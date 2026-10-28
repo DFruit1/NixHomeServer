@@ -3,12 +3,11 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
-use zip::ZipArchive;
 
 use super::paperless::extract_pdf_text;
 use super::ExtractedDocument;
 use crate::config::SourceConfig;
-use crate::text::html_to_text;
+use crate::text::{html_to_text, truncate_text};
 use crate::timeutil::parse_date;
 
 /// Upper bound on the body text copied out of a single book. Technical books
@@ -22,7 +21,8 @@ const BODY_LIMIT: usize = 2_000_000;
 /// The body combines the catalog metadata, the book's description/comment, and
 /// the text of the best available format (EPUB over PDF over plain text), so a
 /// query like "beam deflection" can match body prose as well as title, author,
-/// series, or tag. Other formats are recorded in metadata but not extracted.
+/// series, or tag. DOCX, ODT, FB2 and zipped HTML/text are also readable;
+/// unsupported formats are recorded in metadata but not extracted.
 pub struct CalibreExtractor {
     pub pdftotext: Option<PathBuf>,
 }
@@ -152,7 +152,8 @@ fn format_priority(format: &str) -> u8 {
         "pdf" => 1,
         "txt" => 2,
         "html" | "htm" => 3,
-        _ => 4,
+        "docx" | "odt" | "fb2" | "htmlz" | "txtz" | "md" => 4,
+        _ => 5,
     }
 }
 
@@ -162,6 +163,12 @@ fn content_type_for_format(format: &str) -> String {
         "pdf" => "application/pdf".to_string(),
         "txt" => "text/plain".to_string(),
         "html" | "htm" => "text/html".to_string(),
+        "docx" => {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
+        }
+        "odt" => "application/vnd.oasis.opendocument.text".to_string(),
+        "fb2" => "application/x-fictionbook+xml".to_string(),
+        "md" => "text/markdown".to_string(),
         "mobi" => "application/x-mobipocket-ebook".to_string(),
         "azw3" => "application/vnd.amazon.ebook".to_string(),
         _ => "application/octet-stream".to_string(),
@@ -197,47 +204,24 @@ pub(crate) fn source_fingerprint(source: &SourceConfig) -> Option<String> {
     super::file_inventory_fingerprint(source, files)
 }
 
-fn extract_epub_text(path: &Path) -> Option<String> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut archive = ZipArchive::new(std::io::BufReader::new(file)).ok()?;
-    let mut names: Vec<String> = archive
-        .file_names()
-        .filter(|name| {
-            let lower = name.to_ascii_lowercase();
-            lower.ends_with(".xhtml") || lower.ends_with(".html") || lower.ends_with(".htm")
-        })
-        .map(str::to_string)
-        .collect();
-    names.sort();
-    let mut body = String::new();
-    for name in names {
-        let Ok(mut entry) = archive.by_name(&name) else {
-            continue;
-        };
-        let mut raw = String::new();
-        if entry.read_to_string(&mut raw).is_err() {
-            continue;
-        }
-        let text = html_to_text(&raw);
-        if !text.trim().is_empty() {
-            body.push_str(&text);
-            body.push('\n');
-        }
-    }
-    if body.trim().is_empty() {
-        None
-    } else {
-        Some(body)
-    }
-}
-
 fn extract_format_text(path: &Path, format: &str, pdftotext: Option<&Path>) -> Option<String> {
     match format.to_ascii_lowercase().as_str() {
-        "epub" => extract_epub_text(path),
+        format @ ("epub" | "docx" | "odt" | "htmlz" | "txtz") => {
+            let file = std::fs::File::open(path).ok()?;
+            super::document::zip_text(std::io::BufReader::new(file), format)
+        }
+        "fb2" => {
+            let file = std::fs::File::open(path).ok()?;
+            let mut bytes = Vec::new();
+            file.take(super::document::XML_LIMIT + 1)
+                .read_to_end(&mut bytes)
+                .ok()?;
+            super::document::xml_text(std::str::from_utf8(&bytes).ok()?)
+        }
         "pdf" => extract_pdf_text(path, pdftotext)
             .ok()
             .filter(|text| !text.trim().is_empty()),
-        "txt" => std::fs::read_to_string(path)
+        "txt" | "md" => std::fs::read_to_string(path)
             .ok()
             .filter(|text| !text.trim().is_empty()),
         "html" | "htm" => std::fs::read_to_string(path)
@@ -246,17 +230,6 @@ fn extract_format_text(path: &Path, format: &str, pdftotext: Option<&Path>) -> O
             .filter(|text| !text.trim().is_empty()),
         _ => None,
     }
-}
-
-fn truncate(value: &str, limit: usize) -> String {
-    if value.len() <= limit {
-        return value.to_string();
-    }
-    let mut truncated = value[..limit].to_string();
-    while !truncated.is_char_boundary(truncated.len()) {
-        truncated.pop();
-    }
-    truncated
 }
 
 impl super::Extractor for CalibreExtractor {
@@ -415,7 +388,7 @@ impl super::Extractor for CalibreExtractor {
                 } else {
                     book.title.clone()
                 },
-                body_text: truncate(&body, BODY_LIMIT),
+                body_text: truncate_text(&body, BODY_LIMIT),
                 content_type,
                 origin_url: String::new(),
                 app_url: format!("{app_base}/book/{}", book.id),

@@ -1,3 +1,8 @@
+/// Truncates text by bytes without splitting a UTF-8 character.
+pub fn truncate_text(text: &str, limit: usize) -> String {
+    text[..text.floor_char_boundary(limit.min(text.len()))].to_string()
+}
+
 /// Extracts the raw contents of the first `<title>` element in an HTML document.
 pub fn html_title(html: &str) -> Option<String> {
     let lower = html.to_ascii_lowercase();

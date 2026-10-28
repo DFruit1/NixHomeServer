@@ -1,5 +1,6 @@
 pub mod browsertrix;
 pub mod calibre;
+pub mod document;
 pub mod freshrss;
 pub mod kiwix;
 pub mod mail;
@@ -54,7 +55,11 @@ impl ExtractedDocument {
         ])
     }
 
-    pub fn into_record(self) -> crate::db::DocumentRecord {
+    pub fn into_record(mut self) -> crate::db::DocumentRecord {
+        // Ordinary queries search title/body, not the exact-value facet fields.
+        // Keep descriptive metadata in the authoritative body too, so matches
+        // on a sender, feed, ISBN, or contributor also get usable snippets.
+        append_search_metadata(&mut self.body_text, &self.metadata);
         let checksum = self.checksum();
         crate::db::DocumentRecord {
             external_id: self.external_id,
@@ -71,6 +76,77 @@ impl ExtractedDocument {
             content_modified_at: self.content_modified_at,
             metadata: self.metadata,
         }
+    }
+}
+
+fn append_search_metadata(body: &mut String, metadata: &Value) {
+    fn collect(value: &Value, values: &mut Vec<String>, remaining: &mut usize) {
+        if *remaining <= 1 {
+            return;
+        }
+        match value {
+            Value::String(text) => {
+                let text = crate::text::truncate_text(text.trim(), (*remaining - 1).min(4_096));
+                if !text.is_empty() && !values.contains(&text) {
+                    *remaining -= text.len() + 1;
+                    values.push(text);
+                }
+            }
+            Value::Number(number) => collect(&Value::String(number.to_string()), values, remaining),
+            Value::Array(items) => {
+                for item in items {
+                    collect(item, values, remaining);
+                    if *remaining <= 1 {
+                        break;
+                    }
+                }
+            }
+            Value::Object(map) => {
+                if let Some(name) = map.get("name") {
+                    collect(name, values, remaining);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Deliberate allowlist: never turn arbitrary metadata (paths, tokens, or
+    // provider internals) into search terms. Bound the added text separately
+    // so a large body does not crowd out useful metadata or vice versa.
+    let mut values = Vec::new();
+    let mut remaining = 32_768;
+    for key in [
+        "authors",
+        "author",
+        "narrators",
+        "writers",
+        "from",
+        "to",
+        "cc",
+        "correspondent",
+        "tags",
+        "genres",
+        "series",
+        "feed",
+        "crawl",
+        "publisher",
+        "languages",
+        "language",
+        "identifiers",
+        "attachments",
+        "year",
+    ] {
+        if let Some(value) = metadata.get(key) {
+            collect(value, &mut values, &mut remaining);
+        }
+    }
+    let context = values
+        .into_iter()
+        .filter(|value| !body.contains(value))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !context.is_empty() {
+        *body = format!("{context}\n{body}");
     }
 }
 
@@ -92,7 +168,7 @@ pub trait Extractor {
 /// fingerprint silently serves a stale index, so extractors without a reliable
 /// signal must return `None`.
 pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
-    match source.source_type.as_str() {
+    let inputs = match source.source_type.as_str() {
         "kiwix" => kiwix::source_fingerprint(source),
         "mail-archive" => mail::source_fingerprint(source),
         "browsertrix" => browsertrix::source_fingerprint(source),
@@ -101,7 +177,11 @@ pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
         "media-snapshot" => media_snapshot::source_fingerprint(source),
         "paperless" => paperless::source_fingerprint(source),
         _ => None,
-    }
+    }?;
+    // Extraction changes must reach unchanged source files too. A Solr-only
+    // reindex cannot recover text an older extractor never put in Postgres.
+    const EXTRACTION_VERSION: &str = "2";
+    Some(crate::timeutil::sha256_hex(&[EXTRACTION_VERSION, &inputs]))
 }
 
 /// Fingerprints a set of input files together with the source's settings.
@@ -196,7 +276,9 @@ pub fn run(
                 .ok_or_else(|| "SEARCH_ZIMDUMP must be set for the kiwix source".to_string())?,
         }),
         "browsertrix" => Box::new(browsertrix::BrowsertrixExtractor),
-        "mail-archive" => Box::new(mail::MailExtractor),
+        "mail-archive" => Box::new(mail::MailExtractor {
+            pdftotext: settings.pdftotext.clone(),
+        }),
         "freshrss" => Box::new(freshrss::FreshRssExtractor),
         "calibre" => Box::new(calibre::CalibreExtractor {
             pdftotext: settings.pdftotext.clone(),

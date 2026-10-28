@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
 
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 use serde_json::Value;
 use zip::ZipArchive;
 
 use super::ExtractedDocument;
 use crate::config::SourceConfig;
-use crate::text::{html_title, html_to_text};
+use crate::text::{html_title, html_to_text, truncate_text};
 use crate::timeutil::{parse_date, sha256_hex};
 
 const MAX_PAGE_TEXT_BYTES: usize = 400_000;
@@ -71,7 +71,9 @@ fn parse_pages_jsonl(raw: &str) -> Vec<PageRecord> {
 /// whole (potentially multi-hundred-MB) decompressed archive.
 pub fn parse_warc_html<R: Read>(reader: R) -> HashMap<String, (String, String)> {
     let mut results = HashMap::new();
-    let mut decoder = GzDecoder::new(reader);
+    // WARC writers commonly gzip each record independently, then concatenate
+    // the members. A single-member decoder silently loses every later page.
+    let mut decoder = MultiGzDecoder::new(reader);
     while let Some(record) = read_warc_record(&mut decoder) {
         if record.record_type != "response" {
             continue;
@@ -89,8 +91,8 @@ pub fn parse_warc_html<R: Read>(reader: R) -> HashMap<String, (String, String)> 
             continue;
         }
         results.entry(record.target_uri.clone()).or_insert((
-            truncate(&title, 2_000),
-            truncate(&text, MAX_PAGE_TEXT_BYTES),
+            truncate_text(&title, 2_000),
+            truncate_text(&text, MAX_PAGE_TEXT_BYTES),
         ));
     }
     results
@@ -214,18 +216,6 @@ pub fn http_body(payload: &[u8]) -> Option<String> {
     Some(String::from_utf8_lossy(&payload[separator..]).into_owned())
 }
 
-fn truncate(value: &str, limit: usize) -> String {
-    if value.len() <= limit {
-        value.to_string()
-    } else {
-        let mut truncated = value[..limit].to_string();
-        while !truncated.is_char_boundary(truncated.len()) {
-            truncated.pop();
-        }
-        truncated
-    }
-}
-
 fn parse_wacz(path: &PathBuf) -> Result<CrawlPackage, String> {
     let file = std::fs::File::open(path)
         .map_err(|err| format!("failed to open {}: {err}", path.display()))?;
@@ -264,33 +254,40 @@ fn parse_wacz(path: &PathBuf) -> Result<CrawlPackage, String> {
             .to_string();
     }
 
-    let pages_jsonl = archive
-        .by_name("pages/pages.jsonl")
-        .ok()
-        .map(|mut entry| {
-            let mut raw = String::new();
-            let _ = entry.read_to_string(&mut raw);
-            raw
+    // Browsertrix may put discovered pages in extraPages.jsonl or split a
+    // crawl across multiple page lists. Read them all, preferring the normal
+    // pages.jsonl record and filling missing fields from duplicate URLs.
+    let mut page_lists: Vec<String> = archive
+        .file_names()
+        .filter(|name| {
+            (name.starts_with("pages/") && name.ends_with(".jsonl"))
+                || name.ends_with("pages.jsonl")
         })
-        .or_else(|| {
-            let mut names: Vec<String> = archive
-                .file_names()
-                .filter(|name| name.ends_with("pages.jsonl"))
-                .map(str::to_string)
-                .collect();
-            names.sort();
-            names
-                .into_iter()
-                .next()
-                .and_then(|name| archive.by_name(&name).ok())
-                .map(|mut entry| {
-                    let mut raw = String::new();
-                    let _ = entry.read_to_string(&mut raw);
-                    raw
-                })
-        });
-    if let Some(raw) = pages_jsonl {
-        package.pages = parse_pages_jsonl(&raw);
+        .map(str::to_string)
+        .collect();
+    page_lists.sort_by_key(|name| (name != "pages/pages.jsonl", name.clone()));
+    let mut positions = HashMap::new();
+    for name in page_lists {
+        let mut raw = String::new();
+        archive
+            .by_name(&name)
+            .map_err(|err| format!("failed to read WACZ page list {name}: {err}"))?
+            .read_to_string(&mut raw)
+            .map_err(|err| format!("failed to decode WACZ page list {name}: {err}"))?;
+        for mut page in parse_pages_jsonl(&raw) {
+            page.text = page
+                .text
+                .map(|text| truncate_text(&text, MAX_PAGE_TEXT_BYTES));
+            if let Some(&position) = positions.get(&page.url) {
+                let existing: &mut PageRecord = &mut package.pages[position];
+                existing.title = existing.title.take().or(page.title);
+                existing.text = existing.text.take().or(page.text);
+                existing.timestamp = existing.timestamp.or(page.timestamp);
+            } else {
+                positions.insert(page.url.clone(), package.pages.len());
+                package.pages.push(page);
+            }
+        }
     }
 
     // Extract page text for pages the pages.jsonl did not carry.

@@ -1974,6 +1974,31 @@ Notes:
   Because `_default` defines `*_ss`/`*_i` dynamic fields, adding a facet
   dimension never requires a schema/configset rebuild. The UI presents the
   snippet and selected metadata identically for every source.
+* Searchable descriptive metadata. Ordinary text queries also match email
+  senders/recipients, attachment names, feed names/authors, book identifiers,
+  and the descriptive creator/category/collection fields from each indexed
+  source. An explicit allowlist adds missing values to the stored body, so
+  these matches can produce snippets; arbitrary metadata and filesystem paths
+  are not copied into searchable text. Added metadata is bounded to 32 KiB.
+* Email text. The mail extractor combines readable parts of mixed messages,
+  selects the last readable representation of a multipart alternative, and
+  handles messages without an explicit content type and forwarded `.eml`
+  attachments. It extracts PDF, EPUB, DOCX, ODT, FB2, text/Markdown/CSV and
+  zipped text/HTML attachments where supported. Unsupported or oversized binary
+  attachments still contribute their filenames. Text is capped at 2 MB per
+  message; binary MIME parts above 8 MB are skipped, and traversal is bounded
+  to 256 parts and 16 nested levels. PDFs use the existing local `pdftotext`
+  binary, without writing attachments to temporary files.
+* Book formats. Calibre extraction prefers EPUB, PDF, plain text and HTML,
+  then tries DOCX, ODT, FB2, Markdown and zipped HTML/text. Word extraction
+  includes footnotes, endnotes and running headers/footers. ZIP extraction
+  reads members in memory, caps expanded input at 8 MB per member and 32 MB
+  per book, and retains up to 2 MB of text. UTF-8 truncation preserves complete
+  characters. Scanned image-only documents still require upstream OCR.
+* Web captures. WACZ extraction reads every page list under `pages/`, merges
+  duplicate URLs, and handles concatenated gzip members in WARC streams, so
+  later captures and extra page lists contribute searchable content. Page
+  bodies are capped at 400 KB whether supplied as text or extracted from HTML.
 * Facet dimensions. The UI narrows results by user, source, content type, and
   the cross-source author, tag, series, and year facets; selecting a chip adds
   an `fq` clause and the facet counts update around it. High-cardinality
@@ -2049,7 +2074,11 @@ Notes:
   indexer skips that source's extraction entirely; a changed fingerprint or a
   missing input falls back to a full extraction pass. Fingerprints are only a
   skip signal — the per-document checksum still governs whether a document is
-  re-pushed.
+  re-pushed. Fingerprints also include an extraction revision. A new revision
+  causes one normal source extraction after deployment, even for unchanged
+  files, so improved text extraction reaches existing documents automatically.
+  That pass may take longer than an ordinary hourly refresh. A Solr-only
+  `search-reindex.service` rebuild cannot recover text missing from Postgres.
 * Kiwix federation. Every ZIM with an embedded Xapian index is searched live,
   not just the first few: archives are queried in bounded-concurrency batches
   (8 at a time) and each archive's article title/snippet fetches run

@@ -635,11 +635,12 @@ mod tests {
         assert_eq!(payload["id"], json!("paperless:42"));
         assert_eq!(payload["source"], json!("paperless"));
         assert_eq!(payload["title"], json!("Invoice 42"));
-        assert_eq!(payload["body"], json!("total due 100"));
+        assert_eq!(payload["body"], json!("ACME\ntotal due 100"));
         assert_eq!(payload["content_type"], json!("application/pdf"));
         assert!(payload.get("content_created").is_some());
         assert_eq!(payload["owner_s"], json!("ACME"));
-        // Metadata stays authoritative in Postgres and is not copied to Solr.
+        // Descriptive metadata also appears in body text, while arbitrary
+        // per-key metadata fields stay authoritative in Postgres.
         assert!(payload.get("meta_correspondent_s").is_none());
     }
 
