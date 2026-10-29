@@ -41,6 +41,7 @@ async fn setup() -> Client {
     ] {
         db.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES($1,$2,$1,'V21')",&[&topic,&DEVICE]).await.unwrap();
     }
+    crate::fixtures::implemented_handlers_for_protocol_fixture(&db).await;
     db
 }
 async fn queued(db: &Client, kind: &str, payload: Value) -> platform::Command {
@@ -119,7 +120,7 @@ async fn durable_attempts_recover_and_reboot_is_terminal_only_after_puback() {
     assert!(command(&db, settings.id).await.broker_acked_at.is_none());
     assert!(db
         .query_one(
-            "SELECT desired_config FROM devices WHERE device_id=$1",
+            "SELECT project_config FROM devices WHERE device_id=$1",
             &[&DEVICE]
         )
         .await
@@ -174,7 +175,7 @@ async fn durable_attempts_recover_and_reboot_is_terminal_only_after_puback() {
     publisher.outgoing(&mut db, 42, &bus).await.unwrap();
     assert!(db
         .query_one(
-            "SELECT desired_config FROM devices WHERE device_id=$1",
+            "SELECT project_config FROM devices WHERE device_id=$1",
             &[&DEVICE]
         )
         .await
@@ -200,7 +201,7 @@ async fn durable_attempts_recover_and_reboot_is_terminal_only_after_puback() {
     assert!(sent.broker_acked_at.is_some());
     assert!(sent.acked_at.is_none());
     assert!(sent.ack_payload.is_none());
-    let row=db.query_one("SELECT desired_config,min_limit,max_limit,applied_config FROM devices WHERE device_id=$1",&[&DEVICE]).await.unwrap();
+    let row=db.query_one("SELECT project_config,min_limit,max_limit,applied_config FROM devices WHERE device_id=$1",&[&DEVICE]).await.unwrap();
     assert_eq!(row.get::<_, Value>(0), config());
     assert_eq!(row.get::<_, f64>(1), 0.);
     assert_eq!(row.get::<_, f64>(2), 9.);
@@ -323,9 +324,8 @@ impl Drop for Broker {
     }
 }
 fn broker() -> Broker {
-    let executable = std::env::var("GROUNDWATER_TEST_MOSQUITTO").unwrap_or_else(|_| {
-        "/nix/store/k4r88y4x9081gx5kv1cgcqpyhmn8xih1-mosquitto-2.1.2/bin/mosquitto".into()
-    });
+    let executable =
+        std::env::var("GROUNDWATER_TEST_MOSQUITTO").unwrap_or_else(|_| "mosquitto".into());
     let scratch = tempfile::Builder::new()
         .prefix("groundwater-puback-")
         .tempdir()
@@ -410,7 +410,7 @@ async fn real_mqtt_puback_correlates_after_crash_before_dispatch() {
     assert_eq!(self::command(&db, command.id).await.state, "queued");
     assert!(db
         .query_one(
-            "SELECT desired_config FROM devices WHERE device_id=$1",
+            "SELECT project_config FROM devices WHERE device_id=$1",
             &[&DEVICE]
         )
         .await
@@ -431,7 +431,7 @@ async fn real_mqtt_puback_correlates_after_crash_before_dispatch() {
     assert_eq!(sent.attempts, 2);
     assert_eq!(
         db.query_one(
-            "SELECT desired_config FROM devices WHERE device_id=$1",
+            "SELECT project_config FROM devices WHERE device_id=$1",
             &[&DEVICE]
         )
         .await
@@ -612,7 +612,7 @@ async fn owner_reconcile_preserves_tracked_inflight_and_puback_across_database_l
     );
     assert_eq!(
         db.query_one(
-            "SELECT desired_config FROM devices WHERE device_id=$1",
+            "SELECT project_config FROM devices WHERE device_id=$1",
             &[&DEVICE]
         )
         .await

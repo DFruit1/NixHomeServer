@@ -6,14 +6,7 @@ import {
   useStore,
   type QRL,
 } from "@builder.io/qwik";
-import {
-  buildConfig,
-  CFG_KEYS,
-  CFG_LABELS,
-  CONFIG_FIELDS,
-  DANGER_COMMANDS,
-  emptyConfig,
-} from "./config";
+import { buildConfig, CONFIG_FIELDS, emptyConfig } from "./config";
 import { errorText, request, stamp } from "./api";
 import type { Command, Device } from "./types";
 
@@ -25,7 +18,18 @@ export const ConfigEditor = component$<Props>(({ device, refresh }) => {
     pending = useSignal(false),
     message = useSignal(""),
     failed = useSignal(false);
-  const built = useComputed$(() => buildConfig(config));
+  const built = useComputed$(() => {
+    const result = buildConfig(config);
+    const [hours, minutes] = config.ltost.split(":").map(Number);
+    const offset = device.clock_policy === "utc" ? 0 : device.local_offset_min;
+    if (
+      !result.errors.ltost &&
+      (offset == null || hours * 60 + minutes !== offset)
+    )
+      result.errors.ltost =
+        "Keep the commissioned UTC offset. This firmware cannot identify clock changes in SD backlog.";
+    return result;
+  });
   const submit = $(async () => {
     for (const [key] of CONFIG_FIELDS) touched[key] = true;
     if (
@@ -149,25 +153,18 @@ export const ConfigEditor = component$<Props>(({ device, refresh }) => {
 });
 
 export const DeviceCommands = component$<Props>(({ device, refresh }) => {
-  const cfgKey = useSignal<string>(CFG_KEYS[0]),
-    cfgValue = useSignal("1"),
-    danger = useSignal<string>(""),
+  const danger = useSignal<string>(""),
     confirm = useSignal("");
   const pending = useSignal(false),
     message = useSignal(""),
     failed = useSignal(false);
-  const send = $(async (kind: "cfg" | "test" | "danger") => {
+  const send = $(async (kind: "test" | "danger") => {
     if (
       pending.value ||
       (kind === "danger" && (!danger.value || confirm.value !== "DANGER"))
     )
       return;
-    const payload =
-      kind === "test"
-        ? {}
-        : kind === "cfg"
-          ? { [cfgKey.value]: cfgValue.value }
-          : danger.value;
+    const payload = kind === "test" ? {} : danger.value;
     pending.value = true;
     message.value = "";
     try {
@@ -180,7 +177,7 @@ export const DeviceCommands = component$<Props>(({ device, refresh }) => {
           ...(kind === "danger" ? { confirm: confirm.value } : {}),
         },
       );
-      message.value = `${kind === "test" ? "Self-test" : kind === "cfg" ? "Configuration toggle" : danger.value} queued until wake.`;
+      message.value = `${kind === "test" ? "Self-test" : danger.value} queued until wake.`;
       failed.value = false;
       confirm.value = "";
       refresh();
@@ -198,127 +195,76 @@ export const DeviceCommands = component$<Props>(({ device, refresh }) => {
         Commands wait for a Ready wake window. Unacknowledged commands are
         retried on the next Ready until cancelled.
       </p>
-      <div class="command-section">
-        <h3>Self-test</h3>
-        <p>Results arrive in the delivery log on the testresults topic.</p>
-        <button
-          disabled={pending.value}
-          aria-busy={pending.value}
-          onClick$={() => send("test")}
-        >
-          Queue self-test
-        </button>
-      </div>
-      <form
-        class="command-section"
-        preventdefault:submit
-        onSubmit$={() => send("cfg")}
-      >
-        <h3>Configuration toggle</h3>
-        <p>
-          Firmware booleans are quoted strings. Compare desired and applied
-          values below.
-        </p>
-        <div class="toolbar">
-          <label class="field" for="cfg-key">
-            Firmware key
-            <select
-              id="cfg-key"
-              value={cfgKey.value}
-              onChange$={(_, el) => {
-                cfgKey.value = el.value;
-              }}
-            >
-              {CFG_KEYS.map((key) => (
-                <option key={key} value={key}>
-                  {`${CFG_LABELS[key]} · ${key}`}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label class="field" for="cfg-value">
-            Value
-            <select
-              id="cfg-value"
-              value={cfgValue.value}
-              onChange$={(_, el) => {
-                cfgValue.value = el.value;
-              }}
-            >
-              <option value="1">
-                {cfgKey.value === "Disable_Logging"
-                  ? "1 · stop logging"
-                  : "1 · request action"}
-              </option>
-              <option value="0">
-                {cfgKey.value === "Disable_Logging"
-                  ? "0 · allow logging"
-                  : "0 · clear request"}
-              </option>
-            </select>
-          </label>
+      {device.capabilities?.test && (
+        <div class="command-section">
+          <h3>Self-test</h3>
+          <p>Results arrive in the delivery log on the testresults topic.</p>
           <button
-            type="submit"
             disabled={pending.value}
             aria-busy={pending.value}
+            onClick$={() => send("test")}
           >
-            Queue toggle
+            Queue self-test
           </button>
         </div>
-      </form>
+      )}
+      <p class="notice">
+        This firmware does not implement configuration toggles or wipe/reset
+        actions. Its echoes confirm receipt only. These actions cannot be
+        queued.
+      </p>
       <ConfigSnapshot device={device} />
-      <form
-        class="command-section"
-        preventdefault:submit
-        onSubmit$={() => send("danger")}
-      >
-        <h3 class="error-text">Danger commands</h3>
-        <p>
-          Wipe and reset commands can permanently erase device data or keys.
-          Reboot has no firmware acknowledgement.
-        </p>
-        <div class="toolbar">
-          <label class="field" for="danger-command">
-            Command
-            <select
-              id="danger-command"
-              value={danger.value}
-              onChange$={(_, el) => {
-                danger.value = el.value;
-                confirm.value = "";
-              }}
+      {device.capabilities?.danger_commands.length > 0 && (
+        <form
+          class="command-section"
+          preventdefault:submit
+          onSubmit$={() => send("danger")}
+        >
+          <h3 class="error-text">Danger commands</h3>
+          <p>Reboot restarts the logger and has no firmware acknowledgement.</p>
+          <div class="toolbar">
+            <label class="field" for="danger-command">
+              Command
+              <select
+                id="danger-command"
+                value={danger.value}
+                onChange$={(_, el) => {
+                  danger.value = el.value;
+                  confirm.value = "";
+                }}
+              >
+                <option value="">Choose a command</option>
+                {device.capabilities.danger_commands.map((command) => (
+                  <option key={command} value={command}>
+                    {command}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label class="field" for="danger-confirm">
+              Type DANGER
+              <input
+                id="danger-confirm"
+                autoComplete="off"
+                value={confirm.value}
+                onInput$={(_, el) => {
+                  confirm.value = el.value;
+                }}
+              />
+            </label>
+            <button
+              class="danger"
+              type="submit"
+              disabled={
+                pending.value || !danger.value || confirm.value !== "DANGER"
+              }
+              aria-busy={pending.value}
             >
-              <option value="">Choose a command</option>
-              {DANGER_COMMANDS.map((command) => (
-                <option key={command} value={command}>
-                  {command}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label class="field" for="danger-confirm">
-            Type DANGER
-            <input
-              id="danger-confirm"
-              autoComplete="off"
-              value={confirm.value}
-              onInput$={(_, el) => {
-                confirm.value = el.value;
-              }}
-            />
-          </label>
-          <button
-            class="danger"
-            type="submit"
-            disabled={
-              pending.value || !danger.value || confirm.value !== "DANGER"
-            }
-            aria-busy={pending.value}
-          >
-            Queue danger command
-          </button>
-        </div>
-      </form>
+              Queue danger command
+            </button>
+          </div>
+        </form>
+      )}
       {message.value && (
         <p
           role={failed.value ? "alert" : "status"}
@@ -333,29 +279,35 @@ export const DeviceCommands = component$<Props>(({ device, refresh }) => {
 
 export const ConfigSnapshot = component$<{ device: Device }>(({ device }) => (
   <details class="snapshot">
-    <summary>Desired / applied configuration</summary>
-    <div class="snapshot-grid">
-      <div>
-        <h3>Desired</h3>
-        <pre>
-          {device.desired_config
-            ? JSON.stringify(device.desired_config, null, 2)
-            : "No desired configuration recorded."}
-        </pre>
-      </div>
-      <div>
-        <h3>Applied</h3>
-        <pre>
-          {device.applied_config
-            ? JSON.stringify(device.applied_config, null, 2)
-            : "No acknowledgement recorded."}
-        </pre>
-      </div>
-    </div>
+    <summary>Configuration record</summary>
+    <h3>Last project settings sent</h3>
+    <pre>
+      {device.project_config
+        ? JSON.stringify(device.project_config, null, 2)
+        : "No project settings sent."}
+    </pre>
     <p class="muted">
-      An applied echo confirms cfg toggles only. Project settings do not produce
-      an acknowledgement.
+      Project settings have no firmware acknowledgement. This is the last
+      broker-accepted payload, not proof of application.
     </p>
+    {(device.desired_config || device.applied_config) && (
+      <>
+        <div class="snapshot-grid">
+          <div>
+            <h3>Requested toggles</h3>
+            <pre>{JSON.stringify(device.desired_config || {}, null, 2)}</pre>
+          </div>
+          <div>
+            <h3>Received toggle echoes</h3>
+            <pre>{JSON.stringify(device.applied_config || {}, null, 2)}</pre>
+          </div>
+        </div>
+        <p class="muted">
+          Historical echoes record receipt. The bundled firmware does not
+          implement these actions.
+        </p>
+      </>
+    )}
   </details>
 ));
 
@@ -410,8 +362,14 @@ export const CommandQueue = component$<{
                   </td>
                   <td>
                     <span class="state">{command.state}</span>
-                    {command.kind === "config" ||
-                    command.kind === "project_settings" ? (
+                    {command.supported === false &&
+                      ["queued", "sent"].includes(command.state) && (
+                        <small class="error-text">
+                          Delivery blocked by firmware capability or clock
+                          policy. Cancel to close.
+                        </small>
+                      )}
+                    {command.firmware_ack_expected === false ? (
                       <small>No firmware ack</small>
                     ) : null}
                   </td>

@@ -10,6 +10,14 @@ use chrono::{DateTime, Utc};
 use rumqttc::AsyncClient;
 use tokio_postgres::Client;
 
+/// A live control connection is required for every command window. Cached
+/// readiness from before a disconnect is never evidence of current wake state.
+pub async fn invalidate_ready(client: &Client) -> Result<(), String> {
+    client.execute("UPDATE devices SET presence_status=NULL,last_ready_at=NULL WHERE presence_status='awake'", &[])
+        .await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn attributed<'a>(
     registry: &'a EnrollmentRegistry,
     topic: &str,
@@ -26,8 +34,8 @@ pub fn attributed<'a>(
     (!enrolled.revoked && enrolled.profile == binding.profile && !ambiguous).then_some(binding)
 }
 
-pub async fn ancillary(
-    client: &Client,
+pub async fn ancillary<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
     registry: &EnrollmentRegistry,
     topic: &str,
     payload: &[u8],
@@ -53,7 +61,7 @@ pub async fn ancillary(
             "sleep" => "asleep",
             _ => return Ok(None),
         };
-        client.execute("UPDATE devices SET last_seen=$2,presence_status=$3,last_ready_at=CASE WHEN $3='awake' THEN $2 ELSE last_ready_at END WHERE device_id=$1 AND revoked_at IS NULL", &[&device,&now,&status]).await.map_err(|e|e.to_string())?;
+        client.execute("UPDATE devices SET last_seen=GREATEST(last_seen,$2),presence_status=$3,last_ready_at=CASE WHEN $3='awake' THEN $2 ELSE last_ready_at END WHERE device_id=$1 AND revoked_at IS NULL", &[&device,&now,&status]).await.map_err(|e|e.to_string())?;
         bus.emit(LiveEvent::Presence {
             device_id: device.clone(),
         });
@@ -76,7 +84,7 @@ pub async fn ancillary(
         {
             client
                 .execute(
-                    "UPDATE devices SET last_seen=$2 WHERE device_id=$1 AND revoked_at IS NULL",
+                    "UPDATE devices SET last_seen=GREATEST(last_seen,$2) WHERE device_id=$1 AND revoked_at IS NULL",
                     &[&device, &now],
                 )
                 .await
@@ -87,7 +95,7 @@ pub async fn ancillary(
     };
     client
         .execute(
-            "UPDATE devices SET last_seen=$2 WHERE device_id=$1 AND revoked_at IS NULL",
+            "UPDATE devices SET last_seen=GREATEST(last_seen,$2) WHERE device_id=$1 AND revoked_at IS NULL",
             &[&device, &now],
         )
         .await
@@ -121,7 +129,7 @@ pub async fn ancillary(
         if ack_kind == "cfg" && changed.iter().any(|r| r.get::<_, bool>(1)) {
             client
                 .execute(
-                    "UPDATE devices SET applied_config=$2,last_seen=$3 WHERE device_id=$1",
+                    "UPDATE devices SET applied_config=COALESCE(applied_config,'{}'::jsonb)||$2::jsonb,last_seen=GREATEST(last_seen,$3) WHERE device_id=$1",
                     &[&device, &parsed, &now],
                 )
                 .await
@@ -153,11 +161,13 @@ pub async fn tick(
          WHERE c.active_publish_attempt IS NULL
            AND (c.state='queued' OR (c.state='sent' AND (c.firmware_ack_expected OR c.broker_acked_at IS NULL)))
            AND d.revoked_at IS NULL AND d.presence_status='awake'
+           AND groundwater_command_supported(d.source_profile,c.kind,c.payload,d.clock_policy,d.local_offset_min,d.clock_change_unverified) IS TRUE
            AND d.last_ready_at<=now() AND d.last_ready_at>now()-interval '8 minutes'
            AND (d.last_downlink_at IS NULL OR d.last_downlink_at<=now()-interval '5 seconds')
            AND (c.broker_acked_at IS NULL OR c.last_ready_at IS NULL OR c.last_ready_at<d.last_ready_at)
            AND NOT EXISTS(SELECT 1 FROM commands prior WHERE prior.device_id=c.device_id AND prior.id<c.id
-               AND (prior.state='queued' OR (prior.state='sent' AND (prior.firmware_ack_expected OR prior.broker_acked_at IS NULL))))
+               AND (prior.state='queued' OR (prior.state='sent' AND (prior.firmware_ack_expected OR prior.broker_acked_at IS NULL)))
+               AND groundwater_command_supported(d.source_profile,prior.kind,prior.payload,d.clock_policy,d.local_offset_min,d.clock_change_unverified) IS TRUE)
          ORDER BY c.id LIMIT 32 FOR UPDATE OF c,d SKIP LOCKED", &[])
         .await.map_err(|e|format!("scheduler select: {e:?}"))?;
     let mut prepared = None;

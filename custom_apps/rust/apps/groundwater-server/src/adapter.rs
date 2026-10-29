@@ -247,6 +247,8 @@ pub enum QuarantineReason {
     PayloadTooLarge,
     /// Payload was not UTF-8.
     NotUtf8,
+    /// PostgreSQL text/JSONB cannot store a NUL character.
+    NulByte,
     /// No configured topic matched.
     UnknownTopic,
     /// GPS/status/storage/self-test/motion/alert/config traffic: recorded, not
@@ -278,6 +280,7 @@ impl QuarantineReason {
             Self::TopicTooLong => "topic-too-long",
             Self::PayloadTooLarge => "payload-too-large",
             Self::NotUtf8 => "not-utf8",
+            Self::NulByte => "nul-byte",
             Self::UnknownTopic => "unknown-topic",
             Self::AncillaryChannel => "ancillary-channel",
             Self::UnboundSharedTopic => "unbound-shared-topic",
@@ -525,6 +528,15 @@ pub fn evaluate(
     // Best-effort parsed copy and identity claim: evidence is retained even
     // for traffic that will be quarantined.
     record.payload_json = serde_json::from_str(payload_text.trim()).ok();
+    if payload_text.contains('\0') || record.payload_json.as_ref().is_some_and(json_has_nul) {
+        record.payload_text = payload_text.replace('\0', "\\u0000");
+        record.payload_json = None;
+        return quarantine(
+            record,
+            QuarantineReason::NulByte,
+            "NUL payload retained as escaped text; not representable in PostgreSQL JSONB".into(),
+        );
+    }
     record.claimed_device_id = claimed_identity(record.payload_json.as_ref());
 
     // 2. Topic meaning. Classification is name-only: an unknown topic is never
@@ -854,6 +866,17 @@ pub fn intake(delivery: &Delivery<'_>, registry: &EnrollmentRegistry, topics: &T
 
 /// True for the 24-character hex identifier the firmware derives from its MCU
 /// UID.
+fn json_has_nul(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(value) => value.contains('\0'),
+        serde_json::Value::Array(values) => values.iter().any(json_has_nul),
+        serde_json::Value::Object(values) => values
+            .iter()
+            .any(|(key, value)| key.contains('\0') || json_has_nul(value)),
+        _ => false,
+    }
+}
+
 pub fn is_valid_device_id(value: &str) -> bool {
     value.len() == 24 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }

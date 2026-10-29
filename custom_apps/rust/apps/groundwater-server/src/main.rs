@@ -63,7 +63,7 @@ fn main() -> ExitCode {
 
 async fn run() -> Result<(), String> {
     let settings = Arc::new(Settings::from_env()?);
-    let client = Arc::new(db::connect(&settings.database_url).await?);
+    let client = db::connect(&settings.database_url).await?;
     db::migrate(&client).await?;
 
     // Trust state is loaded once so the first message is decided against real
@@ -80,13 +80,20 @@ async fn run() -> Result<(), String> {
     let bus = EventBus::new();
     let stats = Arc::new(tokio::sync::Mutex::new(IngestStats::default()));
     // Stored observations/configuration can need replay even without MQTT.
-    let alert_db = client.clone();
+    let alert_db = db::Database::new(
+        settings.database_url.clone(),
+        db::connect(&settings.database_url).await?,
+    );
     let alert_bus = bus.clone();
     tokio::spawn(async move {
         let mut timer = tokio::time::interval(Duration::from_secs(1));
         loop {
             timer.tick().await;
-            match platform::refresh_alerts(&alert_db).await {
+            let result = match alert_db.get().await {
+                Ok(db) => platform::refresh_alerts(&db).await,
+                Err(e) => Err(e),
+            };
+            match result {
                 Ok(ids) => {
                     for device_id in ids {
                         alert_bus.emit(ingest::LiveEvent::Alert { device_id });
@@ -112,11 +119,18 @@ async fn run() -> Result<(), String> {
     // Retention keeps the raw delivery log bounded. Observations are never
     // pruned, and pruning clears their delivery reference rather than deleting
     // them.
-    let prune_client = client.clone();
+    let prune_client = db::Database::new(
+        settings.database_url.clone(),
+        db::connect(&settings.database_url).await?,
+    );
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(PRUNE_INTERVAL).await;
-            match db::prune_deliveries(&prune_client, retention_days).await {
+            let result = match prune_client.get().await {
+                Ok(db) => db::prune_deliveries(&db, retention_days).await,
+                Err(e) => Err(e),
+            };
+            match result {
                 Ok(0) => {}
                 Ok(removed) => eprintln!(
                     "groundwater: pruned {removed} raw delivery rows older than {retention_days} days"
@@ -131,7 +145,7 @@ async fn run() -> Result<(), String> {
     // data.
     if let Some(mqtt) = settings.mqtt.clone() {
         let ingest_settings = settings.clone();
-        let ingest_client = client.clone();
+        let ingest_client = db::connect(&settings.database_url).await?;
         let ingest_bus = bus.clone();
         let ingest_stats = Arc::clone(&stats);
         let ingest_registry = Arc::clone(&registry);
@@ -158,7 +172,7 @@ async fn run() -> Result<(), String> {
 
     let state = api::AppState {
         settings: settings.clone(),
-        db: client,
+        db: Arc::new(db::Database::new(settings.database_url.clone(), client)),
         bus,
         stats,
     };

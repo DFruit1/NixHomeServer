@@ -16,8 +16,12 @@ export function connectLive(
   let source: LiveSource | undefined,
     timer: ReturnType<typeof setTimeout> | undefined;
   const schedule = () => {
-    clearTimeout(timer);
-    timer = setTimeout(refresh, 300);
+    // Bound the wait even while a backlog produces an uninterrupted stream.
+    if (timer !== undefined) return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      refresh();
+    }, 300);
   };
   try {
     source = create?.();

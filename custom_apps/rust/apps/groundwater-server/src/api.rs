@@ -26,14 +26,14 @@ use std::{
 #[derive(Clone)]
 pub struct AppState {
     pub settings: Arc<Settings>,
-    pub db: Arc<tokio_postgres::Client>,
+    pub db: Arc<db::Database>,
     pub bus: EventBus,
     pub stats: Arc<tokio::sync::Mutex<IngestStats>>,
 }
 type ApiResult = Result<Response, Response>;
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/healthz", get(|| async { "ok" }))
+        .route("/healthz", get(health))
         .route("/api/status", get(status))
         .route("/api/devices", get(devices))
         .route("/api/devices/{device_id}", get(device))
@@ -65,6 +65,12 @@ pub async fn serve(state: AppState) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())
 }
+async fn health(State(s): State<AppState>) -> Response {
+    match s.db.get().await {
+        Ok(db) if db.simple_query("SELECT 1").await.is_ok() => "ok".into_response(),
+        _ => error(StatusCode::SERVICE_UNAVAILABLE, "database unavailable"),
+    }
+}
 fn error(code: StatusCode, message: &str) -> Response {
     (code, Json(json!({"error":message}))).into_response()
 }
@@ -94,9 +100,10 @@ fn operator(headers: &HeaderMap) -> Result<Identity, Response> {
     Ok(i)
 }
 async fn authorize(s: &AppState, h: &HeaderMap, device: &str) -> Result<String, Response> {
+    let db = s.db.get().await.map_err(database)?;
     let (i, r) = gate(h)?;
     let device = crate::adapter::canonical_device_id(device);
-    if !platform::allowed(&s.db, &i.username, &device, r == Role::Operator)
+    if !platform::allowed(&db, &i.username, &device, r == Role::Operator)
         .await
         .map_err(database)?
     {
@@ -105,8 +112,9 @@ async fn authorize(s: &AppState, h: &HeaderMap, device: &str) -> Result<String, 
     Ok(device)
 }
 async fn ids(s: &AppState, h: &HeaderMap) -> Result<Vec<String>, Response> {
+    let db = s.db.get().await.map_err(database)?;
     let (i, r) = gate(h)?;
-    platform::visible_ids(&s.db, &i.username, r == Role::Operator)
+    platform::visible_ids(&db, &i.username, r == Role::Operator)
         .await
         .map_err(database)
 }
@@ -171,16 +179,12 @@ async fn status(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
     let (i, r) = gate(&h)?;
     let stats = s.stats.lock().await.clone();
     let visible = ids(&s, &h).await?;
-    Ok(Json(json!({"service":"groundwater-server","user":{"username":i.username,"role":if r==Role::Operator{"operator"}else{"viewer"}},"broker":{"configured":s.settings.mqtt.is_some(),"connected":stats.connected,"endpoint":s.settings.mqtt.as_ref().map(|m|format!("{}:{}",m.host,m.port)),"lastError":if r==Role::Operator{stats.last_error}else{None}},"ingest":{"deliveries":stats.deliveries,"observations":stats.observations,"redeliveryCandidates":stats.redelivery_candidates,"conflicts":stats.conflicts,"quarantined":stats.quarantined},"adapter":{"profiles":crate::profiles::ALL_PROFILES.iter().map(|p|json!({"id":p.as_str(),"label":p.label(),"carriesDeviceId":p.carries_device_id()})).collect::<Vec<_>>()},"devices":visible.len(),"retentionDays":s.settings.retention_days})).into_response())
+    Ok(Json(json!({"service":"groundwater-server","user":{"username":i.username,"role":if r==Role::Operator{"operator"}else{"viewer"}},"broker":{"configured":s.settings.mqtt.is_some(),"connected":stats.connected && stats.telemetry_connected,"endpoint":s.settings.mqtt.as_ref().map(|m|format!("{}:{}",m.host,m.port)),"lastError":if r==Role::Operator{stats.last_error}else{None}},"ingest":{"deliveries":stats.deliveries,"observations":stats.observations,"redeliveryCandidates":stats.redelivery_candidates,"conflicts":stats.conflicts,"quarantined":stats.quarantined},"adapter":{"profiles":crate::profiles::ALL_PROFILES.iter().map(|p|json!({"id":p.as_str(),"label":p.label(),"carriesDeviceId":p.carries_device_id()})).collect::<Vec<_>>()},"devices":visible.len(),"retentionDays":s.settings.retention_days})).into_response())
 }
 async fn devices(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
+    let db = s.db.get().await.map_err(database)?;
     let visible = ids(&s, &h).await?;
-    let devices: Vec<_> = db::list_devices(&s.db)
-        .await
-        .map_err(database)?
-        .into_iter()
-        .filter(|d| visible.contains(&d.device_id))
-        .collect();
+    let devices = db::scoped_devices(&db, &visible).await.map_err(database)?;
     Ok(Json(json!({"devices":devices})).into_response())
 }
 async fn device(
@@ -188,8 +192,9 @@ async fn device(
     h: HeaderMap,
     AxumPath(device): AxumPath<String>,
 ) -> ApiResult {
+    let db = s.db.get().await.map_err(database)?;
     let device = authorize(&s, &h, &device).await?;
-    let device = db::list_devices(&s.db)
+    let device = db::scoped_devices(&db, std::slice::from_ref(&device))
         .await
         .map_err(database)?
         .into_iter()
@@ -226,10 +231,11 @@ impl Range {
     }
 }
 async fn series(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>) -> ApiResult {
+    let db = s.db.get().await.map_err(database)?;
     let device = authorize(&s, &h, &q.device).await?;
     let (from, to) = q.bounds()?;
     let series = db::device_series(
-        &s.db,
+        &db,
         &device,
         db::SeriesQuery {
             from,
@@ -247,6 +253,7 @@ struct List {
     state: Option<String>,
 }
 async fn alerts(State(s): State<AppState>, h: HeaderMap, Query(q): Query<List>) -> ApiResult {
+    let db = s.db.get().await.map_err(database)?;
     let device = match &q.device {
         Some(d) => Some(authorize(&s, &h, d).await?),
         None => None,
@@ -258,15 +265,16 @@ async fn alerts(State(s): State<AppState>, h: HeaderMap, Query(q): Query<List>) 
         return Err(bad("state must be open or resolved"));
     }
     let visible = ids(&s, &h).await?;
-    Ok(Json(json!({"alerts":platform::alerts(&s.db,&visible,device.as_deref(),q.state.as_deref()).await.map_err(database)?})).into_response())
+    Ok(Json(json!({"alerts":platform::alerts(&db,&visible,device.as_deref(),q.state.as_deref()).await.map_err(database)?})).into_response())
 }
 async fn commands(State(s): State<AppState>, h: HeaderMap, Query(q): Query<List>) -> ApiResult {
+    let db = s.db.get().await.map_err(database)?;
     let device = match &q.device {
         Some(d) => Some(authorize(&s, &h, d).await?),
         None => None,
     };
     let visible = ids(&s, &h).await?;
-    Ok(Json(json!({"commands":platform::commands(&s.db,&visible,device.as_deref()).await.map_err(database)?})).into_response())
+    Ok(Json(json!({"commands":platform::commands(&db,&visible,device.as_deref()).await.map_err(database)?})).into_response())
 }
 #[derive(Deserialize)]
 struct DeliveryParams {
@@ -280,10 +288,11 @@ async fn deliveries(
     h: HeaderMap,
     Query(q): Query<DeliveryParams>,
 ) -> ApiResult {
+    let db = s.db.get().await.map_err(database)?;
     operator(&h)?;
     let device = q.device.as_deref().map(crate::adapter::canonical_device_id);
     let deliveries = db::filtered_deliveries(
-        &s.db,
+        &db,
         device.as_deref(),
         q.topic.as_deref(),
         q.since,
@@ -304,11 +313,18 @@ async fn configure(
     AxumPath(device): AxumPath<String>,
     Json(q): Json<ConfigRequest>,
 ) -> ApiResult {
+    let db = s.db.get().await.map_err(database)?;
     let user = operator(&h)?;
     let device = authorize(&s, &h, &device).await?;
     let wire = crate::commands::project_payload(&q.config).map_err(|e| bad(&e))?;
+    if !platform::command_supported(&db, &device, "project-settings", &q.config)
+        .await
+        .map_err(database)?
+    {
+        return Err(bad("Keep ltost equal to the commissioned UTC offset. This firmware cannot identify clock epochs in SD backlog. An unknown or changed device clock requires re-commissioning before project settings can be sent."));
+    }
     let command = platform::queue(
-        &s.db,
+        &db,
         &device,
         "project-settings",
         q.config,
@@ -337,12 +353,19 @@ async fn enqueue(
     AxumPath(device): AxumPath<String>,
     Json(q): Json<CommandRequest>,
 ) -> ApiResult {
+    let db = s.db.get().await.map_err(database)?;
     let user = operator(&h)?;
     let device = authorize(&s, &h, &device).await?;
     let (payload, wire) =
         crate::commands::command_payload(&q.kind, &q.payload, q.confirm.as_deref())
             .map_err(|e| bad(&e))?;
-    let command = platform::queue(&s.db, &device, &q.kind, payload, &wire, &user.username)
+    if !platform::command_supported(&db, &device, &q.kind, &payload)
+        .await
+        .map_err(database)?
+    {
+        return Err(bad("This firmware does not implement the requested action. Incremental configuration and wipe/reset handlers only acknowledge receipt. Supported actions are self-test and, for V2.x, Reboot."));
+    }
+    let command = platform::queue(&db, &device, &q.kind, payload, &wire, &user.username)
         .await
         .map_err(database)?;
     s.bus.emit(LiveEvent::Command { device_id: device });
@@ -353,9 +376,10 @@ async fn cancel(
     h: HeaderMap,
     AxumPath((device, id)): AxumPath<(String, i64)>,
 ) -> ApiResult {
+    let db = s.db.get().await.map_err(database)?;
     let user = operator(&h)?;
     let device = authorize(&s, &h, &device).await?;
-    let command = platform::cancel(&s.db, &device, id, &user.username)
+    let command = platform::cancel(&db, &device, id, &user.username)
         .await
         .map_err(database)?
         .ok_or_else(|| {
@@ -368,13 +392,14 @@ async fn cancel(
     Ok(Json(json!({"command":command})).into_response())
 }
 async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>) -> ApiResult {
+    let db = s.db.get().await.map_err(database)?;
     let device = authorize(&s, &h, &q.device).await?;
     let (from, to) = q.bounds()?;
     if q.format.as_deref().is_some_and(|f| f != "csv") {
         return Err(bad("format must be csv"));
     }
     let params: [&(dyn tokio_postgres::types::ToSql + Sync); 3] = [&device, &from, &to];
-    let rows=s.db.query_raw("SELECT device_id,recorded_at,received_at,gwl,rssi,battery_v,solar_v,time_quality,duplicate_outcome FROM observations WHERE device_id=$1 AND recorded_at >= $2 AND recorded_at <= $3 ORDER BY recorded_at,id",params).await.map_err(|e|database(e.to_string()))?;
+    let rows=db.query_raw("SELECT device_id,recorded_at,received_at,gwl,rssi,battery_v,solar_v,time_quality,duplicate_outcome FROM observations WHERE device_id=$1 AND recorded_at >= $2 AND recorded_at <= $3 ORDER BY recorded_at,id",params).await.map_err(|e|database(e.to_string()))?;
     let body=futures_util::stream::once(async{Ok::<_,std::io::Error>("device_id,recorded_at,received_at,gwl,rssi,battery_v,solar_v,time_quality,duplicate_outcome\r\n".to_owned())}).chain(rows.map_ok(|r|{
         let fields=vec![r.get::<_,String>(0),r.get::<_,DateTime<Utc>>(1).to_rfc3339(),r.get::<_,DateTime<Utc>>(2).to_rfc3339(),r.get::<_,f64>(3).to_string(),r.get::<_,Option<i16>>(4).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,Option<f64>>(5).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,Option<f64>>(6).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,String>(7),r.get::<_,String>(8)];fields.iter().map(|v|csv_field(v)).collect::<Vec<_>>().join(",")+"\r\n"
     }).map_err(std::io::Error::other));
@@ -425,7 +450,7 @@ async fn events(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
             }
             loop {
                 let text = tokio::select! {event=rx.recv()=>match event{
-                    Ok(event)=>{let allowed=if let Some(device)=event_device(&event){platform::allowed(&db,&identity.username,device,role==Role::Operator).await.unwrap_or(false)}else{role==Role::Operator};if !allowed{continue}format!("data: {}\n\n",serde_json::to_string(&event).unwrap())},
+                    Ok(event)=>{let allowed=if let Some(device)=event_device(&event){match db.get().await { Ok(client) => platform::allowed(&client,&identity.username,device,role==Role::Operator).await.unwrap_or(false), Err(_) => false }}else{role==Role::Operator};if !allowed{continue}format!("data: {}\n\n",serde_json::to_string(&event).unwrap())},
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>"event: resync\ndata: {\"type\":\"resync\"}\n\n".into(),Err(tokio::sync::broadcast::error::RecvError::Closed)=>return None,
                 },_=heartbeat.tick()=>": keepalive\n\n".into()};
                 return Some((Ok(text), (rx, heartbeat, false, db, identity, role)));

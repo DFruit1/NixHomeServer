@@ -27,6 +27,7 @@ import type { Alert, Command, Device, Series, Status } from "./types";
 interface Workspace {
   device?: Device;
   series?: Series;
+  seriesSelection: string;
   alerts: Alert[];
   commands: Command[];
   errors: Record<string, string>;
@@ -49,6 +50,7 @@ export default component$(() => {
     loading: boolean;
   }>({ errors: [], loading: true });
   const workspace = useStore<Workspace>({
+    seriesSelection: "",
     alerts: [],
     commands: [],
     errors: {},
@@ -59,13 +61,36 @@ export default component$(() => {
     updated = useSignal("");
   const now = new Date();
   const range = useStore({
-    from: dateInput(new Date(now.getTime() - 86400000)),
-    to: dateInput(now),
+    from: new Date(now.getTime() - 86400000).toISOString(),
+    to: now.toISOString(),
+    bucket: 15,
+    relativeHours: 24 as number | null,
+  });
+  const draft = useStore({
+    from: dateInput(new Date(range.from)),
+    to: dateInput(new Date(range.to)),
     bucket: 15,
   });
-  const draft = useStore({ from: range.from, to: range.to, bucket: 15 });
   const rangeError = useSignal("");
+  const refreshPending = useSignal(false);
   const refresh = $(() => {
+    refreshPending.value = true;
+  });
+  useVisibleTask$(({ track }) => {
+    const pending = track(() => refreshPending.value),
+      globalLoading = track(() => global.loading),
+      workspaceLoading = track(() => workspace.loading);
+    // Background events wait for the current batch, rather than repeatedly
+    // cancelling responses on connections slower than the SSE throttle.
+    if (!pending || globalLoading || workspaceLoading) return;
+    refreshPending.value = false;
+    if (range.relativeHours !== null) {
+      const end = new Date();
+      range.from = new Date(
+        end.getTime() - range.relativeHours * 3600000,
+      ).toISOString();
+      range.to = end.toISOString();
+    }
     revision.value++;
   });
   useVisibleTask$(({ cleanup }) => {
@@ -81,7 +106,7 @@ export default component$(() => {
     window.addEventListener("hashchange", readRoute);
     const stop = connectLive(
       () => {
-        revision.value++;
+        void refresh();
       },
       (value) => {
         live.value = value;
@@ -128,12 +153,15 @@ export default component$(() => {
       view = track(() => route.view);
     const from = track(() => range.from),
       to = track(() => range.to),
-      bucket = track(() => range.bucket);
+      bucket = track(() => range.bucket),
+      relativeHours = track(() => range.relativeHours);
     track(() => revision.value);
-    if (!device) return;
+    if (!device) {
+      workspace.loading = false;
+      return;
+    }
     const latest = latestRequest();
     workspace.loading = true;
-    workspace.series = undefined;
     if (workspace.device?.device_id !== device) {
       workspace.device = undefined;
       workspace.series = undefined;
@@ -148,6 +176,16 @@ export default component$(() => {
       workspace.errors = { series: errorText(error) };
       workspace.loading = false;
       return;
+    }
+    const selection = JSON.stringify([
+      device,
+      view,
+      bucket,
+      relativeHours === null ? [from, to] : relativeHours,
+    ]);
+    if (workspace.seriesSelection !== selection) {
+      workspace.series = undefined;
+      workspace.seriesSelection = selection;
     }
     const tasks: [string, string][] = [
       ["device", `/api/devices/${encodeURIComponent(device)}`],
@@ -179,7 +217,6 @@ export default component$(() => {
           if (error) {
             workspace.errors[key] = error;
             if (key === "device") workspace.device = undefined;
-            if (key === "series") workspace.series = undefined;
             if (key === "commands") workspace.commands = [];
             continue;
           }
@@ -225,6 +262,7 @@ export default component$(() => {
             {global.status?.user?.username || "Checking session"}
             {global.status?.user && ` · ${global.status.user.role}`}
           </span>
+          {operator && <a href="#view=log">Raw deliveries</a>}
           <span class="muted" role="status">
             {live.value}
           </span>
@@ -252,10 +290,16 @@ export default component$(() => {
       <main id="main" tabIndex={-1}>
         {!route.device ? (
           <>
-            {global.loading && !global.devices && (
-              <p role="status">Loading devices…</p>
+            {route.view === "log" && operator ? (
+              <RawLog device="" revision={revision.value} />
+            ) : (
+              <>
+                {global.loading && !global.devices && (
+                  <p role="status">Loading devices…</p>
+                )}
+                {global.devices && <Fleet devices={global.devices} />}
+              </>
             )}
-            {global.devices && <Fleet devices={global.devices} />}
           </>
         ) : (
           <>
@@ -300,6 +344,13 @@ export default component$(() => {
                     <dd>{stamp(device.last_ready_at)}</dd>
                   </div>
                 </dl>
+                {device.clock_change_unverified && (
+                  <p role="alert" class="notice error-text">
+                    An earlier UTC offset change is unverified. Zoneless
+                    readings retain an unknown clock until the logger is
+                    re-commissioned.
+                  </p>
+                )}
                 <nav class="view-nav" aria-label="Device views">
                   {deviceViews.map((view) => (
                     <a
@@ -329,6 +380,7 @@ export default component$(() => {
                           range.from = draft.from;
                           range.to = draft.to;
                           range.bucket = draft.bucket;
+                          range.relativeHours = null;
                           rangeError.value = "";
                         } catch (error) {
                           rangeError.value = errorText(error);
@@ -398,11 +450,14 @@ export default component$(() => {
                             type="button"
                             onClick$={() => {
                               const end = new Date();
-                              const start = dateInput(
-                                new Date(end.getTime() - hours * 3600000),
+                              const start = new Date(
+                                end.getTime() - hours * 3600000,
                               );
-                              range.from = draft.from = start;
-                              range.to = draft.to = dateInput(end);
+                              range.from = start.toISOString();
+                              range.to = end.toISOString();
+                              draft.from = dateInput(start);
+                              draft.to = dateInput(end);
+                              range.relativeHours = hours;
                               range.bucket = draft.bucket =
                                 hours === 24 ? 15 : hours === 168 ? 60 : 360;
                               rangeError.value = "";
@@ -439,7 +494,9 @@ export default component$(() => {
                 )}
                 {route.view === "configuration" && (
                   <>
-                    {operator && !device.revoked ? (
+                    {operator &&
+                    !device.revoked &&
+                    device.capabilities?.project_settings ? (
                       <ConfigEditor
                         key={device.device_id}
                         device={device}
@@ -449,7 +506,9 @@ export default component$(() => {
                       <p class="notice">
                         {device.revoked
                           ? "This enrollment is revoked."
-                          : "Your viewer account has read-only access to configuration."}
+                          : !operator
+                            ? "Your viewer account has read-only access to configuration."
+                            : "Commission the device clock before sending project settings. Offset changes cannot be applied safely to zoneless SD backlog."}
                       </p>
                     )}
                     <ConfigSnapshot device={device} />

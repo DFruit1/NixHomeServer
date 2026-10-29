@@ -28,7 +28,7 @@ const device = (id) => ({
       ? "North bore · Upper field"
       : "South bore · Long location name for responsive review",
   profile: "V21",
-  clock_policy: "fixed_offset",
+  clock_policy: "local-offset",
   revoked: false,
   status: id === ids[0] ? "awake" : "asleep",
   status_reason: "Attributed device-status message",
@@ -43,6 +43,14 @@ const device = (id) => ({
   sensor_id: "B1",
   local_offset_min: 300,
   last_ready_at: new Date(Date.now() - 60000).toISOString(),
+  project_config: { l: "A1", lf: "0:3", ltost: "5:0" },
+  clock_change_unverified: false,
+  capabilities: {
+    test: true,
+    project_settings: true,
+    cfg_keys: [],
+    danger_commands: ["Reboot"],
+  },
   desired_config: { Flush_mqtt: "1" },
   applied_config: { Flush_mqtt: "0" },
   open_alert_count: 1,
@@ -127,7 +135,7 @@ const server = createServer(async (req, res) => {
     const command = {
       id: nextId++,
       device_id: id,
-      kind: body.config ? "project_settings" : body.kind,
+      kind: body.config ? "project-settings" : body.kind,
       payload: body.config || body.payload,
       state: "queued",
       requested_by: "fixture-user",
@@ -135,6 +143,8 @@ const server = createServer(async (req, res) => {
       sent_at: null,
       acked_at: null,
       ack_payload: null,
+      firmware_ack_expected: !body.config && body.kind !== "danger",
+      supported: true,
     };
     commands.unshift(command);
     send({ command });
@@ -194,7 +204,7 @@ const server = createServer(async (req, res) => {
           received_at: now(),
           topic: "azman1/feeds/testresults",
           kind: "test",
-          device_id: id,
+          device_id: url.searchParams.get("device") || null,
           claimed_device_id: null,
           qos: 1,
           payload: "~ GPS passed\nX SD card unavailable",

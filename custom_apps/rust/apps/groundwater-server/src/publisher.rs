@@ -231,10 +231,10 @@ async fn accept(
                 .as_str()
                 .and_then(|s| s.parse::<f64>().ok())
                 .ok_or("invalid persisted maximum")?;
-            tx.execute("UPDATE devices SET desired_config=$2::jsonb,min_limit=$3,max_limit=$4,location_id=$2::jsonb->>'l',sensor_id=$2::jsonb->>'id',alerts_dirty=true WHERE device_id=$1",&[&device,&payload,&min,&max]).await.map_err(|e|format!("accepted settings: {e:?}"))?;
+            tx.execute("UPDATE devices SET project_config=$2::jsonb,min_limit=$3,max_limit=$4,location_id=$2::jsonb->>'l',sensor_id=$2::jsonb->>'id' WHERE device_id=$1",&[&device,&payload,&min,&max]).await.map_err(|e|format!("accepted settings: {e:?}"))?;
         } else if kind == "cfg" && firmware_at.is_some() {
             tx.execute(
-                "UPDATE devices SET applied_config=$2::jsonb WHERE device_id=$1",
+                "UPDATE devices SET applied_config=COALESCE(applied_config,'{}'::jsonb)||$2::jsonb WHERE device_id=$1",
                 &[&device, &payload],
             )
             .await

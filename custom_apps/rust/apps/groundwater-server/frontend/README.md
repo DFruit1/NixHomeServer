@@ -22,14 +22,22 @@ Configuration validation follows firmware `8278b61` and the server's
 limit, bounded intervals/integers, two-digit calibration fractions with
 negative `.00` only. Fields start empty. The operator explicitly types DANGER
 for project settings and danger commands. Project settings have no firmware
-acknowledgement; desired/applied echoes describe incremental cfg only.
+acknowledgement. The last full project payload is displayed separately from
+historical requested toggles/received echoes. Device capabilities expose only
+implemented actions (self-test and V2.x Reboot); stub toggles/wipes cannot be
+queued. Full settings preserve the commissioned UTC offset because zoneless
+SD records cannot establish a clock transition.
 
-SSE uses native EventSource reconnect. Messages and `resync` trigger a debounced
-refetch; unavailable/reconnecting streams poll every 30 seconds. Resource
-requests are aborted on selection changes and late responses are discarded.
+SSE uses native EventSource reconnect. Messages and `resync` schedule a refetch
+after 300 ms. Active requests finish while further events coalesce into one
+pending refresh; unavailable/reconnecting streams poll every 30 seconds.
+Recent ranges roll on refresh; explicit ranges stay fixed. Resource requests
+are aborted on selection changes and late responses are discarded.
 Charts use plausible UTC device time, with local browser labels, configured
 threshold bands, alert-opening markers and line breaks for missing intervals.
 The table exposes exact plotted values; CSV exports underlying observations.
+The header's operator-only raw-delivery view includes unattributed quarantines;
+the device log links to that same view and filter implementation.
 
 Hardware wake-window delivery, gateway roles and real ingest require the
 parent's integrated backend checks; fixture rendering does not prove them.

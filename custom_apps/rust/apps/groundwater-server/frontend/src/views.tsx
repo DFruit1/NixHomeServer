@@ -362,14 +362,22 @@ export const RawLog = component$<{ device: string; revision: number }>(
       error: string;
       loading: boolean;
     }>({ deliveries: [], error: "", loading: true });
+    const refresh = useSignal(0),
+      fetchedRevision = useSignal(-1);
+    useVisibleTask$(({ track }) => {
+      const revision = track(() => props.revision),
+        fetched = track(() => fetchedRevision.value),
+        loading = track(() => data.loading);
+      if (!loading && revision !== fetched) refresh.value++;
+    });
     useVisibleTask$(({ track, cleanup }) => {
       const device = track(() => props.device),
-        revision = track(() => props.revision),
         selectedTopic = track(() => filter.topic),
         selectedSince = track(() => filter.since);
-      void revision;
+      track(() => refresh.value);
       const latest = latestRequest();
       data.loading = true;
+      fetchedRevision.value = props.revision;
       latest.run(
         (signal) =>
           request<{ deliveries: Delivery[] }>(
@@ -390,10 +398,18 @@ export const RawLog = component$<{ device: string; revision: number }>(
     });
     return (
       <section>
-        <h2>Raw delivery log</h2>
+        <h2>{props.device ? "Device delivery log" : "All raw deliveries"}</h2>
+        {props.device && (
+          <p>
+            <a href="#view=log">
+              Inspect all deliveries, including unattributed quarantines
+            </a>
+          </p>
+        )}
         <p>
-          Operator-only ingress evidence, retained for 90 days. Self-test output
-          appears on the testresults topic.
+          Operator-only evidence. The latest 100 matching deliveries are shown.
+          Unattributed and rejected messages appear in the all-deliveries view.
+          Self-test output appears on the testresults topic.
         </p>
         <form
           class="toolbar"
@@ -443,6 +459,13 @@ export const RawLog = component$<{ device: string; revision: number }>(
                 <span class="state">{delivery.state}</span>
               </summary>
               <dl class="facts">
+                <div>
+                  <dt>Device / claimed identity</dt>
+                  <dd>
+                    {delivery.device_id || "Unattributed"} /{" "}
+                    {delivery.claimed_device_id || "—"}
+                  </dd>
+                </div>
                 <div>
                   <dt>Kind / QoS</dt>
                   <dd>
