@@ -1468,9 +1468,12 @@ package) and resolves it through AcoustID; it needs an AcoustID API key. Auto
 mode fingerprints first and falls back to search. Enabling the key makes
 fingerprint mode available, otherwise the editor shows the key's absence and
 falls back to search. Register an application API key at
-https://acoustid.org/settings, then enter it under **Accounts → AcoustID**.
-AcoustID validation happens during a real fingerprint lookup because a useful
-test request requires a valid local fingerprint.
+https://acoustid.org/new-application (AcoustID has no separate password; sign in
+with an existing MusicBrainz account, or Google/OpenID), then enter it under
+**Accounts → AcoustID**.
+The provider's **Test** button validates the key with a built-in synthetic
+fingerprint; full validation still happens during a real fingerprint lookup on
+one of the user's own files.
 
 Open Library lookup is available for cataloged books and audiobooks without an
 account. Search by title and author or by ISBN, expand a work into its specific

@@ -298,9 +298,9 @@ const PROVIDERS: &[ProviderDefinition] = &[
         connection_test: Some(ConnectionTestAdapter::Acoustid),
         capabilities: &["audio-fingerprint", "musicbrainz-id"],
         credential_fields: &API_KEY_FIELD,
-        setup_url: "https://acoustid.org/settings",
+        setup_url: "https://acoustid.org/new-application",
         documentation_url: "https://acoustid.org/webservice",
-        notes: "Resolves locally calculated Chromaprint audio fingerprints to MusicBrainz recording IDs without uploading audio files.",
+        notes: "Resolves locally calculated Chromaprint audio fingerprints to MusicBrainz recording IDs without uploading audio files. AcoustID has no separate password: sign in with an existing MusicBrainz account (recommended) or Google/OpenID, then register an application to get the API key.",
     },
     ProviderDefinition {
         id: "musicbrainz",
