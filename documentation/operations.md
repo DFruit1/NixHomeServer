@@ -2005,7 +2005,20 @@ Notes:
 * Web captures. WACZ extraction reads every page list under `pages/`, merges
   duplicate URLs, and handles concatenated gzip members in WARC streams, so
   later captures and extra page lists contribute searchable content. Page
-  bodies are capped at 400 KB whether supplied as text or extracted from HTML.
+  lists are optional: captured HTML pages, PDFs, plain text, Markdown, CSV and
+  TSV documents also contribute results when they are absent from those lists.
+  Declared HTML fragments and XHTML are converted to readable text. Captured
+  PDFs use the existing local `pdftotext` binary; no document URLs are fetched.
+  Listed titles/text take precedence, duplicate captures keep their first
+  readable result, and documents retain their captured content types and dates.
+  HTTP chunking and gzip content encoding are decoded before extraction;
+  unsupported encodings, unsuccessful HTTP responses, scripts, styles, images
+  and API responses are skipped. WARC response payloads and decoded HTTP bodies
+  are capped at 16 MB, headers at 64 KiB, and extracted text at 400 KB per page.
+  Oversized WARC records are drained without keeping their payloads in memory,
+  allowing later captures to contribute. The Browsertrix extraction-version
+  bump refreshes existing archives on the next normal indexing pass after
+  deployment; a Solr-only reindex does not perform this extraction.
 * Facet dimensions. The UI narrows results by user, source, content type, and
   the cross-source author, tag, series, and year facets; selecting a chip adds
   an `fq` clause and the facet counts update around it. High-cardinality

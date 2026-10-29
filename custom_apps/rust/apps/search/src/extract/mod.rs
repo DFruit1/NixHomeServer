@@ -181,10 +181,11 @@ pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
     }?;
     // Extraction changes must reach unchanged source files too. A Solr-only
     // reindex cannot recover text an older extractor never put in Postgres.
-    // Preserve unaffected sources' revisions so a book/mail/feed improvement
-    // does not repeat a potentially multi-hour ZIM or WACZ extraction.
+    // Preserve unaffected sources' revisions so a targeted improvement does
+    // not repeat extraction of unrelated, potentially large archives.
     let extraction_version = match source.source_type.as_str() {
         "mail-archive" | "freshrss" => "3",
+        "browsertrix" => "3",
         "calibre" | "media-snapshot" => "4",
         _ => "2",
     };
@@ -282,7 +283,9 @@ pub fn run(
                 .clone()
                 .ok_or_else(|| "SEARCH_ZIMDUMP must be set for the kiwix source".to_string())?,
         }),
-        "browsertrix" => Box::new(browsertrix::BrowsertrixExtractor),
+        "browsertrix" => Box::new(browsertrix::BrowsertrixExtractor {
+            pdftotext: settings.pdftotext.clone(),
+        }),
         "mail-archive" => Box::new(mail::MailExtractor {
             pdftotext: settings.pdftotext.clone(),
         }),
