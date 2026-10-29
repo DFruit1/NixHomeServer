@@ -1,8 +1,9 @@
-use std::collections::HashMap;
-use std::io::{BufReader, Read};
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 
-use flate2::read::MultiGzDecoder;
+use flate2::read::{MultiGzDecoder, ZlibDecoder};
 use serde_json::Value;
 use zip::ZipArchive;
 
@@ -76,35 +77,37 @@ fn parse_pages_jsonl(raw: &str) -> Vec<PageRecord> {
         .collect()
 }
 
-/// Parses captured HTML, text documents and PDFs without fetching their URLs.
+/// Parses captured documents without fetching their URLs.
 ///
 /// The gzip stream is decompressed incrementally and parsed record-by-record
-/// so only one WARC record's payload is ever held in memory, instead of the
-/// whole (potentially multi-hundred-MB) decompressed archive.
+/// into the crawl's page set, without collecting a second copy of its text.
+/// Successful URLs are shared across WARC members so duplicate responses are
+/// discarded before HTML/office conversion or PDF subprocesses run again.
 fn parse_warc_content<R: Read>(
     reader: R,
     pdftotext: Option<&Path>,
-) -> HashMap<String, CapturedContent> {
-    let mut results = HashMap::new();
+    captured_urls: &mut HashSet<String>,
+    emit: &mut dyn FnMut(String, CapturedContent),
+) {
     // WARC writers commonly gzip each record independently, then concatenate
     // the members. A single-member decoder silently loses every later page.
-    let mut decoder = MultiGzDecoder::new(reader);
+    let mut decoder = BufReader::new(MultiGzDecoder::new(reader));
     while let Some(record) = read_warc_record(&mut decoder) {
         if record.record_type != "response" {
             continue;
         }
         if !url::Url::parse(&record.target_uri)
             .is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
-            || results.contains_key(&record.target_uri)
+            || captured_urls.contains(&record.target_uri)
         {
             continue;
         }
         if let Some(mut content) = captured_content(&record.payload, pdftotext) {
             content.timestamp = record.timestamp;
-            results.entry(record.target_uri).or_insert(content);
+            captured_urls.insert(record.target_uri.clone());
+            emit(record.target_uri, content);
         }
     }
-    results
 }
 
 fn looks_like_html(body: &str) -> bool {
@@ -119,7 +122,7 @@ struct WarcRecord {
     timestamp: Option<i64>,
 }
 
-fn read_warc_record<R: Read>(reader: &mut R) -> Option<WarcRecord> {
+fn read_warc_record<R: BufRead>(reader: &mut R) -> Option<WarcRecord> {
     let mut headers = String::new();
     let mut first_line = String::new();
     let mut saw_any = false;
@@ -188,31 +191,18 @@ fn read_warc_record<R: Read>(reader: &mut R) -> Option<WarcRecord> {
     })
 }
 
-fn read_line<R: Read>(reader: &mut R) -> Option<String> {
+fn read_line<R: BufRead>(reader: &mut R) -> Option<String> {
     let mut line = Vec::new();
-    loop {
-        let mut byte = [0u8; 1];
-        match reader.read(&mut byte) {
-            Ok(0) => {
-                if line.is_empty() {
-                    return None;
-                }
-                break;
-            }
-            Ok(_) => {
-                if byte[0] == b'\n' {
-                    break;
-                }
-                line.push(byte[0]);
-                if line.len() > 65_536 {
-                    return None;
-                }
-            }
-            Err(_) => return None,
-        }
+    // Bound the read itself: read_until without take could allocate an entire
+    // malformed archive while searching for a missing newline.
+    if reader.take(65_538).read_until(b'\n', &mut line).ok()? == 0 {
+        return None;
     }
-    if line.is_empty() {
-        return Some(String::new());
+    if line.ends_with(b"\n") {
+        line.pop();
+    }
+    if line.len() > 65_536 {
+        return None;
     }
     if line.ends_with(b"\r") {
         line.pop();
@@ -287,17 +277,36 @@ fn captured_content(payload: &[u8], pdftotext: Option<&Path>) -> Option<Captured
         .next()?
         .trim()
         .to_ascii_lowercase();
+    // Reuse the bounded document readers used for books and mail attachments.
+    // Macros are never executed, and ZIP members are never unpacked to disk.
+    let document_format = match mime.as_str() {
+        "application/epub+zip" => Some("epub"),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => Some("docx"),
+        "application/vnd.ms-word.document.macroenabled.12" => Some("docm"),
+        "application/vnd.oasis.opendocument.text" => Some("odt"),
+        "application/vnd.oasis.opendocument.spreadsheet" => Some("ods"),
+        "application/vnd.oasis.opendocument.presentation" => Some("odp"),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => Some("xlsx"),
+        "application/vnd.ms-excel.sheet.macroenabled.12" => Some("xlsm"),
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => Some("pptx"),
+        "application/vnd.openxmlformats-officedocument.presentationml.slideshow" => Some("ppsx"),
+        "application/vnd.ms-powerpoint.presentation.macroenabled.12" => Some("pptm"),
+        "application/x-fictionbook+xml" => Some("fb2"),
+        _ => None,
+    };
     // Keep captured scripts, styles, images and API responses out of results.
-    if !matches!(
-        mime.as_str(),
-        "" | "text/html"
-            | "application/xhtml+xml"
-            | "text/plain"
-            | "text/markdown"
-            | "text/csv"
-            | "text/tab-separated-values"
-            | "application/pdf"
-    ) {
+    if document_format.is_none()
+        && !matches!(
+            mime.as_str(),
+            "" | "text/html"
+                | "application/xhtml+xml"
+                | "text/plain"
+                | "text/markdown"
+                | "text/csv"
+                | "text/tab-separated-values"
+                | "application/pdf"
+        )
+    {
         return None;
     }
     let bytes = match header("transfer-encoding")
@@ -305,8 +314,8 @@ fn captured_content(payload: &[u8], pdftotext: Option<&Path>) -> Option<Captured
         .to_ascii_lowercase()
         .as_str()
     {
-        "chunked" => unchunk(bytes)?,
-        "" | "identity" => bytes.to_vec(),
+        "chunked" => Cow::Owned(unchunk(bytes)?),
+        "" | "identity" => Cow::Borrowed(bytes),
         _ => return None,
     };
     let bytes = match header("content-encoding")
@@ -315,20 +324,19 @@ fn captured_content(payload: &[u8], pdftotext: Option<&Path>) -> Option<Captured
         .as_str()
     {
         "" | "identity" => bytes,
-        "gzip" | "x-gzip" => {
-            let mut decoded = Vec::new();
-            MultiGzDecoder::new(bytes.as_slice())
-                .take(MAX_RESPONSE_BYTES + 1)
-                .read_to_end(&mut decoded)
-                .ok()?;
-            if decoded.len() as u64 > MAX_RESPONSE_BYTES {
-                return None;
-            }
-            decoded
-        }
+        "gzip" | "x-gzip" => Cow::Owned(decode_response(MultiGzDecoder::new(bytes.as_ref()))?),
+        // HTTP deflate uses the zlib wrapper (RFC 9110, section 8.4.1.2).
+        "deflate" => Cow::Owned(decode_response(ZlibDecoder::new(bytes.as_ref()))?),
         _ => return None,
     };
-    let (title, text, content_type) = if mime == "application/pdf" {
+    let (title, text, content_type) = if let Some(format) = document_format {
+        let text = if format == "fb2" {
+            super::document::xml_text(&decode_document_text(&bytes))?
+        } else {
+            super::document::zip_text(Cursor::new(bytes.as_ref()), format)?
+        };
+        (String::new(), text, mime)
+    } else if mime == "application/pdf" {
         (
             String::new(),
             super::paperless::extract_pdf_bytes(&bytes, pdftotext).ok()?,
@@ -359,6 +367,15 @@ fn captured_content(payload: &[u8], pdftotext: Option<&Path>) -> Option<Captured
         content_type,
         timestamp: None,
     })
+}
+
+fn decode_response(reader: impl Read) -> Option<Vec<u8>> {
+    let mut decoded = Vec::new();
+    reader
+        .take(MAX_RESPONSE_BYTES + 1)
+        .read_to_end(&mut decoded)
+        .ok()?;
+    (decoded.len() as u64 <= MAX_RESPONSE_BYTES).then_some(decoded)
 }
 
 fn parse_wacz(path: &PathBuf, pdftotext: Option<&Path>) -> Result<CrawlPackage, String> {
@@ -438,7 +455,7 @@ fn parse_wacz(path: &PathBuf, pdftotext: Option<&Path>) -> Result<CrawlPackage, 
     // Page lists describe browser visits, but captures also hold linked PDFs,
     // text downloads and HTML pages absent from those lists. Include those
     // documents too, preserving page-list text and the first successful capture.
-    let mut captured_urls = std::collections::HashSet::new();
+    let mut captured_urls = HashSet::new();
     let mut warc_names: Vec<String> = archive
         .file_names()
         .filter(|name| name.ends_with(".warc.gz"))
@@ -449,12 +466,7 @@ fn parse_wacz(path: &PathBuf, pdftotext: Option<&Path>) -> Result<CrawlPackage, 
         let Ok(entry) = archive.by_name(&name) else {
             continue;
         };
-        let mut parsed: Vec<_> = parse_warc_content(entry, pdftotext).into_iter().collect();
-        parsed.sort_by(|left, right| left.0.cmp(&right.0));
-        for (url, content) in parsed {
-            if !captured_urls.insert(url.clone()) {
-                continue;
-            }
+        parse_warc_content(entry, pdftotext, &mut captured_urls, &mut |url, content| {
             if let Some(&position) = positions.get(&url) {
                 let page = &mut package.pages[position];
                 if page.title.is_none() && !content.title.is_empty() {
@@ -475,7 +487,7 @@ fn parse_wacz(path: &PathBuf, pdftotext: Option<&Path>) -> Result<CrawlPackage, 
                     content_type: content.content_type,
                 });
             }
-        }
+        });
     }
 
     Ok(package)
@@ -636,7 +648,15 @@ not json
         gzip.write_all(warc.as_bytes()).expect("gzip");
         let compressed = gzip.finish().expect("gzip finish");
 
-        let map = parse_warc_content(Cursor::new(compressed), None);
+        let mut map = HashMap::new();
+        parse_warc_content(
+            Cursor::new(compressed),
+            None,
+            &mut HashSet::new(),
+            &mut |url, content| {
+                map.insert(url, content);
+            },
+        );
         let content = map.get("https://example.org/a").expect("record");
         assert_eq!(content.title, "Page A");
         assert!(content.text.contains("Hello world"));

@@ -185,7 +185,7 @@ pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
     // not repeat extraction of unrelated, potentially large archives.
     let extraction_version = match source.source_type.as_str() {
         "mail-archive" | "freshrss" => "3",
-        "browsertrix" => "3",
+        "browsertrix" => "4",
         "calibre" | "media-snapshot" => "4",
         _ => "2",
     };
