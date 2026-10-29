@@ -26,6 +26,10 @@ import { isLibraryKind, supportsMediaAction } from "./media-capabilities";
 import { PlayerView } from "./player-view";
 import { VideosView } from "./videos-view";
 import { RefreshView } from "./refresh-view";
+import {
+  PROVIDER_SETUP_GUIDES,
+  ProviderSetupGuide,
+} from "./provider-setup-guide";
 import { EmptyState, LoadingState } from "./view-states";
 import { MetadataHealthView } from "./metadata-health-view";
 import {
@@ -963,6 +967,17 @@ const ProviderAccountsView = component$(() => {
                     </button>
                   )}
                 </div>
+                {planned && PROVIDER_SETUP_GUIDES[provider.id] && (
+                  <details class="provider-planned-guide">
+                    <summary>Account and API key guide</summary>
+                    <p>
+                      This provider is coming soon. You cannot save credentials
+                      or use it here yet. Wait until it is available before
+                      purchasing access.
+                    </p>
+                    <ProviderSetupGuide providerId={provider.id} />
+                  </details>
+                )}
               </article>
             );
           })}
@@ -1002,17 +1017,23 @@ const ProviderAccountsView = component$(() => {
               <span>1</span>
               <div>
                 <strong>Get access</strong>
-                <p>
-                  Open the provider's account page and create the requested
-                  credentials.
-                </p>
-                <a
-                  href={selectedProvider.setupUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open provider setup
-                </a>
+                {PROVIDER_SETUP_GUIDES[selectedProvider.id] ? (
+                  <ProviderSetupGuide providerId={selectedProvider.id} />
+                ) : (
+                  <>
+                    <p>
+                      Open the provider's account page and create the requested
+                      credentials.
+                    </p>
+                    <a
+                      href={selectedProvider.setupUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open provider setup
+                    </a>
+                  </>
+                )}
               </div>
             </li>
             <li>
@@ -1067,7 +1088,11 @@ const ProviderAccountsView = component$(() => {
                       (accounts.credentialValues[field.id] = input.value)
                     }
                   />
-                  <small>{field.help}</small>
+                  <small>
+                    {PROVIDER_SETUP_GUIDES[selectedProvider.id]?.credentialHelp[
+                      field.id
+                    ] ?? field.help}
+                  </small>
                 </label>
               ))}
             </div>
