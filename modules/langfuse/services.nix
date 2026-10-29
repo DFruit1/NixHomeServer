@@ -267,10 +267,13 @@ in {
         http_port = vars.networking.ports.langfuseClickhouseHttp;
         tcp_port = vars.networking.ports.langfuseClickhouseTcp;
         max_server_memory_usage = 4294967296;
-        max_threads = 8;
-        max_insert_threads = 4;
         storage_configuration.disks.backups = { type = "local"; path = "/var/lib/langfuse/clickhouse-backups/"; };
         backups.allowed_disk = "backups";
+      };
+      # Query limits belong to a user profile, not the server configuration.
+      usersConfig.profiles.default = {
+        max_threads = 8;
+        max_insert_threads = 4;
       };
       extraUsersConfig = ''
         <clickhouse><users>
