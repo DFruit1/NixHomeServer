@@ -7,7 +7,7 @@ cd "$TESTS_REPO_ROOT"
 ensure_tools bash jq nix rg
 
 host="$(test_default_host)"
-test_root="$(mktemp -d)"
+test_root="$(mktemp -d /tmp/nixhomeserver-netbird-login.XXXXXX)"
 trap 'rm -rf "$test_root"' EXIT
 helper="$test_root/netbird-login-helper.sh"
 address_helper="$test_root/netbird-address-helper.sh"
@@ -249,6 +249,10 @@ count=0
 [[ ! -f "$MOCK_ADDRESS_STATE" ]] || count="$(<"$MOCK_ADDRESS_STATE")"
 count=$((count + 1))
 printf '%s\n' "$count" >"$MOCK_ADDRESS_STATE"
+if (( count <= ${MOCK_ADDRESS_MISSING_ATTEMPTS:-0} )); then
+  echo 'Device does not exist' >&2
+  exit 1
+fi
 address="192.0.2.99"
 if (( count >= MOCK_ADDRESS_READY_AFTER )); then
   address="$MOCK_EXPECTED_ADDRESS"
@@ -262,13 +266,31 @@ EOF
 make_test_executable "$test_root/ip" "$test_root/sleep"
 
 address_state="$test_root/address-delayed.count"
+# Reproduce the repeated boot failures observed on 2026-10-29: nb0 does not
+# exist yet, then briefly has the wrong address before enrollment converges.
 PATH="$test_root:$PATH" \
   MOCK_ADDRESS_STATE="$address_state" \
-  MOCK_ADDRESS_READY_AFTER=3 \
+  MOCK_ADDRESS_MISSING_ATTEMPTS=2 \
+  MOCK_ADDRESS_READY_AFTER=4 \
   MOCK_EXPECTED_ADDRESS="$expected_address" \
   bash "$address_helper"
-[[ "$(<"$address_state")" == "3" ]] || {
-  echo "❌ NetBird address verification did not wait for the assigned address."
+[[ "$(<"$address_state")" == "4" ]] || {
+  echo "❌ NetBird address verification did not wait for the interface and assigned address."
+  exit 1
+}
+
+address_state="$test_root/address-missing.count"
+if PATH="$test_root:$PATH" \
+  MOCK_ADDRESS_STATE="$address_state" \
+  MOCK_ADDRESS_MISSING_ATTEMPTS=120 \
+  MOCK_ADDRESS_READY_AFTER=3 \
+  MOCK_EXPECTED_ADDRESS="$expected_address" \
+  bash "$address_helper" >"$test_root/address-missing.log" 2>&1; then
+  echo "❌ NetBird address verification accepted a missing interface."
+  exit 1
+fi
+[[ "$(<"$address_state")" == "120" ]] || {
+  echo "❌ NetBird address verification did not honor its missing-interface retry limit."
   exit 1
 }
 

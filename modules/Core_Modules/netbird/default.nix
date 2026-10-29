@@ -138,8 +138,10 @@ in
       interface=${lib.escapeShellArg netbirdIface}
       actual=""
       for _ in $(seq 1 120); do
+        # The interface can be absent during boot. Keep polling when ip fails
+        # rather than letting errexit abort the readiness check immediately.
         actual="$(ip -4 -o address show dev "$interface" 2>/dev/null \
-          | awk '{ sub(/\/.*/, "", $4); print $4; exit }')"
+          | awk '{ sub(/\/.*/, "", $4); print $4; exit }')" || actual=""
         if [[ "$actual" == "$expected" ]]; then
           exit 0
         fi
