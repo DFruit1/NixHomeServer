@@ -129,6 +129,8 @@ enum ImplementationStatus {
 enum ConnectionTestAdapter {
     Tmdb,
     OpenSubtitles,
+    Acoustid,
+    GoogleBooks,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -293,7 +295,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["music"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Active,
-        connection_test: None,
+        connection_test: Some(ConnectionTestAdapter::Acoustid),
         capabilities: &["audio-fingerprint", "musicbrainz-id"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://acoustid.org/settings",
@@ -453,7 +455,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["books"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Active,
-        connection_test: None,
+        connection_test: Some(ConnectionTestAdapter::GoogleBooks),
         capabilities: &["search", "isbn", "descriptions", "covers"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://console.cloud.google.com/apis/library/books.googleapis.com",

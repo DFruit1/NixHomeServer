@@ -10,6 +10,7 @@ import {
   useOnWindow,
 } from "@builder.io/qwik";
 import { api, errorDetail, readableError } from "./api";
+import type { ProviderTestResult } from "./api-contract.generated";
 import { ActivityView } from "./activity-view";
 import { ConversionsView } from "./conversions-view";
 import { Icon } from "./icon";
@@ -711,16 +712,16 @@ const ProviderAccountsView = component$(() => {
       accounts.notice = `${provider.name} was encrypted and saved. Its values cannot be viewed from Media Manager.`;
       if (testAfterSave) {
         try {
-          const test = await api<{
-            status: "ready" | "rejected" | "rateLimited" | "unavailable";
-            message: string;
-          }>(`/provider-accounts/${encodeURIComponent(provider.id)}/test`, {
-            method: "POST",
-          });
-          accounts.notice =
-            test.status === "ready"
-              ? `${provider.name} was saved and connected. ${test.message}`
-              : `${provider.name} was saved, but its connection needs attention: ${test.message}`;
+          const test = await api<ProviderTestResult>(
+            `/provider-accounts/${encodeURIComponent(provider.id)}/test`,
+            { method: "POST" },
+          );
+          if (test.status === "ready") {
+            accounts.notice = `${provider.name} was saved and connected. ${test.message}`;
+          } else {
+            accounts.notice = "";
+            accounts.error = `${provider.name} was saved, but its connection needs attention: ${test.message}`;
+          }
         } catch (error) {
           accounts.notice = `${provider.name} was encrypted and saved.`;
           accounts.error = `The saved credentials could not be tested: ${readableError(error)}`;
@@ -743,12 +744,15 @@ const ProviderAccountsView = component$(() => {
     if (accounts.saving || accounts.busyProviderId) return;
     accounts.busyProviderId = provider.id;
     accounts.error = "";
+    accounts.notice = "";
     try {
-      const response = await api<{ message: string }>(
+      const response = await api<ProviderTestResult>(
         `/provider-accounts/${encodeURIComponent(provider.id)}/test`,
         { method: "POST" },
       );
-      accounts.notice = `${provider.name}: ${response.message}`;
+      const message = `${provider.name}: ${response.message}`;
+      if (response.status === "ready") accounts.notice = message;
+      else accounts.error = message;
       await loadAccounts();
     } catch (error) {
       accounts.error = readableError(error);
@@ -906,7 +910,10 @@ const ProviderAccountsView = component$(() => {
                 </div>
                 <p>{provider.notes}</p>
                 {provider.account.lastTestMessage && (
-                  <p class="provider-last-test">
+                  <p
+                    class="provider-last-test"
+                    key={provider.account.lastTestMessage}
+                  >
                     <strong>Last test:</strong>{" "}
                     {provider.account.lastTestMessage}
                   </p>
