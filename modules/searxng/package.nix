@@ -8,7 +8,7 @@ let
     general:
       instance_name: "home server"
     server:
-      # Only the loopback ai-tools service queries this instance. The gateway
+      # Loopback ai-tools and Search clients query this instance. The gateway
       # never publishes SearXNG directly.
       bind_address: "127.0.0.1"
       port: ${toString cfg.port}
@@ -29,7 +29,7 @@ in
 {
   options.repo.searxng = {
     enable = lib.mkEnableOption ''
-      Self-hosted SearXNG metasearch backing the local model's web_search tool.
+      Self-hosted SearXNG backing the local model and opt-in scholarly Search.
       Loopback-only and never published through the gateway.
     '';
 

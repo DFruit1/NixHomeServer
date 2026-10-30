@@ -2164,6 +2164,25 @@ Notes:
   is intentionally not backed up because `search-reindex.service` rebuilds it
   from the database.
 
+### Online paper discovery
+
+When Search and SearXNG are both enabled, choose **Online papers** in Search's
+**Type** selector to search SearXNG's `scientific publications` category.
+**All saved types** and every other type search saved content only; the backend
+contacts SearXNG only for an explicit `kind=online-paper` request. Online papers
+is a separate mode, so library filters and pagination are hidden. It returns up
+to 50 titles, links and snippets, with source failures shown alongside results.
+Newest sorts that sample by available publication dates. Queries and papers are
+not saved to the Search index, and full papers are not downloaded.
+
+The optional integration supplies `SEARCH_SEARXNG_URL` to `search-ui.service`
+and orders it after SearXNG. Discovery works independently of the saved-content
+database and Solr. Disabling either app removes the integration; without the
+URL, the UI omits Online papers and explicit API calls report it unavailable.
+SearXNG stays on loopback and Search retains its existing access controls.
+The adapter follows the [SearXNG Search API](https://docs.searxng.org/dev/search_api.html)
+and refuses engine/category shortcut syntax so queries stay in publications.
+
 ### Admin PDF archive
 
 Some feeds (academic and repository feeds in particular) publish only an
