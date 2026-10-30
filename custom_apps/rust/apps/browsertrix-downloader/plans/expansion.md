@@ -2,6 +2,11 @@
 
 Status: implementation in progress. Baseline: `ff550b82549c`.
 
+Independent plan review: one read-only pass at `13cb1b6`. Findings
+WA-PLAN-01 through WA-PLAN-10 are accepted; the binding corrections below
+supersede the corresponding initial sketches. Implementation acceptance still
+requires evidence against these corrections.
+
 The owner requested implementation of the complete 30-feature review, delegated
 work, integration and application-level verification. This document is the scope
 and acceptance ledger. A control, empty endpoint, mocked result or documented
@@ -87,6 +92,78 @@ claims conflict even across isolated worktrees.
 | 30 | Private capture profiles | Isolated owner-scoped profile references and import/use lifecycle; no credentials in recipes, logs or other users' responses. Verify isolation with synthetic profile data; no live credential operations. |
 
 ## Shared HTTP contract
+
+### Binding corrections from independent review
+
+1. **Publication custody (WA-PLAN-01):** Before any published payload, persist an
+   intent containing owner, destination, source job, expected hash and visibility.
+   Allocate staging/destination names exclusively, fsync file and containing
+   directory, finalize the catalogue idempotently, then remove scratch. Recovery
+   completes known intents; legacy files without ownership evidence stay unclaimed.
+2. **Durable resume (WA-PLAN-02):** Save periodic checkpoints and resumable WARC
+   material in a persistent worker-owned checkpoint directory under stateRoot,
+   rather than relying on disposable cache. Atomic state transitions prevent two
+   attempts resuming together. Resume never passes --overwrite or deletes saved
+   material. Page/byte limits are cumulative; time is bounded per attempt with
+   accumulated runtime reported. `/resume` additionally accepts bounded
+   `additionalPages`, `additionalMinutes`, `additionalBytes`; an exhausted budget
+   without an explicit valid extension returns a useful conflict. A published
+   partial version remains immutable while the next attempt resumes its checkpoint.
+3. **Network boundary (WA-PLAN-03):** API discovery uses a dedicated fetcher with
+   proxies disabled, automatic redirects disabled, all resolved addresses checked,
+   validated addresses pinned through the actual connection, and every redirect
+   revalidated. Bound inflated bytes, URL count, sitemap recursion and total time.
+   Browser sampling runs as a queued worker operation behind the existing egress
+   firewall, never an unrestricted API-side browser. Add `POST /api/samples`
+   returning jobId; completed samples expose a measured estimate. Profile-backed
+   discovery/samples also run through this worker boundary.
+4. **Profile lifecycle (WA-PLAN-04):** `POST /api/profiles/import?name=NAME` accepts
+   bounded raw profile archive bytes into private staging and queues validation.
+   Reject absolute/traversing paths, symlinks/hardlinks/devices, excessive entry
+   count and inflated size before upstream tar sees the archive. Store immutable
+   accepted material with a digest; mount only the selected profile read-only and
+   use fresh writable browser state per attempt. Recheck owner, expiry, revocation
+   and digest at execution for captures/samples/repairs/resumes/schedules. Fail
+   closed on loading failure. No live profile is created during validation.
+5. **Private visibility (WA-PLAN-05):** Existing shared captures keep their current
+   access. Every profile-backed capture and its descendants are private, stored
+   outside the shared archive tree and global Search consumers. A private
+   data-pool root is accessible only to the API/worker service identities, with
+   explicit backup inclusion. Profile data stays in private persistent state.
+   No automatic promotion from private to shared is offered.
+6. **Dedupe identity (WA-PLAN-06):** Dependency inputs are `(archiveId, sha256,
+   authorizedLocalPath)` from the same owner and visibility. Resolve missing,
+   changed or cyclic dependencies before replay/export. Record identity includes
+   target URL, WARC date, record ID, request distinctions and archive/WARC location;
+   URL alone is insufficient. Add engine operations for deduplication and
+   standalone materialization with an explicit authorized dependency set. Serve
+   a Multi-WACZ manifest at `/api/archives/:id/replay` with authorized hash-bound
+   sources; its use must be validated against the pinned replay viewer. Standalone
+   export must replay with parent sources unavailable.
+7. **Repair composition (WA-PLAN-07):** Repair jobs carry parent ID/hash, selected
+   targets, frozen recipe and budgets. Materialize a new complete derivative with
+   untouched parent records plus successful repair records. Prefer repaired
+   responses for selected targets via an explicit replay/index selection policy,
+   while preserving their actual WARC dates and documenting mixed-time provenance.
+   A patch-only capture is not a completed repair feature.
+8. **Fixity versus browser QA (WA-PLAN-08):** File-only verification reports fixity
+   separately. New captures record `--screenshot view` and `--text
+   to-pages,to-warc,final-to-warc` for comparable baselines. Queue browser QA using
+   the pinned crawler, with selected interaction steps and observable assertions.
+   Live origins must be unavailable even through service workers; archive delivery
+   remains allowed. Missing legacy baselines and unavailable browser execution
+   produce `not-run` checks, never inferred passes. The API `verify` action may
+   return `{jobId}` for asynchronous work. Archive mutations (exports/imports/QA)
+   are queued to the writer worker; the API retains read-only payload access.
+9. **Bounded responses (WA-PLAN-09):** Archive list rows contain summaries only:
+   metadata, counts, size and verification summary. Detailed report inventories
+   live behind paginated endpoints. Persist large reports separately, bound parse
+   memory and response bytes, and do not serialize all captured text in polling.
+10. **Rollback (WA-PLAN-10):** Previous binaries cannot read expanded states/scopes.
+    Rollback preserves the new database and parks newer work; use the maintained
+    compatible fallback binary or an explicit export of legacy-compatible records
+    into a separate rollback database. Never point old binaries at expanded rows
+    and never delete the new database to make rollback appear successful.
 
 All JSON uses camelCase. User identity continues to come only from the trusted
 auth gateway. Same-origin JSON checks protect every mutation. IDs are opaque safe
