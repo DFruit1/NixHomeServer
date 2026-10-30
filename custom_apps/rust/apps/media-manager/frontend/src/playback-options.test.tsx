@@ -114,7 +114,9 @@ describe("music player playback options", () => {
     expect(screen.querySelector(".track-button")?.textContent).toContain(
       "Shared Album",
     );
-    expect(screen.textContent).not.toContain("Blue Hour");
+    expect(screen.querySelector(".player-sidebar")?.textContent).not.toContain(
+      "Blue Hour",
+    );
     expect(
       screen.querySelector('input[aria-label="Playback position"]'),
     ).toBeTruthy();

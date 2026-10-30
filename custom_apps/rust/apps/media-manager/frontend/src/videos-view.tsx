@@ -140,6 +140,7 @@ export const VideosView = component$<{
 
   useVisibleTask$(({ track, cleanup }) => {
     track(() => state.selectedId);
+    track(() => state.transcode);
     if (typeof navigator === "undefined" || !("mediaSession" in navigator)) {
       return;
     }
@@ -147,23 +148,39 @@ export const VideosView = component$<{
     if (!item) return;
     const filename = item.relativePath.split("/").at(-1) ?? "";
     const folder = item.relativePath.split("/").slice(0, -1).join("/");
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: filename,
-      artist: folder,
-    });
-    navigator.mediaSession.setActionHandler("play", () => {
-      void videoRef.value?.play();
-    });
-    navigator.mediaSession.setActionHandler("pause", () => {
-      videoRef.value?.pause();
-    });
-    navigator.mediaSession.setActionHandler(
-      "enterpictureinpicture" as unknown as MediaSessionAction,
-      () => {
-        void togglePip();
-      },
-    );
+    let sessionMetadata: MediaMetadata | null = null;
+    const claimSession = () => {
+      sessionMetadata = new MediaMetadata({
+        title: filename,
+        artist: folder,
+      });
+      navigator.mediaSession.metadata = sessionMetadata;
+      navigator.mediaSession.playbackState = "playing";
+      navigator.mediaSession.setActionHandler("play", () => {
+        void videoRef.value?.play();
+      });
+      navigator.mediaSession.setActionHandler("pause", () => {
+        videoRef.value?.pause();
+      });
+      navigator.mediaSession.setActionHandler(
+        "enterpictureinpicture" as unknown as MediaSessionAction,
+        () => {
+          void togglePip();
+        },
+      );
+    };
+    const video = videoRef.value;
+    video?.addEventListener("play", claimSession);
     cleanup(() => {
+      video?.removeEventListener("play", claimSession);
+      // Audio may have reclaimed the session while this page was visible.
+      if (
+        !sessionMetadata ||
+        navigator.mediaSession.metadata !== sessionMetadata
+      )
+        return;
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = "none";
       navigator.mediaSession.setActionHandler("play", null);
       navigator.mediaSession.setActionHandler("pause", null);
       navigator.mediaSession.setActionHandler(
@@ -183,7 +200,6 @@ export const VideosView = component$<{
             class="video-screen"
             aria-label={selected()!.relativePath.split("/").at(-1)}
             controls
-            autoplay
             playsInline
             preload="metadata"
             src={streamUrl()}

@@ -8,6 +8,7 @@ import {
 } from "@builder.io/qwik";
 import { api, readableError } from "./api";
 import { Icon } from "./icon";
+import { LibraryMiniPlayer } from "./mini-player";
 import { PlaybackSettings } from "./playback-settings";
 import {
   albumName,
@@ -17,6 +18,7 @@ import {
   endActionSettings,
   nextShuffleScope,
   queueStep,
+  queuedNext,
   randomPoolStart,
   shuffleOrderFor,
   SLEEP_CHOICES,
@@ -28,6 +30,7 @@ import { EmptyState, LoadingState } from "./view-states";
 
 export const PlayerView = component$<{
   state: DashboardState;
+  active?: boolean;
   initialItemId?: string;
   initialPath?: string;
 }>((props) => {
@@ -36,8 +39,13 @@ export const PlayerView = component$<{
   const search = useSignal("");
   const lastSavedPosition = useSignal(0);
   const saveTimerRef = useSignal<number | undefined>();
-  const initialTargetApplied = useSignal(false);
+  const initialTargetApplied = useSignal("");
+  const pipEnabled = useSignal(true);
+  const started = useSignal(false);
+  const landscapeArtwork = useSignal(false);
+  const artworkFailed = useSignal(false);
   const playerState = useStore<{
+    dismissedNext: string[];
     tracks: CatalogItem[];
     currentIndex: number;
     isPlaying: boolean;
@@ -57,6 +65,7 @@ export const PlayerView = component$<{
     albumView: boolean;
     selectedAlbumDir: string;
   }>({
+    dismissedNext: [],
     tracks: [],
     currentIndex: -1,
     isPlaying: false,
@@ -189,6 +198,8 @@ export const PlayerView = component$<{
     if (!audio || index < 0 || index >= playerState.tracks.length) return;
     savePlaybackPosition();
     playerState.currentIndex = index;
+    playerState.dismissedNext = [];
+    started.value = true;
     playerState.currentTime = 0;
     lastSavedPosition.value = 0;
     playerState.shuffleOrder = shuffleOrderFor(
@@ -199,31 +210,10 @@ export const PlayerView = component$<{
     );
     const track = playerState.tracks[index];
     audio.src = `/api/v1/items/${encodeURIComponent(track.id)}/stream`;
-    audio.load();
-
-    if ("mediaSession" in navigator) {
-      const filename = track.relativePath.split("/").at(-1) ?? "";
-      const stem = filename.replace(/\.[^.]+$/, "");
-      const parts = stem.split(" - ");
-      const artist = parts.length >= 3 ? parts[0] : "";
-      const album = parts.length >= 2 ? parts[parts.length - 2] : "";
-      const title = parts.length >= 2 ? parts[parts.length - 1] : stem;
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title,
-        artist,
-        album,
-        artwork: [
-          {
-            src: `/api/v1/items/${encodeURIComponent(track.id)}/image`,
-            sizes: "512x512",
-            type: "image/png",
-          },
-        ],
-      });
-    }
+    audio.load?.();
 
     loadPlaybackPosition(track);
-    audio.play().catch(() => {});
+    audio.play?.()?.catch(() => {});
   });
 
   // A deep link from the YouTube Downloader selects one track and asks the
@@ -231,30 +221,41 @@ export const PlayerView = component$<{
   // playTrack even when the target is already the current index (the player
   // pre-selects the first track) so the stream URL is actually set. Reveal the
   // track's album so the linked song, not just the album grid, is in view.
-  useVisibleTask$(({ track }) => {
-    track(() => playerState.loading);
-    track(() => props.initialItemId);
-    track(() => props.initialPath);
-    if (initialTargetApplied.value || playerState.loading) {
-      return;
-    }
-    const index = findTargetIndex(
-      playerState.tracks,
-      props.initialItemId,
-      props.initialPath,
-    );
-    if (index < 0) {
-      return;
-    }
-    initialTargetApplied.value = true;
-    const target = playerState.tracks[index];
-    const albumDir = target.relativePath.split("/").slice(0, -1).join("/");
-    if (albumDir) {
-      playerState.albumView = false;
-      playerState.selectedAlbumDir = albumDir;
-    }
-    playTrack(index);
-  });
+  useVisibleTask$(
+    ({ track }) => {
+      track(() => playerState.loading);
+      track(() => props.initialItemId);
+      track(() => props.initialPath);
+      const requestId = track(() => props.state.miniPlayerItemId);
+      if (!requestId && !props.initialItemId && !props.initialPath) {
+        initialTargetApplied.value = "";
+        return;
+      }
+      const targetKey =
+        requestId || `${props.initialItemId ?? ""}|${props.initialPath ?? ""}`;
+      if (playerState.loading || initialTargetApplied.value === targetKey) {
+        return;
+      }
+      const index = findTargetIndex(
+        playerState.tracks,
+        requestId || props.initialItemId,
+        requestId ? undefined : props.initialPath,
+      );
+      if (index < 0) {
+        return;
+      }
+      initialTargetApplied.value = targetKey;
+      const target = playerState.tracks[index];
+      const albumDir = target.relativePath.split("/").slice(0, -1).join("/");
+      if (albumDir) {
+        playerState.albumView = false;
+        playerState.selectedAlbumDir = albumDir;
+      }
+      playTrack(index);
+      if (requestId) props.state.miniPlayerItemId = "";
+    },
+    { strategy: "document-ready" },
+  );
 
   const togglePlay = $(() => {
     const audio = audioRef.value;
@@ -265,7 +266,7 @@ export const PlayerView = component$<{
       return;
     }
     if (audio.paused) {
-      audio.play().catch(() => {});
+      audio.play?.()?.catch(() => {});
     } else {
       audio.pause();
     }
@@ -273,14 +274,24 @@ export const PlayerView = component$<{
 
   const skipNext = $(() => {
     if (playerState.tracks.length === 0) return;
-    const nextIndex = queueStep(
+    const next = queuedNext(
       playerState.tracks,
       playerState.shuffleOrder,
       playerState.currentIndex,
       playerState.shuffle,
-      1,
-    ).index;
-    playTrack(nextIndex);
+      playerState.dismissedNext,
+    );
+    playTrack(
+      next.index >= 0
+        ? next.index
+        : queueStep(
+            playerState.tracks,
+            playerState.shuffleOrder,
+            playerState.currentIndex,
+            playerState.shuffle,
+            1,
+          ).index,
+    );
   });
 
   const skipPrev = $(() => {
@@ -347,6 +358,7 @@ export const PlayerView = component$<{
   const setShuffleScope = $((scope: ShuffleScope) => {
     if (scope === playerState.shuffle) return;
     playerState.shuffle = scope;
+    playerState.dismissedNext = [];
     // Changing scope reshuffles; re-picking the active one keeps the queue.
     playerState.shuffleOrder = buildShuffleOrder(
       playerState.tracks,
@@ -395,120 +407,246 @@ export const PlayerView = component$<{
     setSleepMinutes(next);
   });
 
-  useVisibleTask$(({ cleanup }) => {
-    const audio = audioRef.value;
-    if (!audio) return;
+  useVisibleTask$(
+    () => {
+      try {
+        pipEnabled.value = localStorage.getItem("mm-music-pip") !== "off";
+      } catch {
+        /* unavailable storage */
+      }
+    },
+    { strategy: "document-ready" },
+  );
 
-    const onPlay = () => {
-      playerState.isPlaying = true;
-      if ("mediaSession" in navigator) {
-        navigator.mediaSession.playbackState = "playing";
-      }
-      startSaveTimer();
-    };
-    const onPause = () => {
-      playerState.isPlaying = false;
-      if ("mediaSession" in navigator) {
-        navigator.mediaSession.playbackState = "paused";
-      }
-      savePlaybackPosition();
-      stopSaveTimer();
-    };
-    const onTimeUpdate = () => {
-      playerState.currentTime = audio.currentTime;
-    };
-    const onDurationChange = () => {
-      playerState.duration = audio.duration || 0;
-    };
-    const onEnded = () => {
-      savePlaybackPosition();
-      const decision = decideAdvance({
-        tracks: playerState.tracks,
-        order: playerState.shuffleOrder,
-        currentIndex: playerState.currentIndex,
-        shuffleScope: playerState.shuffle,
-        stopAfterCurrent: playerState.stopAfterCurrent,
-        loop: playerState.loop,
-      });
-      if (decision.kind === "repeat-one") {
-        audio.currentTime = 0;
-        audio.play().catch(() => {});
-        return;
-      }
-      if (decision.kind === "stop") {
-        // A finished track is already paused, so the pause event never fires
-        // and the player state has to be settled here.
-        playerState.isPlaying = false;
-        if ("mediaSession" in navigator) {
-          navigator.mediaSession.playbackState = "paused";
-        }
-        return;
-      }
-      playTrack(decision.index);
-    };
-    const onVolumeChange = () => {
-      playerState.volume = audio.volume;
-    };
-    const onError = () => {
-      playerState.isPlaying = false;
-      if ("mediaSession" in navigator) {
-        navigator.mediaSession.playbackState = "none";
-      }
-    };
-
-    audio.addEventListener("play", onPlay);
-    audio.addEventListener("pause", onPause);
-    audio.addEventListener("timeupdate", onTimeUpdate);
-    audio.addEventListener("durationchange", onDurationChange);
-    audio.addEventListener("ended", onEnded);
-    audio.addEventListener("volumechange", onVolumeChange);
-    audio.addEventListener("error", onError);
-
-    if ("mediaSession" in navigator) {
-      navigator.mediaSession.setActionHandler("play", () => togglePlay());
-      navigator.mediaSession.setActionHandler("pause", () => togglePlay());
-      navigator.mediaSession.setActionHandler("previoustrack", () =>
-        skipPrev(),
-      );
-      navigator.mediaSession.setActionHandler("nexttrack", () => skipNext());
-      navigator.mediaSession.setActionHandler("seekto", (details) => {
-        if (details.seekTime != null) seek(details.seekTime);
-      });
+  const togglePip = $(() => {
+    pipEnabled.value = !pipEnabled.value;
+    try {
+      localStorage.setItem("mm-music-pip", pipEnabled.value ? "on" : "off");
+    } catch {
+      /* unavailable storage */
     }
-
-    const sleepInterval = setInterval(() => {
-      if (
-        playerState.sleepTimer > 0 &&
-        playerState.sleepRemaining > 0 &&
-        playerState.isPlaying
-      ) {
-        playerState.sleepRemaining -= 1;
-        if (playerState.sleepRemaining <= 0) {
-          playerState.sleepTimer = 0;
-          const a = audioRef.value;
-          if (a) a.pause();
-        }
-      }
-    }, 1000);
-
-    cleanup(() => {
-      audio.removeEventListener("play", onPlay);
-      audio.removeEventListener("pause", onPause);
-      audio.removeEventListener("timeupdate", onTimeUpdate);
-      audio.removeEventListener("durationchange", onDurationChange);
-      audio.removeEventListener("ended", onEnded);
-      audio.removeEventListener("volumechange", onVolumeChange);
-      audio.removeEventListener("error", onError);
-      stopSaveTimer();
-      clearInterval(sleepInterval);
-    });
+  });
+  const closeMini = $(() => {
+    audioRef.value?.pause?.();
+    pipEnabled.value = false;
+    try {
+      localStorage.setItem("mm-music-pip", "off");
+    } catch {
+      /* unavailable storage */
+    }
+  });
+  useVisibleTask$(
+    ({ track }) => {
+      const active = track(() => props.active !== false);
+      const enabled = track(() => pipEnabled.value);
+      if (!active && !enabled) audioRef.value?.pause?.();
+    },
+    { strategy: "document-ready" },
+  );
+  useTask$(({ track }) => {
+    const active = track(() => props.active !== false);
+    const enabled = track(() => pipEnabled.value);
+    const hasStarted = track(() => started.value);
+    props.state.musicMiniPlayerVisible = !active && enabled && hasStarted;
+  });
+  useTask$(({ track }) => {
+    track(() => playerState.tracks[playerState.currentIndex]?.id);
+    landscapeArtwork.value = false;
+    artworkFailed.value = false;
   });
 
+  useVisibleTask$(
+    ({ cleanup }) => {
+      const audio = audioRef.value;
+      if (!audio) return;
+
+      let sessionMetadata: MediaMetadata | null = null;
+      const onPlay = () => {
+        playerState.isPlaying = true;
+        if ("mediaSession" in navigator) {
+          navigator.mediaSession.playbackState = "playing";
+        }
+        startSaveTimer();
+      };
+      const onPause = () => {
+        playerState.isPlaying = false;
+        if (
+          "mediaSession" in navigator &&
+          navigator.mediaSession.metadata === sessionMetadata
+        ) {
+          navigator.mediaSession.playbackState = "paused";
+        }
+        savePlaybackPosition();
+        stopSaveTimer();
+      };
+      const onTimeUpdate = () => {
+        playerState.currentTime = audio.currentTime;
+      };
+      const onDurationChange = () => {
+        playerState.duration = audio.duration || 0;
+      };
+      const onEnded = () => {
+        savePlaybackPosition();
+        const decision = decideAdvance({
+          tracks: playerState.tracks,
+          order: playerState.shuffleOrder,
+          currentIndex: playerState.currentIndex,
+          shuffleScope: playerState.shuffle,
+          stopAfterCurrent: playerState.stopAfterCurrent,
+          loop: playerState.loop,
+        });
+        if (decision.kind === "repeat-one") {
+          audio.currentTime = 0;
+          audio.play?.()?.catch(() => {});
+          return;
+        }
+        if (decision.kind === "stop") {
+          // A finished track is already paused, so the pause event never fires
+          // and the player state has to be settled here.
+          playerState.isPlaying = false;
+          stopSaveTimer();
+          if ("mediaSession" in navigator) {
+            navigator.mediaSession.playbackState = "paused";
+          }
+          return;
+        }
+        const next = queuedNext(
+          playerState.tracks,
+          playerState.shuffleOrder,
+          playerState.currentIndex,
+          playerState.shuffle,
+          playerState.dismissedNext,
+        );
+        if (next.index < 0 || (next.wrapped && playerState.loop !== "all")) {
+          playerState.isPlaying = false;
+          stopSaveTimer();
+          if ("mediaSession" in navigator)
+            navigator.mediaSession.playbackState = "paused";
+          return;
+        }
+        playTrack(next.index);
+      };
+      const onVolumeChange = () => {
+        playerState.volume = audio.volume;
+      };
+      const onError = () => {
+        playerState.isPlaying = false;
+        if ("mediaSession" in navigator) {
+          navigator.mediaSession.playbackState = "none";
+        }
+      };
+
+      audio.addEventListener("play", onPlay);
+      audio.addEventListener("pause", onPause);
+      audio.addEventListener("timeupdate", onTimeUpdate);
+      audio.addEventListener("durationchange", onDurationChange);
+      audio.addEventListener("ended", onEnded);
+      audio.addEventListener("volumechange", onVolumeChange);
+      audio.addEventListener("error", onError);
+
+      const claimMediaSession = () => {
+        if ("mediaSession" in navigator) {
+          const track = playerState.tracks[playerState.currentIndex];
+          if (track) {
+            const parts = (track.relativePath.split("/").at(-1) ?? "")
+              .replace(/\.[^.]+$/, "")
+              .replace(/^(?:\d+-)?\d{1,3}\s+-\s+/, "")
+              .split(" - ");
+            sessionMetadata = new MediaMetadata({
+              title: parts.at(-1) ?? "",
+              artist: parts.slice(0, -1).join(" - "),
+              album: albumName(track),
+              artwork: [
+                { src: `/api/v1/items/${encodeURIComponent(track.id)}/image` },
+              ],
+            });
+            navigator.mediaSession.metadata = sessionMetadata;
+          }
+          navigator.mediaSession.playbackState = "playing";
+          navigator.mediaSession.setActionHandler("play", () => {
+            audio.play?.()?.catch(() => {});
+          });
+          navigator.mediaSession.setActionHandler("pause", () =>
+            audio.pause?.(),
+          );
+          navigator.mediaSession.setActionHandler("previoustrack", () =>
+            skipPrev(),
+          );
+          navigator.mediaSession.setActionHandler("nexttrack", () =>
+            skipNext(),
+          );
+          navigator.mediaSession.setActionHandler("seekto", (details) => {
+            if (details.seekTime != null) seek(details.seekTime);
+          });
+        }
+      };
+      audio.addEventListener("play", claimMediaSession);
+
+      const sleepInterval = setInterval(() => {
+        if (
+          playerState.sleepTimer > 0 &&
+          playerState.sleepRemaining > 0 &&
+          playerState.isPlaying
+        ) {
+          playerState.sleepRemaining -= 1;
+          if (playerState.sleepRemaining <= 0) {
+            playerState.sleepTimer = 0;
+            const a = audioRef.value;
+            if (a) a.pause();
+          }
+        }
+      }, 1000);
+
+      cleanup(() => {
+        audio.removeEventListener("play", onPlay);
+        audio.removeEventListener("play", claimMediaSession);
+        audio.removeEventListener("pause", onPause);
+        audio.removeEventListener("timeupdate", onTimeUpdate);
+        audio.removeEventListener("durationchange", onDurationChange);
+        audio.removeEventListener("ended", onEnded);
+        audio.removeEventListener("volumechange", onVolumeChange);
+        audio.removeEventListener("error", onError);
+        stopSaveTimer();
+        clearInterval(sleepInterval);
+      });
+    },
+    { strategy: "document-ready" },
+  );
+
+  const upNextStep = queuedNext(
+    playerState.tracks,
+    playerState.shuffleOrder,
+    playerState.currentIndex,
+    playerState.shuffle,
+    playerState.dismissedNext,
+  );
+  const upNext =
+    upNextStep.index >= 0 && (!upNextStep.wrapped || playerState.loop === "all")
+      ? playerState.tracks[upNextStep.index]
+      : undefined;
+  const followingStep = queuedNext(
+    playerState.tracks,
+    playerState.shuffleOrder,
+    playerState.currentIndex,
+    playerState.shuffle,
+    upNext
+      ? [...playerState.dismissedNext, upNext.id]
+      : playerState.dismissedNext,
+  );
+  const canDismissNext =
+    followingStep.index >= 0 &&
+    (!followingStep.wrapped || playerState.loop === "all");
+  const dismissNext = $(() => {
+    if (upNext && canDismissNext)
+      playerState.dismissedNext = [...playerState.dismissedNext, upNext.id];
+  });
   const currentTrack = playerState.tracks[playerState.currentIndex];
   const currentFilename = currentTrack
     ? (currentTrack.relativePath.split("/").at(-1) ?? "")
     : "";
-  const currentStem = currentFilename.replace(/\.[^.]+$/, "");
+  const currentStem = currentFilename
+    .replace(/\.[^.]+$/, "")
+    .replace(/^(?:\d+-)?\d{1,3}\s+-\s+/, "");
 
   const formatTime = (seconds: number): string => {
     if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
@@ -592,400 +730,508 @@ export const PlayerView = component$<{
   })();
 
   return (
-    <section class="player-layout">
-      <div class="player-main">
-        <div class="now-playing">
-          {currentTrack ? (
-            <div class="now-playing-artwork">
-              <img
-                src={`/api/v1/items/${encodeURIComponent(currentTrack.id)}/image`}
-                alt=""
-                loading="lazy"
-                class="album-art"
-              />
-            </div>
-          ) : (
-            <div class="now-playing-artwork empty-art">
-              <Icon name="play" size={64} />
-            </div>
-          )}
-          <div class="now-playing-info">
-            <h2 class="track-title">
-              {currentTrack
-                ? (currentStem.split(" - ").at(-1) ?? currentStem)
-                : "No track selected"}
-            </h2>
-            {currentTrack && (
-              <p class="track-artist-album">
-                {currentStem.split(" - ").slice(0, -1).join(" - ") ||
-                  currentTrack.rootId
-                    .split("-")
-                    .at(-1)
-                    ?.replace(/^\w/, (c: string) => c.toUpperCase())}
-              </p>
+    <>
+      <section class="player-layout" hidden={props.active === false}>
+        <div class="player-main">
+          <div class="now-playing">
+            {currentTrack ? (
+              <div
+                class={{
+                  "now-playing-artwork": true,
+                  "now-playing-artwork--landscape": landscapeArtwork.value,
+                }}
+              >
+                {artworkFailed.value ? (
+                  <Icon name="music-note" size={64} />
+                ) : (
+                  <img
+                    key={currentTrack.id}
+                    src={`/api/v1/items/${encodeURIComponent(currentTrack.id)}/image`}
+                    alt=""
+                    loading="lazy"
+                    class="album-art"
+                    onLoad$={(_, image) => {
+                      landscapeArtwork.value =
+                        image.naturalHeight > 0 &&
+                        image.naturalWidth / image.naturalHeight >= 4 / 3;
+                    }}
+                    onError$={() => {
+                      artworkFailed.value = true;
+                      landscapeArtwork.value = false;
+                    }}
+                  />
+                )}
+              </div>
+            ) : (
+              <div class="now-playing-artwork empty-art">
+                <Icon name="play" size={64} />
+              </div>
             )}
-          </div>
-          <div class="player-time">
-            <span>{formatTime(playerState.currentTime)}</span>
-            <div class="seek-bar-container">
-              <input
-                type="range"
-                class="seek-bar"
-                aria-label="Playback position"
-                min="0"
-                max={playerState.duration || 0}
-                step="0.1"
-                value={playerState.currentTime}
-                onInput$={(_, el) => seek(Number(el.value))}
-              />
+            <div class="now-playing-info">
+              <h2 class="track-title">
+                {currentTrack
+                  ? (currentStem.split(" - ").at(-1) ?? currentStem)
+                  : "No track selected"}
+              </h2>
+              {currentTrack && (
+                <p class="track-artist-album">
+                  {currentStem.split(" - ").slice(0, -1).join(" - ") ||
+                    currentTrack.rootId
+                      .split("-")
+                      .at(-1)
+                      ?.replace(/^\w/, (c: string) => c.toUpperCase())}
+                </p>
+              )}
             </div>
-            <span>{formatTime(playerState.duration)}</span>
-          </div>
-          <div class="player-controls">
-            <button
-              type="button"
-              class={{
-                "control-button": true,
-                "control-active": playerState.loop !== "off",
-              }}
-              aria-label={(() => {
-                switch (playerState.loop) {
-                  case "one":
-                    return "Loop one";
-                  case "all":
-                    return "Loop all";
-                  default:
-                    return "Loop off";
-                }
-              })()}
-              title={(() => {
-                switch (playerState.loop) {
-                  case "one":
-                    return "Repeat this track";
-                  case "all":
-                    return "Repeat the queue";
-                  default:
-                    return "Repeat off";
-                }
-              })()}
-              onClick$={cycleLoop}
-            >
-              {playerState.loop === "one" ? (
-                <Icon name="repeat-one" size={16} />
-              ) : (
-                <Icon name="repeat" size={16} />
-              )}
-              {playerState.loop === "one" && <span class="loop-badge">1</span>}
-            </button>
-            <button
-              type="button"
-              class={{
-                "control-button": true,
-                "control-active": playerState.stopAfterCurrent,
-              }}
-              aria-label="Stop after this track"
-              aria-pressed={playerState.stopAfterCurrent}
-              title="Stop after this track"
-              onClick$={toggleStopAfterCurrent}
-            >
-              <Icon name="stop" size={16} />
-            </button>
-            <button
-              type="button"
-              class="control-button"
-              aria-label="Previous track"
-              disabled={playerState.tracks.length === 0}
-              onClick$={skipPrev}
-            >
-              <Icon name="skip-back" size={22} />
-            </button>
-            <button
-              type="button"
-              class="control-button play-button"
-              aria-label={playerState.isPlaying ? "Pause" : "Play"}
-              disabled={playerState.tracks.length === 0}
-              onClick$={togglePlay}
-            >
-              {playerState.isPlaying ? (
-                <Icon name="pause" size={28} />
-              ) : (
-                <Icon name="play" size={28} />
-              )}
-            </button>
-            <button
-              type="button"
-              class="control-button"
-              aria-label="Next track"
-              disabled={playerState.tracks.length === 0}
-              onClick$={skipNext}
-            >
-              <Icon name="skip-forward" size={22} />
-            </button>
-            <button
-              type="button"
-              class={{
-                "control-button": true,
-                "control-active": playerState.shuffle !== "off",
-              }}
-              aria-label={shuffleLabel}
-              title={shuffleLabel}
-              onClick$={cycleShuffle}
-            >
-              <Icon name="shuffle" size={16} />
-            </button>
-            <div
-              class="player-settings"
-              ref={settingsRef}
-              document:onClick$={(event: MouseEvent) => {
-                const container = settingsRef.value;
-                const target = event.target as Node | null;
-                if (!container || !target || container.contains(target)) return;
-                playerState.settingsOpen = false;
-              }}
-              document:onKeyDown$={(event: KeyboardEvent) => {
-                if (event.key === "Escape") playerState.settingsOpen = false;
-              }}
-            >
+            <div class="player-time">
+              <span>{formatTime(playerState.currentTime)}</span>
+              <div class="seek-bar-container">
+                <input
+                  type="range"
+                  class="seek-bar"
+                  aria-label="Playback position"
+                  min="0"
+                  max={playerState.duration || 0}
+                  step="0.1"
+                  value={playerState.currentTime}
+                  onInput$={(_, el) => seek(Number(el.value))}
+                />
+              </div>
+              <span>{formatTime(playerState.duration)}</span>
+            </div>
+            <div class="player-controls">
               <button
                 type="button"
                 class={{
                   "control-button": true,
-                  "control-active": playerState.settingsOpen,
+                  "control-active": playerState.loop !== "off",
                 }}
-                aria-label="Playback options"
-                aria-haspopup="menu"
-                aria-expanded={playerState.settingsOpen}
-                title="Playback options"
-                onClick$={() =>
-                  (playerState.settingsOpen = !playerState.settingsOpen)
-                }
+                aria-label={(() => {
+                  switch (playerState.loop) {
+                    case "one":
+                      return "Loop one";
+                    case "all":
+                      return "Loop all";
+                    default:
+                      return "Loop off";
+                  }
+                })()}
+                title={(() => {
+                  switch (playerState.loop) {
+                    case "one":
+                      return "Repeat this track";
+                    case "all":
+                      return "Repeat the queue";
+                    default:
+                      return "Repeat off";
+                  }
+                })()}
+                onClick$={cycleLoop}
               >
-                <Icon name="gear" size={16} />
+                {playerState.loop === "one" ? (
+                  <Icon name="repeat-one" size={16} />
+                ) : (
+                  <Icon name="repeat" size={16} />
+                )}
+                {playerState.loop === "one" && (
+                  <span class="loop-badge">1</span>
+                )}
               </button>
-              {playerState.settingsOpen && (
-                <PlaybackSettings
-                  shuffle={playerState.shuffle}
-                  endAction={endAction}
-                  sleepMinutes={playerState.sleepTimer}
-                  kindLabel={kindLabel}
-                  albumLabel={currentAlbum}
-                  albumTrackCount={albumTrackCount}
-                  kindTrackCount={kindTrackCount}
-                  onShuffle$={setShuffleScope}
-                  onEndAction$={setEndAction}
-                  onSleep$={setSleepMinutes}
+              <button
+                type="button"
+                class={{
+                  "control-button": true,
+                  "control-active": playerState.stopAfterCurrent,
+                }}
+                aria-label="Stop after this track"
+                aria-pressed={playerState.stopAfterCurrent}
+                title="Stop after this track"
+                onClick$={toggleStopAfterCurrent}
+              >
+                <Icon name="stop" size={16} />
+              </button>
+              <button
+                type="button"
+                class="control-button"
+                aria-label="Previous track"
+                disabled={playerState.tracks.length === 0}
+                onClick$={skipPrev}
+              >
+                <Icon name="skip-back" size={22} />
+              </button>
+              <button
+                type="button"
+                class="control-button play-button"
+                aria-label={playerState.isPlaying ? "Pause" : "Play"}
+                disabled={playerState.tracks.length === 0}
+                onClick$={togglePlay}
+              >
+                {playerState.isPlaying ? (
+                  <Icon name="pause" size={28} />
+                ) : (
+                  <Icon name="play" size={28} />
+                )}
+              </button>
+              <button
+                type="button"
+                class="control-button"
+                aria-label="Next track"
+                disabled={playerState.tracks.length === 0}
+                onClick$={skipNext}
+              >
+                <Icon name="skip-forward" size={22} />
+              </button>
+              <button
+                type="button"
+                class={{
+                  "control-button": true,
+                  "control-active": playerState.shuffle !== "off",
+                }}
+                aria-label={shuffleLabel}
+                title={shuffleLabel}
+                onClick$={cycleShuffle}
+              >
+                <Icon name="shuffle" size={16} />
+              </button>
+              <div
+                class="player-settings"
+                ref={settingsRef}
+                document:onClick$={(event: MouseEvent) => {
+                  const container = settingsRef.value;
+                  const target = event.target as Node | null;
+                  if (!container || !target || container.contains(target))
+                    return;
+                  playerState.settingsOpen = false;
+                }}
+                document:onKeyDown$={(event: KeyboardEvent) => {
+                  if (event.key === "Escape") playerState.settingsOpen = false;
+                }}
+              >
+                <button
+                  type="button"
+                  class={{
+                    "control-button": true,
+                    "control-active": playerState.settingsOpen,
+                  }}
+                  aria-label="Playback options"
+                  aria-haspopup="menu"
+                  aria-expanded={playerState.settingsOpen}
+                  title="Playback options"
+                  onClick$={() =>
+                    (playerState.settingsOpen = !playerState.settingsOpen)
+                  }
+                >
+                  <Icon name="gear" size={16} />
+                </button>
+                {playerState.settingsOpen && (
+                  <PlaybackSettings
+                    shuffle={playerState.shuffle}
+                    endAction={endAction}
+                    sleepMinutes={playerState.sleepTimer}
+                    kindLabel={kindLabel}
+                    albumLabel={currentAlbum}
+                    albumTrackCount={albumTrackCount}
+                    kindTrackCount={kindTrackCount}
+                    onShuffle$={setShuffleScope}
+                    onEndAction$={setEndAction}
+                    onSleep$={setSleepMinutes}
+                  />
+                )}
+              </div>
+            </div>
+            <div class="player-extras">
+              <div class="volume-control">
+                <Icon name="volume" size={16} />
+                <input
+                  type="range"
+                  class="volume-bar"
+                  aria-label="Volume"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={playerState.volume}
+                  onInput$={(_, el) => setVolume(Number(el.value))}
                 />
-              )}
+              </div>
+              <button
+                type="button"
+                class={{
+                  "control-button": true,
+                  "control-active": pipEnabled.value,
+                }}
+                aria-label="Keep music playing on other pages"
+                title="Music picture in picture"
+                aria-pressed={pipEnabled.value}
+                onClick$={togglePip}
+              >
+                <Icon name="picture-in-picture" size={16} />
+              </button>
+              <button
+                type="button"
+                class={{
+                  "control-button": true,
+                  timer: true,
+                  "sleep-active": playerState.sleepTimer > 0,
+                }}
+                aria-label={
+                  playerState.sleepTimer > 0
+                    ? `Sleep timer: ${playerState.sleepTimer} min`
+                    : "Sleep timer off"
+                }
+                onClick$={cycleSleepTimer}
+              >
+                <Icon name="timer" size={16} />
+                {playerState.sleepTimer > 0 && (
+                  <span class="sleep-label">{sleepLabel}</span>
+                )}
+              </button>
             </div>
           </div>
-          <div class="player-extras">
-            <div class="volume-control">
-              <Icon name="volume" size={16} />
-              <input
-                type="range"
-                class="volume-bar"
-                aria-label="Volume"
-                min="0"
-                max="1"
-                step="0.01"
-                value={playerState.volume}
-                onInput$={(_, el) => setVolume(Number(el.value))}
-              />
-            </div>
-            <button
-              type="button"
-              class={{
-                "control-button": true,
-                timer: true,
-                "sleep-active": playerState.sleepTimer > 0,
-              }}
-              aria-label={
-                playerState.sleepTimer > 0
-                  ? `Sleep timer: ${playerState.sleepTimer} min`
-                  : "Sleep timer off"
-              }
-              onClick$={cycleSleepTimer}
-            >
-              <Icon name="timer" size={16} />
-              {playerState.sleepTimer > 0 && (
-                <span class="sleep-label">{sleepLabel}</span>
-              )}
-            </button>
-          </div>
+          <section class="up-next" aria-label="Up next">
+            {upNext ? (
+              <>
+                <button
+                  type="button"
+                  class="up-next-track"
+                  onClick$={() => playTrack(upNextStep.index)}
+                  aria-label={`Play next: ${upNext.relativePath.split("/").at(-1)}`}
+                >
+                  <span class="up-next-art">
+                    <Icon name="music-note" size={22} />
+                    <img
+                      key={upNext.id}
+                      src={`/api/v1/items/${encodeURIComponent(upNext.id)}/image`}
+                      alt=""
+                      loading="lazy"
+                      onError$={(_, image) => {
+                        image.hidden = true;
+                      }}
+                    />
+                  </span>
+                  <span class="up-next-copy">
+                    <span>Up next</span>
+                    <strong>
+                      {upNext.relativePath
+                        .split("/")
+                        .at(-1)
+                        ?.replace(/\.[^.]+$/, "")}
+                    </strong>
+                    <span>{albumName(upNext)}</span>
+                  </span>
+                  <Icon name="play" size={18} />
+                </button>
+                <button
+                  type="button"
+                  class="control-button"
+                  aria-label="Skip upcoming track"
+                  title="Replace the upcoming track without interrupting playback"
+                  disabled={!canDismissNext}
+                  onClick$={dismissNext}
+                >
+                  <Icon name="skip-forward" size={18} />
+                </button>
+              </>
+            ) : (
+              <span class="up-next-empty">Up next · End of queue</span>
+            )}
+          </section>
         </div>
-        <audio ref={audioRef} preload="auto" style="display: none;" />
-      </div>
-      <div class="player-sidebar">
-        <div class="player-sidebar-header">
-          {!playerState.albumView && (
-            <button
-              type="button"
-              class="back-button"
-              aria-label="Back to albums"
-              onClick$={() => {
-                playerState.albumView = true;
-                playerState.selectedAlbumDir = "";
-              }}
-            >
-              <Icon name="chevron-down" size={16} />
-              Albums
-            </button>
-          )}
-          {playerState.albumView && <h3>Albums</h3>}
-          <div class="sidebar-header-actions">
-            {musicRoots.length > 1 && (
-              <select
-                class="root-filter-select"
-                value={playerState.selectedRootFilter}
-                onChange$={(_, el) => {
-                  playerState.selectedRootFilter = el.value;
+        <div class="player-sidebar">
+          <div class="player-sidebar-header">
+            {!playerState.albumView && (
+              <button
+                type="button"
+                class="back-button"
+                aria-label="Back to albums"
+                onClick$={() => {
                   playerState.albumView = true;
                   playerState.selectedAlbumDir = "";
-                  loadTracks(el.value || undefined);
                 }}
               >
-                <option value="">All music</option>
-                {musicRoots.map((root) => (
-                  <option value={root.id} key={root.id}>
-                    {root.label}
-                  </option>
-                ))}
-              </select>
-            )}
-            {playerState.selectedAlbumDir ? (
-              <button
-                type="button"
-                class="secondary-button compact-action"
-                onClick$={() => playAlbum(playerState.selectedAlbumDir)}
-              >
-                <Icon name="play" size={14} /> Play album
-              </button>
-            ) : (
-              <button
-                type="button"
-                class="secondary-button compact-action"
-                disabled={playerState.tracks.length === 0}
-                onClick$={playAllTracks}
-              >
-                <Icon name="play" size={14} /> Play all
+                <Icon name="chevron-down" size={16} />
+                Albums
               </button>
             )}
-          </div>
-        </div>
-        <label class="video-library-filter">
-          <span class="sr-only">Search loaded albums and tracks</span>
-          <input
-            type="search"
-            aria-label="Search loaded albums and tracks"
-            placeholder="Search loaded albums and tracks"
-            value={search.value}
-            onInput$={(_, input) => (search.value = input.value)}
-          />
-        </label>
-        {playerState.loading ? (
-          <LoadingState />
-        ) : playerState.error ? (
-          <div class="message error" role="alert">
-            <Icon name="alert" size={18} />
-            <span>{playerState.error}</span>
-          </div>
-        ) : playerState.tracks.length === 0 ? (
-          <EmptyState
-            title="No music found"
-            detail="Add music files to your personal or shared music folders to see them here."
-          />
-        ) : query && filteredTracks.length === 0 ? (
-          <p class="video-library-empty">No matching albums or tracks.</p>
-        ) : playerState.albumView && !query ? (
-          <ul class="album-grid">
-            {albums.map((album) => {
-              const isCurrentAlbum =
-                currentTrack &&
-                currentTrack.relativePath.startsWith(album.dirPath + "/");
-              return (
-                <li key={album.dirPath} class="album-item">
-                  <button
-                    type="button"
-                    class="album-button"
-                    onClick$={() => playAlbum(album.dirPath)}
-                  >
-                    <div
-                      class={{
-                        "album-artwork": true,
-                        "album-active": isCurrentAlbum,
-                      }}
-                    >
-                      <img
-                        src={`/api/v1/items/${encodeURIComponent(album.artworkTrackId)}/image`}
-                        alt=""
-                        loading="lazy"
-                      />
-                    </div>
-                    <span class="album-name">{album.name}</span>
-                    <span class="album-count">
-                      {album.tracks.length}{" "}
-                      {album.tracks.length === 1 ? "track" : "tracks"}
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        ) : (
-          <ul class="track-list">
-            {filteredTracks.map((track) => {
-              const filename = track.relativePath.split("/").at(-1) ?? "";
-              const stem = filename.replace(/\.[^.]+$/, "");
-              const dirPath = track.relativePath
-                .split("/")
-                .slice(0, -1)
-                .join("/");
-              const isActive =
-                playerState.tracks.indexOf(track) === playerState.currentIndex;
-              return (
-                <li
-                  key={track.id}
-                  class={{ "track-item": true, active: isActive }}
+            {playerState.albumView && <h3>Albums</h3>}
+            <div class="sidebar-header-actions">
+              {musicRoots.length > 1 && (
+                <select
+                  class="root-filter-select"
+                  value={playerState.selectedRootFilter}
+                  onChange$={(_, el) => {
+                    playerState.selectedRootFilter = el.value;
+                    playerState.albumView = true;
+                    playerState.selectedAlbumDir = "";
+                    loadTracks(el.value || undefined);
+                  }}
                 >
-                  <button
-                    type="button"
-                    class="track-button"
-                    onClick$={() =>
-                      playTrack(playerState.tracks.indexOf(track))
-                    }
+                  <option value="">All music</option>
+                  {musicRoots.map((root) => (
+                    <option value={root.id} key={root.id}>
+                      {root.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {playerState.selectedAlbumDir ? (
+                <button
+                  type="button"
+                  class="secondary-button compact-action"
+                  onClick$={() => playAlbum(playerState.selectedAlbumDir)}
+                >
+                  <Icon name="play" size={14} /> Play album
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  class="secondary-button compact-action"
+                  disabled={playerState.tracks.length === 0}
+                  onClick$={playAllTracks}
+                >
+                  <Icon name="play" size={14} /> Play all
+                </button>
+              )}
+            </div>
+          </div>
+          <label class="video-library-filter">
+            <span class="sr-only">Search loaded albums and tracks</span>
+            <input
+              type="search"
+              aria-label="Search loaded albums and tracks"
+              placeholder="Search loaded albums and tracks"
+              value={search.value}
+              onInput$={(_, input) => (search.value = input.value)}
+            />
+          </label>
+          {playerState.loading ? (
+            <LoadingState />
+          ) : playerState.error ? (
+            <div class="message error" role="alert">
+              <Icon name="alert" size={18} />
+              <span>{playerState.error}</span>
+            </div>
+          ) : playerState.tracks.length === 0 ? (
+            <EmptyState
+              title="No music found"
+              detail="Add music files to your personal or shared music folders to see them here."
+            />
+          ) : query && filteredTracks.length === 0 ? (
+            <p class="video-library-empty">No matching albums or tracks.</p>
+          ) : playerState.albumView && !query ? (
+            <ul class="album-grid">
+              {albums.map((album) => {
+                const isCurrentAlbum =
+                  currentTrack &&
+                  currentTrack.relativePath.startsWith(album.dirPath + "/");
+                return (
+                  <li key={album.dirPath} class="album-item">
+                    <button
+                      type="button"
+                      class="album-button"
+                      onClick$={() => playAlbum(album.dirPath)}
+                    >
+                      <div
+                        class={{
+                          "album-artwork": true,
+                          "album-active": isCurrentAlbum,
+                        }}
+                      >
+                        <img
+                          src={`/api/v1/items/${encodeURIComponent(album.artworkTrackId)}/image`}
+                          alt=""
+                          loading="lazy"
+                        />
+                      </div>
+                      <span class="album-name">{album.name}</span>
+                      <span class="album-count">
+                        {album.tracks.length}{" "}
+                        {album.tracks.length === 1 ? "track" : "tracks"}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <ul class="track-list">
+              {filteredTracks.map((track) => {
+                const filename = track.relativePath.split("/").at(-1) ?? "";
+                const stem = filename.replace(/\.[^.]+$/, "");
+                const dirPath = track.relativePath
+                  .split("/")
+                  .slice(0, -1)
+                  .join("/");
+                const isActive =
+                  playerState.tracks.indexOf(track) ===
+                  playerState.currentIndex;
+                return (
+                  <li
+                    key={track.id}
+                    class={{ "track-item": true, active: isActive }}
                   >
-                    <div class="track-artwork-thumb">
-                      <img
-                        src={`/api/v1/items/${encodeURIComponent(track.id)}/image`}
-                        alt=""
-                        loading="lazy"
-                      />
-                    </div>
-                    <div class="track-info">
-                      <span class="track-name">
-                        {stem.split(" - ").at(-1) ?? stem}
-                      </span>
-                      <span class="track-album">
-                        {query
-                          ? dirPath
-                          : stem.split(" - ").slice(0, -1).join(" - ") ||
-                            dirPath}
-                      </span>
-                    </div>
-                    {isActive && playerState.isPlaying && (
-                      <span class="playing-indicator" aria-hidden="true">
-                        <span class="bar" />
-                        <span class="bar" />
-                        <span class="bar" />
-                      </span>
-                    )}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+                    <button
+                      type="button"
+                      class="track-button"
+                      onClick$={() =>
+                        playTrack(playerState.tracks.indexOf(track))
+                      }
+                    >
+                      <div class="track-artwork-thumb">
+                        <img
+                          src={`/api/v1/items/${encodeURIComponent(track.id)}/image`}
+                          alt=""
+                          loading="lazy"
+                        />
+                      </div>
+                      <div class="track-info">
+                        <span class="track-name">
+                          {stem.split(" - ").at(-1) ?? stem}
+                        </span>
+                        <span class="track-album">
+                          {query
+                            ? dirPath
+                            : stem.split(" - ").slice(0, -1).join(" - ") ||
+                              dirPath}
+                        </span>
+                      </div>
+                      {isActive && playerState.isPlaying && (
+                        <span class="playing-indicator" aria-hidden="true">
+                          <span class="bar" />
+                          <span class="bar" />
+                          <span class="bar" />
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </section>
+      <audio ref={audioRef} preload="metadata" hidden />
+      {props.active === false &&
+        pipEnabled.value &&
+        started.value &&
+        currentTrack && (
+          <LibraryMiniPlayer
+            title={currentStem.split(" - ").at(-1) ?? currentStem}
+            artist={
+              currentStem.split(" - ").length >= 2
+                ? (currentStem.split(" - ")[0] ?? "")
+                : albumName(currentTrack)
+            }
+            isPlaying={playerState.isPlaying}
+            currentTime={playerState.currentTime}
+            duration={playerState.duration}
+            volume={playerState.volume}
+            onToggle$={togglePlay}
+            onSeek$={seek}
+            onVolume$={setVolume}
+            onNext$={skipNext}
+            onClose$={closeMini}
+          />
         )}
-      </div>
-    </section>
+    </>
   );
 });

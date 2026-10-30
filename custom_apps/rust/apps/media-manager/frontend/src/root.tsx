@@ -21,7 +21,6 @@ import {
   renameReady,
   type EditorCommandAction,
 } from "./item-editor";
-import { LibraryMiniPlayer } from "./mini-player";
 import { isLibraryKind, supportsMediaAction } from "./media-capabilities";
 import { PlayerView } from "./player-view";
 import { VideosView } from "./videos-view";
@@ -60,6 +59,7 @@ import {
   type TmdbDetails,
 } from "./metadata-provider-candidates";
 import {
+  initialRouteFromSearch,
   itemFromSearch,
   parseTvEpisodeFilename,
   pathFromSearch,
@@ -154,6 +154,8 @@ function beginItemEdit(
 
 export default component$((props: RootProps) => {
   const view = useSignal<View>(props.initialView ?? "library");
+  const route = useStore<RootProps>({ ...props });
+  const playerOpened = useSignal(props.initialView === "player");
   const sidebarSide = useSignal<"left" | "right">("left");
   const menuOpen = useSignal(false);
   const state = useStore<DashboardState>({
@@ -186,9 +188,6 @@ export default component$((props: RootProps) => {
     metadataDraftDirty: false,
     metadataDraftRevision: 0,
     miniPlayerItemId: "",
-    miniPlayerTitle: "",
-    miniPlayerArtist: "",
-    miniPlayerPauseToken: 0,
   });
 
   // eslint-disable-next-line qwik/no-use-visible-task -- sidebar preference is client-only
@@ -201,9 +200,8 @@ export default component$((props: RootProps) => {
 
   useTask$(({ track }) => {
     const currentView = track(() => view.value);
-    if (currentView === "player" && state.miniPlayerItemId) {
-      state.miniPlayerPauseToken += 1;
-    }
+    const requestedTrack = track(() => state.miniPlayerItemId);
+    if (currentView === "player" || requestedTrack) playerOpened.value = true;
   });
 
   const toggleSidebarSide = $(() => {
@@ -460,11 +458,124 @@ export default component$((props: RootProps) => {
     }
   });
 
+  // Keep the audio owner mounted while same-app links change the visible page.
+  // Native listeners prevent navigation synchronously, without disabling normal
+  // modified clicks, downloads, external links or opening another tab.
+  useVisibleTask$(({ cleanup }) => {
+    if (typeof document === "undefined" || typeof window === "undefined")
+      return;
+    let revision = 0;
+    const navigate = async (url: URL, push: boolean) => {
+      if (!allowMetadataDraftDiscard(state.metadataDraftDirty)) return;
+      const current = ++revision;
+      const next = initialRouteFromSearch(url.search);
+      state.metadataDraftDirty = false;
+      if (next.initialView === "library") {
+        const root =
+          state.roots.find((r) => r.id === next.initialRootId) ??
+          state.roots.find((r) => r.category === state.selectedCategory) ??
+          state.roots[0];
+        if (root) await loadCategoryItems(root.category, "", true);
+        if (current !== revision) return;
+        state.selectedRootId = root?.id ?? "";
+        state.selectedItemId = "";
+        if (next.initialItemId) {
+          try {
+            const item =
+              state.items.find((i) => i.id === next.initialItemId) ??
+              (await api<CatalogItem>(
+                `/items/${encodeURIComponent(next.initialItemId)}`,
+              ));
+            if (current !== revision) return;
+            if (next.initialRootId && item.rootId !== next.initialRootId) {
+              throw new Error(
+                "The linked item is not in the selected library.",
+              );
+            }
+            if (!state.items.some((i) => i.id === item.id))
+              state.items.push(item);
+            beginItemEdit(state, state.roots, item);
+          } catch (error) {
+            state.error = readableError(error);
+          }
+        }
+      }
+      if (current !== revision) return;
+      Object.assign(
+        route,
+        { initialRootId: "", initialItemId: "", initialPath: "" },
+        next,
+      );
+      view.value = next.initialView ?? "library";
+      if (push) window.history.pushState({}, "", url);
+      window.scrollTo(0, 0);
+    };
+    const onClick = (event: MouseEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        event.altKey
+      )
+        return;
+      const anchor = (event.target as Element | null)?.closest?.("a");
+      if (
+        !anchor ||
+        anchor.hasAttribute("download") ||
+        (anchor.target && anchor.target !== "_self")
+      )
+        return;
+      const url = new URL(anchor.href, window.location.href);
+      if (
+        url.origin !== window.location.origin ||
+        url.pathname !== window.location.pathname ||
+        !url.searchParams.has("view") ||
+        viewFromSearch(url.search) !== url.searchParams.get("view")
+      )
+        return;
+      event.preventDefault();
+      void navigate(url, true).catch((error) => {
+        state.error = readableError(error);
+      });
+    };
+    const onPopState = () => {
+      // The library owns its within-page folder/item history.
+      if (
+        view.value === "library" &&
+        viewFromSearch(window.location.search) === "library"
+      )
+        return;
+      void navigate(new URL(window.location.href), false).catch((error) => {
+        state.error = readableError(error);
+      });
+    };
+    const onPlay = (event: Event) => {
+      const playing = event.target;
+      if (!(playing instanceof HTMLMediaElement)) return;
+      document
+        .querySelectorAll<HTMLMediaElement>("audio,video")
+        .forEach((media) => {
+          if (media !== playing && !media.paused) media.pause();
+        });
+    };
+    document.addEventListener("click", onClick, true);
+    document.addEventListener("play", onPlay, true);
+    window.addEventListener("popstate", onPopState);
+    cleanup(() => {
+      document.removeEventListener("click", onClick, true);
+      document.removeEventListener("play", onPlay, true);
+      window.removeEventListener("popstate", onPopState);
+    });
+  });
+
   const currentConversions = state.conversions?.progress.conversions ?? [];
   return (
     <div
       class={{
         "app-shell": true,
+        "has-mini-player": Boolean(state.musicMiniPlayerVisible),
         "sidebar-right": sidebarSide.value === "right",
       }}
     >
@@ -548,7 +659,10 @@ export default component$((props: RootProps) => {
       >
         {view.value !== "library" && (
           <header class="topbar">
-            <h1>{NAV_ITEMS.find((item) => item.id === view.value)?.label}</h1>
+            <h1>
+              {NAV_ITEMS.find((item) => item.id === view.value)?.label ??
+                "Activity"}
+            </h1>
           </header>
         )}
 
@@ -572,6 +686,18 @@ export default component$((props: RootProps) => {
           </div>
         )}
 
+        {!state.loading && playerOpened.value && (
+          <PlayerView
+            state={state}
+            active={view.value === "player"}
+            initialItemId={
+              view.value === "player" ? route.initialItemId : undefined
+            }
+            initialPath={
+              view.value === "player" ? route.initialPath : undefined
+            }
+          />
+        )}
         {state.loading ? (
           <LoadingState />
         ) : view.value === "library" ? (
@@ -582,32 +708,26 @@ export default component$((props: RootProps) => {
             confirmRename$={confirmRename}
             loadCategoryItems$={loadCategoryItems}
             loadMoreItems$={loadMoreCategoryItems}
-            initialRootId={props.initialRootId}
-            initialPath={props.initialPath}
+            initialRootId={route.initialRootId}
+            initialPath={route.initialPath}
           />
         ) : view.value === "health" ? (
           <MetadataHealthView
             roots={state.roots.filter(
               (root) => root.category !== "iso" && root.available,
             )}
-            initialRootId={props.initialRootId}
+            initialRootId={route.initialRootId}
             canEdit={state.session?.canEdit ?? false}
           />
         ) : view.value === "conversions" ? (
           <ConversionsView initial={state.conversions} />
         ) : view.value === "activity" ? (
           <ActivityView canEdit={state.session?.canEdit ?? false} />
-        ) : view.value === "player" ? (
-          <PlayerView
-            state={state}
-            initialItemId={props.initialItemId}
-            initialPath={props.initialPath}
-          />
-        ) : view.value === "videos" ? (
+        ) : view.value === "player" ? null : view.value === "videos" ? (
           <VideosView
             roots={state.roots}
-            initialItemId={props.initialItemId}
-            initialPath={props.initialPath}
+            initialItemId={route.initialItemId}
+            initialPath={route.initialPath}
           />
         ) : view.value === "accounts" ? (
           <ProviderAccountsView />
@@ -615,7 +735,6 @@ export default component$((props: RootProps) => {
           <RefreshView integrations={state.status?.integrations ?? []} />
         )}
       </main>
-      {state.miniPlayerItemId && <LibraryMiniPlayer state={state} />}
     </div>
   );
 });
@@ -1509,21 +1628,6 @@ const CoverArtCard = component$<{
   );
 });
 
-function trackDisplay(item: CatalogItem): { title: string; artist: string } {
-  const stem = (item.relativePath.split("/").at(-1) ?? "").replace(
-    /\.[^.]+$/,
-    "",
-  );
-  const parts = stem.split(" - ");
-  if (parts.length >= 2) {
-    return {
-      title: parts[parts.length - 1],
-      artist: parts.slice(0, -1).join(" - "),
-    };
-  }
-  return { title: stem, artist: "" };
-}
-
 const ItemQuickActions = component$<{
   item: CatalogItem;
   state: DashboardState;
@@ -1562,10 +1666,7 @@ const ItemQuickActions = component$<{
   );
   const playTarget = playback.target;
   const startInPagePlayer = $(() => {
-    const { title, artist } = trackDisplay(props.item);
     props.state.miniPlayerItemId = props.item.id;
-    props.state.miniPlayerTitle = title;
-    props.state.miniPlayerArtist = artist;
   });
   const sendEditorCommand = $((action: EditorCommandAction) => {
     props.editorCommand.action = action;
@@ -2294,20 +2395,6 @@ const LibraryView = component$<{
           )}
         </div>
       </div>
-      <button
-        class={{
-          "library-fab": true,
-          "library-fab--player": Boolean(props.state.miniPlayerItemId),
-        }}
-        type="button"
-        disabled={refreshing.value}
-        onClick$={refreshLibrary$}
-        title="Scan this library from disk now"
-        aria-label="Refresh this library from disk now"
-      >
-        <Icon name="refresh" size={17} />
-        {refreshing.value ? "Refreshing…" : "Refresh"}
-      </button>
       <section
         class={{
           "library-layout": true,
@@ -2418,8 +2505,8 @@ const LibraryView = component$<{
           />
         )}
       </section>
-      {advancedSearch?.url && (
-        <div class="library-footer">
+      <div class="library-footer">
+        {advancedSearch?.url && (
           <a
             class="library-advanced-search"
             href={`${advancedSearch.url}/?q=${encodeURIComponent(filter.value.trim())}`}
@@ -2430,8 +2517,19 @@ const LibraryView = component$<{
             <Icon name="search" size={15} />
             Advanced search
           </a>
-        </div>
-      )}
+        )}
+        <button
+          class="library-refresh"
+          type="button"
+          disabled={refreshing.value}
+          onClick$={refreshLibrary$}
+          title="Scan this library from disk now"
+          aria-label="Refresh this library from disk now"
+        >
+          <Icon name="refresh" size={15} />
+          {refreshing.value ? "Refreshing…" : "Refresh"}
+        </button>
+      </div>
     </section>
   );
 });

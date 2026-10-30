@@ -176,7 +176,8 @@ export function endActionSettings(action: EndOfTrackAction): {
 } {
   return {
     stopAfterCurrent: action === "stop",
-    loop: action === "repeat-all" ? "all" : "off",
+    loop:
+      action === "repeat-one" ? "one" : action === "repeat-all" ? "all" : "off",
   };
 }
 
@@ -206,4 +207,25 @@ export function decideAdvance(args: {
   if (step.index < 0) return { kind: "stop" };
   if (step.wrapped && action !== "repeat-all") return { kind: "stop" };
   return { kind: "advance", index: step.index, wrapped: step.wrapped };
+}
+
+/** Peek ahead without mutating the current track or the existing shuffle order. */
+export function queuedNext(
+  tracks: QueueTrack[],
+  order: number[],
+  currentIndex: number,
+  scope: ShuffleScope,
+  dismissed: string[],
+): QueueStep {
+  let index = currentIndex;
+  let wrapped = false;
+  const dismissedIds = new Set(dismissed);
+  for (let count = 0; count < tracks.length; count++) {
+    const step = queueStep(tracks, order, index, scope, 1);
+    wrapped ||= step.wrapped;
+    if (step.index < 0 || step.index === currentIndex) break;
+    index = step.index;
+    if (!dismissedIds.has(tracks[index]!.id)) return { index, wrapped };
+  }
+  return { index: -1, wrapped };
 }

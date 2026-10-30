@@ -3206,12 +3206,12 @@ describe("Media Manager library browser", () => {
     expect(screen.querySelector(".mini-player-info span")?.textContent).toBe(
       "Nirvana",
     );
-    expect(
-      screen.querySelector(".mini-player audio")?.getAttribute("src"),
-    ).toBe("/api/v1/items/track-1/stream");
+    expect(screen.querySelector("audio")?.getAttribute("src")).toBe(
+      "/api/v1/items/track-1/stream",
+    );
 
     await userEvent(
-      screen.querySelector('[aria-label="Close music player"]'),
+      screen.querySelector('[aria-label="Disable music mini player"]'),
       "click",
     );
     expect(screen.querySelector(".mini-player")).toBeUndefined();

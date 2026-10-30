@@ -58,7 +58,7 @@ assumptions.
 | Guided rename lives in the metadata editor as a "File organization" section; there is no dedicated Rename view | media-manager | One surface edits both metadata and file name, and removes a redundant top-level view | — |
 | The library detail pane exposes only Play and Metadata actions; the Metadata action reveals a single editor holding the remote sources and the edit fields | media-manager | Replaces the Explore/Metadata/Rename/Subtitles tab strip and the extra quick actions with one predictable entry point, identical from the library and from Metadata health's "Review metadata" link | — |
 | Music and Videos are separate top-level playback pages; the video page keeps a wide 16:9 player beside a bounded, independently scrollable library on desktop and stacks the player above the list on phones | media-manager (`player-view.tsx`, `videos-view.tsx`) | Video controls and landscape viewing need the space of the page, while the music player keeps its existing queue and controls; unsupported source playback retries through the server's H.264/AAC MP4 transcode | — |
-| A downloader deep link (`?view=player|videos&path=…`) selects and starts the linked item on load, revealing its album in the music player | media-manager (`player-view.tsx`, `videos-view.tsx`, `playback-target.ts`) | Tapping a finished download must land on the specific track/video, not the top of the library; browsers may still require a tap before audible autoplay, so the item and its Play control are always surfaced | — |
+| A downloader music deep link (`?view=player&path=…`) selects and starts the linked track, revealing its album; video links select the video and wait for Play | media-manager (`player-view.tsx`, `videos-view.tsx`, `playback-target.ts`) | Tapping a finished download must land on the specific track/video, not the top of the library; browsers may still require a tap before audible autoplay, so the item and its Play control are always surfaced | — |
 | The video player shows a feature-detected Picture-in-Picture button beside the title and registers a media session | media-manager (`videos-view.tsx`) | Chrome for Android and desktop support `requestPictureInPicture()` behind a user gesture; a registered media session also lets the browser auto-enter PiP when the page is occluded. The button only renders when the API is available | — |
 | Music transport keeps quick icon toggles (repeat, stop-after-track, three-state shuffle) and a gear opens one "Playback options" menu that spells out every option with its own wording — "Shuffle off / Shuffle album / Shuffle all <file type> files", "Continue to the next track / Stop after this track / Repeat this track / Repeat the queue", plus the sleep timer. The panel opens upward beside the controls on desktop and as a sheet above the bottom nav on phones | media-manager (`player-view.tsx`, `playback-settings.tsx`, `playback-queue.ts`) | Icon-only transport buttons cannot say what a three-state toggle or a file-type-scoped shuffle will do; the menu carries the wording, the current album and the pool sizes, and stays the single place the two end-of-track controls are written so they cannot disagree | — |
 | A shuffled queue only ever contains tracks of the current track's own media kind, and an album shuffle only the current album folder; the personal and shared roots of that kind are one pool | media-manager (`playback-queue.ts`) | Music crosses from a personal root to a shared music album, but a song must never hand over to an audiobook mid-queue. "Play album" still starts inside the album that was clicked, whichever scope is active | — |
@@ -110,3 +110,20 @@ Library search is deliberately split. The library toolbar filters the currently 
 |---|---|---|
 | Fleet table and hash-routed device workspace, app-local system-font tokens derived from mail-archive-ui, native light/dark palette, focusable table scroll regions | groundwater-server | Practical fleet comparison and history take priority. Configuration, commands, raw deliveries and audit use separate views. Forms start empty, dangerous submissions require DANGER, and viewers see read-only state. Default Qwik segment chunking stays enabled. |
 | SVG history exposes threshold bands, alert-opening markers and gaps, with an accessible measurement table and CSV observations export | groundwater-server | Device time and receipt time remain distinct; secondary battery/RSSI history shares the time range without redundant metric panels. Alerts are read-only and resolve automatically. |
+
+### Media playback continuity
+
+The music player keeps one audio element mounted across same-app navigation, with
+a compact player above the phone navigation on other pages. The PiP icon left of
+the sleep timer toggles this behavior; it defaults on and remembers the choice.
+Turning it off pauses music when leaving Music. Native links, modified clicks,
+external links and library selection history retain their normal behavior. Video
+selection never autoplays or takes the music media session; actual playback owns
+the media session and pauses other media.
+
+Now-playing artwork uses 4:3 when the original is at least that wide, otherwise
+1:1. The Up next card below the main player starts its candidate when clicked;
+its separate skip control removes only that upcoming candidate. The same queue
+preview drives Next and natural track completion, preserving shuffle/repeat/stop.
+Library Refresh is a normal right-aligned footer action beside Advanced search,
+sharing its typography. Activity remains addressable but is hidden from navigation.

@@ -117,10 +117,8 @@ export interface DashboardState {
   preview?: MutationPreview;
   metadataDraftDirty: boolean;
   metadataDraftRevision: number;
+  musicMiniPlayerVisible?: boolean;
   miniPlayerItemId: string;
-  miniPlayerTitle: string;
-  miniPlayerArtist: string;
-  miniPlayerPauseToken: number;
 }
 
 // The open editor can outlive the current catalog page or search results.
@@ -150,7 +148,6 @@ export const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
   { id: "player", label: "Music", icon: "music-note" },
   { id: "videos", label: "Videos", icon: "video" },
   { id: "accounts", label: "Metadata sources", icon: "shield" },
-  { id: "activity", label: "Activity", icon: "activity" },
   { id: "refresh", label: "App refresh", icon: "refresh" },
 ];
 
