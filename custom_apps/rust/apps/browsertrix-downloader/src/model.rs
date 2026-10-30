@@ -261,6 +261,8 @@ pub struct JobRuntime {
     pub control: Option<String>,
     #[serde(skip_serializing)]
     pub resume_config: Option<String>,
+    #[serde(skip_serializing)]
+    pub attempt_deadline: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -304,6 +306,7 @@ impl JobRuntime {
         value["operation"] = serde_json::to_value(&self.operation)?;
         value["control"] = serde_json::to_value(&self.control)?;
         value["resumeConfig"] = serde_json::to_value(&self.resume_config)?;
+        value["attemptDeadline"] = serde_json::to_value(&self.attempt_deadline)?;
         serde_json::to_string(&value)
     }
 }

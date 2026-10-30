@@ -18,7 +18,6 @@ pub fn build_crawl_args(
         "--shm-size=1g".into(),
         "--cap-add=SYS_ADMIN".into(),
         "--security-opt=seccomp=unconfined".into(),
-        "--pid=host".into(),
         "--uts=host".into(),
         "-v".into(),
         format!("{}:/crawls", crawl_dir.display()).into(),
@@ -241,6 +240,27 @@ const p=settings.policy;
 const {Browser}=await import('file:///app/dist/util/browser.js');
 const install=Browser.prototype.installProfile;
 Browser.prototype.installProfile=async function(url){this.profileDir='/browser-state/profile';this.downloadsDir='/browser-state/downloads';return install.call(this,url);};
+// 1.14.3 drops page-limit overflow URLs from its saved queue, retaining them in
+// skippedPages instead. Restore only those already-scoped rows on an explicit
+// resume; otherwise extending the page budget would never discover them again.
+if(settings.resumeConfig&&!settings.qaMode){
+ const {Crawler}=await import('file:///app/dist/crawler.js');
+ const add=Crawler.prototype._addInitialSeeds;
+ Crawler.prototype._addInitialSeeds=async function(){
+  await add.call(this);
+  const report=`${this.collDir}/reports/skippedPages.jsonl`;
+  if(!fs.existsSync(report))return;
+  const length=Math.min(fs.statSync(report).size,32*1024*1024);if(!length)return;
+  const {createInterface}=await import('node:readline');
+  // Freeze the old extent: native queueUrl may append a new skipped row, which
+  // must not feed back into this same restoration pass.
+  const input=fs.createReadStream(report,{start:0,end:length-1});
+  const lines=createInterface({input,crlfDelay:Infinity});
+  let count=0;
+  try{for await(const line of lines){if(++count>20000)break;if(line.length>16384)continue;let row;try{row=JSON.parse(line);}catch{continue;}if(row.reason!=='pageLimit'||!Number.isInteger(row.depth)||row.depth<0||row.depth>20)continue;const seedId=this.seeds.findIndex(seed=>seed.url===row.seedUrl);if(seedId<0)continue;await this.queueUrl({url:row.url,seedId,depth:row.depth,extraHops:0});}}
+  finally{lines.close();input.destroy();}
+ };
+}
 
 console.log(JSON.stringify({message:'policyReady',version:1}));
 const installed=new WeakSet();

@@ -36,3 +36,18 @@ production URL and egress validation are unchanged. It verifies sequential
 Alice/Bob/unprofiled captures and queued revocation/expiry rejection. Run only
 with the approved isolated runtime via `WEB_ARCHIVES_PODMAN` and
 `WEB_ARCHIVES_IMAGE`, with `TMPDIR` inside the task scratch directory.
+
+The ignored `capture_resume` test uses `WEB_ARCHIVES_BASE_PODMAN` for that same
+wrapper and `WEB_ARCHIVES_FIXTURE_MODE=site`. It creates an actual native
+one-page partial capture, extends its page budget by two, resumes the retained
+native YAML/WARCs, and checks the complete three-page version plus unchanged
+partial-file hash and immutable parent identity. Both capture attempts use fresh
+browser state. Private PID namespaces ensure image Redis/browser descendants
+exit with the container; do not add `--pid=host` to these checks.
+
+`measured_stored_forecast_accounts_for_assets_and_unattributed_overhead` accepts
+the same real WACZ fixture without needing a browser runtime. It checks that
+stored assets and uncertain unattributed/package overhead are represented in a
+bounded forecast. Set `WEB_ARCHIVES_OMIT_FAVICON=1` and
+`WEB_ARCHIVES_EXPECT_RESOURCES=fail` on the QA test to retain the negative
+missing-resource case; it must remain distinct from a captured HTTP 404.

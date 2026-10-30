@@ -64,15 +64,18 @@ set -eu
 if [ "${{1:-}}" = image ]; then exit 0; fi
 volume=''
 collection=''
+time_limit=''
 while [ "$#" -gt 0 ]; do
  case "$1" in
  -v) case "$2" in *:/crawls) volume="$2";; esac; shift 2;;
  --collection) collection="$2"; shift 2;;
+ --timeLimit) time_limit="$2"; shift 2;;
  *) shift;;
  esac
 done
 crawl_root="${{volume%:/crawls}}"
 mkdir -p "$crawl_root/collections/$collection/crawls"
+printf '%s' "$time_limit" > "$crawl_root/time-limit.txt"
 cp '{}' "$crawl_root/collections/$collection/$collection.wacz"
 printf 'state: {{finished: false}}\n' > "$crawl_root/collections/$collection/crawls/fixture.yaml"
 printf '%s\n' '{{"message":"policyReady","version":1}}'

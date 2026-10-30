@@ -26,7 +26,6 @@ async fn synthetic_profiles_are_owner_bound_fresh_and_rechecked_at_execution() {
                 "--shm-size=1g",
                 "--cap-add=SYS_ADMIN",
                 "--security-opt=seccomp=unconfined",
-                "--pid=host",
                 "--uts=host",
                 "--entrypoint=node",
                 "-v",

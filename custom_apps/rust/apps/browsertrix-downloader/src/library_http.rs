@@ -260,8 +260,12 @@ async fn archive_read(
             )?;
             let left = archive_path(&s, &a)?;
             let right = archive_path(&s, &other)?;
+            let config = s.config.clone();
+            let db = s.database.clone();
             let report = crate::library::analyze(move || {
-                archive_engine::compare_archives(&left, &right)
+                let left_deps = crate::library::authorized_view_dependencies(&config, &db, &a)?;
+                let right_deps = crate::library::authorized_view_dependencies(&config, &db, &other)?;
+                archive_engine::compare_archives_authorized(&left, &left_deps, &right, &right_deps)
             })
             .await
             .map_err(ApiError::internal)?
@@ -293,8 +297,13 @@ async fn archive_read(
             let path = archive_path(&s, &a)?;
             let format = format.to_owned();
             let kind = format.clone();
+            let config = s.config.clone();
+            let db = s.database.clone();
             let content =
-                crate::library::analyze(move || archive_engine::reader_export(&path, &kind))
+                crate::library::analyze(move || {
+                    let deps = crate::library::authorized_view_dependencies(&config, &db, &a)?;
+                    archive_engine::reader_export_authorized(&path, &kind, &deps)
+                })
                     .await
                     .map_err(ApiError::internal)?
                     .map_err(ApiError::bad_request)?;
@@ -325,8 +334,11 @@ async fn archive_read(
                 return Err(ApiError::bad_request("url too long"));
             }
             let path = archive_path(&s, &a)?;
+            let config = s.config.clone();
+            let db = s.database.clone();
             let html = crate::library::analyze(move || {
-                archive_engine::preview_document(&path, &target)
+                let deps = crate::library::authorized_view_dependencies(&config, &db, &a)?;
+                archive_engine::preview_document_authorized(&path, &target, &deps)
             })
             .await
             .map_err(ApiError::internal)?

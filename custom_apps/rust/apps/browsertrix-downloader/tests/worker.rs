@@ -50,6 +50,9 @@ async fn exhausted_partial_retains_checkpoint_and_immutable_snapshot_for_extende
     let partial = db.job("partial-1").unwrap().unwrap();
     assert_eq!(partial.status, JobStatus::Partial);
     assert!(partial.runtime.can_resume);
+    let mut runtime = partial.runtime.clone();
+    runtime.runtime_seconds = 115;
+    db.set_runtime(&job.id, &runtime).unwrap();
     let first = db
         .archive_for_user(partial.runtime.archive_id.as_ref().unwrap(), "alice")
         .unwrap()
@@ -63,14 +66,20 @@ async fn exhausted_partial_retains_checkpoint_and_immutable_snapshot_for_extende
         "alice",
         &browsertrix_downloader::model::ResumeOptions {
             additional_pages: 2,
+            additional_minutes: 1,
             ..Default::default()
         },
     )
     .unwrap();
     assert!(db.resume(&job.id, "alice", &Default::default()).is_err());
     let resumed = db.claim_next_queued_job().unwrap().unwrap();
+    assert_eq!(resumed.request.time_limit_minutes, 3);
     process_job(&config, &db, &resumed).await.unwrap();
     let next = db.job(&job.id).unwrap().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(config.checkpoints_root.join("partial-1/time-limit.txt")).unwrap(),
+        "65"
+    );
     assert_ne!(next.runtime.archive_id, Some(first.id));
     assert_eq!(
         browsertrix_downloader::custody::sha256(&config.archive_root.join(first.archive_file))
@@ -81,5 +90,25 @@ async fn exhausted_partial_retains_checkpoint_and_immutable_snapshot_for_extende
         !std::fs::read_to_string(config.checkpoints_root.join("partial-1/capture.json"))
             .unwrap()
             .contains("overwrite")
+    );
+    let mut exhausted = next.runtime;
+    exhausted.runtime_seconds = 180;
+    db.set_runtime(&job.id, &exhausted).unwrap();
+    assert!(db
+        .resume(&job.id, "alice", &Default::default())
+        .unwrap_err()
+        .contains("exhausted"));
+    db.resume(
+        &job.id,
+        "alice",
+        &browsertrix_downloader::model::ResumeOptions {
+            additional_minutes: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        db.job(&job.id).unwrap().unwrap().request.time_limit_minutes,
+        4
     );
 }

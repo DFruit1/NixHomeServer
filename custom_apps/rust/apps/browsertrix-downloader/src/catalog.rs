@@ -548,22 +548,27 @@ impl Database {
             .size_limit_bytes
             .unwrap_or(2 * 1024 * 1024 * 1024)
             .checked_add(ext.additional_bytes)
-            .filter(|n| *n <= 64 * 1024 * 1024 * 1024)
-            .ok_or("cumulative byte limit exceeds 64GiB")?;
+            .filter(|n| *n <= 16 * 1024 * 1024 * 1024)
+            .ok_or("cumulative WARC byte limit exceeds 16GiB")?;
+        let minutes = request
+            .time_limit_minutes
+            .checked_add(ext.additional_minutes)
+            .filter(|n| *n <= 1440)
+            .ok_or("cumulative time limit exceeds 24 hours")?;
         if done >= u64::from(pages)
             || rt.warc_bytes >= bytes
+            || rt.runtime_seconds >= u64::from(minutes) * 60
             || (rt.stop_reason.as_deref() == Some("time-limit") && ext.additional_minutes == 0)
         {
             return Err("capture budget exhausted; supply an explicit bounded additionalPages, additionalMinutes or additionalBytes extension".into());
         }
         request.page_limit = pages;
         request.options.size_limit_bytes = Some(bytes);
-        if ext.additional_minutes > 0 {
-            request.time_limit_minutes = ext.additional_minutes;
-        }
+        request.time_limit_minutes = minutes;
         rt.control = None;
         rt.stop_reason = None;
         rt.can_resume = false;
+        rt.attempt_deadline = None;
         tx.execute("UPDATE jobs SET status='queued',request_json=?2,runtime_json=?3,updated_at=?4 WHERE id=?1",params![id,sql_json(&request).map_err(|e|e.to_string())?,rt.storage_json().map_err(|e|e.to_string())?,now()]).map_err(|e|e.to_string())?;
         tx.commit().map_err(|e| e.to_string())
     }
@@ -577,6 +582,49 @@ impl Database {
     }
     pub fn begin_capture(&self, id: &str, rt: &JobRuntime) -> rusqlite::Result<bool> {
         Ok(self.connect()?.execute("UPDATE jobs SET status='running',runtime_json=?2,updated_at=?3 WHERE id=?1 AND status='starting' AND json_extract(runtime_json,'$.control') IS NULL",params![id,rt.storage_json().map_err(|e|rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,now()])?==1)
+    }
+    /// Freeze stop/discard controls atomically with the packaging transition.
+    /// Once this commits, new controls are rejected by the existing state gate.
+    pub fn prepare_publication(
+        &self,
+        id: &str,
+        rt: &JobRuntime,
+    ) -> rusqlite::Result<Option<JobRuntime>> {
+        let mut c = self.connect()?;
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (status, stored): (String, String) = tx.query_row(
+            "SELECT status,runtime_json FROM jobs WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if status == "cancelling" {
+            return Ok(None);
+        }
+        if status != "running" {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let current: JobRuntime = from_json(&stored)?;
+        let mut frozen = rt.clone();
+        frozen.control = current.control;
+        if let Some(control) = frozen.control.as_deref() {
+            frozen.stop_reason = match control {
+                "pause" => Some("pause".into()),
+                "stop" => Some("stop-and-save".into()),
+                _ => frozen.stop_reason,
+            };
+        }
+        tx.execute(
+            "UPDATE jobs SET status='packaging',runtime_json=?2,updated_at=?3 WHERE id=?1",
+            params![
+                id,
+                frozen
+                    .storage_json()
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+                now()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(Some(frozen))
     }
     pub fn list_jobs_for_recovery(&self) -> rusqlite::Result<Vec<crate::model::Job>> {
         let c = self.connect()?;

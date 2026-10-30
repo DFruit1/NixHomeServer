@@ -34,9 +34,28 @@ pub async fn run(config: AppConfig) -> Result<(), String> {
         // A worker/CLI crash does not guarantee the container exited. Stop only
         // the exact previously claimed job before reading its durable checkpoint.
         kill_capture_container(&config, &job.id).await;
+        if let Some(deadline) = job.runtime.attempt_deadline.as_deref() {
+            let deadline = chrono::DateTime::parse_from_rfc3339(deadline)
+                .map_err(|_| "invalid durable attempt deadline")?;
+            let remaining = (deadline.with_timezone(&chrono::Utc) - chrono::Utc::now())
+                .num_seconds()
+                .max(0) as u64;
+            let mut rt = job.runtime.clone();
+            rt.runtime_seconds = rt
+                .runtime_seconds
+                .max((u64::from(job.request.time_limit_minutes) * 60).saturating_sub(remaining));
+            rt.attempt_deadline = None;
+            database
+                .set_runtime(&job.id, &rt)
+                .map_err(|e| e.to_string())?;
+        }
         let dir = config.checkpoints_root.join(&job.id);
         if let Some(saved) = find_checkpoint(&dir, &job) {
-            let mut rt = job.runtime.clone();
+            let mut rt = database
+                .job(&job.id)
+                .map_err(|e| e.to_string())?
+                .ok_or("recovery job disappeared")?
+                .runtime;
             rt.can_resume = true;
             rt.resume_config = Some(saved);
             rt.stop_reason = Some("worker-restart".into());
@@ -221,6 +240,14 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
     crate::custody::private_directory(&config.checkpoints_root)?;
     crate::custody::private_directory(&crawl_dir)?;
     let mut runtime = job.runtime.clone();
+    let remaining_seconds = (u64::from(effective.request.time_limit_minutes) * 60)
+        .saturating_sub(runtime.runtime_seconds);
+    if remaining_seconds == 0 {
+        return Err(
+            "cumulative time budget exhausted; explicit additionalMinutes extension required"
+                .into(),
+        );
+    }
     let saved = if runtime.attempt > 0 {
         Some(
             find_checkpoint(&crawl_dir, job)
@@ -262,6 +289,9 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
         &crawl_dir,
         &config.crawler_image,
     );
+    if let Some(index) = args.iter().position(|v| v == "--timeLimit") {
+        args[index + 1] = remaining_seconds.to_string().into();
+    }
     if let Some(saved) = saved {
         if let Some(index) = args.iter().rposition(|v| v == "--config") {
             args[index + 1] = format!("/crawls/{saved}").into();
@@ -300,6 +330,9 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
     runtime.attempt += 1;
     runtime.control = None;
     runtime.can_resume = false;
+    runtime.attempt_deadline = Some(
+        (chrono::Utc::now() + chrono::Duration::seconds(remaining_seconds as i64)).to_rfc3339(),
+    );
     if !database
         .begin_capture(&job.id, &runtime)
         .map_err(|e| e.to_string())?
@@ -352,7 +385,7 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
          Some(line)=rx.recv()=>{read_metrics(&line,&mut runtime,&mut policy_ready);record_omission(&crawl_dir,&line)?;if let Some(update)=parse_crawl_log_line(&line){progress=merge_progress(&progress,&update);}if last_write.elapsed()>=Duration::from_secs(2){database.set_progress(&job.id,Some(&progress)).map_err(|e|e.to_string())?;last_write=Instant::now();}if reason.is_none(){if let Some(value)=stop_reason_from_log(&line){reason=Some(value.into());}}},
          _=poll.tick()=>{
            let current=database.job(&job.id).map_err(|e|e.to_string())?.ok_or("active job disappeared")?;
-           if signalled.is_none(){let control=current.runtime.control.as_deref();let next=if current.status==JobStatus::Cancelling{Some("discard")}else if control==Some("pause"){Some("pause")}else if control==Some("stop"){Some("stop-and-save")}else if started.elapsed()>=Duration::from_secs(u64::from(effective.request.time_limit_minutes)*60+30){Some("time-limit")}else{None};
+           if signalled.is_none(){let control=current.runtime.control.as_deref();let next=if current.status==JobStatus::Cancelling{Some("discard")}else if control==Some("pause"){Some("pause")}else if control==Some("stop"){Some("stop-and-save")}else if started.elapsed()>=Duration::from_secs(remaining_seconds+30){Some("time-limit")}else{None};
             let disk=if next.is_none(){crate::custody::available_bytes(&crawl_dir)?<reserve||crate::custody::available_bytes(destination_root)?<reserve}else{false};
             if next.is_some()||disk{reason=Some(next.unwrap_or("disk-reserve").into());signal_process(pid,libc::SIGINT)?;signalled=Some(Instant::now());}
            }else if signalled.is_some_and(|t|t.elapsed()>Duration::from_secs(180)){kill_capture_container(config,&job.id).await;signal_process(pid,libc::SIGKILL)?;}
@@ -375,6 +408,7 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
     runtime.runtime_seconds = job.runtime.runtime_seconds + started.elapsed().as_secs();
+    runtime.attempt_deadline = None;
     runtime.warc_bytes = warc_bytes(&crawl_dir)?;
     runtime.coverage = Some(progress.clone());
     runtime.resume_config = find_checkpoint(&crawl_dir, job);
@@ -393,11 +427,21 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
     {
         runtime.stop_reason = Some("page-limit".into());
     }
+    let collection = effective.request.collection.as_deref().unwrap_or(&job.id);
+    if runtime.stop_reason.as_deref() == Some("page-limit")
+        && progress.pages_queued == 0
+        && !crate::coverage::unfinished_page_limit(&crawl_dir, collection)?
+    {
+        runtime.stop_reason = None;
+    }
+    if runtime.stop_reason.is_none() && progress.pages_failed > 0 {
+        runtime.stop_reason = Some("page-failures".into());
+    }
     database
         .set_progress(&job.id, Some(&progress))
         .map_err(|e| e.to_string())?;
     database
-        .set_runtime(&job.id, &runtime)
+        .set_runtime_preserving_control(&job.id, &runtime)
         .map_err(|e| e.to_string())?;
     if runtime.stop_reason.as_deref() == Some("discard") {
         runtime.can_resume = false;
@@ -409,7 +453,6 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
             .map_err(|e| e.to_string())?;
         return Ok(());
     }
-    let collection = effective.request.collection.as_deref().unwrap_or(&job.id);
     let source = crawl_dir
         .join("collections")
         .join(collection)
@@ -424,12 +467,22 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
             .map_err(|e| e.to_string())?;
         return Ok(());
     }
+    runtime.control = latest.runtime.control;
+    if runtime.stop_reason.is_none() {
+        runtime.stop_reason = match runtime.control.as_deref() {
+            Some("pause") => Some("pause".into()),
+            Some("stop") => Some("stop-and-save".into()),
+            _ => None,
+        };
+        database
+            .set_runtime_preserving_control(&job.id, &runtime)
+            .map_err(|e| e.to_string())?;
+    }
     if !policy_ready {
         return Err(
             "capture policy driver did not load; retained WACZ/checkpoint was not published".into(),
         );
     }
-    let partial = runtime.stop_reason.is_some() || !status.success();
     if !source.is_file() {
         let state = if runtime.can_resume {
             JobStatus::Paused
@@ -455,9 +508,17 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
         }
         return Ok(());
     }
-    database
-        .set_status(&job.id, JobStatus::Packaging, None)
-        .map_err(|e| e.to_string())?;
+    let Some(frozen) = database
+        .prepare_publication(&job.id, &runtime)
+        .map_err(|e| e.to_string())?
+    else {
+        database
+            .set_status(&job.id, JobStatus::Cancelled, None)
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    };
+    runtime = frozen;
+    let partial = runtime.stop_reason.is_some() || !status.success();
     let config2 = config.clone();
     let db = database.clone();
     let mut complete = effective.clone();

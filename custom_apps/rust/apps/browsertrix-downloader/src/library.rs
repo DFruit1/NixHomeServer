@@ -103,6 +103,16 @@ fn engine_dependencies(
         })
         .collect()
 }
+pub fn authorized_view_dependencies(
+    config: &AppConfig,
+    db: &Database,
+    a: &Archive,
+) -> Result<Vec<AuthorizedDependency>, String> {
+    if !a.sha256.is_empty() {
+        checked_archive(config, db, &a.created_by, &a.id, &a.sha256)?;
+    }
+    engine_dependencies(config, &authorized_dependencies(config, db, a)?)
+}
 fn source(config: &AppConfig, a: &Archive) -> Result<PathBuf, String> {
     custody::checked_file(custody::root(config, a), &a.archive_file)
 }
@@ -174,6 +184,23 @@ pub fn publish_capture(
     if private {
         a.visibility = "private".into();
     }
+    if matches!(
+        job.runtime.operation,
+        Operation::Capture | Operation::Sample { .. }
+    ) {
+        if let Some(parent_id) = &job.runtime.archive_id {
+            let parent = db
+                .archive_for_user(parent_id, &job.created_by)
+                .map_err(|e| e.to_string())?
+                .ok_or("previous partial version is not authorized")?;
+            checked_archive(config, db, &job.created_by, &parent.id, &parent.sha256)?;
+            if parent.visibility == "private" {
+                a.visibility = "private".into();
+            }
+            a.parent_id = Some(parent.id);
+            a.parent_sha256 = Some(parent.sha256);
+        }
+    }
     a.capture_status = if status == JobStatus::Completed {
         "complete"
     } else {
@@ -230,13 +257,20 @@ pub fn publish_capture(
             .filter(|p| p.visibility == a.visibility && p.sha256.len() == 64)
         {
             checked_archive(config, db, &job.created_by, &parent.id, &parent.sha256)?;
-            for dep in authorized_dependencies(config, db, &parent)? {
+            let mut closure = authorized_dependencies(config, db, &parent)?;
+            closure.push(parent);
+            let additional = closure
+                .iter()
+                .filter(|dep| !authorized.iter().any(|a: &Archive| a.id == dep.id))
+                .count();
+            if authorized.len() + additional > 16 {
+                report.warnings.push("Deduplication candidate skipped: complete authorized graph exceeds the engine's 16-archive bound; standalone captured bytes retained.".into());
+                continue;
+            }
+            for dep in closure {
                 if !authorized.iter().any(|a: &Archive| a.id == dep.id) {
                     authorized.push(dep);
                 }
-            }
-            if !authorized.iter().any(|a| a.id == parent.id) {
-                authorized.push(parent);
             }
         }
         if !authorized.is_empty() {
@@ -253,7 +287,7 @@ pub fn publish_capture(
                     report = result;
                     actual = destination;
                 }
-                Err(error) if error == "No matching response payloads in authorized captures" => {
+                Err(error) if error == archive_engine::NO_MATCHING_PAYLOADS => {
                     report.warnings.push("Cross-capture deduplication found no matching payloads; original standalone capture retained with zero savings".into());
                 }
                 Err(error) => return Err(error),
@@ -628,7 +662,6 @@ fn browser_qa(
             "--tmpfs=/browser-state:rw,nosuid,nodev,mode=0700,size=512m",
             "--cap-add=SYS_ADMIN",
             "--security-opt=seccomp=unconfined",
-            "--pid=host",
             "--uts=host",
             "-v",
         ])
@@ -780,7 +813,18 @@ fn browser_qa(
                 .is_some_and(|o| o.contains_key("replayGood"))
         })
         .count();
-    check(v,"resource-fidelity",if comparable!=pages.len(){"not-run"}else if missing==0{"pass"}else{"fail"},format!("Native1.14.3 pageinfo comparison; {missing} missing/changed error responses; bounded examples: {}",serde_json::to_string(&gaps).map_err(|e|e.to_string())?));
+    let receipts_complete = pages.iter().all(|p| {
+        p["comparison"]["resourceCounts"]["replayBad"]
+            .as_u64()
+            .is_some_and(|count| {
+                count
+                    == p["badResources"]
+                        .as_array()
+                        .map(|a| a.len() as u64)
+                        .unwrap_or(0)
+            })
+    });
+    check(v,"resource-fidelity",if missing>0{"fail"}else if comparable!=pages.len()||!receipts_complete{"not-run"}else{"pass"},format!("Native1.14.3 pageinfo comparison; {missing} missing/changed error responses; complete bounded error receipts={receipts_complete}; bounded examples: {}",serde_json::to_string(&gaps).map_err(|e|e.to_string())?));
     for (field, name) in [
         ("screenshotMatch", "screenshot-baseline"),
         ("textMatch", "text-baseline"),
