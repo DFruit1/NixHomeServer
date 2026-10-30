@@ -1,5 +1,20 @@
 # NixHomeServer – Agent Guidelines
 
+## Hermes disabled (owner instruction, 2026-10-31)
+
+Hermes automation and policy enforcement are disabled. This overrides the
+historical Hermes-specific instructions below, including directory claims,
+cards, role assignments, review chains and deployment decision receipts for
+interactive work. Do not dispatch Hermes workers, create replacement cards or
+reinstall/reactivate its policies unless the owner explicitly requests it.
+Keep existing Hermes records, source and history intact. Coordinate concurrent
+work through isolated worktrees and preserve other writers' changes.
+
+Continue normal focused validation, code review, commits and publication.
+Authorized deployments still use the guarded deploy helper and retain its
+health checks, tested-closure checks and rollback protection. Secret, destructive
+data, public exposure and build-allocation restrictions remain in force.
+
 ## Purpose
 
 This repository defines a reproducible NixOS home-server focused on:
