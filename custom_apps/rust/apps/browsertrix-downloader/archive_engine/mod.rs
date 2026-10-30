@@ -5,6 +5,72 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+mod content;
+mod read;
+
+/// Caller authorizes every path for the same owner/visibility before entering
+/// the engine. The engine checks immutable content identity, never authorization.
+#[derive(Clone, Debug)]
+pub struct AuthorizedDependency {
+    pub archive_id: String,
+    pub sha256: String,
+    pub authorized_local_path: PathBuf,
+}
+
+pub fn inspect_archive(path: &Path) -> Result<ArchiveReport, String> {
+    read::load(path)?.report()
+}
+
+/// File fixity only. Browser screenshots, interactions and offline replay need
+/// the queued browser worker and are deliberately never inferred from file data.
+pub fn verify_archive(path: &Path) -> Result<Verification, String> {
+    let mut verification = Verification {
+        checked_at: chrono::Utc::now().to_rfc3339(),
+        ..Default::default()
+    };
+    match read::load(path).and_then(|archive| archive.report()) {
+        Ok(report) => {
+            verification.valid = report.dependencies.is_empty();
+            verification.warnings = report.warnings;
+            verification.checks.push(VerificationCheck {
+                name: "zip-manifest-warc-index-fixity".into(),
+                status: "pass".into(),
+                details: format!(
+                    "SHA-256 {}; {} resources",
+                    report.sha256,
+                    report.resources.len()
+                ),
+            });
+            if !report.dependencies.is_empty() {
+                verification.checks.push(VerificationCheck {
+                    name: "standalone-dependencies".into(),
+                    status: "not-run".into(),
+                    details: "Hash-bound authorized dependencies are required".into(),
+                });
+            }
+        }
+        Err(error) => verification.checks.push(VerificationCheck {
+            name: "zip-manifest-warc-index-fixity".into(),
+            status: "fail".into(),
+            details: error,
+        }),
+    }
+    for name in [
+        "offline-browser-replay",
+        "screenshot-baseline",
+        "interaction-assertions",
+    ] {
+        verification.checks.push(VerificationCheck {
+            name: name.into(),
+            status: "not-run".into(),
+            details: "Requires queued browser QA with live origins blocked and recorded baselines"
+                .into(),
+        });
+    }
+    Ok(verification)
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -113,3 +179,6 @@ pub struct Estimate {
     pub assumptions: Vec<String>,
     pub warnings: Vec<String>,
 }
+
+#[cfg(test)]
+mod tests;
