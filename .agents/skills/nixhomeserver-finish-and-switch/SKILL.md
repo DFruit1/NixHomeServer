@@ -94,6 +94,17 @@ implementation subagents in isolated worktrees; this workflow calls for that
 delegation when useful and one independent review of the integrated candidate.
 Keep deployment under the parent agent so only one actor changes the server.
 
+Before build-dependent delegation, check free space on the actual source,
+build-output, scratch and Nix-store filesystems. `/tmp` may be a bounded tmpfs,
+and free Nix-store space does not imply room for Cargo or frontend outputs under
+`/home`. Coordinate concurrent local builds, serialize them when capacity is
+tight, and reuse artifacts only when their source/toolchain match. Recover space
+only through supported cleanup of exact task-owned generated output; preserve
+source, handoff evidence and other agents' caches/worktrees. Wait for safe
+capacity rather than starting another cold build or overriding allocation.
+Rerun interrupted checks after recovery; retain the guarded deploy's own space
+checks before activation.
+
 Use the available native orchestration and live provider/model catalog. With
 T3, use `delegate_task` with `isolation:"worktree"` for separate checkouts;
 preserve requested/inherited model options and retain task IDs. Such children
