@@ -164,6 +164,12 @@ intact; the ledger identifies changes now represented in the integrated commit.
    and no writer can mutate this candidate during deployment. Record the commit,
    target, source identity and intended live checks. Recheck target configuration
    and shutdown protection using the maintained safe-change procedures.
+   For persistent schema or privacy changes, qualify the actual previous closure
+   that guarded rollback will restore: its binaries must safely handle retained
+   state, and its users/groups must not gain access to newly private data.
+   A source review or matching stamp alone does not prove rollback compatibility.
+   Resolve incompatible on-disk state with a reviewed, non-destructive migration
+   or isolation correction before activation; retain the guarded rollback.
 2. From that stable Git checkout, with the dashboard's default allocation, run:
 
    ```bash
