@@ -20,5 +20,5 @@ export async function replayLink(archive: Pick<Archive,'id'|'sha256'|'cleanRules
   const config={injectScripts:clean?[`${origin}/replay/clean.js#${fragment}`]:[],liveRedirectOnNotFound:false};
   const query=new URLSearchParams({source:new URL(archivePath(archive.id)+'/replay.json',origin).href,customColl:'wa-'+hash,config:JSON.stringify(config),noCache:'1',embed:'full',swName:'sw-clean.js'});
   const target=new URLSearchParams({view:'replay',...(url?{url}:{}),...(ts?{ts:ts.replace(/[^0-9]/g,'').slice(0,14)}:{})});
-  return `/replay/index.html?${query}#${target}`;
+  return `/replay/boot.html?${query}#${target}`;
 }
