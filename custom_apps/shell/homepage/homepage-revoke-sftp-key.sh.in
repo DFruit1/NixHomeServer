@@ -14,6 +14,10 @@ fi
 @NIX_COREUTILS@/bin/install -d -m 0755 -o root -g root @NIX_SFTPAUTHORIZEDKEYSDIR_QUOTED@
 exec 9>"@NIX_SFTPAUTHORIZEDKEYSDIR@/.$username.lock"
 @NIX_UTIL_LINUX@/bin/flock -x 9
+# Revoke by the existing key file, even after group removal or identity deletion.
+# Requiring an NSS/Kanidm identity here would prevent administrator offboarding.
+# Homepage authorizes the acting user; this helper receives only the target and
+# fingerprint, so the Homepage service retains authority over all stored keys.
 target="@NIX_SFTPAUTHORIZEDKEYSDIR@/$username"
 if [[ -L "$target" || ! -f "$target" ]]; then
   echo "authorized-keys file does not exist or is not a regular file" >&2

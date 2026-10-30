@@ -34,6 +34,32 @@ trap - EXIT
 @NIX_COREUTILS@/bin/install -d -m 0755 -o root -g root @NIX_SFTPAUTHORIZEDKEYSDIR_QUOTED@
 exec 9>"@NIX_SFTPAUTHORIZEDKEYSDIR@/.$username.lock"
 @NIX_UTIL_LINUX@/bin/flock -x 9
+
+# Re-check the target against the local NSS view used for SFTP login, including
+# realm-qualified group names and the configured local-admin bridge. Kanidm
+# unixd can serve cached memberships: this is not a live remote Kanidm check.
+# The caller supplies only the target username; Homepage still authorizes the
+# acting user. A compromised Homepage service can act for any eligible target.
+if ! resolved_groups="$(@NIX_COREUTILS@/bin/id -Gn -- "$username")"; then
+  echo "unable to resolve local SFTP groups; no key was installed" >&2
+  exit 1
+fi
+read -r -a user_groups <<< "$resolved_groups"
+sftp_unix_groups=( @NIX_SFTP_UNIX_GROUPS@ )
+eligible=0
+for group in "${user_groups[@]}"; do
+  for allowed_group in "${sftp_unix_groups[@]}"; do
+    if [[ "$group" == "$allowed_group" ]]; then
+      eligible=1
+      break 2
+    fi
+  done
+done
+if (( eligible != 1 )); then
+  echo "local group membership does not permit SFTP access; no key was installed" >&2
+  exit 1
+fi
+
 target="@NIX_SFTPAUTHORIZEDKEYSDIR@/$username"
 if [[ -L "$target" ]]; then
   echo "refusing symlinked authorized-keys file" >&2
