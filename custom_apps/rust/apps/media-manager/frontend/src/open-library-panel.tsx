@@ -1,3 +1,4 @@
+import { ProviderUsageGuide } from "./provider-setup-guide";
 export type { OpenLibraryCandidate } from "./api-contract.generated";
 import type {
   OpenLibraryCandidate,
@@ -168,6 +169,7 @@ export const OpenLibraryPanel = component$<{
             About Open Library
           </a>
         </p>
+        <ProviderUsageGuide providerId="open-library" />
         <div class="metadata-form">
           <label class="source-query-input">
             <span>Title, author, or ISBN</span>

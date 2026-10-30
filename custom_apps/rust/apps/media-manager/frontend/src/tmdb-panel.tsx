@@ -1,3 +1,4 @@
+import { ProviderUsageGuide } from "./provider-setup-guide";
 import { $, component$, type QRL, useSignal, useTask$ } from "@builder.io/qwik";
 import { Icon } from "./icon";
 import type {
@@ -66,6 +67,7 @@ export const TmdbPanel = component$<{
             Enter season and episode numbers before comparing an episode.
           </p>
         ) : null}
+        <ProviderUsageGuide providerId="tmdb" />
         <div class="metadata-form">
           <label class="tmdb-query-input">
             <span>Title</span>

@@ -6772,6 +6772,8 @@ a:focus-visible {
   position: sticky;
   z-index: 4;
   bottom: 14px;
+  max-height: calc(100dvh - 110px);
+  overflow: auto;
   padding: 22px;
   border-color: var(--accent-line);
   box-shadow: 0 14px 36px rgba(33, 29, 21, 0.18);
@@ -6785,11 +6787,11 @@ a:focus-visible {
   margin: 18px 0 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   list-style: none;
 }
-.provider-setup-steps li {
+.provider-setup-steps > li {
   min-width: 0;
   padding: 12px;
   display: grid;
@@ -6800,7 +6802,10 @@ a:focus-visible {
   border-radius: 4px;
   background: var(--paper-recess);
 }
-.provider-setup-steps li > span {
+.provider-setup-steps > li:first-child {
+  grid-column: 1 / -1;
+}
+.provider-setup-steps > li > span {
   width: 26px;
   height: 26px;
   display: grid;
@@ -6812,7 +6817,7 @@ a:focus-visible {
   font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
-.provider-setup-steps li > div {
+.provider-setup-steps > li > div {
   display: grid;
   gap: 5px;
 }
@@ -6829,6 +6834,61 @@ a:focus-visible {
 .provider-setup-steps a {
   color: var(--accent);
   font-size: 10px;
+}
+.provider-signup-steps {
+  display: grid;
+  gap: 14px;
+  margin: 8px 0 18px;
+  padding-left: 22px;
+}
+.provider-access-guide,
+.provider-planned-guide,
+.provider-use-guide {
+  min-width: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.provider-access-guide p,
+.provider-planned-guide > p,
+.provider-use-guide p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.65;
+}
+.provider-access-guide a {
+  display: inline-block;
+  padding-block: 5px;
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.provider-application-fields {
+  display: grid;
+  gap: 10px;
+  margin-block: 12px 0;
+}
+.provider-application-fields dt {
+  color: var(--ink);
+  font-weight: 600;
+}
+.provider-application-fields dd {
+  margin: 2px 0 0;
+}
+.provider-access-guide .provider-setup-troubleshooting {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.provider-planned-guide summary,
+.provider-use-guide summary {
+  min-height: 44px;
+  padding-block: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 600;
 }
 .provider-test-choice {
   width: fit-content;
@@ -6860,6 +6920,12 @@ a:focus-visible {
 }
 .provider-credential-footer {
   justify-content: space-between;
+}
+@media (max-width: 640px) {
+  .provider-credential-editor {
+    /* The phone navigation floats over the bottom of this scroll region. */
+    padding-bottom: calc(94px + env(safe-area-inset-bottom));
+  }
 }
 @media (max-width: 720px) {
   .provider-account-intro {

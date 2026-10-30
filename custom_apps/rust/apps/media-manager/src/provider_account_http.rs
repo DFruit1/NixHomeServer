@@ -219,7 +219,7 @@ const OPENSUBTITLES_FIELDS: [CredentialFieldDefinition; 4] = [
         label: "Account password",
         input_type: "password",
         is_required: true,
-        help: "Use the value saved in your password manager.",
+        help: "Enter the password for that OpenSubtitles.com username, not your Media Manager sign-in or the application API key.",
     },
     CredentialFieldDefinition {
         id: "userAgent",
@@ -236,7 +236,7 @@ const TVDB_FIELDS: [CredentialFieldDefinition; 2] = [
         label: "API key",
         input_type: "password",
         is_required: true,
-        help: "The project API key issued by TheTVDB.",
+        help: "Paste the API key from your registered TheTVDB project. A website password or subscriber PIN alone cannot replace this key.",
     },
     CredentialFieldDefinition {
         id: "pin",
@@ -260,7 +260,7 @@ const PODCAST_INDEX_FIELDS: [CredentialFieldDefinition; 2] = [
         label: "API secret",
         input_type: "password",
         is_required: true,
-        help: "The matching Podcast Index API secret.",
+        help: "Paste the original secret paired with this API key. Do not paste a per-request authorization hash.",
     },
 ];
 
@@ -278,14 +278,14 @@ const FANART_FIELDS: [CredentialFieldDefinition; 2] = [
         label: "Project API key",
         input_type: "password",
         is_required: false,
-        help: "The application's project key; supply this or a personal key.",
+        help: "Paste the Project API key from Fanart.tv. Supply this, a Personal API key, or both; keep the key types in their matching fields.",
     },
     CredentialFieldDefinition {
         id: "clientKey",
         label: "Personal API key",
         input_type: "password",
         is_required: false,
-        help: "Your optional personal key controls your access tier.",
+        help: "Paste a Personal API key from Fanart.tv. It can be used alone or with the project key and determines the access tier when both are supplied.",
     },
 ];
 
@@ -310,7 +310,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &TMDB_TOKEN_FIELD,
         setup_url: "https://www.themoviedb.org/settings/api",
         documentation_url: "https://developer.themoviedb.org/docs/getting-started",
-        notes: "Rich movie and television matching: title search returning details, seasons, episodes, people, images, and external IDs. TMDB attribution is required when its data is displayed.",
+        notes: "Search movie or series titles, check the year and episode numbers, then compare fields or preview a poster. Requires the API Read Access Token from TMDB account settings.",
     },
     ProviderDefinition {
         id: "opensubtitles",
@@ -324,7 +324,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &OPENSUBTITLES_FIELDS,
         setup_url: "https://www.opensubtitles.com/consumers",
         documentation_url: "https://opensubtitles.stoplight.io/docs/opensubtitles-api",
-        notes: "Subtitle search and download for movies and shows, matching by an exact local movie hash before falling back to titles; media contents are not uploaded.",
+        notes: "Find subtitles for a video using a local file hash or title search. Requires an OpenSubtitles.com application key and account login. Preview the release and timing before confirming installation.",
     },
     ProviderDefinition {
         id: "acoustid",
@@ -338,7 +338,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://acoustid.org/new-application",
         documentation_url: "https://acoustid.org/webservice",
-        notes: "Resolves locally calculated Chromaprint audio fingerprints to MusicBrainz recording IDs without uploading audio files. AcoustID has no separate password: sign in with an existing MusicBrainz account (recommended) or Google/OpenID, then register an application to get the API key.",
+        notes: "Identify a local music track through the MusicBrainz panel using a fingerprint and duration, without uploading audio. Requires an AcoustID application/client key, separate from a personal submission key.",
     },
     ProviderDefinition {
         id: "musicbrainz",
@@ -358,7 +358,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &[],
         setup_url: "https://musicbrainz.org/",
         documentation_url: "https://musicbrainz.org/doc/MusicBrainz_API",
-        notes: "Public music title search across releases, release groups, and recordings, each carrying stable MusicBrainz IDs; served with a descriptive user agent and a shared one-request-per-second limit.",
+        notes: "Search music by artist and album title without an account or key. Check the release edition before comparing metadata or previewing a Cover Art Archive cover. AcoustID is needed only for fingerprint matching.",
     },
     ProviderDefinition {
         id: "cover-art-archive",
@@ -372,7 +372,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &[],
         setup_url: "https://coverartarchive.org/",
         documentation_url: "https://musicbrainz.org/doc/Cover_Art_Archive/API",
-        notes: "Public cover art and booklet imagery for music releases, linked through MusicBrainz identifiers.",
+        notes: "Preview a front cover for a release selected in MusicBrainz. No account or key is needed. Artwork is linked by MusicBrainz release ID; some editions have no archived cover.",
     },
     ProviderDefinition {
         id: "open-library",
@@ -386,7 +386,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &[],
         setup_url: "https://openlibrary.org/",
         documentation_url: "https://openlibrary.org/developers/api",
-        notes: "Public, human-triggered book search by title or ISBN returning normalized editions, bibliographic details, and cover links.",
+        notes: "Search books and audiobooks by title, author or ISBN without an account. Expand editions and check language, publisher and ISBN before comparing fields or previewing a cover.",
     },
     ProviderDefinition {
         id: "wikidata",
@@ -400,7 +400,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &[],
         setup_url: "https://www.wikidata.org/",
         documentation_url: "https://www.wikidata.org/wiki/Wikidata:Data_access",
-        notes: "Stable cross-provider identifiers that link a title across otherwise disconnected catalogs.",
+        notes: "Search a title or Wikidata Q ID, check the item description, then review linked identifiers. No account or key is needed. A book and its film adaptation can be different items.",
     },
     ProviderDefinition {
         id: "audnexus",
@@ -414,7 +414,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &[],
         setup_url: "https://audnex.us/",
         documentation_url: "https://api.audnex.us/",
-        notes: "Audiobook lookup by ASIN and region with authors, narrators, and series information, where provider availability and terms permit it.",
+        notes: "Look up an audiobook with its ten-character Audible ASIN and region. No account or key is needed. Check narrator, language and abridged status; title and ISBN search are not supported here.",
     },
     ProviderDefinition {
         id: "tvdb",
@@ -428,7 +428,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &TVDB_FIELDS,
         setup_url: "https://thetvdb.com/api-information",
         documentation_url: "https://github.com/thetvdb/v4-api",
-        notes: "A second episodic source: title search with episode listings, artwork, and translations for disambiguation and alternate ordering.",
+        notes: "Search a series or movie, then open its details. Choose the episode order and language to match your files. Requires a project API key, with a subscriber PIN only when that project needs one.",
     },
     ProviderDefinition {
         id: "omdb",
@@ -442,7 +442,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://www.omdbapi.com/apikey.aspx",
         documentation_url: "https://www.omdbapi.com/",
-        notes: "Compact IMDb-oriented title search with rating cross-checks.",
+        notes: "Search movie and television titles, then check the year and IMDb ID in the details. Requires an OMDb API key activated through its email link; daily request limits still apply.",
     },
     ProviderDefinition {
         id: "fanart",
@@ -456,7 +456,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &FANART_FIELDS,
         setup_url: "https://fanart.tv/get-an-api-key/",
         documentation_url: "https://fanart.tv/api-docs/",
-        notes: "Supplemental artwork, logos, and backgrounds once a title has been matched to a stable provider ID.",
+        notes: "Find covers, logos and backgrounds using a matched TMDB, IMDb, TVDB or MusicBrainz ID. Requires a project or personal API key. This is an artwork lookup by ID, not a title search.",
     },
     ProviderDefinition {
         id: "discogs",
@@ -470,7 +470,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &DISCOGS_FIELDS,
         setup_url: "https://www.discogs.com/settings/developers",
         documentation_url: "https://www.discogs.com/developers/",
-        notes: "Music release search with label, catalog-number, and pressing details that complement MusicBrainz.",
+        notes: "Search a release title with its artist, barcode or catalog number, or open a Discogs release/master ID. Check the pressing and format. Requires a personal access token from developer settings.",
     },
     ProviderDefinition {
         id: "theaudiodb",
@@ -482,9 +482,9 @@ const PROVIDERS: &[ProviderDefinition] = &[
         connection_test: Some(ConnectionTestAdapter::Additional("theaudiodb")),
         capabilities: &["artist-details", "album-details", "artwork"],
         credential_fields: &API_KEY_FIELD,
-        setup_url: "https://www.theaudiodb.com/api_apply.php",
+        setup_url: "https://www.theaudiodb.com/free_music_api",
         documentation_url: "https://www.theaudiodb.com/api_guide.php",
-        notes: "Artist biographies and album details with artwork, as a supplement to stable MusicBrainz IDs.",
+        notes: "Look up an album with its artist, or inspect artist details and artwork. Uses TheAudioDB v1 with its current free test key or a key with v1 access. Artist biographies remain reference information.",
     },
     ProviderDefinition {
         id: "google-books",
@@ -498,7 +498,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://console.cloud.google.com/apis/library/books.googleapis.com",
         documentation_url: "https://developers.google.com/books/docs/v1/using",
-        notes: "Broad book and edition search by title or ISBN with descriptions and covers; the configured key avoids relying on anonymous quota.",
+        notes: "Search a book by title and author or ISBN, then check the edition before comparing fields or previewing a cover. Requires a Google Cloud API key with Books API enabled in the same project.",
     },
     ProviderDefinition {
         id: "comic-vine",
@@ -512,7 +512,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://comicvine.gamespot.com/api/",
         documentation_url: "https://comicvine.gamespot.com/api/documentation",
-        notes: "Comic issue, volume, and people metadata with covers for ComicInfo.xml workflows.",
+        notes: "Search a comic series/volume, check its start year and publisher, then browse to the correct issue. Requires a Comic Vine API key. Compare issue fields or preview its cover before applying changes.",
     },
     ProviderDefinition {
         id: "isbndb",
@@ -526,7 +526,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://isbndb.com/isbn-database",
         documentation_url: "https://isbndb.com/apidocs/v2",
-        notes: "Optional paid ISBN lookups with edition and publisher details for difficult matches.",
+        notes: "Use an edition ISBN for an exact book lookup, or search by title. Check binding, publisher and language before comparing fields. This source supplies metadata here and requires an ISBNdb key with active API access and available quota.",
     },
     ProviderDefinition {
         id: "podcast-index",
@@ -540,7 +540,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &PODCAST_INDEX_FIELDS,
         setup_url: "https://api.podcastindex.org/",
         documentation_url: "https://podcastindex-org.github.io/docs-api/",
-        notes: "Podcast search returning feeds and episodes with podcast-namespace tags, while portable podcast writes remain inspection-only.",
+        notes: "Search podcasts and inspect their feeds and episodes. Requires a matching API key and original API secret. Results are for inspection here; feed and episode changes belong in Audiobookshelf.",
     },
     ProviderDefinition {
         id: "subdl",
@@ -554,7 +554,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://subdl.com/panel/api",
         documentation_url: "https://subdl.com/api-doc",
-        notes: "Optional subtitle search and download fallback; results still require review and staged installation.",
+        notes: "Find movie or episode subtitles by title and language, using saved provider IDs when available. Requires a SubDL API key for v1 search. Preview the selected file before confirming installation.",
     },
 ];
 

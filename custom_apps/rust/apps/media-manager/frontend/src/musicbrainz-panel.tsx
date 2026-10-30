@@ -1,3 +1,4 @@
+import { ProviderUsageGuide } from "./provider-setup-guide";
 import { component$, type QRL, useSignal, useTask$ } from "@builder.io/qwik";
 import { Icon } from "./icon";
 import type {
@@ -56,6 +57,7 @@ export const MusicBrainzPanel = component$<{
             Configure sources
           </a>
         </p>
+        <ProviderUsageGuide providerId="musicbrainz" />
         <div class="metadata-form">
           <label>
             <span>Lookup mode</span>

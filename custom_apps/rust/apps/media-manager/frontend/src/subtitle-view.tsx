@@ -1,3 +1,4 @@
+import { ProviderUsageGuide } from "./provider-setup-guide";
 import type {
   InstalledSubtitle,
   InstalledSubtitleContent,
@@ -1010,18 +1011,21 @@ export const SubtitleView = component$<{
                   </li>
                   <li>
                     Open <a href="?view=accounts">Metadata sources</a>, choose
-                    OpenSubtitles, and paste the values at runtime. Saved values
-                    cannot be viewed again, so retain the recovery copy in
-                    Vaultwarden, KeePassXC, or another password manager.
+                    OpenSubtitles → Set up, enter its application key, account
+                    username and password, then choose Save and test. Saved
+                    values cannot be viewed again, so retain the recovery copy
+                    in Vaultwarden, KeePassXC, or another password manager.
                   </li>
                   <li>
-                    Return here after saving. No NixOS rebuild or shared server
-                    credential is required.
+                    Return here after saving. A successful connection test
+                    checks login; you still need to select, preview and confirm
+                    each subtitle before it is installed.
                   </li>
                 </ol>
               </>
             )}
           </div>
+          <ProviderUsageGuide providerId="opensubtitles" />
           <div class="provider-search">
             <label>
               <span>
