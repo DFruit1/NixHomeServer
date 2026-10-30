@@ -66,7 +66,8 @@ export type View =
   | "accounts"
   | "refresh"
   | "player"
-  | "videos";
+  | "videos"
+  | "images";
 
 export interface RootProps {
   initialView?: View;
@@ -149,6 +150,7 @@ export const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
   { id: "conversions", label: "Conversions", icon: "disc" },
   { id: "player", label: "Music", icon: "music-note" },
   { id: "videos", label: "Videos", icon: "video" },
+  { id: "images", label: "Images", icon: "image" },
   { id: "accounts", label: "Metadata sources", icon: "shield" },
   { id: "activity", label: "Activity", icon: "activity" },
   { id: "refresh", label: "App refresh", icon: "refresh" },

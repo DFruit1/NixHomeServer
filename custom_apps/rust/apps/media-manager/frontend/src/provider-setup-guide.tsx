@@ -15,6 +15,25 @@ interface SetupGuide {
 // Keep these instructions beside the credential UI: they describe provider
 // websites, not a change to the server's credential or capability contract.
 export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
+  immich: {
+    steps: [
+      {
+        text: "Open your existing Immich account from the Photos link on the homepage. Use User settings → API keys to create a key named Media Manager.",
+      },
+      {
+        text: "Grant asset.read, asset.view, user.read, tag.read, tag.create and tag.asset. These allow browsing previews, checking the connection, and adding tags. Original-download, upload and delete permissions are not needed.",
+      },
+      {
+        text: "Copy the key once, save a recovery copy in your password manager, then paste it here. Each person should connect their own Immich key.",
+      },
+    ],
+    credentialHelp: {
+      apiKey:
+        "Your Immich API key, without a Bearer prefix. Its permissions determine which photos and tag actions are available.",
+    },
+    troubleshooting:
+      "If browsing works but adding tags fails, check tag.create and tag.asset in Immich and your Media Manager editor access. Replacing a key does not change any photos or existing tags.",
+  },
   tmdb: {
     steps: [
       {
@@ -435,6 +454,13 @@ interface UsageGuide {
 // These examples describe the syntax accepted by Media Manager's adapters,
 // which can be narrower than the provider's own website or API.
 export const PROVIDER_USAGE_GUIDES: Record<string, UsageGuide> = {
+  immich: {
+    steps: [
+      "Open Images and choose a photo from your Immich timeline. Search uses filenames, and Load more photos retrieves the next page.",
+      "Choose Analyze photo to generate EYE tags and relative aesthetic, keeper and cover scores locally. Review the suggestions, then select up to 32 tags and choose Add tags to Immich.",
+      "Selected tags are added under EYE/ through Immich's API. Existing tags remain. Refresh tags reads their current state; Media Manager never writes originals, EXIF, image sidecars or the Immich database.",
+    ],
+  },
   tmdb: {
     steps: [
       "Open a movie or television item's Metadata editor and expand TMDB. Search the movie title or series title; check the year to distinguish remakes.",

@@ -11,6 +11,78 @@ servers:
 security:
   - forwardedIdentity: []
 paths:
+  /provider-lookups/immich/images:
+    get:
+      operationId: listImmichImages
+      description: Browse the caller's Immich timeline through its API, without storage access.
+      parameters:
+        - { in: query, name: page, schema: { type: integer, minimum: 1, maximum: 100000 } }
+        - { in: query, name: query, schema: { type: string, maxLength: 200 } }
+      responses:
+        "200":
+          description: A bounded page of Immich photos and the caller's tagging capability.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImmichImagePage" }
+  /provider-lookups/immich/images/{id}:
+    get:
+      operationId: getImmichImage
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Current photo tags from Immich.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImmichImageResponse" }
+  /provider-lookups/immich/images/{id}/preview:
+    get:
+      operationId: previewImmichImage
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Authenticated, size-bounded image preview. No-store; never an original download.
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+  /provider-lookups/immich/images/{id}/analysis:
+    post:
+      operationId: analyzeImmichImage
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Local EYE suggestions for review; this request does not write tags.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImmichAnalysisResponse" }
+  /provider-lookups/immich/images/{id}/tags:
+    post:
+      operationId: addImmichImageTags
+      description: Add selected EYE/ tags via Immich. Requires editor access, same origin, and enabled changes. Existing tags are preserved.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tags]
+              additionalProperties: false
+              properties:
+                tags:
+                  type: array
+                  minItems: 1
+                  maxItems: 32
+                  items: { type: string, pattern: "^[a-z0-9_]{1,96}$" }
+      responses:
+        "200":
+          description: Photo with confirmed current tags from Immich, after the additive update.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImmichImageResponse" }
   /provider-lookups/subdl/download:
     post:
       operationId: downloadSubdlSubtitle
@@ -1614,6 +1686,65 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    ImmichTag:
+      type: object
+      required: [id, value]
+      properties:
+        id: { type: string }
+        value: { type: string }
+    ImmichImage:
+      type: object
+      required: [id, filename, capturedAt, tags]
+      properties:
+        id: { type: string }
+        filename: { type: string }
+        capturedAt: { type: string }
+        tags: { type: array, items: { $ref: "#/components/schemas/ImmichTag" } }
+    ImmichImagePage:
+      type: object
+      required: [items, nextPage, canTag, requestId]
+      properties:
+        items: { type: array, maxItems: 48, items: { $ref: "#/components/schemas/ImmichImage" } }
+        nextPage: { type: [integer, "null"], minimum: 1, maximum: 100000 }
+        canTag: { type: boolean }
+        requestId: { type: string }
+    ImmichImageResponse:
+      type: object
+      required: [image, requestId]
+      properties:
+        image: { $ref: "#/components/schemas/ImmichImage" }
+        requestId: { type: string }
+    EyeAnalysis:
+      type: object
+      additionalProperties: false
+      required: [model, suggestions, scores]
+      properties:
+        model: { type: string, const: "eye@v1.0.0" }
+        suggestions:
+          type: array
+          maxItems: 64
+          items:
+            type: object
+            required: [tag, confidence]
+            additionalProperties: false
+            properties:
+              tag: { type: string, pattern: "^[a-z0-9_]{1,96}$" }
+              confidence: { type: number, minimum: 0, maximum: 1 }
+        scores:
+          type: object
+          required: [aesthetic, keeper, cover]
+          additionalProperties: false
+          properties:
+            aesthetic: { type: number, minimum: 0, maximum: 1 }
+            keeper: { type: number, minimum: 0, maximum: 1 }
+            cover: { type: number, minimum: 0, maximum: 1 }
+    ImmichAnalysisResponse:
+      type: object
+      required: [assetId, analysis, requestId]
+      properties:
+        assetId: { type: string }
+        analysis: { $ref: "#/components/schemas/EyeAnalysis" }
+        requestId: { type: string }
     SubdlDownloadResponse:
       type: object
       required: [files, cueCount]

@@ -1377,6 +1377,9 @@ queue protocol rather than restoring this removed wiring.
 
 ### Media Manager
 
+The [Images page](media-manager-images.md) connects to each user's Immich API key,
+runs EYE locally on previews, and adds reviewed tags through Immich's API.
+
 Media Manager is an always-present core application at
 `https://media.<domain>`. It is private-DNS-only and uses the shared OAuth2
 Proxy gateway. Every authenticated `users` member can inspect registered

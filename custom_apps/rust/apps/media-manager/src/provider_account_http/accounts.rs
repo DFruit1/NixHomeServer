@@ -254,6 +254,19 @@ async fn test_live_provider(
         };
     }
     let response = match adapter {
+        ConnectionTestAdapter::Immich => {
+            let (Some(runtime), Some(api_key)) = (&state.images, credentials.get("apiKey")) else {
+                return ProviderTestOutcome::UNAVAILABLE;
+            };
+            let Ok(url) = runtime.base.join("users/me") else {
+                return ProviderTestOutcome::UNAVAILABLE;
+            };
+            let Ok(mut key) = HeaderValue::from_str(api_key) else {
+                return invalid_saved_credentials();
+            };
+            key.set_sensitive(true);
+            state.client.get(url).header("x-api-key", key).send().await
+        }
         ConnectionTestAdapter::Additional(_) => unreachable!("handled above"),
         ConnectionTestAdapter::Tmdb => {
             let url = provider_test_url(&state.endpoints.tmdb_api_base, "authentication");

@@ -53,6 +53,8 @@ rec {
     immich = app ./immich "Immich" "media" [ "immichClientSecret" ] [
       "immich-storage-layout-v1"
       "immich-server"
+      "media-manager-eye-model-prepare"
+      "media-manager-eye"
     ];
     ipfs = app ./ipfs "IPFS Distribution" "operations" [ ] [ "ipfs" "ipfs-alias" "fdroid-ipfs-publish" ];
     jellyfin = app ./jellyfin "Jellyfin" "media" [ "jellyfinOidcClientSecret" ] [
@@ -171,6 +173,7 @@ rec {
   };
 
   integrationDefinitions = [
+    { module = ./Integrations/expose_immich_images_to_media_manager.nix; allApps = [ "immich" ]; anyApps = [ ]; }
     { module = ./Integrations/publish_fdroid_to_ipfs.nix; allApps = [ "fdroid" "ipfs" ]; anyApps = [ ]; }
     { module = ./Integrations/publish_filesync_to_fdroid.nix; allApps = [ "fdroid" "filesync" "ipfs" ]; anyApps = [ ]; }
     { module = ./Integrations/publish_youtube_downloader_to_fdroid.nix; allApps = [ "fdroid" "youtube-downloader" ]; anyApps = [ ]; }

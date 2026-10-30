@@ -26,6 +26,7 @@ import { LibraryMiniPlayer } from "./mini-player";
 import { isLibraryKind, supportsMediaAction } from "./media-capabilities";
 import { PlayerView } from "./player-view";
 import { VideosView } from "./videos-view";
+import { ImagesView } from "./images-view";
 import { RefreshView } from "./refresh-view";
 import {
   PROVIDER_SETUP_GUIDES,
@@ -614,6 +615,15 @@ export default component$((props: RootProps) => {
             roots={state.roots}
             initialItemId={props.initialItemId}
             initialPath={props.initialPath}
+          />
+        ) : view.value === "images" ? (
+          <ImagesView
+            immichUrl={
+              state.status?.integrations.find(
+                (integration) =>
+                  integration.id === "immich" && integration.available,
+              )?.url ?? undefined
+            }
           />
         ) : view.value === "accounts" ? (
           <ProviderAccountsView />

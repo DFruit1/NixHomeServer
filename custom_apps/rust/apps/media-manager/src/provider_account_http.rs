@@ -27,6 +27,7 @@ mod accounts;
 mod additional;
 mod artwork_lookups;
 mod google_books;
+mod immich;
 mod tmdb_lookups;
 
 const MAX_CREDENTIAL_FIELDS: usize = 8;
@@ -39,6 +40,7 @@ pub struct ProviderBrokerState {
     endpoints: ProviderTestEndpoints,
     open_library_gate: open_library::RequestGate,
     additional: Arc<additional::Runtime>,
+    images: Option<Arc<immich::Runtime>>,
 }
 
 #[derive(Clone, Debug)]
@@ -114,7 +116,25 @@ impl ProviderBrokerState {
             endpoints,
             open_library_gate: open_library::RequestGate::default(),
             additional: Arc::new(additional::Runtime::default()),
+            images: None,
         })
+    }
+
+    /// Deployment-owned endpoints only; callers cannot choose an Immich host.
+    pub fn with_images(
+        mut self,
+        api_base: &str,
+        eye_socket: &std::path::Path,
+        editor_group: &str,
+        mutations_enabled: bool,
+    ) -> Result<Self, String> {
+        self.images = Some(Arc::new(immich::Runtime::new(
+            api_base,
+            eye_socket,
+            editor_group,
+            mutations_enabled,
+        )?));
+        Ok(self)
     }
 }
 
@@ -139,6 +159,7 @@ enum ImplementationStatus {
 
 #[derive(Clone, Copy)]
 enum ConnectionTestAdapter {
+    Immich,
     Tmdb,
     OpenSubtitles,
     Acoustid,
@@ -290,6 +311,20 @@ const FANART_FIELDS: [CredentialFieldDefinition; 2] = [
 ];
 
 const PROVIDERS: &[ProviderDefinition] = &[
+    ProviderDefinition {
+        id: "immich",
+        name: "Immich",
+        logo_url: None,
+        media_domains: &["images"],
+        setup_kind: SetupKind::ApiKey,
+        implementation_status: ImplementationStatus::Active,
+        connection_test: Some(ConnectionTestAdapter::Immich),
+        capabilities: &["image-library", "image-tags"],
+        credential_fields: &API_KEY_FIELD,
+        setup_url: "https://docs.immich.app/features/command-line-interface/#obtain-the-api-key",
+        documentation_url: "https://api.immich.app/",
+        notes: "Browse your Immich photos on Images, review EYE suggestions, and add selected tags through Immich. Originals remain managed by Immich.",
+    },
     ProviderDefinition {
         id: "tmdb",
         name: "The Movie Database (TMDB)",
@@ -606,6 +641,23 @@ struct AcoustidReleaseGroup {
 
 pub fn provider_account_router(state: ProviderBrokerState) -> Router {
     let router = Router::new()
+        .route("/api/v1/provider-lookups/immich/images", get(immich::list))
+        .route(
+            "/api/v1/provider-lookups/immich/images/{id}",
+            get(immich::details),
+        )
+        .route(
+            "/api/v1/provider-lookups/immich/images/{id}/preview",
+            get(immich::preview),
+        )
+        .route(
+            "/api/v1/provider-lookups/immich/images/{id}/analysis",
+            axum::routing::post(immich::analyze),
+        )
+        .route(
+            "/api/v1/provider-lookups/immich/images/{id}/tags",
+            axum::routing::post(immich::add_tags),
+        )
         .route(
             "/api/v1/provider-accounts",
             get(accounts::list_provider_accounts),
