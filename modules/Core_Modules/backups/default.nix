@@ -192,7 +192,7 @@ in
     retainedSuccessfulGenerations = lib.mkOption {
       type = lib.types.ints.positive;
       default = 2;
-      description = "Number of successfully published logical backup generations to retain.";
+      description = "Number of successfully published logical backup generations to retain, including current.";
     };
 
     minimumFreeBytes = lib.mkOption {
@@ -469,8 +469,14 @@ in
         publish_current_link "generations/$generation"
 
         mapfile -t generations < <(find ${lib.escapeShellArg successfulGenerationRoot} -mindepth 1 -maxdepth 1 -type d ! -name '.prepare.*' -printf '%T@ %f\n' | sort -nr | cut -d' ' -f2-)
-        if (( ''${#generations[@]} > ${toString config.repo.backups.retainedSuccessfulGenerations} )); then
-          for old_generation in "''${generations[@]:${toString config.repo.backups.retainedSuccessfulGenerations}}"; do
+        retention_limit=${toString config.repo.backups.retainedSuccessfulGenerations}
+        spare_retention=$((retention_limit - 1))
+        prior_generations=()
+        for candidate_generation in "''${generations[@]}"; do
+          [[ "$candidate_generation" == "$generation" ]] || prior_generations+=("$candidate_generation")
+        done
+        if (( ''${#prior_generations[@]} > spare_retention )); then
+          for old_generation in "''${prior_generations[@]:spare_retention}"; do
             rm -rf -- ${lib.escapeShellArg successfulGenerationRoot}/"$old_generation"
           done
         fi
