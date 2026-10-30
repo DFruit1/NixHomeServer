@@ -28,15 +28,70 @@ checks.
 ## Data and recovery
 
 Persistent queue state and rootless container storage live under
-`/var/lib/browsertrix-downloader`. Crawl scratch data lives under
-`/var/cache/browsertrix-downloader` and is intentionally disposable. Completed
-archives are stored in the data pool at `_Shared/_WebArchives` and remain there
-if the application module is disabled or removed.
+`/var/lib/browsertrix-downloader`. Resumable crawl state and WARCs live in its
+worker-owned `checkpoints` directory; only disposable scratch belongs under
+`/var/cache/browsertrix-downloader`. Shared captures remain in the data pool at
+`_Shared/_WebArchives`. Profile-backed captures and their derivatives use
+`repo.browsertrixDownloader.paths.privateArchiveRoot`, outside the shared tree.
+Both payload roots remain when the application is disabled or removed.
 
-The central backup registry includes a logical SQLite dump plus the state and
-WACZ payload roots. A worker restart marks only `starting`, `running`, or
-`cancelling` jobs as failed; queued jobs remain available for the restarted
-worker.
+The archive catalogue survives job-history cleanup. Publication records an
+owner-bound intent before copying, validates fixity and indexes, publishes
+exclusively and finalizes catalogue state before scratch cleanup. Reconciliation
+recovers known intents; retained files without ownership evidence remain
+unclaimed and require explicit import. Never assign orphan files to the first
+user who opens the library.
+
+Pause retains checkpoints, stop saves partial work, and discard is a separate
+action. Resume keeps the frozen recipe and accumulated page/WARC budgets;
+exhausted limits require an explicit bounded extension. Published partial
+versions remain immutable. A stopped or interrupted capture is not evidence
+that the entire website was archived.
+
+Backups include the logical SQLite dump and persistent state. The private payload
+root is an actual Kopia snapshot root with a scoped policy that includes WACZ;
+the global bulk-data exclusion still applies to shared WACZ. Search has
+read-only ACL access to shared captures and never joins the private service
+group. The API cannot access or replace accepted profile material; the worker
+mounts the selected immutable profile into fresh per-attempt browser storage.
+
+## Capture and library tools
+
+The library supports server-side search, pagination, tags, collections,
+favourites, notes, capture timelines and comparisons. Captured-text results
+include original URL/time replay links. Reusable recipes and opt-in schedules
+freeze capture settings; disabling a schedule prevents future submissions.
+
+Discovery has separate time, byte and URL bounds. Its estimate describes the
+selected recipe and known scope, not an exact total for an arbitrary dynamic
+website. Queued browser samples supply measured stored bytes. The UI separates
+shared and marginal storage, transfer bytes, WARC bytes and peak disk headroom.
+
+Faithful, Balanced and Reader presets expose editable scope/depth, SPA hashes,
+multiple seeds, path/query patterns, resource rules, media choices, viewport,
+language and bounded behaviours. Lossy choices are opt-in. Hidden components
+can be needed by later interaction; hiding a DOM element does not imply that
+its dependencies can be deleted.
+
+The isolated element picker saves reversible display rules. Clean replay changes
+presentation and saves zero stored bytes. Compact exports create new WACZ files
+with rebuilt indexes/hashes and provenance; originals remain intact. Captures
+with cross-archive deduplication retain hash-bound dependencies. Download a
+standalone export before taking one of those archives away from the server.
+Reader HTML/Markdown is a labelled derivative with reduced fidelity.
+
+Fixity verification and offline browser QA are separate operations. Browser QA
+reports page/resource, screenshot/text baseline and selected interaction results
+independently, including unavailable baselines and untested dimensions. A valid
+ZIP/hash does not imply correct replay. Targeted repair creates a complete new
+version with mixed-time provenance, retaining untouched pages and the original.
+
+The [implementation plan](../custom_apps/rust/apps/browsertrix-downloader/plans/expansion.md)
+records the complete 30-feature scope, API contracts and acceptance evidence.
+Rollback must preserve expanded catalogue/checkpoint state and the new private
+storage boundary. Previous binaries cannot consume every new scope/status; never
+point an incompatible binary at the expanded database or resume profile-backed
+work with an older crawler adapter.
 
 ## Kiwix archives (optional integration)
 
