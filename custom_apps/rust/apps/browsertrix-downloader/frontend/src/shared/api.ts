@@ -11,7 +11,21 @@ const optional = (v: unknown, guard: (v: unknown) => boolean) => v === undefined
 const fields = (v: unknown, ss: string[], ns: string[] = []) => obj(v) && ss.every(k => str(v[k])) && ns.every(k => num(v[k]));
 export const listOf = <T>(guard: Guard<T>): Guard<T[]> => (v): v is T[] => Array.isArray(v) && v.every(guard);
 export const pageOf = <T>(guard: Guard<T>): Guard<Paginated<T>> => (v): v is Paginated<T> => obj(v) && listOf(guard)(v.items) && [v.total, v.offset, v.limit].every(n => num(n) && Number.isInteger(n)) && (v.limit as number) > 0 && (v.limit as number) <= 100 && (v.items as unknown[]).length <= (v.limit as number) && (v.total as number) >= (v.items as unknown[]).length;
-export const isRequest: Guard<CreateJobRequest> = (v): v is CreateJobRequest => obj(v) && str(v.url) && ['page', 'page-spa', 'prefix', 'host', 'domain'].includes(String(v.scope)) && num(v.pageLimit) && num(v.timeLimitMinutes) && optional(v.options, obj);
+const isOptions = (v:unknown):boolean => {
+  if(!obj(v))return false;
+  const check=(key:string,guard:(v:unknown)=>boolean)=>v[key]===undefined||guard(v[key]);
+  return ['seeds','include','exclude','blockRules','allowRules','behaviors'].every(k=>check(k,strings))
+    && ['blockAds','deduplicate','alternateImages'].every(k=>check(k,bool))
+    && ['clickSelector','language'].every(k=>check(k,str))
+    && ['behaviorTimeoutSeconds','postLoadDelaySeconds','viewportWidth','viewportHeight','diskReserveBytes'].every(k=>check(k,num))
+    && check('depth',n=>typeof n==='number'&&Number.isInteger(n)&&n>=-1)
+    && check('preset',n=>['faithful','balanced','reader'].includes(String(n)))
+    && check('media',n=>['full','posters','none'].includes(String(n)))
+    && optional(v.profileId,str)&&optional(v.sizeLimitBytes,num)&&optional(v.maxResourceBytes,num)
+    && check('selectors',n=>Array.isArray(n)&&n.every(isRule))
+    && check('interactions',n=>Array.isArray(n)&&n.length<=20&&n.every(step=>obj(step)&&str(step.selector)&&str(step.expected)&&['visible','hidden','text'].includes(String(step.assertion))));
+};
+export const isRequest: Guard<CreateJobRequest> = (v): v is CreateJobRequest => obj(v) && str(v.url) && ['page', 'page-spa', 'prefix', 'host', 'domain'].includes(String(v.scope)) && num(v.pageLimit) && num(v.timeLimitMinutes) && optional(v.options, isOptions);
 export const isUser: Guard<CurrentUser> = (v): v is CurrentUser => obj(v) && str(v.username) && strings(v.groups) && optional(v.email, str);
 export const isRule: Guard<SelectorRule> = (v): v is SelectorRule => obj(v) && str(v.selector) && ['hide', 'block'].includes(String(v.action)) && optional(v.urlPrefix, str);
 export const isEstimate: Guard<Estimate> = (v): v is Estimate => obj(v) && fields(v, [], ['lowerBytes','upperBytes','expectedBytes','samplePages','discoveredPages','sharedBytes','marginalPageBytes','peakDiskBytes']) && bool(v.unknownScope) && strings(v.assumptions) && strings(v.warnings) && optional(v.measured, bool) && optional(v.method, str);
@@ -20,7 +34,7 @@ export const isZims: Guard<ZimListing> = (v): v is ZimListing => obj(v) && Array
 export const isPage: Guard<PageRecord> = (v): v is PageRecord => obj(v) && fields(v, ['url','title','ts','text'], ['bytes','status']) && strings(v.resourceUrls);
 export const isResource: Guard<ResourceRecord> = (v): v is ResourceRecord => obj(v) && fields(v, ['url','mime','digest','domain'], ['status','bytes']) && strings(v.pages);
 export const isVerification: Guard<Verification> = (v): v is Verification => obj(v) && bool(v.valid) && str(v.checkedAt) && Array.isArray(v.checks) && v.checks.every(c => fields(c,['name','status','details'])) && strings(v.warnings);
-export const isReport: Guard<ArchiveReport> = (v): v is ArchiveReport => obj(v) && fields(v, ['sha256','title','description'], ['archiveBytes','uniquePayloadBytes','duplicatePayloadBytes','metadataBytes']) && listOf(isPage)(v.pages) && listOf(isResource)(v.resources) && strings(v.warnings) && strings(v.dependencies);
+export const isReport: Guard<ArchiveReport> = (v): v is ArchiveReport => obj(v) && fields(v, ['sha256','title','description'], ['archiveBytes','uniquePayloadBytes','duplicatePayloadBytes','metadataBytes']) && optional(v.pages,listOf(isPage)) && optional(v.resources,listOf(isResource)) && strings(v.warnings) && strings(v.dependencies);
 export const isArchive: Guard<Archive> = (v): v is Archive => obj(v) && id(v.id) && fields(v,['createdAt','updatedAt','createdBy','url','title','archiveFile','sha256','collection','notes'], ['archiveBytes']) && strings(v.tags) && bool(v.favorite) && bool(v.trashed) && ['complete','partial','imported','derived','repair'].includes(String(v.captureStatus)) && strings(v.dependencies) && listOf(isRule)(v.cleanRules) && optional(v.request,isRequest) && optional(v.report,isReport) && optional(v.verification,isVerification) && optional(v.parentId,id) && optional(v.stopReason,str);
 export const isPreflight: Guard<Preflight> = (v): v is Preflight => obj(v) && strings(v.urls) && Array.isArray(v.groups) && v.groups.every(g => fields(g,['prefix'],['pages'])) && isEstimate(v.estimate) && strings(v.warnings);
 export const isComparison: Guard<ComparisonReport> = (v): v is ComparisonReport => obj(v) && ['addedPages','removedPages','changedPages','unchangedPages','addedResources','removedResources','changedResources','warnings'].every(k=>strings(v[k]));
