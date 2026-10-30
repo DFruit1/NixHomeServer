@@ -1,6 +1,6 @@
 # Project skills
 
-Five discoverable entrypoints are maintained under .agents/skills:
+Six discoverable entrypoints are maintained under .agents/skills:
 
 - [Development](../.agents/skills/nixhomeserver-development/SKILL.md): ordinary
   coding, debugging, focused checks, and preparation for review.
@@ -12,6 +12,12 @@ Five discoverable entrypoints are maintained under .agents/skills:
   application boundaries, catalog, integrations, retained data, and canaries.
 - [Operations](../.agents/skills/nixhomeserver-safe-change/SKILL.md): validation
   scope, offload, guarded deployment/recovery, and shutdown protection.
+- [Finish and switch](../.agents/skills/nixhomeserver-finish-and-switch/SKILL.md):
+  gather unfinished work across checkouts, complete complex fixes with scoped
+  subagents, integrate and publish validated changes, and repair guarded
+  test/switch failures through a verified live switch. Invoking this workflow
+  to finish and switch authorizes those operations within existing owner gates;
+  creating or discussing the skill does not activate anything.
 
 A task loads only the entrypoints and references relevant to its boundaries.
 Project policy remains in AGENTS.md; a skill does not widen authority.

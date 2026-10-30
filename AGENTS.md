@@ -33,6 +33,7 @@ assigned checkout. Skills supply procedures within existing role permissions.
 | Coding, debugging and focused application checks | [nixhomeserver-development](.agents/skills/nixhomeserver-development/SKILL.md) |
 | Scoped code review and bounded re-review | [review-loop](.agents/skills/review-loop/SKILL.md) |
 | Validation, builds, deployment or recovery | [nixhomeserver-safe-change](.agents/skills/nixhomeserver-safe-change/SKILL.md) |
+| Gather unfinished work, complete and integrate it, then deploy | [nixhomeserver-finish-and-switch](.agents/skills/nixhomeserver-finish-and-switch/SKILL.md) |
 | Application module boundaries, integrations or removal | [nixhomeserver-module-change](.agents/skills/nixhomeserver-module-change/SKILL.md) |
 | Rendered frontend implementation or review | [frontend-design](.agents/skills/frontend-design/SKILL.md) |
 
@@ -517,7 +518,7 @@ unpublished worktrees.
 * `lib/` — validation and derived-value helpers (`derive-vars.nix`, `identity-access.nix`, `*validation.nix`).
 * `flake/` — system/package/check/app assembly. `checks.nix` wires the test gates.
 * `custom_apps/` — first-party apps: `rust/apps/*` (media-manager, mail-archive-ui, kanidm-canary-bootstrap), `node/apps/*` (homepage, groundwater-logger, youtube-downloader), `mkvmaker`.
-* `.agents/skills/` — five project entrypoints; see [skill routing](documentation/agent-skills.md). `.agents/vendor/` holds non-discoverable UI knowledge and the pinned Impeccable detector, consumed only through frontend-design references.
+* `.agents/skills/` — six project entrypoints; see [skill routing](documentation/agent-skills.md). `.agents/vendor/` holds non-discoverable UI knowledge and the pinned Impeccable detector, consumed only through frontend-design references.
 * `DESIGN_SYSTEM.md` — living record of frontend surfaces and deliberate design decisions; the precedent Impeccable detectors must respect.
 * `.impeccable/config.json` — shared Impeccable config; narrowly scoped detector exceptions live here.
 * `scripts/` — deploy, admin, helpers, and `tests/` (shell regression suite). `tests/test-common.sh` holds shared helpers; `validate-repo.sh` provides opt-in repository gates.
