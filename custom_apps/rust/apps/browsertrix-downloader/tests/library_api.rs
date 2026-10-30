@@ -408,3 +408,209 @@ async fn opt_in_schedules_dispatch_atomically_with_owner_bound_recipes() {
     assert_eq!(edited.1["version"], 2);
     assert!(frozen.iter().all(|j| j.request == expected));
 }
+
+// Risk basis: slow clients retained amplified reader bodies and concurrent raw
+// uploads could exhaust the API allocation before its handler permits helped.
+#[tokio::test]
+async fn reader_rejects_escaped_amplification_with_explicit_recovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = common::config(temp.path());
+    let db = Database::open(&config.database_path).unwrap();
+    std::fs::create_dir_all(&config.inbox_root).unwrap();
+    common::fixture_with_page_text(
+        &config.inbox_root.join("large"),
+        "Native text",
+        Some(&"&".repeat(7 * 1024 * 1024 / 4)),
+    );
+    db.queue_operation(
+        "import",
+        "alice",
+        &common::request(),
+        browsertrix_downloader::model::Operation::Import {
+            inbox_id: "large".into(),
+        },
+    )
+    .unwrap();
+    library::execute(&config, &db, &db.claim_next_queued_job().unwrap().unwrap()).unwrap();
+    let archive = db
+        .archives("alice", &Default::default())
+        .unwrap()
+        .items
+        .pop()
+        .unwrap();
+    common::fixture(&config.inbox_root.join("ordinary"), "Ordinary capture");
+    db.queue_operation(
+        "ordinary-import",
+        "alice",
+        &common::request(),
+        browsertrix_downloader::model::Operation::Import {
+            inbox_id: "ordinary".into(),
+        },
+    )
+    .unwrap();
+    library::execute(&config, &db, &db.claim_next_queued_job().unwrap().unwrap()).unwrap();
+    let ordinary = db
+        .job("ordinary-import")
+        .unwrap()
+        .unwrap()
+        .runtime
+        .archive_id
+        .unwrap();
+    let app = router(AppState {
+        config,
+        database: db.clone(),
+        queue: JobQueue::new(db, Resolver::system()),
+    });
+    let (status, error) = call(
+        &app,
+        "GET",
+        &format!("/api/archives/{}/reader?format=html", archive.id),
+        "alice",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(error.to_string().contains("8 MiB"), "{error}");
+    assert!(error.to_string().contains("standalone"), "{error}");
+    let response = app
+        .oneshot(req(
+            "GET",
+            &format!("/api/archives/{ordinary}/reader"),
+            "alice",
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!to_bytes(response.into_body(), library::API_VIEW_BYTES)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn raw_imports_stream_before_eof_preserve_caps_and_clean_failed_staging() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let temp = tempfile::tempdir().unwrap();
+    let config = common::config(temp.path());
+    let db = Database::open(&config.database_path).unwrap();
+    let app = router(AppState {
+        config: config.clone(),
+        database: db.clone(),
+        queue: JobQueue::new(db.clone(), Resolver::system()),
+    });
+    let raw = |path: &str, body: Body| {
+        Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("host", "archives.example.test")
+            .header("origin", "https://archives.example.test")
+            .header("x-forwarded-preferred-username", "alice")
+            .header("content-type", "application/octet-stream")
+            .body(body)
+            .unwrap()
+    };
+    let mut uploads = vec![];
+    let mut writers = vec![];
+    for _ in 0..4 {
+        let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+        let body = Body::from_stream(tokio_util::io::ReaderStream::new(reader));
+        uploads.push(tokio::spawn(
+            app.clone().oneshot(raw("/api/archives/import", body)),
+        ));
+        writer.write_all(&[42; 64 * 1024]).await.unwrap();
+        writers.push(writer);
+    }
+    // All four must write to disk while their streams are still open. Bytes
+    // extraction would wait for EOF here and retain complete bodies in memory.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let count = std::fs::read_dir(&config.inbox_root)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.metadata().is_ok_and(|m| m.len() > 0))
+            .count();
+        if count == 4 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "uploads were buffered before staging"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let mut producers = vec![];
+    for mut writer in writers {
+        producers.push(tokio::spawn(async move {
+            tokio::io::copy(
+                &mut tokio::io::repeat(42).take(128 * 1024 * 1024 - 64 * 1024),
+                &mut writer,
+            )
+            .await
+            .unwrap();
+            writer.shutdown().await.unwrap();
+        }));
+    }
+    for producer in producers {
+        producer.await.unwrap();
+    }
+    for upload in uploads {
+        assert_eq!(upload.await.unwrap().unwrap().status(), StatusCode::OK);
+    }
+    for e in std::fs::read_dir(&config.inbox_root).unwrap() {
+        assert_eq!(e.unwrap().metadata().unwrap().len(), 128 * 1024 * 1024);
+    }
+    assert_eq!(db.list_jobs("alice", 100).unwrap().len(), 4);
+    // Release the four successful raw fixtures before testing rejection paths.
+    for e in std::fs::read_dir(&config.inbox_root).unwrap() {
+        std::fs::remove_file(e.unwrap().path()).unwrap();
+    }
+    for (path, limit) in [
+        ("/api/archives/import", 128u64),
+        ("/api/profiles/import?name=Synthetic", 32),
+    ] {
+        let body = Body::from_stream(tokio_util::io::ReaderStream::new(
+            tokio::io::repeat(0).take(limit * 1024 * 1024 + 1),
+        ));
+        let response = app.clone().oneshot(raw(path, body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(std::fs::read_dir(&config.inbox_root).unwrap().count(), 0);
+    }
+    struct InterruptedRead(bool);
+    impl tokio::io::AsyncRead for InterruptedRead {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if self.0 {
+                return std::task::Poll::Ready(Err(std::io::Error::other("disconnected fixture")));
+            }
+            self.0 = true;
+            buf.put_slice(b"partial");
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+    let response = app
+        .clone()
+        .oneshot(raw(
+            "/api/archives/import",
+            Body::from_stream(tokio_util::io::ReaderStream::new(InterruptedRead(false))),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(std::fs::read_dir(&config.inbox_root).unwrap().count(), 0);
+    assert_eq!(db.list_jobs("alice", 100).unwrap().len(), 4);
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        eprintln!(
+            "streaming upload observation: {}",
+            status
+                .lines()
+                .find(|s| s.starts_with("VmHWM:"))
+                .unwrap_or("RSS unavailable")
+        );
+    }
+}

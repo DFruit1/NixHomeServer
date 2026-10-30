@@ -11,7 +11,7 @@ use crate::{
     validation::{parse_create_job, CreateJobInput},
 };
 use axum::{
-    body::Bytes,
+    body::{Body, Bytes, HttpBody},
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -262,15 +262,19 @@ async fn archive_read(
             let right = archive_path(&s, &other)?;
             let config = s.config.clone();
             let db = s.database.clone();
-            let report = crate::library::analyze(move || {
+            crate::library::analyze_response(move || {
                 let left_deps = crate::library::authorized_view_dependencies(&config, &db, &a)?;
                 let right_deps = crate::library::authorized_view_dependencies(&config, &db, &other)?;
-                archive_engine::compare_archives_authorized(&left, &left_deps, &right, &right_deps)
+                let mut paths = vec![left.clone(), right.clone()];
+                paths.extend(left_deps.iter().chain(&right_deps).map(|d| d.authorized_local_path.clone()));
+                crate::library::check_api_view_inputs(&paths)?;
+                let report = archive_engine::compare_archives_authorized(&left, &left_deps, &right, &right_deps)?;
+                let headers = HeaderMap::from_iter([(header::CONTENT_TYPE, "application/json".parse().unwrap())]);
+                Ok((headers, serde_json::to_string(&report).map_err(|e| e.to_string())?))
             })
             .await
             .map_err(ApiError::internal)?
-            .map_err(ApiError::bad_request)?;
-            Ok(value(report)?.into_response())
+            .map_err(ApiError::bad_request)
         }
         "timeline" => {
             let host = url::Url::parse(&a.url)
@@ -295,35 +299,25 @@ async fn archive_read(
                 return Err(ApiError::bad_request("format must be markdown or html"));
             }
             let path = archive_path(&s, &a)?;
-            let format = format.to_owned();
-            let kind = format.clone();
+            let kind = format.to_owned();
             let config = s.config.clone();
             let db = s.database.clone();
-            let content =
-                crate::library::analyze(move || {
+            crate::library::analyze_response(move || {
                     let deps = crate::library::authorized_view_dependencies(&config, &db, &a)?;
-                    archive_engine::reader_export_authorized(&path, &kind, &deps)
-                })
-                    .await
-                    .map_err(ApiError::internal)?
-                    .map_err(ApiError::bad_request)?;
-            let mime = if format == "html" {
+                    let content = archive_engine::reader_export_authorized_limited(&path, &kind, &deps, crate::library::API_VIEW_BYTES)
+                        .map_err(|e| format!("{e}; {}", crate::library::API_VIEW_LIMIT))?;
+            let mime = if kind == "html" {
                 "text/html; charset=utf-8"
             } else {
                 "text/markdown; charset=utf-8"
             };
-            Ok((
-                [
-                    (header::CONTENT_TYPE, mime),
-                    (header::CONTENT_DISPOSITION, "attachment"),
-                    (
-                        header::CONTENT_SECURITY_POLICY,
-                        "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
-                    ),
-                ],
-                content,
-            )
-                .into_response())
+            let headers = HeaderMap::from_iter([
+                (header::CONTENT_TYPE, mime.parse().unwrap()),
+                (header::CONTENT_DISPOSITION, "attachment".parse().unwrap()),
+                (header::CONTENT_SECURITY_POLICY, "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:".parse().unwrap()),
+            ]);
+            Ok((headers, content))
+            }).await.map_err(ApiError::internal)?.map_err(ApiError::bad_request)
         }
         "preview" => {
             let target = params
@@ -336,25 +330,22 @@ async fn archive_read(
             let path = archive_path(&s, &a)?;
             let config = s.config.clone();
             let db = s.database.clone();
-            let html = crate::library::analyze(move || {
+            crate::library::analyze_response(move || {
                 let deps = crate::library::authorized_view_dependencies(&config, &db, &a)?;
-                archive_engine::preview_document_authorized(&path, &target, &deps)
+                let mut paths = vec![path.clone()];
+                paths.extend(deps.iter().map(|d| d.authorized_local_path.clone()));
+                crate::library::check_api_view_inputs(&paths)?;
+                let html = archive_engine::preview_document_authorized(&path, &target, &deps)?;
+                let headers = HeaderMap::from_iter([
+                    (header::CONTENT_TYPE, "text/html; charset=utf-8".parse().unwrap()),
+                    (header::CONTENT_SECURITY_POLICY, html.content_security_policy.parse().map_err(|e| format!("invalid preview CSP: {e}"))?),
+                    (header::REFERRER_POLICY, "no-referrer".parse().unwrap()),
+                ]);
+                Ok((headers, html.html))
             })
             .await
             .map_err(ApiError::internal)?
-            .map_err(ApiError::bad_request)?;
-            Ok((
-                [
-                    (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-                    (
-                        header::CONTENT_SECURITY_POLICY,
-                        html.content_security_policy.as_str(),
-                    ),
-                    (header::REFERRER_POLICY, "no-referrer"),
-                ],
-                html.html,
-            )
-                .into_response())
+            .map_err(ApiError::bad_request)
         }
         _ => Err(ApiError::not_found("archive endpoint not found")),
     }
@@ -540,28 +531,76 @@ fn placeholder() -> CreateJobRequest {
         options: CaptureOptions::default(),
     }
 }
-async fn upload(s: &AppState, b: Bytes, max: usize) -> Result<String, ApiError> {
-    if b.is_empty() || b.len() > max {
-        return Err(ApiError::bad_request("upload exceeds nonzero byte limit"));
+// Until the queue owns the complete synced file, drop removes the exact staging
+// path on errors, cancellation and disconnect. Raw routes never collect Bytes.
+#[derive(Debug)]
+struct StagedUpload {
+    id: String,
+    path: Option<std::path::PathBuf>,
+}
+impl StagedUpload {
+    fn preserve(mut self) {
+        self.path = None;
+    }
+}
+impl Drop for StagedUpload {
+    fn drop(&mut self) {
+        if let Some(path) = &self.path {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+async fn upload(s: &AppState, mut body: Body, max: usize) -> Result<StagedUpload, ApiError> {
+    if body.size_hint().lower() > max as u64 {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "upload byte limit exceeded",
+        ));
     }
     let id = random_job_id();
     let root = &s.config.inbox_root;
     tokio::fs::create_dir_all(root)
         .await
         .map_err(ApiError::internal)?;
-    let mut options = tokio::fs::OpenOptions::new();
+    let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
-    options.mode(0o640);
-    let mut file = options
-        .open(root.join(&id))
-        .await
-        .map_err(ApiError::internal)?;
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o640);
+    }
+    // Create synchronously so cancellation cannot leave an unowned async-open
+    // result behind. The handler already runs on the bounded blocking executor.
+    let path = root.join(&id);
+    let file = options.open(&path).map_err(ApiError::internal)?;
+    let staged = StagedUpload {
+        id,
+        path: Some(path),
+    };
+    let mut file = tokio::fs::File::from_std(file);
     use tokio::io::AsyncWriteExt;
-    file.write_all(&b).await.map_err(ApiError::internal)?;
+    let mut size = 0usize;
+    while let Some(frame) =
+        std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await
+    {
+        let frame = frame.map_err(|e| ApiError::bad_request(format!("incomplete upload: {e}")))?;
+        if let Ok(bytes) = frame.into_data() {
+            size = size
+                .checked_add(bytes.len())
+                .filter(|n| *n <= max)
+                .ok_or_else(|| {
+                    ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "upload byte limit exceeded")
+                })?;
+            file.write_all(&bytes).await.map_err(ApiError::internal)?;
+        }
+    }
+    if size == 0 {
+        return Err(ApiError::bad_request("upload must not be empty"));
+    }
+    file.flush().await.map_err(ApiError::internal)?;
     file.sync_all().await.map_err(ApiError::internal)?;
     crate::custody::sync_directory(root).map_err(ApiError::internal)?;
-    Ok(id)
+    Ok(staged)
 }
 fn raw_mutation(h: &HeaderMap) -> Result<(), ApiError> {
     assert_same_origin(h)?;
@@ -589,17 +628,21 @@ fn raw_mutation(h: &HeaderMap) -> Result<(), ApiError> {
 async fn import_archive(
     State(s): State<AppState>,
     h: HeaderMap,
-    b: Bytes,
+    b: Body,
 ) -> Result<Json<Value>, ApiError> {
     let u = authenticated_user(&h)?;
     raw_mutation(&h)?;
     let inbox = upload(&s, b, UPLOAD_LIMIT).await?;
-    queue(
+    let result = queue(
         &s,
         &u.username,
         &placeholder(),
-        Operation::Import { inbox_id: inbox },
-    )
+        Operation::Import {
+            inbox_id: inbox.id.clone(),
+        },
+    )?;
+    inbox.preserve();
+    Ok(result)
 }
 async fn list_recipes(State(s): State<AppState>, h: HeaderMap) -> Result<Json<Value>, ApiError> {
     let u = authenticated_user(&h)?;
@@ -833,7 +876,7 @@ async fn import_profile(
     State(s): State<AppState>,
     Query(q): Query<BTreeMap<String, String>>,
     h: HeaderMap,
-    b: Bytes,
+    b: Body,
 ) -> Result<Json<Value>, ApiError> {
     let u = authenticated_user(&h)?;
     raw_mutation(&h)?;
@@ -865,11 +908,12 @@ async fn import_profile(
         &placeholder(),
         Operation::ProfileImport {
             profile_id: id.clone(),
-            inbox_id: inbox,
+            inbox_id: inbox.id.clone(),
         },
     )?
     .0;
     result["profileId"] = json!(id);
+    inbox.preserve();
     Ok(Json(result))
 }
 async fn revoke_profile(
@@ -945,4 +989,51 @@ pub(crate) async fn resume_job(
 fn archive_page(page: crate::catalog::Page<Archive>) -> Value {
     let items=page.items.into_iter().map(|a|json!({"id":a.id,"createdAt":a.created_at,"updatedAt":a.updated_at,"createdBy":a.created_by,"url":a.url,"title":a.title,"archiveBytes":a.archive_bytes,"sha256":a.sha256,"tags":a.tags,"collection":a.collection,"favorite":a.favorite,"trashed":a.trashed,"captureStatus":a.capture_status,"stopReason":a.stop_reason,"visibility":a.visibility,"pageCount":a.page_count,"resourceCount":a.resource_count,"parentId":a.parent_id,"verification":a.verification.as_ref().map(|v|json!({"valid":v.valid,"checkedAt":v.checked_at,"checks":v.checks.iter().take(10).map(|c|json!({"name":c.name,"status":c.status})).collect::<Vec<_>>()}))})).collect::<Vec<_>>();
     json!({"items":items,"total":page.total,"offset":page.offset,"limit":page.limit})
+}
+
+#[cfg(test)]
+mod upload_budget_tests {
+    use super::*;
+    #[tokio::test]
+    async fn cancelling_upload_removes_its_exclusive_partial_file() {
+        use tokio::io::AsyncWriteExt;
+        let temp = tempfile::tempdir().unwrap();
+        let config = crate::config::AppConfig::for_test(temp.path());
+        let db = crate::database::Database::open(&config.database_path).unwrap();
+        let state = AppState {
+            config: config.clone(),
+            database: db.clone(),
+            queue: crate::queue::JobQueue::new(db, crate::queue::Resolver::system()),
+        };
+        let (mut writer, reader) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            upload(
+                &state,
+                Body::from_stream(tokio_util::io::ReaderStream::new(reader)),
+                UPLOAD_LIMIT,
+            )
+            .await
+        });
+        writer
+            .write_all(b"incomplete synthetic fixture")
+            .await
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let staged = std::fs::read_dir(&config.inbox_root)
+                .ok()
+                .into_iter()
+                .flatten()
+                .flatten()
+                .any(|e| e.metadata().is_ok_and(|m| m.len() > 0));
+            if staged {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(std::fs::read_dir(&config.inbox_root).unwrap().count(), 0);
+    }
 }

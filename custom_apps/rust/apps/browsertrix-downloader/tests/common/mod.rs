@@ -4,6 +4,9 @@
 use sha2::{Digest, Sha256};
 use std::{io::Write, path::Path};
 pub fn fixture(path: &Path, title: &str) {
+    fixture_with_page_text(path, title, None);
+}
+pub fn fixture_with_page_text(path: &Path, title: &str, text: Option<&str>) {
     let payload=format!("<!doctype html><html><head><title>{title}</title></head><body><h1>{title}</h1><p>Durable archived content</p><script>fetch('https://leak.invalid/')</script></body></html>");
     let block = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{payload}",
@@ -14,11 +17,13 @@ pub fn fixture(path: &Path, title: &str) {
     gz.write_all(raw.as_bytes()).unwrap();
     let warc = gz.finish().unwrap();
     let index=format!("com,example)/ 20260102030405 {}\n",serde_json::json!({"url":"https://example.com/","filename":"capture.warc.gz","offset":0,"length":warc.len(),"status":"200","mime":"text/html"})).into_bytes();
-    let pages = format!(
-        "{{\"format\":\"json-pages-1.0\"}}\n{}\n",
-        serde_json::json!({"url":"https://example.com/","title":title,"ts":"2026-01-02T03:04:05Z"})
-    )
-    .into_bytes();
+    let mut page =
+        serde_json::json!({"url":"https://example.com/","title":title,"ts":"2026-01-02T03:04:05Z"});
+    if let Some(text) = text {
+        page["url"] = serde_json::json!("https://metadata.example/");
+        page["text"] = serde_json::json!(text);
+    }
+    let pages = format!("{{\"format\":\"json-pages-1.0\"}}\n{}\n", page).into_bytes();
     let mut entries = vec![
         ("archive/capture.warc.gz", warc),
         ("indexes/index.cdxj", index),

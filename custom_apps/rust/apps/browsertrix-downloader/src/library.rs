@@ -895,15 +895,159 @@ fn stop_qa_container(config: &AppConfig, job_id: &str) {
         .status();
 }
 
-static ARCHIVE_READ_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+// API-only budgets; worker/standalone exports keep their existing larger limits.
+// Two retained responses total at most 16 MiB of content. This is a content and
+// concurrency bound, not a claim about allocator/DOM/SQLite or whole-process RSS.
+pub const API_VIEW_BYTES: usize = 8 * 1024 * 1024;
+pub const API_VIEW_LIMIT: &str = "API view exceeds its 8 MiB analysis/output limit; download the original WACZ or queue a smaller standalone export and read it with standalone tools";
+static ARCHIVE_READ_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
+
+/// Preview/comparison lack a caller-sized engine entrypoint. Before entering
+/// either, stream/count all inflated ZIP/gzip inputs under one aggregate budget.
+/// Reader uses the engine's metadata/analysis/output limit instead, so large
+/// binary captures still support ordinary bounded reader downloads.
+pub fn check_api_view_inputs(paths: &[PathBuf]) -> Result<(), String> {
+    use std::io::Read;
+    let mut remaining = API_VIEW_BYTES as u64;
+    for path in paths {
+        let mut zip =
+            zip::ZipArchive::new(custody::open_nofollow(path)?).map_err(|e| e.to_string())?;
+        for i in 0..zip.len() {
+            let entry = zip.by_index(i).map_err(|e| e.to_string())?;
+            let gzip = entry.name().ends_with(".gz");
+            let input: Box<dyn Read + '_> = if gzip {
+                Box::new(flate2::read::MultiGzDecoder::new(entry))
+            } else {
+                Box::new(entry)
+            };
+            let size = std::io::copy(&mut input.take(remaining + 1), &mut std::io::sink())
+                .map_err(|e| e.to_string())?;
+            remaining = remaining.checked_sub(size).ok_or(API_VIEW_LIMIT)?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn analyze<T: Send + 'static, F: FnOnce() -> Result<T, String> + Send + 'static>(
     function: F,
 ) -> Result<Result<T, String>, tokio::task::JoinError> {
-    let _permit = ARCHIVE_READ_SLOTS
-        .acquire()
+    let permit = ARCHIVE_READ_SLOTS
+        .clone()
+        .acquire_owned()
         .await
         .expect("archive read semaphore remains open");
-    tokio::task::spawn_blocking(function).await
+    // Dropping the awaiting future cannot release admission while CPU work lives.
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        function()
+    })
+    .await
+}
+
+/// Admission transfers from the blocking closure to the response's reader.
+/// It ends only when the body is consumed/dropped, including client disconnects.
+pub async fn analyze_response<F>(
+    function: F,
+) -> Result<Result<axum::response::Response, String>, tokio::task::JoinError>
+where
+    F: FnOnce() -> Result<(axum::http::HeaderMap, String), String> + Send + 'static,
+{
+    let permit = ARCHIVE_READ_SLOTS
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("archive read semaphore remains open");
+    tokio::task::spawn_blocking(move || {
+        let (headers, content) = function()?;
+        if content.len() > API_VIEW_BYTES {
+            return Err(API_VIEW_LIMIT.into());
+        }
+        let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(ViewBody {
+            content: std::io::Cursor::new(content.into_bytes()),
+            _permit: permit,
+        }));
+        let mut response = axum::response::Response::new(body);
+        *response.headers_mut() = headers;
+        Ok(response)
+    })
+    .await
+}
+struct ViewBody {
+    content: std::io::Cursor<Vec<u8>>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+#[cfg(test)]
+mod api_budget_tests {
+    use super::*;
+    use std::time::Duration;
+    async fn response() -> axum::response::Response {
+        analyze_response(|| Ok((Default::default(), "reader content".into())))
+            .await
+            .unwrap()
+            .unwrap()
+    }
+    #[tokio::test]
+    async fn api_leases_cover_retained_bodies_and_cancelled_blocking_work() {
+        // Concrete OOM regression: the handler returning a response is not the
+        // end of its retained allocation, nor does abort stop spawn_blocking.
+        let first = response().await;
+        let second = response().await;
+        let mut third = tokio::spawn(response());
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut third)
+            .await
+            .is_err());
+        drop(first);
+        let third = tokio::time::timeout(Duration::from_secs(3), third)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            axum::body::to_bytes(third.into_body(), 100).await.unwrap(),
+            "reader content"
+        );
+        let fourth = tokio::time::timeout(Duration::from_secs(3), response())
+            .await
+            .unwrap();
+        drop((second, fourth));
+
+        let mut releases = vec![];
+        for _ in 0..2 {
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let task = tokio::spawn(analyze(move || {
+                started.send(()).unwrap();
+                wait.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(())
+            }));
+            ready.await.unwrap();
+            task.abort();
+            let _ = task.await;
+            releases.push(release);
+        }
+        let mut next = tokio::spawn(response());
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut next)
+            .await
+            .is_err());
+        releases.remove(0).send(()).unwrap();
+        drop(
+            tokio::time::timeout(Duration::from_secs(3), next)
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        releases.remove(0).send(()).unwrap();
+    }
+}
+impl tokio::io::AsyncRead for ViewBody {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.content).poll_read(cx, buf)
+    }
 }
 
 fn verify_custody(
