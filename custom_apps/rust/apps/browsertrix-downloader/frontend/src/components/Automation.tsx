@@ -6,17 +6,20 @@ export const Automation = component$<{onEdit$:QRL<(r:Recipe)=>void>;onQueued$:QR
   const recipes=useSignal<Recipe[]>([]),schedules=useSignal<Schedule[]>([]),profiles=useSignal<Profile[]>([]);
   const pending=useStore<Record<string,boolean>>({}),errors=useStore<Record<string,string>>({}),notices=useStore<Record<string,string>>({});
   const recipeId=useSignal(''),interval=useSignal(1440),enabled=useSignal(false),profileName=useSignal(''),profileFile=useSignal<NoSerialize<File>>();
-  const scheduleEdit=useSignal(''),editMinutes=useSignal(1440);
+  const scheduleEdit=useSignal(''),editMinutes=useSignal(1440),loadGeneration=useSignal(0);
   const load=$(async()=>{
+    const generation=++loadGeneration.value;
     const results=await Promise.allSettled([api('/api/recipes',listOf(isRecipe)),api('/api/schedules',listOf(isSchedule)),api('/api/profiles',listOf(isProfile))]);
+    if(generation!==loadGeneration.value)return;
     const [r,s,p]=results;
     if(r.status==='fulfilled'){recipes.value=r.value;errors.recipes='';}else errors.recipes=message(r.reason);
     if(s.status==='fulfilled'){schedules.value=s.value;errors.schedules='';}else errors.schedules=message(s.reason);
     if(p.status==='fulfilled'){profiles.value=p.value;errors.profiles='';}else errors.profiles=message(p.reason);
   });
-  useVisibleTask$(()=>{void load();});
+  useVisibleTask$(({cleanup})=>{void load();cleanup(()=>{loadGeneration.value++;});});
   const act=$(async(kind:string,id='')=>{
     const key=kind+id;if(pending[key])return;pending[key]=true;errors[key]='';notices[key]='';
+    if(kind!=='refresh')loadGeneration.value++;
     try{
       if(kind==='refresh'){await load();}
       else if(kind==='run'){

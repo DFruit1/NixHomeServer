@@ -8,7 +8,12 @@ export const Library = component$(()=>{
   const data=useSignal<Paginated<ArchiveSummary>>(),hits=useSignal<Paginated<SearchHit>>();
   const upload=useSignal<NoSerialize<File>>(),pending=useSignal(''),actionError=useSignal(''),notice=useSignal(''),resultArchive=useSignal('');
   const reconcile=useSignal<Record<string,unknown>>();
-  const apply=$(()=>{offset.value=0;query.value=new URLSearchParams({q:filters.q.trim(),favorite:filters.favorite?'true':'',collection:filters.collection.trim(),tag:filters.tag.trim(),sort:filters.sort,trashed:String(filters.trashed),mode:filters.text?'text':'library'}).toString();});
+  const apply=$(()=>{
+    const params=new URLSearchParams({sort:filters.sort,trashed:String(filters.trashed),mode:filters.text?'text':'library'});
+    for(const [name,value] of Object.entries({q:filters.q,collection:filters.collection,tag:filters.tag}))if(value.trim())params.set(name,value.trim());
+    if(filters.favorite)params.set('favorite','true');
+    offset.value=0;query.value=params.toString();
+  });
   useVisibleTask$(({track,cleanup})=>{
     const qs=track(()=>query.value),off=track(()=>offset.value);track(()=>revision.value);
     const abort=new AbortController();cleanup(()=>abort.abort());busy.value=true;error.value='';
