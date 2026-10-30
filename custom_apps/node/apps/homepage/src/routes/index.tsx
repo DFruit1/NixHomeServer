@@ -29,9 +29,20 @@ export default component$(() => {
 
     document.addEventListener('homepage-show-unused-apps-change', onShowUnusedAppsChange);
     document.addEventListener('homepage-click-service-cards-change', onClickServiceCardsChange);
+
+    const onDocumentClick = (event: Event) => {
+      const target = event.target as HTMLElement | null;
+      if (!target || target.closest('.service-tile, .service-preview-bar')) {
+        return;
+      }
+      selectedServiceId.value = '';
+    };
+    document.addEventListener('click', onDocumentClick);
+
     cleanup(() => {
       document.removeEventListener('homepage-show-unused-apps-change', onShowUnusedAppsChange);
       document.removeEventListener('homepage-click-service-cards-change', onClickServiceCardsChange);
+      document.removeEventListener('click', onDocumentClick);
     });
   });
 

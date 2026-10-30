@@ -6007,15 +6007,21 @@ a:focus-visible {
 }
 .health-result {
   min-width: 0;
-  border-top: 1px solid var(--line-strong);
 }
 .health-result > header {
+  --health-banner-start: color-mix(in srgb, var(--accent) 14%, var(--paper));
+  --health-banner-end: color-mix(in srgb, var(--accent) 4%, var(--paper));
+  background: linear-gradient(
+    110deg,
+    var(--health-banner-start),
+    var(--health-banner-end)
+  );
   position: relative;
   display: flex;
   align-items: start;
   justify-content: space-between;
   gap: 16px;
-  padding: 16px 0;
+  padding: 10px 12px;
 }
 .health-result-art {
   position: absolute;
@@ -6038,7 +6044,11 @@ a:focus-visible {
 .health-result-art::before {
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, var(--paper) 0%, transparent 44%);
+  background: linear-gradient(
+    90deg,
+    var(--health-banner-end) 0%,
+    transparent 44%
+  );
   content: "";
 }
 .health-result-art::after {
@@ -6047,12 +6057,12 @@ a:focus-visible {
   background:
     linear-gradient(
       180deg,
-      var(--paper) 0%,
+      var(--health-banner-end) 0%,
       transparent 22%,
       transparent 78%,
-      var(--paper) 100%
+      var(--health-banner-end) 100%
     ),
-    linear-gradient(90deg, transparent 70%, var(--paper) 100%);
+    linear-gradient(90deg, transparent 70%, var(--health-banner-end) 100%);
   content: "";
 }
 .health-result-heading,
@@ -6094,11 +6104,11 @@ a:focus-visible {
 }
 .health-result-issue {
   min-width: 0;
-  padding: 14px 0;
-  border-top: 1px solid var(--line);
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
 }
 .health-result-issue h4 {
-  margin-bottom: 10px;
+  margin-bottom: 0;
   font-size: 14px;
   font-weight: 600;
 }
@@ -6110,7 +6120,7 @@ a:focus-visible {
 .health-comparison {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 14px;
+  gap: 6px;
 }
 .health-comparison > div {
   min-width: 0;
@@ -6120,14 +6130,28 @@ a:focus-visible {
   table-layout: fixed;
   border-collapse: collapse;
 }
+.health-current-column {
+  width: 24%;
+}
+.health-proposed-column {
+  width: 30%;
+}
+.health-file-column {
+  width: 22%;
+}
+.health-issue-table-files .health-current-column {
+  width: 20%;
+}
+.health-issue-table-files .health-proposed-column {
+  width: 25%;
+}
 .health-issue-table th,
 .health-issue-table td {
   min-width: 0;
-  padding: 12px;
+  padding: 2px 12px 2px 0;
   text-align: start;
   vertical-align: top;
   overflow-wrap: anywhere;
-  border-bottom: 1px solid var(--line);
 }
 .health-issue-table thead th {
   color: var(--ink-soft);
@@ -6155,39 +6179,9 @@ a:focus-visible {
 .health-album-scope p {
   color: var(--ink-soft);
 }
-.health-custom-value {
-  display: flex;
-  align-items: end;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-}
-.health-custom-editor > summary {
-  min-height: 44px;
-  align-content: center;
-  color: var(--accent);
-  cursor: pointer;
-  font-size: 12px;
-}
 .health-queued-value {
-  margin-top: 8px;
-  color: var(--accent);
-}
-.health-custom-value label {
-  flex: 1 1 120px;
-  min-width: 0;
-  font-size: 12px;
-  color: var(--ink-soft);
-}
-.health-custom-value input {
-  display: block;
-  width: 100%;
-  min-width: 0;
-  min-height: 44px;
   margin-top: 4px;
-}
-.health-custom-value button {
-  min-height: 44px;
+  color: var(--accent);
 }
 .health-value-label {
   display: block;
@@ -6236,11 +6230,13 @@ a:focus-visible {
   opacity: 0.6;
 }
 .health-unset {
+  color: var(--ink-soft);
   font-style: italic;
 }
 .health-provenance p {
   color: var(--ink-soft);
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 1.5;
 }
 .health-comparison small {
   display: block;
@@ -6250,14 +6246,14 @@ a:focus-visible {
   overflow-wrap: anywhere;
 }
 .health-candidate + .health-candidate {
-  margin-top: 12px;
+  margin-top: 6px;
 }
 .health-source {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 7px;
-  margin-top: 12px;
+  margin-top: 0;
   font-size: 12px;
   line-height: 1.5;
   overflow-wrap: anywhere;
@@ -6300,9 +6296,7 @@ a:focus-visible {
   line-height: 1.5;
 }
 .health-online-selection {
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
+  margin-top: 4px;
 }
 .health-online-selection p {
   font-weight: 600;
@@ -6388,7 +6382,7 @@ a:focus-visible {
   cursor: pointer;
 }
 .health-file-details {
-  padding: 6px 0 12px;
+  padding: 2px 0 0;
   color: var(--ink-soft);
   font-size: 12px;
 }
@@ -6496,9 +6490,36 @@ a:focus-visible {
   .health-result-art {
     width: min(56%, 220px);
   }
+  .health-issue-table colgroup {
+    display: none;
+  }
+  .health-issue-table thead,
+  .health-issue-table tbody {
+    display: block;
+  }
+  .health-issue-table tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2px 12px;
+  }
   .health-issue-table th,
   .health-issue-table td {
-    padding: 10px 6px;
+    padding: 2px 0;
+  }
+  .health-issue-table-files thead th:first-child,
+  .health-issue-table tbody th,
+  .health-issue-table .health-provenance {
+    grid-column: 1 / -1;
+  }
+  .health-issue-table .health-reason-heading {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .health-issue-table tbody tr + tr {
+    margin-top: 10px;
   }
   .health-issue-table .health-value-set,
   .health-issue-table .health-value-text {

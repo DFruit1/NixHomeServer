@@ -214,6 +214,25 @@ struct ProviderTestOutcome {
     message: &'static str,
 }
 
+impl ProviderTestOutcome {
+    const READY: Self = Self {
+        status: "ready",
+        message: "The provider accepted this account.",
+    };
+    const REJECTED: Self = Self {
+        status: "rejected",
+        message: "The provider rejected the saved account.",
+    };
+    const RATE_LIMITED: Self = Self {
+        status: "rateLimited",
+        message: "The provider rate limit was reached; try again later.",
+    };
+    const UNAVAILABLE: Self = Self {
+        status: "unavailable",
+        message: "The provider could not be reached or did not accept the test request.",
+    };
+}
+
 async fn test_live_provider(
     state: &ProviderBrokerState,
     adapter: ConnectionTestAdapter,
@@ -226,6 +245,46 @@ async fn test_live_provider(
                 (Ok(url), Some(api_key)) => state.client.get(url).bearer_auth(api_key).send().await,
                 _ => return invalid_saved_credentials(),
             }
+        }
+        ConnectionTestAdapter::Acoustid => {
+            let Some(api_key) = credentials.get("apiKey") else {
+                return invalid_saved_credentials();
+            };
+            let Ok(url) = provider_test_url(&state.endpoints.acoustid_api_base, "lookup") else {
+                return ProviderTestOutcome::UNAVAILABLE;
+            };
+            // Valid Chromaprint data for three synthetic subfingerprints. A lookup
+            // with no matches still validates the application key; no audio is read.
+            state
+                .client
+                .get(url)
+                .query(&[
+                    ("client", api_key.as_str()),
+                    ("duration", "3"),
+                    ("fingerprint", "AQAAA1OiKEnCRJESAA"),
+                ])
+                .send()
+                .await
+        }
+        ConnectionTestAdapter::GoogleBooks => {
+            let Some(api_key) = credentials.get("apiKey") else {
+                return invalid_saved_credentials();
+            };
+            let Ok(url) = provider_test_url(&state.endpoints.google_books_api_base, "volumes")
+            else {
+                return ProviderTestOutcome::UNAVAILABLE;
+            };
+            state
+                .client
+                .get(url)
+                .query(&[
+                    ("key", api_key.as_str()),
+                    ("q", "isbn:9780140328721"),
+                    ("maxResults", "1"),
+                    ("fields", "kind,totalItems"),
+                ])
+                .send()
+                .await
         }
         ConnectionTestAdapter::OpenSubtitles => {
             let url = provider_test_url(&state.endpoints.opensubtitles_api_base, "login");
@@ -254,33 +313,118 @@ async fn test_live_provider(
             }
         }
     };
-    match response {
-        Ok(response) if response.status().is_success() => ProviderTestOutcome {
-            status: "ready",
-            message: "The provider accepted this account.",
-        },
-        Ok(response)
-            if matches!(
-                response.status(),
-                reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
-            ) =>
-        {
-            ProviderTestOutcome {
-                status: "rejected",
-                message: "The provider rejected the saved account.",
-            }
-        }
-        Ok(response) if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
-            ProviderTestOutcome {
-                status: "rateLimited",
-                message: "The provider rate limit was reached; try again later.",
-            }
-        }
-        Ok(_) | Err(_) => ProviderTestOutcome {
-            status: "unavailable",
-            message: "The provider could not be reached or did not accept the test request.",
-        },
+    let Ok(response) = response else {
+        return ProviderTestOutcome::UNAVAILABLE;
+    };
+    let status = response.status();
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return ProviderTestOutcome::RATE_LIMITED;
     }
+    match adapter {
+        ConnectionTestAdapter::Acoustid => acoustid_test_outcome(response).await,
+        ConnectionTestAdapter::GoogleBooks => google_books_test_outcome(response).await,
+        _ if status.is_success() => ProviderTestOutcome::READY,
+        _ if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => {
+            ProviderTestOutcome::REJECTED
+        }
+        _ => ProviderTestOutcome::UNAVAILABLE,
+    }
+}
+
+async fn acoustid_test_outcome(response: reqwest::Response) -> ProviderTestOutcome {
+    let status = response.status();
+    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+        return ProviderTestOutcome::REJECTED;
+    }
+    if !status.is_success() && status != StatusCode::BAD_REQUEST {
+        return ProviderTestOutcome::UNAVAILABLE;
+    }
+    let Ok(body) = bounded_provider_json::<serde_json::Value>(response).await else {
+        return ProviderTestOutcome::UNAVAILABLE;
+    };
+    // AcoustID reports API errors in JSON, including invalid keys (4) and
+    // throttling (14). Never infer key validity from an arbitrary HTTP 200.
+    match body.get("status").and_then(|value| value.as_str()) {
+        Some("ok")
+            if status.is_success()
+                && body.get("results").is_some_and(|value| value.is_array())
+                && body.get("error").is_none() =>
+        {
+            ProviderTestOutcome::READY
+        }
+        Some("error") => match body.pointer("/error/code").and_then(|value| value.as_u64()) {
+            Some(4) => ProviderTestOutcome::REJECTED,
+            Some(14) => ProviderTestOutcome::RATE_LIMITED,
+            _ => ProviderTestOutcome::UNAVAILABLE,
+        },
+        _ => ProviderTestOutcome::UNAVAILABLE,
+    }
+}
+
+async fn google_books_test_outcome(response: reqwest::Response) -> ProviderTestOutcome {
+    let status = response.status();
+    if !status.is_success() && !status.is_client_error() {
+        return ProviderTestOutcome::UNAVAILABLE;
+    }
+    let body = bounded_provider_json::<serde_json::Value>(response).await;
+    if matches!(status, StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN) {
+        if let Ok(body) = &body {
+            // Google uses both legacy errors[].reason and details[].reason,
+            // and may return quota failures as HTTP 403 instead of HTTP 429.
+            if body
+                .pointer("/error/status")
+                .and_then(|value| value.as_str())
+                == Some("RESOURCE_EXHAUSTED")
+                || google_books_error_reason(
+                    body,
+                    &[
+                        "dailyLimitExceeded",
+                        "rateLimitExceeded",
+                        "userRateLimitExceeded",
+                        "quotaExceeded",
+                        "RATE_LIMIT_EXCEEDED",
+                        "QUOTA_EXCEEDED",
+                    ],
+                )
+            {
+                return ProviderTestOutcome::RATE_LIMITED;
+            }
+            if google_books_error_reason(
+                body,
+                &[
+                    "keyInvalid",
+                    "keyExpired",
+                    "API_KEY_INVALID",
+                    "API_KEY_EXPIRED",
+                ],
+            ) {
+                return ProviderTestOutcome::REJECTED;
+            }
+        }
+    }
+    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+        return ProviderTestOutcome::REJECTED;
+    }
+    match body {
+        Ok(body)
+            if status.is_success()
+                && body.get("kind").and_then(|value| value.as_str()) == Some("books#volumes")
+                && body.get("totalItems").is_some_and(|value| value.is_u64())
+                && body.get("error").is_none() =>
+        {
+            ProviderTestOutcome::READY
+        }
+        _ => ProviderTestOutcome::UNAVAILABLE,
+    }
+}
+
+fn google_books_error_reason(body: &serde_json::Value, reasons: &[&str]) -> bool {
+    ["/error/errors", "/error/details"]
+        .into_iter()
+        .filter_map(|path| body.pointer(path).and_then(|value| value.as_array()))
+        .flatten()
+        .filter_map(|error| error.get("reason").and_then(|value| value.as_str()))
+        .any(|reason| reasons.contains(&reason))
 }
 
 fn invalid_saved_credentials() -> ProviderTestOutcome {

@@ -1,13 +1,17 @@
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
 
 use super::ExtractedDocument;
 use crate::config::SourceConfig;
-use crate::text::html_to_text;
+use crate::pdf_archive;
+use crate::text::{html_to_text, truncate_text};
 use crate::timeutil::sha256_hex;
 
-pub struct FreshRssExtractor;
+pub struct FreshRssExtractor {
+    pub pdftotext: Option<PathBuf>,
+}
 
 struct EntryRow {
     guid: String,
@@ -40,16 +44,35 @@ pub(crate) fn user_databases(state_dir: &str) -> Vec<PathBuf> {
     databases
 }
 
-/// Fingerprints each user's SQLite database (path, size, mtime) plus the
-/// source settings. FreshRSS rewrites the database on every new entry, so an
+/// Fingerprints each user's SQLite database and WAL plus completed archived
+/// PDFs (path, size, mtime) and source settings. FreshRSS writes new entries
+/// into the WAL before checkpointing the database, so both files matter. An
 /// unchanged fingerprint means no feed changed and the query/parse pass can be
 /// skipped. Returns `None` when no database is present, so the indexer still
 /// runs extraction (and its wipe guard) rather than skipping on an empty view.
 pub(crate) fn source_fingerprint(source: &SourceConfig) -> Option<String> {
     let state_dir = source.setting_str("stateDir")?;
-    let databases = user_databases(state_dir);
+    let mut databases = user_databases(state_dir);
     if databases.is_empty() {
         return None;
+    }
+    let journals: Vec<PathBuf> = databases
+        .iter()
+        .flat_map(|database| {
+            [
+                database.with_file_name("db.sqlite-wal"),
+                database.with_file_name("db.sqlite-journal"),
+            ]
+        })
+        .filter(|path| path.exists())
+        .collect();
+    databases.extend(journals);
+    if let Some(root) = source.setting_str("pdfArchiveRoot") {
+        databases.extend(
+            pdf_archive::archived_files(Path::new(root))
+                .ok()?
+                .into_values(),
+        );
     }
     super::file_inventory_fingerprint(source, databases)
 }
@@ -89,6 +112,13 @@ impl super::Extractor for FreshRssExtractor {
     ) -> Result<(), String> {
         let state_dir = source.require_setting("stateDir")?;
         let app_base = source.app_base.trim_end_matches('/').to_string();
+        let archived = source
+            .setting_str("pdfArchiveRoot")
+            .map(|root| pdf_archive::archived_files(Path::new(root)))
+            .transpose()?
+            .unwrap_or_default();
+        let mut seen_pdfs = HashSet::new();
+        let mut pdf_failure = None;
 
         for database in user_databases(&state_dir) {
             let username = database
@@ -112,6 +142,47 @@ impl super::Extractor for FreshRssExtractor {
                 if let Some(author) = entry.author.filter(|author| !author.is_empty()) {
                     metadata.insert("author".to_string(), serde_json::Value::String(author));
                 }
+                // Read only files already downloaded by the opt-in archive
+                // pass. Indexing never fetches a feed's URLs over the network.
+                for url in pdf_archive::pdf_urls_in_entry(&entry.link, &entry.content) {
+                    let key = pdf_archive::manifest_key(&url);
+                    let Some(path) = archived.get(&key) else {
+                        continue;
+                    };
+                    let external_id = format!("pdf:{}", sha256_hex(&[&username, &key]));
+                    if !seen_pdfs.insert(external_id.clone()) {
+                        continue;
+                    }
+                    let text =
+                        match super::paperless::extract_pdf_text(path, self.pdftotext.as_deref()) {
+                            Ok(text) => text,
+                            Err(err) => {
+                                eprintln!("search: archived PDF extraction failed: {err}");
+                                pdf_failure = Some(err);
+                                continue;
+                            }
+                        };
+                    emit(ExtractedDocument {
+                        external_id,
+                        kind: "document".to_string(),
+                        title: if entry.title.is_empty() {
+                            url.clone()
+                        } else {
+                            entry.title.clone()
+                        },
+                        body_text: truncate_text(&text, super::document::TEXT_LIMIT),
+                        content_type: "application/pdf".to_string(),
+                        origin_url: url,
+                        app_url: app_base.clone(),
+                        file_path: path.display().to_string(),
+                        size_bytes: std::fs::metadata(path)
+                            .map_err(|err| format!("failed to stat archived PDF: {err}"))?
+                            .len() as i64,
+                        content_created_at: entry.date,
+                        content_modified_at: None,
+                        metadata: serde_json::Value::Object(metadata.clone()),
+                    });
+                }
                 emit(ExtractedDocument {
                     external_id: sha256_hex(&[&username, &entry.guid]),
                     kind: "feed-entry".to_string(),
@@ -132,7 +203,12 @@ impl super::Extractor for FreshRssExtractor {
                 });
             }
         }
-        Ok(())
+        // A transient local PDF failure must not prune its older document or
+        // store an unchanged-input fingerprint that prevents a later retry.
+        match pdf_failure {
+            Some(err) => Err(format!("archived PDF extraction incomplete: {err}")),
+            None => Ok(()),
+        }
     }
 }
 

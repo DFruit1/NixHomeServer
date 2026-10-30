@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 
 cd "$TESTS_REPO_ROOT"
 
-ensure_tools cmp find jq nix
+ensure_tools cmp find jq nix sha256sum
 
 homepage_logo_dir="custom_apps/node/apps/homepage/public/logos"
 kanidm_logo_dir="modules/Core_Modules/kanidm/assets/apps"
@@ -78,5 +78,16 @@ require_fixed modules/Core_Modules/kanidm/override.css \
 require_fixed scripts/tests/run-script-tests.sh \
   'scripts/tests/test-kanidm-branding.sh' \
   "Kanidm branding regression coverage must run in the lean repository gate."
+
+# Pin Prowlarr's cute tiger logo so it cannot silently regress to the
+# upstream/ugly variant. Both copies must keep this exact content.
+expected_prowlarr_hash="82f86383c34ff908df396dbadc0db7cb78246ff33ba71476b454483b7c038ae0"
+for prowlarr_logo in "$homepage_logo_dir/prowlarr.svg" "$kanidm_logo_dir/prowlarr.svg"; do
+  actual_prowlarr_hash="$(sha256sum "$prowlarr_logo" | awk '{print $1}')"
+  if [[ "$actual_prowlarr_hash" != "$expected_prowlarr_hash" ]]; then
+    echo "❌ Prowlarr logo regressed from the pinned cute tiger variant: $prowlarr_logo" >&2
+    exit 1
+  fi
+done
 
 echo "✅ Kanidm theme installation and service-logo parity tests passed."

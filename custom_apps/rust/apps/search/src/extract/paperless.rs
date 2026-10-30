@@ -215,11 +215,15 @@ impl super::Extractor for PaperlessExtractor {
 }
 
 pub(crate) fn extract_pdf_text(path: &Path, pdftotext: Option<&Path>) -> Result<String, String> {
+    let bytes =
+        std::fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    extract_pdf_bytes(&bytes, pdftotext)
+}
+
+pub(crate) fn extract_pdf_bytes(bytes: &[u8], pdftotext: Option<&Path>) -> Result<String, String> {
     let pdftotext = pdftotext
         .filter(|path| path.exists())
         .ok_or_else(|| "SEARCH_PDFTOTEXT must point to a pdftotext binary".to_string())?;
-    let bytes =
-        std::fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
     let mut child = Command::new(pdftotext)
         .arg("-q")
         .arg("-")
@@ -228,17 +232,28 @@ pub(crate) fn extract_pdf_text(path: &Path, pdftotext: Option<&Path>) -> Result<
         .stdout(std::process::Stdio::piped())
         .spawn()
         .map_err(|err| format!("failed to run pdftotext: {err}"))?;
-    if let Some(stdin) = child.stdin.as_mut() {
-        use std::io::Write;
-        stdin
-            .write_all(&bytes)
-            .map_err(|err| format!("failed to feed pdftotext: {err}"))?;
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|err| format!("failed to run pdftotext: {err}"))?;
+    // Feed stdin while draining stdout: large attachments can fill both pipes
+    // and deadlock if the parent finishes writing before it starts reading.
+    let stdin = child.stdin.take().ok_or("pdftotext stdin unavailable")?;
+    let output = std::thread::scope(|scope| {
+        let writer = scope.spawn(move || {
+            use std::io::Write;
+            let mut stdin = stdin;
+            stdin.write_all(bytes)
+        });
+        let output = child
+            .wait_with_output()
+            .map_err(|err| format!("failed to run pdftotext: {err}"))?;
+        let written = writer
+            .join()
+            .map_err(|_| "pdftotext writer panicked".to_string())?;
+        if output.status.success() {
+            written.map_err(|err| format!("failed to feed pdftotext: {err}"))?;
+        }
+        Ok::<_, String>(output)
+    })?;
     if !output.status.success() {
-        return Ok(String::new());
+        return Err(format!("pdftotext failed ({})", output.status));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }

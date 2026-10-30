@@ -13,6 +13,8 @@
         appBase = "https://rss.${vars.domain}";
         settings = {
           stateDir = config.repo.freshrss.stateDir;
+          # Read completed local downloads; this does not enable fetching.
+          pdfArchiveRoot = config.repo.search.paths.pdfArchive;
         };
       };
 

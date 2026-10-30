@@ -4,10 +4,12 @@ use mailparse::MailHeaderMap;
 
 use super::ExtractedDocument;
 use crate::config::SourceConfig;
-use crate::text::html_to_text;
+use crate::text::{decode_document_text, html_to_text, truncate_text};
 use crate::timeutil::{parse_date, sha256_hex};
 
-pub struct MailExtractor;
+pub struct MailExtractor {
+    pub pdftotext: Option<PathBuf>,
+}
 
 #[derive(Debug)]
 struct MailRoot {
@@ -94,33 +96,146 @@ struct ParsedMail {
     cc: String,
     date: Option<i64>,
     body: String,
+    attachments: Vec<String>,
 }
 
-fn first_text_part(mail: &mailparse::ParsedMail<'_>, html: bool) -> Option<String> {
-    if mail.subparts.is_empty() {
-        let content_type = mail
-            .get_headers()
-            .get_first_value("Content-Type")
-            .unwrap_or_default();
-        let matches_type = if html {
-            content_type.contains("text/html")
+fn attachment_name(mail: &mailparse::ParsedMail<'_>) -> Option<String> {
+    mail.get_content_disposition()
+        .params
+        .get("filename")
+        .or_else(|| mail.ctype.params.get("name"))
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| truncate_text(name, 4_096))
+}
+
+fn text_parts(
+    mail: &mailparse::ParsedMail<'_>,
+    pdftotext: Option<&Path>,
+    depth: usize,
+    remaining: &mut usize,
+) -> String {
+    if depth > 16 || *remaining == 0 {
+        return String::new();
+    }
+    *remaining -= 1;
+    let mime = mail.ctype.mimetype.to_ascii_lowercase();
+    if !mail.subparts.is_empty() {
+        let mut body = String::new();
+        // Alternatives describe the same content. Prefer the last readable
+        // representation (usually HTML) instead of indexing duplicate prose.
+        if mime == "multipart/alternative" {
+            for part in mail.subparts.iter().rev() {
+                let text = text_parts(part, pdftotext, depth + 1, remaining);
+                if !text.trim().is_empty() {
+                    return text;
+                }
+            }
         } else {
-            content_type.contains("text/plain")
+            for part in &mail.subparts {
+                let text = text_parts(part, pdftotext, depth + 1, remaining);
+                if !text.trim().is_empty() {
+                    body.push_str(&truncate_text(
+                        &text,
+                        super::document::TEXT_LIMIT - body.len(),
+                    ));
+                    if body.len() >= super::document::TEXT_LIMIT {
+                        break;
+                    }
+                    body.push('\n');
+                }
+            }
+        }
+        return body;
+    }
+
+    if matches!(
+        mime.as_str(),
+        "text/plain" | "text/html" | "text/markdown" | "text/csv" | "text/tab-separated-values"
+    ) {
+        let raw = if let Ok(bytes) = mail.get_body_raw()
+            && (bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]))
+        {
+            decode_document_text(&bytes)
+        } else {
+            mail.get_body().unwrap_or_default()
         };
-        if !matches_type {
-            return None;
-        }
-        return mail.get_body().ok().filter(|body| !body.trim().is_empty());
+        let bounded = truncate_text(&raw, super::document::TEXT_LIMIT);
+        return if mime == "text/html" {
+            truncate_text(&html_to_text(&bounded), super::document::TEXT_LIMIT)
+        } else {
+            bounded
+        };
     }
-    for part in &mail.subparts {
-        if let Some(body) = first_text_part(part, html) {
-            return Some(body);
-        }
+    // Only decode recognised document types; images, executables and large
+    // binary attachments keep their filenames without consuming extraction work.
+    let name = attachment_name(mail)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let format = match mime.as_str() {
+        "application/pdf" => "pdf",
+        "application/epub+zip" => "epub",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
+        "application/vnd.oasis.opendocument.text" => "odt",
+        "application/vnd.oasis.opendocument.spreadsheet" => "ods",
+        "application/vnd.oasis.opendocument.presentation" => "odp",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => "pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml.slideshow" => "ppsx",
+        "application/vnd.ms-word.document.macroenabled.12" => "docm",
+        "application/vnd.ms-excel.sheet.macroenabled.12" => "xlsm",
+        "application/vnd.ms-powerpoint.presentation.macroenabled.12" => "pptm",
+        "application/x-fictionbook+xml" => "fb2",
+        "message/rfc822" => "eml",
+        "application/octet-stream" => name.rsplit('.').next().unwrap_or_default(),
+        _ => return String::new(),
+    };
+    if !matches!(
+        format,
+        "pdf"
+            | "epub"
+            | "docx"
+            | "docm"
+            | "odt"
+            | "ods"
+            | "odp"
+            | "xlsx"
+            | "xlsm"
+            | "pptx"
+            | "pptm"
+            | "ppsx"
+            | "fb2"
+            | "htmlz"
+            | "txtz"
+            | "eml"
+            | "txt"
+            | "md"
+            | "csv"
+            | "html"
+            | "htm"
+    ) || mail.raw_bytes.len() > 8_000_000
+    {
+        return String::new();
     }
-    None
+    let Ok(bytes) = mail.get_body_raw() else {
+        return String::new();
+    };
+    let text = match format {
+        "pdf" => super::paperless::extract_pdf_bytes(&bytes, pdftotext).ok(),
+        "epub" | "docx" | "docm" | "odt" | "ods" | "odp" | "xlsx" | "xlsm" | "pptx" | "pptm"
+        | "ppsx" | "htmlz" | "txtz" => {
+            super::document::zip_text(std::io::Cursor::new(&bytes), format)
+        }
+        "fb2" => super::document::xml_text(&decode_document_text(&bytes)),
+        "eml" => mailparse::parse_mail(&bytes)
+            .ok()
+            .map(|nested| text_parts(&nested, pdftotext, depth + 1, remaining)),
+        "html" | "htm" => Some(html_to_text(&decode_document_text(&bytes))),
+        _ => Some(decode_document_text(&bytes)),
+    };
+    truncate_text(&text.unwrap_or_default(), super::document::TEXT_LIMIT)
 }
 
-fn parse_eml(bytes: &[u8]) -> Result<ParsedMail, String> {
+fn parse_eml(bytes: &[u8], pdftotext: Option<&Path>) -> Result<ParsedMail, String> {
     let mail =
         mailparse::parse_mail(bytes).map_err(|err| format!("failed to parse email: {err}"))?;
     let headers = mail.get_headers();
@@ -136,14 +251,8 @@ fn parse_eml(bytes: &[u8]) -> Result<ParsedMail, String> {
         .get_first_value("Date")
         .as_deref()
         .and_then(parse_date);
-    let plain = first_text_part(&mail, false);
-    let body = match plain {
-        Some(text) => text,
-        None => match first_text_part(&mail, true) {
-            Some(html_body) => html_to_text(&html_body),
-            None => String::new(),
-        },
-    };
+    let body = text_parts(&mail, pdftotext, 0, &mut 256);
+    let attachments = mail.parts().filter_map(attachment_name).take(64).collect();
     Ok(ParsedMail {
         subject,
         from,
@@ -151,6 +260,7 @@ fn parse_eml(bytes: &[u8]) -> Result<ParsedMail, String> {
         cc,
         date,
         body,
+        attachments,
     })
 }
 
@@ -198,7 +308,7 @@ impl super::Extractor for MailExtractor {
                     continue;
                 }
             };
-            let parsed = match parse_eml(&bytes) {
+            let parsed = match parse_eml(&bytes, self.pdftotext.as_deref()) {
                 Ok(parsed) => parsed,
                 Err(err) => {
                     eprintln!(
@@ -214,6 +324,12 @@ impl super::Extractor for MailExtractor {
                 "owner".to_string(),
                 serde_json::Value::String(owner.clone()),
             );
+            if !parsed.attachments.is_empty() {
+                metadata.insert(
+                    "attachments".to_string(),
+                    serde_json::json!(parsed.attachments),
+                );
+            }
             for (key, value) in [
                 ("from", &parsed.from),
                 ("to", &parsed.to),
@@ -277,7 +393,7 @@ Content-Type: text/html; charset=utf-8\r\n\
 
     #[test]
     fn parses_plain_email() {
-        let parsed = parse_eml(EML.as_bytes()).expect("parse");
+        let parsed = parse_eml(EML.as_bytes(), None).expect("parse");
         assert_eq!(parsed.subject, "Hello there");
         assert_eq!(parsed.from, "Alice <alice@example.org>");
         assert_eq!(parsed.date, Some(1_700_000_000));
@@ -286,7 +402,7 @@ Content-Type: text/html; charset=utf-8\r\n\
 
     #[test]
     fn parses_html_email() {
-        let parsed = parse_eml(HTML_EML.as_bytes()).expect("parse");
+        let parsed = parse_eml(HTML_EML.as_bytes(), None).expect("parse");
         assert_eq!(parsed.subject, "Report");
         assert!(
             parsed.body.contains("Quarterly report attached"),

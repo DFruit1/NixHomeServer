@@ -674,7 +674,19 @@ pub fn parse_search_response(response: &Value) -> Result<SearchResponse, String>
                 .to_string(),
             title: doc
                 .get("title")
-                .and_then(Value::as_str)
+                // text_general is multiValued in the stock configset, so
+                // even one title is returned as ["Subject or book title"].
+                // Accept scalar responses too for explicitly single-valued
+                // schemas; never drop a valid stored title at this boundary.
+                .and_then(|value| {
+                    value.as_str().or_else(|| {
+                        value
+                            .as_array()?
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .find(|title| !title.trim().is_empty())
+                    })
+                })
                 .unwrap_or_default()
                 .to_string(),
             origin_url: doc

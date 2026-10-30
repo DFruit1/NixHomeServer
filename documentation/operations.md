@@ -1468,9 +1468,12 @@ package) and resolves it through AcoustID; it needs an AcoustID API key. Auto
 mode fingerprints first and falls back to search. Enabling the key makes
 fingerprint mode available, otherwise the editor shows the key's absence and
 falls back to search. Register an application API key at
-https://acoustid.org/settings, then enter it under **Accounts → AcoustID**.
-AcoustID validation happens during a real fingerprint lookup because a useful
-test request requires a valid local fingerprint.
+https://acoustid.org/new-application (AcoustID has no separate password; sign in
+with an existing MusicBrainz account, or Google/OpenID), then enter it under
+**Accounts → AcoustID**.
+The provider's **Test** button validates the key with a built-in synthetic
+fingerprint; full validation still happens during a real fingerprint lookup on
+one of the user's own files.
 
 Open Library lookup is available for cataloged books and audiobooks without an
 account. Search by title and author or by ISBN, expand a work into its specific
@@ -1974,6 +1977,51 @@ Notes:
   Because `_default` defines `*_ss`/`*_i` dynamic fields, adding a facet
   dimension never requires a schema/configset rebuild. The UI presents the
   snippet and selected metadata identically for every source.
+* Searchable descriptive metadata. Ordinary text queries also match email
+  senders/recipients, attachment names, feed names/authors, book identifiers,
+  and the descriptive creator/category/collection fields from each indexed
+  source. An explicit allowlist adds missing values to the stored body, so
+  these matches can produce snippets; arbitrary metadata and filesystem paths
+  are not copied into searchable text. Added metadata is bounded to 32 KiB.
+* Email text. The mail extractor combines readable parts of mixed messages,
+  selects the last readable representation of a multipart alternative, and
+  handles messages without an explicit content type and forwarded `.eml`
+  attachments. It extracts PDF, EPUB, Word, Excel, PowerPoint, OpenDocument,
+  FB2, text/Markdown/CSV and zipped text/HTML attachments where supported.
+  Unsupported or oversized binary attachments still contribute their filenames.
+  Text is capped at 2 MB per
+  message; binary MIME parts above 8 MB are skipped, and traversal is bounded
+  to 256 parts and 16 nested levels. PDFs use the existing local `pdftotext`
+  binary, without writing attachments to temporary files.
+* Book formats. Calibre extraction prefers EPUB, PDF, plain text and HTML,
+  then tries DOCX/DOCM, XLSX/XLSM, PPTX/PPTM/PPSX, ODT/ODS/ODP, FB2,
+  Markdown, zipped HTML/text and CBZ ComicInfo metadata. Word extraction includes
+  footnotes, endnotes and running headers/footers; presentations include speaker
+  notes. Spreadsheet extraction resolves shared strings, inline text, sheet names
+  and cached cell values, without evaluating formulas or indexing unused
+  shared-string entries.
+  UTF-8 and BOM-marked UTF-16 text/XML exports are decoded before extraction.
+  Loose text/HTML files contribute a bounded 8 MB prefix. ZIP extraction
+  reads members in memory, caps expanded input at 8 MB per member and 32 MB
+  per book, and retains up to 2 MB of text. UTF-8 truncation preserves complete
+  characters. Scanned image-only documents still require upstream OCR.
+* Web captures. WACZ extraction reads every page list under `pages/`, merges
+  duplicate URLs, and handles concatenated gzip members in WARC streams, so
+  later captures and extra page lists contribute searchable content. Page
+  lists are optional: captured HTML pages, PDFs, plain text, Markdown, CSV and
+  TSV documents also contribute results when they are absent from those lists.
+  Declared HTML fragments and XHTML are converted to readable text. Captured
+  PDFs use the existing local `pdftotext` binary; no document URLs are fetched.
+  Listed titles/text take precedence, duplicate captures keep their first
+  readable result, and documents retain their captured content types and dates.
+  HTTP chunking and gzip content encoding are decoded before extraction;
+  unsupported encodings, unsuccessful HTTP responses, scripts, styles, images
+  and API responses are skipped. WARC response payloads and decoded HTTP bodies
+  are capped at 16 MB, headers at 64 KiB, and extracted text at 400 KB per page.
+  Oversized WARC records are drained without keeping their payloads in memory,
+  allowing later captures to contribute. The Browsertrix extraction-version
+  bump refreshes existing archives on the next normal indexing pass after
+  deployment; a Solr-only reindex does not perform this extraction.
 * Facet dimensions. The UI narrows results by user, source, content type, and
   the cross-source author, tag, series, and year facets; selecting a chip adds
   an `fq` clause and the facet counts update around it. High-cardinality
@@ -1997,6 +2045,22 @@ Notes:
   missing or malformed is treated as an extraction error, so the existing
   document set is retained rather than pruned. Disabling a media application
   removes its source on the next `search-reconcile` pass.
+* Kavita book content. The Books source also reads supported book files beneath
+  each snapshot entry's shared or personal `_Books` root, using the existing
+  read-only `media-manager` ACLs. EPUB, PDF, FB2, text, HTML and the office
+  formats above contribute body text; CBZ contributes ComicInfo metadata.
+  EPUB package titles and ComicInfo titles name individual file results;
+  catalog titles and filenames provide fallbacks. Embedded authors, subjects,
+  publishers, languages, identifiers and summaries are searchable alongside
+  the catalog metadata. Paths must remain inside the configured book root;
+  recursive scans skip symlinks. Unreadable or missing book paths fail the
+  extraction pass and retain previously indexed documents. Book-file changes
+  invalidate the source fingerprint even before a new metadata snapshot arrives.
+  The extraction-version bump makes the next indexing pass pick up existing
+  books after deployment. Image-only PDFs and comics still need upstream OCR.
+* Result titles. Search accepts both scalar and array-shaped Solr titles, so
+  stored email subjects and book titles appear in results instead of falling
+  back to `Untitled`. This response-parsing fix needs no schema reset or reindex.
 * Runtime-federated sources. A source that already ships a queryable index is
   searched at request time instead of being copied into Solr. Two sources work
   this way:
@@ -2043,13 +2107,20 @@ Notes:
   indexing pass. Enabling more entries increases index size and first-sync
   time.
 * Incremental indexing. Every extractor derives a cheap fingerprint of its
-  inputs (ZIM inventory, `.eml` files, FreshRSS SQLite files, `metadata.db`,
+  inputs (ZIM inventory, `.eml` files, FreshRSS SQLite databases and their WAL/
+  journal files, completed archived PDFs, `metadata.db`,
   WACZ archives, the media snapshot, and the Paperless export manifest) plus
   its settings. When the fingerprint matches the last successful pass the
   indexer skips that source's extraction entirely; a changed fingerprint or a
   missing input falls back to a full extraction pass. Fingerprints are only a
   skip signal — the per-document checksum still governs whether a document is
-  re-pushed.
+  re-pushed. Fingerprints also include a revision per extractor. A new revision
+  causes one normal source extraction after deployment, even for unchanged
+  files, so improved text extraction reaches existing documents automatically.
+  Only affected extractors refresh; unchanged ZIM/WACZ revisions keep their
+  existing fingerprints. That pass may take longer than an ordinary hourly
+  refresh. A Solr-only `search-reindex.service` rebuild cannot recover text
+  missing from Postgres.
 * Kiwix federation. Every ZIM with an embedded Xapian index is searched live,
   not just the first few: archives are queried in bounded-concurrency batches
   (8 at a time) and each archive's article title/snippet fetches run
@@ -2124,9 +2195,20 @@ Behaviour and state:
   `application/pdf`, within the size limit, and actually starts with `%PDF-`.
   Landing pages that merely link to a PDF are not followed recursively; only
   the entry's own link and `href`s are considered.
-* **Not yet indexed.** Archived PDFs are not added to the Search corpus in this
-  scaffold. The manifest records enough metadata (owner, feed, title, origin
-  URL, path) to add a `pdftotext`-based extractor later.
+* **Searchable text.** The next normal FreshRSS indexing pass reads completed
+  local PDFs still linked by configured feed entries. Each PDF contributes a
+  document under **Feeds**, with its origin URL, entry title/date, feed/author
+  metadata and up to 2 MB of extracted text. Repeated links within one account
+  share a result; downloads stored under an earlier discoverer's directory can
+  be reused by other accounts linking the same URL. Partial files, symlinks and
+  PDFs with no current feed link are excluded. The archive inventory participates
+  in source fingerprints, so new downloads are picked up even when the feed
+  database is unchanged. Local extraction errors keep the source retryable and
+  prevent pruning its previous results. Scanned PDFs still need upstream OCR.
+* **Download and index are separate.** Indexing only reads existing files and
+  never fetches URLs. Turning off the archive timer retains downloads and lets
+  configured feeds continue searching their linked local PDFs. The existing
+  opt-in download limits and egress policy remain unchanged.
 
 Egress trust boundary:
 

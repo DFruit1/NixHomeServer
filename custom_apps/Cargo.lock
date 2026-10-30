@@ -4862,6 +4862,7 @@ dependencies = [
  "mailparse",
  "rand 0.8.7",
  "reqwest",
+ "roxmltree",
  "rusqlite",
  "serde",
  "serde_json",

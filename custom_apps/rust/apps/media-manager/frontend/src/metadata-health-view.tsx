@@ -595,7 +595,6 @@ const HealthDecisionRow = component$<{
   applying: boolean;
   onApply$: ApplyHealthValue;
 }>((props) => {
-  const customValue = useSignal("");
   const queuedValue = useSignal("");
   const { issue, target } = props.entries[0];
   const field = issue.field ?? "";
@@ -657,51 +656,20 @@ const HealthDecisionRow = component$<{
         ) : (
           <p class="health-no-proposal">???</p>
         )}
-        {editable && (
-          <details class="health-custom-editor" open={proposals.length === 0}>
-            <summary>Enter another value</summary>
-            <form
-              class="health-custom-value"
-              preventdefault:submit
-              onSubmit$={() => {
-                if (customValue.value.trim())
-                  return apply$(customValue.value.trim(), "Proposed");
-              }}
-            >
-              <label>
-                <span>
-                  Enter {field.replace(/([A-Z])/g, " $1").toLowerCase()}
-                </span>
-                <input
-                  type={field === "year" ? "number" : "text"}
-                  min={field === "year" ? 1 : undefined}
-                  max={field === "year" ? 2100 : undefined}
-                  maxLength={
-                    field === "volumeNumber"
-                      ? 32
-                      : field === "language"
-                        ? 15
-                        : 500
-                  }
-                  value={customValue.value}
-                  onInput$={(_, input) => (customValue.value = input.value)}
-                />
-              </label>
-              <button
-                type="submit"
-                class="secondary-button"
-                disabled={props.applying || !customValue.value.trim()}
-              >
-                Apply
-              </button>
-            </form>
-          </details>
-        )}
         {queuedValue.value && (
           <p class="health-queued-value" role="status">
             {queuedValue.value}
           </p>
         )}
+      </td>
+      <td class="health-provenance">
+        {[
+          ...new Set(
+            props.entries.map(({ issue }) => proposedProvenance(issue)),
+          ),
+        ].map((reason) => (
+          <p key={reason}>{reason}</p>
+        ))}
       </td>
     </tr>
   );
@@ -752,9 +720,6 @@ const HealthIssueReview = component$<{
     files.length,
     ...entries.map(({ issue }) => issue.affectedFileCount ?? 0),
   );
-  const provenance = [
-    ...new Set(entries.map(({ issue }) => proposedProvenance(issue))),
-  ];
   return (
     <section class="health-result-issue">
       <div class="health-comparison">
@@ -784,13 +749,29 @@ const HealthIssueReview = component$<{
                 </p>
               </div>
             )}
-            <table class="health-issue-table">
+            <table
+              class={{
+                "health-issue-table": true,
+                "health-issue-table-files": !album && entries.length > 1,
+              }}
+            >
+              <colgroup>
+                {!album && entries.length > 1 && (
+                  <col class="health-file-column" />
+                )}
+                <col class="health-current-column" />
+                <col class="health-proposed-column" />
+                <col />
+              </colgroup>
               <caption class="sr-only">{issue.title}</caption>
               <thead>
                 <tr>
                   {!album && entries.length > 1 && <th scope="col">File</th>}
                   <th scope="col">Current</th>
                   <th scope="col">Proposed</th>
+                  <th scope="col" class="health-reason-heading">
+                    Reason
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -835,11 +816,6 @@ const HealthIssueReview = component$<{
                 <small>{props.selectedOnline.source}</small>
               </div>
             )}
-            <div class="health-provenance">
-              {provenance.map((reason) => (
-                <p key={reason}>{reason}</p>
-              ))}
-            </div>
             {primary && (
               <p class="health-source">
                 <button
@@ -878,7 +854,7 @@ const HealthIssueReview = component$<{
 const HealthArtwork = component$<{ itemId: string }>((props) => {
   const failed = useSignal(false);
   return (
-    <div class="health-result-art" aria-hidden="true">
+    <div class="health-result-art" aria-hidden="true" hidden={failed.value}>
       {!failed.value && (
         <img
           src={`/api/v1/items/${encodeURIComponent(props.itemId)}/image`}
