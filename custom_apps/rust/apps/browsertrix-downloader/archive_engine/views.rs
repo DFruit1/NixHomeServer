@@ -375,7 +375,9 @@ fn reader_export_impl(
         // Drop archive inventories and report resources before allocating the
         // response; only the reader's page data remains live here.
         if limited_analysis {
-            archive.report_with_analysis_budget(budget, true)?.pages
+            archive
+                .report_with_analysis_budget(budget.saturating_sub(archive.cost), true)?
+                .pages
         } else {
             archive.report()?.pages
         }

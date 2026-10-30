@@ -419,7 +419,14 @@ pub(super) fn load(path: &Path) -> Result<Archive, String> {
     if index_inflated > MAX_METADATA {
         return Err("Inflated index metadata exceeds 32 MiB".into());
     }
-    archive.cost = metadata_total + record_metadata;
+    // Expanded CDX rows, including arbitrary nested keys/values, survive in
+    // Record.index. Compressed member bytes alone substantially undercount that
+    // retained inventory. Raw expanded lengths conservatively include the full
+    // rows and lookup prefixes, not only fields the engine understands.
+    archive.cost = metadata_total
+        .checked_add(record_metadata)
+        .and_then(|cost| cost.checked_add(index_inflated))
+        .ok_or("Archive metadata accounting overflow")?;
     archive.resolve_local()?;
     if archive.report.title.is_empty() {
         archive.report.title = archive

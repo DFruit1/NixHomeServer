@@ -28,6 +28,12 @@ pub(super) fn authorized_archive_limited(
     let mut archive = read::load(path)?;
     let inputs = dependencies_for_limited(&archive, dependencies, metadata_limit)?;
     hydrate(&mut archive, &inputs)?;
+    // Keep the already-checked aggregate for the reader's shared analysis pool,
+    // even after dependency inventories give way to hydrated lazy body sources.
+    archive.cost = inputs.values().try_fold(archive.cost, |cost, input| {
+        cost.checked_add(input.cost)
+            .ok_or("Dependency memory budget overflow")
+    })?;
     Ok(archive)
 }
 
@@ -488,6 +494,111 @@ fn replace_payload(record: &mut Record, bytes: Vec<u8>) -> Result<(), String> {
     Ok(())
 }
 
+// Associate each native row with a unique actual capture before selecting
+// successful repairs. URL-nearest matching alone can assign a failed retry's
+// rendered baseline to an earlier successful response with no native row.
+fn repair_page_metadata(
+    patch: &Archive,
+    successful: &BTreeSet<String>,
+) -> (Vec<PageRecord>, usize) {
+    let mut captures = BTreeMap::<&str, Vec<(usize, &Record)>>::new();
+    for (i, record) in patch.records.iter().enumerate() {
+        if successful.contains(record.url())
+            && matches!(record.kind(), "response" | "resource")
+            && matches!(record.mime.as_str(), "text/html" | "application/xhtml+xml")
+        {
+            // Include failures and request variants when qualifying ownership.
+            captures.entry(record.url()).or_default().push((i, record));
+        }
+    }
+    let mut associated = BTreeMap::<usize, Vec<&PageRecord>>::new();
+    // The general inventory's ID lookup has one value per URL/date. Conflicting
+    // duplicate native rows must not borrow one another's identity from it.
+    let mut page_counts = BTreeMap::new();
+    for page in &patch.page_meta {
+        if let Ok(stamp) = chrono::DateTime::parse_from_rfc3339(&page.ts) {
+            *page_counts
+                .entry((page.url.as_str(), stamp))
+                .or_insert(0usize) += 1;
+        }
+    }
+    let mut work = 2_000_000usize;
+    for page in &patch.page_meta {
+        if page.status != 0 && !(200..400).contains(&page.status) {
+            continue;
+        }
+        let Some(group) = captures.get(page.url.as_str()) else {
+            continue;
+        };
+        let Some(remaining) = work.checked_sub(group.len()) else {
+            continue;
+        };
+        work = remaining;
+        let Ok(stamp) = chrono::DateTime::parse_from_rfc3339(&page.ts) else {
+            continue;
+        };
+        if page_counts.get(&(page.url.as_str(), stamp)) != Some(&1) {
+            continue;
+        }
+        let page_id = patch.page_ids.get(&(page.url.clone(), stamp.to_rfc3339()));
+        let mut best = None;
+        let mut owner = None;
+        for (i, record) in group {
+            let Ok(date) = chrono::DateTime::parse_from_rfc3339(record.field("warc-date")) else {
+                continue;
+            };
+            let id = record.field("warc-page-id");
+            let matching_id = page_id.is_some_and(|page_id| !page_id.is_empty() && page_id == id);
+            if page_id.is_some_and(|page_id| !page_id.is_empty() && !id.is_empty() && page_id != id)
+                || (!matching_id && stamp.timestamp() != date.timestamp())
+            {
+                continue;
+            }
+            // Explicit identity and exact dates take precedence. Timing slack
+            // qualifies only a unique candidate, never an arbitrary nearest
+            // response/request variant within the allowed capture interval.
+            let score = (!matching_id, stamp != date);
+            match best {
+                None => {
+                    best = Some(score);
+                    owner = Some(*i);
+                }
+                Some(previous) if score < previous => {
+                    best = Some(score);
+                    owner = Some(*i);
+                }
+                Some(previous) if score == previous => owner = None,
+                _ => {}
+            }
+        }
+        if let Some(owner) = owner {
+            associated.entry(owner).or_default().push(page);
+        }
+    }
+    let mut pages = vec![];
+    let mut fallbacks = 0;
+    for group in captures.values() {
+        for (i, record) in group {
+            if !(200..400).contains(&record.status) {
+                continue;
+            }
+            if let Some(rows) = associated.get(i).filter(|rows| rows.len() == 1) {
+                pages.push(rows[0].clone());
+            } else {
+                fallbacks += 1;
+                // Seed a row even when unrelated parent pages remain; the
+                // writer must rebuild this page from its successful response.
+                pages.push(PageRecord {
+                    url: record.url().into(),
+                    ts: record.field("warc-date").into(),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    (pages, fallbacks)
+}
+
 /// Prefer successful repaired targets by retaining all parent records for other
 /// URLs and removing replaced targets from this new derivative's replay index.
 /// Actual capture dates remain unchanged (mixed-time provenance is recorded).
@@ -523,26 +634,7 @@ pub fn compose_repair(
     if successful.is_empty() {
         return Err("Repair contains no successful selected targets".into());
     }
-    let patch_pages: BTreeMap<_, _> = patch
-        .page_meta
-        .iter()
-        .map(|p| {
-            let ts = chrono::DateTime::parse_from_rfc3339(&p.ts)
-                .map(|d| d.to_rfc3339())
-                .unwrap_or_else(|_| p.ts.clone());
-            ((p.url.clone(), ts), p.clone())
-        })
-        .collect();
-    let successful_pages: BTreeSet<_> = patch
-        .records
-        .iter()
-        .filter(|r| {
-            successful.contains(r.url())
-                && matches!(r.kind(), "response" | "resource")
-                && (200..400).contains(&r.status)
-        })
-        .filter_map(|r| read::page_key(&patch_pages, r, Some(&patch.page_ids)))
-        .collect();
+    let (patch_pages, page_metadata_fallbacks) = repair_page_metadata(&patch, &successful);
     original.records.retain(|r| !successful.contains(r.url()));
     // Include patch dependencies too; limiting to selected HTML alone drops the
     // assets that make a repaired page render. Failed parent targets stay intact.
@@ -559,13 +651,8 @@ pub fn compose_repair(
         return Err("Composed repair record limit exceeded".into());
     }
     original.page_meta.retain(|p| !successful.contains(&p.url));
-    original.page_meta.extend(
-        patch_pages
-            .into_iter()
-            .filter(|(key, _)| successful_pages.contains(key))
-            .map(|(_, page)| page),
-    );
-    write_archive(
+    original.page_meta.extend(patch_pages);
+    let mut report = write_archive(
         destination,
         original.records,
         original.page_meta,
@@ -573,8 +660,12 @@ pub fn compose_repair(
         BTreeMap::new(),
         &[],
         false,
-        json!({"operation":"repair-composition","parentSha256":original.report.sha256,"repairSha256":patch.report.sha256,"replacedTargets":successful,"requestedTargets":targets,"selectionPolicy":"only successful repair responses replace selected URLs; failed alternatives excluded; other parent responses and patch assets retained","mixedCaptureTimes":true}),
-    )
+        json!({"operation":"repair-composition","parentSha256":original.report.sha256,"repairSha256":patch.report.sha256,"replacedTargets":successful,"requestedTargets":targets,"selectionPolicy":"only successful repair responses replace selected URLs; failed alternatives excluded; other parent responses and patch assets retained","pageMetadataPolicy":"native rows require unique successful capture association by page identity/date; missing or ambiguous rows rebuilt from successful response at actual WARC date","pageMetadataFallbacks":page_metadata_fallbacks,"mixedCaptureTimes":true}),
+    )?;
+    if page_metadata_fallbacks > 0 {
+        report.warnings.push(format!("Repair native page metadata missing or ambiguous for {page_metadata_fallbacks} successful captures; title/text rebuilt from successful responses at actual WARC dates (rendered JavaScript baseline unavailable); recorded in provenance.json"));
+    }
+    Ok(report)
 }
 
 struct OutputHash<'a, W> {

@@ -257,3 +257,34 @@ aggregate permit until the HTTP body is drained or dropped; engine output bounds
 alone do not limit how many slow bodies the server retains. The regression checks
 high-expansion native text, exact HTML/Markdown byte boundaries, aggregate
 dependency metadata rejection, and original hash preservation.
+
+Round-2 remaining corrections (WA-ENG003 and WA-ENG005):
+
+- Repair metadata is qualified against all actual HTML captures for the URL,
+  including failed alternatives and request variants. Matching native page IDs
+  and exact capture dates take precedence. Without matching IDs, only a unique
+  same-second capture can qualify a subsecond native baseline; conflicting IDs,
+  failed native statuses and ambiguous associations cannot supply title/text.
+  A missing qualified row is seeded at the successful WARC date and rebuilt
+  from that response, including when unrelated parent pages remain. Genuine
+  rendered native text survives. The returned repair report warns about fallback;
+  `provenance.json` records `pageMetadataPolicy` and `pageMetadataFallbacks`
+  alongside the existing mixed-time/source hashes. These are artifact evidence,
+  with no public API signature changes.
+- The limited reader's aggregate inventory cost includes complete expanded CDX
+  rows and lookup prefixes, including arbitrary nested metadata keys/values
+  retained on records. Compressed sizes cannot substitute for expanded sizes.
+  Source plus all authorized dependency costs share one pool with optional
+  extracted text/title/links; analysis receives only its remaining capacity.
+  Overflow returns an error rather than dropping metadata or truncating output.
+  Raw serialized inventory lengths are conservative logical byte accounting,
+  not an allocator/RSS guarantee. ZIP/CDX inflation, JSON parsing and one-body
+  DOM analysis retain their separate existing transient limits.
+
+The additional regressions reproduce a failed-only native row shadowing a
+successful repair and a sub-16-KiB WACZ retaining over 8 MiB of compressed-index
+metadata under a 1 MiB reader budget. They also cover matching/conflicting page
+IDs, request and subsecond ambiguity, explicit failed native status, the existing
+`.500Z` rendered baseline with a `.000Z` response, source/dependency/analysis
+budget aggregation, unknown key/value preservation, and unchanged originals.
+Native browser replay qualification remains with the integration owner.

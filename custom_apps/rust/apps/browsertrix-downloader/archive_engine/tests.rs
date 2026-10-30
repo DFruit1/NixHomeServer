@@ -419,6 +419,84 @@ fn archive_engine_reader_cap_prevents_escaped_response_and_dependency_amplificat
 }
 
 #[test]
+fn archive_engine_reader_budget_counts_expanded_cdx_and_analysis_together() {
+    // WA-ENG-005: a valid tiny compressed index retained 8 MiB of unknown CDX
+    // metadata while the caller's 1 MiB inventory budget incorrectly passed.
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("expanded-index.wacz");
+    fixture(&source);
+    let padding = "x".repeat(8 * 1024 * 1024);
+    let metadata_key = "extra-key".repeat(4096);
+    rewrite_package(&source, |entries| {
+        let raw = entries.remove("indexes/index.cdxj").unwrap();
+        let line = std::str::from_utf8(&raw).unwrap().trim_end();
+        let start = line.find('{').unwrap();
+        let mut row: serde_json::Value = serde_json::from_str(&line[start..]).unwrap();
+        // Unknown/nested metadata must be preserved, never dropped to fit.
+        row["custom"] = serde_json::json!({"nested":[{(metadata_key.clone()):padding}]});
+        let expanded = format!("{}{}\n", &line[..start], row);
+        let mut enc = flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
+        enc.write_all(expanded.as_bytes()).unwrap();
+        let compressed = enc.finish().unwrap();
+        entries.insert(
+            "indexes/index.idx".into(),
+            format!(
+                "{}{}\n",
+                &line[..start],
+                serde_json::json!({"filename":"index.cdx.gz","offset":0,"length":compressed.len()})
+            )
+            .into_bytes(),
+        );
+        entries.insert("indexes/index.cdx.gz".into(), compressed);
+    });
+    assert!(std::fs::metadata(&source).unwrap().len() < 16 * 1024);
+    let before = inspect_archive(&source).unwrap().sha256;
+    let error = reader_export_authorized_limited(&source, "html", &[], 1024 * 1024).unwrap_err();
+    assert!(error.contains("Archive metadata exceeds"), "{error}");
+    let loaded = read::load(&source).unwrap();
+    assert!(loaded.cost >= padding.len() + metadata_key.len());
+    assert_eq!(
+        loaded.records[0].index["custom"]["nested"][0][&metadata_key],
+        padding
+    );
+    let cost = loaded.cost;
+    drop(loaded);
+    // Metadata fits exactly, but optional extracted text must share that pool.
+    let error = reader_export_authorized_limited(&source, "html", &[], cost).unwrap_err();
+    assert!(error.contains("Reader analysis exceeds"), "{error}");
+    assert!(reader_export_authorized_limited(&source, "html", &[], cost + 1024).is_ok());
+
+    let small = dir.path().join("small.wacz");
+    fixture(&small);
+    let inputs = [AuthorizedDependency {
+        archive_id: "expanded".into(),
+        sha256: before.clone(),
+        authorized_local_path: source.clone(),
+    }];
+    let dependent = dir.path().join("dependent.wacz");
+    deduplicate_archive(&small, &dependent, &inputs).unwrap();
+    let error =
+        reader_export_authorized_limited(&dependent, "html", &inputs, 1024 * 1024).unwrap_err();
+    assert!(
+        error.contains("Combined archive dependency metadata"),
+        "{error}"
+    );
+    let combined = cost + read::load(&dependent).unwrap().cost;
+    let error =
+        reader_export_authorized_limited(&dependent, "html", &inputs, combined).unwrap_err();
+    assert!(error.contains("Reader analysis exceeds"), "{error}");
+    assert!(reader_export_authorized_limited(&dependent, "html", &inputs, combined + 1024).is_ok());
+    // A larger budget preserves the complete arbitrary metadata in derivatives.
+    let output = dir.path().join("preserved-index.wacz");
+    export_archive(&source, &output, &ExportOptions::default()).unwrap();
+    assert_eq!(
+        read::load(&output).unwrap().records[0].index["custom"]["nested"][0][&metadata_key],
+        padding
+    );
+    assert_eq!(inspect_archive(&source).unwrap().sha256, before);
+}
+
+#[test]
 fn archive_engine_cdx_identity_and_sorted_range_regression() {
     // WA-ENG-002: recomputed manifests do not make arbitrary lookup keys
     // replayable. Validate plain and block-compressed indexes, not just hashes.
@@ -574,7 +652,7 @@ fn archive_engine_repair_success_cannot_be_shadowed_by_later_failure() {
                 b"<h1>Successful repair</h1>",
                 "2026-02-01T00:00:00Z",
                 200,
-                true,
+                false,
             ),
             (
                 "https://example.test/target",
@@ -602,7 +680,28 @@ fn archive_engine_repair_success_cannot_be_shadowed_by_later_failure() {
             ),
         ],
     );
+    // Round 2: only the failed retry has a native row. Nearest-row matching
+    // retained its title/text/date even after the failed response was excluded.
+    rewrite_package(&patch, |entries| {
+        let data = std::str::from_utf8(&entries["pages/pages.jsonl"]).unwrap();
+        let rows: Vec<_> = data
+            .lines()
+            .map(|line| {
+                let mut row: serde_json::Value = serde_json::from_str(line).unwrap();
+                if row["url"] == "https://example.test/target" {
+                    row["title"] = serde_json::json!("FAILED native title");
+                    row["text"] = serde_json::json!("FAILED native baseline");
+                }
+                row.to_string()
+            })
+            .collect();
+        entries.insert(
+            "pages/pages.jsonl".into(),
+            format!("{}\n", rows.join("\n")).into_bytes(),
+        );
+    });
     let before = inspect_archive(&parent).unwrap().sha256;
+    let patch_before = inspect_archive(&patch).unwrap().sha256;
     let report = compose_repair(
         &parent,
         &patch,
@@ -628,13 +727,27 @@ fn archive_engine_repair_success_cannot_be_shadowed_by_later_failure() {
     assert!(html.contains("Successful repair"));
     let reader = reader_export(&output, "html").unwrap();
     assert!(!reader.contains("Later failure") && !reader.contains("Failed patch"));
+    assert!(!reader.contains("FAILED"));
+    assert!(reader.contains("Successful repair"));
     assert!(reader.contains("Untouched") && reader.contains("Keep parent"));
     assert!(report
         .resources
         .iter()
         .any(|r| r.url.ends_with("patch.css")));
     assert!(report.pages.iter().all(|p| !p.ts.starts_with("2026-02-02")));
+    let page = report
+        .pages
+        .iter()
+        .find(|p| p.url.ends_with("/target"))
+        .unwrap();
+    assert_eq!(page.ts, "2026-02-01T00:00:00Z");
+    assert_eq!(page.status, 200);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|w| w.contains("native page metadata") && w.contains("rebuilt")));
     assert_eq!(inspect_archive(&parent).unwrap().sha256, before);
+    assert_eq!(inspect_archive(&patch).unwrap().sha256, patch_before);
 }
 
 #[test]
@@ -1418,4 +1531,180 @@ fn archive_engine_rendered_baseline_survives_subsecond_response_merge() {
         .unwrap()
         .contains(baseline));
     assert!(verify_archive(&output).unwrap().valid);
+
+    // WA-ENG-003 round 2 must retain this genuine same-capture native baseline
+    // during repair too, including when other parent pages keep inference off.
+    let parent = dir.path().join("parent.wacz");
+    fixture(&parent);
+    let repaired = dir.path().join("repaired.wacz");
+    let report = compose_repair(
+        &parent,
+        &source,
+        &repaired,
+        &[],
+        &["https://example.test/account".into()],
+    )
+    .unwrap();
+    let page = report
+        .pages
+        .iter()
+        .find(|p| p.url.ends_with("/account"))
+        .unwrap();
+    assert_eq!(page.text, baseline);
+    assert_eq!(page.title, "Rendered private dashboard");
+    assert_eq!(page.ts, ts);
+    assert!(!report
+        .warnings
+        .iter()
+        .any(|w| w.contains("native page metadata")));
+    assert!(verify_archive(&repaired).unwrap().valid);
+}
+
+#[test]
+fn archive_engine_repair_native_baseline_requires_unambiguous_capture_identity() {
+    // Preservation regression: matching URL and a nearby date must not defeat
+    // an explicit mismatched page ID or select between distinct requests.
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("parent.wacz");
+    fixture(&parent);
+    for (case, page_id, ts, expected_native) in [
+        ("matching", "actual-page", "2026-02-01T00:00:02Z", true),
+        (
+            "conflicting",
+            "different-page",
+            "2026-02-01T00:00:00.500Z",
+            false,
+        ),
+        ("ambiguous-requests", "", "2026-02-01T00:00:00.500Z", false),
+        ("ambiguous-subsecond", "", "2026-02-01T00:00:00.100Z", false),
+        (
+            "ambiguous-page-rows",
+            "different-page",
+            "2026-02-01T00:00:00Z",
+            false,
+        ),
+        (
+            "failed-status",
+            "actual-page",
+            "2026-02-01T00:00:00Z",
+            false,
+        ),
+    ] {
+        let patch = dir.path().join(format!("{case}.wacz"));
+        let mut captures = vec![(
+            "https://example.test/account",
+            "text/html",
+            b"<title>Successful title</title><h1>Successful body</h1>".as_slice(),
+            "2026-02-01T00:00:00Z",
+            200,
+            true,
+        )];
+        if case == "ambiguous-requests" {
+            captures.push(captures[0]);
+        } else if case == "ambiguous-subsecond" {
+            let mut failure = captures[0];
+            failure.3 = "2026-02-01T00:00:00.300Z";
+            failure.4 = 500;
+            captures.push(failure);
+        }
+        capture_fixture(&patch, &captures);
+        rewrite_package(&patch, |entries| {
+            if case == "ambiguous-requests" {
+                let index = std::str::from_utf8(&entries["indexes/index.cdxj"]).unwrap();
+                let mut rows = vec![];
+                for (i, line) in index.lines().enumerate() {
+                    let start = line.find('{').unwrap();
+                    let mut row: serde_json::Value = serde_json::from_str(&line[start..]).unwrap();
+                    row["method"] = serde_json::json!("POST");
+                    row["requestBody"] = serde_json::json!(format!("variant={i}"));
+                    rows.push(format!(
+                        "test,example)/account?__wb_method=post&variant={i} 20260201000000 {row}\n"
+                    ));
+                }
+                rows.sort_unstable();
+                entries.insert("indexes/index.cdxj".into(), rows.concat().into_bytes());
+            } else if case != "ambiguous-subsecond" {
+                // One response: add native identity while retaining exact CDX
+                // span fixity, without depending on production capture helpers.
+                let raw = read::bounded(
+                    flate2::read::MultiGzDecoder::new(
+                        entries["archive/capture.warc.gz"].as_slice(),
+                    ),
+                    64 * 1024,
+                )
+                .unwrap();
+                let raw = String::from_utf8(raw).unwrap().replacen(
+                    "WARC/1.1\r\n",
+                    "WARC/1.1\r\nWARC-Page-ID: actual-page\r\n",
+                    1,
+                );
+                let mut enc = flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
+                enc.write_all(raw.as_bytes()).unwrap();
+                let data = enc.finish().unwrap();
+                let index = std::str::from_utf8(&entries["indexes/index.cdxj"]).unwrap();
+                let start = index.find('{').unwrap();
+                let mut row: serde_json::Value = serde_json::from_str(&index[start..]).unwrap();
+                row["length"] = serde_json::json!(data.len());
+                entries.insert(
+                    "indexes/index.cdxj".into(),
+                    format!("{}{}\n", &index[..start], row).into_bytes(),
+                );
+                entries.insert("archive/capture.warc.gz".into(), data);
+            }
+            let mut pages = format!(
+                "{{\"format\":\"json-pages-1.0\"}}\n{}\n",
+                serde_json::json!({"id":page_id,"url":"https://example.test/account","ts":ts,"title":"Native title","text":"Native rendered baseline","status":if case=="failed-status" {500} else {200}})
+            );
+            if case == "ambiguous-page-rows" {
+                // The conflicting row must not borrow this later row's ID from
+                // the inventory's URL/date lookup, even if this row is failed.
+                pages.push_str(&format!("{}\n", serde_json::json!({"id":"actual-page","url":"https://example.test/account","ts":ts,"title":"Failed native title","text":"Failed native baseline","status":500})));
+            }
+            entries.insert("pages/pages.jsonl".into(), pages.into_bytes());
+        });
+        let before = inspect_archive(&patch).unwrap().sha256;
+        let output = dir.path().join(format!("{case}-repaired.wacz"));
+        let report = compose_repair(
+            &parent,
+            &patch,
+            &output,
+            &[],
+            &["https://example.test/account".into()],
+        )
+        .unwrap();
+        let page = report
+            .pages
+            .iter()
+            .find(|p| p.url.ends_with("/account"))
+            .unwrap();
+        let reader = reader_export(&output, "html").unwrap();
+        if expected_native {
+            assert_eq!(page.text, "Native rendered baseline", "{case}");
+            assert_eq!(page.title, "Native title");
+            assert_eq!(page.ts, ts);
+            assert!(reader.contains("Native rendered baseline"));
+        } else {
+            assert!(!reader.contains("Native rendered baseline"), "{case}");
+            assert!(reader.contains("Successful body"));
+            assert_eq!(page.title, "Successful title");
+            assert_eq!(page.ts, "2026-02-01T00:00:00Z");
+        }
+        assert_eq!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("native page metadata")),
+            !expected_native
+        );
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&output).unwrap()).unwrap();
+        let provenance: serde_json::Value =
+            serde_json::from_reader(zip.by_name("provenance.json").unwrap()).unwrap();
+        assert_eq!(provenance["mixedCaptureTimes"], true);
+        assert_eq!(
+            provenance["pageMetadataFallbacks"].as_u64().unwrap() > 0,
+            !expected_native
+        );
+        assert!(verify_archive(&output).unwrap().valid);
+        assert_eq!(inspect_archive(&patch).unwrap().sha256, before);
+    }
 }
