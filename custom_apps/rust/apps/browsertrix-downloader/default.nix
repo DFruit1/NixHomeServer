@@ -16,6 +16,10 @@ let
       "dist/replay/index.html"
       "dist/replay/ui.js"
       "dist/replay/sw.js"
+      "dist/replay/clean.js"
+      "dist/replay/sw-clean.js"
+      "dist/replay/boot.html"
+      "dist/replay/bootstrap.js"
     ];
   };
   app = rustLib.mkRustApp {
@@ -36,6 +40,13 @@ let
       export BROWSERTRIX_DOWNLOADER_STATE_DIR="$PWD/.local/browsertrix-downloader/state"
       export BROWSERTRIX_DOWNLOADER_CRAWLS_DIR="$PWD/.local/browsertrix-downloader/crawls"
       export BROWSERTRIX_DOWNLOADER_ARCHIVE_ROOT="$PWD/.local/browsertrix-downloader/archives"
+      export BROWSERTRIX_DOWNLOADER_PRIVATE_ARCHIVE_ROOT="$PWD/.local/browsertrix-downloader/private-archives"
+      export BROWSERTRIX_DOWNLOADER_CHECKPOINTS_ROOT="$BROWSERTRIX_DOWNLOADER_STATE_DIR/checkpoints"
+      export BROWSERTRIX_DOWNLOADER_PROFILES_ROOT="$BROWSERTRIX_DOWNLOADER_STATE_DIR/profiles"
+      export BROWSERTRIX_DOWNLOADER_INBOX_ROOT="$BROWSERTRIX_DOWNLOADER_STATE_DIR/inbox"
+      export BROWSERTRIX_DOWNLOADER_ARCHIVE_UID="$(id -u)"
+      export BROWSERTRIX_DOWNLOADER_ARCHIVE_GID="$(id -g)"
+      export BROWSERTRIX_DOWNLOADER_PRIVATE_ARCHIVE_GID="$BROWSERTRIX_DOWNLOADER_ARCHIVE_GID"
       export BROWSERTRIX_DOWNLOADER_ZIM_ROOT="$PWD/.local/browsertrix-downloader/zims"
       export BROWSERTRIX_DOWNLOADER_FRONTEND_DIR="$PWD/frontend/dist/client"
       export BROWSERTRIX_DOWNLOADER_REPLAY_DIR="$PWD/frontend/dist/replay"
@@ -43,6 +54,10 @@ let
         "$BROWSERTRIX_DOWNLOADER_STATE_DIR" \
         "$BROWSERTRIX_DOWNLOADER_CRAWLS_DIR" \
         "$BROWSERTRIX_DOWNLOADER_ARCHIVE_ROOT" \
+        "$BROWSERTRIX_DOWNLOADER_PRIVATE_ARCHIVE_ROOT" \
+        "$BROWSERTRIX_DOWNLOADER_CHECKPOINTS_ROOT" \
+        "$BROWSERTRIX_DOWNLOADER_PROFILES_ROOT" \
+        "$BROWSERTRIX_DOWNLOADER_INBOX_ROOT" \
         "$BROWSERTRIX_DOWNLOADER_ZIM_ROOT"
     '';
     meta = {
