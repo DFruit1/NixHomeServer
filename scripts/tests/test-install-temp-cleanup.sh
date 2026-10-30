@@ -3,7 +3,7 @@
 #
 # Pins the scheduled-job wiring: a cron block (or systemd user units when
 # available), idempotent reinstallation, preserved unrelated crontab entries,
-# the opt-out flags, and clean uninstall. Runs hermetically with fake crontab
+# the schedule override, and clean uninstall. Runs hermetically with fake crontab
 # and systemctl binaries.
 
 set -euo pipefail
@@ -12,7 +12,7 @@ TESTS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$TESTS_REPO_ROOT/scripts/tests/test-common.sh"
 ensure_tools awk
 
-root="$(mktemp -d)"
+root="$(mktemp -d /tmp/nixhomeserver-test-install-temp-cleanup.XXXXXXXX)"
 trap 'rm -rf "$root"' EXIT
 
 home="$root/home"
@@ -79,25 +79,19 @@ grep -qF '15 2 * * * /usr/bin/backup --now' "$FAKE_CRONTAB" \
   || { cat "$FAKE_CRONTAB" >&2; echo "❌ an unrelated crontab entry was lost" >&2; exit 1; }
 grep -qF '10 4 * * *' "$FAKE_CRONTAB" \
   || { cat "$FAKE_CRONTAB" >&2; echo "❌ the default 04:10 schedule was not installed" >&2; exit 1; }
-grep -qF -- '--apply --include-scratch --include-worktrees' "$FAKE_CRONTAB" \
+grep -qF -- '--apply' "$FAKE_CRONTAB" \
   || { cat "$FAKE_CRONTAB" >&2; echo "❌ the scheduled command is missing its safe defaults" >&2; exit 1; }
 grep -qF "$home/.local/state/nixhomeserver/temp-cleanup.log" "$FAKE_CRONTAB" \
   || { cat "$FAKE_CRONTAB" >&2; echo "❌ the scheduled command does not log to state" >&2; exit 1; }
 
 echo "  ✅ cron installation is idempotent and keeps unrelated entries"
 
-# --- opt-out flags are honored ----------------------------------------------
+# --- schedule override is honored ----------------------------------------------
 
-run_installer --no-worktrees --no-scratch --time 05:07 >/dev/null
+run_installer --time 05:07 >/dev/null
 grep -qF '7 5 * * *' "$FAKE_CRONTAB" \
   || { cat "$FAKE_CRONTAB" >&2; echo "❌ --time was not applied" >&2; exit 1; }
-if grep -q -- '--include-worktrees\|--include-scratch' "$FAKE_CRONTAB"; then
-  cat "$FAKE_CRONTAB" >&2
-  echo "❌ an opt-out flag remained in the scheduled command" >&2
-  exit 1
-fi
-
-echo "  ✅ --no-worktrees, --no-scratch and --time are honored"
+echo "  ✅ --time is honored"
 
 # --- uninstall preserves unrelated entries ----------------------------------
 
@@ -117,7 +111,7 @@ service="$home/.config/systemd/user/nixhomeserver-temp-cleanup.service"
 timer="$home/.config/systemd/user/nixhomeserver-temp-cleanup.timer"
 [[ -f "$service" && -f "$timer" ]] \
   || { echo "❌ systemd user units were not written" >&2; exit 1; }
-grep -qF -- '--apply --include-scratch --include-worktrees' "$service" \
+grep -qF -- '--apply' "$service" \
   || { cat "$service" >&2; echo "❌ the systemd service is missing its safe defaults" >&2; exit 1; }
 grep -qF 'OnCalendar=*-*-* 4:10:00' "$timer" \
   || { cat "$timer" >&2; echo "❌ the systemd timer schedule is wrong" >&2; exit 1; }

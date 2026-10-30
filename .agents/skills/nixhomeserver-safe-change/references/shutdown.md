@@ -1,9 +1,8 @@
 # Protect work from a pending shutdown
 
 Use this only when work depends on the server and could outlast its pending
-shutdown. Existing operational authority is required. Hermes implementers use
-an approved helper or route the timer action to the coordinator; reviewers
-do not gain server-administration access from a review task.
+shutdown. Existing operational authority is required; a review task does not
+grant server-administration access.
 
 On the server:
 

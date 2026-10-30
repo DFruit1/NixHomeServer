@@ -40,9 +40,6 @@ let
       "home/*/.gradle"
       "home/*/.cargo"
       "home/*/.npm"
-      "home/*/.hermes/tools"
-      "home/*/.hermes/cache"
-      "home/*/.hermes/installs"
       "*.wacz"
       "*.iso"
       "*.qcow2"
@@ -105,9 +102,6 @@ let
       --add-ignore='home/*/.gradle' \
       --add-ignore='home/*/.cargo' \
       --add-ignore='home/*/.npm' \
-      --add-ignore='home/*/.hermes/tools' \
-      --add-ignore='home/*/.hermes/cache' \
-      --add-ignore='home/*/.hermes/installs' \
       --add-ignore='var/cache' \
       --add-ignore='var/lib/immich-public-proxy' \
       --add-ignore='var/lib/jellyfin/log' \

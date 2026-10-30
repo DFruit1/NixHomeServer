@@ -6,7 +6,7 @@ description: Add, disable, remove, or restructure a removable NixHomeServer appl
 # Application module changes
 
 Removing an application must preserve unrelated evaluation and retained data.
-Work under `AGENTS.md` and the role/card's existing authority.
+Work under `AGENTS.md` and the user's authorized scope.
 
 1. Start with `modules/catalog.nix`, the app's `default.nix`, and the facet
    being changed. Optional apps live in `modules/<app>/`; always-present

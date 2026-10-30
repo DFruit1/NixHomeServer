@@ -16,9 +16,9 @@ the complete original brief, prior findings, responses, and unresolved objection
 Use a fresh delegated task for each round. The child thread is backing storage,
 not the target for a review follow-up. Do not create top-level conversations.
 
-Outside T3, use an available authorized native Sol subagent only if it supports
-the requested model/options. Report unavailable capability rather than silently
-substituting another model. Never ask a reviewer to spawn more reviewers.
+If T3 delegation is unavailable, report the capability gap rather than
+substituting another orchestrator or model. Never ask a reviewer to spawn
+more reviewers.
 
 Reviewer brief:
 
@@ -37,5 +37,6 @@ cancellation before replacement. Do not edit the reviewed files concurrently.
 
 Use review-loop's ceiling of three ordinary rounds and current-diff acceptance
 rule; an adequate first approval needs no additional round. Report
-model/options and usage only when exposed. No model result authorizes deployment
-or replaces the qualified Hermes whole-set review and paired decision.
+model/options and usage only when exposed. No model result authorizes deployment;
+follow AGENTS.md and the guarded deployment procedure for an explicitly
+requested activation.

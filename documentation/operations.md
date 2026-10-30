@@ -2,16 +2,16 @@
 
 Use this as the maintained day-2 operations guide for validation, guarded deploys, rollback, service health, SMART monitoring, and first-response troubleshooting.
 
-For workstation agents, see the [Hermes review taskforce](hermes-review-taskforce.md)
-for audit ownership, project cadence, persisted findings and owner approval rules.
+For agent workflow and authority, use the current [AGENTS.md](../AGENTS.md)
+and [project skills](agent-skills.md). T3 Code owns project orchestration.
 
 Routine rebuilds and deployment tests use only the guarded helper: run
 `nix run .#deploy -- --action test` before the matching `--action switch` from
 unchanged reviewed source, with dashboard-selected allocation and no overrides.
 Do not use raw `nixos-rebuild` to bypass staging, canary, stamp or rollback
 checks; the emergency console rollback below is a separate explicit bypass.
-The current reviewed-change integration manifest and live prerequisites are in
-[deployment composition t_0fa78113](deploy-composition-t_0fa78113.md).
+Review the intended source change under current AGENTS.md before an authorized
+deployment; historical task manifests are not live deployment instructions.
 
 ## Keys & Secrets Vault
 
@@ -806,73 +806,38 @@ emits `disk_cleanup_action_failed` (with the final 8 KiB of its output as
 base64) and a final `disk_cleanup_failed`, which uses the normal systemd
 failure alert path.
 
-## Hermes and Development Temp Cleanup
+## Development Temp Cleanup
 
-`scripts/admin/temp-cleanup.sh` is the regular, conservative pass for Hermes
-and development temporary files. The server runs it daily as the local admin
-through `nixhomeserver-temp-cleanup.timer`; workstations install the same job
-with `scripts/admin/install-temp-cleanup.sh`.
+`scripts/admin/temp-cleanup.sh` reclaims aged development scratch and generated
+output. The server runs it daily as the local admin through
+`nixhomeserver-temp-cleanup.timer`; workstations install the same job with
+`scripts/admin/install-temp-cleanup.sh`.
 
-It removes only entries directly inside these roots, and only when they are
-older than the configured age:
-
-| Root | Default age | What it holds |
+| Root | Default age | Contents |
 | --- | --- | --- |
-| `~/.hermes/cache/*`, `~/.hermes/profiles/*/cache/*` | 14 days | Regenerable model, browser, token-cost and schema caches |
-| `~/.hermes/logs/*.log`, `~/.hermes/profiles/*/logs/*.log` | 14 days | Rotated or stale diagnostic logs |
-| `~/.hermes/profiles/*/scratch/*` (with `--include-scratch`) | 30 days | Dormant agent scratch, including test environments |
-| `/tmp/nixhomeserver-*`, `/tmp/hermes-*` | 7 days | Test fixtures and tool scratch owned by this tooling |
-| `<repo>/.tmp/*` | 7 days | Agent task scratch described in `AGENTS.md` |
-| `<repo>/output/*`, `test-results/*`, `playwright-report/*` | 14 days | Generated render and test artifacts |
+| `/tmp/nixhomeserver-*`, `<repo>/.tmp/*` | 7 days | Task scratch |
+| `<repo>/output/*`, `test-results/*`, `playwright-report/*` | 14 days | Generated artifacts |
 
-`~/.hermes/installs` and `~/.hermes/tools` are always reported and never
-auto-deleted; project environments are expensive to rebuild and managed
-runtimes are pinned. `--include-installs` opts into the 30-day project
-environment cleanup. Worktrees are never deleted by this script: with
-`--include-worktrees` it runs Hermes' audited `hermes worktree prune` (which
-keeps uncommitted and unpushed work) and the kanban worktree reaper, whose own
-safety contract is described in `AGENTS.md`.
-
-An entry is preserved when it is a symlink, a mount point, or contains `.git`,
-`SOUL.md`, a database (`*.db`, `*.sqlite*`), an encrypted archive (`*.age`,
-`*.kdbx`), model weights (`*.gguf*`), `models/`, credentials (`*.env`, `*.pem`,
-`*.key`, `.ssh`) or any archive. The filesystem boundary is never crossed
-(`find -xdev`, `rm --one-file-system`), so a bind mount or network share under
-a cache root cannot be deleted through it. The default action is a dry run.
+The default is a dry run. Symlinks, mount points, repositories, databases,
+secrets, model weights, credentials and archives are preserved. The script
+never crosses filesystems, invokes an orchestrator, or prunes worktrees.
 
 ```bash
-# Review what would be removed, including byte accounting.
-scripts/admin/temp-cleanup.sh --bytes
-
-# Apply the same policy to Hermes scratch and both worktree tools.
-scripts/admin/temp-cleanup.sh --apply --include-scratch --include-worktrees
+scripts/admin/temp-cleanup.sh --bytes           # review candidates
+scripts/admin/temp-cleanup.sh --apply           # apply the same allowlist
 ```
 
-On the server, `system.tempCleanup` controls the job:
-
-```nix
-system.tempCleanup = {
-  enable = true;         # daily, as the local admin
-  maxAgeDays = 14;       # caches, logs, and generated output
-  scratchAgeDays = 30;   # dormant Hermes profile scratch
-};
-```
+On the server, `system.tempCleanup` controls `enable` (default true) and
+`maxAgeDays` (default 14). Inspect `nixhomeserver-temp-cleanup.timer` and its
+service journal for actual execution. On workstations the installer uses a
+systemd user timer when available, otherwise a cron block. Reinstallation is
+idempotent and preserves unrelated entries. Reinstall an existing workstation
+job after changing the cleanup CLI to refresh its saved command.
 
 ```bash
-systemctl list-timers nixhomeserver-temp-cleanup.timer
-journalctl -u nixhomeserver-temp-cleanup.service --output=cat
-sudo systemctl start nixhomeserver-temp-cleanup.service
-```
-
-On a workstation (including Void/runit hosts without a systemd user manager),
-the installer writes a daily cron block or, when available, a systemd user
-timer. It is idempotent, preserves unrelated crontab entries, and logs to
-`~/.local/state/nixhomeserver/temp-cleanup.log` on the cron path.
-
-```bash
-scripts/admin/install-temp-cleanup.sh --dry-run   # show the planned job
-scripts/admin/install-temp-cleanup.sh             # install at 04:10 daily
-scripts/admin/install-temp-cleanup.sh --no-worktrees --time 05:00
+scripts/admin/install-temp-cleanup.sh --dry-run
+scripts/admin/install-temp-cleanup.sh
+scripts/admin/install-temp-cleanup.sh --time 05:00
 scripts/admin/install-temp-cleanup.sh --uninstall
 ```
 
@@ -2584,11 +2549,6 @@ with an instruction to rerun `--action test`; they are never silently upgraded
 or assumed to have been debug-validated. Run `./scripts/deploy.sh --action test`
 once after upgrading to record a new stamp before switching.
 
-Hermes coordinators also follow the [deployment receipt procedure](hermes-deployment-receipts.md)
-to compare whole-set review, coordinator decision, clean source and supplied test
-stamp evidence before each action. This read-only check does not enforce the
-workflow inside deploy.sh or replace its live target stamp validation.
-
 The regular deploy path stays intentionally focused. It evaluates the target,
 checks build and target capacity, uses the build allocation selected in
 `vars.nix`, and runs the runtime health gates described above.
@@ -2708,7 +2668,7 @@ build.
 Two limits belong with that statement:
 
 * **The sandbox has no user `PATH`.** A derivation that shells out to `cargo`,
-  `hermes`, `systemd-tmpfiles`, `jq`-adjacent workstation tooling or anything
+  `systemd-tmpfiles`, `jq`-adjacent workstation tooling or anything
   in `~/.local/bin` fails on the server and passes on the workstation. This is
   why `scripts/validate-repo.sh` excludes `repo-policy` from `--build-checks`
   and runs the script suite directly. Do not widen that exclusion list from
@@ -2729,41 +2689,11 @@ directional, but the `max-jobs` and load-average numbers from the previous
 capacity headroom. Re-measure on an idle pair before drawing a scaling
 conclusion.
 
-### What offload does not cover
+### What offload covers
 
-The Hermes kanban board is single-host by design and its crash detection
-assumes host-local PIDs, so kanban workers do not run remotely. The SSH
-terminal backend is a global per-profile flip that would also move the guarded
-deploy helpers; it is not the offload mechanism. Tool jobs that only need the
-repo's own scripts stay local; the auditable patterns are the `remote-eval.sh`,
-`remote-build.sh` and `remote-run.sh` helpers described above.
-
-## Manual Hermes Kanban Dispatch
-
-The gateway dispatcher runs as `hermes -p default gateway run` and enforces the
-`kanban.max_in_progress_per_profile` caps in the default profile's configuration
-(`~/.hermes/config.yaml`). A manual `hermes kanban dispatch` must name that
-profile explicitly:
-
-```bash
-hermes -p default kanban dispatch
-```
-
-A bare `hermes kanban dispatch`, or one run under a worker profile, resolves the
-*sticky active* profile's own configuration instead. Every per-profile config
-has a `kanban:` block with no caps, so such a pass is uncapped and will spawn
-past the `local-implementer: 1` limit, breaking the serialized local lane.
-Always select the default profile; `--profile` is the long form of `-p`.
-
-`--dry-run` is not read-only. It still runs the reclaim phase and can write (a
-dead running PID produces a `protocol_violation` event), so probe only against a
-*copied* board database, never the live board.
-
-A manual pass spawns workers only and changes none of the surrounding policy:
-local work stays local-only, the serialized owner-alert (SimpleX-first) local
-capacity dependencies are untouched, and the separate guarded test/switch deploy
-gates remain unchanged. Treat this as an operational mitigation for the
-config-source divergence, not a repair of it.
+Use the maintained `remote-eval.sh`, `remote-build.sh` and `remote-run.sh`
+helpers for authorized server work. T3 Code owns agent orchestration; the
+compute helpers do not create or dispatch agent tasks.
 
 ## Upstream Sync
 

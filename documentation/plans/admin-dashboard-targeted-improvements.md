@@ -1,7 +1,7 @@
 # Proposal: Admin Dashboard + Targeted Server Feature Improvements
 
 Status: draft proposal (no implementation yet)
-Scope: actual NixOS server features (not Hermes). All items are admin-only surfaces
+Scope: actual NixOS server features. All items are admin-only surfaces
 in the homepage app, exposed through a new **Admin Dashboard** page that is
 deliberately separate from the existing `/admins` command-reference page.
 

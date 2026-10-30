@@ -1,38 +1,8 @@
 {
   "archived_on": "2026-10-28",
   "source_revision": "ffcc7b240ca4e9923f4b117938ccffc4a3a01987",
-  "purpose": "Historical definitions; current project skills and native compatibility adapters supersede these instructions.",
+  "purpose": "Historical definitions only; current AGENTS.md and project skills govern authorized work.",
   "files": [
-    {
-      "source": "scripts/hermes/instructions/systematic-debugging.md",
-      "archive": "documentation/archive/skills/hermes/systematic-debugging.md",
-      "sha256": "8238bba7d847323f54de3bff6d39da947ccca6e1629729229dd83f558fbec14e"
-    },
-    {
-      "source": "scripts/hermes/instructions/requesting-code-review.md",
-      "archive": "documentation/archive/skills/hermes/requesting-code-review.md",
-      "sha256": "acf9ffe5127bd63d9ebead77071c72a8b9718fcaa2d28cbfb4ca1a50d6415ff0"
-    },
-    {
-      "source": "scripts/hermes/instructions/sdlc-review.md",
-      "archive": "documentation/archive/skills/hermes/sdlc-review.md",
-      "sha256": "55e303880e089cca059ce77785f90993d95d7632b877ba5bf2d33c74d3788851"
-    },
-    {
-      "source": "scripts/hermes/instructions/kanban-orchestration.md",
-      "archive": "documentation/archive/skills/hermes/kanban-orchestration.md",
-      "sha256": "e44587420c00792d38fcc65fe5bbea1b55c5c8bc804253f0768e59421a8d488d"
-    },
-    {
-      "source": "scripts/hermes/instructions/taskforce-feature-audit.md",
-      "archive": "documentation/archive/skills/hermes/taskforce-feature-audit.md",
-      "sha256": "3d655a63a2b5df99fcfe599a9d2c9de5f4798b70865396baadcfccd05a998fa0"
-    },
-    {
-      "source": "scripts/hermes/taskforce/board-steward-skill.md",
-      "archive": "documentation/archive/skills/hermes/board-steward.md",
-      "sha256": "b277accf1baa10f4b0848ea3c1a0d85f0664d1b2e88c48da82ab5d6a153bc72c"
-    },
     {
       "source": ".agents/skills/grilling/SKILL.md",
       "archive": "documentation/archive/skills/retired/grilling/REFERENCE.md",
@@ -82,16 +52,6 @@
       "source": ".agents/skills/teach/agents/openai.yaml",
       "archive": "documentation/archive/skills/retired/teach/agents/openai.yaml",
       "sha256": "09c613cc83b2138d96e49d24c43ddd36f77a1819d21956a28ef8ab23e2f07544"
-    },
-    {
-      "source": ".agents/skills/nixhomeserver-shutdown-guard/SKILL.md",
-      "archive": "documentation/archive/skills/retired/nixhomeserver-shutdown-guard/REFERENCE.md",
-      "sha256": "e0feb7fd4920a11e88356bf4b4633ef69b5e6d447c68f73cef003e1a0f8ab1df"
-    },
-    {
-      "source": ".agents/skills/nixhomeserver-shutdown-guard/agents/openai.yaml",
-      "archive": "documentation/archive/skills/retired/nixhomeserver-shutdown-guard/agents/openai.yaml",
-      "sha256": "6f345b796ea8ca192cc4d86c2a7aa9d24568f6d4dab66fcb3bf688526cd8c790"
     }
   ]
 }

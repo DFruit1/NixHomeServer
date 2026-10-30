@@ -3,7 +3,7 @@
 #
 # The daily unit deletes files on the server, so this pins the effective
 # configuration: it runs as the local admin, applies the conservative script
-# with scratch enabled, and fires once a day in a persistent window.
+# and fires once a day in a persistent window.
 
 set -euo pipefail
 
@@ -38,7 +38,7 @@ local_admin="$(
 
 jq -e --arg user "$local_admin" '
   .user == $user
-  and (.execStart | test("--apply --include-scratch$"))
+  and (.execStart | test("--apply$"))
   and .privateTmp == false
   and .timer.OnCalendar == "*-*-* 03:40:00"
   and .timer.Persistent == true

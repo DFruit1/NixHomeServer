@@ -26,7 +26,7 @@ cause. Summarize rejected hypotheses and the next discriminating check. This
 does not authorize an architecture replacement or a wider test suite.
 
 Verify the original symptom and one relevant ordinary/error path. Reviewers use
-this method read-only and request implementation changes through native review.
+this method read-only and request implementation changes through the parent T3 Code task.
 An installed helper or a queued recovery is only an intermediate result:
 compare the original failure with an observed successful attempt before claiming
 repair. If that attempt is unavailable or outside authority, name the remaining

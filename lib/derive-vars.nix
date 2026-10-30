@@ -128,7 +128,6 @@ let
   tempCleanup = {
     enable = configuredTempCleanup.enable or true;
     maxAgeDays = configuredTempCleanup.maxAgeDays or 14;
-    scratchAgeDays = configuredTempCleanup.scratchAgeDays or 30;
   };
   configuredStorageCapacityAlerts = settings.system.storageCapacityAlerts or { };
 in

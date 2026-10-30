@@ -14,8 +14,7 @@ in
       catalog.integrationDefinitions
       vars.enabledApps);
 
-  # Hermes Agent's upstream installer manages generic Linux binaries such as
-  # Node and FFmpeg. NixOS needs nix-ld to run those in the dsaw user profile.
+  # Support generic Linux binaries used by local development tools on NixOS.
   programs.nix-ld.enable = true;
 
   repo = { }
@@ -42,7 +41,7 @@ in
     }
   // lib.optionalAttrs (builtins.elem "qwen-27b" vars.enabledApps) {
       # Qwen is the server's primary local inference endpoint. It starts at
-      # boot and serves Hermes and other local clients over loopback.
+      # boot and serves local clients over loopback.
       #
       # The profile is tuned on this host's single 24 GiB Arc Pro B60: the
       # IQ4_XS 27B weights, a 192K-token Q8_0 KV cache and two parallel slots
@@ -52,16 +51,8 @@ in
       qwen27b = {
         enable = true;
         gpu.enable = true;
-        # Two concurrent 96K sessions. Hermes Agent recommends at least 64K
-        # context for tool workflows and its transcripts routinely overflow
-        # that, so each of the two slots gets 96K.
-        #
-        # llama.cpp splits this total across `parallel` slots, so the
-        # local-implementer Hermes pin
-        # (~/.hermes/profiles/local-implementer/config.yaml -> context_length)
-        # must equal 98304 (contextSize / parallel), NOT contextSize itself; a
-        # longer Hermes context than its slot is rejected per request, and a
-        # shorter one silently truncates. Change both in the same commit.
+        # Two concurrent 96K sessions. llama.cpp splits the total context
+        # across parallel slots; clients must fit within each slot's 98304 tokens.
         #
         # VRAM budget on the 23.91 GiB card, scaled from the measured Q4_K_M
         # load (15.98 GiB weights, 0.86 GiB buffers at parallel = 1):

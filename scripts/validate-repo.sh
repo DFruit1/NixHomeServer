@@ -45,7 +45,7 @@ Full mode (--full):
   - runs the pinned Homepage Playwright end-to-end suite
 
 Sandbox-excluded checks (the class, stated once, enforced below):
-  - a derivation that shells out to the invoking user's tools (cargo, hermes,
+  - a derivation that shells out to the invoking user's tools (cargo,
     systemd-tmpfiles, ~/.local/bin) fails inside a remote builder's sandbox,
     which has no PATH into those tools, and passes on the workstation
   - each excluded check therefore runs directly on the workstation instead,
@@ -213,7 +213,7 @@ current_system() {
 # direct workstation path that keeps their coverage instead.
 #
 # The class: a derivation that shells out to the invoking user's tools. A remote
-# builder's sandbox has no PATH into cargo, hermes, systemd-tmpfiles or
+# builder's sandbox has no PATH into cargo, systemd-tmpfiles or
 # ~/.local/bin, so such a check fails on the server and passes on the
 # workstation. Measured evidence and the numbers behind it are in
 # documentation/operations.md, "Builds".

@@ -47,7 +47,7 @@ Langfuse's supported headless initialization creates the NixHomeServer
 organization, an AI usage project, project API keys, and owner account on first
 startup. Initialization preserves existing resources; editing the bootstrap
 keys later does not rotate a project's existing keys. Use the Langfuse UI to
-rotate keys, then update Hermes credentials.
+rotate keys, then update the configured telemetry clients.
 
 Rotating the encrypted `langfuseServerEnv` is a supported operation. The
 prepare unit rewrites the `/run/langfuse` environment and the Redis password
@@ -61,294 +61,12 @@ client `.env` files to be updated and their processes restarted.
 Rotating `langfuseClientSecret` is likewise supported: `langfuse-prepare`
 rewrites `/run/langfuse/oidc.env` and `langfuse-web` restarts.
 
-AI clients (Hermes, Codex, OpenCode, ...) need these values in their own
-configuration. The canonical variable names are `LANGFUSE_*`; the legacy
-`HERMES_LANGFUSE_*` names remain supported as a fallback:
-
-- `LANGFUSE_PUBLIC_KEY` (legacy `HERMES_LANGFUSE_PUBLIC_KEY`): `LANGFUSE_INIT_PROJECT_PUBLIC_KEY`
-- `LANGFUSE_SECRET_KEY` (legacy `HERMES_LANGFUSE_SECRET_KEY`): `LANGFUSE_INIT_PROJECT_SECRET_KEY`
-- `LANGFUSE_BASE_URL` (legacy `HERMES_LANGFUSE_BASE_URL`): the private HTTPS Langfuse URL
-- `LANGFUSE_CAPTURE=metadata`
-- `LANGFUSE_ENV=nixhomeserver`
-
-Keep each `.env` at mode `0600`. Configure Langfuse Observability through
-`hermes tools` to install the SDK via Hermes's package manager, and enable
-`observability/langfuse` in every worker profile. Restart idle Hermes processes
-for the new SDK and environment to take effect. Metadata capture records model
-usage, latency, failures, and tool timing without exporting conversation text.
-
-## Codex, OpenCode and local inference usage
-
-The existing Hermes Langfuse plugin records requests sent through Codex,
-OpenCode Go and the local llama.cpp endpoint. Fleet releases also install the
-`agent-usage` collector for coding sessions outside Hermes. The existing
-no-agent fleet supervisor runs it every five minutes; it makes no model calls
-and adds no separate cron or service. Python is retained for this operations
-bridge because it shares Hermes/OpenCode's SQLite/JSON interfaces and the
-existing Python release/reporting tools, using only the standard library.
-
-The collector reads Codex's native session index and `token_count` records, and
-OpenCode 2's completed assistant/compaction messages in its local SQLite database
-(or finalized `step-finish` parts on OpenCode 1). The current V2 projection takes
-precedence over the retained V1 tables. Source
-databases open read-only with query deadlines. Only token counters, model,
-native session identity, project label and timestamps are exported. Prompt,
-response, tool and file contents are never exported. Existing project keys are
-read from the root Hermes `.env` in memory; credentials are not copied into a
-new file or supplied to the steward. Authenticated exports use private HTTPS
-and refuse HTTP redirects.
-
-Codex prompt counts include cached input; the collector separates that cache
-from uncached input. Its output count includes reasoning. OpenCode stores text
-and reasoning output separately, so those two fields form its output count.
-Reasoning is retained as metadata, rather than added again to the usage total.
-The fleet-owned native Hermes adapter makes the same correction to future
-Hermes generations and adds `profile`, `provider_route`, `board`, `card_id`,
-`run_id` and `cost_status` where available. Existing historical observations
-are preserved. Old workers retain their loaded plugin until they finish;
-installation alone does not prove their telemetry changed.
-
-Native event identities generate deterministic trace/span IDs. A failed or
-partially rejected upload leaves the checkpoint unchanged; replay targets the
-same observation IDs. Collection is bounded to 512 recent Codex sessions,
-32 MiB of input and 1,000 usage records per source per pass. Initial collection
-has a rolling 24-hour horizon; it does not claim complete historical coverage.
-`bounded`, unavailable and stale sources stay explicit. Checkpoints and the
-credential-free summary live privately at `~/.hermes/state/agent-usage/`.
-
-The collector also reads the local Qwen llama.cpp `/metrics` endpoint. These
-engine lifetime counters cover all clients, including requests outside Hermes.
-They appear as **spans**, with raw uncached/cached/output counts in metadata,
-rather than additional generations: they overlap per-request usage and must
-never be added to it. Engine counters reset when the inference server restarts.
-
-The owner can inspect all streams in the existing AI usage project at
-`https://langfuse.<domain>/project/ai-usage`. Filter generations by model and by
-metadata `source` (`hermes`, `codex-cli`, `opencode-cli`), `provider_route`,
-`profile`, `board` or `card_id`. Select spans with source `llama.cpp-engine` for
-the independent engine counters. Request-level durations are available for
-native Hermes generations; imported coding records have zero duration because
-their usage event does not establish inference latency.
-
-The existing generated steward report includes the rolling 24-hour Langfuse
-model totals, source coverage and separate engine counters. The performance
-report exposes the same cached evidence under `agent_usage`. Both are read-only
-and require no Langfuse credentials or inference probes:
-
-```sh
-python3 ~/.hermes/scripts/agent-usage.py --report
-python3 ~/.hermes/scripts/kanban-performance.py --json
-python3 ~/.hermes/scripts/fleet-report.py
-```
-
-The summary becomes stale after 15 minutes. Aggregate failure and unavailable
-sources are reported as unknown, never zero. Rolling metrics use the Langfuse
-v4 `/api/public/v2/metrics` API; legacy metrics endpoints return 404 on this
-deployment. Input totals include cache. Model-price estimates in Langfuse are
-API equivalents, not subscription invoices or local electricity/hardware cost.
-Actual billing remains unknown without a separately measured billing source.
-
-Install through the existing committed, reviewed fleet release procedure in
-[Hermes fleet maintenance](hermes-fleet.md). The release owns the native adapter
-and both reporting copies, retains preimages, and refuses unsupported upstream
-plugin shapes before writing. Rollback restores only unchanged owned postimages;
-usage observations and checkpoints are retained. Run
-`bash scripts/tests/test-agent-usage.sh` before the owning repository gate.
-
-## Coordinator Sol trial
-
-The owner-selected coordinator primary is `gpt-6.1-sol` through `openai-codex`,
-with a model-specific `medium` reasoning override. The former
-`glm-5.3-flash` primary remains the fallback. The fleet release composes this
-policy from `coordinator_trial.py`; it changes no other profile, credential,
-worker/provider limit or schedule. Rollback through the retained previous fleet
-release restores the previous model settings and telemetry adapter together.
-New workers read the new settings; active workers retain their loaded runtime.
-
-The same instrumentation covers the coordinator, standard/local implementers,
-reviewer, auditor and steward. All currently installed profiles already enable
-the native Langfuse plugin. Reasoning tags apply to every model where the wire
-request reports a recognized effort; no other profile's model is changed.
-
-Use these three questions to compare similar work in the Hermes project:
-
-| Question | Langfuse evidence |
-| --- | --- |
-| How many tokens does each profile/model consume? | Filter generations to metadata `source=hermes`, `profile=<role>`, then compare model, `provider_route` and `reasoning_effort`. Input, cache and output counts are native usage; reasoning is a subset of output, never an extra total. |
-| How long does useful work take? | `Hermes kanban run` spans (`source=hermes-kanban-run`) carry native start/end times and `elapsed_seconds`, including tools and waits. Compare median/p95 and inspect individual runs. Generation duration separately measures provider request time. |
-| Is the model making progress reliably? | Run metadata `status`, `outcome` and `attempt` show recorded handoffs, timeouts/crashes and repeated attempts per card. Generation errors/retry metadata and `provider_route` show request failures and fallback traffic. Completion is a recorded native run outcome, not independent feature acceptance. |
-
-Generations receive reasoning effort from the actual request body; missing
-wire evidence stays absent. Run summaries do **not** add token usage. They link
-the native worker session when it is recorded; `session_model` is that session's
-recorded model, not proof that every call used it. Missing links remain unknown,
-including many historic failed runs. Use matching `board`, `card_id`, `run_id`
-and session to inspect related generations rather than attributing every run
-to today's configuration. Failure categories are never inferred from messages.
-
-The existing five-minute usage collection exports terminal runs for every profile
-from active boards with a rolling 24-hour completion horizon (at most 32 boards
-and 1,000 runs per pass). In-progress runs are not counted as successes. Replays
-use stable observation IDs; delayed native session linkage updates the same
-observation. Missing/malformed sources or bounds appear explicitly in
-`summary.json` under `sources.hermes_runs`. No transcript, task body,
-provider error text, additional generation or new recurring job is introduced.
-
-The existing read-only `langfuse_mcp.py` bridge, when configured, forwards
-`queryMetrics` to the native observations Metrics API with a generation filter.
-Use per-profile metadata filters for token totals, generation latency and error
-counts, grouped by model. `getMetricsSchema` supplies the supported fields and
-units: native latency measures use milliseconds; run `elapsed_seconds` uses
-seconds. Run spans remain separate in the Langfuse explorer; a generation-only token query
-cannot accidentally add their durations or duplicate token usage. No second
-API, MCP server, credential set or reporting service is introduced here.
-Imported Codex/OpenCode usage retains its existing token coverage; those events
-do not establish request latency and must not be used as zero-latency samples.
-
-## Verification
-
-### Read-only MCP access
-
-The existing private instance serves its native MCP endpoint at
-`https://langfuse.<domain>/api/public/mcp` with project-key authentication.
-The native endpoint offers writes as well as reads. Desktop agents use the
-stdio bridge `python3 ~/.hermes/scripts/langfuse_mcp.py`, which exposes only
-`getHealth`, `getMetricsSchema` and `queryMetrics`. It rejects every other tool
-or method before loading credentials or making a request. Usage queries are
-restricted to generations, seven days and at most 1,000 rows. The collector
-and automated guards continue using the API without model calls.
-
-`langfuseMcpClientEnv` is an optional manifest-managed JSON credential containing
-`baseUrl`, `publicKey` and `secretKey`, owned by the Langfuse catalog entry for
-desktop use. It is not a new server service or NixOS runtime secret. Ciphertext
-is tracked at `secrets/langfuseMcpClientEnv.age` and copied privately to
-`~/.hermes/credentials/langfuse-mcp.age`. The bridge sends ciphertext over SSH
-to the existing server age identity for decryption into process memory. The
-private identity stays on the server, and client configuration contains neither
-the project key nor its Basic Auth header. HTTP redirects are refused.
-
-For an authorized new credential, the local-only credential operator on the
-desktop runs the reviewed helper:
-
-```sh
-python3 scripts/admin/provision-langfuse-mcp.py --apply
-```
-
-Langfuse itself mints and registers the project key through its supported owner
-UI API, using the existing bootstrap owner authentication over server loopback.
-This generates the key on the server; the local model operates the flow from
-the desktop and receives only a sanitized receipt. No owner password or API key
-is returned in model/tool output. The helper realizes the normal
-`generate-secrets` app and evaluates its manifest **before** staging plaintext,
-then runs that same realized entrypoint with `--replace-external` and the server
-identity. Passing the already evaluated manifest avoids copying plaintext into
-the Nix store. Other ciphertext is hash-checked unchanged, staging is cleaned,
-and only encrypted output crosses back to the desktop. Transport failure never
-falls back to executing credential work on the desktop.
-
-A root-only locked receipt at
-`/var/lib/langfuse/credential-provisioning/desktop-usage-mcp-v1/receipt.json`
-persists the exact operation intent and encrypted result before handoff. A
-broken SSH connection or partial desktop handoff replays that ciphertext rather
-than minting another key. Only a never-delivered key matching this operation's
-unique note may be revoked as rollback. Two attempts are the automatic limit;
-unused-key cleanup remains available after the limit. Conflicting desktop files
-are preserved. Ciphertext is published atomically from one ignored task
-directory on the same filesystem, and the new credential must pass native MCP
-health and usage queries before success is reported.
-
-After installation and successful provisioning, enroll the bridge with the
-clients' native commands:
-
-```sh
-codex mcp add langfuse -- python3 "$HOME/.hermes/scripts/langfuse_mcp.py"
-opencode mcp add --global langfuse -- python3 "$HOME/.hermes/scripts/langfuse_mcp.py"
-```
-
-OpenCode 2 connects asynchronously. Use `opencode reload` and allow startup to
-finish before checking `opencode mcp list` for `langfuse connected`; a successful
-config write alone is not connection evidence. Its supported
-[configuration reload](https://dev.opencode.ai/v2/docs/cli/commands/#reload)
-keeps running sessions at their next step boundary.
-
-New client sessions load that configuration. The board steward continues using
-credential-free cached reports; its tool permissions and write prohibition
-stay intact. No public route or additional daemon is needed. Native keys remain
-project-scoped; the bridge enforces the smaller read-only interface for callers.
-
-### Token guards and alerts
-
-The existing five-minute fleet supervisor runs `usage-guard` immediately after
-collection. It uses Langfuse generation input plus output tokens (including
-cached input), never engine counters or model-price estimates. A closed
-15-minute window ends 15 minutes behind collection time to accommodate older
-SDK ingestion. The preceding six hours provide a per-model baseline.
-
-A candidate spike must exceed both one million tokens per 15 minutes and three
-times that model's prior mean, with at least 20 baseline requests. This is an
-anomaly threshold for optional work, not an owner-approved spending allowance.
-Three distinct five-minute samples spanning at least ten minutes confirm the
-incident. Sustained failed export, incomplete client coverage or missing guard
-metrics use the same confirmation period. Unknown telemetry is never zero.
-
-A confirmed incident holds **only new proactive intake** in the supervisor.
-It preserves configured pauses, existing cards, active workers, provider
-cooldowns, recovery/review work and deployment gates. A missing or stale guard
-also withholds proactive intake until fresh evidence returns. Two distinct
-healthy samples clear a confirmed hold without modifying scheduling policy.
-
-`~/.hermes/state/agent-usage/guard.json` contains current measurements,
-confirmation state and one stable incident ID. The steward report shows the
-hold and current per-model window/baseline totals. The supervisor uses its
-existing bounded coordinator delivery path to issue a `TOKEN_GUARD` finding;
-changing token amounts do not create fresh incidents or repeated alert cards.
-Technical incidents stay internal rather than becoming owner phone decisions.
-
-On a token spike, read that file and `summary.json`, then inspect the named
-model's generations in Langfuse over the recorded window. Group by source,
-profile and card/run metadata where present. Check original-task progress,
-retries and duplicated recovery work before narrowing the existing task or
-changing priorities within existing budgets. High cached-input volume can be
-legitimate; the guard does not cancel a worker or infer a billing charge.
-For coverage incidents, check collector exit/freshness, read-only source
-availability, authentication and ingestion health. Verify two fresh healthy
-samples before claiming recovery; do not erase guard state to bypass the hold.
-
-`bash scripts/tests/test-agent-usage-guard.sh` covers confirmation, stale
-evidence, recovery and missing-baseline behavior. Supervisor tests verify that
-the hold actually skips proactive intake while recovery continues, and that
-the stable alert reaches the coordinator command with this runbook.
-
-```sh
-bash scripts/tests/test-langfuse-secrets.sh
-bash scripts/tests/test-langfuse-module.sh
-```
-
-Select the relevant local tests above. Run the full gate below only when the
-user explicitly requests full validation. Deployment commands require their
-existing authority and retain all guarded checks:
-
-```sh
-scripts/validate-repo.sh --full
-nix run .#deploy -- --action test
-nix run .#deploy -- --action switch
-```
-
-After activation, check `langfuse-web`, `langfuse-worker`, `redis-langfuse`,
-`clickhouse`, and `langfuse-minio`. Run the Homepage canary and inspect its result:
-
-```sh
-sudo systemctl start homepage-canary.service
-sudo homepage-canary-assert
-```
-
-Send a harmless AI client request, then confirm its trace is present in the AI
-usage Langfuse project. A successful process start or SDK authentication check alone
-is not proof that ingestion reached ClickHouse.
-
-ClickHouse is pinned to UTC because Langfuse writes UTC date strings. Verify a
-fresh generation through `/api/public/v2/observations` with a bounded UTC time
-range; the legacy traces API is unavailable on this Langfuse version.
+AI clients may use their own supported telemetry configuration with the private
+Langfuse project. Use `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and
+`LANGFUSE_BASE_URL` where supported. Keep credentials in each client's private
+configuration and never include conversation contents in telemetry by default.
+There is no repository-managed agent usage collector or agent MCP provisioning
+workflow. Existing encrypted credentials and historical telemetry are retained.
 
 ## Ingestion freshness monitoring
 
@@ -358,12 +76,12 @@ queues (`ingestion-queue`, `otel-ingestion-queue`, `secondary-ingestion-queue`,
 `secondary-otel-ingestion-queue`, verified against the live key space) and
 alerts through the shared failure-alert webhook when the total exceeds 500.
 Queue depth is deliberately traffic-independent: healthy processing drains the
-queue within seconds even under a whole-board burst, and an idle fleet reads as
+queue within seconds even under a request burst, and an idle deployment reads as
 zero depth, so no alerts occur while the owner sleeps. The check skips its
 alert while Redis itself is down, because the Redis unit's failure alerting
 already covers that outage; a worker that runs but stops consuming is the
 remaining silent failure mode this monitor closes. Trace timestamps were
-rejected as the signal precisely because the fleet legitimately idles.
+rejected as the signal precisely because clients legitimately idle.
 Upgrading Langfuse may introduce or rename queues, so inspect the `bull:*`
 key space after a major version bump and extend the queue family here.
 
@@ -427,5 +145,3 @@ Langfuse data lives in the separate `default` database and is unaffected.
 - [Langfuse native MCP server](https://langfuse.com/docs/api-and-data-platform/features/mcp-server)
 - [Codex telemetry](https://developers.openai.com/codex/config-advanced)
 - [llama.cpp monitoring endpoints](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
-- Hermes's bundled `plugins/observability/langfuse/README.md` documents SDK setup
-  and content-capture modes for the installed Hermes version.

@@ -1,10 +1,8 @@
 # Deployment and recovery
 
 Read the focused operation's maintained runbook and `AGENTS.md` deploy gate.
-Hermes uses `documentation/hermes-deployment-receipts.md` to verify recorded
-whole-set review, paired decision, frozen source, and guarded test consistency.
-Outside this checkout, use its maintained installed copy under
-`~/.hermes/scripts/hermes-deployment-receipts.md`.
+Use T3 Code for authorized independent review; the current checkout and
+AGENTS.md define authority and the deployment procedure.
 
 Commit validated source where possible before a guarded operation. Ordinary
 build/activation uses the dashboard's default allocation:
@@ -14,9 +12,9 @@ nix run .#deploy -- --action test
 nix run .#deploy -- --action switch
 ```
 
-Run only the already-authorized action after its prerequisites hold. A matching
-green test plus qualified whole-set acceptance/decision authorizes routine
-switching within recorded scope. Changed source or mutable inputs need fresh
+Run only the already-authorized action after its prerequisites hold. For an
+explicitly authorized deployment, a matching green test and completed review
+are prerequisites for switching. Changed source or mutable inputs need fresh
 review/test. Preserve the deployer's evaluation, build, activation, route/unit/
 canary, tested-closure, boot-commit, and rollback checks. Never switch manually
 to bypass them, use raw `nixos-rebuild` outside an in-scope console recovery, or

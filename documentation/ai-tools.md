@@ -2,7 +2,7 @@
 
 The `ai-tools` application serves MCP tools to the local llama.cpp web UI. Tools
 are attached per client, so the shared inference endpoint keeps serving other
-consumers (Hermes, Paperless) with their own tool choices. The process speaks MCP
+consumers (such as Paperless) with their own tool choices. The process speaks MCP
 over Streamable HTTP on `127.0.0.1:8097` and is published at `https://tools.<domain>`
 through the shared Kanidm authentication gateway, which admits `ai-users`.
 

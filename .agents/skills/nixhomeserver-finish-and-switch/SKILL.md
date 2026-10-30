@@ -25,10 +25,8 @@ or module skill only when that boundary changes.
   A request only to create the skill, inspect work, or prepare changes does not
   authorize activation. If activation is missing from the request, complete the
   authorized preparation and present the concrete candidate before asking.
-- The 2026-10-31 Hermes-disabled instruction supersedes historical card, claim,
-  role, review-chain, and deployment-receipt requirements for interactive work.
-  Use ordinary subagents and review; preserve historical Hermes records and
-  source. Do not start Hermes workers or recreate its policy machinery.
+- T3 Code is the only project orchestrator. Use its authorized task tools and
+  isolated worktrees; historical orchestration policy has no authority.
 - Retain owner gates for credentials/secrets, destructive data effects, wider
   public exposure/routing, spending, and reserved build-allocation settings.
   Do not infer permission for these effects from an unfinished diff. Prepare
@@ -50,7 +48,7 @@ or module skill only when that boundary changes.
    writer, dependencies, checks, and disposition for each logical change.
    Include unpublished commits on participating branches when necessary to
    preserve or finish their dirty work. Do not sweep every historical branch
-   or archived Hermes task into a request about uncommitted work.
+   or historical task into a request about uncommitted work.
 3. Establish intent from the diff, nearby code and available task context.
    Finish evident implementation gaps autonomously. Ask only for material
    choices the evidence cannot settle. Never silently drop a difficult change

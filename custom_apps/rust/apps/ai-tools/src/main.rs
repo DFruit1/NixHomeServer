@@ -1,7 +1,7 @@
 //! MCP tools for the llama.cpp web UI.
 //!
 //! Tools are attached per client, not baked into the model server, so the
-//! shared inference endpoint keeps serving other consumers (Hermes, Paperless)
+//! shared inference endpoint keeps serving other consumers (such as Paperless)
 //! with their own tool choices. This process speaks MCP over Streamable HTTP on
 //! loopback and is published through the shared authentication gateway.
 //!

@@ -39,8 +39,7 @@ Frontend verification follows a real task through its visible result and back,
 with mobile feedback and shared entry-point consistency. Performance work
 measures the reported case, eliminates redundant work first, and preserves
 quality and allocation. Review permits up to three ordinary rounds, stopping
-after one adequate approval. Runtime/card-specific procedures stay in native
-adapters rather than expanding the everyday skill bodies.
+after one adequate approval. Task-specific evidence belongs with its T3 Code task.
 
 ## Consolidation decision
 
@@ -50,11 +49,11 @@ procedures; shutdown protection is an operations reference; frontend work uses
 a bounded project review instead of mandatory consultations and agent fan-outs.
 Toolkit scripts require explicit actual-app inputs and observed coverage.
 
-The full six legacy Hermes definitions, teaching/interview skills, shutdown
-skill, and vendor agent/command configuration are [archived](archive/skills/README.md).
-Native Hermes compatibility adapters retain their names and lifecycle contracts.
-Their source changes are not a live installation. No models, schedules, tools,
-approval policy, or deployment allocation changed.
+Retired teaching/interview skills and vendor agent/command configuration are
+[archived](archive/skills/README.md). These are historical material only. T3 Code
+is the sole project orchestrator; current AGENTS.md and project skills govern
+authorized work. Retired orchestration source and policy are kept only in Git
+history and must not be loaded as current agent context.
 
 The two new entrypoints are original project guidance inspired by
 [tstack's Sol Loop](https://github.com/t3dotgg/tstack/blob/main/skills/sol-loop/SKILL.md).

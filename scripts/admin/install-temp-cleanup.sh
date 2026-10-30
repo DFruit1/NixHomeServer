@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install a daily Hermes and development temp cleanup for the current user.
+# Install a daily development temp cleanup for the current user.
 #
 # Uses a systemd user timer when one is available (NixOS workstations) and the
 # user's crontab otherwise (Void/runit workstations). The job runs the dry-run-
@@ -22,22 +22,16 @@ end_marker="# END nixhomeserver-temp-cleanup"
 
 apply=true
 uninstall=false
-include_scratch=true
-include_worktrees=true
 time_of_day="04:10"
 
 usage() {
   cat <<'EOF'
-Usage: install-temp-cleanup.sh [--uninstall] [--dry-run] [--no-worktrees]
-                               [--no-scratch] [--time HH:MM] [-h]
+Usage: install-temp-cleanup.sh [--uninstall] [--dry-run] [--time HH:MM] [-h]
 
-Install (or remove) the daily Hermes and development temp cleanup for this user.
+Install (or remove) the daily development temp cleanup for this user.
 
   --uninstall       Remove the timer or crontab block installed earlier.
   --dry-run         Print the planned changes without applying them.
-  --no-worktrees    Do not prune worktrees in the scheduled run (caches, logs,
-                    scratch and generated output are still cleaned).
-  --no-scratch      Do not clean dormant Hermes profile scratch directories.
   --time HH:MM      Daily run time in local time (default 04:10).
   -h, --help        Show this help.
 
@@ -52,8 +46,6 @@ while (($# > 0)); do
     --uninstall) uninstall=true; shift ;;
     --apply) apply=true; shift ;;
     --dry-run) apply=false; shift ;;
-    --no-worktrees) include_worktrees=false; shift ;;
-    --no-scratch) include_scratch=false; shift ;;
     --time) [[ $# -ge 2 ]] || { echo "❌ --time needs HH:MM" >&2; exit 2; }; time_of_day="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "❌ Unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -75,14 +67,7 @@ if [[ ! -x "$cleanup" ]]; then
   exit 1
 fi
 
-cleanup_args=(--apply)
-if [[ "$include_scratch" == true ]]; then
-  cleanup_args+=(--include-scratch)
-fi
-if [[ "$include_worktrees" == true ]]; then
-  cleanup_args+=(--include-worktrees)
-fi
-command_line="$cleanup ${cleanup_args[*]}"
+command_line="$cleanup --apply"
 
 has_systemd_user() {
   command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1
@@ -106,7 +91,7 @@ install_systemd_units() {
   install -d -m 0755 -- "$unit_dir"
   cat >"$service_file" <<EOF
 [Unit]
-Description=NixHomeServer Hermes and development temp cleanup
+Description=NixHomeServer development temp cleanup
 
 [Service]
 Type=oneshot
@@ -117,7 +102,7 @@ Nice=15
 EOF
   cat >"$timer_file" <<EOF
 [Unit]
-Description=Daily NixHomeServer Hermes and development temp cleanup
+Description=Daily NixHomeServer development temp cleanup
 
 [Timer]
 OnCalendar=*-*-* ${hour}:${minute}:00

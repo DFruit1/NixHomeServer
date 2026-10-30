@@ -1,7 +1,0 @@
-{
-  "schema": "lwracq-metrics-availability/v1",
-  "status": "ACCEPTED",
-  "reason": "none",
-  "requests_processing": 1,
-  "requests_deferred": 0
-}

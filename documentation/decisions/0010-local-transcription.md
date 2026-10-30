@@ -37,7 +37,7 @@ long-form on this card at all. Its VRAM at c=4096 is 2.701 GiB against the
 2.82 GiB left by Qwen at a 128K context, and llama.cpp does not spill a failed
 allocation to host RAM; under pressure it splits weights between card and host
 without erroring. A nightly unload window was considered and rejected: it would
-have cost Hermes availability during active worker turns, in exchange for a tool
+have interrupted active development sessions, in exchange for a tool
 that cannot transcribe a ten-minute video.
 
 Parakeet is English-only. Whisper covers 100 languages plus translation. Both

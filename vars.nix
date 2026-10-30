@@ -100,9 +100,8 @@ let
         journalVacuumTime = "7d"; # Journal retention kept while under pressure; normal journald retention is 30 days.
       };
       tempCleanup = {
-        enable = true; # Daily reclaim of Hermes caches, logs, and dormant scratch on the server.
-        maxAgeDays = 14; # Retention for caches, logs, and generated development output.
-        scratchAgeDays = 30; # Retention for dormant Hermes profile scratch directories.
+        enable = true; # Daily reclaim of development scratch and generated output.
+        maxAgeDays = 14; # Retention for generated development output.
       };
       storageCapacityAlerts = {
         enable = true; # Alert when watched filesystems cross capacity thresholds; this never deletes anything.

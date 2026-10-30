@@ -1,2 +1,0 @@
-llamacpp:requests_processing 3 extra
-llamacpp:requests_deferred 0

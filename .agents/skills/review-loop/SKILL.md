@@ -32,15 +32,14 @@ review. Loading this skill does not itself authorize subagents or publication.
 6. Approve only the current behavior diff with no required findings open and
    sufficient evidence. Changed behavior invalidates the affected approval.
    Budget exhaustion, timeout, no reply, or missing evidence is not approval.
-   Report unresolved technical disputes to the existing coordinator or user as
+   Report unresolved technical disputes to the parent task or user as
    appropriate; uncertainty alone does not create an owner gate.
 
 For independent review, give the reviewer the pinned scope, original intent,
 checks, and a read-only brief. Freeze only the reviewed files while it runs.
 Do not claim independence for a self-review.
 
-Use the existing native review lifecycle when present; its dispatcher adapter
-owns transitions and role separation. Do not add parallel reviewers around it.
+Use T3 Code for authorized delegation and preserve reviewer role separation.
 For an explicitly requested Sol review, read [the Sol adapter](references/sol.md).
 
 Report candidate identity, checks and coverage limits, rounds, reviewer identity

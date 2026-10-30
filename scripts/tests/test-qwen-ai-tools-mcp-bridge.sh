@@ -25,7 +25,7 @@ fi
 # The wrapper's own --mcp-servers-config / --cors-origins flags are NOT asserted
 # here. ExecStart records only the generated wrapper's store path, so reading the
 # flags means inspecting the built wrapper, which needs a Nix build rather than
-# an evaluation. That obligation belongs to t_34c52c70.
+# an evaluation; verify that separately before live use.
 both_enabled="$(remote_eval_batch_json \
   both="let
     cfg = f.nixosConfigurations.\"$host\".config;

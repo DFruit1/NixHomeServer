@@ -17,14 +17,12 @@ in
 {
   config = lib.mkIf tempCleanupCfg.enable {
     systemd.services.nixhomeserver-temp-cleanup = {
-      description = "Daily Hermes and development temporary-file cleanup";
+      description = "Daily development temporary-file cleanup";
       environment = {
         HOME = adminHome;
-        TEMP_CLEANUP_HERMES_HOME = "${adminHome}/.hermes";
         TEMP_CLEANUP_REPO_PATH = "${adminHome}/Projects/NixOS";
         TEMP_CLEANUP_STATE_DIR = "${adminHome}/.local/state/nixhomeserver";
         TEMP_CLEANUP_MAX_AGE_DAYS = toString tempCleanupCfg.maxAgeDays;
-        TEMP_CLEANUP_SCRATCH_AGE_DAYS = toString tempCleanupCfg.scratchAgeDays;
       };
       unitConfig = {
         OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
@@ -33,7 +31,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         User = vars.localAdminUser;
-        ExecStart = "${tempCleanup}/bin/nixhomeserver-temp-cleanup --apply --include-scratch";
+        ExecStart = "${tempCleanup}/bin/nixhomeserver-temp-cleanup --apply";
         Nice = 15;
         CPUWeight = 10;
         IOWeight = 10;

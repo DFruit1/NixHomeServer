@@ -1,3 +1,0 @@
-llamacpp:requests_processing 0
-CANARY_RAW_BODY_FRAGMENT
-llamacpp:requests_deferred 0

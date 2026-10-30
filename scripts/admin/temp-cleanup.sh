@@ -1,41 +1,8 @@
 #!/usr/bin/env bash
-# Reclaim Hermes and development temporary files on a workstation or server.
-#
-# Why this exists
-# ---------------
-# Hermes keeps caches, scratch directories, logs and worktrees under its home,
-# and development work leaves test output and scratch trees in the repository.
-# The server already reclaims aged tmpfiles and the Nix store, but only under
-# disk pressure, and the workstation has no equivalent routine at all. This is
-# the regular, conservative pass: it deletes only entries inside an explicit
-# allowlist that are older than the configured age, and it never touches
-# recorded work, boards, backups, secrets, model weights or worktrees it cannot
-# prove are safe.
-#
-# Safety contract
-# ---------------
-# * The default action is a dry run; nothing is removed without --apply.
-# * Only entries directly inside the allowlisted roots are considered:
-#     - $HERMES_HOME/cache/*            (14 days)
-#     - $HERMES_HOME/profiles/*/cache/* (14 days)
-#     - $HERMES_HOME/logs/*.log         (14 days)
-#     - $HERMES_HOME/profiles/*/scratch/* with --include-scratch (30 days)
-#     - $HERMES_HOME/installs/* with --include-installs (30 days)
-#     - $TMP_DIR/nixhomeserver-*, $TMP_DIR/hermes-*  (7 days)
-#     - $REPO/.tmp/*                    (7 days)
-#     - $REPO/output/*, test-results/*, playwright-report/* (14 days)
-# * An entry is preserved when it is a symlink, a mount point, or when it
-#   contains protected content: .git, SOUL.md, *.db/*.sqlite, *.age, *.gguf,
-#   *.env, secrets, models, *.kdbx, *.pem, *.key, or an archive.
-# * The filesystem boundary is never crossed (find -xdev, rm --one-file-system),
-#   so a bind mount or NFS share under a cache root cannot be deleted through it.
-# * Worktrees are never deleted here. With --include-worktrees the script runs
-#   Hermes' own audited `worktree prune` (which keeps uncommitted and unpushed
-#   work) and this repository's kanban reaper when both are available.
-# * The script refuses to run under a second concurrent invocation.
-#
-# Run as the user who owns the temporary files. The default is a dry run; pass
-# --apply from the scheduled unit.
+# Reclaim aged development scratch and generated output.
+# Default is a dry run. Only allowlisted roots are scanned, and protected data,
+# symlinks, mounts, repositories and worktrees are preserved. No orchestration
+# tool or worktree-pruning helper is discovered or invoked.
 
 set -euo pipefail
 
@@ -43,44 +10,27 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 apply=false
 bytes=false
-include_scratch=false
-include_installs=false
-include_worktrees=false
 
 max_age_days="${TEMP_CLEANUP_MAX_AGE_DAYS:-14}"
-scratch_age_days="${TEMP_CLEANUP_SCRATCH_AGE_DAYS:-30}"
-installs_age_days="${TEMP_CLEANUP_INSTALLS_AGE_DAYS:-30}"
 tmp_age_days="${TEMP_CLEANUP_TMP_AGE_DAYS:-7}"
 
-hermes_home="${TEMP_CLEANUP_HERMES_HOME:-${HERMES_HOME:-$HOME/.hermes}}"
 repo_path="${TEMP_CLEANUP_REPO_PATH:-$(cd "$script_dir/../.." && pwd)}"
 tmp_dir="${TEMP_CLEANUP_TMP_DIR:-/tmp}"
 state_root="${XDG_STATE_HOME:-$HOME/.local/state}"
 state_dir="${TEMP_CLEANUP_STATE_DIR:-$state_root/nixhomeserver}"
 lock_path="${TEMP_CLEANUP_LOCK_PATH:-$state_dir/temp-cleanup.lock}"
-hermes_bin="${TEMP_CLEANUP_HERMES_BIN:-}"
 
 usage() {
   cat <<'EOF'
 Usage: temp-cleanup.sh [--apply] [--bytes] [--max-age-days N]
-                       [--scratch-age-days N] [--installs-age-days N]
-                       [--tmp-age-days N] [--include-scratch] [--include-installs]
-                       [--include-worktrees] [--hermes-home PATH] [--repo PATH]
-                       [--tmp-dir PATH] [-h]
+                       [--tmp-age-days N] [--repo PATH] [--tmp-dir PATH] [-h]
 
-Reclaim Hermes and development temporary files without touching valuable data.
+Reclaim development temporary files without touching valuable data.
 
-  --apply                Delete the classified entries; default is a dry run.
+  --apply                Delete classified entries; default is a dry run.
   --bytes                Include byte accounting (walks each candidate with du).
-  --max-age-days N       Age for caches, logs, logs and test output (default 14).
-  --scratch-age-days N   Age for Hermes profile scratch (default 30).
-  --installs-age-days N  Age for Hermes project environments (default 30).
-  --tmp-age-days N       Age for /tmp scratch owned by this tooling (default 7).
-  --include-scratch      Also reap $HERMES_HOME/profiles/*/scratch entries.
-  --include-installs     Also reap $HERMES_HOME/installs project environments.
-  --include-worktrees    Also run Hermes' audited worktree prune and this repo's
-                         kanban worktree reaper when they are available.
-  --hermes-home PATH     Hermes home (default $HERMES_HOME or ~/.hermes).
+  --max-age-days N        Age for generated output (default 14).
+  --tmp-age-days N        Age for task scratch (default 7).
   --repo PATH            Repository holding .tmp and generated output.
   --tmp-dir PATH         Temporary directory to scan (default /tmp).
   -h, --help             Show this help.
@@ -96,14 +46,8 @@ while (($# > 0)); do
     --apply) apply=true; shift ;;
     --dry-run) apply=false; shift ;;
     --bytes) bytes=true; shift ;;
-    --include-scratch) include_scratch=true; shift ;;
-    --include-installs) include_installs=true; shift ;;
-    --include-worktrees) include_worktrees=true; shift ;;
     --max-age-days) [[ $# -ge 2 ]] || { echo "❌ --max-age-days needs a value" >&2; exit 2; }; max_age_days="$2"; shift 2 ;;
-    --scratch-age-days) [[ $# -ge 2 ]] || { echo "❌ --scratch-age-days needs a value" >&2; exit 2; }; scratch_age_days="$2"; shift 2 ;;
-    --installs-age-days) [[ $# -ge 2 ]] || { echo "❌ --installs-age-days needs a value" >&2; exit 2; }; installs_age_days="$2"; shift 2 ;;
     --tmp-age-days) [[ $# -ge 2 ]] || { echo "❌ --tmp-age-days needs a value" >&2; exit 2; }; tmp_age_days="$2"; shift 2 ;;
-    --hermes-home) [[ $# -ge 2 ]] || { echo "❌ --hermes-home needs a value" >&2; exit 2; }; hermes_home="$2"; shift 2 ;;
     --repo) [[ $# -ge 2 ]] || { echo "❌ --repo needs a value" >&2; exit 2; }; repo_path="$2"; shift 2 ;;
     --tmp-dir) [[ $# -ge 2 ]] || { echo "❌ --tmp-dir needs a value" >&2; exit 2; }; tmp_dir="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -111,7 +55,7 @@ while (($# > 0)); do
   esac
 done
 
-for value_name in max_age_days scratch_age_days installs_age_days tmp_age_days; do
+for value_name in max_age_days tmp_age_days; do
   value="${!value_name}"
   if [[ ! "$value" =~ ^[1-9][0-9]*$ ]] || ((value > 3650)); then
     echo "❌ $value_name must be an integer from 1 through 3650." >&2
@@ -128,9 +72,11 @@ if ! flock -n 9; then
   exit 0
 fi
 
+task_tmp="$(mktemp -d /tmp/nixhomeserver-temp-cleanup.XXXXXXXX)"
+trap 'rm -rf -- "$task_tmp"' EXIT
+
 processed=0 removed=0 candidates=0 protected=0 symlinks=0 foreign=0
 failed=0 removed_bytes=0 candidate_bytes=0
-reports=()
 
 human() { awk -v b="$1" 'BEGIN{printf "%.1f GiB", b/1024/1024/1024}'; }
 
@@ -175,7 +121,7 @@ scan_root() {
   if [[ ! -d "$root" ]]; then
     return 0
   fi
-  list="$(mktemp)"
+  list="$(mktemp "$task_tmp/scan.XXXXXXXX")"
   if ! find -P "$root" -mindepth 1 -maxdepth 1 -xdev -mtime "+$age" \
       "${find_args[@]}" -print0 >"$list" 2>/dev/null; then
     echo "⚠️  Could not scan $root; leaving it untouched." >&2
@@ -221,74 +167,13 @@ scan_root() {
   done
 }
 
-if [[ ! -d "$hermes_home" ]]; then
-  echo "ℹ️  No Hermes home at $hermes_home; skipping Hermes caches."
-else
-  scan_root "$hermes_home/cache" "$max_age_days" "hermes cache"
-  for profile_dir in "$hermes_home"/profiles/*/; do
-    [[ -d "$profile_dir" ]] || continue
-    profile_dir="${profile_dir%/}"
-    scan_root "$profile_dir/cache" "$max_age_days" "profile cache"
-    scan_root "$profile_dir/logs" "$max_age_days" "profile log" '*.log'
-    if [[ "$include_scratch" == true ]]; then
-      scan_root "$profile_dir/scratch" "$scratch_age_days" "profile scratch"
-    fi
-  done
-  scan_root "$hermes_home/logs" "$max_age_days" "hermes log" '*.log'
-  if [[ "$include_installs" == true ]]; then
-    scan_root "$hermes_home/installs" "$installs_age_days" "hermes install"
-  fi
-  reports+=("$hermes_home/installs" "$hermes_home/tools")
-fi
-
 scan_root "$tmp_dir" "$tmp_age_days" "tmp" 'nixhomeserver-*'
-scan_root "$tmp_dir" "$tmp_age_days" "tmp" 'hermes-*'
 
 if [[ -d "$repo_path" ]]; then
   scan_root "$repo_path/.tmp" "$tmp_age_days" "repo scratch"
   scan_root "$repo_path/output" "$max_age_days" "repo output"
   scan_root "$repo_path/test-results" "$max_age_days" "test results"
   scan_root "$repo_path/playwright-report" "$max_age_days" "playwright report"
-fi
-
-if [[ "$include_worktrees" == true ]]; then
-  if [[ -z "$hermes_bin" ]]; then
-    hermes_bin="$(command -v hermes 2>/dev/null || true)"
-  fi
-  if [[ -z "$hermes_bin" && -x "$HOME/.local/bin/hermes" ]]; then
-    hermes_bin="$HOME/.local/bin/hermes"
-  fi
-  agent_repo="$hermes_home/hermes-agent"
-  if [[ -n "$hermes_bin" && -d "$agent_repo/.git" ]]; then
-    if [[ "$apply" == true ]]; then
-      echo "▶ Hermes worktree prune in $agent_repo"
-      "$hermes_bin" worktree prune --repo "$agent_repo" --older-than "$max_age_days" \
-        || { failed=$((failed+1)); echo "⚠️  hermes worktree prune failed." >&2; }
-    else
-      echo "▶ Hermes worktree audit in $agent_repo (dry run)"
-      "$hermes_bin" worktree list --repo "$agent_repo" --older-than "$max_age_days" \
-        || { failed=$((failed+1)); echo "⚠️  hermes worktree list failed." >&2; }
-    fi
-  fi
-  kanban_reaper="$script_dir/../hermes/reap-kanban-worktrees.sh"
-  if [[ -n "$hermes_bin" && -x "$kanban_reaper" ]]; then
-    if [[ "$apply" == true ]]; then
-      HERMES_BIN="$hermes_bin" "$kanban_reaper" --apply \
-        || { failed=$((failed+1)); echo "⚠️  kanban worktree reaper failed." >&2; }
-    else
-      HERMES_BIN="$hermes_bin" "$kanban_reaper" \
-        || { failed=$((failed+1)); echo "⚠️  kanban worktree reaper failed." >&2; }
-    fi
-  elif [[ -x "$kanban_reaper" ]]; then
-    echo "ℹ️  hermes is not on PATH; skipping the kanban worktree reaper."
-  fi
-fi
-
-if [[ "$bytes" == true ]]; then
-  for report_root in "${reports[@]}"; do
-    [[ -d "$report_root" ]] || continue
-    echo "ℹ️  Kept (never auto-deleted): $(display "$report_root") $(du -sh "$report_root" 2>/dev/null | cut -f1)"
-  done
 fi
 
 echo "Processed (older than retention): ${processed}"

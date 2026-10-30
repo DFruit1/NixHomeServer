@@ -6,8 +6,8 @@ description: Select focused validation and guarded build, deployment, or recover
 # Safe server changes
 
 `AGENTS.md` owns authority, reserved effects, test scope, and deployment gates.
-Prefer this checkout's instructions over installed copies. Preserve existing
-role/card restrictions, exact-scope approvals, unrelated work, and tool fences.
+Prefer this checkout's instructions over installed copies. Preserve exact-scope
+approvals, unrelated work, and tool restrictions.
 
 1. Identify the affected operational boundary and read the relevant section of
    `documentation/operations.md` or focused runbook. Do not load the entire

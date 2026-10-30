@@ -13,12 +13,12 @@ success claim, or ask again for an unchanged authorized step.
 - Android release: an authorized interactive release operator uses the owning
   app's `pnpm release:android` workflow through signing, publication, and
   F-Droid/IPFS index verification. Retain version/signing identity and required
-  server/client compatibility checks under AGENTS.md. A build-only worker hands
-  off exact revision/results through its existing route. Report device launch
+  server/client compatibility checks under AGENTS.md. An intermediate build hands
+  off its exact revision/results to the authorized release task. Report device launch
   as unverified when no permitted device/emulator check is available; do not
   claim publication proves launch or require the owner at a computer for work
   the available environment can complete.
-- Server deployment: follow safe-change's exact source/review/decision/test gate,
+- Server deployment: follow safe-change's source review and guarded test procedure,
   guarded action, and affected access/health checks. A successful build is an
   intermediate result, not live proof.
 - Monitoring/scheduling: discover the native facility before claiming it is

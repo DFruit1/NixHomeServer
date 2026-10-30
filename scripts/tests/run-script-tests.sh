@@ -52,19 +52,6 @@ else
   export NIXHOMESERVER_TEST_ALL_APPS=0
 fi
 
-# The Hermes policy tests import PyYAML directly or through the installers
-# they exercise. A delegated worker's terminal resolves python3 to Hermes'
-# managed runtime, which does not ship PyYAML; without this preflight that
-# surfaces as many unrelated ModuleNotFoundError failures instead of one
-# actionable message (2026-10-19: eight policy tests red for one cause).
-if ! python3 -c 'import yaml' >/dev/null 2>&1; then
-  echo "❌ PyYAML is unavailable to the resolved python3: $(command -v python3 || echo 'not found')" >&2
-  echo "   Repository script tests import yaml. Install PyYAML for that interpreter" >&2
-  echo "   (e.g. 'python3 -m pip install pyyaml', or transplant the distro package" >&2
-  echo "   into the interpreter's site-packages when pip has no reachable index)." >&2
-  exit 1
-fi
-
 all_app_only_test() {
   case "${1##*/}" in
     test-module-structure.sh | \
@@ -103,17 +90,6 @@ lean_skip_test() {
 }
 
 test_scripts=(
-  scripts/tests/test-hermes-opencode-acp.sh
-  scripts/tests/test-hermes-cron-policy.sh
-  scripts/tests/test-hermes-memory-policy.sh
-  scripts/tests/test-hermes-worker-policy.sh
-  scripts/tests/test-hermes-kanban-stop.sh
-  scripts/tests/test-hermes-autonomy.sh
-  scripts/tests/test-hermes-autonomy-runtime.sh
-  scripts/tests/test-hermes-fixture-isolation.sh
-  scripts/tests/test-hermes-capability-recovery.sh
-  scripts/tests/test-hermes-aging-escalation.sh
-  scripts/tests/test-hermes-analytics.sh
   scripts/tests/test-module-structure.sh
   scripts/tests/test-langfuse-secrets.sh
   scripts/tests/test-langfuse-module.sh
@@ -179,49 +155,6 @@ test_scripts=(
   scripts/tests/test-remote-eval-helper.sh
   scripts/tests/test-remote-build-helper.sh
   scripts/tests/test-remote-run-helper.sh
-  scripts/tests/test-reap-kanban-worktrees.sh
-  scripts/tests/test-hermes-workspace-preflight.sh
-  scripts/tests/test-hermes-workspace-repair.sh
-  scripts/tests/test-hermes-worker-origin.sh
-  scripts/tests/test-hermes-recovered-resume.sh
-  scripts/tests/test-hermes-coordinator-repair.sh
-  scripts/tests/test-kanban-board-health.sh
-  scripts/tests/test-quiescence-inventory.sh
-  scripts/tests/test-kanban-retry-breaker.sh
-  scripts/tests/test-kanban-durability-sync.sh
-  scripts/tests/test-kanban-install-board-wiring.sh
-  scripts/tests/test-kanban-decision-reply.sh
-  scripts/tests/test-hermes-review-taskforce.sh
-  scripts/tests/test-hermes-instruction-policy.sh
-  scripts/tests/test-hermes-directory-claims.sh
-  scripts/tests/test-hermes-card-dependencies.sh
-  scripts/tests/test-steward-card-policy.sh
-  scripts/tests/test-hermes-installer-convergence.sh
-  scripts/tests/test-hermes-fleet-workflow.sh
-  scripts/tests/test-hermes-fleet-contract.sh
-  scripts/tests/test-hermes-execution-preflight.sh
-  scripts/tests/test-hermes-recovery-episodes.sh
-  scripts/tests/test-hermes-fleet-native.sh
-  scripts/tests/test-hermes-fleet-evidence.sh
-  scripts/tests/test-hermes-fleet-supervisor.sh
-  scripts/tests/test-hermes-board-progress.sh
-  scripts/tests/test-hermes-fleet-release.sh
-  scripts/tests/test-hermes-behavior-trials.sh
-  scripts/tests/test-hermes-config-policy.sh
-  scripts/tests/test-hermes-performance.sh
-  scripts/tests/test-agent-usage.sh
-  scripts/tests/test-agent-usage-guard.sh
-  scripts/tests/test-langfuse-mcp.sh
-  scripts/tests/test-hermes-runtime-evidence.sh
-  scripts/tests/test-hermes-blockers.sh
-  scripts/tests/test-hermes-prerequisite-repair.sh
-  scripts/tests/test-hermes-deploy-receipt.sh
-  scripts/tests/test-hermes-coordination.sh
-  scripts/tests/test-kanban-owner-alerts.sh
-  scripts/tests/test-simplex-decisions.sh
-  scripts/tests/test-hermes-owner-chat-policy.sh
-  scripts/tests/test-steward-readonly.sh
-  scripts/tests/test-steward-opportunity-scan.sh
   scripts/tests/test-auth-gateway-compression.sh
   scripts/tests/test-app-registration.sh
   scripts/tests/test-shell-template.sh
@@ -278,27 +211,6 @@ test_scripts=(
 NIXHOMESERVER_DEFAULT_HOST="$(test_default_host)"
 export NIXHOMESERVER_DEFAULT_HOST
 
-fixture_origin_pinned=false
-fixture_helper="${HERMES_ROOT:-${HOME}/.hermes}/scripts/fixture-runner.py"
-for origin_var in HERMES_KANBAN_TASK HERMES_KANBAN_DB HERMES_KANBAN_BOARD \
-                  HERMES_KANBAN_RUN_ID HERMES_KANBAN_CLAIM_LOCK \
-                  HERMES_DELEGATED_CHILD_CONTEXT HERMES_PROFILE_NAME HERMES_PROFILE; do
-  if [[ -n "${!origin_var:-}" ]]; then
-    fixture_origin_pinned=true
-    break
-  fi
-done
-
-fixture_suite() {
-  case "${1##*/}" in
-    test-kanban-owner-alerts.sh | test-steward-readonly.sh | \
-    test-steward-opportunity-scan.sh | test-kanban-retry-breaker.sh | \
-    test-hermes-autonomy.sh | test-hermes-autonomy-runtime.sh | \
-    test-hermes-worker-origin.sh | test-hermes-recovered-resume.sh | test-hermes-coordinator-repair.sh | test-hermes-workspace-repair.sh) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 active=0
 max_jobs=$(nproc 2>/dev/null || echo 2)
 failures=0
@@ -330,14 +242,7 @@ for test_script in "${test_scripts[@]}"; do
   log_file="${test_tmp}/test-${test_script//\//_}.log"
   (
     printf '==> %s\n' "$test_script"
-    if [[ "$fixture_origin_pinned" == true ]] && fixture_suite "$test_script"; then
-      python3 -B "$fixture_helper" --repo "$TESTS_REPO_ROOT" \
-        --suite "$TESTS_REPO_ROOT/$test_script" --timeout 300 > "$log_file" 2>&1 || {
-        echo "❌ $test_script failed in required confined fixture; output follows:" >&2
-        cat "$log_file" >&2
-        exit 1
-      }
-    elif ! bash "$test_script" > "$log_file" 2>&1; then
+    if ! bash "$test_script" > "$log_file" 2>&1; then
       echo "❌ $test_script failed; output follows:" >&2
       cat "$log_file" >&2
       exit 1
