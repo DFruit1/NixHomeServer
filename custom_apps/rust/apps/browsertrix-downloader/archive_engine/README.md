@@ -5,12 +5,39 @@ checks in the caller. Public original types and seven operations retain the plan
 contract. `verify_archive` is file fixity only: browser QA dimensions are
 `not-run`, and unresolved revisits do not qualify as standalone verification.
 
-Bounds: 256 MiB archive/ZIP inflated bytes, a separate cumulative 256 MiB
-WARC/index inflation budget, 32 MiB record, 50,000 records/pages/index rows,
-10,000 ZIP members, 1,024-byte member paths, 64 KiB headers, 2 MiB HTML,
-50,000 DOM nodes and depth 128. No member is extracted to disk. Unsupported
-encodings and transformations fail explicitly. Large captures exceeding these
-limits need a future streaming implementation; never silently truncate them.
+Bounds: 32 GiB archive files, 64 GiB total ZIP inflation and a separate
+64 GiB total WARC inflation budget; record bodies up to 2 GiB plus 64 KiB
+HTTP allowance; at most 128 records and 2 GiB + 192 KiB inflation per gzip
+member. Those ceilings cover the app's current maximum 16 GiB WARC capture
+budget and 2 GiB resource budget. WARC members must use ZIP STORE for random
+access. Bodies and manifest hashes stream in 64 KiB buffers; inventories keep
+lazy source locations, not payloads. Source bytes are hash-checked before/after
+inspection, and each lazily read body is checked against its scanned block hash.
+A cumulative 256 GiB lazy reread budget prevents gzip seek amplification.
+
+The bounded in-memory limits are 50,000 records/pages/index rows, 10,000 ZIP
+members, 1,024-byte member paths, 64 KiB headers, 4 MiB manifest, 32 MiB each
+for ZIP page/index metadata, combined WARC/HTTP header inventory, inflated CDX,
+and extracted text/link inventory. Dependency metadata is capped at 256 MiB
+across at most 16 explicitly authorized archives. Reader output is capped at
+256 MiB. HTML analysis is limited to 2 MiB, 50,000 nodes and depth 128;
+individual eager text/resource decoding is bounded at 32 MiB. Large binary
+responses stay streamed through inspection, verification, dedupe, materialization
+and export rather than going through the text decoder. ZIP64 STORE output is
+written record by record to destination staging, then validated before publish.
+Unsupported input layouts/encodings fail clearly; no member is extracted by an
+archive-controlled path and no inventory is silently truncated.
+
+Optional DOM/text analysis does not invalidate otherwise valid original records.
+HTML above 2 MiB or beyond the DOM/decode/aggregate analysis bounds stays intact;
+inspection reports omissions, retains bounded native page text/title, and keeps
+asset closure conservative. Nonempty Browsertrix rendered text is authoritative
+over response-HTML text. Native page IDs and nearest same-URL timestamps merge
+subsecond response records without manufacturing duplicate page rows. Preview
+and selector rewriting still refuse HTML beyond the explicit analysis bounds.
+Export records optional analysis omissions in provenance; resource-to-page
+attribution has a separate 32 MiB budget with explicit omissions, preserving all
+resource inventory rows.
 
 Storage fields count compressed gzip spans once, apportioned across records in
 a shared member. Unique/duplicate bytes plus metadata bytes equal ZIP file bytes.
@@ -33,6 +60,13 @@ compose_repair(parent: &Path, repair: &Path, destination: &Path,
                dependencies: &[AuthorizedDependency], targets: &[String])
                -> Result<ArchiveReport, String>
 preview_document(path: &Path, url: &str) -> Result<PreviewDocument, String>
+reader_export_authorized(path: &Path, format: &str,
+                         dependencies: &[AuthorizedDependency]) -> Result<String, String>
+preview_document_authorized(path: &Path, url: &str,
+                            dependencies: &[AuthorizedDependency]) -> Result<PreviewDocument, String>
+compare_archives_authorized(left: &Path, left_dependencies: &[AuthorizedDependency],
+                            right: &Path, right_dependencies: &[AuthorizedDependency])
+                            -> Result<ComparisonReport, String>
 PreviewDocument { html: String, content_security_policy: String }
 ```
 
@@ -45,6 +79,10 @@ dedupe writes actual identical-payload revisits, keeping response headers and CD
 request distinctions. Standalone materialization resolves dependencies. Repair
 replaces successful selected URLs in the derivative's index, retains other parent
 records and patch assets, and records mixed-time provenance without altering dates.
+Authorized reader/preview/comparison views use the same hash/graph checks and
+lazy hydration, without temporary archive publication or payload writes. Legacy
+signatures remain wrappers supplying empty dependency sets. Missing/changed
+bindings fail closed, including when a source already has native page text.
 
 The backend sends `preview_document.content_security_policy` as the exact HTTP
 CSP header. It contains a random trusted-picker nonce and `sandbox allow-scripts`.
@@ -87,6 +125,49 @@ Actual Browsertrix 1.14.3 output (100,502 bytes, 3 pages, 15 resources) passed f
 fixity and a selector-derived export (92,753 bytes), preserving URN screenshot/text
 index keys. Static checks do not establish ReplayWeb.page browser correctness.
 
-The initial API checkpoint still has the 256 MiB aggregate parsing cap above.
-A required streaming followup replaces it for ordinary multi-GiB captures while
-preserving bounded per-record memory; this checkpoint alone is not final scope.
+The corrected positive Browsertrix fixture (109,406 bytes, 3 pages, 18 resources)
+also passed inspection/fixity, actual selector export and output validation.
+The final derivative is 101,382 bytes (8,024 saved), retaining all 18 resources
+while removing the advertisement DOM/text. The compact risk fixture measured
+134,171 -> 4,045 bytes (130,126 saved); cross-capture payload dedupe measured
+133,568 -> 4,646 bytes (128,922 saved), and standalone rehydration remained valid
+after physically removing its parent fixture.
+Focused risk checks cover a 3 MiB SPA response with native rendered text, native
+subsecond baseline merging, 3,000 revisits, source mutation, and authorized views
+with valid, missing, unbound and changed dependency inputs. A measured 320 MiB
+binary fixture completed inspect/export/verify with 15,872 KiB peak RSS in the
+debug test process (1,220.59 seconds); the output was 335,653,513 bytes, with the
+source unchanged. This is bounded streaming evidence, not a throughput target
+or a measurement at the 32 GiB ceiling. The per-record pipeline was exercised
+before the final optional-text and authorized-view refinements.
+
+The generated preview was rendered in an opaque sandbox with its exact HTTP CSP
+in Chromium at 1280x800 and 390x844. Captured CSS/raster image rendered, one trusted
+picker script remained, originally hidden panels stayed hidden, and selecting
+the story delivered the documented message with origin `null`. The measured
+mobile reload requested only the local wrapper and preview document; no live
+origin requests occurred and no horizontal overflow appeared. The collaborative
+preview snapshot timed out twice, so this bounded check used the repository's
+Playwright CLI fallback. This checks the isolated picker, not full app browser
+QA or independent acceptance of ReplayWeb.page integration.
+
+
+The streaming implementation supersedes the initial 256 MiB archive/body
+retention checkpoint. The qualified no-savings error remains exactly
+`No matching response payloads in authorized captures`, also exported as
+`NO_MATCHING_PAYLOADS`; callers may fall back only on that discriminator, after
+all source/dependency validation has passed. Other errors remain fatal.
+
+WARC/manifest SHA-256 supports hexadecimal and Base32 encodings; payloads are
+hashed after HTTP transfer decoding, before content decoding. CDX digests,
+capture timestamps and actual gzip spans are cross-checked. Original lookup keys
+(including Browsertrix URN screenshots/text and request distinctions) are retained.
+Compressed CDX requires a complete `.idx` mapping; each exact gzip block, lookup
+key, optional digest and coverage are validated. The normal derivative uses
+uncompressed `indexes/index.cdxj` as tested with the pinned replay viewer.
+
+The many-revisit risk fixture exercises 3,000 matching payload references through
+local dedupe and standalone materialization, guarding against quadratic resolver
+cutoffs producing invalid outputs. Source-record lookup uses stable IDs or
+URL/date tuples plus digest, transport and location checks; URL alone never
+identifies a reference.

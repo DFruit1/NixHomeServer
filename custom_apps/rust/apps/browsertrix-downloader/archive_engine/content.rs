@@ -50,7 +50,18 @@ pub(super) fn transfer_payload(record: &Record) -> Result<Vec<u8>, String> {
     }
     Ok(bytes)
 }
+pub(super) const MAX_HTML: usize = 2 * 1024 * 1024;
 pub(super) fn payload(record: &Record) -> Result<Vec<u8>, String> {
+    payload_limited(record, MAX_RECORD)
+}
+pub(super) fn payload_limited(record: &Record, limit: usize) -> Result<Vec<u8>, String> {
+    if record.payload_length > limit as u64 {
+        return Err(format!(
+            "Resource decoding exceeds {limit} byte analysis bound"
+        ));
+    }
+    let loaded = record.eager_body_limited(limit.saturating_add(64 * 1024))?;
+    let record = &loaded;
     let mut bytes = transfer_payload(record)?;
     if record.kind() == "resource" {
         return Ok(bytes);
@@ -64,13 +75,10 @@ pub(super) fn payload(record: &Record) -> Result<Vec<u8>, String> {
     if let Some(encoding) = headers.get("content-encoding") {
         bytes = match encoding.to_ascii_lowercase().as_str() {
             "identity" => bytes,
-            "gzip" | "x-gzip" => read::bounded(
-                flate2::read::MultiGzDecoder::new(bytes.as_slice()),
-                MAX_RECORD,
-            )?,
-            "deflate" => {
-                read::bounded(flate2::read::ZlibDecoder::new(bytes.as_slice()), MAX_RECORD)?
+            "gzip" | "x-gzip" => {
+                read::bounded(flate2::read::MultiGzDecoder::new(bytes.as_slice()), limit)?
             }
+            "deflate" => read::bounded(flate2::read::ZlibDecoder::new(bytes.as_slice()), limit)?,
             _ => return Err("Unsupported HTTP content encoding for text transformation".into()),
         };
     }
@@ -133,21 +141,57 @@ pub(super) fn text(node: &Handle) -> Result<String, String> {
         )
         .map_err(|e| e.to_string())
 }
+pub(super) struct HtmlAnalysis {
+    pub content: Option<(String, String, Vec<String>)>,
+    pub omitted: Option<String>,
+}
+/// Optional analysis cannot invalidate fixity. Lazy source IO/fixity remains
+/// fatal; decode/DOM limits retain the original and bounded crawler metadata.
+pub(super) fn analyse(record: &Record) -> Result<HtmlAnalysis, String> {
+    if record.payload_length > MAX_HTML as u64 {
+        return Ok(HtmlAnalysis {
+            content: None,
+            omitted: Some("HTML entity exceeds 2 MiB optional DOM bound".into()),
+        });
+    }
+    let loaded = record.eager_body_limited(MAX_HTML + 64 * 1024)?;
+    Ok(match extract(&loaded) {
+        Ok(content) => HtmlAnalysis {
+            content: Some(content),
+            omitted: None,
+        },
+        Err(reason) => HtmlAnalysis {
+            content: None,
+            omitted: Some(reason),
+        },
+    })
+}
 pub(super) fn extract(record: &Record) -> Result<(String, String, Vec<String>), String> {
     if record.kind() == "revisit" && !record.resolved {
         return Ok((String::new(), String::new(), vec![]));
     }
-    let dom = dom(&payload(record)?)?;
+    let dom = dom(&payload_limited(record, MAX_HTML)?)?;
     let mut stack = vec![dom.document.clone()];
     let mut title = String::new();
     let mut links = BTreeSet::new();
     let mut base = url::Url::parse(record.url()).ok();
-    while let Some(node) = stack.pop() {
+    let mut base_nodes = vec![dom.document.clone()];
+    while let Some(node) = base_nodes.pop() {
         if node.element_name().as_deref() == Some("base") {
             if let (Some(current), Some(href)) = (&base, attr(&node, "href")) {
-                base = current.join(&href).ok();
+                if let Ok(next) = current.join(&href) {
+                    if matches!(next.scheme(), "http" | "https") {
+                        base = Some(next);
+                        break;
+                    }
+                }
             }
         }
+        for child in node.children.borrow().iter().rev() {
+            base_nodes.push(child.clone());
+        }
+    }
+    while let Some(node) = stack.pop() {
         if node.element_name().as_deref() == Some("title") {
             title = node
                 .children

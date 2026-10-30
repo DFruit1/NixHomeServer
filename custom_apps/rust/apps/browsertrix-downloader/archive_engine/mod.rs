@@ -10,12 +10,17 @@ use std::path::{Path, PathBuf};
 mod content;
 mod read;
 mod selectors;
+mod streaming;
 mod transform;
 mod views;
 
-pub use transform::{compose_repair, deduplicate_archive, export_archive, materialize_archive};
+pub use transform::{
+    compose_repair, deduplicate_archive, export_archive, materialize_archive, NO_MATCHING_PAYLOADS,
+};
 pub use views::{
-    compare_archives, estimate_size, preview_document, preview_page, reader_export, PreviewDocument,
+    compare_archives, compare_archives_authorized, estimate_size, preview_document,
+    preview_document_authorized, preview_page, reader_export, reader_export_authorized,
+    PreviewDocument,
 };
 
 /// Caller authorizes every path for the same owner/visibility before entering

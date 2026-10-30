@@ -1,12 +1,28 @@
-use super::read::{self, Archive, Record, MAX_BYTES, MAX_ITEMS};
+use super::read::{self, Archive, Record, MAX_ITEMS};
 use super::*;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeSet, HashMap},
     fs::File,
     io::Write,
 };
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+
+/// Stable no-savings outcome; other errors remain fatal.
+pub const NO_MATCHING_PAYLOADS: &str = "No matching response payloads in authorized captures";
+
+/// Read-only authorization boundary shared by derived views. Hydration keeps
+/// checked lazy payload sources; it never publishes a temporary WACZ.
+pub(super) fn authorized_archive(
+    path: &Path,
+    dependencies: &[AuthorizedDependency],
+) -> Result<Archive, String> {
+    let mut archive = read::load(path)?;
+    let inputs = dependencies_for(&archive, dependencies)?;
+    hydrate(&mut archive, &inputs)?;
+    Ok(archive)
+}
 
 pub fn export_archive(
     source: &Path,
@@ -18,6 +34,14 @@ pub fn export_archive(
 
 /// Standalone derivative; every external input is explicitly authorized by the
 /// caller and hash-checked from the same bytes used by the parser.
+fn page_base(url: &str) -> String {
+    url::Url::parse(url)
+        .map(|mut u| {
+            u.set_fragment(None);
+            u.to_string()
+        })
+        .unwrap_or_else(|_| url.into())
+}
 pub fn materialize_archive(
     source: &Path,
     destination: &Path,
@@ -39,7 +63,7 @@ pub fn materialize_archive(
     }
     let mut omitted = vec![];
     let mut records = vec![];
-    for mut record in archive.records {
+    for record in archive.records {
         let page = matches!(record.mime.as_str(), "text/html" | "application/xhtml+xml");
         let domain = url::Url::parse(record.url())
             .ok()
@@ -58,20 +82,16 @@ pub fn materialize_archive(
                 .any(|m| record.mime.starts_with(m))
             || (page
                 && !options.include_urls.is_empty()
-                && !options.include_urls.iter().any(|u| u == record.url()));
+                && !options
+                    .include_urls
+                    .iter()
+                    .any(|u| u == record.url() || page_base(u) == page_base(record.url())));
         if excluded {
             omitted.push(json!({"url":record.url(),"date":record.field("warc-date"),"recordId":record.field("warc-record-id"),"reason":"explicit export filter"}));
             continue;
         }
-        if page && !rules.is_empty() {
-            if record.mime == "application/xhtml+xml" {
-                return Err("XHTML selector transformation unsupported; original preserved".into());
-            }
-            let dom = content::dom(&content::payload(&record)?)?;
-            selectors::remove(&dom, &rules)?;
-            let mut html = vec![];
-            dom.serialize(&mut html).map_err(|e| e.to_string())?;
-            replace_payload(&mut record, html)?;
+        if page && !rules.is_empty() && record.mime == "application/xhtml+xml" {
+            return Err("XHTML selector transformation unsupported; original preserved".into());
         }
         records.push(record);
     }
@@ -81,13 +101,15 @@ pub fn materialize_archive(
     {
         return Err("Export selection contains no resources".into());
     }
-    if options.deduplicate {
-        dedupe_local(&mut records)?;
-    }
+    let retained_bases: BTreeSet<_> = records.iter().map(|r| page_base(r.url())).collect();
     let pages = archive
         .page_meta
         .into_iter()
-        .filter(|p| records.iter().any(|r| r.url() == p.url))
+        .filter(|p| {
+            (options.include_urls.is_empty() || options.include_urls.contains(&p.url))
+                && !options.exclude_urls.contains(&p.url)
+                && retained_bases.contains(&page_base(&p.url))
+        })
         .collect();
     let title = if options.title.is_empty() {
         archive.report.title
@@ -100,6 +122,8 @@ pub fn materialize_archive(
         pages,
         &title,
         BTreeMap::new(),
+        &rules,
+        options.deduplicate,
         json!({"operation":"standalone-derived-export","sourceSha256":source_hash,"omissions":omitted,"removeSelectors":options.remove_selectors,"resourcePolicy":"retain all non-page resources unless explicitly excluded; hidden DOM never proves unused resources","fidelity":"derived content; captured originals retained"}),
     )
 }
@@ -131,8 +155,8 @@ fn dependencies_for(
         cost = cost
             .checked_add(archive.cost)
             .ok_or("Dependency memory budget overflow")?;
-        if cost > MAX_BYTES * 2 {
-            return Err("Combined archive dependency inflation exceeds 512 MiB".into());
+        if cost > super::streaming::MAX_METADATA * 8 {
+            return Err("Combined archive dependency metadata exceeds 256 MiB".into());
         }
         archives.insert(input.archive_id.clone(), archive);
     }
@@ -183,6 +207,10 @@ fn hydrate(archive: &mut Archive, inputs: &BTreeMap<String, Archive>) -> Result<
     // Resolve only complete payload records. Our own dedupe always refers to a
     // response/resource; arbitrary unresolved revisit chains fail closed.
     let mut work = 2_000_000usize;
+    let lookups: BTreeMap<_, _> = inputs
+        .iter()
+        .map(|(id, input)| (id, read::RecordLookup::new(&input.records)))
+        .collect();
     for record in &mut archive.records {
         if record.kind() == "continuation"
             || record
@@ -198,15 +226,11 @@ fn hydrate(archive: &mut Archive, inputs: &BTreeMap<String, Archive>) -> Result<
         if !record.resolved {
             let required = record.field("warc-x-dependency-sha256");
             let mut candidates = vec![];
-            for input in inputs.values() {
+            for (id, input) in inputs {
                 if !required.is_empty() && input.report.sha256 != required {
                     continue;
                 }
-                if input.records.len() > work {
-                    return Err("Revisit resolution work limit exceeded".into());
-                }
-                work -= input.records.len();
-                if let Some(target) = read::find_revisit(record, &input.records) {
+                if let Some(target) = lookups[id].find(record, &input.records, &mut work)? {
                     candidates.push(target);
                 }
             }
@@ -219,6 +243,11 @@ fn hydrate(archive: &mut Archive, inputs: &BTreeMap<String, Archive>) -> Result<
             }
             let target = candidates[0];
             record.payload = target.payload.clone();
+            record.payload_source = target
+                .payload_source
+                .clone()
+                .or_else(|| target.source.clone());
+            record.payload_length = target.payload_length;
             record.payload_digest = target.payload_digest.clone();
             record.resolved = true;
             if record.mime.is_empty() {
@@ -227,20 +256,12 @@ fn hydrate(archive: &mut Archive, inputs: &BTreeMap<String, Archive>) -> Result<
             if record.status == 0 {
                 record.status = target.status;
             }
-            if record.block.is_empty() {
-                record.block = target.block.clone();
+            if record.http_headers.is_empty() {
+                record.http_headers = target.http_headers.clone();
             }
         }
-        // A revisit's HTTP headers belong to the new capture; retain them and
-        // attach the original encoded entity body without changing its encoding.
-        let end = record
-            .block
-            .windows(4)
-            .position(|x| x == b"\r\n\r\n")
-            .ok_or("Revisit HTTP headers missing")?
-            + 4;
-        record.block.truncate(end);
-        record.block.extend_from_slice(&record.payload);
+        // Bodies remain lazy: retain this capture's HTTP headers, reference the
+        // canonical response payload, and stream it only when emitting output.
         record.headers.insert("warc-type".into(), "response".into());
         for key in [
             "warc-profile",
@@ -273,9 +294,9 @@ pub fn deduplicate_archive(
     let mut payloads = HashMap::new();
     for (id, input) in &inputs {
         for record in &input.records {
-            if matches!(record.kind(), "response" | "resource") && !record.payload.is_empty() {
+            if matches!(record.kind(), "response" | "resource") && record.payload_length > 0 {
                 payloads
-                    .entry((record.digest(), record.mime.clone()))
+                    .entry((record.digest(), record.mime.clone(), record.transport_key()))
                     .or_insert((id, input, record));
             }
         }
@@ -283,10 +304,12 @@ pub fn deduplicate_archive(
     let mut used = BTreeMap::new();
     let mut converted = 0;
     for record in &mut archive.records {
-        if record.kind() != "response" || record.payload.is_empty() {
+        if record.kind() != "response" || record.payload_length == 0 {
             continue;
         }
-        if let Some((id, input, target)) = payloads.get(&(record.digest(), record.mime.clone())) {
+        if let Some((id, input, target)) =
+            payloads.get(&(record.digest(), record.mime.clone(), record.transport_key()))
+        {
             to_revisit(record, target)?;
             record
                 .headers
@@ -304,7 +327,7 @@ pub fn deduplicate_archive(
         }
     }
     if converted == 0 {
-        return Err("No matching response payloads in authorized captures".into());
+        return Err(NO_MATCHING_PAYLOADS.into());
     }
     write_archive(
         destination,
@@ -312,6 +335,8 @@ pub fn deduplicate_archive(
         archive.page_meta,
         &archive.report.title,
         used,
+        &[],
+        false,
         json!({"operation":"cross-capture-payload-dedupe","sourceSha256":archive.report.sha256,"convertedResponses":converted,"standalone":false}),
     )
 }
@@ -319,13 +344,6 @@ fn to_revisit(record: &mut Record, target: &Record) -> Result<(), String> {
     if target.field("warc-record-id").is_empty() || target.field("warc-date").is_empty() {
         return Err("Dedupe target lacks stable WARC identity".into());
     }
-    let end = record
-        .block
-        .windows(4)
-        .position(|x| x == b"\r\n\r\n")
-        .ok_or("Response headers missing")?
-        + 4;
-    record.block.truncate(end);
     record.headers.insert("warc-type".into(), "revisit".into());
     record.headers.insert(
         "warc-profile".into(),
@@ -350,30 +368,14 @@ fn to_revisit(record: &mut Record, target: &Record) -> Result<(), String> {
     record.resolved = false;
     Ok(())
 }
-fn dedupe_local(records: &mut [Record]) -> Result<(), String> {
-    let mut seen = HashMap::<(String, String), usize>::new();
-    for i in 0..records.len() {
-        if records[i].kind() != "response" || records[i].payload.is_empty() {
-            continue;
-        }
-        let key = (records[i].digest(), records[i].mime.clone());
-        if let Some(&target) = seen.get(&key) {
-            let original = records[target].clone();
-            to_revisit(&mut records[i], &original)?;
-        } else {
-            seen.insert(key, i);
-        }
-    }
-    Ok(())
-}
 fn replace_payload(record: &mut Record, bytes: Vec<u8>) -> Result<(), String> {
-    let split = record
-        .block
-        .windows(4)
-        .position(|x| x == b"\r\n\r\n")
-        .ok_or("HTTP headers missing")?;
-    let header_text =
-        std::str::from_utf8(&record.block[..split]).map_err(|_| "NonUTF8 HTTP headers")?;
+    let header_text = std::str::from_utf8(
+        record
+            .http_headers
+            .strip_suffix(b"\r\n\r\n")
+            .ok_or("HTTP headers missing")?,
+    )
+    .map_err(|_| "NonUTF8 HTTP headers")?;
     let mut lines = header_text.split("\r\n");
     let status = lines.next().ok_or("Missing HTTP status")?;
     let mut block = format!("{status}\r\n");
@@ -401,6 +403,11 @@ fn replace_payload(record: &mut Record, bytes: Vec<u8>) -> Result<(), String> {
     record.block.extend_from_slice(&bytes);
     record.payload_digest = format!("sha256:{}", read::hash(&bytes));
     record.payload = bytes;
+    record.payload_length = record.payload.len() as u64;
+    record.body_length = record.block.len() as u64;
+    record.source = None;
+    record.payload_source = None;
+    record.http_headers = record.block[..record.block.len() - record.payload.len()].to_vec();
     record.headers.insert("warc-type".into(), "response".into());
     record.headers.remove("warc-payload-digest");
     record.headers.remove("warc-block-digest");
@@ -426,7 +433,7 @@ pub fn compose_repair(
     hydrate(&mut original, &inputs)?;
     let inputs = dependencies_for(&patch, dependencies)?;
     hydrate(&mut patch, &inputs)?;
-    if original.cost + patch.cost > MAX_BYTES * 2 {
+    if original.cost + patch.cost > super::streaming::MAX_METADATA * 8 {
         return Err("Combined repair inflation limit exceeded".into());
     }
     let successful: BTreeSet<String> = patch
@@ -466,6 +473,8 @@ pub fn compose_repair(
         original.page_meta,
         &original.report.title,
         BTreeMap::new(),
+        &[],
+        false,
         json!({"operation":"repair-composition","parentSha256":original.report.sha256,"repairSha256":patch.report.sha256,"replacedTargets":successful,"requestedTargets":targets,"selectionPolicy":"successful repair replaces all parent responses for selected URL; other parent responses retained","mixedCaptureTimes":true}),
     )
 }
@@ -494,13 +503,35 @@ fn surt(url: &str) -> Result<String, String> {
     }
     Ok(key.to_ascii_lowercase())
 }
-fn encode_record(record: &Record) -> Result<Vec<u8>, String> {
+struct OutputHash<'a, W> {
+    inner: &'a mut W,
+    hash: &'a mut Sha256,
+    position: &'a mut u64,
+}
+impl<W: Write> Write for OutputHash<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if (*self.position).saturating_add(bytes.len() as u64) > super::streaming::MAX_ARCHIVE {
+            return Err(std::io::Error::other("Output WARC exceeds 32 GiB limit"));
+        }
+        let n = self.inner.write(bytes)?;
+        self.hash.update(&bytes[..n]);
+        *self.position += n as u64;
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+fn encode_record(record: &Record, out: impl Write) -> Result<(), String> {
+    let length = record.output_length();
+    let (actual, block_digest) =
+        super::streaming::stream_hash(record.output_reader()?, super::streaming::MAX_BODY)?;
+    if length != actual {
+        return Err("Record output length mismatch".into());
+    }
     let mut headers = record.headers.clone();
-    headers.insert("content-length".into(), record.block.len().to_string());
-    headers.insert(
-        "warc-block-digest".into(),
-        format!("sha256:{}", read::hash(&record.block)),
-    );
+    headers.insert("content-length".into(), length.to_string());
+    headers.insert("warc-block-digest".into(), block_digest);
     if record.kind() != "revisit" && matches!(record.kind(), "response" | "resource") {
         headers.insert("warc-payload-digest".into(), record.digest());
     }
@@ -514,23 +545,29 @@ fn encode_record(record: &Record) -> Result<Vec<u8>, String> {
         raw.push_str(&format!("{key}: {value}\r\n"));
     }
     raw.push_str("\r\n");
-    let mut encoder = flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
+    let mut encoder = flate2::write::GzEncoder::new(out, flate2::Compression::default());
     encoder
         .write_all(raw.as_bytes())
         .map_err(|e| e.to_string())?;
-    encoder
-        .write_all(&record.block)
-        .map_err(|e| e.to_string())?;
+    let copied =
+        std::io::copy(&mut record.output_reader()?, &mut encoder).map_err(|e| e.to_string())?;
+    if copied != length {
+        return Err("Source body changed during output".into());
+    }
     encoder.write_all(b"\r\n\r\n").map_err(|e| e.to_string())?;
-    encoder.finish().map_err(|e| e.to_string())
+    encoder.finish().map_err(|e| e.to_string())?;
+    Ok(())
 }
+
 fn write_archive(
     destination: &Path,
     records: Vec<Record>,
     pages: Vec<PageRecord>,
     title: &str,
     dependencies: BTreeMap<String, String>,
-    provenance: Value,
+    rules: &[selectors::Selector],
+    deduplicate: bool,
+    mut provenance: Value,
 ) -> Result<ArchiveReport, String> {
     if destination.exists() {
         return Err("Destination exists; originals are immutable".into());
@@ -549,19 +586,97 @@ fn write_archive(
         }
     }
     let mut manifest_resources = vec![];
-    let mut warc = vec![];
+    zip.start_file(
+        "archive/derived.warc.gz",
+        SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Stored)
+            .large_file(true),
+    )
+    .map_err(|e| e.to_string())?;
+    let mut warc_hash = Sha256::new();
+    let mut warc_position = 0u64;
     let mut index = vec![];
     let mut page_rows = BTreeMap::<(String, String), PageRecord>::new();
-    for page in pages {
+    let infer_pages = pages.is_empty();
+    for mut page in pages {
+        if !rules.is_empty() {
+            // Rendered native baselines may contain removed confidential text.
+            // Clear all rows, including unmatched capture timestamps, before
+            // rebuilding bounded text from the actual rewritten responses.
+            page.text.clear();
+            page.title.clear();
+            page.resource_urls.clear();
+        }
         page_rows.insert((page.url.clone(), page.ts.clone()), page);
     }
-    for record in &records {
-        let offset = warc.len();
-        let bytes = encode_record(record)?;
-        if warc.len() + bytes.len() > MAX_BYTES {
-            return Err("Output WARC exceeds bounded export size".into());
+    let mut page_data = serde_json::to_vec(
+        &json!({"format":"json-pages-1.0","id":"pages","title":"Derived archived pages"}),
+    )
+    .map_err(|e| e.to_string())?;
+    page_data.push(b'\n');
+    let row_bytes = |page: &PageRecord| -> Result<usize, String> {
+        Ok(serde_json::to_vec(page).map_err(|e| e.to_string())?.len() + 1)
+    };
+    let mut page_metadata_bytes = page_data.len();
+    for page in page_rows.values() {
+        page_metadata_bytes += row_bytes(page)?;
+    }
+    if page_metadata_bytes > super::streaming::MAX_METADATA {
+        return Err("Source page metadata exceeds output inventory bound".into());
+    }
+    let mut analysis_omissions = 0u64;
+    let page_urls: BTreeSet<_> = page_rows.keys().map(|(url, _)| url.clone()).collect();
+    let mut canonical = HashMap::<(String, String, String), Record>::new();
+    for original in &records {
+        // Transform one small HTML body at a time. Never retain all edited
+        // page payloads in memory across a multi-GiB export.
+        let mut record = original.clone();
+        if !rules.is_empty() && record.mime == "text/html" {
+            let dom = content::dom(&content::payload_limited(&record, content::MAX_HTML)?)?;
+            selectors::remove(&dom, rules)?;
+            let mut html = vec![];
+            dom.serialize(&mut html).map_err(|e| e.to_string())?;
+            replace_payload(&mut record, html)?;
         }
-        warc.extend_from_slice(&bytes);
+        let page_analysis = if matches!(record.mime.as_str(), "text/html" | "application/xhtml+xml")
+            && record.resolved
+            && (infer_pages || page_urls.contains(record.url()))
+        {
+            Some(content::analyse(&record)?)
+        } else {
+            None
+        };
+        if page_analysis
+            .as_ref()
+            .is_some_and(|analysis| analysis.content.is_none())
+        {
+            analysis_omissions += 1;
+        }
+        let page_text = page_analysis.and_then(|analysis| analysis.content);
+        if deduplicate && record.kind() == "response" && record.payload_length > 0 {
+            let key = (record.digest(), record.mime.clone(), record.transport_key());
+            if let Some(target) = canonical.get(&key) {
+                to_revisit(&mut record, target)?;
+            } else {
+                let mut reference = record.clone();
+                reference.block.clear();
+                reference.payload.clear();
+                canonical.insert(key, reference);
+            }
+        }
+        let offset = warc_position;
+        encode_record(
+            &record,
+            OutputHash {
+                inner: &mut zip,
+                hash: &mut warc_hash,
+                position: &mut warc_position,
+            },
+        )?;
+        if warc_position > super::streaming::MAX_ARCHIVE {
+            return Err("Output WARC exceeds 32 GiB limit".into());
+        }
+        let encoded_length = warc_position - offset;
         if matches!(record.kind(), "response" | "resource" | "revisit") {
             let mut row = record.index.clone();
             for (key, value) in [
@@ -584,7 +699,7 @@ fn write_archive(
                     }),
                 ),
                 ("offset", json!(offset.to_string())),
-                ("length", json!(bytes.len().to_string())),
+                ("length", json!(encoded_length.to_string())),
                 ("filename", json!("derived.warc.gz")),
             ] {
                 row.insert(key.into(), value);
@@ -609,43 +724,80 @@ fn write_archive(
                 read::timestamp_of(record.field("warc-date"))?,
                 serde_json::to_string(&row).map_err(|e| e.to_string())?
             ));
-            if matches!(record.mime.as_str(), "text/html" | "application/xhtml+xml")
-                && record.resolved
-                && (record.field("warc-resource-type") == "document"
-                    || page_rows.keys().any(|(url, _)| url == record.url()))
+            if let Some((text, title, links)) = page_text {
+                let key = read::page_key(&page_rows, &record, None)
+                    .unwrap_or((record.url().into(), record.field("warc-date").into()));
+                let previous_bytes = page_rows
+                    .get(&key)
+                    .map(&row_bytes)
+                    .transpose()?
+                    .unwrap_or(0);
+                let mut page = page_rows.get(&key).cloned().unwrap_or_default();
+                page.url = record.url().into();
+                if page.ts.is_empty() {
+                    page.ts = record.field("warc-date").into();
+                }
+                page.bytes = encoded_length;
+                page.status = record.status;
+                let baseline = page.clone();
+                // Native Browsertrix rendered baselines include JavaScript
+                // content absent from the original response. Regenerate only
+                // when this derivative actually rewrites HTML selectors.
+                if !rules.is_empty() || page.text.is_empty() {
+                    page.text = text;
+                }
+                if !rules.is_empty() || page.title.is_empty() {
+                    page.title = title;
+                }
+                page.resource_urls = links;
+                let without = page_metadata_bytes - previous_bytes;
+                if without + row_bytes(&page)? > super::streaming::MAX_METADATA {
+                    page = baseline;
+                    analysis_omissions += 1;
+                }
+                page_metadata_bytes = without + row_bytes(&page)?;
+                if page_metadata_bytes > super::streaming::MAX_METADATA {
+                    return Err("Page structural metadata exceeds output inventory bound".into());
+                }
+                page_rows.insert(key, page);
+            } else if infer_pages
+                && matches!(record.mime.as_str(), "text/html" | "application/xhtml+xml")
             {
-                let (text, title, links) = content::extract(record)?;
-                page_rows.insert(
-                    (record.url().into(), record.field("warc-date").into()),
-                    PageRecord {
+                let key = (record.url().into(), record.field("warc-date").into());
+                if !page_rows.contains_key(&key) {
+                    let page = PageRecord {
                         url: record.url().into(),
                         ts: record.field("warc-date").into(),
-                        title,
-                        text,
-                        resource_urls: links,
-                        bytes: bytes.len() as u64,
+                        bytes: encoded_length,
                         status: record.status,
-                    },
-                );
+                        ..Default::default()
+                    };
+                    page_metadata_bytes += row_bytes(&page)?;
+                    if page_metadata_bytes > super::streaming::MAX_METADATA {
+                        return Err(
+                            "Page structural metadata exceeds output inventory bound".into()
+                        );
+                    }
+                    page_rows.insert(key, page);
+                }
             }
         }
     }
+    manifest_resources.push(json!({"name":"derived.warc.gz","path":"archive/derived.warc.gz","bytes":warc_position,"hash":format!("sha256:{:x}",warc_hash.finalize())}));
+    if index.iter().map(String::len).sum::<usize>() > super::streaming::MAX_METADATA {
+        return Err("Output CDX inventory exceeds 32 MiB".into());
+    }
     index.sort();
     let index = index.concat().into_bytes();
-    let mut page_data = serde_json::to_vec(
-        &json!({"format":"json-pages-1.0","id":"pages","title":"Derived archived pages"}),
-    )
-    .map_err(|e| e.to_string())?;
-    page_data.push(b'\n');
+    provenance["optionalPageAnalysisOmissions"] = json!(analysis_omissions);
     for page in page_rows.into_values() {
         page_data.extend_from_slice(&serde_json::to_vec(&page).map_err(|e| e.to_string())?);
         page_data.push(b'\n');
-        if page_data.len() > MAX_BYTES {
+        if page_data.len() > super::streaming::MAX_METADATA {
             return Err("Page export limit exceeded".into());
         }
     }
     let entries = vec![
-        ("archive/derived.warc.gz", warc),
         ("indexes/index.cdxj", index),
         ("pages/pages.jsonl", page_data),
         (

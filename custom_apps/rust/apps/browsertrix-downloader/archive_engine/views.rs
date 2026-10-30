@@ -16,22 +16,52 @@ pub fn preview_page(path: &Path, url: &str) -> Result<String, String> {
 }
 
 pub fn preview_document(path: &Path, url: &str) -> Result<PreviewDocument, String> {
+    preview_document_authorized(path, url, &[])
+}
+
+/// The caller authorizes owner/visibility; the engine verifies every immutable
+/// dependency binding and resolves revisits without writing payload files.
+pub fn preview_document_authorized(
+    path: &Path,
+    url: &str,
+    dependencies: &[AuthorizedDependency],
+) -> Result<PreviewDocument, String> {
     if url.len() > 8192 {
         return Err("Preview URL exceeds limit".into());
     }
-    let archive = read::load(path)?;
+    let archive = transform::authorized_archive(path, dependencies)?;
     let record = archive
         .records
         .iter()
         .filter(|r| r.url() == url && r.mime == "text/html" && r.resolved)
         .max_by_key(|r| r.field("warc-date"))
         .ok_or("Captured HTML page not found or requires standalone materialization")?;
-    let dom = content::dom(&content::payload(record)?)?;
-    let base = url::Url::parse(url).map_err(|_| "Invalid preview URL")?;
+    let dom = content::dom(&content::payload_limited(record, content::MAX_HTML)?)?;
+    let mut base = url::Url::parse(url).map_err(|_| "Invalid preview URL")?;
     let mut resources = HashMap::<String, &Record>::new();
+    let capture = chrono::DateTime::parse_from_rfc3339(record.field("warc-date"))
+        .map(|d| d.timestamp_millis())
+        .unwrap_or(0);
+    let score = |resource: &Record| {
+        let stamp = chrono::DateTime::parse_from_rfc3339(resource.field("warc-date"))
+            .map(|d| d.timestamp_millis())
+            .unwrap_or(0);
+        (
+            !record.field("warc-page-id").is_empty()
+                && record.field("warc-page-id") == resource.field("warc-page-id"),
+            std::cmp::Reverse(stamp.abs_diff(capture)),
+        )
+    };
     for resource in &archive.records {
         if resource.resolved {
-            resources.entry(resource.url().into()).or_insert(resource);
+            resources
+                .entry(resource.url().into())
+                .and_modify(|current| {
+                    if score(resource) > score(current) {
+                        *current = resource;
+                    }
+                })
+                .or_insert(resource);
         }
     }
     let scaffold = content::dom(b"<div data-archive-selector='' src='' poster=''></div>")?;
@@ -44,8 +74,18 @@ pub fn preview_document(path: &Path, url: &str) -> Result<PreviewDocument, Strin
         nodes.extend(node.children.borrow().iter().cloned());
     }
     let mut ids = HashMap::<String, usize>::new();
+    let mut saw_base = false;
     let mut stack = vec![dom.document.clone()];
     while let Some(node) = stack.pop() {
+        if !saw_base && node.element_name().as_deref() == Some("base") {
+            if let Some(next) = content::attr(&node, "href")
+                .and_then(|s| base.join(&s).ok())
+                .filter(|u| matches!(u.scheme(), "http" | "https"))
+            {
+                base = next;
+                saw_base = true;
+            }
+        }
         if let Some(id) = content::attr(&node, "id") {
             *ids.entry(id).or_default() += 1;
         }
@@ -112,7 +152,7 @@ pub fn preview_document(path: &Path, url: &str) -> Result<PreviewDocument, Strin
                         "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
                     )
                 });
-            let image = if let Some(image) = image {
+            let image = if let Some(image) = image.filter(|r| r.payload_length <= 512 * 1024) {
                 let bytes = content::payload(image)?;
                 if bytes.len() <= 512 * 1024 && image_bytes + bytes.len() <= 4 * 1024 * 1024 {
                     image_bytes += bytes.len();
@@ -165,6 +205,7 @@ pub fn preview_document(path: &Path, url: &str) -> Result<PreviewDocument, Strin
                             | "width"
                             | "height"
                             | "alt"
+                            | "hidden"
                     )
             });
             // Attribute's concrete type is public via the DOM even though the
@@ -199,30 +240,48 @@ pub fn preview_document(path: &Path, url: &str) -> Result<PreviewDocument, Strin
                 .retain(|child| !Rc::ptr_eq(child, &node));
         }
     }
-    let mut bytes = vec![];
-    dom.serialize(&mut bytes).map_err(|e| e.to_string())?;
-    let mut html = String::from_utf8(bytes).map_err(|e| e.to_string())?;
     let nonce = format!("{:032x}", rand::random::<u128>());
     let csp=format!("default-src 'none'; sandbox allow-scripts; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; media-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'");
     let meta = format!(
         "<meta http-equiv=\"Content-Security-Policy\" content=\"{}\"><style>{css}</style>",
         content::escape(&csp)
     );
-    if let Some(start) = html
-        .find("<head")
-        .and_then(|p| html[p..].find('>').map(|n| p + n + 1))
-    {
-        html.insert_str(start, &meta);
-    } else {
-        return Err("Preview has no HTML head".into());
-    }
     let encoded_url = serde_json::to_string(url)
         .map_err(|e| e.to_string())?
         .replace('<', "\\u003c");
     let script = format!(
         r#"<script nonce="{nonce}">(()=>{{'use strict';const url={encoded_url};document.addEventListener('click',e=>{{e.preventDefault();e.stopImmediatePropagation();const n=e.target.closest('[data-archive-selector]');if(!n)return;const selector=n.dataset.archiveSelector;if(typeof selector!=='string'||selector.length>512)return;parent.postMessage({{type:'web-archives:selection',selector,url,matches:1}},'*');}},true);document.addEventListener('mouseover',e=>{{const n=e.target.closest('[data-archive-selector]');if(n)n.style.outline='2px solid #1d70b8';}},true);document.addEventListener('mouseout',e=>{{const n=e.target.closest('[data-archive-selector]');if(n)n.style.outline='';}},true);}})();</script>"#
     );
-    html = html.replacen("</body>", &format!("{script}</body>"), 1);
+    // Insert trusted nodes through the public DOM. String searches for '>' are
+    // incorrect when original selector attributes contain child combinators.
+    let trusted =
+        content::dom(format!("<html><head>{meta}</head><body>{script}</body></html>").as_bytes())?;
+    let element = |root: &html2text::RcDom, tag: &str| {
+        let mut stack = vec![root.document.clone()];
+        while let Some(node) = stack.pop() {
+            if node.element_name().as_deref() == Some(tag) {
+                return Some(node);
+            }
+            stack.extend(node.children.borrow().iter().cloned());
+        }
+        None
+    };
+    for tag in ["head", "body"] {
+        let target = element(&dom, tag).ok_or("Preview has no HTML head/body")?;
+        let source = element(&trusted, tag).ok_or("Trusted preview scaffold invalid")?;
+        let children: Vec<_> = source.children.borrow_mut().drain(..).collect();
+        for child in &children {
+            child.parent.set(Some(Rc::downgrade(&target)));
+        }
+        if tag == "head" {
+            target.children.borrow_mut().splice(0..0, children);
+        } else {
+            target.children.borrow_mut().extend(children);
+        }
+    }
+    let mut bytes = vec![];
+    dom.serialize(&mut bytes).map_err(|e| e.to_string())?;
+    let html = String::from_utf8(bytes).map_err(|e| e.to_string())?;
     if html.len() > 8 * 1024 * 1024 {
         return Err("Preview output exceeds 8 MiB".into());
     }
@@ -262,15 +321,18 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 pub fn reader_export(path: &Path, format: &str) -> Result<String, String> {
+    reader_export_authorized(path, format, &[])
+}
+
+pub fn reader_export_authorized(
+    path: &Path,
+    format: &str,
+    dependencies: &[AuthorizedDependency],
+) -> Result<String, String> {
     if !matches!(format, "markdown" | "html") {
         return Err("Reader format must be markdown or html".into());
     }
-    let report = inspect_archive(path)?;
-    if !report.dependencies.is_empty() {
-        return Err(
-            "Reader requires standalone materialization with authorized dependencies".into(),
-        );
-    }
+    let report = transform::authorized_archive(path, dependencies)?.report()?;
     if report.pages.is_empty() {
         return Err("No captured readable pages".into());
     }
@@ -308,17 +370,34 @@ pub fn reader_export(path: &Path, format: &str) -> Result<String, String> {
     Ok(out)
 }
 fn markdown_safe(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+    let mut out = String::new();
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\\' | '[' | ']' | '!' | '*' | '_' | '#' | '`' | '|' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 pub fn compare_archives(left: &Path, right: &Path) -> Result<ComparisonReport, String> {
-    let left = inspect_archive(left)?;
-    let right = inspect_archive(right)?;
-    if !left.dependencies.is_empty() || !right.dependencies.is_empty() {
-        return Err("Comparison requires standalone archives or authorized materialization".into());
-    }
+    compare_archives_authorized(left, &[], right, &[])
+}
+
+pub fn compare_archives_authorized(
+    left: &Path,
+    left_dependencies: &[AuthorizedDependency],
+    right: &Path,
+    right_dependencies: &[AuthorizedDependency],
+) -> Result<ComparisonReport, String> {
+    let left = transform::authorized_archive(left, left_dependencies)?.report()?;
+    let right = transform::authorized_archive(right, right_dependencies)?.report()?;
     let mut report = ComparisonReport::default();
     let pages = |a: ArchiveReport| -> (
         BTreeMap<String, BTreeSet<String>>,

@@ -164,6 +164,8 @@ fn archive_engine_export_preserves_shared_payloads_and_source() {
 }
 #[test]
 fn archive_engine_cross_capture_revisits_rehydrate_without_parent() {
+    // Risk: dependency-backed views must not disclose unbound archive bytes or
+    // silently lose revisited HTML, and must leave source custody untouched.
     let dir = tempfile::tempdir().unwrap();
     let parent = dir.path().join("parent.wacz");
     let source = dir.path().join("source.wacz");
@@ -172,11 +174,18 @@ fn archive_engine_cross_capture_revisits_rehydrate_without_parent() {
     let blob = noise(128 * 1024);
     multi_fixture(
         &parent,
-        &[(
-            "https://example.test/asset",
-            "application/octet-stream",
-            &blob,
-        )],
+        &[
+            (
+                "https://example.test/asset",
+                "application/octet-stream",
+                &blob,
+            ),
+            (
+                "https://example.test/",
+                "text/html",
+                b"<h1>New content</h1>",
+            ),
+        ],
         "2026-01-01T00:00:00Z",
     );
     multi_fixture(
@@ -212,6 +221,35 @@ fn archive_engine_cross_capture_revisits_rehydrate_without_parent() {
     assert!(report.resources.iter().any(|r| r.url.ends_with("new.css")));
     assert!(!verify_archive(&dedup).unwrap().valid);
     assert!(report.archive_bytes + 100_000 < source_report.archive_bytes);
+    let files_before = std::fs::read_dir(dir.path()).unwrap().count();
+    assert!(preview_document(&dedup, "https://example.test/").is_err());
+    assert!(reader_export(&dedup, "html").is_err());
+    assert!(compare_archives(&source, &dedup).is_err());
+    let mut denied = deps.clone();
+    denied[0].archive_id = "unbound-id".into();
+    assert!(preview_document_authorized(&dedup, "https://example.test/", &denied).is_err());
+    assert!(reader_export_authorized(&dedup, "markdown", &denied).is_err());
+    assert!(compare_archives_authorized(&source, &[], &dedup, &denied).is_err());
+    denied = deps.clone();
+    denied[0].sha256 = "0".repeat(64);
+    assert!(preview_document_authorized(&dedup, "https://example.test/", &denied).is_err());
+    assert!(reader_export_authorized(&dedup, "html", &denied).is_err());
+    assert!(compare_archives_authorized(&dedup, &denied, &source, &[]).is_err());
+    let preview = preview_document_authorized(&dedup, "https://example.test/", &deps).unwrap();
+    assert!(preview.html.contains("New content"));
+    assert!(reader_export_authorized(&dedup, "markdown", &deps)
+        .unwrap()
+        .contains("New content"));
+    let comparison = compare_archives_authorized(&source, &[], &dedup, &deps).unwrap();
+    assert!(comparison.changed_pages.is_empty());
+    assert!(comparison.changed_resources.is_empty());
+    assert_eq!(comparison.unchanged_pages, vec!["https://example.test/"]);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), files_before);
+    assert_eq!(
+        inspect_archive(&source).unwrap().sha256,
+        source_report.sha256
+    );
+    assert_eq!(inspect_archive(&dedup).unwrap().sha256, report.sha256);
     assert!(export_archive(&dedup, &standalone, &ExportOptions::default()).is_err());
     let output =
         materialize_archive(&dedup, &standalone, &deps, &ExportOptions::default()).unwrap();
@@ -330,6 +368,21 @@ fn archive_engine_preview_and_reader_do_not_execute_archive_script() {
     assert!(preview.html.contains("web-archives:selection"));
     assert_eq!(preview.html.matches("<script").count(), 1);
     assert!(preview.html.contains("data-archive-selector"));
+    let dom = content::dom(preview.html.as_bytes()).unwrap();
+    let mut nodes = vec![dom.document.clone()];
+    let mut meta_in_head = false;
+    while let Some(node) = nodes.pop() {
+        if node.element_name().as_deref() == Some("meta")
+            && content::attr(&node, "http-equiv").as_deref() == Some("Content-Security-Policy")
+        {
+            meta_in_head = node.get_parent().and_then(|p| p.element_name()).as_deref()
+                == Some("head")
+                && content::attr(&node, "content").as_deref()
+                    == Some(preview.content_security_policy.as_str());
+        }
+        nodes.extend(node.children.borrow().iter().cloned());
+    }
+    assert!(meta_in_head, "Trusted policy must survive DOM roundtrip");
     let html = reader_export(&path, "html").unwrap();
     assert!(!html.contains("<script"));
     assert!(html.contains("Saved content"));
@@ -357,7 +410,7 @@ fn archive_engine_real_crawler_derivative_corruption_check() {
     let verification = verify_archive(&source).unwrap();
     assert!(verification.valid, "{verification:?}");
     let options = ExportOptions {
-        remove_selectors: vec![".advertisement".into()],
+        remove_selectors: vec![".advert, .advertisement".into()],
         ..Default::default()
     };
     let report = export_archive(&source, &destination, &options).expect("actual crawler export");
@@ -365,6 +418,10 @@ fn archive_engine_real_crawler_derivative_corruption_check() {
     assert_eq!(inspect_archive(&source).unwrap().sha256, original.sha256);
     assert!(!report.pages.is_empty());
     assert_eq!(original.resources.len(), report.resources.len());
+    assert!(!report
+        .pages
+        .iter()
+        .any(|p| p.text.contains("Advertisement region")));
     println!(
         "actual crawler export {} -> {} bytes: {}",
         original.archive_bytes,
@@ -374,4 +431,307 @@ fn archive_engine_real_crawler_derivative_corruption_check() {
     let preview = preview_document(&source, &original.pages[0].url).unwrap();
     assert_eq!(preview.html.matches("<script").count(), 1);
     assert!(reader_export(&source, "html").unwrap().contains("Capture:"));
+}
+
+#[test]
+fn archive_engine_lazy_payload_rejects_source_mutation() {
+    use std::io::{Read, Seek, SeekFrom};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("source.wacz");
+    fixture(&path);
+    let archive = read::load(&path).unwrap();
+    let source = archive.records[0].source.as_ref().unwrap();
+    let offset = source.start + source.compressed_length / 2;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    let mut byte = [0];
+    file.read_exact(&mut byte).unwrap();
+    byte[0] ^= 0x7f;
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.write_all(&byte).unwrap();
+    file.sync_all().unwrap();
+    assert!(archive.records[0]
+        .eager_body_limited(read::MAX_RECORD)
+        .is_err());
+}
+
+#[test]
+fn archive_engine_thousands_of_revisits_materialize_without_payload_loss() {
+    // Risk: common assets across thousands of pages must not produce a corrupt
+    // derivative or hit an accidental quadratic resolver cutoff at publication.
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("many.wacz");
+    let dedup = dir.path().join("dedup.wacz");
+    let standalone = dir.path().join("standalone.wacz");
+    let urls: Vec<_> = (0..3000)
+        .map(|i| format!("https://example.test/assets/{i}"))
+        .collect();
+    let mut entries = vec![(
+        "https://example.test/",
+        "text/html",
+        &b"<h1>Many resources</h1>"[..],
+    )];
+    entries.extend(urls.iter().map(|url| {
+        (
+            url.as_str(),
+            "application/octet-stream",
+            &b"Repeated captured asset payload"[..],
+        )
+    }));
+    multi_fixture(&source, &entries, "2026-01-01T00:00:00Z");
+    let report = export_archive(
+        &source,
+        &dedup,
+        &ExportOptions {
+            deduplicate: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(report.resources.len(), 3001);
+    assert!(report.dependencies.is_empty());
+    let report = materialize_archive(&dedup, &standalone, &[], &ExportOptions::default()).unwrap();
+    assert_eq!(report.resources.len(), 3001);
+    assert!(verify_archive(&standalone).unwrap().valid);
+    let expected = format!("sha256:{}", read::hash(b"Repeated captured asset payload"));
+    assert!(report
+        .resources
+        .iter()
+        .filter(|r| r.mime == "application/octet-stream")
+        .all(|r| r.digest == expected));
+}
+
+#[test]
+fn archive_engine_compressed_index_rejects_truncated_or_missing_blocks() {
+    // Risk: a manifest-valid archive with broken random-access index ranges
+    // publishes successfully but loses offline access to its captured records.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fixture.wacz");
+    fixture(&path);
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
+    let mut originals = vec![];
+    for i in 0..zip.len() {
+        let mut file = zip.by_index(i).unwrap();
+        let name = file.name().to_owned();
+        let mut bytes = vec![];
+        std::io::Read::read_to_end(&mut file, &mut bytes).unwrap();
+        if name != "datapackage.json" {
+            originals.push((name, bytes));
+        }
+    }
+    drop(zip);
+    let cdx = originals
+        .iter()
+        .find(|(n, _)| n == "indexes/index.cdxj")
+        .unwrap()
+        .1
+        .clone();
+    let line = std::str::from_utf8(&cdx).unwrap().lines().next().unwrap();
+    let prefix = line[..line.find('{').unwrap()].trim_end();
+    let mut encoder = flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
+    encoder.write_all(&cdx).unwrap();
+    let compressed = encoder.finish().unwrap();
+    for (name, with_index, length) in [
+        ("valid.wacz", true, compressed.len()),
+        ("truncated.wacz", true, compressed.len() - 1),
+        ("missing.wacz", false, compressed.len()),
+    ] {
+        let mut entries: Vec<_> = originals
+            .iter()
+            .filter(|(n, _)| n != "indexes/index.cdxj")
+            .cloned()
+            .collect();
+        entries.push(("indexes/index.cdx.gz".into(), compressed.clone()));
+        if with_index {
+            entries.push(("indexes/index.idx".into(),format!("{prefix} {}\n",serde_json::json!({"filename":"index.cdx.gz","offset":0,"length":length,"digest":format!("sha256:{}",read::hash(&compressed))})).into_bytes()));
+        }
+        let resources:Vec<_>=entries.iter().map(|(path,bytes)|serde_json::json!({"path":path,"bytes":bytes.len(),"hash":format!("sha256:{}",read::hash(bytes))})).collect();
+        entries.push((
+            "datapackage.json".into(),
+            serde_json::to_vec(&serde_json::json!({"resources":resources})).unwrap(),
+        ));
+        let borrowed = entries
+            .iter()
+            .map(|(n, b)| (n.as_str(), b.clone()))
+            .collect();
+        let destination = dir.path().join(name);
+        write_zip(&destination, borrowed);
+        if name == "valid.wacz" {
+            assert!(verify_archive(&destination).unwrap().valid);
+        } else {
+            assert!(inspect_archive(&destination).is_err());
+        }
+    }
+    assert_eq!(
+        read::normalize_sha256("sha256:6QAW7PDTIV5WD6ACG37BHQKHLPDISHGFSVMYV2T4XRIYWNSF4VQQ")
+            .unwrap(),
+        "sha256:f4016fbc73457b61f80236fe13c1475bc6891cc595598aea7cbc518b3645e561"
+    );
+}
+
+#[test]
+fn archive_engine_selector_dedupe_does_not_leave_removed_text_in_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.wacz");
+    let output = dir.path().join("derived.wacz");
+    let html=&b"<html><body><h1>Retained story</h1><p class=secret>Removed confidential text</p></body></html>"[..];
+    multi_fixture(
+        &source,
+        &[
+            ("https://example.test/a", "text/html", html),
+            ("https://example.test/b", "text/html", html),
+        ],
+        "2026-01-01T00:00:00Z",
+    );
+    let report = export_archive(
+        &source,
+        &output,
+        &ExportOptions {
+            deduplicate: true,
+            remove_selectors: vec!["p.secret".into()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(report
+        .pages
+        .iter()
+        .all(|p| p.text.contains("Retained story") && !p.text.contains("Removed confidential")));
+    assert!(verify_archive(&output).unwrap().valid);
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(output).unwrap()).unwrap();
+    let mut pages = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("pages/pages.jsonl").unwrap(), &mut pages)
+        .unwrap();
+    assert!(!pages.contains("Removed confidential"));
+}
+
+#[test]
+fn archive_engine_large_spa_html_preserves_original_and_crawler_baseline() {
+    // Risk: optional text extraction must not prevent publication or silently
+    // corrupt/drop a legal large SPA document and its archived dependencies.
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("large-spa.wacz");
+    let output = dir.path().join("retained.wacz");
+    let mut html = b"<html><body><h1>SPA shell</h1><script type=application/json>\"".to_vec();
+    html.extend(std::iter::repeat_n(b'x', 3 * 1024 * 1024));
+    html.extend_from_slice(b"\"</script><link rel=stylesheet href='/shared.css'></body></html>");
+    multi_fixture(
+        &source,
+        &[
+            ("https://example.test/spa", "text/html", &html),
+            (
+                "https://example.test/shared.css",
+                "text/css",
+                b"body{color:navy}",
+            ),
+        ],
+        "2026-01-01T00:00:00Z",
+    );
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(&source).unwrap()).unwrap();
+    let mut entries = vec![];
+    for i in 0..zip.len() {
+        let mut file = zip.by_index(i).unwrap();
+        let name = file.name().to_owned();
+        let mut bytes = vec![];
+        std::io::Read::read_to_end(&mut file, &mut bytes).unwrap();
+        if name != "datapackage.json" {
+            entries.push((name, bytes));
+        }
+    }
+    drop(zip);
+    let baseline = "Captured browser SPA baseline";
+    entries.iter_mut().find(|(name,_)|name=="pages/pages.jsonl").unwrap().1=format!("{{\"format\":\"json-pages-1.0\",\"id\":\"pages\"}}\n{}\n",serde_json::json!({"url":"https://example.test/spa","title":"Browser title","ts":"2026-01-01T00:00:00Z","text":baseline})).into_bytes();
+    let resources:Vec<_>=entries.iter().map(|(path,bytes)|serde_json::json!({"path":path,"bytes":bytes.len(),"hash":format!("sha256:{}",read::hash(bytes))})).collect();
+    entries.push((
+        "datapackage.json".into(),
+        serde_json::to_vec(&serde_json::json!({"resources":resources})).unwrap(),
+    ));
+    write_zip(
+        &source,
+        entries
+            .iter()
+            .map(|(n, b)| (n.as_str(), b.clone()))
+            .collect(),
+    );
+    let report = inspect_archive(&source).unwrap();
+    assert_eq!(report.pages[0].text, baseline);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|w| w.contains("analysis omitted")));
+    assert!(verify_archive(&source).unwrap().valid);
+    let derived = export_archive(&source, &output, &ExportOptions::default()).unwrap();
+    assert_eq!(derived.resources.len(), 2);
+    assert_eq!(derived.resources[0].digest, report.resources[0].digest);
+    assert_eq!(derived.pages[0].text, baseline);
+    assert!(verify_archive(&output).unwrap().valid);
+    assert!(reader_export(&source, "markdown")
+        .unwrap()
+        .contains(baseline));
+    assert!(preview_document(&source, "https://example.test/spa").is_err());
+    let unsupported = dir.path().join("unsupported.wacz");
+    assert!(export_archive(
+        &source,
+        &unsupported,
+        &ExportOptions {
+            remove_selectors: vec![".ad".into()],
+            ..Default::default()
+        }
+    )
+    .is_err());
+    assert!(!unsupported.exists());
+}
+
+#[test]
+fn archive_engine_rendered_baseline_survives_subsecond_response_merge() {
+    // Demonstrated profile-capture regression: JavaScript-rendered account text
+    // was replaced with the pre-render response shell and an extra page row.
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("rendered.wacz");
+    let output = dir.path().join("standalone.wacz");
+    multi_fixture(&source,&[("https://example.test/account","text/html",b"<html><head><title>Shell title</title></head><body><div id=root>Response shell</div><script>document.querySelector('#root').textContent='Rendered account';</script></body></html>")],"2026-01-01T00:00:00Z");
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(&source).unwrap()).unwrap();
+    let mut entries = vec![];
+    for i in 0..zip.len() {
+        let mut file = zip.by_index(i).unwrap();
+        let name = file.name().to_owned();
+        let mut bytes = vec![];
+        std::io::Read::read_to_end(&mut file, &mut bytes).unwrap();
+        if name != "datapackage.json" {
+            entries.push((name, bytes));
+        }
+    }
+    drop(zip);
+    let baseline = "Rendered authenticated account details";
+    let ts = "2026-01-01T00:00:00.500Z";
+    entries.iter_mut().find(|(name,_)|name=="pages/pages.jsonl").unwrap().1=format!("{{\"format\":\"json-pages-1.0\",\"id\":\"pages\"}}\n{}\n",serde_json::json!({"id":"native-page-id","url":"https://example.test/account","title":"Rendered private dashboard","ts":ts,"text":baseline})).into_bytes();
+    let resources:Vec<_>=entries.iter().map(|(path,bytes)|serde_json::json!({"path":path,"bytes":bytes.len(),"hash":format!("sha256:{}",read::hash(bytes))})).collect();
+    entries.push((
+        "datapackage.json".into(),
+        serde_json::to_vec(&serde_json::json!({"resources":resources})).unwrap(),
+    ));
+    write_zip(
+        &source,
+        entries
+            .iter()
+            .map(|(n, b)| (n.as_str(), b.clone()))
+            .collect(),
+    );
+    for report in [
+        inspect_archive(&source).unwrap(),
+        export_archive(&source, &output, &ExportOptions::default()).unwrap(),
+    ] {
+        assert_eq!(report.pages.len(), 1);
+        assert_eq!(report.pages[0].text, baseline);
+        assert_eq!(report.pages[0].title, "Rendered private dashboard");
+        assert_eq!(report.pages[0].ts, ts);
+    }
+    assert!(reader_export(&output, "markdown")
+        .unwrap()
+        .contains(baseline));
+    assert!(verify_archive(&output).unwrap().valid);
 }
