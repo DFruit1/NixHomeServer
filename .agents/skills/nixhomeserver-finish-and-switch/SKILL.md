@@ -1,13 +1,14 @@
 ---
 name: nixhomeserver-finish-and-switch
-description: Gather unfinished NixHomeServer work across checkouts, complete and integrate it with scoped subagents when needed, and repair guarded deployment failures through a verified NixOS switch. Use for an explicit finish-and-switch request; creating or discussing the skill does not deploy anything.
+description: Gather unfinished NixHomeServer work, wait for active agents' explicit handoffs, complete and integrate their work with scoped subagents when needed, and repair guarded deployment failures through a verified NixOS switch. Use for a finish-and-switch request; creating or discussing the skill does not deploy anything.
 ---
 
 # Finish outstanding work and switch
 
 Own the requested outcome through completion: account for the unfinished work,
-finish it, integrate and publish validated source, then perform a guarded test
-and switch and verify the live result. Continue after recoverable failures.
+wait for participating agents to hand over, finish it, integrate and publish
+validated source, then perform a guarded test and switch and verify the live
+result. Continue after recoverable failures.
 Do not hand back a plan, a passing build, or a test activation as completion.
 
 Resolve the actual NixHomeServer checkout and read its current `AGENTS.md`.
@@ -45,7 +46,9 @@ or module skill only when that boundary changes.
    `secrets/unencrypted/`, dump credentials, or gather ignored caches/artifacts.
    Missing worktrees are unresolved inventory entries, not empty checkouts.
 2. Keep a task ledger: source checkout/HEAD, paths, intended behavior, active
-   writer, dependencies, checks, and disposition for each logical change.
+   writer and thread/task ID, dependencies, checks, handoff state and disposition
+   for each logical change. Identify this invoking thread as the coordinator and
+   start the [agent handoff procedure](references/agent-handoffs.md) immediately.
    Include unpublished commits on participating branches when necessary to
    preserve or finish their dirty work. Do not sweep every historical branch
    or historical task into a request about uncommitted work.
@@ -53,9 +56,12 @@ or module skill only when that boundary changes.
    Finish evident implementation gaps autonomously. Ask only for material
    choices the evidence cannot settle. Never silently drop a difficult change
    or call it complete because another subset deploys successfully.
-4. Coordinate active writers through the available orchestration context and
-   use isolated worktrees for concurrent changes. Agree on a stable handoff
-   before copying their work; do not steal files, stop agents, or race a writer.
+4. Request each participating agent's completion notification, issues and
+   explicit handoff to this invoking thread. Wait for all required handoffs
+   before combining their work into the final integration commit, publishing
+   the combined candidate or deploying. While waiting, review existing work and
+   repo state, diagnose issues and finish unowned work in isolated checkouts.
+   Do not edit or capture an active writer's changing files for integration.
    Use a separate integration checkout if the destination has active or unrelated
    edits. Verify the intended destination branch and remote before integrating.
 5. Preserve the source checkout's index, dirty bytes, untracked files and HEAD
@@ -94,10 +100,17 @@ If delegation is unavailable, continue direct technical work where feasible;
 never describe a self-review as independent review.
 
 Validate each completed logical change using its owning package's focused
-checks, inspect status and diff, stage only its files, and commit. Integrate
-completed commits in dependency order using ordinary non-rewriting Git
-operations. Resolve conflicts against both features' intended behavior and
-check the affected interaction. Do not copy whole stale trees over the candidate.
+checks, inspect status and diff, stage only its files, and commit in its isolated
+checkout. Agents may make validated commits to deliver their handoffs; the wait
+does not prohibit those commits or require rewriting existing history. Keep
+private preparation separate from the final combined integration/publication.
+
+After all required handoffs have been explicitly received and verified, refresh
+the agent/worktree inventory and integrate completed outputs in dependency order
+using ordinary non-rewriting Git operations. New relevant writers or changed
+handed-over content reopen the affected handoff before integration continues.
+Resolve conflicts against both features' intended behavior and check the affected
+interaction. Do not copy whole stale trees over the candidate.
 
 Run the relevant combined checks, then request a read-only independent review
 under [review-loop](../review-loop/SKILL.md) of the exact integrated revision,
@@ -117,8 +130,10 @@ intact; the ledger identifies changes now represented in the integrated commit.
 
 ## Guarded deployment and repair loop
 
-1. Before activation, account for every gathered change. Required work still
-   unfinished or awaiting a decision blocks the claim that everything is ready;
+1. Before activation, confirm all participating agents' current work has an
+   explicit verified handoff to this invoking thread and account for every
+   gathered change. Required work still unfinished or awaiting a decision blocks
+   the claim that everything is ready;
    defer a change only with established authorization. Confirm the destination
    has the validated integrated source, review has no required findings open,
    and no writer can mutate this candidate during deployment. Record the commit,
@@ -175,8 +190,9 @@ system boot profile resolve to that closure using the maintained target access
 path; record the helper's health and rollback outcome. A new app also needs the
 safe-change canary/access checks. Do not reboot merely to prove a switch.
 
-Report the integrated commit and publication, gathered changes and dispositions,
-focused checks and coverage limits, test/switch results, active/boot closure and
-live behavior. Account for source worktrees still holding preserved dirty copies,
+Report the integrated commit and publication, participating agents and received
+handoffs, gathered changes and dispositions, focused checks and coverage limits,
+test/switch results, active/boot closure and live behavior. Account for source
+worktrees still holding preserved dirty copies,
 any remaining work and rollback state. A green subset with unfinished requested
 work is partial progress. Do not add recurring scheduling or external messages.

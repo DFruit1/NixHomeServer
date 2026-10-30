@@ -13,7 +13,10 @@ Six discoverable entrypoints are maintained under .agents/skills:
 - [Operations](../.agents/skills/nixhomeserver-safe-change/SKILL.md): validation
   scope, offload, guarded deployment/recovery, and shutdown protection.
 - [Finish and switch](../.agents/skills/nixhomeserver-finish-and-switch/SKILL.md):
-  gather unfinished work across checkouts, complete complex fixes with scoped
+  gather unfinished work across checkouts, request completion and issue reports
+  from active agents, and wait for their explicit handoffs to the invoking
+  thread before final combined commits/integration and deployment. Review repo
+  state and finish unowned work while waiting, complete complex fixes with scoped
   subagents, integrate and publish validated changes, and repair guarded
   test/switch failures through a verified live switch. Invoking this workflow
   to finish and switch authorizes those operations within existing owner gates;

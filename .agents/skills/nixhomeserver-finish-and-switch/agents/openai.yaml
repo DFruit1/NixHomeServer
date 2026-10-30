@@ -1,4 +1,4 @@
 interface:
   display_name: "NixHomeServer Finish and Switch"
   short_description: "Finish outstanding work and complete a guarded switch"
-  default_prompt: "Use $nixhomeserver-finish-and-switch to gather unfinished work, complete and integrate it, and fix deployment errors until a guarded NixOS switch succeeds."
+  default_prompt: "Use $nixhomeserver-finish-and-switch to gather unfinished work, wait for active agents' explicit handoffs to this thread, finish and integrate it, and fix deployment errors until a guarded NixOS switch succeeds."
