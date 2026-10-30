@@ -97,8 +97,9 @@ frontend expectations. Important integration details:
   origin `null`, exact iframe `event.source`, exact requested URL, selector ≤1000
   chars and integer matches 1–10000. Selector syntax is validated again. Original
   scripts and external fetches must be disabled by the backend preview/CSP.
-- Replay source is ABSOLUTE same-origin `/api/archives/:id/replay`, since the
-  pinned loader calls `new URL(sourceUrl)` without a base. Keep `embed=full`
+- Replay source is ABSOLUTE same-origin `/api/archives/:id/replay.json`, since the
+  pinned loader calls `new URL(sourceUrl)` without a base and requires a JSON
+  filename for Multi-WACZ discovery. Keep `embed=full`
   whenever config/customColl is set. Page/time selection is in the viewer hash.
 - customColl SHA-256 identity includes username, archive ID/hash, display mode
   and saved rules. Original/clean are distinct; original→clean→original is stable
@@ -110,6 +111,18 @@ frontend expectations. Important integration details:
   scopes WB_wombat_location/_WB_wombat_location, then sets only display:none with
   style.setProperty. It fails closed without the replay location. No raw CSS/HTML
   is built from selectors; no API fetch or archive rewrite occurs in this script.
+- Both modes use `sw-clean.js`, a small wrapper around the pinned worker. Its
+  proxy exception accepts only GET for the exact local `clean.js` path, without
+  query parameters or redirects; every other request uses upstream replay
+  handling. This is needed because per-collection injectScripts does not update
+  the upstream worker's proxy allowlist. The wrapper never permits a live origin.
+
+Root integration checks: `pnpm check` now passes 13 tests, including a regression
+for the strict script proxy boundary, plus production replay staging. Actual
+ReplayWeb.page 2.5.2 rendered the synthetic Multi-WACZ manifest and applied the
+scoped hide rule while preserving text and the original payload. The earlier
+child-only limitations below describe its original handoff; final integrated
+acceptance is recorded by the parent plan.
 
 ## Checks and fixture-only browser evidence
 

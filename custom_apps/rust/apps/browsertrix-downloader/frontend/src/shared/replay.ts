@@ -18,7 +18,7 @@ export async function replayLink(archive: Pick<Archive,'id'|'sha256'|'cleanRules
   // Encode apostrophes too: the pinned viewer emits script src in single quotes.
   const fragment=encodeURIComponent(JSON.stringify(rules)).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16).toUpperCase());
   const config={injectScripts:clean?[`${origin}/replay/clean.js#${fragment}`]:[],liveRedirectOnNotFound:false};
-  const query=new URLSearchParams({source:new URL(archivePath(archive.id)+'/replay',origin).href,customColl:'wa-'+hash,config:JSON.stringify(config),noCache:'1',embed:'full'});
+  const query=new URLSearchParams({source:new URL(archivePath(archive.id)+'/replay.json',origin).href,customColl:'wa-'+hash,config:JSON.stringify(config),noCache:'1',embed:'full',swName:'sw-clean.js'});
   const target=new URLSearchParams({view:'replay',...(url?{url}:{}),...(ts?{ts:ts.replace(/[^0-9]/g,'').slice(0,14)}:{})});
   return `/replay/index.html?${query}#${target}`;
 }

@@ -25,7 +25,8 @@ describe('replay isolation',()=>{
     expect(originalAgain).toBe(original);
     expect(p(original).get('customColl')).not.toBe(p(clean).get('customColl'));
     expect(p(original).get('customColl')).not.toBe(p(otherOwner).get('customColl'));
-    expect(p(original).get('source')).toBe('https://archives.test/api/archives/a1/replay');
+    expect(p(original).get('source')).toBe('https://archives.test/api/archives/a1/replay.json');
+    expect(p(original).get('swName')).toBe('sw-clean.js');
     expect(JSON.parse(p(original).get('config')!).injectScripts).toEqual([]);
     const script=JSON.parse(p(clean).get('config')!).injectScripts[0] as string;
     expect(script).not.toMatch(/[<>']/);
@@ -41,5 +42,20 @@ describe('replay isolation',()=>{
     runInNewContext(readFileSync(new URL('../../../public/replay/clean.js',import.meta.url),'utf8'),{document,window,URL,MutationObserver:class {observe(){}},HTMLElement:Element,SVGElement:class {}});
     expect(selectors).toEqual(['.banner','body{background:url(https://leak.test)}']);
     expect(setProperty).toHaveBeenCalledExactlyOnceWith('display','none','important');
+  });
+  it('permits only the fixed local clean script through the replay proxy',()=>{
+    const handlers:Record<string,(event:unknown)=>void>={};
+    const fetch=vi.fn(()=>Promise.resolve({}));
+    runInNewContext(readFileSync(new URL('../../../public/replay/sw-clean.js',import.meta.url),'utf8'),{
+      URL,fetch,importScripts:vi.fn(),self:{location:{href:'https://archives.test/replay/sw-clean.js?serveIndex=1'},addEventListener:(type:string,handler:(event:unknown)=>void)=>{handlers[type]=handler;}}
+    });
+    const respondWith=vi.fn(),stopImmediatePropagation=vi.fn();
+    const prefix='https://archives.test/replay/static/proxy/';
+    for(const url of [prefix+'https://leak.test/clean.js',prefix+'https://archives.test/replay/clean.js/extra',prefix+'https://archives.test/replay/clean.js?url=https://leak.test'])handlers.fetch({request:{url,method:'GET'},respondWith,stopImmediatePropagation});
+    expect(respondWith).not.toHaveBeenCalled();
+    handlers.fetch({request:{url:prefix+'https://archives.test/replay/clean.js#encoded-rules',method:'GET'},respondWith,stopImmediatePropagation});
+    expect(fetch).toHaveBeenCalledExactlyOnceWith('https://archives.test/replay/clean.js',{credentials:'same-origin',redirect:'error',cache:'no-store'});
+    expect(respondWith).toHaveBeenCalledOnce();
+    expect(stopImmediatePropagation).toHaveBeenCalledOnce();
   });
 });
