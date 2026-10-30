@@ -10,24 +10,25 @@ pub fn build_crawl_args(
 ) -> Vec<OsString> {
     // Use custom collection name if provided, otherwise fall back to the provided collection (job ID)
     let collection_name = request.collection.as_deref().unwrap_or(collection);
-    [
+    let mut args: Vec<OsString> = vec![
         "run".into(),
         "--rm".into(),
+        "--name".into(),
+        format!("web-archive-{collection}").into(),
         "--shm-size=1g".into(),
         "--cap-add=SYS_ADMIN".into(),
         "--security-opt=seccomp=unconfined".into(),
-        // The host kernel rejects procfs mounts from this rootless user
-        // namespace. Keep the container's network and filesystem isolation,
-        // but reuse the host PID namespace so crun does not need that mount.
-        "--pid=host".into(),
-        // The service sandbox prevents changing the hostname when the UTS
-        // namespace is private, so share it with the host as well.
         "--uts=host".into(),
         "-v".into(),
         format!("{}:/crawls", crawl_dir.display()).into(),
+        "--tmpfs".into(),
+        "/browser-state:rw,nosuid,nodev,mode=0700,size=512m".into(),
+        "--tmpfs".into(),
+        format!("/crawls/collections/{collection_name}/downloads:rw,nosuid,nodev,mode=0700").into(),
         "--network=slirp4netns:allow_host_loopback=false".into(),
         image.into(),
         "crawl".into(),
+        "--headless".into(),
         "--url".into(),
         request.url.clone().into(),
         "--collection".into(),
@@ -38,11 +39,10 @@ pub fn build_crawl_args(
         request.scope.as_str().into(),
         "--depth".into(),
         if request.scope == CrawlScope::Page {
-            "0"
+            "0".into()
         } else {
-            "1"
-        }
-        .into(),
+            request.options.depth.to_string().into()
+        },
         "--limit".into(),
         request.page_limit.to_string().into(),
         "--timeLimit".into(),
@@ -50,11 +50,38 @@ pub fn build_crawl_args(
         "--workers".into(),
         "1".into(),
         "--generateWACZ".into(),
+        "--screenshot".into(),
+        "view".into(),
         "--text".into(),
-        "--overwrite".into(),
-    ]
-    .into_iter()
-    .collect()
+        "to-pages,to-warc,final-to-warc".into(),
+        "--saveState".into(),
+        "always".into(),
+        "--saveStateInterval".into(),
+        "30".into(),
+        "--saveStateHistory".into(),
+        "3".into(),
+        "--reportSkipped".into(),
+        "--statsFilename".into(),
+        "/crawls/stats.json".into(),
+        "--serviceWorker".into(),
+        "disabled".into(),
+        "--behaviorTimeout".into(),
+        request.options.behavior_timeout_seconds.to_string().into(),
+        "--postLoadDelay".into(),
+        request.options.post_load_delay_seconds.to_string().into(),
+        "--lang".into(),
+        request.options.language.clone().into(),
+    ];
+    if let Some(bytes) = request.options.size_limit_bytes {
+        args.extend(["--sizeLimit".into(), bytes.to_string().into()]);
+    }
+    if request.scope == CrawlScope::PageSpa {
+        args.push("--allowHashUrls".into());
+    }
+    if crawl_dir.join("capture.json").is_file() {
+        args.extend(["--config".into(), "/crawls/capture.json".into()]);
+    }
+    args
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -75,6 +102,17 @@ pub fn parse_crawl_log_line(line: &str) -> Option<CrawlLogProgress> {
         progress.pages_done = stats.get("done").and_then(json_u64);
         progress.pages_queued = stats.get("queued").and_then(json_u64);
         progress.pages_failed = stats.get("failed").and_then(json_u64);
+    }
+    if value.get("message").and_then(Value::as_str) == Some("Crawl statistics") {
+        if let Some(details) = value.get("details") {
+            progress.pages_done = details.get("crawled").and_then(json_u64);
+            progress.pages_failed = details.get("failed").and_then(json_u64);
+            progress.pages_queued = details.get("total").and_then(json_u64).map(|total| {
+                total
+                    .saturating_sub(progress.pages_done.unwrap_or(0))
+                    .saturating_sub(progress.pages_failed.unwrap_or(0))
+            });
+        }
     }
     if value.get("message").and_then(Value::as_str) == Some("pageCrawled")
         && progress.pages_done.is_none()
@@ -130,3 +168,158 @@ fn json_u64(value: &Value) -> Option<u64> {
 fn shorten(value: &str) -> String {
     value.chars().take(240).collect()
 }
+
+/// Only flags present in Browsertrix Crawler v1.14.3/src/util/argParser.ts.
+/// Policy requiring response interception is implemented by its supported driver.
+pub fn write_capture_config(
+    request: &CreateJobRequest,
+    path: &Path,
+    resume: Option<&str>,
+) -> Result<(), String> {
+    let options = &request.options;
+    let mut seeds = vec![request.url.clone()];
+    seeds.extend(options.seeds.iter().cloned());
+    seeds.sort();
+    seeds.dedup();
+    let mut config = serde_json::json!({"seeds":seeds,"behaviors":options.behaviors,"clickSelector":options.click_selector,"blockAds":options.block_ads,"driver":"file:///crawls/policy.js","policy":options,"blockMessage":"Intentionally omitted by frozen capture policy","adBlockMessage":"Intentionally omitted advertisement"});
+    // JS negative lookahead gives allow exceptions priority over each native block.
+    let exception = options
+        .allow_rules
+        .iter()
+        .map(|v| format!("(?:{v})"))
+        .collect::<Vec<_>>()
+        .join("|");
+    let blocks = options
+        .block_rules
+        .iter()
+        .map(|block| {
+            if exception.is_empty() {
+                block.clone()
+            } else {
+                format!("^(?!.*(?:{exception})).*(?:{block})")
+            }
+        })
+        .collect::<Vec<_>>();
+    config["blockRules"] = serde_json::json!(blocks);
+    let mut excludes = options.exclude.clone();
+    // Native includes extend scope by OR. Inclusion filters must restrict pages
+    // while leaving resource dependencies independent, so use a page exclusion.
+    if !options.include.is_empty() {
+        excludes.push(format!(
+            "^(?!(?:{})).*",
+            options
+                .include
+                .iter()
+                .map(|p| format!("(?:{p})"))
+                .collect::<Vec<_>>()
+                .join("|")
+        ));
+    }
+    if !excludes.is_empty() {
+        config["exclude"] = serde_json::json!(excludes);
+    }
+    // Saved YAML contains native crawler state. Yargs loads it first, then exact CLI
+    // budget/recipe values override stale settings without --overwrite.
+    if let Some(saved) = resume {
+        config["resumeConfig"] = serde_json::json!(saved);
+    }
+    std::fs::write(
+        path.join("capture.json"),
+        serde_json::to_vec(&config).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::write(path.join("policy.js"), POLICY_DRIVER).map_err(|e| e.to_string())
+}
+
+const POLICY_DRIVER: &str = r#"
+import fs from 'node:fs';
+const settings=JSON.parse(fs.readFileSync('/crawls/capture.json','utf8'));
+const p=settings.policy;
+// Native profile installation renames downloads/profile-* into profile. Keep
+// both on the same fresh tmpfs; mounting profile itself would fail with EBUSY.
+const {Browser}=await import('file:///app/dist/util/browser.js');
+const install=Browser.prototype.installProfile;
+Browser.prototype.installProfile=async function(url){this.profileDir='/browser-state/profile';this.downloadsDir='/browser-state/downloads';return install.call(this,url);};
+// 1.14.3 drops page-limit overflow URLs from its saved queue, retaining them in
+// skippedPages instead. Restore only those already-scoped rows on an explicit
+// resume; otherwise extending the page budget would never discover them again.
+if(settings.resumeConfig&&!settings.qaMode){
+ const {Crawler}=await import('file:///app/dist/crawler.js');
+ const add=Crawler.prototype._addInitialSeeds;
+ Crawler.prototype._addInitialSeeds=async function(){
+  await add.call(this);
+  const report=`${this.collDir}/reports/skippedPages.jsonl`;
+  if(!fs.existsSync(report))return;
+  const length=Math.min(fs.statSync(report).size,32*1024*1024);if(!length)return;
+  const {createInterface}=await import('node:readline');
+  // Freeze the old extent: native queueUrl may append a new skipped row, which
+  // must not feed back into this same restoration pass.
+  const input=fs.createReadStream(report,{start:0,end:length-1});
+  const lines=createInterface({input,crlfDelay:Infinity});
+  let count=0;
+  try{for await(const line of lines){if(++count>20000)break;if(line.length>16384)continue;let row;try{row=JSON.parse(line);}catch{continue;}if(row.reason!=='pageLimit'||!Number.isInteger(row.depth)||row.depth<0||row.depth>20)continue;const seedId=this.seeds.findIndex(seed=>seed.url===row.seedUrl);if(seedId<0)continue;await this.queueUrl({url:row.url,seedId,depth:row.depth,extraHops:0});}}
+  finally{lines.close();input.destroy();}
+ };
+}
+
+console.log(JSON.stringify({message:'policyReady',version:1}));
+const installed=new WeakSet();
+export default async function({page,data,crawler,seed}) {
+  await page.setViewport({width:p.viewportWidth,height:p.viewportHeight});
+  if (!installed.has(page)) {
+    installed.add(page);
+    crawler.browser.interceptRequest(page,async request=>{if(p.allowRules.some(rule=>new RegExp(rule).test(request.url()))){try{await request.continue({},10);}catch{}}});
+    const session=await page.createCDPSession();
+    await session.send('Network.enable');
+    session.on('Network.loadingFinished',e=>console.log(JSON.stringify({message:'transferBytes',bytes:e.encodedDataLength||0})));
+    await session.send('Fetch.enable',{patterns:[{urlPattern:'*',requestStage:'Response'}]});
+    session.on('Fetch.requestPaused',async e=>{
+      const headers=e.responseHeaders||[];
+      const length=Number(headers.find(h=>h.name.toLowerCase()==='content-length')?.value||0);
+      const type=(headers.find(h=>h.name.toLowerCase()==='content-type')?.value||'').toLowerCase();
+      const allow=p.allowRules.some(rule=>new RegExp(rule).test(e.request.url));
+      const media=/^(video|audio)\//.test(type);
+      const image=/^image\//.test(type);
+      const block=!allow && ((p.maxResourceBytes && length>p.maxResourceBytes)||(media && p.media!=='full')||(image && p.media==='none'));
+      try {if(block){await session.send('Fetch.failRequest',{requestId:e.requestId,errorReason:'BlockedByClient'});console.log(JSON.stringify({message:'policyOmission',details:e.request.url,reason:length>p.maxResourceBytes?'resource-size':'media-policy'}));}else{await session.send('Fetch.continueRequest',{requestId:e.requestId});}}catch{}
+    });
+    await page.evaluateOnNewDocument((p)=>{
+      if(p.media!=='full') {HTMLMediaElement.prototype.play=function(){return Promise.resolve();};}
+      if(!p.alternateImages){new MutationObserver(()=>{document.querySelectorAll('[srcset]').forEach(n=>n.removeAttribute('srcset'));}).observe(document,{subtree:true,childList:true});}
+      const apply=()=>{for(const rule of p.selectors){if(rule.urlPrefix&&!location.href.startsWith(rule.urlPrefix))continue;for(const element of document.querySelectorAll(rule.selector)){element.style.setProperty('display','none','important');if(rule.action==='block'){element.querySelectorAll('img,video,audio,iframe,source').forEach(n=>{n.removeAttribute('src');n.removeAttribute('srcset');});}}}};
+      new MutationObserver(apply).observe(document,{subtree:true,childList:true});
+    },p);
+  }
+  await crawler.loadPage(page,data,seed);
+  await runAssertions(page,data,crawler);
+}
+async function runAssertions(page,data,crawler) {
+  const results=[];
+  const context=crawler.recording===false ? (page.frames().slice(2)[0]||page) : page;
+  for(const step of p.interactions||[]) {
+    try {
+      const element=await context.waitForSelector(step.selector,{timeout:3000});
+      if(!element)throw new Error('click target missing');
+      await element.click({timeout:3000});
+      let pass=false;
+      if(step.assertion==='text'){pass=await element.evaluate((n,expected)=>n.textContent.includes(expected),step.expected);}
+      else {const result=await context.$(step.expected);const visible=result?await result.isVisible():false;pass=step.assertion==='visible'?visible:!visible;}
+      results.push({name:`interaction:${step.selector}`,status:pass?'pass':'fail',details:step.assertion});
+    }catch {results.push({name:`interaction:${step.selector}`,status:'fail',details:'click or assertion failed'});}
+  }
+  if(results.length)fs.appendFileSync('/crawls/interactions.jsonl',JSON.stringify({url:data.url,checks:results})+'\n');
+}
+// Browsertrix1.14.3 QA overrides crawlPage, bypassing the driver's default
+// callback. This module is still loaded through --driver. Wrap its native hooks
+// inside this isolated container to retain actual comparisons and assertions.
+if(settings.qaMode){
+ const {ReplayCrawler}=await import('file:///app/dist/replaycrawler.js');
+ const setup=ReplayCrawler.prototype.setupPage;
+ ReplayCrawler.prototype.setupPage=async function(opts){await setup.call(this,opts);if(settings.applyViewport)await opts.page.setViewport({width:p.viewportWidth,height:p.viewportHeight});};
+ const process=ReplayCrawler.prototype.processPageInfo;
+ ReplayCrawler.prototype.processPageInfo=async function(page,state){if(state){const info=this.pageInfos.get(page);if(info)fs.appendFileSync('/crawls/qa-observations.jsonl',JSON.stringify({url:info.url,comparison:info.comparison,badResources:Object.entries(info.urls).filter(([url,value])=>url.startsWith("http")&&value.status>=400).slice(0,100).map(([url,value])=>({url,status:value.status,mime:value.mime}))})+'\n');}return process.call(this,page,state);};
+ const crawl=ReplayCrawler.prototype.crawlPage;
+ ReplayCrawler.prototype.crawlPage=async function(opts){await crawl.call(this,opts);await runAssertions(opts.page,opts.data,this);};
+}
+
+"#;

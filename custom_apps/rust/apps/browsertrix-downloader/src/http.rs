@@ -35,6 +35,7 @@ pub struct AppState {
 
 pub fn router(state: AppState) -> Router {
     let router = Router::new()
+        .merge(crate::library_http::routes())
         .route("/healthz", get(health))
         .route("/api/me", get(me))
         .route(
@@ -44,6 +45,18 @@ pub fn router(state: AppState) -> Router {
         .route("/api/jobs/{job_id}", get(get_job).delete(delete_job))
         .route("/api/jobs/{job_id}/cancel", post(cancel_job))
         .route("/api/jobs/{job_id}/retry", post(retry_job))
+        .route(
+            "/api/jobs/{job_id}/pause",
+            post(crate::library_http::pause_job),
+        )
+        .route(
+            "/api/jobs/{job_id}/stop",
+            post(crate::library_http::stop_job),
+        )
+        .route(
+            "/api/jobs/{job_id}/resume",
+            post(crate::library_http::resume_job),
+        )
         .route("/api/jobs/{job_id}/wacz", get(serve_archive))
         .route("/api/zims", get(list_zims))
         .route("/api/zims/{name}", get(serve_zim))
@@ -66,6 +79,17 @@ async fn serve_archive(
         .filter(|job| job.status == crate::model::JobStatus::Completed)
         .filter(|job| job.archive_file.is_some())
         .ok_or_else(|| ApiError::not_found("archive not found"))?;
+    if let Some(id) = job.runtime.archive_id.as_ref() {
+        if let Some(archive) = state.database.archive_for_user(id, &user.username)? {
+            return file_response(
+                crate::custody::root(&state.config, &archive),
+                &archive.archive_file,
+                query.as_deref(),
+                &headers,
+            )
+            .await;
+        }
+    }
     let archive_file = job.archive_file.expect("filtered archive file");
     file_response(
         &state.config.archive_root,
@@ -170,7 +194,7 @@ async fn scan_zims(root: &FilePath) -> Result<Vec<Value>, ApiError> {
     Ok(zims)
 }
 
-async fn file_response(
+pub(crate) async fn file_response(
     root: &FilePath,
     name: &str,
     query: Option<&str>,
@@ -219,7 +243,7 @@ async fn file_response(
         .map_err(ApiError::internal)
 }
 
-async fn open_archive(
+pub(crate) async fn open_archive(
     root: &FilePath,
     archive_file: &str,
 ) -> Result<(tokio::fs::File, u64), ApiError> {
@@ -428,12 +452,15 @@ async fn clear_history(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn authenticated_user(headers: &HeaderMap) -> Result<CurrentUser, ApiError> {
+pub(crate) fn authenticated_user(headers: &HeaderMap) -> Result<CurrentUser, ApiError> {
     current_user(headers)
         .map_err(|error| ApiError::new(StatusCode::UNAUTHORIZED, error.to_string()))
 }
 
-fn mutation_json<T: DeserializeOwned>(headers: &HeaderMap, body: &[u8]) -> Result<T, ApiError> {
+pub(crate) fn mutation_json<T: DeserializeOwned>(
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<T, ApiError> {
     assert_same_origin(headers)?;
     let content_type = header(headers, "content-type")
         .and_then(|value| value.split(';').next())
@@ -456,7 +483,7 @@ fn mutation_json<T: DeserializeOwned>(headers: &HeaderMap, body: &[u8]) -> Resul
     serde_json::from_value(value).map_err(|error| ApiError::bad_request(error.to_string()))
 }
 
-fn assert_same_origin(headers: &HeaderMap) -> Result<(), ApiError> {
+pub(crate) fn assert_same_origin(headers: &HeaderMap) -> Result<(), ApiError> {
     homelab_common::assert_same_origin(headers)
         .map_err(|error| ApiError::forbidden(error.to_string()))
 }
@@ -466,35 +493,35 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 }
 
 #[derive(Debug)]
-struct ApiError {
+pub(crate) struct ApiError {
     status: StatusCode,
     message: String,
 }
 
 impl ApiError {
-    fn new(status: StatusCode, message: impl Into<String>) -> Self {
+    pub(crate) fn new(status: StatusCode, message: impl Into<String>) -> Self {
         Self {
             status,
             message: message.into(),
         }
     }
 
-    fn bad_request(message: impl Into<String>) -> Self {
+    pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, message)
     }
 
-    fn forbidden(message: impl Into<String>) -> Self {
+    pub(crate) fn forbidden(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::FORBIDDEN,
             format!("not authorised: {}", message.into()),
         )
     }
 
-    fn not_found(message: impl Into<String>) -> Self {
+    pub(crate) fn not_found(message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, message)
     }
 
-    fn internal(error: impl std::fmt::Display) -> Self {
+    pub(crate) fn internal(error: impl std::fmt::Display) -> Self {
         eprintln!(
             "{}",
             json!({

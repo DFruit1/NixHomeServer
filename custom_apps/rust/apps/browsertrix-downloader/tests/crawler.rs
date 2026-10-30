@@ -12,6 +12,7 @@ fn request(scope: CrawlScope) -> CreateJobRequest {
         page_limit: 25,
         time_limit_minutes: 10,
         collection: None,
+        options: Default::default(),
     }
 }
 
@@ -22,6 +23,7 @@ fn request_with_collection(scope: CrawlScope, collection: &str) -> CreateJobRequ
         page_limit: 25,
         time_limit_minutes: 10,
         collection: Some(collection.to_owned()),
+        options: Default::default(),
     }
 }
 
@@ -52,7 +54,9 @@ fn crawler_arguments_follow_the_documented_container_contract() {
     assert_eq!(value_after(&strings, "--timeLimit"), "600");
     assert!(strings.contains(&std::borrow::Cow::Borrowed("--generateWACZ")));
     assert!(strings.contains(&std::borrow::Cow::Borrowed("--cap-add=SYS_ADMIN")));
-    assert!(strings.contains(&std::borrow::Cow::Borrowed("--pid=host")));
+    // A private PID namespace kills crawler/Redis/browser descendants on exit;
+    // host PID mode left Redis processes behind during actual capture checks.
+    assert!(!strings.contains(&std::borrow::Cow::Borrowed("--pid=host")));
     assert!(strings.contains(&std::borrow::Cow::Borrowed("--uts=host")));
     assert!(!strings.contains(&std::borrow::Cow::Borrowed("--init")));
     assert!(strings.contains(&std::borrow::Cow::Borrowed(

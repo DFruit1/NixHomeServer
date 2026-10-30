@@ -23,7 +23,7 @@ impl Database {
         &self.path
     }
 
-    fn connect(&self) -> rusqlite::Result<Connection> {
+    pub(crate) fn connect(&self) -> rusqlite::Result<Connection> {
         let connection = Connection::open_with_flags(
             &self.path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -71,16 +71,30 @@ impl Database {
                ON job_events(job_id, created_at);
              INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                VALUES (1, {NOW});"
-        ))
+        ))?;
+        let has_runtime = connection
+            .prepare("PRAGMA table_info(jobs)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "runtime_json");
+        if !has_runtime {
+            connection.execute(
+                "ALTER TABLE jobs ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{}'",
+                [],
+            )?;
+        }
+        self.migrate_catalog()
     }
 
     pub fn mark_worker_interrupted(&self) -> rusqlite::Result<usize> {
         self.connect()?.execute(
             &format!(
                 "UPDATE jobs
-                    SET status = 'failed', updated_at = {NOW},
+                    SET status = CASE WHEN status='cancelling' OR json_extract(runtime_json,'$.control')='discard' THEN 'cancelled' WHEN json_extract(runtime_json,'$.attempt') > 0 THEN 'paused' ELSE 'failed' END,
+                        runtime_json = CASE WHEN status='cancelling' OR json_extract(runtime_json,'$.control')='discard' THEN json_set(runtime_json,'$.control','discard','$.canResume',json('false'),'$.discardCleanupPending',json('true')) ELSE runtime_json END, updated_at = {NOW},
                         error = 'interrupted by crawl worker restart', progress_json = NULL
-                  WHERE status IN ('starting', 'running', 'cancelling')"
+                  WHERE status IN ('starting', 'running', 'cancelling', 'packaging')"
             ),
             [],
         )
@@ -137,15 +151,15 @@ impl Database {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute(
-            &format!("UPDATE jobs SET status = ?2, updated_at = {NOW}, error = ?3 WHERE id = ?1"),
+            &format!("UPDATE jobs SET status = CASE WHEN json_extract(runtime_json,'$.control')='discard' THEN 'cancelled' ELSE ?2 END, updated_at = {NOW}, error = ?3 WHERE id = ?1"),
             params![job_id, status.as_str(), error],
         )?;
         transaction.execute(
             &format!(
                 "INSERT INTO job_events(job_id, created_at, event_type, message, data_json)
-                 VALUES (?1, {NOW}, ?2, ?3, NULL)"
+                 SELECT ?1, {NOW}, status, ?2, NULL FROM jobs WHERE id=?1"
             ),
-            params![job_id, status.as_str(), error],
+            params![job_id, error],
         )?;
         transaction.commit()
     }
@@ -159,7 +173,10 @@ impl Database {
             })
             .optional()?;
         let (next, message) = match current.as_deref() {
-            Some("queued") => ("cancelled", "Queued archive cancelled"),
+            Some("queued" | "paused" | "partial") => (
+                "cancelled",
+                "Archive work discarded; published versions retained",
+            ),
             Some("starting" | "running") => ("cancelling", "Cancellation requested"),
             _ => {
                 transaction.commit()?;
@@ -167,7 +184,7 @@ impl Database {
             }
         };
         let changed = transaction.execute(
-            &format!("UPDATE jobs SET status = ?2, updated_at = {NOW} WHERE id = ?1"),
+            &format!("UPDATE jobs SET status = ?2, runtime_json=json_set(runtime_json,'$.canResume',json('false'),'$.control','discard','$.discardCleanupPending',json(CASE WHEN status IN ('starting','running') OR json_extract(runtime_json,'$.attempt')>0 THEN 'true' ELSE 'false' END)), updated_at = {NOW} WHERE id = ?1"),
             params![job_id, next],
         )? == 1;
         transaction.execute(
@@ -177,6 +194,9 @@ impl Database {
             ),
             params![job_id, next, message],
         )?;
+        // Invalidate pre-upgrade intents in the same cancellation transaction,
+        // so clearing terminal history cannot erase the only discard evidence.
+        transaction.execute("UPDATE publication_intents SET completed=-1 WHERE completed=0 AND json_extract(document,'$.jobId')=?1", [job_id])?;
         transaction.commit()?;
         Ok(changed)
     }
@@ -220,7 +240,7 @@ impl Database {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
             "SELECT id, created_at, updated_at, created_by, status, request_json,
-                    progress_json, archive_file, archive_bytes, error
+                    progress_json, archive_file, archive_bytes, error, runtime_json
                FROM jobs WHERE created_by = ?1
               ORDER BY created_at DESC, id DESC LIMIT ?2",
         )?;
@@ -234,7 +254,7 @@ impl Database {
         self.connect()?
             .query_row(
                 "SELECT id, created_at, updated_at, created_by, status, request_json,
-                        progress_json, archive_file, archive_bytes, error
+                        progress_json, archive_file, archive_bytes, error, runtime_json
                    FROM jobs WHERE id = ?1 LIMIT 1",
                 [id],
                 row_to_job,
@@ -246,7 +266,7 @@ impl Database {
         self.connect()?
             .query_row(
                 "SELECT id, created_at, updated_at, created_by, status, request_json,
-                        progress_json, archive_file, archive_bytes, error
+                        progress_json, archive_file, archive_bytes, error, runtime_json
                    FROM jobs WHERE id = ?1 AND created_by = ?2 LIMIT 1",
                 params![id, created_by],
                 row_to_job,
@@ -262,7 +282,7 @@ impl Database {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
             "SELECT id, created_at, updated_at, created_by, status, request_json,
-                    progress_json, archive_file, archive_bytes, error
+                    progress_json, archive_file, archive_bytes, error, runtime_json
                FROM jobs
               WHERE created_by = ?1 AND status IN ('queued', 'starting', 'running')
               ORDER BY created_at, id",
@@ -277,7 +297,7 @@ impl Database {
         self.connect()?.execute(
             "DELETE FROM jobs
               WHERE id = ?1 AND created_by = ?2
-                AND status IN ('completed', 'failed', 'cancelled')",
+                AND status IN ('completed', 'failed', 'cancelled', 'partial') AND coalesce(json_extract(runtime_json,'$.canResume'),0)=0 AND coalesce(json_extract(runtime_json,'$.discardCleanupPending'),0)=0",
             params![id, created_by],
         )
     }
@@ -285,7 +305,7 @@ impl Database {
     pub fn clear_history(&self, created_by: &str) -> rusqlite::Result<usize> {
         self.connect()?.execute(
             "DELETE FROM jobs
-              WHERE created_by = ?1 AND status IN ('completed', 'failed', 'cancelled')",
+              WHERE created_by = ?1 AND status IN ('completed', 'failed', 'cancelled', 'partial') AND coalesce(json_extract(runtime_json,'$.canResume'),0)=0 AND coalesce(json_extract(runtime_json,'$.discardCleanupPending'),0)=0",
             [created_by],
         )
     }
@@ -300,7 +320,7 @@ impl Database {
                    SELECT id FROM job_events
                     WHERE created_at < datetime('now', ?1)
                       AND job_id IN (
-                        SELECT id FROM jobs WHERE status IN ('completed', 'failed', 'cancelled')
+                        SELECT id FROM jobs WHERE status IN ('completed', 'failed', 'cancelled', 'partial')
                       )
                     ORDER BY id LIMIT 10000
                  )",
@@ -377,6 +397,7 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
         archive_file: row.get(7)?,
         archive_bytes: archive_bytes.and_then(|value| u64::try_from(value).ok()),
         error: row.get(9)?,
+        runtime: serde_json::from_str(&row.get::<_, String>(10)?).map_err(json_from_sqlite)?,
     })
 }
 

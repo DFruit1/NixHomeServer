@@ -21,6 +21,7 @@ fn input(url: &str) -> CreateJobInput {
         page_limit: Some(5),
         time_limit_minutes: Some(2),
         collection: None,
+        options: None,
     }
 }
 

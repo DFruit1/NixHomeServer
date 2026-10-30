@@ -56,6 +56,7 @@ async fn completed_archives_stream_with_defensive_byte_ranges() {
         page_limit: 5,
         time_limit_minutes: 2,
         collection: None,
+        options: Default::default(),
     };
     database
         .create_job("wacz-job", "alice", &crawl)
@@ -433,6 +434,7 @@ async fn sqlite_writer_wait_does_not_stall_the_async_runtime() {
         page_limit: 5,
         time_limit_minutes: 2,
         collection: None,
+        options: Default::default(),
     };
     database.create_job("locked", "alice", &crawl).expect("job");
     let writer = rusqlite::Connection::open(&config.database_path).expect("writer");

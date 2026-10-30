@@ -1,355 +1,49 @@
-import { component$, $, useSignal, useVisibleTask$ } from '@builder.io/qwik';
-import type { CreateJobRequest, CrawlScope, CurrentUser, Job, ZimListing } from './shared/types.js';
-import { MAX_PAGE_LIMIT, MAX_TIME_LIMIT_MINUTES, parseCrawlUrl } from './shared/url.js';
+import { $, component$, useSignal, useVisibleTask$ } from '@builder.io/qwik';
+import type { CurrentUser, Job, Recipe, ZimListing } from './shared/types';
+import { api, bytes, isJob, isUser, isZims, listOf, message, safeExternal, segment } from './shared/api';
+import { CaptureForm } from './components/CaptureForm';
+import { Library } from './components/Library';
+import { Jobs } from './components/Jobs';
+import { ArchiveDetail } from './components/ArchiveDetail';
+import { Automation } from './components/Automation';
 import './client/styles.css';
 
-const SCOPES: { value: CrawlScope; label: string; hint: string }[] = [
-  { value: 'page', label: 'Single page', hint: 'Archive only this URL.' },
-  { value: 'prefix', label: 'Same directory', hint: 'Archive this URL and pages under the same path.' },
-  { value: 'host', label: 'Whole site', hint: 'Archive pages across this site host.' },
-];
-
-const ACTIVE = ['queued', 'starting', 'running', 'cancelling'];
-
-const formatBytes = (bytes: number | undefined): string => {
-  if (!bytes || bytes <= 0) {
-    return '';
-  }
-  const units = ['B', 'KiB', 'MiB', 'GiB'];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
-};
-
-const formatStamp = (value: string): string => value.replace('T', ' ').replace('Z', ' UTC');
-
-export default component$(() => {
-  const me = useSignal<CurrentUser | undefined>();
-  const jobs = useSignal<Job[]>([]);
-  const zims = useSignal<ZimListing | undefined>();
-  const error = useSignal('');
-  const url = useSignal('');
-  const scope = useSignal<CrawlScope>('page');
-  const pageLimit = useSignal(25);
-  const timeLimitMinutes = useSignal(10);
-  const submitting = useSignal(false);
-
-  const refresh = $(async () => {
-    const [meResponse, jobsResponse, zimsResponse] = await Promise.all([
-      fetch('/api/me'),
-      fetch('/api/jobs'),
-      fetch('/api/zims'),
-    ]);
-    if (!meResponse.ok) {
-      throw new Error('Authentication is required');
-    }
-    me.value = await meResponse.json();
-    jobs.value = await jobsResponse.json();
-    zims.value = zimsResponse.ok ? await zimsResponse.json() : undefined;
+export default component$(()=>{
+  const me=useSignal<CurrentUser>(),jobs=useSignal<Job[]>([]),zims=useSignal<ZimListing>();
+  const busy=useSignal(false),authError=useSignal(''),jobError=useSignal(''),zimError=useSignal(''),booted=useSignal(false);
+  const view=useSignal('library'),archiveId=useSignal(''),targetUrl=useSignal(''),targetTs=useSignal(''),editing=useSignal<Recipe>();
+  const refresh=$(async()=>{
+    if(busy.value)return;busy.value=true;
+    try{
+      const user=await api('/api/me',isUser);
+      if(me.value?.username!==user.username){jobs.value=[];zims.value=undefined;editing.value=undefined;}
+      me.value=user;authError.value='';
+      const results=await Promise.allSettled([api('/api/jobs',listOf(isJob)),api('/api/zims',isZims)]);
+      const [j,z]=results;
+      if(j.status==='fulfilled'){jobs.value=j.value;jobError.value='';}else jobError.value=message(j.reason);
+      if(z.status==='fulfilled'){zims.value=z.value;zimError.value='';}else zimError.value=message(z.reason);
+    }catch(e){authError.value=message(e);me.value=undefined;jobs.value=[];zims.value=undefined;}
+    finally{busy.value=false;booted.value=true;}
   });
-
-  useVisibleTask$(({ cleanup }) => {
-    refresh().catch((caught) => {
-      error.value = caught instanceof Error ? caught.message : String(caught);
-    });
-    const timer = window.setInterval(() => {
-      refresh().catch(() => undefined);
-    }, 2500);
-    cleanup(() => {
-      window.clearInterval(timer);
-    });
+  useVisibleTask$(({cleanup})=>{
+    const params=new URLSearchParams(window.location.search);
+    view.value=['capture','automation'].includes(params.get('view')||'')?params.get('view')!:'library';
+    const id=params.get('archive')||'';archiveId.value=/^[a-zA-Z0-9_-]{1,200}$/.test(id)?id:'';
+    targetUrl.value=params.get('url')||'';targetTs.value=params.get('ts')||'';
+    let live=true,timer:number|undefined;
+    const poll=async()=>{await refresh();if(live)timer=window.setTimeout(poll,5000);};
+    void poll();cleanup(()=>{live=false;window.clearTimeout(timer);});
   });
-
-  const submit = $(async () => {
-    if (submitting.value) {
-      return;
-    }
-    error.value = '';
-    const parsed = parseCrawlUrl(url.value);
-    if (!parsed) {
-      error.value = 'A valid http(s) website URL is required.';
-      return;
-    }
-    submitting.value = true;
-    const request: CreateJobRequest = {
-      url: parsed.url,
-      scope: scope.value,
-      pageLimit: pageLimit.value,
-      timeLimitMinutes: timeLimitMinutes.value,
-    };
-    try {
-      const response = await fetch('/api/jobs', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(request),
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || 'Archive job could not be queued');
-      }
-      url.value = '';
-      await refresh();
-    } catch (caught) {
-      error.value = caught instanceof Error ? caught.message : String(caught);
-    } finally {
-      submitting.value = false;
-    }
-  });
-
-  const jobAction = $(async (job: Job, command: 'cancel' | 'retry' | 'delete') => {
-    const response = await fetch(`/api/jobs/${job.id}${command === 'delete' ? '' : `/${command}`}`, {
-      method: command === 'delete' ? 'DELETE' : 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: '{}',
-    });
-    if (response.ok) {
-      await refresh();
-    }
-  });
-
-  const clearHistory = $(async () => {
-    const response = await fetch('/api/jobs', {
-      method: 'DELETE',
-      headers: { 'content-type': 'application/json' },
-      body: '{}',
-    });
-    if (response.ok) {
-      await refresh();
-    }
-  });
-
-  const activeJobs = jobs.value.filter((job) => ACTIVE.includes(job.status));
-  const historyJobs = jobs.value.filter((job) => !ACTIVE.includes(job.status));
-  const selectedScope = SCOPES.find((entry) => entry.value === scope.value);
-
-  return (
-    <main class="shell">
-      <section class="toolbar">
-        <div>
-          <h1><span>Web</span> Archives</h1>
-        </div>
-        <div class="toolbar-user">
-          <span>{me.value?.username ?? ''}</span>
-          <button type="button" class="link" onClick$={clearHistory}>Clear history</button>
-          <a class="signout" href="/oauth2/sign_out">Log out</a>
-        </div>
-      </section>
-
-      <section class="archive-form">
-        <label class="url-field">
-          <input
-            type="url"
-            aria-label="Website URL"
-            value={url.value}
-            onInput$={(_, target) => (url.value = target.value)}
-            placeholder="https://example.com/page"
-          />
-        </label>
-
-        <div class="control-grid">
-          <fieldset>
-            <legend>Scope</legend>
-            {SCOPES.map((entry) => (
-              <label key={entry.value} class={{ 'segment-option': true, selected: scope.value === entry.value }}>
-                <input
-                  type="radio"
-                  name="crawl-scope"
-                  value={entry.value}
-                  checked={scope.value === entry.value}
-                  onChange$={() => (scope.value = entry.value)}
-                />
-                <span>{entry.label}</span>
-              </label>
-            ))}
-          </fieldset>
-
-          <label class="number-field">
-            <span>Max pages (1–{MAX_PAGE_LIMIT})</span>
-            <input
-              type="number"
-              min="1"
-              max={MAX_PAGE_LIMIT}
-              value={pageLimit.value}
-              onInput$={(_, target) => (pageLimit.value = Math.max(1, Math.min(MAX_PAGE_LIMIT, Number(target.value) || 1)))}
-            />
-          </label>
-
-          <label class="number-field">
-            <span>Time limit minutes (1–{MAX_TIME_LIMIT_MINUTES})</span>
-            <input
-              type="number"
-              min="1"
-              max={MAX_TIME_LIMIT_MINUTES}
-              value={timeLimitMinutes.value}
-              onInput$={(_, target) => (timeLimitMinutes.value = Math.max(1, Math.min(MAX_TIME_LIMIT_MINUTES, Number(target.value) || 1)))}
-            />
-          </label>
-        </div>
-
-        <p class="scope-hint">{selectedScope?.hint}</p>
-
-        {error.value && <p class="error">{error.value}</p>}
-        <div class="submit-actions">
-          <button class="primary" type="button" disabled={!url.value.trim() || submitting.value} onClick$={() => submit()}>
-            {submitting.value ? 'Queueing' : 'Archive website'}
-          </button>
-        </div>
-      </section>
-
-      {zims.value && (zims.value.readerUrl || zims.value.zims.length > 0) && (
-        <section class="jobs">
-          <div class="library-head">
-            <h2>Kiwix archives</h2>
-            {zims.value.readerUrl && (
-              <a
-                class="library-link"
-                href={zims.value.readerUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Open Kiwix reader
-              </a>
-            )}
-          </div>
-          {zims.value.zims.length === 0 ? (
-            <p class="empty">No ZIM archives uploaded yet</p>
-          ) : (
-            <div class="job-stack">
-              {zims.value.zims.map((zim) => (
-                <article key={zim.name} class="job">
-                  <div class="job-head">
-                    <strong>{zim.name}</strong>
-                  </div>
-                  <p class="job-meta">{zim.bytes ? formatBytes(zim.bytes) : ''}</p>
-                  <div class="job-actions">
-                    <a
-                      class="action-link"
-                      href={`/api/zims/${encodeURIComponent(zim.name)}?download=1`}
-                    >
-                      Download
-                    </a>
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
-      )}
-
-      <section class="jobs">
-        <h2>Active</h2>
-        {activeJobs.length === 0 ? (
-          <p class="empty">No crawls running</p>
-        ) : (
-          <div class="job-stack">
-            {activeJobs.map((job) => (
-              <article key={job.id} class={{ job: true, [job.status]: true }}>
-                <div class="job-head">
-                  <strong>{job.request.url}</strong>
-                  <span class={`status-badge ${job.status}`}>{job.status}</span>
-                </div>
-                <div class={{ progress: true, indeterminate: job.status === 'queued' || job.status === 'starting' }}>
-                  <div style={{
-                    transform: `scaleX(${progressPercent(job) / 100})`,
-                  }} />
-                </div>
-                <p class="progress-label">{progressLabel(job)}</p>
-                <div class="job-actions">
-                  {['queued', 'starting', 'running'].includes(job.status) && (
-                    <button type="button" onClick$={() => jobAction(job, 'cancel')}>Cancel</button>
-                  )}
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section class="jobs">
-        <h2>History</h2>
-        {historyJobs.length === 0 ? (
-          <p class="empty">No finished archives yet</p>
-        ) : (
-          <div class="job-stack">
-            {historyJobs.map((job) => (
-              <article key={job.id} class={{ job: true, [job.status]: true }}>
-                <div class="job-head">
-                  <strong>{job.archiveFile ?? job.request.url}</strong>
-                  <span class={`status-badge ${job.status}`}>{job.status}</span>
-                </div>
-                <p class="job-meta">
-                  {job.request.url}
-                  {job.archiveBytes ? ` · ${formatBytes(job.archiveBytes)}` : ''}
-                  {` · ${formatStamp(job.updatedAt)}`}
-                </p>
-                {job.error && <p class="error">{job.error}</p>}
-                <div class="job-actions">
-                  {job.status === 'completed' && job.archiveFile && (
-                    <>
-                      <a
-                        class="action-link"
-                        href={`/replay/index.html?source=${encodeURIComponent(`/api/jobs/${job.id}/wacz`)}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        Replay
-                      </a>
-                      <a class="action-link" href={`/api/jobs/${job.id}/wacz?download=1`}>Download</a>
-                    </>
-                  )}
-                  {['failed', 'cancelled'].includes(job.status) && (
-                    <button type="button" onClick$={() => jobAction(job, 'retry')}>Retry</button>
-                  )}
-                  <button type="button" onClick$={() => jobAction(job, 'delete')}>Remove</button>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
-    </main>
-  );
+  return <main class="shell" id="main"><a class="skip-link" href="#workspace">Skip to workspace</a>
+    <header class="toolbar"><a class="brand" href="/"><h1><span>Web</span> Archives</h1></a><div class="toolbar-user"><span>{me.value?.username||''}</span><a href="/oauth2/sign_out">Log out</a></div></header>
+    <nav class="main-nav" aria-label="Main"><a class="button" href="/" aria-current={!archiveId.value&&view.value==='library'?'page':undefined}>Library</a><a class="button primary" href="/?view=capture" aria-current={!archiveId.value&&view.value==='capture'?'page':undefined}>New capture</a><a class="button" href="/?view=automation" aria-current={!archiveId.value&&view.value==='automation'?'page':undefined}>Recipes & schedules</a></nav>
+    {!booted.value&&<p role="status">Loading your archive workspace…</p>}
+    {authError.value&&<section class="panel"><p class="error" role="alert">Authentication or session refresh failed: {authError.value}</p><p>Archive data is hidden until your session is verified.</p><button type="button" disabled={busy.value} onClick$={refresh}>Retry session</button></section>}
+    {me.value&&<div id="workspace" class="workspace" key={me.value.username}>
+      {archiveId.value?<ArchiveDetail id={archiveId.value} username={me.value.username} initialUrl={targetUrl.value} initialTs={targetTs.value}/>:view.value==='capture'?<CaptureForm key={editing.value?.id||'new'} initial={editing.value?.request} recipe={editing.value} onQueued$={refresh}/>:view.value==='automation'?<Automation onQueued$={refresh} onEdit$={$((recipe:Recipe)=>{editing.value=recipe;view.value='capture';window.history.replaceState({},'','/?view=capture');window.scrollTo({top:0,behavior:'instant'});})}/>:<Library/>}
+      <Jobs jobs={jobs.value} error={jobError.value} loading={busy.value} onRefresh$={refresh}/>
+      {(zims.value||zimError.value)&&<section class="panel" aria-labelledby="kiwix-title"><div class="section-head"><h2 id="kiwix-title">Kiwix archives</h2>{safeExternal(zims.value?.readerUrl)&&<a class="button" href={safeExternal(zims.value?.readerUrl)} target="_blank" rel="noopener noreferrer">Open Kiwix reader</a>}</div>{zimError.value&&<p class="warning" role="alert">Kiwix refresh failed: {zimError.value}. {zims.value?'Showing last received listing.':'No listing available.'}</p>}{zims.value?.zims.length===0&&<p class="hint">No ZIM archives are available.</p>}{zims.value?.zims.map(z=><article class="list-row" key={z.name}><div class="row-head"><strong class="break">{z.name}</strong><span>{bytes(z.bytes)}</span></div><a class="button" href={`/api/zims/${segment(z.name)}?download=1`}>Download ZIM</a></article>)}</section>}
+    </div>}
+    <footer><p>Archived content can be incomplete. File integrity, replay fidelity and coverage are separate checks.</p></footer>
+  </main>;
 });
-
-const progressPercent = (job: Job): number => {
-  const done = job.progress?.pagesDone ?? 0;
-  const queued = job.progress?.pagesQueued ?? 0;
-  const total = done + queued;
-  if (job.status === 'cancelling') {
-    return 100;
-  }
-  if (total <= 0) {
-    return job.status === 'queued' || job.status === 'starting' ? 0 : 100;
-  }
-  return Math.max(0, Math.min(100, (done / total) * 100));
-};
-
-const progressLabel = (job: Job): string => {
-  switch (job.status) {
-    case 'queued':
-      return 'Waiting for an available crawl worker';
-    case 'starting':
-      return 'Preparing browser crawler';
-    case 'cancelling':
-      return 'Stopping crawl';
-    case 'running': {
-      const done = job.progress?.pagesDone ?? 0;
-      const queued = job.progress?.pagesQueued ?? 0;
-      const failed = job.progress?.pagesFailed ?? 0;
-      const parts = [`${done} page${done === 1 ? '' : 's'} archived`];
-      if (queued > 0) {
-        parts.push(`${queued} queued`);
-      }
-      if (failed > 0) {
-        parts.push(`${failed} failed`);
-      }
-      return parts.join(' · ');
-    }
-    default:
-      return '';
-  }
-};
