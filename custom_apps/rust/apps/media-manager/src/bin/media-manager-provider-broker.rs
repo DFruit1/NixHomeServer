@@ -42,10 +42,21 @@ async fn run() -> Result<(), String> {
         &state_dir.join("master.key"),
     )
     .map_err(|error| format!("initialize provider accounts: {error}"))?;
-    let app = provider_account_router(
-        ProviderBrokerState::new(Arc::new(store))
-            .map_err(|error| format!("initialize provider client: {error}"))?,
-    );
+    let mut state = ProviderBrokerState::new(Arc::new(store))
+        .map_err(|error| format!("initialize provider client: {error}"))?;
+    if let Ok(base) = std::env::var("MEDIA_MANAGER_IMMICH_API_BASE") {
+        let socket = PathBuf::from(env_string(
+            "MEDIA_MANAGER_EYE_SOCKET",
+            "/run/media-manager-eye/eye.sock",
+        ));
+        state = state.with_images(
+            &base,
+            &socket,
+            &env_string("MEDIA_MANAGER_EDITOR_GROUP", "media-manager-editors"),
+            env_string("MEDIA_MANAGER_MUTATION_MODE", "read-only") == "enabled",
+        )?;
+    }
+    let app = provider_account_router(state);
     let socket = std::net::SocketAddr::new(address, port);
     let listener = tokio::net::TcpListener::bind(socket)
         .await

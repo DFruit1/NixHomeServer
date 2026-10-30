@@ -2,6 +2,10 @@ import { $, component$, type QRL, useStore, useTask$ } from "@builder.io/qwik";
 import { api, readableError } from "./api";
 import { Icon } from "./icon";
 import { RemoteArtwork } from "./remote-artwork";
+import {
+  PROVIDER_USAGE_GUIDES,
+  ProviderUsageGuide,
+} from "./provider-setup-guide";
 import type {
   AdditionalProviderCandidate,
   AdditionalProviderId,
@@ -141,28 +145,25 @@ export const AdditionalProviderPanel = component$<{
             <a href="?view=accounts">Configure {props.name} in Accounts</a>
           </p>
         )}
+        <ProviderUsageGuide providerId={props.provider} />
         <div class="metadata-form">
           <label class="source-query-input">
             <span>
-              {props.provider === "audnexus"
-                ? "Audiobook ASIN"
-                : "Search or provider identifier"}
+              {PROVIDER_USAGE_GUIDES[props.provider]?.queryLabel ??
+                "Search title"}
             </span>
             <input
               value={state.query}
               maxLength={500}
+              placeholder={
+                PROVIDER_USAGE_GUIDES[props.provider]?.queryPlaceholder
+              }
               onInput$={(_, el) => {
                 state.query = el.value;
                 state.touched = true;
               }}
             />
           </label>
-          {props.provider === "fanart" && (
-            <p class="quiet-copy">
-              Use a provider ID: tmdb:550, tvdb:121361, musicbrainz-artist:UUID,
-              or musicbrainz-release-group:UUID.
-            </p>
-          )}
           {props.provider === "tvdb" && (
             <>
               <label>
@@ -234,18 +235,6 @@ export const AdditionalProviderPanel = component$<{
             {state.loading ? "Looking up…" : `Find ${props.name}`}
           </button>
         </div>
-        {props.provider === "discogs" && (
-          <p class="quiet-copy">
-            Search a release title, barcode:NUMBER, catalog:NUMBER, release:ID,
-            or master:ID.
-          </p>
-        )}
-        {props.provider === "theaudiodb" && (
-          <p class="quiet-copy">
-            Search an album title with its artist, or use artist:NAME or
-            musicbrainz-release-group:UUID.
-          </p>
-        )}
         {state.error && (
           <p class="error-copy" role="alert">
             {state.error}

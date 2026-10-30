@@ -1342,6 +1342,9 @@ queue protocol rather than restoring this removed wiring.
 
 ### Media Manager
 
+The [Images page](media-manager-images.md) connects to each user's Immich API key,
+runs EYE locally on previews, and adds reviewed tags through Immich's API.
+
 Media Manager is an always-present core application at
 `https://media.<domain>`. It is private-DNS-only and uses the shared OAuth2
 Proxy gateway. Every authenticated `users` member can inspect registered
@@ -1468,17 +1471,60 @@ remain mandatory before any file is changed. Switching to another item
 discards late search/detail responses from the previous item instead of
 attaching them to the new selection.
 
-The Accounts page inventories public sources and active adapters. All eighteen
-catalogued sources have an implemented workflow; user keys, account entitlements
-and connection health remain separate from implementation status. Accounts are
+The **Metadata sources** page lists all eighteen implemented sources, their
+availability and account state. Expand **How to use this source** for supported
+input examples and review steps. **Set up** and **Replace credentials** open
+the provider's signup instructions, direct links, exact credential types and
+troubleshooting. API access and connection health are separate from whether
+an adapter is implemented. Accounts are
 owned by the stable OIDC subject, not the mutable preferred username. One user
 cannot list, test, replace, or remove another user's account. Keep the recovery
 copy in Vaultwarden, KeePassXC, or another password manager. Media Manager does
 not ask for vault credentials or use Vaultwarden as a live credential backend.
 
+**Save and test** stores the complete credential set and makes a small API
+request. **Test connection** repeats that check later. Saving with testing
+unchecked confirms storage only. A successful test confirms access at that
+time; it does not guarantee a matching edition, image or subtitle, correct
+subtitle timing, or remaining download allowance. Tests may consume provider
+quota. For a rejected account, check credential type, activation and access
+restrictions. For a rate limit, check the current allowance or reset time;
+requests can be limited by Cloud project or the shared outgoing server IP.
+
+| Account source | Where to get access and exactly what to enter |
+| --- | --- |
+| [TMDB](https://developer.themoviedb.org/docs/getting-started) | Sign in, open **Settings → API**, register the application and copy the **API Read Access Token**, without `Bearer`. The shorter v3 API key is different. TMDB recommends registration in a desktop browser; use your actual private Media Manager URL for the application description. |
+| [OpenSubtitles](https://opensubtitles.tawk.help/article/getting-started) | Create an **OpenSubtitles.com API Consumer** and enter its application key plus that .com account's username/password. An older .org account can be imported on the .com site. The registered user agent is optional. |
+| [AcoustID](https://acoustid.org/webservice) | Sign in with MusicBrainz or Google and [register an application](https://acoustid.org/new-application). Enter the **application/client key**, not the personal key for fingerprint submissions. The connection test uses a synthetic fingerprint; identify a real track afterward to check its match. |
+| [Google Books](https://developers.google.com/books/docs/v1/using) | Select a Google Cloud project, enable **Books API**, then create an **API key** in the same project's **APIs & Services → Credentials**. Restrict its API access to Books API. Browser-referrer restrictions do not fit server requests; IP restrictions must allow the server's outgoing public IP. No OAuth client or Google password is used. |
+| [TheTVDB](https://thetvdb.com/api-information) | Obtain a **project API key** through API and Data Licensing. Add a **subscriber PIN** only when that project's access model requires it. A PIN or website subscription alone does not replace the project key. Review current licensing before arranging paid access. |
+| [OMDb](https://www.omdbapi.com/apikey.aspx) | Request a key and follow its email activation link. Enter the key itself, not an email address or activation URL. Check the current request allowance; an inactive key and an exhausted daily allowance need different fixes. |
+| [Fanart.tv](https://api.fanart.tv/) | Enter a **Project API key**, **Personal API key**, or both in the matching fields. This adapter uses v3.2, which accepts a personal key alone. The personal key determines the tier when both are present; recently added artwork may be delayed by that tier. |
+| [Discogs](https://support.discogs.com/hc/en-us/articles/360007423833-How-Do-I-Change-My-Account-Settings) | Sign in, open **Settings → Developers** and generate a **personal access token**. Paste it without an authorization-header prefix. A consumer key/secret pair and the website password are different credentials. |
+| [TheAudioDB](https://www.theaudiodb.com/free_music_api) | This adapter uses **v1**. Copy the current free v1 test key from the official guide or use your own key with v1 access. Enter only the key; v2 header-authentication examples describe a different API. Check endpoint entitlement if one lookup succeeds but another is restricted. |
+| [Comic Vine](https://comicvine.gamespot.com/api/) | Sign in to Comic Vine and copy its site-specific key from **Grab an API key**. Follow the provider's non-commercial-use and request-limit terms. A login or key from another website is not sufficient. |
+| [ISBNdb](https://isbndb.com/apidocs/v2) | Use the API key for an account with active ISBNdb API access. Check the current plan's allowance before testing or searching; even the connection test uses a lookup request. Enter the key only, not an ISBN, subscription ID or password. |
+| [Podcast Index](https://podcastindex-org.github.io/docs-api/) | Complete API signup and retain the matching **API key and original secret** together. A generated per-request authorization hash is not the secret to save. Signed requests also depend on the server clock. |
+| [SubDL](https://subdl.com/api-doc) | Obtain a key from the account panel. Media Manager uses **v1** search. Check the current account and outgoing-IP download allowances if searches work but downloads are limited. |
+
+MusicBrainz, Cover Art Archive, Open Library, Wikidata and Audnexus are public
+lookup sources: no account or API key is needed. MusicBrainz search uses artist
+and album title; AcoustID is needed only for fingerprint mode. Cover Art Archive
+uses the release selected in MusicBrainz. Open Library works and editions must
+be distinguished before selecting book fields. Wikidata IDs identify entities;
+Audnexus requires an Audible edition ASIN and region, not a title or ISBN.
+
+Start lookups from the selected item's **Metadata** editor or subtitle tools.
+Check the title and edition before selecting a result. **Compare fields**
+shows the current and proposed values; **Add selected to draft** carries the
+chosen fields forward. Artwork and subtitle previews are separate actions.
+Searches do not apply changes: review the plan and explicitly confirm it.
+Podcast Index results are inspection-only; edit feeds and episodes in
+Audiobookshelf.
+
 Additional provider controls are in the selected item's metadata editor:
 
-- **OMDb:** search a movie/series title or enter an IMDb `tt…` identifier. Fetch
+- **OMDb:** search a movie/series title and verify its IMDb `tt…` identifier. Fetch
   details before comparing fields. IMDb's numeric rating can fill the existing
   community-rating field; other rating scales are shown as reference evidence.
 - **TheTVDB:** search a movie/series, select details, then choose an episode.
@@ -1537,7 +1583,8 @@ must re-enter their accounts from their password managers.
 The deployed service no longer consumes the old agenix-backed OpenSubtitles or
 AcoustID inputs. TMDB, OpenSubtitles, and AcoustID lookups use the signed-in
 user's runtime broker account, so rotating a key does not require a NixOS
-rebuild and one user's quota or lockout does not affect another user.
+rebuild. Stored accounts remain separate; provider-wide project or IP limits
+can still affect several users on the same server.
 
 Manual refresh adapters are registered only for installed applications.
 Jellyfin, Audiobookshelf, Kavita, and Syncthing have explicit adapters. The

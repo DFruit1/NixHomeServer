@@ -1,3 +1,4 @@
+import { ProviderUsageGuide } from "./provider-setup-guide";
 import { $, component$, type QRL, useStore, useTask$ } from "@builder.io/qwik";
 import { api, readableError } from "./api";
 import { Icon } from "./icon";
@@ -88,6 +89,7 @@ export const GoogleBooksPanel = component$<{
             Configure the key
           </a>
         </p>
+        <ProviderUsageGuide providerId="google-books" />
         <div class="metadata-form">
           <label class="source-query-input">
             <span>Title, author, or ISBN</span>

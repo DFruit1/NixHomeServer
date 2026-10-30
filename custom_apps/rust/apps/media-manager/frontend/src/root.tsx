@@ -25,7 +25,13 @@ import {
 import { isLibraryKind, supportsMediaAction } from "./media-capabilities";
 import { PlayerView } from "./player-view";
 import { VideosView } from "./videos-view";
+import { ImagesView } from "./images-view";
 import { RefreshView } from "./refresh-view";
+import {
+  PROVIDER_SETUP_GUIDES,
+  ProviderSetupGuide,
+  ProviderUsageGuide,
+} from "./provider-setup-guide";
 import { EmptyState, LoadingState } from "./view-states";
 import { MetadataHealthView } from "./metadata-health-view";
 import {
@@ -730,6 +736,15 @@ export default component$((props: RootProps) => {
             initialItemId={route.initialItemId}
             initialPath={route.initialPath}
           />
+        ) : view.value === "images" ? (
+          <ImagesView
+            immichUrl={
+              state.status?.integrations.find(
+                (integration) =>
+                  integration.id === "immich" && integration.available,
+              )?.url ?? undefined
+            }
+          />
         ) : view.value === "accounts" ? (
           <ProviderAccountsView />
         ) : (
@@ -941,9 +956,9 @@ const ProviderAccountsView = component$(() => {
         <div>
           <h2>Provider accounts</h2>
           <p>
-            Connect your own metadata and subtitle sources. Accounts belong to
-            your signed-in identity, so another user's quota or lockout does not
-            affect yours.
+            Connect metadata and subtitle sources for your signed-in account.
+            Each source uses your saved credentials; the provider may also apply
+            limits shared across a project or the server's outgoing IP address.
           </p>
         </div>
       </section>
@@ -1089,6 +1104,18 @@ const ProviderAccountsView = component$(() => {
                     </button>
                   )}
                 </div>
+                {!planned && <ProviderUsageGuide providerId={provider.id} />}
+                {planned && PROVIDER_SETUP_GUIDES[provider.id] && (
+                  <details class="provider-planned-guide">
+                    <summary>Account and API key guide</summary>
+                    <p>
+                      This provider is coming soon. You cannot save credentials
+                      or use it here yet. Wait until it is available before
+                      purchasing access.
+                    </p>
+                    <ProviderSetupGuide providerId={provider.id} />
+                  </details>
+                )}
               </article>
             );
           })}
@@ -1127,18 +1154,24 @@ const ProviderAccountsView = component$(() => {
             <li>
               <span>1</span>
               <div>
-                <strong>Get access</strong>
-                <p>
-                  Open the provider's account page and create the requested
-                  credentials.
-                </p>
-                <a
-                  href={selectedProvider.setupUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open provider setup
-                </a>
+                <strong>Get access for {selectedProvider.name}</strong>
+                {PROVIDER_SETUP_GUIDES[selectedProvider.id] ? (
+                  <ProviderSetupGuide providerId={selectedProvider.id} />
+                ) : (
+                  <>
+                    <p>
+                      Open the provider's account page and create the requested
+                      credentials.
+                    </p>
+                    <a
+                      href={selectedProvider.setupUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open provider setup
+                    </a>
+                  </>
+                )}
               </div>
             </li>
             <li>
@@ -1161,8 +1194,8 @@ const ProviderAccountsView = component$(() => {
                 </strong>
                 <p>
                   {selectedProvider.canTest && accounts.testAfterSave
-                    ? "Encrypt the values, then verify that the provider accepts them."
-                    : "Encrypt the values for this signed-in identity."}
+                    ? "Save these credentials for your signed-in account and send a small API request to check access. The test may count against provider quota but does not modify your files. Then try the source on an item; a successful test does not verify every match or download allowance."
+                    : "Save these credentials for your signed-in account. Saving alone does not verify API access or change any media files. Use Test connection later if this provider supports it."}
                 </p>
               </div>
             </li>
@@ -1193,7 +1226,11 @@ const ProviderAccountsView = component$(() => {
                       (accounts.credentialValues[field.id] = input.value)
                     }
                   />
-                  <small>{field.help}</small>
+                  <small>
+                    {PROVIDER_SETUP_GUIDES[selectedProvider.id]?.credentialHelp[
+                      field.id
+                    ] ?? field.help}
+                  </small>
                 </label>
               ))}
             </div>

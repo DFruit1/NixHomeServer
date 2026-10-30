@@ -1,3 +1,4 @@
+import { ProviderUsageGuide } from "./provider-setup-guide";
 import { $, component$, useStore, useTask$ } from "@builder.io/qwik";
 import { api, readableError } from "./api";
 import type {
@@ -167,6 +168,7 @@ export const SubdlPanel = component$<{
         <p class="quiet-copy">
           <a href="?view=accounts">Configure SubDL in Accounts</a>
         </p>
+        <ProviderUsageGuide providerId="subdl" />
         <div class="metadata-form">
           <label>
             <span>Movie or series title</span>
