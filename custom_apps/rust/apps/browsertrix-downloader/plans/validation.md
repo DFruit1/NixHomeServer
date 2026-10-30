@@ -174,3 +174,15 @@ Same-URL/same-second ambiguity within a single gzip member remains explicitly
 rejected. Picker fidelity and transformations retain their documented bounds;
 size forecasts remain heuristic. The deployment coordinator owns whole-set
 review and guarded activation; feature publication does not activate services.
+
+## Workstream cleanup
+
+All delegated writers and reviewers finished. Directory claims were released;
+the integration checkout is clean. Task-owned browser sessions, HTTP servers,
+API/worker processes and isolated container storage were stopped and removed.
+Legacy host-PID test descendants were identified by their exact task-storage
+conmon ancestry and stopped; unrelated processes were untouched. The managed
+temporary directory was removed after all consumers finished. Only the completed
+engine task's duplicate Cargo cache was reclaimed; source worktrees and the
+primary validated app cache remain. Final observed free space was 4.9 GiB on
+`/home` and 4.3 GiB on `/tmp`; the interrupted app gates were rerun successfully.
