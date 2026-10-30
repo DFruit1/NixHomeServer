@@ -27,10 +27,14 @@ checks.
 
 ## Data and recovery
 
-Persistent queue state and rootless container storage live under
-`/var/lib/browsertrix-downloader`. Resumable crawl state and WARCs live in its
-worker-owned `checkpoints` directory; only disposable scratch belongs under
-`/var/cache/browsertrix-downloader`. Shared captures remain in the data pool at
+Expanded queue state and rootless container storage live under the separately
+persisted `/var/lib/browsertrix-downloader-private-v2`. Resumable crawl state and
+WARCs live in its worker-owned `checkpoints` directory; only disposable scratch
+belongs under `/var/cache/browsertrix-downloader-private-v2`. The legacy
+`/var/lib/browsertrix-downloader` directory remains intact. The new state root
+must be a sibling: old Search can write directory entries inside the legacy
+root and could replace a private directory nested there. Shared captures remain
+in the data pool at
 `_Shared/_WebArchives`. Profile-backed captures and their derivatives use
 `repo.browsertrixDownloader.paths.privateArchiveRoot`, outside the shared tree.
 Both payload roots remain when the application is disabled or removed.
@@ -51,9 +55,13 @@ that the entire website was archived.
 Backups include the logical SQLite dump and persistent state. The private payload
 root is an actual Kopia snapshot root with a scoped policy that includes WACZ;
 the global bulk-data exclusion still applies to shared WACZ. Search has
-read-only ACL access to shared captures and never joins the private service
-group. The API cannot access or replace accepted profile material; the worker
-mounts the selected immutable profile into fresh per-attempt browser storage.
+read-only ACL access to shared captures. Both services use the service-only
+`browsertrix-private` primary group, with no NSS group members. Old Search's
+`browsertrix-downloader` group grants no access to the new database, inbox,
+checkpoints, profiles, worker storage or private payloads, even after a complete
+closure rollback. The API cannot access or replace accepted profile material;
+the worker mounts the selected immutable profile into fresh per-attempt browser
+storage.
 
 ## Capture and library tools
 
@@ -90,10 +98,51 @@ version with mixed-time provenance, retaining untouched pages and the original.
 
 The [implementation plan](../custom_apps/rust/apps/browsertrix-downloader/plans/expansion.md)
 records the complete 30-feature scope, API contracts and acceptance evidence.
-Rollback must preserve expanded catalogue/checkpoint state and the new private
-storage boundary. Previous binaries cannot consume every new scope/status; never
-point an incompatible binary at the expanded database or resume profile-backed
-work with an older crawler adapter.
+
+### Complete-closure rollback
+
+WSD-002 qualification against the actual installed legacy binaries used only a
+synthetic SQLite fixture and fake Podman: the old API returned HTTP 500 for a
+paused job; the old worker rewrote a running job to failed and claimed a queued
+profile capture without passing its profile to the crawler. Unknown statuses
+therefore do not provide a safe compatibility fence.
+
+Storage provisioning requires stopped API and worker services. It consistently
+backs up the legacy `state/browsertrix-downloader.sqlite`, including committed
+WAL rows, into the new private root before the current binary expands the copy.
+A reserved SQLite writer lock spans the copy, source recheck and exclusive,
+atomic publication. The original database's rows/schema, worker home and scratch
+are retained; no automatic reverse copy or destructive restore occurs. An
+already expanded or unknown database at the legacy path is refused for offline
+reconciliation rather than copied and left available to old binaries.
+
+The private database records a logical digest of the imported legacy snapshot.
+Every API and worker start checks it, including when the storage oneshot is
+already active. A complete old-closure rollback uses only the original legacy
+database and old worker paths; private state stays untouched. The old closure's
+tmpfiles rules do not change the sibling root's group or modes. Its persistence
+configuration does not mount that sibling after a reboot, but the contents
+remain under `/persist/var/lib/browsertrix-downloader-private-v2` for a subsequent
+forward activation. Root backups retain both state roots; the current logical
+SQLite dump reads the private database. After rollback, the older logical dump
+targets only the legacy database and the old manifest omits the new app state.
+Root `/persist` snapshots can still retain the private state, but the old backup
+configuration lacks its private data-pool payload snapshot root; verify the
+rollback closure's backup coverage before relying on it.
+
+If rollback writes or deletes legacy rows, the next forward start fails closed
+with `Legacy database changed after private-state import`. Both histories and
+their payloads remain on disk. Stop both services and reconcile the legacy
+changes into a separate consistent copy of the expanded database, checking row
+ownership, completed payloads and queued work before selecting it. Do not delete
+the import receipt, reset its digest, replace the expanded database with the old
+one, or retry a forward activation as though the failed check had passed. This
+guard deliberately requires reconciliation instead of silently omitting either
+new private writes or work done while rolled back. No automatic merge is provided.
+
+Never point an old binary at the expanded database or resume profile-backed work
+with an older crawler adapter. Keep the guarded deploy's complete-closure rollback
+and boot protection intact; a source-only compatibility check is insufficient.
 
 For a deliberately selected legacy read-only service, use the current package's
 maintenance command against a stopped service or consistent database snapshot:
@@ -137,6 +186,7 @@ files on the Web Archives page:
 systemctl status browsertrix-downloader browsertrix-downloader-worker
 journalctl -u browsertrix-downloader -u browsertrix-downloader-worker --since today
 scripts/tests/test-browsertrix-downloader-module.sh
+python3 -B scripts/tests/test-browsertrix-private-state.py
 scripts/tests/test-kiwix-web-archives-integration.sh
 cargo test --manifest-path custom_apps/Cargo.toml -p browsertrix-downloader
 ```

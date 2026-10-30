@@ -5,6 +5,9 @@ let
 in
 {
   users.groups.browsertrix-downloader = { };
+  # Service-only primary group: do not add NSS members. The rollback closure
+  # grants Search the legacy group, but never this private group.
+  users.groups.browsertrix-private = { };
 
   users.users.browsertrix-downloader = {
     isSystemUser = true;

@@ -72,6 +72,13 @@ in {
   workerSubIds = cfg.users.users.browsertrix-downloader-worker.autoSubUidGidRange;
   podmanEnabled = cfg.virtualisation.podman.enable;
   archiveRoot = cfg.repo.browsertrixDownloader.paths.archiveRoot;
+  privatePaths = cfg.repo.browsertrixDownloader.paths;
+  privateGroupMembers = cfg.users.groups.browsertrix-private.members;
+  privateStatePersistent = builtins.elem cfg.repo.browsertrixDownloader.paths.privateStateRoot cfg.repo.impermanence.directories;
+  persistentGidAllocation = !cfg.systemd.sysusers.enable && !cfg.services.userborn.enable
+    && builtins.elem "/var/lib/nixos" cfg.repo.impermanence.directories;
+  backupStateRoots = map (entry: entry.stateRoot) cfg.repo.backups.appStateEntries;
+  databasePath = cfg.systemd.services.browsertrix-downloader.environment.BROWSERTRIX_DOWNLOADER_DATABASE;
   sqliteSources = map (entry: entry.source) cfg.repo.backups.sqliteDumps;
   privateHost = cfg.services.unbound.privateHosts."archives.${vars.domain}".target;
   webSandbox = cfg.systemd.services.browsertrix-downloader.serviceConfig;
@@ -88,16 +95,34 @@ in {
 }
 ')"
 
-if ! jq -e '
+if ! jq -e '.databasePath as $databasePath |
   .moduleEnabled
   and (.webUser == "browsertrix-downloader")
   and (.workerUser == "browsertrix-downloader-worker")
   and .workerSubIds
   and .podmanEnabled
   and (.archiveRoot | endswith("/_WebArchives"))
-  and (.sqliteSources | any(endswith("/browsertrix-downloader.sqlite")))
+  # WSD-002: the complete old closure grants Search the legacy group. The
+  # expanded database and all staging must survive that rollback privately.
+  and (.privatePaths.legacyStateDir == "/var/lib/browsertrix-downloader/state")
+  and (.privatePaths.privateStateRoot == "/var/lib/browsertrix-downloader-private-v2")
+  and (.databasePath == (.privatePaths.stateDir + "/browsertrix-downloader.sqlite"))
+  and (.databasePath | contains("-private-v2/state/"))
+  and ([.privatePaths.stateDir, .privatePaths.workerHome, .privatePaths.checkpointsRoot,
+        .privatePaths.profilesRoot, .privatePaths.inboxRoot] | all(contains("-private-v2/")))
+  and (.privatePaths.cacheRoot | endswith("-private-v2"))
+  and (.privateGroupMembers | length == 0)
+  and .privateStatePersistent
+  and .persistentGidAllocation
+  and (.backupStateRoots | index("/var/lib/browsertrix-downloader-private-v2") != null)
+  and (.backupStateRoots | index("/var/lib/browsertrix-downloader") != null)
+  and (.sqliteSources | index($databasePath) != null)
   and (.privateHost == "private")
   and (.webSandbox.NoNewPrivileges == true)
+  and (.webSandbox.Group == "browsertrix-private")
+  and (.workerSandbox.Group == "browsertrix-private")
+  and (.webSandbox.ExecStartPre | startswith("+"))
+  and (.webSandbox.ExecStartPre == .workerSandbox.ExecStartPre)
   and (.webSandbox.PrivateTmp == true)
   and (.webSandbox.ProtectSystem == "strict")
   and (.webSandbox.ProtectKernelModules == true)

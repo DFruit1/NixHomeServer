@@ -9,12 +9,19 @@ in
       {
         app = "browsertrix-downloader";
         component = "app";
-        stateRoot = paths.stateRoot;
+        stateRoot = paths.privateStateRoot;
         payloadRoots = [ paths.archiveRoot paths.privateArchiveRoot ];
         notes = "Archive catalog, recipes, schedules, private profiles and resumable checkpoints, rootless crawler state, and shared/private WACZ payloads.";
       }
+      {
+        app = "browsertrix-downloader";
+        component = "legacy";
+        stateRoot = paths.stateRoot;
+        payloadRoots = [ ];
+        notes = "Retained pre-expansion database and worker storage for complete-closure rollback; never overwritten from the private v2 database.";
+      }
     ];
-    criticalPaths = [ paths.archiveRoot paths.privateArchiveRoot paths.stateRoot ];
+    criticalPaths = [ paths.archiveRoot paths.privateArchiveRoot paths.privateStateRoot paths.stateRoot ];
     snapshotRoots = [ paths.privateArchiveRoot ];
     sqliteDumps = [
       {

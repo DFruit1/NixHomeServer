@@ -34,6 +34,8 @@ let
     "/var/lib/audiobookshelf"
     "/var/lib/bonsai"
     "/var/lib/browsertrix-downloader"
+    # A sibling: rollback Search can write the legacy root's directory entries.
+    "/var/lib/browsertrix-downloader-private-v2"
     "/var/lib/calibre-web"
     "/var/lib/searxng"
     "/var/lib/chaptarr"

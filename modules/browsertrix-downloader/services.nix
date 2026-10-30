@@ -28,6 +28,11 @@ let
     BROWSERTRIX_DOWNLOADER_EVENT_RETENTION_DAYS = toString cfg.eventRetentionDays;
     RUST_BACKTRACE = "1";
   };
+  privateStateCheck = pkgs.writeShellScript "browsertrix-private-state-check" ''
+    exec ${pkgs.python3}/bin/python3 ${./migrate-state.py} --check \
+      ${lib.escapeShellArg "${paths.legacyStateDir}/browsertrix-downloader.sqlite"} \
+      ${lib.escapeShellArg "${paths.stateDir}/browsertrix-downloader.sqlite"}
+  '';
   workerLauncher = pkgs.writeShellScript "browsertrix-downloader-worker-launch" ''
     set -euo pipefail
 
@@ -39,7 +44,12 @@ let
     fi
     export BROWSERTRIX_DOWNLOADER_ARCHIVE_UID="$archive_uid"
     export BROWSERTRIX_DOWNLOADER_ARCHIVE_GID="$archive_gid"
-    export BROWSERTRIX_DOWNLOADER_PRIVATE_ARCHIVE_GID="$(${pkgs.coreutils}/bin/id -g)"
+    private_gid="$(${pkgs.getent}/bin/getent group browsertrix-private | ${pkgs.coreutils}/bin/cut -d: -f3)"
+    if [[ -z "$private_gid" ]]; then
+      echo "Could not resolve private archive group browsertrix-private" >&2
+      exit 1
+    fi
+    export BROWSERTRIX_DOWNLOADER_PRIVATE_ARCHIVE_GID="$private_gid"
     exec ${lib.getExe' package "browsertrix-downloader-worker"}
   '';
   egressPolicy = pkgs.writeShellScript "browsertrix-downloader-egress-policy" ''
@@ -126,14 +136,16 @@ in
         unitConfig = {
           StartLimitIntervalSec = "5min";
           StartLimitBurst = 5;
-          RequiresMountsFor = [ vars.dataRoot ];
+          RequiresMountsFor = [ vars.dataRoot paths.privateStateRoot ];
         };
         environment = commonEnvironment;
         serviceConfig = {
           Type = "simple";
           User = "browsertrix-downloader";
-          Group = "browsertrix-downloader";
+          Group = "browsertrix-private";
           SupplementaryGroups = [ sharedAccessGroup ];
+          # Recheck on EVERY start, even when the layout oneshot is still active.
+          ExecStartPre = "+${privateStateCheck}";
           ExecStart = lib.getExe' package "browsertrix-downloader";
           Restart = "on-failure";
           RestartSec = "5s";
@@ -158,7 +170,7 @@ in
           RestrictNamespaces = true;
           RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
           SystemCallArchitectures = "native";
-          ReadWritePaths = [ paths.stateRoot ];
+          ReadWritePaths = [ paths.privateStateRoot ];
           ReadOnlyPaths = [ paths.archiveRoot paths.privateArchiveRoot paths.checkpointsRoot ];
           InaccessiblePaths = [ paths.profilesRoot ];
         };
@@ -181,7 +193,7 @@ in
         unitConfig = {
           StartLimitIntervalSec = "10min";
           StartLimitBurst = 4;
-          RequiresMountsFor = [ vars.dataRoot ];
+          RequiresMountsFor = [ vars.dataRoot paths.privateStateRoot ];
         };
         path = [ "/run/wrappers" pkgs.podman pkgs.shadow pkgs.slirp4netns ];
         environment = commonEnvironment // {
@@ -196,8 +208,9 @@ in
         serviceConfig = {
           Type = "simple";
           User = "browsertrix-downloader-worker";
-          Group = "browsertrix-downloader";
+          Group = "browsertrix-private";
           SupplementaryGroups = [ sharedAccessGroup ];
+          ExecStartPre = "+${privateStateCheck}";
           ExecStart = workerLauncher;
           Restart = "on-failure";
           RestartSec = "15s";
@@ -223,7 +236,7 @@ in
           PrivateDevices = false;
           SystemCallArchitectures = "native";
           ReadWritePaths = [
-            paths.stateRoot
+            paths.privateStateRoot
             paths.cacheRoot
             paths.archiveRoot
             paths.privateArchiveRoot
