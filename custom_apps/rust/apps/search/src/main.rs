@@ -6,6 +6,7 @@ mod facets;
 mod federate;
 mod identity;
 mod indexer;
+mod online_papers;
 mod paperless_search;
 mod pdf_archive;
 mod retry;

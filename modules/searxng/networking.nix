@@ -75,7 +75,7 @@ in
     port = lib.mkOption {
       type = lib.types.port;
       default = vars.networking.ports.searxng or 8098;
-      description = "Loopback SearXNG port, reachable only from ai-tools.";
+      description = "Loopback SearXNG port for ai-tools and opt-in scholarly Search.";
     };
 
     stateDir = lib.mkOption {
@@ -88,8 +88,8 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        # SearXNG is loopback-only and reaches the network solely as ai-tools'
-        # upstream, so the invariant to protect is that nothing publishes
+        # SearXNG is a loopback upstream for ai-tools and Search, so the
+        # invariant to protect is that nothing publishes
         # *SearXNG itself* through the gateway.
         #
         # Matching on the `ai.<domain>` host instead would be wrong: that host
@@ -97,7 +97,7 @@ in
         # right, so the assertion fired on a legitimate registration.
         assertion = offenders == [ ];
         message = ''
-          searxng must never be published through the gateway; only the ai-tools MCP host is exposed.
+          searxng must never be published through the gateway; use protected app integrations.
           These Caddy or gateway targets reach loopback:${portString}: ${lib.concatStringsSep ", " offenders}
         '';
       }

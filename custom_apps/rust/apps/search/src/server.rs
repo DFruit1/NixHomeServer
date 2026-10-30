@@ -13,6 +13,7 @@ use crate::config::Settings;
 use crate::db;
 use crate::federate::FederatedHit;
 use crate::identity::Identity;
+use crate::online_papers::{self, OnlinePapers};
 use crate::paperless_search;
 use crate::solr::SolrClient;
 use crate::source_cache::{CachedValue, SourceCache};
@@ -34,6 +35,7 @@ struct AppState {
 }
 
 struct Inner {
+    online_papers: Option<OnlinePapers>,
     settings: Settings,
     solr: SolrClient,
     zim_cache: ZimInventoryCache,
@@ -68,6 +70,7 @@ pub async fn run() -> Result<(), String> {
 
     let state = AppState {
         inner: std::sync::Arc::new(Inner {
+            online_papers: OnlinePapers::from_env()?,
             settings,
             solr: SolrClient::new(
                 &env_or("SEARCH_SOLR_URL", "http://127.0.0.1:8983/solr"),
@@ -128,7 +131,11 @@ async fn index(State(state): State<AppState>) -> Response {
             serde_json::Value::String(state.inner.logout_url.clone())
         )
     };
-    Html(include_str!("ui.html").replace("<!--LOGOUT_URL-->", &logout)).into_response()
+    let config = format!(
+        "<script>window.SEARCH_ONLINE_PAPERS = {};</script>{logout}",
+        state.inner.online_papers.is_some()
+    );
+    Html(include_str!("ui.html").replace("<!--LOGOUT_URL-->", &config)).into_response()
 }
 
 async fn shared_db_client(
@@ -323,6 +330,27 @@ async fn api_search(
     let query = params.q.trim().to_string();
     if query.is_empty() {
         return Json(json!({ "hits": [], "total": 0 })).into_response();
+    }
+
+    // No default, saved-type or source-only search may reach SearXNG.
+    // Keep discovery independent of the saved library and its database.
+    if params.kind.as_deref() == Some(online_papers::KIND) {
+        if params.scope == SearchScope::Indexed || params.page.unwrap_or(0) != 0 {
+            return Json(json!({"hits": [], "total": 0, "hasMore": false})).into_response();
+        }
+        let Some(papers) = &state.inner.online_papers else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "Online paper search is not configured on this server."})),
+            )
+                .into_response();
+        };
+        return match papers.search(&query).await {
+            Ok(body) => Json(body).into_response(),
+            Err(message) => {
+                (StatusCode::BAD_GATEWAY, Json(json!({"error": message}))).into_response()
+            }
+        };
     }
 
     let client = match shared_db_client(&state).await {
