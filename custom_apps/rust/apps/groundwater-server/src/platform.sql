@@ -45,6 +45,30 @@ CREATE TABLE IF NOT EXISTS device_permissions (
 );
 CREATE INDEX IF NOT EXISTS device_permissions_username_idx ON device_permissions(username);
 
+-- Keep the shared-topic cohort identical for intake and dispatch, including
+-- invalid binding rows which the typed intake registry cannot represent.
+CREATE OR REPLACE FUNCTION groundwater_profile_id(profile TEXT) RETURNS TEXT
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE upper(btrim(profile))
+      WHEN 'V21' THEN 'V21' WHEN '2.1' THEN 'V21' WHEN 'GWL_FIRMWARE_V2.1' THEN 'V21'
+      WHEN 'V20' THEN 'V20' WHEN '2.0' THEN 'V20' WHEN '2.00' THEN 'V20' WHEN 'GWL_FIRMWARE_V2.00' THEN 'V20'
+      WHEN 'ML' THEN 'ML' WHEN 'MQTT-LOGGER' THEN 'ML' WHEN 'MQTT_LOGGER' THEN 'ML'
+    END
+$$;
+CREATE OR REPLACE FUNCTION groundwater_legacy_device_count() RETURNS BIGINT
+LANGUAGE sql STABLE AS $$
+    WITH routes AS (
+        SELECT d.device_id,
+            bool_or(b.topic='gwl/v1/'||d.device_id||'/status'
+                AND COALESCE(groundwater_profile_id(b.source_profile)=groundwater_profile_id(d.source_profile),false)) AS has_status,
+            bool_and(b.topic LIKE 'gwl/v1/'||d.device_id||'/%'
+                AND COALESCE(groundwater_profile_id(b.source_profile)=groundwater_profile_id(d.source_profile),false)) AS scoped
+        FROM devices d JOIN device_bindings b ON b.device_id=d.device_id AND b.revoked_at IS NULL
+        GROUP BY d.device_id
+    ) SELECT count(*) FROM devices d LEFT JOIN routes r ON r.device_id=d.device_id
+        WHERE d.revoked_at IS NULL AND NOT COALESCE(r.has_status AND r.scoped,false)
+$$;
+
 CREATE TABLE IF NOT EXISTS alerts (
     id BIGSERIAL PRIMARY KEY,
     device_id TEXT NOT NULL REFERENCES devices(device_id),

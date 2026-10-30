@@ -25,12 +25,12 @@ pub fn attributed<'a>(
     let binding = registry.binding_for_topic(topic)?;
     let enrolled = registry.enrollment(&binding.device_id)?;
     // A flat firmware channel carries no identity. Its binding is valid only
-    // for a single active enrollment; two physical loggers remain ambiguous.
+    // for a single legacy enrollment; verified v1-only units do not use it.
     let flat = crate::topics::TopicMap::default()
         .subscribe_topics()
         .iter()
         .any(|t| t == topic);
-    let ambiguous = flat && registry.enrollments().filter(|e| !e.revoked).count() > 1;
+    let ambiguous = flat && registry.shared_topics_ambiguous();
     (!enrolled.revoked && enrolled.profile == binding.profile && !ambiguous).then_some(binding)
 }
 
@@ -67,9 +67,12 @@ pub async fn ancillary<C: tokio_postgres::GenericClient + Sync>(
         });
         return Ok(Some(device.clone()));
     }
-    let ack_kind = if topic.ends_with("cfg/desired/applied") {
+    let channel = crate::topics::device_channel(topic).map(|(_, channel)| channel);
+    let ack_kind = if channel == Some("config/applied") || topic.ends_with("cfg/desired/applied") {
         "cfg"
-    } else if topic.ends_with("cfg/danger_ack") && text == "Danger Acknowledge" {
+    } else if (channel == Some("cmd/ack") || topic.ends_with("cfg/danger_ack"))
+        && text == "Danger Acknowledge"
+    {
         "danger"
     } else if kind == crate::topics::MessageKind::TestResult {
         "test"
@@ -184,12 +187,14 @@ pub async fn tick(
             "test" => "requesttesta",
             _ => return Err("invalid persisted command kind".into()),
         };
+        let scoped = crate::topics::command_topic(&device, &kind)
+            .ok_or_else(|| "invalid device command topic".to_owned())?;
         let bindings = tx
             .query(
                 "SELECT b.topic FROM device_bindings b JOIN devices d ON d.device_id=b.device_id
              WHERE b.device_id=$1 AND b.source_profile=d.source_profile AND b.revoked_at IS NULL
-               AND (b.topic=$2 OR right(b.topic,length($2)+1)='/'||$2) ORDER BY b.topic",
-                &[&device, &base],
+               AND (b.topic=$3 OR (b.topic NOT LIKE 'gwl/v%' AND (b.topic=$2 OR right(b.topic,length($2)+1)='/'||$2))) ORDER BY b.topic",
+                &[&device, &base, &scoped],
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -198,7 +203,7 @@ pub async fn tick(
         }
         let topic: String = bindings[0].get(0);
         let count: i64 = tx
-            .query_one("SELECT count(*) FROM devices WHERE revoked_at IS NULL", &[])
+            .query_one("SELECT groundwater_legacy_device_count()", &[])
             .await
             .map_err(|e| e.to_string())?
             .get(0);

@@ -146,11 +146,22 @@ impl Enrollment {
 pub struct EnrollmentRegistry {
     enrollments: HashMap<String, Enrollment>,
     bindings: Vec<Binding>,
+    shared_legacy_count: Option<i64>,
 }
 
 impl EnrollmentRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn set_shared_legacy_count(&mut self, count: i64) {
+        self.shared_legacy_count = Some(count);
+    }
+
+    pub(crate) fn shared_topics_ambiguous(&self) -> bool {
+        self.shared_legacy_count
+            .unwrap_or_else(|| self.enrollments.values().filter(|e| !e.revoked).count() as i64)
+            > 1
     }
 
     /// Adds or replaces an enrollment.
@@ -190,6 +201,9 @@ impl EnrollmentRegistry {
             .filter(|binding| binding.topic == topic);
         let first = matches.next()?;
         if matches.next().is_some() {
+            return None;
+        }
+        if topics::device_channel(topic).is_some_and(|(device, _)| device != first.device_id) {
             return None;
         }
         Some(first)

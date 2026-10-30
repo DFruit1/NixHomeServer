@@ -22,6 +22,206 @@ use tower::ServiceExt;
 const A: &str = "8F3A21C04B9E77A1D25C01FE";
 const B: &str = "000000000000000000000002";
 
+// A namespace mismatch must never reset another physical logger.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn versioned_topics_isolate_device_commands() {
+    let mut client = db::connect(&std::env::var("GROUNDWATER_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    db::migrate(&client).await.unwrap();
+    client
+        .batch_execute(
+            "TRUNCATE devices,device_bindings,observations,deliveries RESTART IDENTITY CASCADE",
+        )
+        .await
+        .unwrap();
+    for device in [A, B] {
+        client
+            .execute(
+                "INSERT INTO devices(device_id,source_profile,clock_policy) VALUES($1,'V21','utc')",
+                &[&device],
+            )
+            .await
+            .unwrap();
+        for channel in ["status", "cmd/danger"] {
+            let topic = format!("gwl/v1/{device}/{channel}");
+            client.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES($1,$2,$1,'V21')", &[&topic,&device]).await.unwrap();
+        }
+        platform::queue(
+            &client,
+            device,
+            "danger",
+            json!({"Reboot":"1"}),
+            "{\"Reboot\":\"1\"}",
+            "operator",
+        )
+        .await
+        .unwrap();
+    }
+    let registry = Arc::new(tokio::sync::RwLock::new(
+        db::load_registry(&client).await.unwrap(),
+    ));
+    let bus = EventBus::new();
+    let stats = Arc::new(tokio::sync::Mutex::new(IngestStats::default()));
+    crate::ingest::handle_publish(
+        &format!("gwl/v1/{A}/status"),
+        b"Ready",
+        1,
+        false,
+        Utc::now(),
+        &TopicMap::default(),
+        &mut client,
+        &registry,
+        &bus,
+        &stats,
+    )
+    .await
+    .unwrap();
+    let (mqtt, _events) = rumqttc::AsyncClient::new(
+        rumqttc::MqttOptions::new("topic-safety", "127.0.0.1", 1),
+        10,
+    );
+    let mut publisher = Publisher::default();
+    publisher.connected = true;
+    scheduler::tick(&mut client, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
+    let attempts = client
+        .query(
+            "SELECT device_id,attempts FROM commands ORDER BY device_id",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        attempts
+            .iter()
+            .find(|r| r.get::<_, String>(0) == A)
+            .unwrap()
+            .get::<_, i32>(1),
+        1
+    );
+    assert_eq!(
+        attempts
+            .iter()
+            .find(|r| r.get::<_, String>(0) == B)
+            .unwrap()
+            .get::<_, i32>(1),
+        0
+    );
+    assert_eq!(
+        client
+            .query_one("SELECT topic FROM command_publish_attempts", &[])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        format!("gwl/v1/{A}/cmd/danger")
+    );
+
+    // Profile aliases must not split Rust and SQL cohort decisions.
+    client.execute("UPDATE device_bindings SET source_profile='2.1' WHERE device_id=$1 AND topic LIKE '%/status'", &[&A]).await.unwrap();
+    // Mixed migration: v1-only A must not suppress the sole legacy unit B.
+    client.execute("UPDATE device_bindings SET topic=CASE WHEN topic LIKE '%/status' THEN 'azman1/feeds/device-status' ELSE 'cmd/danger' END WHERE device_id=$1", &[&B]).await.unwrap();
+    client
+        .execute(
+            "UPDATE commands SET state='cancelled' WHERE device_id=$1",
+            &[&A],
+        )
+        .await
+        .unwrap();
+    let c = "000000000000000000000003";
+    client
+        .execute(
+            "INSERT INTO devices(device_id,source_profile,clock_policy) VALUES($1,'V21','utc')",
+            &[&c],
+        )
+        .await
+        .unwrap();
+    *registry.write().await = db::load_registry(&client).await.unwrap();
+    crate::ingest::handle_publish(
+        "azman1/feeds/device-status",
+        b"Ready",
+        1,
+        false,
+        Utc::now(),
+        &TopicMap::default(),
+        &mut client,
+        &registry,
+        &bus,
+        &stats,
+    )
+    .await
+    .unwrap();
+    assert!(client
+        .query_one(
+            "SELECT last_ready_at FROM devices WHERE device_id=$1",
+            &[&B]
+        )
+        .await
+        .unwrap()
+        .get::<_, Option<chrono::DateTime<Utc>>>(0)
+        .is_none());
+    client
+        .execute(
+            "UPDATE devices SET revoked_at=now() WHERE device_id=$1",
+            &[&c],
+        )
+        .await
+        .unwrap();
+    *registry.write().await = db::load_registry(&client).await.unwrap();
+    crate::ingest::handle_publish(
+        "azman1/feeds/device-status",
+        b"Ready",
+        1,
+        false,
+        Utc::now(),
+        &TopicMap::default(),
+        &mut client,
+        &registry,
+        &bus,
+        &stats,
+    )
+    .await
+    .unwrap();
+    // Invalid profile evidence remains conservative even though the typed
+    // registry deliberately skips that binding.
+    client.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES('invalid-legacy',$1,'legacy/reading','invalid')", &[&A]).await.unwrap();
+    let contaminated = db::load_registry(&client).await.unwrap();
+    assert!(scheduler::attributed(&contaminated, "azman1/feeds/device-status").is_none());
+    assert_eq!(
+        client
+            .query_one("SELECT groundwater_legacy_device_count()", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        2
+    );
+    client
+        .execute(
+            "DELETE FROM device_bindings WHERE binding_key='invalid-legacy'",
+            &[],
+        )
+        .await
+        .unwrap();
+    *registry.write().await = db::load_registry(&client).await.unwrap();
+    publisher.disconnected();
+    publisher.reconcile(&mut client, &bus).await.unwrap();
+    publisher.connected = true;
+    scheduler::tick(&mut client, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .query_one("SELECT attempts FROM commands WHERE device_id=$1", &[&B])
+            .await
+            .unwrap()
+            .get::<_, i32>(0),
+        1
+    );
+    assert_eq!(client.query_one("SELECT a.topic FROM command_publish_attempts a JOIN commands c ON c.id=a.command_id WHERE c.device_id=$1", &[&B]).await.unwrap().get::<_,String>(0),"cmd/danger");
+}
+
 // Clock-changing flash writes and stale wake authorization can issue commands
 // against the wrong device state or permanently misinterpret field samples.
 // These hardware/data-preservation risks justify focused safety coverage.

@@ -310,6 +310,12 @@ pub async fn load_registry(client: &Client) -> Result<EnrollmentRegistry, String
         });
     }
 
+    let count = client
+        .query_one("SELECT groundwater_legacy_device_count()", &[])
+        .await
+        .map_err(|e| db_context("legacy topic cohort", e))?
+        .get(0);
+    registry.set_shared_legacy_count(count);
     Ok(registry)
 }
 

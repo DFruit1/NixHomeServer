@@ -15,6 +15,35 @@
 
 use crate::profiles;
 
+pub const DEVICE_PREFIX: &str = "gwl/v1/";
+
+/// Parse the reserved versioned namespace strictly before any legacy aliases.
+pub fn device_channel(topic: &str) -> Option<(&str, &str)> {
+    let (device, channel) = topic.strip_prefix(DEVICE_PREFIX)?.split_once('/')?;
+    (device.len() == 24
+        && device
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
+        && !channel.is_empty())
+    .then_some((device, channel))
+}
+
+pub fn command_topic(device: &str, kind: &str) -> Option<String> {
+    let channel = match kind {
+        "project-settings" => "config/set",
+        "cfg" => "config/desired",
+        "danger" => "cmd/danger",
+        "test" => "cmd/test",
+        _ => return None,
+    };
+    let topic = format!("{DEVICE_PREFIX}{device}/{channel}");
+    if device_channel(&topic).is_some() {
+        Some(topic)
+    } else {
+        None
+    }
+}
+
 /// What a received MQTT message means to the platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
@@ -64,6 +93,21 @@ impl MessageKind {
 /// last path segment, so a namespace change (`azman1/feeds/x` -> `gwl/x`)
 /// still classifies correctly without a config change.
 pub fn classify(topic: &str, map: &TopicMap) -> MessageKind {
+    // Unknown versions/malformed device paths never fall back to a legacy
+    // leaf name. The version selects the complete wire contract.
+    if topic.starts_with("gwl/v") {
+        return match device_channel(topic).map(|(_, channel)| channel) {
+            Some("reading") => MessageKind::Reading,
+            Some("status") => MessageKind::DeviceStatus,
+            Some("gps") => MessageKind::Gps,
+            Some("storage") => MessageKind::Storage,
+            Some("motion") => MessageKind::Motion,
+            Some("alerts") => MessageKind::Alert,
+            Some("test/result") => MessageKind::TestResult,
+            Some("config/applied" | "cmd/ack") => MessageKind::ConfigAck,
+            _ => MessageKind::Other,
+        };
+    }
     let trimmed = topic.trim_end_matches('/');
     if trimmed.is_empty() {
         return MessageKind::Other;
@@ -174,6 +218,49 @@ impl Default for TopicMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Misrouting a hardware command can reset the wrong logger. Exercise
+    // namespace/version boundaries independently of payload identity claims.
+    #[test]
+    fn versioned_topics_preserve_device_and_protocol_boundaries() {
+        let a = "AAAAAAAAAAAAAAAAAAAAAAAA";
+        let b = "BBBBBBBBBBBBBBBBBBBBBBBB";
+        let map = TopicMap::default();
+        for (channel, kind) in [
+            ("reading", MessageKind::Reading),
+            ("status", MessageKind::DeviceStatus),
+            ("gps", MessageKind::Gps),
+            ("storage", MessageKind::Storage),
+            ("motion", MessageKind::Motion),
+            ("alerts", MessageKind::Alert),
+            ("test/result", MessageKind::TestResult),
+            ("config/applied", MessageKind::ConfigAck),
+            ("cmd/ack", MessageKind::ConfigAck),
+        ] {
+            assert_eq!(
+                classify(&format!("{DEVICE_PREFIX}{a}/{channel}"), &map),
+                kind
+            );
+        }
+        for topic in [
+            format!("gwl/v2/{a}/alerts"),
+            format!("gwl/v1/short/status"),
+            format!("{DEVICE_PREFIX}{a}/extra/alerts"),
+        ] {
+            assert_eq!(classify(&topic, &map), MessageKind::Other);
+        }
+        let topic = command_topic(a, "danger").unwrap();
+        assert_eq!(topic, format!("{DEVICE_PREFIX}{a}/cmd/danger"));
+        assert_ne!(topic, command_topic(b, "danger").unwrap());
+        let mut registry = crate::adapter::EnrollmentRegistry::new();
+        registry.bind(crate::adapter::Binding::new(
+            "misbound",
+            &topic,
+            b,
+            profiles::ProfileId::V21,
+        ));
+        assert!(registry.binding_for_topic(&topic).is_none());
+    }
 
     #[test]
     fn classifies_every_current_firmware_topic() {
