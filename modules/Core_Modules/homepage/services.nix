@@ -139,6 +139,20 @@ let
   });
   kanidmVaultUrl = "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}";
   installSftpKey = pkgs.writeShellScript "homepage-install-sftp-key" (renderShell ../../../custom_apps/shell/homepage/homepage-install-sftp-key.sh.in {
+    SFTP_UNIX_GROUPS =
+      let
+        raw = vars.fileAccess.localSftpAccessGroup or null;
+        localGroup =
+          if builtins.isString raw
+            && builtins.stringLength raw >= 1
+            && builtins.stringLength raw <= 31
+            && builtins.match "[a-z_][a-z0-9_-]*" raw != null
+          then raw
+          else "invalid-files-local-sftp-group";
+      in lib.escapeShellArgs (
+        lib.unique (sftpAccessGroups ++ map (group: "${group}@${vars.domain}") sftpAccessGroups)
+        ++ lib.optionals (builtins.elem vars.localAdminUser (vars.filesSftpUsers or [ ])) [ localGroup ]
+      );
     GNUGREP = pkgs.gnugrep;
     COREUTILS = pkgs.coreutils;
     GNUSED = pkgs.gnused;

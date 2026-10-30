@@ -164,6 +164,8 @@ test_scripts=(
   scripts/tests/test-homepage-guidance.sh
   scripts/tests/test-homepage-vault.sh
   scripts/tests/test-admin-dashboard-status.sh
+  scripts/tests/test-admin-dashboard-logs.sh
+  scripts/tests/test-sftp-key-authorization.sh
   scripts/tests/test-portal-landing.sh
   scripts/tests/test-identity-reconcile-fail-closed.sh
   scripts/tests/test-integration-dependencies.sh

@@ -6,6 +6,7 @@
     ./identity.nix
     ./services.nix
     ./dashboard.nix
+    ./logs.nix
     ./canary.nix
     ./bootstrap.nix
     ./backups.nix
