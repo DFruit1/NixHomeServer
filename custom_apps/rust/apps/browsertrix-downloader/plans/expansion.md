@@ -68,6 +68,15 @@ It then validates and commits the dependency input in its assigned checkout.
 
 ## Feature and acceptance ledger
 
+Module review at `514cf7c` found WA-MOD-001 through WA-MOD-003. Corrections
+await re-review: remove Search's service-group membership and retain its narrow
+shared-tree ACL; add the private root to actual Kopia snapshot roots with a
+scoped policy that includes WACZ while preserving model exclusions; mount the
+profile root inaccessible in the API namespace. The two focused module checks
+pass. An isolated Kopia 0.23.1 repository restored the 54,088-byte synthetic WACZ
+byte-for-byte under that policy while excluding a synthetic GGUF. No live backup
+or credential store was used.
+
 | ID | Capability | Implementation and acceptance |
 | --- | --- | --- |
 | 01 | Durable archive library | Separate archive catalog; clearing/removing terminal jobs leaves stable replay, download and metadata available. Migrate existing completed jobs without losing ownership. |

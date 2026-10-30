@@ -160,6 +160,7 @@ in
           SystemCallArchitectures = "native";
           ReadWritePaths = [ paths.stateRoot ];
           ReadOnlyPaths = [ paths.archiveRoot paths.privateArchiveRoot paths.checkpointsRoot ];
+          InaccessiblePaths = [ paths.profilesRoot ];
         };
       };
 

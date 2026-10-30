@@ -1,4 +1,4 @@
-{ config, ... }:
+{ config, lib, ... }:
 
 let
   paths = config.repo.browsertrixDownloader.paths;
@@ -15,6 +15,7 @@ in
       }
     ];
     criticalPaths = [ paths.archiveRoot paths.privateArchiveRoot paths.stateRoot ];
+    snapshotRoots = [ paths.privateArchiveRoot ];
     sqliteDumps = [
       {
         source = "${paths.stateDir}/browsertrix-downloader.sqlite";
@@ -22,4 +23,13 @@ in
       }
     ];
   };
+
+  # Kopia's global bulk-data policy excludes WACZ. A local policy replaces
+  # its ignore list only for private originals, retaining the model exclusions.
+  # Append to the existing locked, credential-bound reconciliation transaction.
+  systemd.services.kopia-policy-reconcile.script = lib.mkAfter ''
+    kopia policy set ${lib.escapeShellArg paths.privateArchiveRoot} --clear-ignore
+    kopia policy set ${lib.escapeShellArg paths.privateArchiveRoot} \
+      --add-ignore='*.gguf' --add-ignore='*.gguf.part' --max-file-size=0
+  '';
 }
