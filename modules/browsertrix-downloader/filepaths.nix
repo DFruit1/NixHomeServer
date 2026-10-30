@@ -41,6 +41,30 @@ in
       default = "${vars.sharedRoot}/_WebArchives";
       description = "Data-pool-backed WACZ archive root.";
     };
+
+    privateArchiveRoot = lib.mkOption {
+      type = lib.types.str;
+      default = "${vars.dataRoot}/browsertrix-downloader/private-archives";
+      description = "Private data-pool WACZ payloads, outside shared library consumers.";
+    };
+
+    checkpointsRoot = lib.mkOption {
+      type = lib.types.str;
+      default = "${paths.stateRoot}/checkpoints";
+      description = "Persistent worker checkpoints and WARC data for resumable captures.";
+    };
+
+    profilesRoot = lib.mkOption {
+      type = lib.types.str;
+      default = "${paths.stateRoot}/profiles";
+      description = "Worker-only immutable browser profile material.";
+    };
+
+    inboxRoot = lib.mkOption {
+      type = lib.types.str;
+      default = "${paths.stateDir}/inbox";
+      description = "Bounded upload staging shared only by the archive API and worker.";
+    };
   };
 
   config = {
@@ -57,6 +81,9 @@ in
       "d ${paths.workerHome} 0750 browsertrix-downloader-worker browsertrix-downloader -"
       "d ${paths.cacheRoot} 0750 browsertrix-downloader-worker browsertrix-downloader -"
       "d ${paths.crawlsRoot} 0750 browsertrix-downloader-worker browsertrix-downloader -"
+      "d ${paths.checkpointsRoot} 0750 browsertrix-downloader-worker browsertrix-downloader -"
+      "d ${paths.profilesRoot} 0700 browsertrix-downloader-worker browsertrix-downloader -"
+      "d ${paths.inboxRoot} 0770 browsertrix-downloader browsertrix-downloader -"
     ];
 
     systemd.services.browsertrix-downloader-storage-layout-v1 = {
@@ -71,6 +98,7 @@ in
       unitConfig.RequiresMountsFor = [
         paths.stateRoot
         paths.archiveRoot
+        paths.privateArchiveRoot
       ];
       serviceConfig = {
         Type = "oneshot";
@@ -85,6 +113,18 @@ in
         install -d -m 0750 -o browsertrix-downloader-worker -g browsertrix-downloader ${lib.escapeShellArg paths.workerHome}
         install -d -m 0750 -o browsertrix-downloader-worker -g browsertrix-downloader ${lib.escapeShellArg paths.cacheRoot}
         install -d -m 0750 -o browsertrix-downloader-worker -g browsertrix-downloader ${lib.escapeShellArg paths.crawlsRoot}
+        install -d -m 0750 -o browsertrix-downloader-worker -g browsertrix-downloader ${lib.escapeShellArg paths.checkpointsRoot}
+        install -d -m 0700 -o browsertrix-downloader-worker -g browsertrix-downloader ${lib.escapeShellArg paths.profilesRoot}
+        install -d -m 0770 -o browsertrix-downloader -g browsertrix-downloader ${lib.escapeShellArg paths.inboxRoot}
+
+        # Private captures never inherit the shared library's default ACLs.
+        if [[ -L ${lib.escapeShellArg paths.privateArchiveRoot} ]]; then
+          echo "Refusing private archive directory symlink" >&2
+          exit 1
+        fi
+        install -d -m 0750 -o browsertrix-downloader-worker -g browsertrix-downloader ${lib.escapeShellArg paths.privateArchiveRoot}
+        setfacl -b -k ${lib.escapeShellArg paths.privateArchiveRoot}
+        chmod 0750 ${lib.escapeShellArg paths.privateArchiveRoot}
 
         database_path=${lib.escapeShellArg "${paths.stateDir}/browsertrix-downloader.sqlite"}
         if [[ -L "$database_path" ]]; then

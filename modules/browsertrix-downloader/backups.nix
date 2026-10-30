@@ -10,11 +10,11 @@ in
         app = "browsertrix-downloader";
         component = "app";
         stateRoot = paths.stateRoot;
-        payloadRoots = [ paths.archiveRoot ];
-        notes = "SQLite crawl history, rootless crawler image state, and completed WACZ archives.";
+        payloadRoots = [ paths.archiveRoot paths.privateArchiveRoot ];
+        notes = "Archive catalog, recipes, schedules, private profiles and resumable checkpoints, rootless crawler state, and shared/private WACZ payloads.";
       }
     ];
-    criticalPaths = [ paths.archiveRoot paths.stateRoot ];
+    criticalPaths = [ paths.archiveRoot paths.privateArchiveRoot paths.stateRoot ];
     sqliteDumps = [
       {
         source = "${paths.stateDir}/browsertrix-downloader.sqlite";

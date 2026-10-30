@@ -19,6 +19,10 @@ let
     BROWSERTRIX_DOWNLOADER_DATABASE = "${paths.stateDir}/browsertrix-downloader.sqlite";
     BROWSERTRIX_DOWNLOADER_CRAWLS_DIR = paths.crawlsRoot;
     BROWSERTRIX_DOWNLOADER_ARCHIVE_ROOT = paths.archiveRoot;
+    BROWSERTRIX_DOWNLOADER_PRIVATE_ARCHIVE_ROOT = paths.privateArchiveRoot;
+    BROWSERTRIX_DOWNLOADER_CHECKPOINTS_ROOT = paths.checkpointsRoot;
+    BROWSERTRIX_DOWNLOADER_PROFILES_ROOT = paths.profilesRoot;
+    BROWSERTRIX_DOWNLOADER_INBOX_ROOT = paths.inboxRoot;
     BROWSERTRIX_DOWNLOADER_FRONTEND_DIR = "${package}/share/browsertrix-downloader/client";
     BROWSERTRIX_DOWNLOADER_REPLAY_DIR = "${package}/share/browsertrix-downloader/replay";
     BROWSERTRIX_DOWNLOADER_EVENT_RETENTION_DAYS = toString cfg.eventRetentionDays;
@@ -35,6 +39,7 @@ let
     fi
     export BROWSERTRIX_DOWNLOADER_ARCHIVE_UID="$archive_uid"
     export BROWSERTRIX_DOWNLOADER_ARCHIVE_GID="$archive_gid"
+    export BROWSERTRIX_DOWNLOADER_PRIVATE_ARCHIVE_GID="$(${pkgs.coreutils}/bin/id -g)"
     exec ${lib.getExe' package "browsertrix-downloader-worker"}
   '';
   egressPolicy = pkgs.writeShellScript "browsertrix-downloader-egress-policy" ''
@@ -154,7 +159,7 @@ in
           RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
           SystemCallArchitectures = "native";
           ReadWritePaths = [ paths.stateRoot ];
-          ReadOnlyPaths = [ paths.archiveRoot ];
+          ReadOnlyPaths = [ paths.archiveRoot paths.privateArchiveRoot paths.checkpointsRoot ];
         };
       };
 
@@ -220,6 +225,7 @@ in
             paths.stateRoot
             paths.cacheRoot
             paths.archiveRoot
+            paths.privateArchiveRoot
           ];
         };
       };
