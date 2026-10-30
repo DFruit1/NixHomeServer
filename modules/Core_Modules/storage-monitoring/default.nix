@@ -11,6 +11,7 @@ let
     install -m 0755 ${./../../../scripts/run-storage-smart-sweep.sh} "$out/scripts/run-storage-smart-sweep.sh"
     install -m 0755 ${./../../../scripts/discover-storage-devices.sh} "$out/scripts/discover-storage-devices.sh"
     install -m 0644 ${./../../../scripts/helpers/repo-common.sh} "$out/scripts/helpers/repo-common.sh"
+    install -m 0644 ${./../../../scripts/helpers/deploy-archive-cleanup.sh} "$out/scripts/helpers/deploy-archive-cleanup.sh"
   '';
   smartSweepScript = "${smartSweepScripts}/scripts/run-storage-smart-sweep.sh";
   discoveryConfig = pkgs.writeText "storage-device-discovery.json" (builtins.toJSON {
