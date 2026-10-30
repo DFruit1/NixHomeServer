@@ -52,6 +52,16 @@ or module skill only when that boundary changes.
    Include unpublished commits on participating branches when necessary to
    preserve or finish their dirty work. Do not sweep every historical branch
    or historical task into a request about uncommitted work.
+   Before assigning recovery, compare the actual dirty delta against the current
+   destination and reachable landing history. Preserved worktrees can remain
+   dirty after their changes have landed and evolved. Classify each group as
+   missing, already represented, superseded by current behavior, historical
+   evidence or retired source; record supporting paths/commits. A differing
+   whole file or dirty-file count alone does not establish missing work. Preserve
+   those source copies without replaying superseded changes or reviving retired
+   systems. Include relevant recently completed outputs identified by the
+   current task/handoffs, with explicit releases, rather than assuming a clean
+   checkout means its feature has reached the destination.
 3. Establish intent from the diff, nearby code and available task context.
    Finish evident implementation gaps autonomously. Ask only for material
    choices the evidence cannot settle. Never silently drop a difficult change
@@ -118,8 +128,12 @@ including newly added files, conflict resolutions and deployment effects.
 Include the last deployed source through candidate HEAD when a trustworthy
 Git baseline is available. Otherwise establish and disclose the deployed
 content baseline from maintained deployment evidence; a deploy source hash is
-not necessarily a Git commit. Never invent a baseline or claim unobserved
-coverage. Resolve required findings and follow the review skill's bounded
+not necessarily a Git commit. A `last-tested` stamp proves a passing test, not
+by itself a completed switch; compare its closure with live and boot state.
+Qualify any reported Git baseline against available source evidence and disclose
+unresolved mismatches. An archive of a commit is not automatically identical
+to the deployment helper's staged working contents. Never invent a baseline or
+claim unobserved coverage. Resolve required findings and follow the review skill's bounded
 rounds. Changed behavior needs review of the affected delta.
 
 Integrate into the intended destination and publish as required by `AGENTS.md`.
