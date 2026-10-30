@@ -385,7 +385,7 @@ observed results, not blanket acceptance.
 | Proposals | Implemented boundary | Observed qualification |
 | --- | --- | --- |
 | 01, 04, 05, 22, 27, 29 | Separate catalogue, owner-bound publication intent/recovery, paged inventories/coverage, metadata, imports, trash | Real API imported the 18-resource fixture; paging, metadata, fixity and export completed. Removing all terminal job history preserved the archive and its SHA-256. Other-user detail, payload, preview and mutation requests returned 404. |
-| 02, 03, 09, 11 | Durable native checkpoints, explicit cumulative budgets/extensions, SPA/depth and multiple seeds | Native partial/resume extension qualification is the final backend acceptance check; bounded request/queue/custody checks pass. |
+| 02, 03, 09, 11 | Durable native checkpoints, explicit cumulative budgets/extensions, SPA/depth and multiple seeds | Actual native partial one-page capture resumed with an explicit two-page extension and completed all three pages in two attempts and 14 cumulative seconds. The partial hash and parent lineage remained intact. Restart/discard concurrency is under the final backend correction. |
 | 07, 08 | DNS-pinned bounded discovery and queued browser samples | Actual 3-page sample freezes target 30. Projection includes document/assets once and reports uncertain dynamic-resource, baseline and packaging overhead separately; transfer remains a different measurement. |
 | 10, 12, 13, 14, 23, 25 | Editable presets, native resource/media/behaviour driver, owner recipes and opt-in schedules | Existing app tests and direct recipe/schedule execution checks pass. Fixture UI preserves SPA hashes, multiple seeds and editable settings. |
 | 06, 15, 16, 17, 21, 24 | Library-first UI, resource/coverage tools, sandbox picker, clean replay, search/deep links and comparisons | Frontend review rounds 1–2 resolved WA-FE-001–003. Actual API responses exposed and corrected bounded-report shape handling. First-use service-worker bootstrap fixed a reproduced replay startup race. Real original → clean → original preserved story/hash and toggled advert display; mobile width 390 had no page overflow and footer remained reachable. New integration UI is in independent round 3. |
@@ -401,3 +401,6 @@ Independent module review accepted private ACLs, actual backup-root policy and
 API profile mounts; isolated Kopia restored a synthetic WACZ byte-for-byte while
 excluding a synthetic GGUF. No live service switch or real credential change has
 been performed by this workstream.
+
+The [validation receipt](validation.md) records actual native, API, replay,
+network-boundary and resource-use evidence, including failures and their scope.
