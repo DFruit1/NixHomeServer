@@ -331,7 +331,7 @@ pub fn page_view() -> crate::ui::FleetView {
         .map(summary_of);
 
     let device_a = DeviceSummary {
-        min_limit:None,max_limit:None,location_id:None,sensor_id:None,local_offset_min:None,last_ready_at:None,desired_config:None,applied_config:None,open_alert_count:0,
+        min_limit:None,max_limit:None,location_id:None,sensor_id:None,local_offset_min:None,last_ready_at:None,desired_config:None,applied_config:None,project_config:None,clock_change_unverified:false,capabilities:serde_json::json!({}),open_alert_count:0,
         device_id: DEVICE_A.to_string(),
         display_name: "Test bore A".to_string(),
         profile: ProfileId::V21.as_str().to_string(),
@@ -358,6 +358,9 @@ pub fn page_view() -> crate::ui::FleetView {
             last_ready_at: None,
             desired_config: None,
             applied_config: None,
+            project_config: None,
+            clock_change_unverified: false,
+            capabilities: serde_json::json!({}),
             open_alert_count: 0,
             device_id: device_id.to_string(),
             display_name: name.to_string(),
@@ -458,4 +461,13 @@ mod tests {
             assert!(!lower.contains("mqtt://"));
         }
     }
+}
+
+/// Unit-test dependency for the historical wire/acknowledgment engine. Those
+/// tests model implemented handlers, independently of today's firmware limits.
+/// The production capability predicate is exercised by the safety regression;
+/// migrate() restores it before each disposable-DB test.
+pub async fn implemented_handlers_for_protocol_fixture(db: &tokio_postgres::Client) {
+    db.batch_execute("CREATE OR REPLACE FUNCTION groundwater_command_supported(profile TEXT,kind TEXT,payload JSONB,policy TEXT,offset_min INTEGER,unverified BOOLEAN) RETURNS BOOLEAN LANGUAGE sql IMMUTABLE AS 'SELECT true'")
+        .await.unwrap();
 }

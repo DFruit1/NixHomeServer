@@ -25,6 +25,16 @@ pub const DANGER_KEYS: [&str; 6] = [
     "Erase keys",
 ];
 
+/// Most V2.x handlers only printf/TODO, despite acknowledging receipt. Keep
+/// this display contract aligned with groundwater_command_supported in SQL.
+pub fn capabilities(profile: &str, policy: &str, offset: Option<i32>, unverified: bool) -> Value {
+    let known = matches!(profile, "V21" | "V20" | "ML");
+    let clock = policy == "utc"
+        || (policy == "local-offset" && offset.is_some_and(|n| (0..1440).contains(&n)));
+    json!({"test":known,"project_settings":known && clock && !unverified,
+        "cfg_keys":[],"danger_commands":if matches!(profile,"V21"|"V20"){vec!["Reboot"]}else{vec![]}})
+}
+
 /// Construct in explicit order; serde's sorted-map order puts `lf` before `l`.
 /// Simulate Extract_Value's unanchored strstr, including its fixed +3 skip.
 pub fn project_payload(config: &Value) -> Result<String, String> {

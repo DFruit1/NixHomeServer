@@ -146,11 +146,22 @@ impl Enrollment {
 pub struct EnrollmentRegistry {
     enrollments: HashMap<String, Enrollment>,
     bindings: Vec<Binding>,
+    shared_legacy_count: Option<i64>,
 }
 
 impl EnrollmentRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn set_shared_legacy_count(&mut self, count: i64) {
+        self.shared_legacy_count = Some(count);
+    }
+
+    pub(crate) fn shared_topics_ambiguous(&self) -> bool {
+        self.shared_legacy_count
+            .unwrap_or_else(|| self.enrollments.values().filter(|e| !e.revoked).count() as i64)
+            > 1
     }
 
     /// Adds or replaces an enrollment.
@@ -184,12 +195,25 @@ impl EnrollmentRegistry {
     /// Two bindings on one topic are ambiguous — the platform cannot know
     /// which device a message came from — so neither is trusted.
     pub fn binding_for_topic(&self, topic: &str) -> Option<&Binding> {
+        // Shared firmware channels cannot identify their sender, even when
+        // only one of several legacy units has an explicit binding here.
+        if self.shared_topics_ambiguous()
+            && TopicMap::default()
+                .subscribe_topics()
+                .iter()
+                .any(|t| t == topic)
+        {
+            return None;
+        }
         let mut matches = self
             .bindings
             .iter()
             .filter(|binding| binding.topic == topic);
         let first = matches.next()?;
         if matches.next().is_some() {
+            return None;
+        }
+        if topics::device_channel(topic).is_some_and(|(device, _)| device != first.device_id) {
             return None;
         }
         Some(first)
@@ -247,6 +271,8 @@ pub enum QuarantineReason {
     PayloadTooLarge,
     /// Payload was not UTF-8.
     NotUtf8,
+    /// PostgreSQL text/JSONB cannot store a NUL character.
+    NulByte,
     /// No configured topic matched.
     UnknownTopic,
     /// GPS/status/storage/self-test/motion/alert/config traffic: recorded, not
@@ -278,6 +304,7 @@ impl QuarantineReason {
             Self::TopicTooLong => "topic-too-long",
             Self::PayloadTooLarge => "payload-too-large",
             Self::NotUtf8 => "not-utf8",
+            Self::NulByte => "nul-byte",
             Self::UnknownTopic => "unknown-topic",
             Self::AncillaryChannel => "ancillary-channel",
             Self::UnboundSharedTopic => "unbound-shared-topic",
@@ -525,6 +552,15 @@ pub fn evaluate(
     // Best-effort parsed copy and identity claim: evidence is retained even
     // for traffic that will be quarantined.
     record.payload_json = serde_json::from_str(payload_text.trim()).ok();
+    if payload_text.contains('\0') || record.payload_json.as_ref().is_some_and(json_has_nul) {
+        record.payload_text = payload_text.replace('\0', "\\u0000");
+        record.payload_json = None;
+        return quarantine(
+            record,
+            QuarantineReason::NulByte,
+            "NUL payload retained as escaped text; not representable in PostgreSQL JSONB".into(),
+        );
+    }
     record.claimed_device_id = claimed_identity(record.payload_json.as_ref());
 
     // 2. Topic meaning. Classification is name-only: an unknown topic is never
@@ -854,6 +890,17 @@ pub fn intake(delivery: &Delivery<'_>, registry: &EnrollmentRegistry, topics: &T
 
 /// True for the 24-character hex identifier the firmware derives from its MCU
 /// UID.
+fn json_has_nul(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(value) => value.contains('\0'),
+        serde_json::Value::Array(values) => values.iter().any(json_has_nul),
+        serde_json::Value::Object(values) => values
+            .iter()
+            .any(|(key, value)| key.contains('\0') || json_has_nul(value)),
+        _ => false,
+    }
+}
+
 pub fn is_valid_device_id(value: &str) -> bool {
     value.len() == 24 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -1037,6 +1084,33 @@ mod tests {
             .iter()
             .any(|reason| reason == "identity-from-binding"));
         assert_eq!(observation.profile, ProfileId::V20);
+    }
+
+    // Misattributed samples persist as another bore's history and alert inputs.
+    #[test]
+    fn shared_reading_requires_an_unambiguous_legacy_cohort() {
+        let mut registry = registry();
+        registry.bind(Binding::new(
+            "shared-reading",
+            crate::profiles::TOPIC_READING,
+            fixtures::DEVICE_B,
+            ProfileId::V20,
+        ));
+        let message = fixtures::v20_reading();
+        let mut delivery = message.delivery();
+        delivery.topic = crate::profiles::TOPIC_READING;
+        let ambiguous = intake(&delivery, &registry, &topics());
+        assert_eq!(reason_of(&ambiguous), QuarantineReason::UnboundSharedTopic);
+        assert_eq!(ambiguous.record.device_id, None);
+
+        // Dedicated paths remain attributable, including identity-free V20.
+        observation_of(&intake(&message.delivery(), &registry, &topics()));
+        // SQL cohort metadata excludes physically verified v1-only units.
+        registry.set_shared_legacy_count(1);
+        assert_eq!(
+            observation_of(&intake(&delivery, &registry, &topics())).device_id,
+            fixtures::DEVICE_B
+        );
     }
 
     #[test]

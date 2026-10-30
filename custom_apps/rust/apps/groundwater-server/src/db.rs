@@ -25,11 +25,11 @@
 //! device adds roughly 175 000 rows a year), so `observations.delivery_id` is
 //! nullable and cleared rather than cascading a delete into the measurements.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use tokio_postgres::{Client, NoTls, Row};
+use tokio_postgres::{Client, GenericClient, NoTls};
 
 use crate::adapter::{
     canonical_device_id, Binding, DuplicateDecision, Enrollment, EnrollmentRegistry, Intake,
@@ -38,6 +38,36 @@ use crate::adapter::{
 use crate::clock::{ClockPolicy, TimeQuality};
 use crate::config::STALE_AFTER_MINUTES;
 use crate::profiles::ProfileId;
+
+/// Reconnect on the next operation without replaying an uncertain write.
+/// Each long-running worker owns its own connection; HTTP readers share this
+/// short-query connection rather than sharing alert replays or MQTT writes.
+pub struct Database {
+    url: String,
+    client: tokio::sync::RwLock<Arc<Client>>,
+}
+
+impl Database {
+    pub fn new(url: String, client: Client) -> Self {
+        Self {
+            url,
+            client: tokio::sync::RwLock::new(Arc::new(client)),
+        }
+    }
+
+    pub async fn get(&self) -> Result<Arc<Client>, String> {
+        let client = self.client.read().await;
+        if !client.is_closed() {
+            return Ok(client.clone());
+        }
+        drop(client);
+        let mut client = self.client.write().await;
+        if client.is_closed() {
+            *client = Arc::new(connect(&self.url).await?);
+        }
+        Ok(client.clone())
+    }
+}
 
 /// Formats a database error with its SQLSTATE and detail.
 ///
@@ -73,9 +103,15 @@ pub async fn connect(database_url: &str) -> Result<Client, String> {
     config.tcp_user_timeout(Duration::from_secs(60));
     config.keepalives(true);
     config.keepalives_idle(Duration::from_secs(30));
-    let (client, connection) = config
-        .connect(NoTls)
+    config.connect_timeout(Duration::from_secs(5));
+    let options = format!(
+        "{} -c statement_timeout=30000",
+        config.get_options().unwrap_or_default()
+    );
+    config.options(&options);
+    let (client, connection) = tokio::time::timeout(Duration::from_secs(5), config.connect(NoTls))
         .await
+        .map_err(|_| "groundwater database connection timed out".to_owned())?
         .map_err(|err| format!("failed to connect to the groundwater database: {err}"))?;
     tokio::spawn(async move {
         if let Err(err) = connection.await {
@@ -203,7 +239,7 @@ pub async fn load_registry(client: &Client) -> Result<EnrollmentRegistry, String
 
     let device_rows = client
         .query(
-            "SELECT device_id, display_name, source_profile, clock_policy, local_offset_min, revoked_at IS NOT NULL
+            "SELECT device_id, display_name, source_profile, clock_policy, local_offset_min, revoked_at IS NOT NULL, clock_change_unverified
              FROM devices
              ORDER BY device_id",
             &[],
@@ -227,9 +263,15 @@ pub async fn load_registry(client: &Client) -> Result<EnrollmentRegistry, String
         let policy_text: String = row.get(3);
         let offset: Option<i32> = row.get(4);
         let revoked: bool = row.get(5);
-        let clock = match (policy_text.as_str(), offset) {
-            ("local-offset", Some(offset_minutes)) => ClockPolicy::LocalOffset { offset_minutes },
-            _ => ClockPolicy::parse(&policy_text).unwrap_or(ClockPolicy::Unknown),
+        let clock = if row.get::<_, bool>(6) {
+            ClockPolicy::Unknown
+        } else {
+            match (policy_text.as_str(), offset) {
+                ("local-offset", Some(offset_minutes)) => {
+                    ClockPolicy::LocalOffset { offset_minutes }
+                }
+                _ => ClockPolicy::parse(&policy_text).unwrap_or(ClockPolicy::Unknown),
+            }
         };
         registry.enroll(Enrollment {
             device_id,
@@ -268,16 +310,64 @@ pub async fn load_registry(client: &Client) -> Result<EnrollmentRegistry, String
         });
     }
 
+    let count = client
+        .query_one("SELECT groundwater_legacy_device_count()", &[])
+        .await
+        .map_err(|e| db_context("legacy topic cohort", e))?
+        .get(0);
+    registry.set_shared_legacy_count(count);
     Ok(registry)
 }
 
 /// Stores a delivery (and its observation, when one was produced).
 ///
-/// Returns the delivery id. The two inserts are intentionally not wrapped in a
-/// transaction: a failed observation insert leaves the delivery visible, which
-/// is the failure direction that preserves evidence rather than hiding it.
-pub async fn record_intake(client: &Client, intake: &Intake) -> Result<i64, String> {
+/// A retry with the same received delivery must survive an uncertain COMMIT
+/// without duplicating its observation or ancillary effects.
+pub fn intake_key(record: &crate::adapter::DeliveryRecord) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update((record.topic.len() as u64).to_be_bytes());
+    hash.update(record.topic.as_bytes());
+    hash.update(record.payload_digest.as_bytes());
+    hash.update(record.received_at.timestamp().to_be_bytes());
+    hash.update(record.received_at.timestamp_subsec_nanos().to_be_bytes());
+    format!("{:x}", hash.finalize())
+}
+
+pub async fn existing_intake<C: GenericClient + Sync>(
+    client: &C,
+    key: &str,
+) -> Result<Option<i64>, String> {
+    client
+        .query_opt("SELECT id FROM deliveries WHERE ingest_key=$1", &[&key])
+        .await
+        .map(|row| row.map(|row| row.get(0)))
+        .map_err(|e| db_context("delivery retry lookup failed", e))
+}
+
+#[cfg(test)]
+pub async fn record_intake(client: &mut Client, intake: &Intake) -> Result<i64, String> {
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| db_context("begin intake", e))?;
+    let id = record_intake_in(&tx, intake).await?;
+    tx.commit()
+        .await
+        .map_err(|e| db_context("commit intake", e))?;
+    Ok(id)
+}
+
+pub async fn record_intake_in<C: GenericClient + Sync>(
+    client: &C,
+    intake: &Intake,
+) -> Result<i64, String> {
     let record = &intake.record;
+    let payload_text = record.payload_text.replace('\0', "\\u0000");
+    let key = intake_key(record);
+    if let Some(id) = existing_intake(client, &key).await? {
+        return Ok(id);
+    }
     let kind = record.kind.as_str();
     let profile = record.profile.map(ProfileId::as_str);
     let state = record.state.as_str();
@@ -296,15 +386,15 @@ pub async fn record_intake(client: &Client, intake: &Intake) -> Result<i64, Stri
             "INSERT INTO deliveries
                 (received_at, topic, kind, qos, payload, payload_size, payload_digest,
                  payload_json, source_profile, binding_key, device_id, claimed_device_id,
-                 state, reason, detail, time_quality, duplicate_outcome, duplicate_reason)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                 state, reason, detail, time_quality, duplicate_outcome, duplicate_reason, ingest_key)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
              RETURNING id",
             &[
                 &record.received_at,
                 &record.topic,
                 &kind,
                 &record.qos,
-                &record.payload_text,
+                &payload_text,
                 &(record.payload_size as i32),
                 &record.payload_digest,
                 &record.payload_json,
@@ -318,6 +408,7 @@ pub async fn record_intake(client: &Client, intake: &Intake) -> Result<i64, Stri
                 &time_quality,
                 &duplicate_outcome,
                 &duplicate_reason,
+                &key,
             ],
         )
         .await
@@ -336,8 +427,8 @@ pub async fn record_intake(client: &Client, intake: &Intake) -> Result<i64, Stri
 }
 
 /// Stores one observation, keeping the interpretation and duplicate decision.
-async fn insert_observation(
-    client: &Client,
+async fn insert_observation<C: GenericClient + Sync>(
+    client: &C,
     delivery_id: i64,
     observation: &Observation,
     duplicate: &DuplicateDecision,
@@ -394,8 +485,8 @@ async fn insert_observation(
 ///
 /// Over-fetches a day so the adapter can apply its own bounded window and
 /// explain an out-of-window match instead of silently ignoring it.
-pub async fn prior_observations(
-    client: &Client,
+pub async fn prior_observations<C: GenericClient + Sync>(
+    client: &C,
     device_id: &str,
     recorded_at: Option<DateTime<Utc>>,
     received_at: DateTime<Utc>,
@@ -426,7 +517,7 @@ pub async fn prior_observations(
 }
 
 /// A measurement as presented to the API and the inspection page.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct ObservationSummary {
     pub recorded_at: Option<DateTime<Utc>>,
     pub received_at: DateTime<Utc>,
@@ -440,28 +531,6 @@ pub struct ObservationSummary {
     pub quality_reasons: Vec<String>,
     pub duplicate_outcome: String,
     pub interpretation_version: String,
-}
-
-/// Column list shared by the latest-observation queries.
-const OBSERVATION_COLUMNS: &str = "recorded_at, received_at, gwl, gwl_text, rssi, battery_v, \
-     solar_v, time_quality, time_reason, quality_reasons, duplicate_outcome, \
-     interpretation_version";
-
-fn observation_summary(row: &Row) -> ObservationSummary {
-    ObservationSummary {
-        recorded_at: row.get(0),
-        received_at: row.get(1),
-        gwl: row.get(2),
-        gwl_text: row.get(3),
-        rssi: row.get(4),
-        battery_v: row.get(5),
-        solar_v: row.get(6),
-        time_quality: row.get(7),
-        time_reason: row.get(8),
-        quality_reasons: row.get(9),
-        duplicate_outcome: row.get(10),
-        interpretation_version: row.get(11),
-    }
 }
 
 /// A device row as presented to the UI.
@@ -491,6 +560,9 @@ pub struct DeviceSummary {
     pub last_ready_at: Option<DateTime<Utc>>,
     pub desired_config: Option<serde_json::Value>,
     pub applied_config: Option<serde_json::Value>,
+    pub project_config: Option<serde_json::Value>,
+    pub clock_change_unverified: bool,
+    pub capabilities: serde_json::Value,
     pub open_alert_count: i64,
 }
 
@@ -505,47 +577,41 @@ impl DeviceSummary {
     }
 }
 
-/// Lists every enrolled device with counts and both "latest" views.
+/// SQL scopes the work before loading measurements. A device page never
+/// computes counters or latest rows for another device in the fleet.
+#[cfg(test)]
 pub async fn list_devices(client: &Client) -> Result<Vec<DeviceSummary>, String> {
-    let rows = client
-        .query(
-            "SELECT device_id, display_name, source_profile, clock_policy, revoked_at IS NOT NULL,
-                min_limit,max_limit,location_id,sensor_id,local_offset_min,last_ready_at,desired_config,applied_config,
-                (SELECT count(*) FROM alerts a WHERE a.device_id=devices.device_id AND a.state='open' AND NOT a.superseded),presence_status,last_seen
-             FROM devices
-             ORDER BY device_id",
-            &[],
-        )
+    let ids = client
+        .query("SELECT device_id FROM devices", &[])
         .await
-        .map_err(|err| db_context("device listing failed", err))?;
+        .map_err(|e| db_context("device ids", e))?
+        .iter()
+        .map(|row| row.get(0))
+        .collect::<Vec<String>>();
+    scoped_devices(client, &ids).await
+}
 
+pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<DeviceSummary>, String> {
+    let columns = "recorded_at,received_at,gwl,gwl_text,rssi,battery_v,solar_v,time_quality,time_reason,quality_reasons,duplicate_outcome,interpretation_version";
+    let sql = format!(
+        "SELECT d.*,d.revoked_at IS NOT NULL AS revoked,
+            (SELECT count(*) FROM alerts a WHERE a.device_id=d.device_id AND a.state='open' AND NOT a.superseded) AS open_alert_count,
+            to_jsonb(received) AS latest_received,to_jsonb(plausible) AS latest_plausible
+         FROM devices d
+         LEFT JOIN LATERAL (SELECT {columns} FROM observations WHERE id=d.latest_received_id) received ON true
+         LEFT JOIN LATERAL (SELECT {columns} FROM observations WHERE id=d.latest_plausible_id) plausible ON true
+         WHERE d.device_id=ANY($1) ORDER BY d.device_id");
+    let rows = client
+        .query(&sql, &[&ids])
+        .await
+        .map_err(|e| db_context("device summaries", e))?;
     let mut devices = Vec::with_capacity(rows.len());
     for row in rows {
-        let device_id: String = row.get(0);
-        let display_name: String = row.get(1);
-        let profile: String = row.get(2);
-        let clock_policy: String = row.get(3);
-        let revoked: bool = row.get(4);
-
-        let counts = client
-            .query_one(
-                "SELECT
-                    (SELECT count(*) FROM observations WHERE device_id = $1),
-                    (SELECT count(*) FROM observations WHERE device_id = $1 AND duplicate_outcome = 'conflict'),
-                    (SELECT max(received_at) FROM observations WHERE device_id = $1)",
-                &[&device_id],
-            )
-            .await
-            .map_err(|err| db_context("device counters failed", err))?;
-
-        let latest_received = latest_observation(client, &device_id, Latest::Received).await?;
-        let latest_plausible =
-            latest_observation(client, &device_id, Latest::PlausibleEvent).await?;
-        let last_received_at: Option<DateTime<Utc>> = counts.get(2);
-
+        let revoked: bool = row.get("revoked");
+        let last_received_at: Option<DateTime<Utc>> = row.get("last_seen");
         let (mut status, mut status_reason) = availability(last_received_at, revoked);
-        let presence: Option<String> = row.get(14);
-        let ready: Option<DateTime<Utc>> = row.get(10);
+        let presence: Option<String> = row.get("presence_status");
+        let ready: Option<DateTime<Utc>> = row.get("last_ready_at");
         if !revoked {
             if crate::platform::awake(Utc::now(), ready, presence.as_deref().unwrap_or("")) {
                 status = "awake".into();
@@ -554,75 +620,56 @@ pub async fn list_devices(client: &Client) -> Result<Vec<DeviceSummary>, String>
                 status = "asleep".into();
                 status_reason = "sleep received or Ready window expired".into();
             }
-            let seen: Option<DateTime<Utc>> = row.get(15);
-            if seen.is_some_and(|t| Utc::now() - t > chrono::Duration::minutes(STALE_AFTER_MINUTES))
+            if last_received_at
+                .is_some_and(|t| Utc::now() - t > chrono::Duration::minutes(STALE_AFTER_MINUTES))
             {
                 status = "stale".into();
                 status_reason = "no attributed traffic within stale threshold".into();
             }
         }
+        let summary = |column: &str| -> Result<Option<ObservationSummary>, String> {
+            row.get::<_, Option<serde_json::Value>>(column)
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| format!("observation summary: {e}"))
+        };
         devices.push(DeviceSummary {
-            device_id,
-            display_name,
-            profile,
-            clock_policy,
+            device_id: row.get("device_id"),
+            display_name: row.get("display_name"),
+            profile: row.get("source_profile"),
+            clock_policy: row.get("clock_policy"),
             revoked,
             status,
             status_reason,
             last_received_at,
-            observation_count: counts.get(0),
-            conflict_count: counts.get(1),
-            latest_received,
-            latest_plausible,
-            min_limit: row.get(5),
-            max_limit: row.get(6),
-            location_id: row.get(7),
-            sensor_id: row.get(8),
-            local_offset_min: row.get(9),
+            observation_count: row.get("observation_count"),
+            conflict_count: row.get("conflict_count"),
+            latest_received: summary("latest_received")?,
+            latest_plausible: summary("latest_plausible")?,
+            min_limit: row.get("min_limit"),
+            max_limit: row.get("max_limit"),
+            location_id: row.get("location_id"),
+            sensor_id: row.get("sensor_id"),
+            local_offset_min: row.get("local_offset_min"),
             last_ready_at: ready,
-            desired_config: row.get(11),
-            applied_config: row.get(12),
-            open_alert_count: row.get(13),
+            desired_config: row.get("desired_config"),
+            applied_config: row.get("applied_config"),
+            project_config: row.get("project_config"),
+            clock_change_unverified: row.get("clock_change_unverified"),
+            capabilities: crate::commands::capabilities(
+                row.get("source_profile"),
+                row.get("clock_policy"),
+                row.get("local_offset_min"),
+                row.get("clock_change_unverified"),
+            ),
+            open_alert_count: row.get("open_alert_count"),
         });
     }
     Ok(devices)
 }
 
-/// Which "latest" view to read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Latest {
-    /// Newest receipt, regardless of event time.
-    Received,
-    /// Newest plausible event time.
-    PlausibleEvent,
-}
-
-async fn latest_observation(
-    client: &Client,
-    device_id: &str,
-    which: Latest,
-) -> Result<Option<ObservationSummary>, String> {
-    let (filter, order) = match which {
-        Latest::Received => ("TRUE", "received_at DESC, id DESC"),
-        Latest::PlausibleEvent => ("time_quality = 'plausible'", "recorded_at DESC, id DESC"),
-    };
-    let sql = format!(
-        "SELECT {OBSERVATION_COLUMNS} FROM observations
-         WHERE device_id = $1 AND {filter}
-         ORDER BY {order}
-         LIMIT 1"
-    );
-    let rows = client
-        .query(&sql, &[&device_id])
-        .await
-        .map_err(|err| db_context("latest observation query failed", err))?;
-    Ok(rows.first().map(observation_summary))
-}
-
-/// Availability derived from reading arrivals.
-///
-/// Slice 1 does not attribute `device-status`, so the platform cannot honestly
-/// claim "awake"/"asleep"; it can only say whether measurements are arriving.
+/// Traffic recency without an explicit Ready/sleep status. The caller overlays
+/// the separately attributed wake state when one is available.
 fn availability(last_received_at: Option<DateTime<Utc>>, revoked: bool) -> (String, String) {
     if revoked {
         return (
@@ -633,22 +680,19 @@ fn availability(last_received_at: Option<DateTime<Utc>>, revoked: bool) -> (Stri
     let Some(last) = last_received_at else {
         return (
             "never".to_string(),
-            "no accepted observation yet".to_string(),
+            "no accepted observation or other attributed traffic yet".to_string(),
         );
     };
     let silent = (Utc::now() - last).num_minutes();
     if silent > STALE_AFTER_MINUTES {
         (
             "stale".to_string(),
-            format!(
-                "no accepted reading for {silent} min (threshold {STALE_AFTER_MINUTES} min); wake state needs device-status, which is not attributed in this slice"
-            ),
+            format!("no attributed traffic for {silent} min (threshold {STALE_AFTER_MINUTES} min)"),
         )
     } else {
         (
             "receiving".to_string(),
-            "readings arriving; wake state needs device-status, which is not attributed in this slice"
-                .to_string(),
+            "attributed traffic arriving; wake state needs device-status".to_string(),
         )
     }
 }
@@ -793,7 +837,7 @@ pub async fn device_series(
                 "SELECT recorded_at, gwl, gwl_text, battery_v, rssi, 1::BIGINT AS sample_count,
                         duplicate_outcome = 'conflict' AS conflict
                  FROM observations
-                 WHERE device_id = $1 AND kind = 'water' AND recorded_at IS NOT NULL
+                 WHERE device_id = $1 AND kind = 'water' AND time_quality = 'plausible' AND recorded_at IS NOT NULL
                    AND recorded_at >= $2 AND recorded_at <= $3
                  ORDER BY recorded_at DESC
                  LIMIT $4",
@@ -813,7 +857,7 @@ pub async fn device_series(
                         count(*)::BIGINT AS sample_count,
                         bool_or(duplicate_outcome = 'conflict') AS conflict
                  FROM observations
-                 WHERE device_id = $1 AND kind = 'water' AND recorded_at IS NOT NULL
+                 WHERE device_id = $1 AND kind = 'water' AND time_quality = 'plausible' AND recorded_at IS NOT NULL
                    AND recorded_at >= $2 AND recorded_at <= $3
                  GROUP BY bucket
                  ORDER BY bucket DESC
@@ -880,6 +924,107 @@ pub async fn prune_deliveries(client: &Client, retention_days: i64) -> Result<u6
 mod tests {
     use super::*;
 
+    // A partial intake or an acknowledgment before COMMIT permanently loses
+    // field measurements. This concrete data-loss risk warrants coverage.
+    #[tokio::test]
+    #[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+    async fn reconnect_and_atomic_intake_preserve_measurements() {
+        let url = std::env::var("GROUNDWATER_TEST_DATABASE_URL").unwrap();
+        let mut client = connect(&url).await.unwrap();
+        migrate(&client).await.unwrap();
+        client
+            .batch_execute(
+                "TRUNCATE devices,device_bindings,observations,deliveries RESTART IDENTITY CASCADE",
+            )
+            .await
+            .unwrap();
+        let device = "00000000000000000000000A";
+        client
+            .execute(
+                "INSERT INTO devices(device_id,source_profile,clock_policy) VALUES($1,'V21','utc')",
+                &[&device],
+            )
+            .await
+            .unwrap();
+        client.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES('atomic',$1,'bore/atomic/gwl-string','V21')", &[&device]).await.unwrap();
+        let registry = load_registry(&client).await.unwrap();
+        let payload = crate::fixtures::v21_payload_for(device);
+        let intake = crate::adapter::intake(
+            &crate::adapter::Delivery {
+                topic: "bore/atomic/gwl-string",
+                payload: payload.as_bytes(),
+                qos: 1,
+                received_at: Utc::now(),
+            },
+            &registry,
+            &crate::topics::TopicMap::default(),
+        );
+        client
+            .batch_execute(
+                "ALTER TABLE observations ADD CONSTRAINT fixture_reject_intake CHECK(gwl<0)",
+            )
+            .await
+            .unwrap();
+        assert!(record_intake(&mut client, &intake).await.is_err());
+        assert_eq!(
+            client
+                .query_one("SELECT count(*) FROM deliveries", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
+        client
+            .batch_execute("ALTER TABLE observations DROP CONSTRAINT fixture_reject_intake")
+            .await
+            .unwrap();
+        let id = record_intake(&mut client, &intake).await.unwrap();
+        assert_eq!(record_intake(&mut client, &intake).await.unwrap(), id);
+        assert_eq!(
+            client
+                .query_one("SELECT count(*) FROM observations", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            1
+        );
+
+        let owned = connect(&url).await.unwrap();
+        let pid: i32 = owned
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let managed = Database::new(url, owned);
+        client
+            .execute("SELECT pg_terminate_backend($1)", &[&pid])
+            .await
+            .unwrap();
+        for _ in 0..50 {
+            if managed.client.read().await.is_closed() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let recovered = managed.get().await.unwrap();
+        assert_ne!(
+            recovered
+                .query_one("SELECT pg_backend_pid()", &[])
+                .await
+                .unwrap()
+                .get::<_, i32>(0),
+            pid
+        );
+        assert_eq!(
+            recovered
+                .query_one("SELECT count(*) FROM observations", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            1
+        );
+    }
+
     #[test]
     fn availability_never_claims_wake_state() {
         let now = Utc::now();
@@ -912,7 +1057,7 @@ mod tests {
     async fn schema_and_round_trip_against_postgres() {
         let url = std::env::var("GROUNDWATER_TEST_DATABASE_URL")
             .expect("GROUNDWATER_TEST_DATABASE_URL must be set for this test");
-        let client = connect(&url).await.expect("connect");
+        let mut client = connect(&url).await.expect("connect");
         migrate(&client).await.expect("migrate");
         // This test owns a throwaway database; reset it so a rerun starts clean.
         client
@@ -969,7 +1114,7 @@ mod tests {
                 ..
             }
         ));
-        record_intake(&client, &intake).await.expect("record");
+        record_intake(&mut client, &intake).await.expect("record");
 
         let (recorded_at, payload_digest) = match &intake.outcome {
             IntakeOutcome::Accepted {

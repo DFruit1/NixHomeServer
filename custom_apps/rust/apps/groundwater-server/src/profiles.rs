@@ -15,11 +15,13 @@
 //! ingress binding* an operator established, never something the payload can
 //! self-declare.
 //!
-//! Topic names are compile-time constants in the firmware and are reproduced
+//! Legacy topic names are compile-time constants and are reproduced
 //! here exactly as spelled in the source — including the
 //! `…/remaingsdstorage` storage-topic typo. A cosmetic rename on our side
 //! would silently stop classifying real traffic, so the typo is load-bearing
 //! and asserted by test.
+//! Updated V2.1 firmware uses gwl/v1/<DeviceID>/...; topics.rs handles that
+//! versioned namespace while these constants preserve older deployments.
 
 /// Topic that carries the telemetry JSON payload (`main.c:559`).
 pub const TOPIC_READING: &str = "azman1/feeds/gwl-string";

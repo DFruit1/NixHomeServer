@@ -96,9 +96,13 @@ be chosen by the operator; the 1000 m parser bound is a sanity limit, not an
 alarm threshold. RSSI is the firmware's 0–100 scale, battery is volts, and solar
 is an integer-truncated coarse voltage, not a calibrated energy measurement.
 
-History uses device event time. Last seen uses server receipt time. Days of
+History uses plausible device event time. Last seen uses the latest attributed
+traffic's server receipt time, including Ready, sleep and acknowledgments. Days of
 backlog are legitimate; reset, invalid, ambiguous and future clock values stay
 visible as quality evidence rather than being silently interpreted as live data.
+Recent-history ranges follow the current time on refresh/live events; applying
+explicit From/To values fixes the range. Operators can open **Raw deliveries**
+from the header to inspect quarantines without a device attribution.
 
 ### Configuration and commands
 
@@ -106,6 +110,31 @@ Project settings require all eleven firmware fields. The server validates
 compact JSON, byte length, key order, quoted strings, firmware formats and
 substring collisions before accepting a queue entry. Check the preview before
 queuing; a valid payload is not evidence that its calibration is correct.
+
+The pinned firmware implements project settings, self-test through `requesttesta`,
+and Reboot on V2.x. Its nine incremental configuration handlers and five other
+danger handlers are TODO/printf stubs, even though they emit acknowledgments.
+The API rejects those actions and the scheduler skips historical unsupported
+queued/sent commands without deleting their audit records or blocking supported
+work. Operators can cancel those entries. `capabilities` in each device response
+drives the available controls.
+
+Full settings must preserve the commissioned `ltost` offset. This firmware's
+zoneless SD backlog carries no clock-epoch marker, and changing `ltost` does not
+immediately refresh the RTC. A PUBACK or UI confirmation cannot establish which
+offset produced a later-arriving backlog sample. Offset changes are therefore
+rejected at both queueing and dispatch. An unknown clock must be commissioned
+before sending settings. Earlier attempted offset changes set
+`clock_change_unverified`; their new zoneless readings remain ambiguous while
+explicitly zoned payloads retain their own timezone evidence. Existing observation
+interpretations are never rewritten.
+
+Re-commissioning requires physical evidence: retain and drain/archive the old
+backlog under its original clock policy, establish a new sampling boundary, and
+verify the RTC after a GPS refresh before changing the enrollment. Record the
+last inspected command in `clock_reviewed_through_command_id` when clearing
+`clock_change_unverified`, so a restart does not mistake already reviewed history
+for a new uncertain transition. Clearing a flag alone supplies no clock evidence.
 
 The scheduler waits for an attributed `Ready`, publishes QoS 1 without retain,
 and waits for the broker's PUBACK before recording a command as `sent`. Broker
@@ -115,20 +144,42 @@ receive downlink. Commands persist across restarts and remain pending for a
 later wake when the firmware has not acknowledged them. Cancellation stops
 future attempts; it cannot undo a delivery already sent.
 
-Incremental configuration matches the `cfg/desired/applied` echo; self-tests
-match attributed result traffic; danger commands match the firmware's danger
-acknowledgment. `Reboot` has no firmware acknowledgment. Full project settings
+Historical incremental configuration matches the `cfg/desired/applied` echo;
+self-tests match attributed result traffic. Echoes prove receipt, not execution
+of a TODO handler. `Reboot` has no firmware acknowledgment. Full project settings
 have no acknowledgment either. Both are single-send operations after broker
 acceptance: `sent` never claims that the device applied them. Verify the
-device's observed intervals and clock after a settings change. Destructive
-device actions require typing `DANGER` in the console.
+device's observed intervals and clock after a settings change. Settings and
+Reboot require typing `DANGER` in the console. The configuration record separates
+the last broker-accepted project payload from historical requested toggles and
+received toggle echoes; these different protocols are never compared as one state.
 
 ## Health, retention and recovery
 
-Use `/healthz`, the authenticated `/api/status` and
+Use `/healthz` (503 when the database is unavailable), the authenticated `/api/status` and
 `journalctl -u groundwater-server` for service and MQTT diagnostics. The event
 stream sends a 15-second heartbeat; browsers reconnect and fetch current state
-after a `resync` event. Polling covers interrupted event connections.
+after a `resync` event. Polling covers interrupted event connections. Event
+coalescing lets active requests finish and retains one pending refresh during
+continuous backlog traffic.
+
+HTTP, ingest, alert replay and publisher work use separate database connections.
+Closed connections reconnect; non-idempotent HTTP writes are not blindly retried.
+Raw deliveries, observations and ancillary state commit in one transaction before
+MQTT acknowledgment, with an ingest key protecting uncertain-commit retries.
+NUL-containing payloads are quarantined with escaped text rather than blocking
+subsequent traffic. Only readings use the durable `-telemetry` MQTT session.
+Readiness and acknowledgments use a clean live control session. Reconnects and
+control-loop database stalls invalidate old wake windows and discard buffered
+control packets; delayed Ready messages cannot authorize downlink after recovery.
+Workers retry initial database connection failures as well as later outages.
+
+Device counters/latest pointers are maintained on observation insertion and
+initialized once for existing databases. Device reads scope authorized IDs in SQL.
+Alert evaluation checkpoints append-only history, replaying earlier data only for
+late/conflicting instants or changed thresholds. Observations are insert-only;
+SQL maintenance that changes/deletes them must rebuild their derived summaries
+and alert checkpoints before serving reads. Truncation resets those summaries.
 
 PostgreSQL is plain PostgreSQL; no TimescaleDB extension or preload setting is
 required. `observations` preserves interpreted measurements and provenance;

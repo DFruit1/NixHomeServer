@@ -112,6 +112,7 @@ Library search is deliberately split. The library toolbar filters the currently 
 |---|---|---|
 | Fleet table and hash-routed device workspace, app-local system-font tokens derived from mail-archive-ui, native light/dark palette, focusable table scroll regions | groundwater-server | Practical fleet comparison and history take priority. Configuration, commands, raw deliveries and audit use separate views. Forms start empty, dangerous submissions require DANGER, and viewers see read-only state. Default Qwik segment chunking stays enabled. |
 | SVG history exposes threshold bands, alert-opening markers and gaps, with an accessible measurement table and CSV observations export | groundwater-server | Device time and receipt time remain distinct; secondary battery/RSSI history shares the time range without redundant metric panels. Alerts are read-only and resolve automatically. |
+| Rolling recent-history ranges, a global operator raw-delivery view, and firmware capability controls | groundwater-server | Explicit ranges stay fixed. Unattributed quarantine evidence is reachable without a device. Full project settings are separate from historical toggle requests/echoes. Unimplemented actions and unprovable UTC offset changes cannot be queued; existing audit entries remain visible. |
 
 ### Media playback continuity
 

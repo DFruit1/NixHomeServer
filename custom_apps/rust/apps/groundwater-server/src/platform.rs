@@ -48,6 +48,7 @@ pub struct Command {
     pub firmware_ack_expected: bool,
     pub cancelled_at: Option<DateTime<Utc>>,
     pub cancelled_by: Option<String>,
+    pub supported: Option<bool>,
 }
 fn command(row: Row) -> Command {
     Command {
@@ -66,6 +67,7 @@ fn command(row: Row) -> Command {
         firmware_ack_expected: row.get("firmware_ack_expected"),
         cancelled_at: row.get("cancelled_at"),
         cancelled_by: row.get("cancelled_by"),
+        supported: row.try_get("supported").ok(),
     }
 }
 pub async fn queue(
@@ -76,14 +78,24 @@ pub async fn queue(
     wire: &str,
     username: &str,
 ) -> Result<Command, String> {
-    client.query_one("INSERT INTO commands(device_id,kind,payload,wire_payload,requested_by) SELECT device_id,$2,$3,$4,$5 FROM devices WHERE device_id=$1 AND revoked_at IS NULL RETURNING *", &[&device,&kind,&payload,&wire,&username]).await.map(command).map_err(|e|format!("queue: {e:?}"))
+    client.query_one("WITH queued AS (INSERT INTO commands(device_id,kind,payload,wire_payload,requested_by) SELECT device_id,$2,$3,$4,$5 FROM devices WHERE device_id=$1 AND revoked_at IS NULL RETURNING *), desired AS (UPDATE devices d SET desired_config=COALESCE(d.desired_config,'{}'::jsonb)||q.payload FROM queued q WHERE d.device_id=q.device_id AND q.kind='cfg') SELECT * FROM queued", &[&device,&kind,&payload,&wire,&username]).await.map(command).map_err(|e|format!("queue: {e:?}"))
 }
 pub async fn commands(
     client: &Client,
     ids: &[String],
     device: Option<&str>,
 ) -> Result<Vec<Command>, String> {
-    client.query("SELECT * FROM commands WHERE device_id=ANY($1) AND ($2::text IS NULL OR device_id=$2) ORDER BY id DESC LIMIT 500", &[&ids,&device]).await.map(|r|r.into_iter().map(command).collect()).map_err(|e|e.to_string())
+    client.query("SELECT c.*,groundwater_command_supported(d.source_profile,c.kind,c.payload,d.clock_policy,d.local_offset_min,d.clock_change_unverified) IS TRUE AS supported FROM commands c JOIN devices d ON d.device_id=c.device_id WHERE c.device_id=ANY($1) AND ($2::text IS NULL OR c.device_id=$2) ORDER BY c.id DESC LIMIT 500", &[&ids,&device]).await.map(|r|r.into_iter().map(command).collect()).map_err(|e|e.to_string())
+}
+
+pub async fn command_supported(
+    client: &Client,
+    device: &str,
+    kind: &str,
+    payload: &Value,
+) -> Result<bool, String> {
+    client.query_one("SELECT groundwater_command_supported(source_profile,$2,$3,clock_policy,local_offset_min,clock_change_unverified) IS TRUE FROM devices WHERE device_id=$1", &[&device,&kind,&payload])
+        .await.map(|row| row.get(0)).map_err(|e| e.to_string())
 }
 pub async fn cancel(
     client: &Client,

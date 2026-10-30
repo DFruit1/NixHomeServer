@@ -34,6 +34,14 @@ export interface Device {
   last_ready_at: string | null;
   desired_config: Record<string, string> | null;
   applied_config: Record<string, string> | null;
+  project_config: Record<string, string> | null;
+  clock_change_unverified: boolean;
+  capabilities: {
+    test: boolean;
+    project_settings: boolean;
+    cfg_keys: string[];
+    danger_commands: string[];
+  };
   open_alert_count: number;
 }
 export interface SeriesPoint {
@@ -73,6 +81,8 @@ export interface Command {
   sent_at: string | null;
   acked_at: string | null;
   ack_payload: unknown;
+  firmware_ack_expected: boolean;
+  supported?: boolean;
 }
 export interface Delivery {
   received_at: string;

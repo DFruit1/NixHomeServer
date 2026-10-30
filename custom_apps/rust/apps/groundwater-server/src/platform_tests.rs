@@ -22,6 +22,478 @@ use tower::ServiceExt;
 const A: &str = "8F3A21C04B9E77A1D25C01FE";
 const B: &str = "000000000000000000000002";
 
+// A namespace mismatch must never reset another physical logger.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn versioned_topics_isolate_device_commands() {
+    let mut client = db::connect(&std::env::var("GROUNDWATER_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    db::migrate(&client).await.unwrap();
+    client
+        .batch_execute(
+            "TRUNCATE devices,device_bindings,observations,deliveries RESTART IDENTITY CASCADE",
+        )
+        .await
+        .unwrap();
+    for device in [A, B] {
+        client
+            .execute(
+                "INSERT INTO devices(device_id,source_profile,clock_policy) VALUES($1,'V21','utc')",
+                &[&device],
+            )
+            .await
+            .unwrap();
+        for channel in ["status", "cmd/danger"] {
+            let topic = format!("gwl/v1/{device}/{channel}");
+            client.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES($1,$2,$1,'2.1')", &[&topic,&device]).await.unwrap();
+        }
+        platform::queue(
+            &client,
+            device,
+            "danger",
+            json!({"Reboot":"1"}),
+            "{\"Reboot\":\"1\"}",
+            "operator",
+        )
+        .await
+        .unwrap();
+    }
+    let registry = Arc::new(tokio::sync::RwLock::new(
+        db::load_registry(&client).await.unwrap(),
+    ));
+    let bus = EventBus::new();
+    let stats = Arc::new(tokio::sync::Mutex::new(IngestStats::default()));
+    crate::ingest::handle_publish(
+        &format!("gwl/v1/{A}/status"),
+        b"Ready",
+        1,
+        false,
+        Utc::now(),
+        &TopicMap::default(),
+        &mut client,
+        &registry,
+        &bus,
+        &stats,
+    )
+    .await
+    .unwrap();
+    let (mqtt, _events) = rumqttc::AsyncClient::new(
+        rumqttc::MqttOptions::new("topic-safety", "127.0.0.1", 1),
+        10,
+    );
+    let mut publisher = Publisher::default();
+    publisher.connected = true;
+    scheduler::tick(&mut client, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
+    let attempts = client
+        .query(
+            "SELECT device_id,attempts FROM commands ORDER BY device_id",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        attempts
+            .iter()
+            .find(|r| r.get::<_, String>(0) == A)
+            .unwrap()
+            .get::<_, i32>(1),
+        1
+    );
+    assert_eq!(
+        attempts
+            .iter()
+            .find(|r| r.get::<_, String>(0) == B)
+            .unwrap()
+            .get::<_, i32>(1),
+        0
+    );
+    assert_eq!(
+        client
+            .query_one("SELECT topic FROM command_publish_attempts", &[])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        format!("gwl/v1/{A}/cmd/danger")
+    );
+
+    // Profile aliases must not split Rust and SQL cohort decisions.
+    client.execute("UPDATE device_bindings SET source_profile='2.1' WHERE device_id=$1 AND topic LIKE '%/status'", &[&A]).await.unwrap();
+    // Mixed migration: v1-only A must not suppress the sole legacy unit B.
+    client.execute("UPDATE device_bindings SET topic=CASE WHEN topic LIKE '%/status' THEN 'azman1/feeds/device-status' ELSE 'cmd/danger' END WHERE device_id=$1", &[&B]).await.unwrap();
+    client
+        .execute(
+            "UPDATE commands SET state='cancelled' WHERE device_id=$1",
+            &[&A],
+        )
+        .await
+        .unwrap();
+    let c = "000000000000000000000003";
+    client
+        .execute(
+            "INSERT INTO devices(device_id,source_profile,clock_policy) VALUES($1,'V21','utc')",
+            &[&c],
+        )
+        .await
+        .unwrap();
+    *registry.write().await = db::load_registry(&client).await.unwrap();
+    crate::ingest::handle_publish(
+        "azman1/feeds/device-status",
+        b"Ready",
+        1,
+        false,
+        Utc::now(),
+        &TopicMap::default(),
+        &mut client,
+        &registry,
+        &bus,
+        &stats,
+    )
+    .await
+    .unwrap();
+    assert!(client
+        .query_one(
+            "SELECT last_ready_at FROM devices WHERE device_id=$1",
+            &[&B]
+        )
+        .await
+        .unwrap()
+        .get::<_, Option<chrono::DateTime<Utc>>>(0)
+        .is_none());
+    client
+        .execute(
+            "UPDATE devices SET revoked_at=now() WHERE device_id=$1",
+            &[&c],
+        )
+        .await
+        .unwrap();
+    *registry.write().await = db::load_registry(&client).await.unwrap();
+    crate::ingest::handle_publish(
+        "azman1/feeds/device-status",
+        b"Ready",
+        1,
+        false,
+        Utc::now(),
+        &TopicMap::default(),
+        &mut client,
+        &registry,
+        &bus,
+        &stats,
+    )
+    .await
+    .unwrap();
+    // Invalid profile evidence remains conservative even though the typed
+    // registry deliberately skips that binding.
+    client.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES('invalid-legacy',$1,'legacy/reading','invalid')", &[&A]).await.unwrap();
+    let contaminated = db::load_registry(&client).await.unwrap();
+    assert!(scheduler::attributed(&contaminated, "azman1/feeds/device-status").is_none());
+    assert_eq!(
+        client
+            .query_one("SELECT groundwater_legacy_device_count()", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        2
+    );
+    client
+        .execute(
+            "DELETE FROM device_bindings WHERE binding_key='invalid-legacy'",
+            &[],
+        )
+        .await
+        .unwrap();
+    *registry.write().await = db::load_registry(&client).await.unwrap();
+    publisher.disconnected();
+    publisher.reconcile(&mut client, &bus).await.unwrap();
+    publisher.connected = true;
+    scheduler::tick(&mut client, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .query_one("SELECT attempts FROM commands WHERE device_id=$1", &[&B])
+            .await
+            .unwrap()
+            .get::<_, i32>(0),
+        1
+    );
+    assert_eq!(client.query_one("SELECT a.topic FROM command_publish_attempts a JOIN commands c ON c.id=a.command_id WHERE c.device_id=$1", &[&B]).await.unwrap().get::<_,String>(0),"cmd/danger");
+}
+
+// Clock-changing flash writes and stale wake authorization can issue commands
+// against the wrong device state or permanently misinterpret field samples.
+// These hardware/data-preservation risks justify focused safety coverage.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn firmware_clock_and_atomic_presence_safety() {
+    let url = std::env::var("GROUNDWATER_TEST_DATABASE_URL").unwrap();
+    let mut db = db::connect(&url).await.unwrap();
+    db::migrate(&db).await.unwrap();
+    db.batch_execute(
+        "TRUNCATE devices,device_bindings,observations,deliveries RESTART IDENTITY CASCADE",
+    )
+    .await
+    .unwrap();
+    db.execute("INSERT INTO devices(device_id,source_profile,clock_policy,presence_status,last_ready_at) VALUES($1,'V21','utc','awake',now())", &[&A]).await.unwrap();
+    for topic in [
+        "requesttesta",
+        "cfg/desired",
+        "cmd/danger",
+        "azman1/feeds/device-status",
+        "azman1/feeds/project-settings-slash-configuration",
+    ] {
+        db.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES($1,$2,$1,'V21')", &[&topic,&A]).await.unwrap();
+    }
+    assert!(
+        !platform::command_supported(&db, A, "cfg", &json!({"Get_Status":"1"}))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !platform::command_supported(&db, A, "danger", &json!({"Wipe_sd":"1"}))
+            .await
+            .unwrap()
+    );
+    assert!(
+        platform::command_supported(&db, A, "danger", &json!({"Reboot":"1"}))
+            .await
+            .unwrap()
+    );
+    let config = json!({"NA":"3","l":"A1","id":"B1","lf":"0:3","sf":"0:9","fac":"1.00,1.00,0.00,0.00","fst":"2026-10-01T00:00:00","mG":"0","MG":"9","S":"0101","ltost":"5:0"});
+    assert!(
+        !platform::command_supported(&db, A, "project-settings", &config)
+            .await
+            .unwrap()
+    );
+    let old = platform::queue(&db, A, "cfg", json!({"Get_Status":"1"}), "{}", "operator")
+        .await
+        .unwrap();
+    db.execute("UPDATE commands SET state='sent',sent_at=now(),broker_acked_at=now(),last_ready_at=now() WHERE id=$1", &[&old.id]).await.unwrap();
+    let offset_change = platform::queue(
+        &db,
+        A,
+        "project-settings",
+        config.clone(),
+        &crate::commands::project_payload(&config).unwrap(),
+        "operator",
+    )
+    .await
+    .unwrap();
+    let supported = platform::queue(&db, A, "test", json!({}), "test", "operator")
+        .await
+        .unwrap();
+    let (mqtt, _events) = rumqttc::AsyncClient::new(
+        rumqttc::MqttOptions::new("capability-safety", "127.0.0.1", 1),
+        10,
+    );
+    let bus = EventBus::new();
+    let mut publisher = Publisher::default();
+    publisher.connected = true;
+    scheduler::tick(&mut db, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
+    let commands = platform::commands(&db, &[A.into()], None).await.unwrap();
+    assert_eq!(
+        commands
+            .iter()
+            .find(|c| c.id == supported.id)
+            .unwrap()
+            .attempts,
+        1
+    );
+    for id in [old.id, offset_change.id] {
+        let c = commands.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(c.attempts, 0);
+        assert_eq!(c.supported, Some(false));
+    }
+    scheduler::invalidate_ready(&db).await.unwrap();
+    assert!(db
+        .query_one(
+            "SELECT last_ready_at FROM devices WHERE device_id=$1",
+            &[&A]
+        )
+        .await
+        .unwrap()
+        .get::<_, Option<chrono::DateTime<Utc>>>(0)
+        .is_none());
+
+    let registry = Arc::new(tokio::sync::RwLock::new(
+        db::load_registry(&db).await.unwrap(),
+    ));
+    let stats = Arc::new(tokio::sync::Mutex::new(IngestStats::default()));
+    db.batch_execute("ALTER TABLE deliveries ADD CONSTRAINT fixture_reject_presence CHECK(kind<>'device-status')").await.unwrap();
+    let now = Utc::now();
+    assert!(crate::ingest::handle_publish(
+        "azman1/feeds/device-status",
+        b"Ready",
+        1,
+        false,
+        now,
+        &TopicMap::default(),
+        &mut db,
+        &registry,
+        &bus,
+        &stats
+    )
+    .await
+    .is_err());
+    assert!(db
+        .query_one(
+            "SELECT last_ready_at FROM devices WHERE device_id=$1",
+            &[&A]
+        )
+        .await
+        .unwrap()
+        .get::<_, Option<chrono::DateTime<Utc>>>(0)
+        .is_none());
+    db.batch_execute("ALTER TABLE deliveries DROP CONSTRAINT fixture_reject_presence")
+        .await
+        .unwrap();
+    crate::ingest::handle_publish(
+        "azman1/feeds/device-status",
+        b"Ready",
+        1,
+        false,
+        now,
+        &TopicMap::default(),
+        &mut db,
+        &registry,
+        &bus,
+        &stats,
+    )
+    .await
+    .unwrap();
+    crate::ingest::handle_publish(
+        "azman1/feeds/device-status",
+        b"Ready",
+        1,
+        false,
+        now,
+        &TopicMap::default(),
+        &mut db,
+        &registry,
+        &bus,
+        &stats,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        db.query_one("SELECT count(*) FROM deliveries", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
+    for payload in [b"bad\0text".as_slice(), br#"{"x":"\u0000"}"#] {
+        crate::ingest::handle_publish(
+            "unknown/topic",
+            payload,
+            1,
+            false,
+            Utc::now(),
+            &TopicMap::default(),
+            &mut db,
+            &registry,
+            &bus,
+            &stats,
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        db.query_one(
+            "SELECT count(*) FROM deliveries WHERE state='quarantined'",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        2
+    );
+
+    let state = api::AppState {
+        settings: Arc::new(crate::config::Settings {
+            database_url: url.clone(),
+            address: "127.0.0.1".into(),
+            port: 0,
+            topics: TopicMap::default(),
+            mqtt: None,
+            retention_days: 90,
+        }),
+        db: Arc::new(db::Database::new(
+            url.clone(),
+            db::connect(&url).await.unwrap(),
+        )),
+        bus,
+        stats,
+    };
+    let app = api::router(state);
+    let command_path = format!("/api/devices/{A}/commands");
+    for body in [
+        json!({"kind":"cfg","payload":{"Get_Status":"1"}}),
+        json!({"kind":"danger","payload":"Wipe_sd","confirm":"DANGER"}),
+    ] {
+        assert_eq!(
+            request(
+                app.clone(),
+                "POST",
+                &command_path,
+                "operator",
+                &body.to_string()
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let config_path = format!("/api/devices/{A}/config");
+    assert_eq!(
+        request(
+            app.clone(),
+            "POST",
+            &config_path,
+            "operator",
+            &json!({"config":config}).to_string()
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let mut matching = config.clone();
+    matching["ltost"] = json!("0:0");
+    assert_eq!(
+        request(
+            app,
+            "POST",
+            &config_path,
+            "operator",
+            &json!({"config":matching}).to_string()
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    // A historical uncertain offset attempt remains unknown across restart.
+    db.execute(
+        "UPDATE commands SET attempts=1 WHERE id=$1",
+        &[&offset_change.id],
+    )
+    .await
+    .unwrap();
+    db::migrate(&db).await.unwrap();
+    assert_eq!(
+        db::load_registry(&db)
+            .await
+            .unwrap()
+            .enrollment(A)
+            .unwrap()
+            .clock,
+        ClockPolicy::Unknown
+    );
+}
+
 async fn request(
     app: axum::Router,
     method: &str,
@@ -54,7 +526,7 @@ async fn request(
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 async fn sample(
-    db: &tokio_postgres::Client,
+    db: &mut tokio_postgres::Client,
     registry: &adapter::EnrollmentRegistry,
     time: chrono::DateTime<Utc>,
     value: f64,
@@ -96,14 +568,14 @@ async fn platform_database_api_and_scheduler_regressions() {
     let old = now - Duration::days(5);
     // Arrival order is high, normal, low, boundary: event time is low ->
     // high -> hold-high -> normal, producing exactly two resolved episodes.
-    sample(&db, &registry, old + Duration::minutes(3), 11.).await;
+    sample(&mut db, &registry, old + Duration::minutes(3), 11.).await;
     platform::refresh_alerts(&db).await.unwrap();
-    sample(&db, &registry, old + Duration::minutes(9), 9.5).await;
-    sample(&db, &registry, old, -1.).await;
-    sample(&db, &registry, old + Duration::minutes(6), 9.75).await;
+    sample(&mut db, &registry, old + Duration::minutes(9), 9.5).await;
+    sample(&mut db, &registry, old, -1.).await;
+    sample(&mut db, &registry, old + Duration::minutes(6), 9.75).await;
     // A reset clock stays stored but never opens an alert.
     sample(
-        &db,
+        &mut db,
         &registry,
         "2000-01-01T00:00:00Z".parse().unwrap(),
         999.,
@@ -134,6 +606,7 @@ async fn platform_database_api_and_scheduler_regressions() {
             .get::<_, i64>(0),
         count
     );
+    crate::fixtures::implemented_handlers_for_protocol_fixture(&db).await;
     let bus = EventBus::new();
     let flags = json!({"Get_Status":"1"});
     let (_, wire) = crate::commands::command_payload("cfg", &flags, None).unwrap();
@@ -387,12 +860,13 @@ async fn platform_database_api_and_scheduler_regressions() {
         true,
         Utc::now(),
         &TopicMap::default(),
-        &db,
+        &mut db,
         &shared,
         &bus,
         &Arc::new(tokio::sync::Mutex::new(IngestStats::default())),
     )
-    .await;
+    .await
+    .unwrap();
     assert_eq!(
         db.query_one(
             "SELECT presence_status FROM devices WHERE device_id=$1",
@@ -424,17 +898,19 @@ async fn platform_database_api_and_scheduler_regressions() {
         ProfileId::V21,
     ));
     assert!(scheduler::attributed(&trust, "azman1/feeds/device-status").is_none());
+    // Restore the production capability contract before exercising HTTP.
+    db::migrate(&db).await.unwrap();
     // API ACLs, framework extraction errors, unknown routes and role gates.
     let state = api::AppState {
         settings: Arc::new(crate::config::Settings {
-            database_url: url,
+            database_url: url.clone(),
             address: "127.0.0.1".into(),
             port: 0,
             topics: TopicMap::default(),
             mqtt: None,
             retention_days: 90,
         }),
-        db: Arc::new(db),
+        db: Arc::new(db::Database::new(url.clone(), db)),
         bus: bus.clone(),
         stats: Arc::new(tokio::sync::Mutex::new(IngestStats::default())),
     };
@@ -558,6 +1034,9 @@ async fn platform_database_api_and_scheduler_regressions() {
     assert!(!data.contains("secret"));
     state
         .db
+        .get()
+        .await
+        .unwrap()
         .execute("DELETE FROM device_permissions WHERE device_id=$1", &[&A])
         .await
         .unwrap();
@@ -581,7 +1060,7 @@ async fn publish_enqueue_does_not_claim_broker_acceptance() {
     db.batch_execute("TRUNCATE devices,device_bindings,observations,deliveries,alerts,commands,command_events,device_permissions RESTART IDENTITY CASCADE").await.unwrap();
     db.execute("INSERT INTO devices(device_id,source_profile,clock_policy,presence_status,last_ready_at) VALUES($1,'V21','utc','awake',now())",&[&A]).await.unwrap();
     db.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES('settings',$1,'azman1/feeds/project-settings-slash-configuration','V21')",&[&A]).await.unwrap();
-    let config = json!({"NA":"3","l":"A1","id":"B1","lf":"0:3","sf":"0:9","fac":"1.00,1.00,0.00,0.00","fst":"2026-10-01T00:00:00","mG":"0","MG":"9","S":"0101","ltost":"5:0"});
+    let config = json!({"NA":"3","l":"A1","id":"B1","lf":"0:3","sf":"0:9","fac":"1.00,1.00,0.00,0.00","fst":"2026-10-01T00:00:00","mG":"0","MG":"9","S":"0101","ltost":"0:0"});
     let wire = crate::commands::project_payload(&config).unwrap();
     platform::queue(&db, A, "project-settings", config, &wire, "operator")
         .await
@@ -600,7 +1079,7 @@ async fn publish_enqueue_does_not_claim_broker_acceptance() {
     );
     let row = db
         .query_one(
-            "SELECT desired_config,min_limit FROM devices WHERE device_id=$1",
+            "SELECT project_config,min_limit FROM devices WHERE device_id=$1",
             &[&A],
         )
         .await

@@ -11,6 +11,7 @@ let
   mqttPort = vars.networking.ports.groundwaterMqtt;
   appPort = vars.networking.ports.groundwaterLogger;
   appAcl = [
+    "readwrite gwl/v1/#"
     "readwrite azman1/feeds/#"
     "readwrite testtopic/9"
     "readwrite requesttesta"
@@ -18,6 +19,20 @@ let
     "readwrite cfg/#"
   ];
   loggerAcl = [
+    "write gwl/v1/+/reading"
+    "write gwl/v1/+/status"
+    "write gwl/v1/+/gps"
+    "write gwl/v1/+/storage"
+    "write gwl/v1/+/motion"
+    "write gwl/v1/+/alerts"
+    "write gwl/v1/+/test/result"
+    "write gwl/v1/+/config/applied"
+    "write gwl/v1/+/cmd/ack"
+    "write gwl/v1/+/info"
+    "read gwl/v1/+/config/set"
+    "read gwl/v1/+/config/desired"
+    "read gwl/v1/+/cmd/test"
+    "read gwl/v1/+/cmd/danger"
     "readwrite azman1/feeds/#"
     "readwrite testtopic/9"
     "read requesttesta"

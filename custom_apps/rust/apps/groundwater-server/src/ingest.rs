@@ -107,6 +107,7 @@ impl Default for EventBus {
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct IngestStats {
     pub connected: bool,
+    pub telemetry_connected: bool,
     /// Every message the loop received.
     pub deliveries: u64,
     /// Deliveries that became a stored water observation.
@@ -132,36 +133,54 @@ pub type SharedRegistry = Arc<RwLock<EnrollmentRegistry>>;
 pub async fn run(
     settings: Arc<Settings>,
     mqtt: Arc<MqttSettings>,
-    client: Arc<Client>,
+    mut client: Client,
     bus: EventBus,
     stats: Arc<tokio::sync::Mutex<IngestStats>>,
     registry: SharedRegistry,
 ) -> Result<(), String> {
-    let password = match &mqtt.password_file {
-        Some(path) => Some(homelab_common::read_secret_file(path)?),
-        None => None,
-    };
+    let options = mqtt_options(&mqtt, false)?;
+    let telemetry_settings = settings.clone();
+    let telemetry_mqtt = mqtt.clone();
+    let telemetry_bus = bus.clone();
+    let telemetry_stats = stats.clone();
+    let telemetry_registry = registry.clone();
+    tokio::spawn(async move {
+        if let Err(e) = telemetry_run(
+            telemetry_settings,
+            telemetry_mqtt,
+            telemetry_bus,
+            telemetry_stats.clone(),
+            telemetry_registry,
+        )
+        .await
+        {
+            telemetry_stats.lock().await.last_error = Some(e);
+        }
+    });
 
-    let mut options = MqttOptions::new(mqtt.client_id.clone(), mqtt.host.clone(), mqtt.port);
-    options.set_keep_alive(Duration::from_secs(mqtt.keep_alive_seconds));
-    options.set_clean_session(true);
-    if let Some(username) = &mqtt.username {
-        options.set_credentials(username, password.as_deref().unwrap_or_default());
-    }
-
-    let (mqtt_client, mut event_loop) = AsyncClient::new(options, 10);
+    let (mut mqtt_client, mut event_loop) = AsyncClient::new(options.clone(), 10);
     // This task is the sole command producer and observer of packet IDs.
     // No volatile rumqttc request survives an unconfirmed process restart.
-    let mut publisher_db = db::connect(&settings.database_url).await?;
-    crate::publisher::recover(&publisher_db).await?;
+    let mut publisher_db = worker_database(&settings, &stats, true).await?;
     let mut publisher = crate::publisher::Publisher::default();
     let mut dispatch = tokio::time::interval(Duration::from_secs(1));
-    let subscribe_topics = settings.topics.subscribe_topics();
-    let topic_map = Arc::new(settings.topics.clone());
     let mut connected = false;
+    let mut reset_ready = true;
     let mut refresh = tokio::time::interval(Duration::from_secs(REGISTRY_REFRESH_SECONDS));
+    let mut resumed = tokio::time::Instant::now();
 
     loop {
+        // A database stall can leave identity-free Ready packets buffered in
+        // the socket/broker even with clean sessions. Discard that connection
+        // before polling again so delayed packets cannot open a new window.
+        if resumed.elapsed() > Duration::from_secs(5) {
+            publisher.disconnected();
+            (mqtt_client, event_loop) = AsyncClient::new(options.clone(), 10);
+            reset_ready = true;
+            connected = false;
+            stats.lock().await.connected = false;
+        }
+        resumed = tokio::time::Instant::now();
         let event = tokio::select! {
             event = event_loop.poll() => event,
             _ = dispatch.tick() => {
@@ -171,6 +190,12 @@ pub async fn run(
                         Err(e)=>{eprintln!("groundwater publisher reconnect: {e}");continue}
                     }
                 }
+                if reset_ready {
+                    match crate::scheduler::invalidate_ready(&publisher_db).await {
+                        Ok(()) => { reset_ready = false; publisher.connected = connected; },
+                        Err(e) => { stats.lock().await.last_error = Some(e); continue; },
+                    }
+                }
                 if let Err(e)=crate::scheduler::tick(&mut publisher_db,&mqtt_client,&bus,&mut publisher).await {
                     eprintln!("groundwater publisher: {e}");
                     stats.lock().await.last_error=Some(e);
@@ -178,12 +203,14 @@ pub async fn run(
                 continue;
             }
             _ = refresh.tick() => {
+                if client.is_closed() {
+                    if let Ok(db) = db::connect(&settings.database_url).await { client = db; }
+                }
                 match db::load_registry(&client).await {
                     Ok(loaded) => {
                         let enrollments = loaded.enrollments().count();
                         let bindings = loaded.bindings().len();
-                        let mut topics=settings.topics.subscribe_topics();
-                        topics.extend(loaded.bindings().iter().map(|b|b.topic.clone()));topics.sort();topics.dedup();
+                        let topics = session_topics(&settings, &loaded, false);
                         let subscriber=mqtt_client.clone();
                         tokio::spawn(async move {for topic in topics {if let Err(e)=subscriber.subscribe(topic,rumqttc::QoS::AtLeastOnce).await {eprintln!("groundwater subscription refresh: {e}");}}});
                         *registry.write().await = loaded;
@@ -207,7 +234,10 @@ pub async fn run(
         match event {
             Ok(Event::Incoming(Incoming::ConnAck(_))) => {
                 connected = true;
-                publisher.connected = true;
+                reset_ready = crate::scheduler::invalidate_ready(&publisher_db)
+                    .await
+                    .is_err();
+                publisher.connected = !reset_ready;
                 {
                     let mut guard = stats.lock().await;
                     guard.connected = true;
@@ -216,17 +246,7 @@ pub async fn run(
                 // Subscription production must not await queue capacity while
                 // this same task owns event_loop.poll().
                 let subscriber = mqtt_client.clone();
-                let mut subscriptions = subscribe_topics.clone();
-                subscriptions.extend(
-                    registry
-                        .read()
-                        .await
-                        .bindings()
-                        .iter()
-                        .map(|b| b.topic.clone()),
-                );
-                subscriptions.sort();
-                subscriptions.dedup();
+                let subscriptions = session_topics(&settings, &*registry.read().await, false);
                 tokio::spawn(async move {
                     for topic in subscriptions {
                         if let Err(e) = subscriber.subscribe(topic, rumqttc::QoS::AtLeastOnce).await
@@ -237,7 +257,7 @@ pub async fn run(
                 });
                 bus.emit(LiveEvent::Broker {
                     connected: true,
-                    detail: format!("subscribed to {} topics", subscribe_topics.len()),
+                    detail: "live control session connected".into(),
                 });
             }
             Ok(Event::Outgoing(Outgoing::Publish(packet_id))) => {
@@ -251,19 +271,8 @@ pub async fn run(
                 }
             }
             Ok(Event::Incoming(Incoming::Publish(publish))) => {
-                handle_publish(
-                    &publish.topic,
-                    &publish.payload,
-                    publish.qos as i16,
-                    publish.retain,
-                    chrono::Utc::now(),
-                    &topic_map,
-                    &client,
-                    &registry,
-                    &bus,
-                    &stats,
-                )
-                .await;
+                persist_publish(&settings, &publish, &mut client, &registry, &bus, &stats).await?;
+                acknowledge(mqtt_client.clone(), publish);
             }
             Ok(_) => {}
             Err(err) => {
@@ -271,6 +280,7 @@ pub async fn run(
                 // SQL owns recovery and wake-window/spacing checks; automatic
                 // MQTT replay could otherwise publish after sleep or cancel.
                 publisher.disconnected();
+                reset_ready = true;
                 crate::publisher::discard_session(&mut event_loop);
                 if let Err(e) = publisher.reconcile(&mut publisher_db, &bus).await {
                     eprintln!("groundwater publish recovery: {e}");
@@ -298,6 +308,225 @@ pub async fn run(
     }
 }
 
+fn mqtt_options(mqtt: &MqttSettings, telemetry: bool) -> Result<MqttOptions, String> {
+    let id = if telemetry {
+        format!("{}-telemetry", mqtt.client_id)
+    } else {
+        mqtt.client_id.clone()
+    };
+    let mut options = MqttOptions::new(id, mqtt.host.clone(), mqtt.port);
+    options.set_keep_alive(Duration::from_secs(mqtt.keep_alive_seconds));
+    // Identity-free Ready/ack traffic must never survive an offline interval.
+    options.set_clean_session(!telemetry);
+    options.set_manual_acks(true);
+    if let Some(username) = &mqtt.username {
+        let password = match &mqtt.password_file {
+            Some(path) => homelab_common::read_secret_file(path)?,
+            None => String::new(),
+        };
+        options.set_credentials(username, password);
+    }
+    Ok(options)
+}
+
+fn session_topics(
+    settings: &Settings,
+    registry: &EnrollmentRegistry,
+    telemetry: bool,
+) -> Vec<String> {
+    let mut topics = settings.topics.subscribe_topics();
+    topics.extend(registry.bindings().iter().map(|b| b.topic.clone()));
+    topics.retain(|topic| {
+        (crate::topics::classify(topic, &settings.topics) == crate::topics::MessageKind::Reading)
+            == telemetry
+    });
+    topics.sort();
+    topics.dedup();
+    topics
+}
+
+fn acknowledge(client: AsyncClient, publish: rumqttc::Publish) {
+    // This task must not await capacity on the queue it alone polls.
+    tokio::spawn(async move {
+        if let Err(e) = client.ack(&publish).await {
+            eprintln!("groundwater committed delivery acknowledgment: {e}");
+        }
+    });
+}
+
+/// Only readings use a persistent session. In particular a queued Ready must
+/// never be mistaken for evidence that a sleeping logger is currently awake.
+async fn telemetry_run(
+    settings: Arc<Settings>,
+    mqtt: Arc<MqttSettings>,
+    bus: EventBus,
+    stats: Arc<tokio::sync::Mutex<IngestStats>>,
+    registry: SharedRegistry,
+) -> Result<(), String> {
+    let (subscriber, mut events) = AsyncClient::new(mqtt_options(&mqtt, true)?, 10);
+    let mut client = worker_database(&settings, &stats, false).await?;
+    let mut refresh = tokio::time::interval(Duration::from_secs(REGISTRY_REFRESH_SECONDS));
+    let mut connected = false;
+    loop {
+        let event = tokio::select! {
+            event = events.poll() => event,
+            _ = refresh.tick(), if connected => {
+                let topics = session_topics(&settings, &*registry.read().await, true);
+                let sender = subscriber.clone();
+                tokio::spawn(async move { for topic in topics {
+                    if let Err(e) = sender.subscribe(topic, rumqttc::QoS::AtLeastOnce).await {
+                        eprintln!("groundwater telemetry subscription: {e}");
+                    }
+                }});
+                continue;
+            },
+            _ = homelab_common::shutdown_signal() => return Ok(()),
+        };
+        match event {
+            Ok(Event::Incoming(Incoming::ConnAck(_))) => {
+                connected = true;
+                stats.lock().await.telemetry_connected = true;
+                let topics = session_topics(&settings, &*registry.read().await, true);
+                let sender = subscriber.clone();
+                tokio::spawn(async move {
+                    for topic in topics {
+                        if let Err(e) = sender.subscribe(topic, rumqttc::QoS::AtLeastOnce).await {
+                            eprintln!("groundwater telemetry subscription: {e}");
+                        }
+                    }
+                });
+                bus.emit(LiveEvent::Broker {
+                    connected: true,
+                    detail: "durable telemetry session connected".into(),
+                });
+            }
+            Ok(Event::Incoming(Incoming::Publish(publish))) => {
+                // Discard any pre-upgrade control subscription from a resumed
+                // telemetry session rather than allowing it to open a window.
+                if crate::topics::classify(&publish.topic, &settings.topics)
+                    == crate::topics::MessageKind::Reading
+                {
+                    persist_publish(&settings, &publish, &mut client, &registry, &bus, &stats)
+                        .await?;
+                }
+                acknowledge(subscriber.clone(), publish);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                connected = false;
+                let mut state = stats.lock().await;
+                state.telemetry_connected = false;
+                state.last_error = Some(e.to_string());
+                drop(state);
+                bus.emit(LiveEvent::Broker {
+                    connected: false,
+                    detail: "telemetry disconnected".into(),
+                });
+                tokio::time::sleep(Duration::from_secs(RECONNECT_BACKOFF_SECONDS)).await;
+            }
+        }
+    }
+}
+
+/// Worker startup races database restarts just like ordinary ingestion. Keep
+/// trying instead of silently leaving HTTP alive with a terminated subscriber.
+async fn worker_database(
+    settings: &Settings,
+    stats: &Arc<tokio::sync::Mutex<IngestStats>>,
+    recover_publishes: bool,
+) -> Result<Client, String> {
+    loop {
+        let result = match db::connect(&settings.database_url).await {
+            Ok(client) => {
+                if recover_publishes {
+                    crate::publisher::recover(&client).await.map(|()| client)
+                } else {
+                    Ok(client)
+                }
+            }
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(client) => return Ok(client),
+            Err(e) => {
+                eprintln!("groundwater worker database initialization: {e}");
+                stats.lock().await.last_error = Some(e);
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                    _ = homelab_common::shutdown_signal() => return Err("worker stopping before database initialization".into()),
+                }
+            }
+        }
+    }
+}
+
+async fn persist_publish(
+    settings: &Settings,
+    publish: &rumqttc::Publish,
+    client: &mut Client,
+    registry: &SharedRegistry,
+    bus: &EventBus,
+    stats: &Arc<tokio::sync::Mutex<IngestStats>>,
+) -> Result<(), String> {
+    let received_at = chrono::Utc::now();
+    let mut refresh_registry = client.is_closed();
+    loop {
+        let result = if client.is_closed() {
+            refresh_registry = true;
+            match db::connect(&settings.database_url).await {
+                Ok(db) => {
+                    *client = db;
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            Ok(())
+        };
+        let result = if result.is_ok() && refresh_registry {
+            match db::load_registry(client).await {
+                Ok(loaded) => {
+                    *registry.write().await = loaded;
+                    refresh_registry = false;
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            result
+        };
+        let result = match result {
+            Ok(()) => {
+                handle_publish(
+                    &publish.topic,
+                    &publish.payload,
+                    publish.qos as i16,
+                    publish.retain,
+                    received_at,
+                    &settings.topics,
+                    client,
+                    registry,
+                    bus,
+                    stats,
+                )
+                .await
+            }
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                eprintln!("groundwater: retrying uncommitted delivery: {e}");
+                stats.lock().await.last_error = Some(e);
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                    _ = homelab_common::shutdown_signal() => return Err("ingest stopping with uncommitted delivery".into()),
+                }
+            }
+        }
+    }
+}
+
 /// Pause between connection failures.
 const RECONNECT_BACKOFF_SECONDS: u64 = 5;
 
@@ -310,11 +539,11 @@ pub async fn handle_publish(
     retained: bool,
     received_at: chrono::DateTime<chrono::Utc>,
     topic_map: &TopicMap,
-    client: &Client,
+    client: &mut Client,
     registry: &SharedRegistry,
     bus: &EventBus,
     stats: &Arc<tokio::sync::Mutex<IngestStats>>,
-) {
+) -> Result<(), String> {
     let delivery = Delivery {
         topic,
         payload,
@@ -324,6 +553,16 @@ pub async fn handle_publish(
     let registry = registry.read().await.clone();
     let evaluation = adapter::evaluate(&delivery, &registry, topic_map);
 
+    let tx = client.transaction().await.map_err(|e| e.to_string())?;
+    let key = match &evaluation {
+        adapter::Evaluation::Quarantined { record, .. }
+        | adapter::Evaluation::Candidate { record, .. } => db::intake_key(record),
+    };
+    if db::existing_intake(&tx, &key).await?.is_some() {
+        return Ok(());
+    }
+    let deferred_bus = EventBus::new();
+    let mut deferred_events = deferred_bus.subscribe();
     let mut intake = match evaluation {
         adapter::Evaluation::Quarantined {
             record,
@@ -342,23 +581,15 @@ pub async fn handle_publish(
             observation,
         } => {
             // Only now, with a derived device time, is a duplicate lookup
-            // meaningful. A failure here must not drop the observation; it
-            // degrades to "new" with the reason recorded.
-            let history = match db::prior_observations(
-                client,
+            // meaningful. Retry lookup failures with the transaction instead
+            // of guessing that an existing measurement is new.
+            let history = db::prior_observations(
+                &tx,
                 &observation.device_id,
                 observation.recorded_at,
                 observation.received_at,
             )
-            .await
-            {
-                Ok(history) => history,
-                Err(err) => {
-                    eprintln!("groundwater: duplicate lookup failed: {err}");
-                    stats.lock().await.last_error.replace(err.clone());
-                    Vec::new()
-                }
-            };
+            .await?;
             let decision = adapter::classify_duplicate(&observation, &history);
             adapter::finalize(
                 adapter::Evaluation::Candidate {
@@ -370,15 +601,17 @@ pub async fn handle_publish(
         }
     };
 
-    if !retained && intake.record.kind != crate::topics::MessageKind::Reading {
+    if !retained
+        && intake.record.quarantine_reason == Some(adapter::QuarantineReason::AncillaryChannel)
+    {
         match crate::scheduler::ancillary(
-            client,
+            &tx,
             &registry,
             topic,
             payload,
             topic_map,
             received_at,
-            bus,
+            &deferred_bus,
         )
         .await
         {
@@ -397,10 +630,17 @@ pub async fn handle_publish(
                 };
             }
             Ok(None) => {}
-            Err(e) => eprintln!("groundwater ancillary: {e}"),
+            Err(e) => return Err(e),
         }
     }
 
+    db::record_intake_in(&tx, &intake).await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit intake: {e}"))?;
+    while let Ok(event) = deferred_events.try_recv() {
+        bus.emit(event);
+    }
     {
         let mut guard = stats.lock().await;
         guard.deliveries += 1;
@@ -408,12 +648,6 @@ pub async fn handle_publish(
             guard.quarantined += 1;
             guard.last_quarantine_reason = Some(reason.code().to_string());
         }
-    }
-
-    if let Err(err) = db::record_intake(client, &intake).await {
-        eprintln!("groundwater: {err}");
-        stats.lock().await.last_error = Some(err);
-        return;
     }
 
     match &intake.outcome {
@@ -468,6 +702,7 @@ pub async fn handle_publish(
             });
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
