@@ -528,7 +528,10 @@ impl Database {
         let mut rt: JobRuntime = serde_json::from_str(&data).map_err(|e| e.to_string())?;
         let mut request: CreateJobRequest =
             serde_json::from_str(&request).map_err(|e| e.to_string())?;
-        if !matches!(status.as_str(), "partial" | "paused") || (rt.attempt > 0 && !rt.can_resume) {
+        if rt.control.as_deref() == Some("discard")
+            || !matches!(status.as_str(), "partial" | "paused")
+            || (rt.attempt > 0 && !rt.can_resume)
+        {
             return Err("no durable checkpoint is available for resume".into());
         }
         if ext.additional_pages > 500
@@ -577,7 +580,7 @@ impl Database {
         id: &str,
         rt: &JobRuntime,
     ) -> rusqlite::Result<()> {
-        self.connect()?.execute("UPDATE jobs SET runtime_json=json_set(json(?2),'$.control',json_extract(runtime_json,'$.control')),updated_at=?3 WHERE id=?1",params![id,rt.storage_json().map_err(|e|rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,now()])?;
+        self.connect()?.execute("UPDATE jobs SET runtime_json=json_set(json(?2),'$.control',json_extract(runtime_json,'$.control'),'$.canResume',json(CASE WHEN json_extract(runtime_json,'$.control')='discard' THEN 'false' WHEN json_extract(json(?2),'$.canResume')=1 THEN 'true' ELSE 'false' END),'$.resumeConfig',CASE WHEN json_extract(runtime_json,'$.control')='discard' THEN json_extract(runtime_json,'$.resumeConfig') ELSE json_extract(json(?2),'$.resumeConfig') END,'$.stopReason',CASE WHEN json_extract(runtime_json,'$.control')='discard' THEN 'discard' ELSE json_extract(json(?2),'$.stopReason') END,'$.discardCleanupPending',json_extract(runtime_json,'$.discardCleanupPending')),updated_at=?3 WHERE id=?1",params![id,rt.storage_json().map_err(|e|rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,now()])?;
         Ok(())
     }
     pub fn begin_capture(&self, id: &str, rt: &JobRuntime) -> rusqlite::Result<bool> {
@@ -629,12 +632,28 @@ impl Database {
     pub fn list_jobs_for_recovery(&self) -> rusqlite::Result<Vec<crate::model::Job>> {
         let c = self.connect()?;
         let ids = c
-            .prepare("SELECT id FROM jobs WHERE status='paused' LIMIT 1000")?
+            .prepare("SELECT id FROM jobs WHERE status='paused' OR (status='cancelled' AND json_extract(runtime_json,'$.discardCleanupPending')=1) LIMIT 1000")?
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         ids.iter()
             .filter_map(|id| self.job(id).transpose())
             .collect()
+    }
+    pub fn discarded_jobs(&self) -> rusqlite::Result<Vec<crate::model::Job>> {
+        let c = self.connect()?;
+        let ids = c.prepare("SELECT id FROM jobs WHERE status='cancelled' AND json_extract(runtime_json,'$.discardCleanupPending')=1 LIMIT 1000")?
+            .query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        ids.iter()
+            .filter_map(|id| self.job(id).transpose())
+            .collect()
+    }
+    pub fn finish_discard_cleanup(&self, id: &str) -> rusqlite::Result<()> {
+        self.connect()?.execute("UPDATE jobs SET runtime_json=json_remove(json_set(runtime_json,'$.canResume',json('false'),'$.resumeConfig',NULL,'$.attemptDeadline',NULL,'$.stopReason','discard'),'$.discardCleanupPending'),updated_at=?2 WHERE id=?1 AND status='cancelled' AND json_extract(runtime_json,'$.control')='discard'", params![id, now()])?;
+        Ok(())
+    }
+    pub fn restore_checkpoint(&self, id: &str, saved: &str) -> rusqlite::Result<()> {
+        self.connect()?.execute("UPDATE jobs SET runtime_json=json_set(runtime_json,'$.canResume',json('true'),'$.resumeConfig',?2,'$.stopReason','worker-restart'),updated_at=?3 WHERE id=?1 AND status='paused' AND coalesce(json_extract(runtime_json,'$.control'),'')!='discard'", params![id, saved, now()])?;
+        Ok(())
     }
     pub fn replace_legacy_inventory(&self, intent: &PublicationIntent) -> rusqlite::Result<()> {
         self.save_archive_metadata(&intent.archive)?;

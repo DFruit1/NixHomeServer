@@ -23,50 +23,13 @@ pub async fn run(config: AppConfig) -> Result<(), String> {
     let database = Database::open(&config.database_path)
         .map_err(|error| format!("initialize queue database: {error}"))?;
     crate::custody::recover(&config, &database)?;
-    database
-        .mark_worker_interrupted()
-        .map_err(|error| format!("recover interrupted crawl: {error}"))?;
-    // Image preparation is lazy: file-only work does not need a browser runtime.
-    for job in database
-        .list_jobs_for_recovery()
-        .map_err(|e| e.to_string())?
-    {
-        // A worker/CLI crash does not guarantee the container exited. Stop only
-        // the exact previously claimed job before reading its durable checkpoint.
-        kill_capture_container(&config, &job.id).await;
-        if let Some(deadline) = job.runtime.attempt_deadline.as_deref() {
-            let deadline = chrono::DateTime::parse_from_rfc3339(deadline)
-                .map_err(|_| "invalid durable attempt deadline")?;
-            let remaining = (deadline.with_timezone(&chrono::Utc) - chrono::Utc::now())
-                .num_seconds()
-                .max(0) as u64;
-            let mut rt = job.runtime.clone();
-            rt.runtime_seconds = rt
-                .runtime_seconds
-                .max((u64::from(job.request.time_limit_minutes) * 60).saturating_sub(remaining));
-            rt.attempt_deadline = None;
-            database
-                .set_runtime(&job.id, &rt)
-                .map_err(|e| e.to_string())?;
-        }
-        let dir = config.checkpoints_root.join(&job.id);
-        if let Some(saved) = find_checkpoint(&dir, &job) {
-            let mut rt = database
-                .job(&job.id)
-                .map_err(|e| e.to_string())?
-                .ok_or("recovery job disappeared")?
-                .runtime;
-            rt.can_resume = true;
-            rt.resume_config = Some(saved);
-            rt.stop_reason = Some("worker-restart".into());
-            database
-                .set_runtime(&job.id, &rt)
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    recover_interrupted(&config, &database).await?;
     log_event("info", "worker_started", None, None);
 
     loop {
+        for job in database.discarded_jobs().map_err(|e| e.to_string())? {
+            cleanup_discarded(&config, &database, &job).await?;
+        }
         database
             .dispatch_due_schedules()
             .map_err(|e| e.to_string())?;
@@ -91,6 +54,96 @@ pub async fn run(config: AppConfig) -> Result<(), String> {
         }
         tokio::time::sleep(config.worker_poll_interval).await;
     }
+}
+
+/// Recover worker state only after the previous exact capture container has
+/// exited. Discard is terminal; checkpoints are never inferred back into life.
+pub async fn recover_interrupted(config: &AppConfig, database: &Database) -> Result<(), String> {
+    database
+        .mark_worker_interrupted()
+        .map_err(|error| format!("recover interrupted crawl: {error}"))?;
+    // Image preparation is lazy: file-only work does not need a browser runtime.
+    for job in database
+        .list_jobs_for_recovery()
+        .map_err(|e| e.to_string())?
+    {
+        // A worker/CLI crash does not guarantee the container exited. Stop only
+        // the exact previously claimed job before reading its durable checkpoint.
+        if job.runtime.control.as_deref() == Some("discard") {
+            cleanup_discarded(config, database, &job).await?;
+            continue;
+        }
+        stop_recovery_container(config, &job).await?;
+        if let Some(deadline) = job.runtime.attempt_deadline.as_deref() {
+            let deadline = chrono::DateTime::parse_from_rfc3339(deadline)
+                .map_err(|_| "invalid durable attempt deadline")?;
+            let remaining = (deadline.with_timezone(&chrono::Utc) - chrono::Utc::now())
+                .num_seconds()
+                .max(0) as u64;
+            let mut rt = job.runtime.clone();
+            rt.runtime_seconds = rt
+                .runtime_seconds
+                .max((u64::from(job.request.time_limit_minutes) * 60).saturating_sub(remaining));
+            rt.attempt_deadline = None;
+            database
+                .set_runtime_preserving_control(&job.id, &rt)
+                .map_err(|e| e.to_string())?;
+        }
+        let dir = config.checkpoints_root.join(&job.id);
+        if let Some(saved) = find_checkpoint(&dir, &job) {
+            database
+                .restore_checkpoint(&job.id, &saved)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+async fn stop_recovery_container(config: &AppConfig, job: &Job) -> Result<(), String> {
+    if !crate::custody::safe_id(&job.id) {
+        return Err("unsafe recovery job identity".into());
+    }
+    if job.runtime.attempt == 0 {
+        return Ok(());
+    }
+    // --ignore tolerates an already removed --rm container. Failure/timeout is
+    // not permission to delete files a still-running container may be writing.
+    let mut command = Command::new(&config.podman_bin);
+    command
+        .args([
+            "rm",
+            "--force",
+            "--ignore",
+            &format!("web-archive-{}", job.id),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let status = tokio::time::timeout(Duration::from_secs(10), command.status())
+        .await
+        .map_err(|_| "timed out stopping prior capture; checkpoint retained")?
+        .map_err(|e| format!("stop prior capture: {e}"))?;
+    if !status.success() {
+        return Err("could not stop prior capture; checkpoint retained".into());
+    }
+    Ok(())
+}
+async fn cleanup_discarded(config: &AppConfig, db: &Database, job: &Job) -> Result<(), String> {
+    stop_recovery_container(config, job).await?;
+    let dir = config.checkpoints_root.join(&job.id);
+    match std::fs::symlink_metadata(&dir) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+            std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+            crate::custody::sync_directory(&config.checkpoints_root)?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        _ => {
+            return Err("discard checkpoint is not a real directory; retained for diagnosis".into())
+        }
+    }
+    db.finish_discard_cleanup(&job.id)
+        .map_err(|e| e.to_string())
 }
 
 pub async fn ensure_image(config: &AppConfig) -> Result<(), String> {
@@ -446,7 +499,7 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
     if runtime.stop_reason.as_deref() == Some("discard") {
         runtime.can_resume = false;
         database
-            .set_runtime(&job.id, &runtime)
+            .set_runtime_preserving_control(&job.id, &runtime)
             .map_err(|e| e.to_string())?;
         database
             .set_status(&job.id, JobStatus::Cancelled, None)

@@ -136,7 +136,7 @@ fn cancellation_duplicates_and_worker_restart_recovery_match_the_api_contract() 
         .mark_worker_interrupted()
         .expect("worker restart recovery");
     let job = database.job("job-2").expect("job lookup").expect("job");
-    assert_eq!(job.status, JobStatus::Failed);
+    assert_eq!(job.status, JobStatus::Cancelled);
     assert_eq!(
         job.error.as_deref(),
         Some("interrupted by crawl worker restart")

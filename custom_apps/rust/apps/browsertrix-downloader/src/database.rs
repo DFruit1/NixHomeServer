@@ -91,7 +91,8 @@ impl Database {
         self.connect()?.execute(
             &format!(
                 "UPDATE jobs
-                    SET status = CASE WHEN json_extract(runtime_json,'$.attempt') > 0 THEN 'paused' ELSE 'failed' END, updated_at = {NOW},
+                    SET status = CASE WHEN status='cancelling' OR json_extract(runtime_json,'$.control')='discard' THEN 'cancelled' WHEN json_extract(runtime_json,'$.attempt') > 0 THEN 'paused' ELSE 'failed' END,
+                        runtime_json = CASE WHEN status='cancelling' OR json_extract(runtime_json,'$.control')='discard' THEN json_set(runtime_json,'$.control','discard','$.canResume',json('false'),'$.discardCleanupPending',json('true')) ELSE runtime_json END, updated_at = {NOW},
                         error = 'interrupted by crawl worker restart', progress_json = NULL
                   WHERE status IN ('starting', 'running', 'cancelling', 'packaging')"
             ),
@@ -150,15 +151,15 @@ impl Database {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute(
-            &format!("UPDATE jobs SET status = ?2, updated_at = {NOW}, error = ?3 WHERE id = ?1"),
+            &format!("UPDATE jobs SET status = CASE WHEN json_extract(runtime_json,'$.control')='discard' THEN 'cancelled' ELSE ?2 END, updated_at = {NOW}, error = ?3 WHERE id = ?1"),
             params![job_id, status.as_str(), error],
         )?;
         transaction.execute(
             &format!(
                 "INSERT INTO job_events(job_id, created_at, event_type, message, data_json)
-                 VALUES (?1, {NOW}, ?2, ?3, NULL)"
+                 SELECT ?1, {NOW}, status, ?2, NULL FROM jobs WHERE id=?1"
             ),
-            params![job_id, status.as_str(), error],
+            params![job_id, error],
         )?;
         transaction.commit()
     }
@@ -183,7 +184,7 @@ impl Database {
             }
         };
         let changed = transaction.execute(
-            &format!("UPDATE jobs SET status = ?2, runtime_json=json_set(runtime_json,'$.canResume',json('false'),'$.control','discard'), updated_at = {NOW} WHERE id = ?1"),
+            &format!("UPDATE jobs SET status = ?2, runtime_json=json_set(runtime_json,'$.canResume',json('false'),'$.control','discard','$.discardCleanupPending',json(CASE WHEN status IN ('starting','running') OR json_extract(runtime_json,'$.attempt')>0 THEN 'true' ELSE 'false' END)), updated_at = {NOW} WHERE id = ?1"),
             params![job_id, next],
         )? == 1;
         transaction.execute(
@@ -293,7 +294,7 @@ impl Database {
         self.connect()?.execute(
             "DELETE FROM jobs
               WHERE id = ?1 AND created_by = ?2
-                AND status IN ('completed', 'failed', 'cancelled', 'partial') AND coalesce(json_extract(runtime_json,'$.canResume'),0)=0",
+                AND status IN ('completed', 'failed', 'cancelled', 'partial') AND coalesce(json_extract(runtime_json,'$.canResume'),0)=0 AND coalesce(json_extract(runtime_json,'$.discardCleanupPending'),0)=0",
             params![id, created_by],
         )
     }
@@ -301,7 +302,7 @@ impl Database {
     pub fn clear_history(&self, created_by: &str) -> rusqlite::Result<usize> {
         self.connect()?.execute(
             "DELETE FROM jobs
-              WHERE created_by = ?1 AND status IN ('completed', 'failed', 'cancelled', 'partial') AND coalesce(json_extract(runtime_json,'$.canResume'),0)=0",
+              WHERE created_by = ?1 AND status IN ('completed', 'failed', 'cancelled', 'partial') AND coalesce(json_extract(runtime_json,'$.canResume'),0)=0 AND coalesce(json_extract(runtime_json,'$.discardCleanupPending'),0)=0",
             [created_by],
         )
     }
