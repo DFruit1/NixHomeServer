@@ -42,7 +42,6 @@ let
         "paperless"
         "prowlarr"
         "qbittorrent"
-        "qwen-27b"
         "radarr"
         "searxng"
         "search"
