@@ -1,6 +1,5 @@
 //! Profile imports never invoke tar until every header and inflated byte is checked.
 use crate::{catalog::now, config::AppConfig, custody, database::Database};
-use serde_json::json;
 use std::{
     io::{Read, Write},
     path::Path,
@@ -127,7 +126,7 @@ pub fn accept(
     if !custody::safe_id(id) || !custody::safe_id(inbox) {
         return Err("unsafe profile identifier".into());
     }
-    let mut metadata = db
+    let metadata = db
         .record("profile", id, owner)
         .map_err(|e| e.to_string())?
         .ok_or("profile not found")?;
@@ -154,16 +153,19 @@ pub fn accept(
         .and_then(|_| output.sync_all())
         .map_err(|e| e.to_string())?;
     custody::sync_directory(&config.profiles_root)?;
-    metadata = db
-        .record("profile", id, owner)
-        .map_err(|e| e.to_string())?
-        .filter(|v| v["revoked"].as_bool() != Some(true))
-        .ok_or("profile revoked during validation; material remains private")?;
-    metadata["digest"] = json!(digest);
-    metadata["available"] = json!(true);
-    metadata["updatedAt"] = json!(now());
-    db.put_record("profile", id, owner, &metadata)
-        .map_err(|e| e.to_string())?;
+    // Import owns only these fields. Evaluate ownership/revocation in the same
+    // write that makes the immutable bytes usable; a stale snapshot must never
+    // undo a revocation committed while validation or the SQLite writer waited.
+    let changed = db.connect().map_err(|e| e.to_string())?.execute(
+        "UPDATE owned_records SET document=json_set(document,'$.digest',?3,'$.available',json('true'),'$.updatedAt',?4) WHERE kind='profile' AND id=?1 AND owner=?2 AND coalesce(json_extract(document,'$.revoked'),0)=0",
+        rusqlite::params![id, owner, digest, now()],
+    ).map_err(|e| e.to_string())?;
+    if changed != 1 {
+        return Err(
+            "profile revoked or ownership changed during validation; material remains private"
+                .into(),
+        );
+    }
     std::fs::remove_file(source).map_err(|e| e.to_string())?;
     Ok(())
 }

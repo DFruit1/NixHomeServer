@@ -162,6 +162,58 @@ fn profile_import_rejects_path_link_and_owner_substitution() {
     assert!(profiles::checked_profile(&config, &db, "profile-1", "alice").is_err());
 }
 #[test]
+fn profile_revocation_committed_while_import_waits_cannot_be_overwritten() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = common::config(temp.path());
+    let db = Database::open(&config.database_path).unwrap();
+    std::fs::create_dir_all(&config.inbox_root).unwrap();
+    common::tar_gz(
+        &config.inbox_root.join("synthetic"),
+        "Default/Preferences",
+        b'0',
+    );
+    db.put_record(
+        "profile",
+        "profile-race",
+        "alice",
+        &serde_json::json!({
+            "id":"profile-race", "available":false, "revoked":false, "name":"Before"
+        }),
+    )
+    .unwrap();
+    // WAL readers can inspect the old profile while this connection owns the
+    // writer. Commit revocation after import has copied its immutable bytes.
+    let mut connection = rusqlite::Connection::open(db.path()).unwrap();
+    let tx = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    let config2 = config.clone();
+    let db2 = db.clone();
+    let import = std::thread::spawn(move || {
+        profiles::accept(&config2, &db2, "profile-race", "synthetic", "alice")
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !config.profiles_root.join("profile-race.tar.gz").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "import did not reach private copy"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    tx.execute("UPDATE owned_records SET document=json_set(document,'$.revoked',json('true'),'$.available',json('false'),'$.name','Revoked') WHERE id='profile-race'", []).unwrap();
+    tx.commit().unwrap();
+    assert!(import.join().unwrap().unwrap_err().contains("revoked"));
+    let metadata = db
+        .record("profile", "profile-race", "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(metadata["revoked"], true);
+    assert_eq!(metadata["available"], false);
+    assert_eq!(metadata["name"], "Revoked");
+    assert!(profiles::checked_profile(&config, &db, "profile-race", "alice").is_err());
+    assert!(profiles::accept(&config, &db, "profile-race", "synthetic", "alice").is_err());
+}
+#[test]
 fn missing_or_cross_owner_dependencies_fail_closed() {
     let temp = tempfile::tempdir().unwrap();
     let config = common::config(temp.path());
