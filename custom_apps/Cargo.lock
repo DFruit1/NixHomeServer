@@ -472,17 +472,23 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "flate2",
  "homelab-common",
+ "html2text",
  "libc",
  "rand 0.8.7",
+ "reqwest",
+ "roxmltree",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-util",
  "tower",
  "url",
+ "zip",
 ]
 
 [[package]]
