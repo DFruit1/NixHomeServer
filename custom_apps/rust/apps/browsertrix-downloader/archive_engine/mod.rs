@@ -9,6 +9,14 @@ use std::path::{Path, PathBuf};
 
 mod content;
 mod read;
+mod selectors;
+mod transform;
+mod views;
+
+pub use transform::{compose_repair, deduplicate_archive, export_archive, materialize_archive};
+pub use views::{
+    compare_archives, estimate_size, preview_document, preview_page, reader_export, PreviewDocument,
+};
 
 /// Caller authorizes every path for the same owner/visibility before entering
 /// the engine. The engine checks immutable content identity, never authorization.
@@ -167,6 +175,7 @@ pub struct PageSample {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Estimate {
+    pub measured: bool,
     pub lower_bytes: u64,
     pub upper_bytes: u64,
     pub expected_bytes: u64,

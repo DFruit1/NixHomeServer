@@ -2,7 +2,7 @@ use super::read::{self, Record, MAX_ITEMS, MAX_RECORD};
 use html2text::{Element, Handle, RcDom};
 use std::collections::BTreeSet;
 
-pub(super) fn payload(record: &Record) -> Result<Vec<u8>, String> {
+pub(super) fn transfer_payload(record: &Record) -> Result<Vec<u8>, String> {
     let mut bytes = record.payload.clone();
     if record.kind() == "resource" {
         return Ok(bytes);
@@ -30,6 +30,10 @@ pub(super) fn payload(record: &Record) -> Result<Vec<u8>, String> {
                 .map_err(|_| "Invalid chunk size")?;
             p = end + 2;
             if size == 0 {
+                let tail = &bytes[p..];
+                if tail != b"\r\n" && (!tail.ends_with(b"\r\n\r\n") || tail.len() > 65536) {
+                    return Err("Invalid chunk trailer".into());
+                }
                 break;
             }
             let end = p
@@ -44,6 +48,19 @@ pub(super) fn payload(record: &Record) -> Result<Vec<u8>, String> {
         }
         bytes = decoded;
     }
+    Ok(bytes)
+}
+pub(super) fn payload(record: &Record) -> Result<Vec<u8>, String> {
+    let mut bytes = transfer_payload(record)?;
+    if record.kind() == "resource" {
+        return Ok(bytes);
+    }
+    let split = record
+        .block
+        .windows(4)
+        .position(|s| s == b"\r\n\r\n")
+        .ok_or("HTTP header missing")?;
+    let (_, headers) = read::headers(&record.block[..split])?;
     if let Some(encoding) = headers.get("content-encoding") {
         bytes = match encoding.to_ascii_lowercase().as_str() {
             "identity" => bytes,
@@ -117,7 +134,7 @@ pub(super) fn text(node: &Handle) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 pub(super) fn extract(record: &Record) -> Result<(String, String, Vec<String>), String> {
-    if record.kind() == "revisit" && record.payload.is_empty() {
+    if record.kind() == "revisit" && !record.resolved {
         return Ok((String::new(), String::new(), vec![]));
     }
     let dom = dom(&payload(record)?)?;
@@ -132,7 +149,15 @@ pub(super) fn extract(record: &Record) -> Result<(String, String, Vec<String>), 
             }
         }
         if node.element_name().as_deref() == Some("title") {
-            title = text(&node)?.trim().into();
+            title = node
+                .children
+                .borrow()
+                .iter()
+                .map(text)
+                .collect::<Result<Vec<_>, _>>()?
+                .join("")
+                .trim()
+                .into();
         }
         for key in ["src", "href", "poster", "data"] {
             if let (Some(base), Some(value)) = (&base, attr(&node, key)) {

@@ -34,12 +34,16 @@ pub(super) struct Record {
     pub headers: BTreeMap<String, String>,
     pub block: Vec<u8>,
     pub payload: Vec<u8>,
+    pub payload_digest: String,
     pub status: u16,
     pub mime: String,
     pub member: String,
     pub offset: u64,
     pub length: u64,
     pub stored: u64,
+    pub resolved: bool,
+    pub index: BTreeMap<String, Value>,
+    pub index_key: String,
 }
 impl Record {
     pub fn field(&self, key: &str) -> &str {
@@ -52,7 +56,7 @@ impl Record {
         self.field("warc-type")
     }
     pub fn digest(&self) -> String {
-        format!("sha256:{}", hash(&self.payload))
+        self.payload_digest.clone()
     }
 }
 
@@ -60,6 +64,8 @@ pub(super) struct Archive {
     pub report: ArchiveReport,
     pub records: Vec<Record>,
     pub page_meta: Vec<PageRecord>,
+    pub dependency_hashes: BTreeMap<String, String>,
+    pub cost: usize,
 }
 
 pub(super) fn load(path: &Path) -> Result<Archive, String> {
@@ -68,12 +74,10 @@ pub(super) fn load(path: &Path) -> Result<Archive, String> {
     if archive_bytes > MAX_BYTES as u64 {
         return Err("Archive file exceeds 256 MiB engine limit".into());
     }
-    let mut hasher = Sha256::new();
-    let mut hashing = file.try_clone().map_err(|e| e.to_string())?;
-    std::io::copy(&mut hashing, &mut hasher).map_err(|e| e.to_string())?;
-    // File clones share a seek offset on Unix; reopen before parsing.
-    let mut zip =
-        ZipArchive::new(File::open(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    // Bind parsing and hashing to the same immutable in-memory snapshot.
+    let file_bytes = bounded(file, MAX_BYTES)?;
+    let sha256 = hash(&file_bytes);
+    let mut zip = ZipArchive::new(Cursor::new(file_bytes)).map_err(|e| e.to_string())?;
     if zip.len() > 10_000 {
         return Err("ZIP member count exceeds 10000".into());
     }
@@ -161,7 +165,7 @@ pub(super) fn load(path: &Path) -> Result<Archive, String> {
     let mut archive = Archive {
         report: ArchiveReport {
             archive_bytes,
-            sha256: format!("{:x}", hasher.finalize()),
+            sha256: sha256,
             title: manifest
                 .get("title")
                 .and_then(Value::as_str)
@@ -176,6 +180,13 @@ pub(super) fn load(path: &Path) -> Result<Archive, String> {
         },
         records: vec![],
         page_meta: vec![],
+        dependency_hashes: manifest
+            .get("webArchivesDependencyHashes")
+            .map(|v| serde_json::from_value(v.clone()))
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default(),
+        cost: 0,
     };
     if let Some(dependencies) = manifest.get("webArchivesDependencies") {
         archive.report.dependencies =
@@ -226,7 +237,11 @@ pub(super) fn load(path: &Path) -> Result<Archive, String> {
     if archive.records.is_empty() {
         return Err("No WARC records".into());
     }
-    validate_indexes(&members, &archive.records, &mut inflated)?;
+    if !members.contains_key("pages/pages.jsonl") {
+        return Err("Missing pages/pages.jsonl".into());
+    }
+    validate_indexes(&members, &mut archive.records, &mut inflated)?;
+    archive.cost = total + inflated;
     archive.resolve_local()?;
     Ok(archive)
 }
@@ -361,25 +376,34 @@ fn parse_warc(
         {
             check_digest(digest, &block)?;
         }
-        if kind != "revisit" {
-            if let Some(digest) = headers
-                .get("warc-payload-digest")
-                .filter(|d| d.starts_with("sha256:"))
-            {
-                check_digest(digest, &payload)?;
-            }
-        }
-        records.push(Record {
+        let resolved = kind != "revisit";
+        let mut record = Record {
             headers,
             block,
             payload,
+            payload_digest: String::new(),
             status,
             mime,
             member: member.into(),
             offset,
             length,
             stored: 0,
-        });
+            resolved,
+            index: BTreeMap::new(),
+            index_key: String::new(),
+        };
+        if matches!(record.kind(), "response" | "resource") {
+            let entity = content::transfer_payload(&record)?;
+            record.payload_digest = format!("sha256:{}", hash(&entity));
+            if let Some(expected) = record
+                .headers
+                .get("warc-payload-digest")
+                .filter(|d| d.starts_with("sha256:"))
+            {
+                check_digest(expected, &entity)?;
+            }
+        }
+        records.push(record);
         position = finish;
     }
     Ok(())
@@ -395,28 +419,62 @@ fn numeric(value: &Value, key: &str) -> Result<u64, String> {
 }
 fn validate_indexes(
     members: &BTreeMap<String, Vec<u8>>,
-    records: &[Record],
+    records: &mut [Record],
     inflated: &mut usize,
 ) -> Result<(), String> {
-    let mut indexed = BTreeSet::new();
-    let locations: HashMap<_, Vec<_>> = records
+    let mut locations = HashMap::<(String, u64, u64, String), Vec<usize>>::new();
+    for (i, r) in records
         .iter()
-        .filter(|r| matches!(r.kind(), "response" | "resource" | "revisit"))
-        .fold(HashMap::new(), |mut m, r| {
-            m.entry((r.member.as_str(), r.offset, r.length))
-                .or_default()
-                .push(r);
-            m
-        });
+        .enumerate()
+        .filter(|(_, r)| matches!(r.kind(), "response" | "resource" | "revisit"))
+    {
+        locations
+            .entry((r.member.clone(), r.offset, r.length, r.url().into()))
+            .or_default()
+            .push(i);
+    }
+    let mut indexed = BTreeSet::new();
     let mut count = 0;
     for (name, bytes) in members {
+        if name.ends_with(".idx") {
+            for line in lines(bytes)? {
+                let start = line.find('{').ok_or("Invalid compressed CDX block index")?;
+                let v: Value = serde_json::from_str(&line[start..]).map_err(|e| e.to_string())?;
+                let filename = v
+                    .get("filename")
+                    .and_then(Value::as_str)
+                    .ok_or("CDX block filename missing")?;
+                let path = if members.contains_key(filename) {
+                    filename.to_owned()
+                } else {
+                    format!("indexes/{filename}")
+                };
+                let data = members.get(&path).ok_or("CDX block file missing")?;
+                let offset = numeric(&v, "offset")?;
+                let length = numeric(&v, "length")?;
+                let end = offset
+                    .checked_add(length)
+                    .filter(|e| *e <= data.len() as u64)
+                    .ok_or("CDX block outside index file")?;
+                if data.get(offset as usize..offset as usize + 2) != Some(&[0x1f, 0x8b]) {
+                    return Err("CDX block is not a gzip boundary".into());
+                }
+                if length == 0 || end <= offset {
+                    return Err("Empty CDX block".into());
+                }
+                count += 1;
+                if count > MAX_ITEMS {
+                    return Err("CDX block count limit exceeded".into());
+                }
+            }
+        }
         if !(name.ends_with(".cdx") || name.ends_with(".cdxj") || name.ends_with(".cdx.gz")) {
             continue;
         }
         let raw = if name.ends_with(".gz") {
             bounded(MultiGzDecoder::new(bytes.as_slice()), MAX_BYTES - *inflated)?
         } else {
-            bytes.clone()
+            bounded(bytes.as_slice(), MAX_BYTES - *inflated)?
         };
         *inflated += raw.len();
         for line in lines(&raw)? {
@@ -424,74 +482,107 @@ fn validate_indexes(
             if count > MAX_ITEMS {
                 return Err("CDX count limit exceeded".into());
             }
-            let json = line
-                .find('{')
-                .ok_or("Unsupported CDX format (requires CDXJ)")?;
-            let value: Value = serde_json::from_str(&line[json..]).map_err(|e| e.to_string())?;
+            let start = line.find('{').ok_or("CDXJ JSON missing")?;
+            let value: Value = serde_json::from_str(&line[start..]).map_err(|e| e.to_string())?;
             let filename = value
                 .get("filename")
                 .and_then(Value::as_str)
                 .ok_or("CDX filename missing")?;
             let filename = if members.contains_key(filename) {
-                filename.to_owned()
+                filename.into()
             } else {
                 format!("archive/{filename}")
             };
-            let offset = numeric(&value, "offset")?;
-            let length = numeric(&value, "length")?;
-            let group = locations
-                .get(&(filename.as_str(), offset, length))
-                .ok_or("CDX points outside a gzip record span")?;
             let url = value
                 .get("url")
                 .and_then(Value::as_str)
                 .ok_or("CDX URL missing")?;
-            let record = group
+            let group = locations
+                .get(&(
+                    filename,
+                    numeric(&value, "offset")?,
+                    numeric(&value, "length")?,
+                    url.into(),
+                ))
+                .ok_or("CDX points outside matching WARC gzip span")?;
+            let timestamp = line[..start]
+                .split_whitespace()
+                .nth(1)
+                .ok_or("CDX timestamp missing")?;
+            let candidates: Vec<_> = group
                 .iter()
-                .find(|r| r.url() == url)
-                .ok_or("CDX URL does not match indexed WARC record")?;
-            indexed.insert((
-                record.member.clone(),
-                record.offset,
-                record.url().to_owned(),
-            ));
+                .copied()
+                .filter(|i| {
+                    timestamp_of(records[*i].field("warc-date")).as_deref() == Ok(timestamp)
+                })
+                .collect();
+            if candidates.len() != 1 {
+                return Err("CDX record timestamp is ambiguous or mismatched".into());
+            }
+            let i = candidates[0];
+            if !indexed.insert(i) {
+                return Err("Duplicate CDX identity; request-variant ambiguity unsupported".into());
+            }
+            records[i].index_key = line[..start]
+                .split_whitespace()
+                .next()
+                .ok_or("CDX lookup key missing")?
+                .into();
+            records[i].index = serde_json::from_value(value).map_err(|e| e.to_string())?;
         }
     }
-    if count == 0 {
+    for (i, r) in records
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r.kind(), "response" | "resource" | "revisit"))
+    {
+        if !indexed.contains(&i) {
+            return Err(format!("WARC resource missing CDXJ index: {}", r.url()));
+        }
+    }
+    if indexed.is_empty() {
         return Err("Missing CDXJ index".into());
     }
-    for record in records
-        .iter()
-        .filter(|r| matches!(r.kind(), "response" | "resource" | "revisit"))
-    {
-        if !indexed.contains(&(
-            record.member.clone(),
-            record.offset,
-            record.url().to_owned(),
-        )) {
-            return Err("WARC resource missing from CDXJ index".into());
-        }
-    }
     Ok(())
+}
+pub(super) fn timestamp_of(date: &str) -> Result<String, String> {
+    chrono::DateTime::parse_from_rfc3339(date)
+        .map(|d| {
+            d.with_timezone(&chrono::Utc)
+                .format("%Y%m%d%H%M%S")
+                .to_string()
+        })
+        .map_err(|_| "Invalid WARC capture date".into())
 }
 
 impl Archive {
     pub fn resolve_local(&mut self) -> Result<(), String> {
         let mut pending = true;
         let mut rounds = 0;
+        let mut work = 2_000_000usize;
         while pending && rounds < 64 {
             pending = false;
             rounds += 1;
             for i in 0..self.records.len() {
-                if self.records[i].kind() != "revisit" || !self.records[i].payload.is_empty() {
+                if self.records[i].kind() != "revisit"
+                    || self.records[i].resolved
+                    || !self.records[i].field("warc-x-dependency-sha256").is_empty()
+                {
                     continue;
                 }
+                if self.records.len() > work {
+                    return Err("Local revisit resolution work limit exceeded".into());
+                }
+                work -= self.records.len();
                 if let Some(target) = find_revisit(&self.records[i], &self.records) {
                     let payload = target.payload.clone();
+                    let digest = target.payload_digest.clone();
                     let mime = target.mime.clone();
                     let status = target.status;
-                    if !payload.is_empty() {
+                    if target.resolved {
+                        self.records[i].resolved = true;
                         self.records[i].payload = payload;
+                        self.records[i].payload_digest = digest;
                         if self.records[i].mime.is_empty() {
                             self.records[i].mime = mime;
                         }
@@ -509,14 +600,17 @@ impl Archive {
         let mut report = self.report.clone();
         let mut pages = BTreeMap::<(String, String), PageRecord>::new();
         for page in &self.page_meta {
-            pages.insert((page.url.clone(), page.ts.clone()), page.clone());
+            let ts = chrono::DateTime::parse_from_rfc3339(&page.ts)
+                .map(|d| d.to_rfc3339())
+                .unwrap_or_else(|_| page.ts.clone());
+            pages.insert((page.url.clone(), ts), page.clone());
         }
         let mut seen = BTreeSet::new();
         for record in &self.records {
             if !matches!(record.kind(), "response" | "resource" | "revisit") {
                 continue;
             }
-            let unresolved = record.kind() == "revisit" && record.payload.is_empty();
+            let unresolved = record.kind() == "revisit" && !record.resolved;
             if unresolved {
                 report.warnings.push(format!(
                     "Unresolved revisit: {} {}",
@@ -544,7 +638,7 @@ impl Archive {
             } else {
                 report.duplicate_payload_bytes += record.stored;
             }
-            let mut resource = ResourceRecord {
+            let resource = ResourceRecord {
                 url: record.url().into(),
                 mime: record.mime.clone(),
                 status: record.status,
@@ -556,15 +650,16 @@ impl Archive {
                     .unwrap_or_default(),
                 pages: vec![],
             };
-            if record.mime == "text/html" || record.mime == "application/xhtml+xml" {
+            if (record.mime == "text/html" || record.mime == "application/xhtml+xml")
+                && (self.page_meta.iter().any(|p| p.url == record.url())
+                    || record.field("warc-resource-type") == "document"
+                    || self.page_meta.is_empty())
+            {
                 let (text, title, links) = content::extract(record)?;
-                let key = pages
-                    .keys()
-                    .find(|(u, ts)| {
-                        u == record.url() && (ts == record.field("warc-date") || ts.is_empty())
-                    })
-                    .cloned()
-                    .unwrap_or((record.url().into(), record.field("warc-date").into()));
+                let ts = chrono::DateTime::parse_from_rfc3339(record.field("warc-date"))
+                    .map(|d| d.to_rfc3339())
+                    .unwrap_or_else(|_| record.field("warc-date").into());
+                let key = (record.url().into(), ts);
                 let page = pages.entry(key).or_default();
                 page.url = record.url().into();
                 page.ts = record.field("warc-date").into();
@@ -576,22 +671,27 @@ impl Archive {
                 page.status = record.status;
                 page.resource_urls = links;
             }
-            resource.pages = self
-                .records
-                .iter()
-                .filter(|r| r.url() == record.field("warc-refers-to-target-uri"))
-                .map(|r| r.url().into())
-                .collect();
             report.resources.push(resource);
         }
         report.pages = pages.into_values().collect();
+        let mut attribution = BTreeMap::<String, BTreeSet<String>>::new();
+        for page in &report.pages {
+            attribution
+                .entry(page.url.clone())
+                .or_default()
+                .insert(page.url.clone());
+            for url in &page.resource_urls {
+                attribution
+                    .entry(url.clone())
+                    .or_default()
+                    .insert(page.url.clone());
+            }
+        }
         for resource in &mut report.resources {
-            resource.pages = report
-                .pages
-                .iter()
-                .filter(|p| p.url == resource.url || p.resource_urls.contains(&resource.url))
-                .map(|p| p.url.clone())
-                .collect();
+            resource.pages = attribution
+                .get(&resource.url)
+                .map(|s| s.iter().cloned().collect())
+                .unwrap_or_default();
         }
         report.metadata_bytes = report
             .archive_bytes
@@ -603,21 +703,36 @@ impl Archive {
     }
 }
 pub(super) fn find_revisit<'a>(record: &Record, candidates: &'a [Record]) -> Option<&'a Record> {
-    candidates.iter().find(|r| {
-        if !matches!(r.kind(), "response" | "resource") && r.payload.is_empty() {
+    let mut matches = candidates.iter().filter(|r| {
+        if !r.resolved {
             return false;
         }
-        if !record.field("warc-refers-to").is_empty() {
-            return r.field("warc-record-id") == record.field("warc-refers-to");
-        }
+        let id = record.field("warc-refers-to");
         let url = record.field("warc-refers-to-target-uri");
         let date = record.field("warc-refers-to-date");
         let digest = record.field("warc-payload-digest");
-        !url.is_empty()
-            && !date.is_empty()
-            && !digest.is_empty()
-            && r.url() == url
-            && r.field("warc-date") == date
-            && (r.field("warc-payload-digest") == digest || r.digest() == digest)
-    })
+        if id.is_empty() && (url.is_empty() || date.is_empty() || digest.is_empty()) {
+            return false;
+        }
+        if !id.is_empty() && r.field("warc-record-id") != id {
+            return false;
+        }
+        if !url.is_empty() && r.url() != url {
+            return false;
+        }
+        if !date.is_empty() && r.field("warc-date") != date {
+            return false;
+        }
+        let location = record.field("warc-x-dependency-location");
+        if !location.is_empty() && location != format!("{}:{}:{}", r.member, r.offset, r.length) {
+            return false;
+        }
+        digest.is_empty() || r.field("warc-payload-digest") == digest || r.digest() == digest
+    });
+    let first = matches.next();
+    if matches.next().is_some() {
+        None
+    } else {
+        first
+    }
 }
