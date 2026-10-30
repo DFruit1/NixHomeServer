@@ -1,4 +1,4 @@
-use super::read::{self, Archive, Record, MAX_ITEMS};
+use super::read::{self, Archive, PageCapture, PageKey, PageMetadata, Record, MAX_ITEMS};
 use super::*;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -500,7 +500,7 @@ fn replace_payload(record: &mut Record, bytes: Vec<u8>) -> Result<(), String> {
 fn repair_page_metadata(
     patch: &Archive,
     successful: &BTreeSet<String>,
-) -> (Vec<PageRecord>, usize) {
+) -> (Vec<PageMetadata>, usize) {
     let mut captures = BTreeMap::<&str, Vec<(usize, &Record)>>::new();
     for (i, record) in patch.records.iter().enumerate() {
         if successful.contains(record.url())
@@ -511,14 +511,14 @@ fn repair_page_metadata(
             captures.entry(record.url()).or_default().push((i, record));
         }
     }
-    let mut associated = BTreeMap::<usize, Vec<&PageRecord>>::new();
-    // The general inventory's ID lookup has one value per URL/date. Conflicting
-    // duplicate native rows must not borrow one another's identity from it.
+    let mut associated = BTreeMap::<usize, Vec<&PageMetadata>>::new();
+    // Conflicting unbound duplicate native rows cannot qualify one another;
+    // already-bound rows at identical dates still represent distinct records.
     let mut page_counts = BTreeMap::new();
     for page in &patch.page_meta {
         if let Ok(stamp) = chrono::DateTime::parse_from_rfc3339(&page.ts) {
             *page_counts
-                .entry((page.url.as_str(), stamp))
+                .entry((page.url.as_str(), stamp, page.capture.as_ref()))
                 .or_insert(0usize) += 1;
         }
     }
@@ -537,19 +537,25 @@ fn repair_page_metadata(
         let Ok(stamp) = chrono::DateTime::parse_from_rfc3339(&page.ts) else {
             continue;
         };
-        if page_counts.get(&(page.url.as_str(), stamp)) != Some(&1) {
+        if page_counts.get(&(page.url.as_str(), stamp, page.capture.as_ref())) != Some(&1) {
             continue;
         }
-        let page_id = patch.page_ids.get(&(page.url.clone(), stamp.to_rfc3339()));
         let mut best = None;
         let mut owner = None;
         for (i, record) in group {
+            if let Some(capture) = &page.capture {
+                if capture == &PageCapture::of(record) {
+                    owner = Some(*i);
+                    break;
+                }
+                continue;
+            }
             let Ok(date) = chrono::DateTime::parse_from_rfc3339(record.field("warc-date")) else {
                 continue;
             };
             let id = record.field("warc-page-id");
-            let matching_id = page_id.is_some_and(|page_id| !page_id.is_empty() && page_id == id);
-            if page_id.is_some_and(|page_id| !page_id.is_empty() && !id.is_empty() && page_id != id)
+            let matching_id = !page.id.is_empty() && page.id == id;
+            if (!page.id.is_empty() && !id.is_empty() && page.id != id)
                 || (!matching_id && stamp.timestamp() != date.timestamp())
             {
                 continue;
@@ -582,18 +588,24 @@ fn repair_page_metadata(
             if !(200..400).contains(&record.status) {
                 continue;
             }
-            if let Some(rows) = associated.get(i).filter(|rows| rows.len() == 1) {
-                pages.push(rows[0].clone());
+            let mut page = if let Some(rows) = associated.get(i).filter(|rows| rows.len() == 1) {
+                rows[0].clone()
             } else {
                 fallbacks += 1;
                 // Seed a row even when unrelated parent pages remain; the
                 // writer must rebuild this page from its successful response.
-                pages.push(PageRecord {
-                    url: record.url().into(),
-                    ts: record.field("warc-date").into(),
+                PageMetadata {
+                    page: PageRecord {
+                        url: record.url().into(),
+                        ts: record.field("warc-date").into(),
+                        ..Default::default()
+                    },
+                    id: record.field("warc-page-id").into(),
                     ..Default::default()
-                });
-            }
+                }
+            };
+            page.capture = Some(PageCapture::of(record));
+            pages.push(page);
         }
     }
     (pages, fallbacks)
@@ -687,7 +699,7 @@ impl<W: Write> Write for OutputHash<'_, W> {
         self.inner.flush()
     }
 }
-fn encode_record(record: &Record, out: impl Write) -> Result<(), String> {
+fn encode_record(record: &Record, out: impl Write) -> Result<u64, String> {
     let length = record.output_length();
     let (actual, block_digest) =
         super::streaming::stream_hash(record.output_reader()?, super::streaming::MAX_BODY)?;
@@ -721,13 +733,13 @@ fn encode_record(record: &Record, out: impl Write) -> Result<(), String> {
     }
     encoder.write_all(b"\r\n\r\n").map_err(|e| e.to_string())?;
     encoder.finish().map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(raw.len() as u64)
 }
 
 fn write_archive(
     destination: &Path,
     records: Vec<Record>,
-    pages: Vec<PageRecord>,
+    pages: Vec<PageMetadata>,
     title: &str,
     dependencies: BTreeMap<String, String>,
     rules: &[selectors::Selector],
@@ -761,7 +773,7 @@ fn write_archive(
     let mut warc_hash = Sha256::new();
     let mut warc_position = 0u64;
     let mut index = vec![];
-    let mut page_rows = BTreeMap::<(String, String), PageRecord>::new();
+    let mut page_rows = BTreeMap::<PageKey, PageMetadata>::new();
     let infer_pages = pages.is_empty();
     for mut page in pages {
         if !rules.is_empty() {
@@ -772,14 +784,14 @@ fn write_archive(
             page.title.clear();
             page.resource_urls.clear();
         }
-        page_rows.insert((page.url.clone(), page.ts.clone()), page);
+        page_rows.insert(page.key(), page);
     }
     let mut page_data = serde_json::to_vec(
         &json!({"format":"json-pages-1.0","id":"pages","title":"Derived archived pages"}),
     )
     .map_err(|e| e.to_string())?;
     page_data.push(b'\n');
-    let row_bytes = |page: &PageRecord| -> Result<usize, String> {
+    let row_bytes = |page: &PageMetadata| -> Result<usize, String> {
         Ok(serde_json::to_vec(page).map_err(|e| e.to_string())?.len() + 1)
     };
     let mut page_metadata_bytes = page_data.len();
@@ -790,7 +802,7 @@ fn write_archive(
         return Err("Source page metadata exceeds output inventory bound".into());
     }
     let mut analysis_omissions = 0u64;
-    let page_urls: BTreeSet<_> = page_rows.keys().map(|(url, _)| url.clone()).collect();
+    let page_urls: BTreeSet<_> = page_rows.keys().map(|(url, _, _)| url.clone()).collect();
     let mut canonical = HashMap::<(String, String, String), Record>::new();
     for original in &records {
         // Transform one small HTML body at a time. Never retain all edited
@@ -830,7 +842,7 @@ fn write_archive(
             }
         }
         let offset = warc_position;
-        encode_record(
+        let body_offset = encode_record(
             &record,
             OutputHash {
                 inner: &mut zip,
@@ -889,9 +901,17 @@ fn write_archive(
                 read::timestamp_of(record.field("warc-date"))?,
                 serde_json::to_string(&row).map_err(|e| e.to_string())?
             ));
-            if let Some((text, title, links)) = page_text {
-                let key = read::page_key(&page_rows, &record, None)
-                    .unwrap_or((record.url().into(), record.field("warc-date").into()));
+            if !matches!(record.mime.as_str(), "text/html" | "application/xhtml+xml")
+                || (!infer_pages && !page_urls.contains(record.url()))
+            {
+                continue;
+            }
+            let key = read::page_key(&page_rows, original).unwrap_or((
+                record.url().into(),
+                record.field("warc-date").into(),
+                Some(PageCapture::of(original)),
+            ));
+            if page_text.is_some() || infer_pages || page_rows.contains_key(&key) {
                 let previous_bytes = page_rows
                     .get(&key)
                     .map(&row_bytes)
@@ -904,17 +924,32 @@ fn write_archive(
                 }
                 page.bytes = encoded_length;
                 page.status = record.status;
+                if page.id.is_empty() {
+                    page.id = record.field("warc-page-id").into();
+                }
+                if key.2.is_some() {
+                    // The key retains the input association during this write;
+                    // the value carries the new exact serialized WARC location.
+                    page.capture = Some(PageCapture {
+                        record_id: record.field("warc-record-id").into(),
+                        member: "archive/derived.warc.gz".into(),
+                        offset,
+                        body_offset,
+                    });
+                }
                 let baseline = page.clone();
                 // Native Browsertrix rendered baselines include JavaScript
                 // content absent from the original response. Regenerate only
                 // when this derivative actually rewrites HTML selectors.
-                if !rules.is_empty() || page.text.is_empty() {
-                    page.text = text;
+                if let Some((text, title, links)) = page_text {
+                    if !rules.is_empty() || page.text.is_empty() {
+                        page.text = text;
+                    }
+                    if !rules.is_empty() || page.title.is_empty() {
+                        page.title = title;
+                    }
+                    page.resource_urls = links;
                 }
-                if !rules.is_empty() || page.title.is_empty() {
-                    page.title = title;
-                }
-                page.resource_urls = links;
                 let without = page_metadata_bytes - previous_bytes;
                 if without + row_bytes(&page)? > super::streaming::MAX_METADATA {
                     page = baseline;
@@ -925,26 +960,6 @@ fn write_archive(
                     return Err("Page structural metadata exceeds output inventory bound".into());
                 }
                 page_rows.insert(key, page);
-            } else if infer_pages
-                && matches!(record.mime.as_str(), "text/html" | "application/xhtml+xml")
-            {
-                let key = (record.url().into(), record.field("warc-date").into());
-                if !page_rows.contains_key(&key) {
-                    let page = PageRecord {
-                        url: record.url().into(),
-                        ts: record.field("warc-date").into(),
-                        bytes: encoded_length,
-                        status: record.status,
-                        ..Default::default()
-                    };
-                    page_metadata_bytes += row_bytes(&page)?;
-                    if page_metadata_bytes > super::streaming::MAX_METADATA {
-                        return Err(
-                            "Page structural metadata exceeds output inventory bound".into()
-                        );
-                    }
-                    page_rows.insert(key, page);
-                }
             }
         }
     }

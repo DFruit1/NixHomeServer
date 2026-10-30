@@ -1561,6 +1561,147 @@ fn archive_engine_rendered_baseline_survives_subsecond_response_merge() {
 }
 
 #[test]
+fn archive_engine_repair_keeps_successful_capture_page_bindings() {
+    // WA-ENG003 round 3: repair qualified A's .500Z rendered row by PageID,
+    // but serialization reassigned A's response text to B's .300Z fallback.
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("parent.wacz");
+    fixture(&parent);
+    let parent_hash = inspect_archive(&parent).unwrap().sha256;
+    let url = "https://example.test/account";
+    let native_ts = "2026-02-01T00:00:00.500Z";
+    for reverse in [false, true] {
+        let patch = dir.path().join(format!("patch-{reverse}.wacz"));
+        let mut captures = vec![
+            (
+                url,
+                "text/html",
+                b"<title>Response A</title><p>Body A</p>".as_slice(),
+                "2026-02-01T00:00:00Z",
+                200,
+                false,
+            ),
+            (
+                url,
+                "text/html",
+                b"<title>Response B</title><p>Body B</p>".as_slice(),
+                "2026-02-01T00:00:00.300Z",
+                200,
+                false,
+            ),
+        ];
+        if reverse {
+            captures.reverse();
+        }
+        capture_fixture(&patch, &captures);
+        rewrite_package(&patch, |entries| {
+            let raw = read::bounded(
+                flate2::read::MultiGzDecoder::new(entries["archive/capture.warc.gz"].as_slice()),
+                64 * 1024,
+            )
+            .unwrap();
+            let raw = String::from_utf8(raw).unwrap();
+            let index = std::str::from_utf8(&entries["indexes/index.cdxj"]).unwrap();
+            let mut rows: Vec<serde_json::Value> = index
+                .lines()
+                .map(|line| serde_json::from_str(&line[line.find('{').unwrap()..]).unwrap())
+                .collect();
+            rows.sort_by_key(|row| row["offset"].as_str().unwrap().parse::<u64>().unwrap());
+            let mut warc = vec![];
+            let mut index = vec![];
+            for (record, row) in raw.split("WARC/1.1\r\n").skip(1).zip(rows.iter_mut()) {
+                let id = if record.contains("<title>Response A</title>") {
+                    "page-A"
+                } else {
+                    "page-B"
+                };
+                let mut encoder =
+                    flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
+                write!(encoder, "WARC/1.1\r\nWARC-Page-ID: {id}\r\n{record}").unwrap();
+                let bytes = encoder.finish().unwrap();
+                row["offset"] = serde_json::json!(warc.len().to_string());
+                row["length"] = serde_json::json!(bytes.len().to_string());
+                row["method"] = serde_json::json!("POST");
+                row["requestBody"] = serde_json::json!(format!("variant={id}"));
+                index.push(format!(
+                    "test,example)/account?__wb_method=post&variant={} 20260201000000 {row}\n",
+                    id.to_ascii_lowercase()
+                ));
+                warc.extend_from_slice(&bytes);
+            }
+            index.sort();
+            entries.insert("archive/capture.warc.gz".into(), warc);
+            entries.insert("indexes/index.cdxj".into(), index.concat().into_bytes());
+            entries.insert("pages/pages.jsonl".into(), format!("{{\"format\":\"json-pages-1.0\"}}\n{}\n", serde_json::json!({"id":"page-A","url":url,"ts":native_ts,"title":"Rendered A title","text":"Rendered A baseline","status":200})).into_bytes());
+        });
+        let before = inspect_archive(&patch).unwrap();
+        let output = dir.path().join(format!("repaired-{reverse}.wacz"));
+        let repaired = compose_repair(&parent, &patch, &output, &[], &[url.into()]).unwrap();
+        assert!(repaired
+            .warnings
+            .iter()
+            .any(|w| w.contains("1 successful captures")));
+        let exported = dir.path().join(format!("exported-{reverse}.wacz"));
+        let reexported = export_archive(&output, &exported, &ExportOptions::default()).unwrap();
+        for (path, report) in [(&output, repaired), (&exported, reexported)] {
+            // Inspect raw rows too: report reconciliation must not conceal
+            // incorrectly serialized metadata, missing PageIDs or request keys.
+            let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+            let mut raw = String::new();
+            std::io::Read::read_to_string(&mut zip.by_name("pages/pages.jsonl").unwrap(), &mut raw)
+                .unwrap();
+            let rows: Vec<serde_json::Value> = raw
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .filter(|row| row["url"] == url)
+                .collect();
+            assert_eq!(rows.len(), 2);
+            for (id, ts, title, text) in [
+                ("page-B", "2026-02-01T00:00:00.300Z", "Response B", "Body B"),
+                (
+                    "page-A",
+                    native_ts,
+                    "Rendered A title",
+                    "Rendered A baseline",
+                ),
+            ] {
+                let row = rows.iter().find(|row| row["ts"] == ts).unwrap();
+                assert_eq!(row["title"], title, "reverse={reverse}, row={row}");
+                assert!(row["text"].as_str().unwrap().contains(text), "{row}");
+                assert_eq!(row["id"], id);
+                let page = report
+                    .pages
+                    .iter()
+                    .find(|p| p.url == url && p.ts == ts)
+                    .unwrap();
+                assert_eq!(page.title, title);
+                assert!(page.text.contains(text));
+            }
+            let reader = reader_export(path, "markdown").unwrap();
+            assert!(reader.contains("Rendered A baseline"));
+            assert!(reader.contains("Body B"));
+            let loaded = read::load(path).unwrap();
+            let records: Vec<_> = loaded.records.iter().filter(|r| r.url() == url).collect();
+            assert_eq!(records.len(), 2);
+            for record in records {
+                let id = record.field("warc-page-id");
+                assert_eq!(record.index["method"], "POST");
+                assert_eq!(record.index["requestBody"], format!("variant={id}"));
+            }
+            for resource in &before.resources {
+                assert!(report
+                    .resources
+                    .iter()
+                    .any(|r| r.url == url && r.digest == resource.digest));
+            }
+            assert!(verify_archive(path).unwrap().valid);
+        }
+        assert_eq!(inspect_archive(&patch).unwrap().sha256, before.sha256);
+    }
+    assert_eq!(inspect_archive(&parent).unwrap().sha256, parent_hash);
+}
+
+#[test]
 fn archive_engine_repair_native_baseline_requires_unambiguous_capture_identity() {
     // Preservation regression: matching URL and a nearby date must not defeat
     // an explicit mismatched page ID or select between distinct requests.

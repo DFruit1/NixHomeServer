@@ -288,3 +288,29 @@ IDs, request and subsecond ambiguity, explicit failed native status, the existin
 `.500Z` rendered baseline with a `.000Z` response, source/dependency/analysis
 budget aggregation, unknown key/value preservation, and unchanged originals.
 Native browser replay qualification remains with the integration owner.
+
+Round-3 WA-ENG003 rework preserves the qualified record association through
+serialization and subsequent report/Reader/export reconciliation. Private page
+metadata retains native `id` plus `webArchivesCapture` (WARC record ID, member,
+gzip offset and uncompressed body offset); the writer refreshes those locations
+for the derivative. Qualified rows can match only their own actual record, with
+separate keys for distinct records even at identical page dates. The body offset
+distinguishes records sharing an input gzip member. The public `PageRecord` and
+operation APIs remain unchanged. Native rendered text and genuine subsecond page
+dates are retained; each missing row is rebuilt from its own successful response
+at that response's actual date, without another nearest-date reassignment.
+
+The added preservation regression reproduces two successful account captures
+at `.000Z` and `.300Z`, with only a `.500Z` native row explicitly identifying A.
+On `f56ba82`, the raw `.300Z` row incorrectly contains A's response title/body.
+It checks raw rows, native PageIDs, both WARC record orders, distinct POST request
+identities, report/Reader content and re-export, response digests and immutable
+parent/repair hashes. This extends the repeated WA-ENG003 preservation regression
+coverage; independent round-4 acceptance remains with the integration owner.
+
+Focused validation for this rework passed 22 engine tests. The opt-in actual
+crawler/native-pair check also passed: selector export 109,406 -> 101,596 bytes,
+dependent output 53,470 bytes, and standalone materialization 101,807 bytes,
+retaining all 18 resources and both original hashes. Full application and native
+browser replay gates remain with the integration owner; the large streaming
+measurement above was not rerun.

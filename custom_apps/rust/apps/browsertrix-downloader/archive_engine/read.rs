@@ -118,11 +118,66 @@ impl Record {
     }
 }
 
+// Keep native identity and a qualified WARC association outside the public
+// PageRecord API. Output locations are refreshed when the WARC is serialized;
+// the body offset also distinguishes records sharing one input gzip member.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PageCapture {
+    pub record_id: String,
+    pub member: String,
+    pub offset: u64,
+    pub body_offset: u64,
+}
+impl PageCapture {
+    pub fn of(record: &Record) -> Self {
+        Self {
+            record_id: record.field("warc-record-id").into(),
+            member: record.member.clone(),
+            offset: record.offset,
+            body_offset: record
+                .source
+                .as_ref()
+                .map_or(0, |source| source.body_offset),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub(super) struct PageMetadata {
+    #[serde(flatten)]
+    pub page: PageRecord,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    #[serde(
+        default,
+        rename = "webArchivesCapture",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub capture: Option<PageCapture>,
+}
+impl std::ops::Deref for PageMetadata {
+    type Target = PageRecord;
+    fn deref(&self) -> &PageRecord {
+        &self.page
+    }
+}
+impl std::ops::DerefMut for PageMetadata {
+    fn deref_mut(&mut self) -> &mut PageRecord {
+        &mut self.page
+    }
+}
+pub(super) type PageKey = (String, String, Option<PageCapture>);
+impl PageMetadata {
+    pub fn key(&self) -> PageKey {
+        (self.url.clone(), self.ts.clone(), self.capture.clone())
+    }
+}
+
 pub(super) struct Archive {
     pub report: ArchiveReport,
     pub records: Vec<Record>,
-    pub page_meta: Vec<PageRecord>,
-    pub page_ids: BTreeMap<(String, String), String>,
+    pub page_meta: Vec<PageMetadata>,
     pub dependency_hashes: BTreeMap<String, String>,
     pub cost: usize,
 }
@@ -502,22 +557,23 @@ pub(super) fn validate_indexes(
     Ok(())
 }
 pub(super) fn page_key(
-    pages: &BTreeMap<(String, String), PageRecord>,
+    pages: &BTreeMap<PageKey, PageMetadata>,
     record: &Record,
-    ids: Option<&BTreeMap<(String, String), String>>,
-) -> Option<(String, String)> {
+) -> Option<PageKey> {
+    let capture = PageCapture::of(record);
     let target = chrono::DateTime::parse_from_rfc3339(record.field("warc-date"))
         .map(|d| d.timestamp_millis())
         .ok();
     pages
         .range(
-            (record.url().to_owned(), String::new())
-                ..=(record.url().to_owned(), "\u{10ffff}".to_owned()),
+            (record.url().to_owned(), String::new(), None)
+                ..=(record.url().to_owned(), "\u{10ffff}".to_owned(), None),
         )
-        .min_by_key(|(key, _)| {
-            let matching_id = ids
-                .and_then(|ids| ids.get(*key))
-                .is_some_and(|id| !id.is_empty() && id == record.field("warc-page-id"));
+        // Qualified rows belong to exactly one record. They cannot be borrowed
+        // by another capture, even one at a closer or identical timestamp.
+        .filter(|(key, _)| key.2.as_ref().is_none_or(|owner| owner == &capture))
+        .min_by_key(|(key, page)| {
+            let matching_id = !page.id.is_empty() && page.id == record.field("warc-page-id");
             let delta = target
                 .and_then(|target| {
                     chrono::DateTime::parse_from_rfc3339(&key.1)
@@ -525,7 +581,7 @@ pub(super) fn page_key(
                         .map(|stamp| stamp.timestamp_millis().abs_diff(target))
                 })
                 .unwrap_or(u64::MAX);
-            (!matching_id, delta)
+            (key.2.is_none(), !matching_id, delta)
         })
         .map(|(key, _)| key.clone())
 }
@@ -593,12 +649,12 @@ impl Archive {
         strict: bool,
     ) -> Result<ArchiveReport, String> {
         let mut report = self.report.clone();
-        let mut pages = BTreeMap::<(String, String), PageRecord>::new();
+        let mut pages = BTreeMap::<PageKey, PageMetadata>::new();
         for page in &self.page_meta {
             let ts = chrono::DateTime::parse_from_rfc3339(&page.ts)
                 .map(|d| d.to_rfc3339())
                 .unwrap_or_else(|_| page.ts.clone());
-            pages.insert((page.url.clone(), ts), page.clone());
+            pages.insert((page.url.clone(), ts, page.capture.clone()), page.clone());
         }
         let mut seen = BTreeSet::new();
         let mut extracted_bytes = 0usize;
@@ -671,8 +727,11 @@ impl Archive {
                 let ts = chrono::DateTime::parse_from_rfc3339(record.field("warc-date"))
                     .map(|d| d.to_rfc3339())
                     .unwrap_or_else(|_| record.field("warc-date").into());
-                let key = page_key(&pages, record, Some(&self.page_ids))
-                    .unwrap_or((record.url().into(), ts));
+                let key = page_key(&pages, record).unwrap_or((
+                    record.url().into(),
+                    ts,
+                    Some(PageCapture::of(record)),
+                ));
                 let page = pages.entry(key).or_default();
                 page.url = record.url().into();
                 if page.ts.is_empty() {
@@ -692,7 +751,7 @@ impl Archive {
             }
             report.resources.push(resource);
         }
-        report.pages = pages.into_values().collect();
+        report.pages = pages.into_values().map(|page| page.page).collect();
         let mut attribution = BTreeMap::<String, BTreeSet<String>>::new();
         for page in &report.pages {
             attribution

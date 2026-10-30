@@ -256,7 +256,6 @@ pub(super) fn load(path: &Path) -> Result<Archive, String> {
         },
         records: vec![],
         page_meta: vec![],
-        page_ids: BTreeMap::new(),
         dependency_hashes: manifest
             .get("webArchivesDependencyHashes")
             .map(|v| serde_json::from_value(v.clone()))
@@ -373,16 +372,10 @@ pub(super) fn load(path: &Path) -> Result<Archive, String> {
                 if value.get("url").is_none() {
                     continue;
                 }
-                let id = value.get("id").and_then(Value::as_str).map(str::to_owned);
-                let page: PageRecord = serde_json::from_value(value).map_err(|e| e.to_string())?;
+                let page: read::PageMetadata =
+                    serde_json::from_value(value).map_err(|e| e.to_string())?;
                 if page.url.len() > 8192 || page.title.len() > 64 * 1024 {
                     return Err("Page metadata length limit exceeded".into());
-                }
-                if let Some(id) = id {
-                    let ts = chrono::DateTime::parse_from_rfc3339(&page.ts)
-                        .map(|d| d.to_rfc3339())
-                        .unwrap_or_else(|_| page.ts.clone());
-                    archive.page_ids.insert((page.url.clone(), ts), id);
                 }
                 archive.page_meta.push(page);
                 if archive.page_meta.len() > MAX_ITEMS {
