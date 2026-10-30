@@ -140,6 +140,47 @@ class DirectoryClaimsTest(unittest.TestCase):
         self.assertEqual('unfinished\n', path.read_text())
         self.assertEqual('one', self.project.status()['claims'][0]['owner'])
 
+    def test_scoped_release_preserves_dirty_work_and_other_holder_requests(self):
+        # A real dependency handoff deadlocked when dirty backend work and a
+        # clean imported engine shared a claim. Preserve both custody boundaries.
+        original = self.project.claim('one', ['modules/books', 'modules/photos/frontend'])
+        path = self.root / 'modules/books/source.txt'
+        path.write_text('unfinished\n')
+        self.project.request('two', ['modules/photos/frontend'], 'Dependency handoff')
+        self.project.request('three', ['modules/books'], 'Later handoff')
+        other_tree = Path(self.scratch.name) / 'other-holder'
+        self.git('worktree', 'add', '-q', '--detach', str(other_tree))
+        other = claims.Project(other_tree).claim('other', ['modules/photos/backend'])
+        self.project.request('four', ['modules/photos'], 'Parent waits for all children')
+        receipt = self.project.release('one', ['modules/photos/frontend'])
+        self.assertEqual(['modules/books'], receipt['remainingPaths'])
+        status = self.project.status()
+        self.assertEqual(['modules/books'], status['claims'][0]['paths'])
+        self.assertEqual(original['generation'], status['claims'][0]['generation'])
+        self.assertEqual(['three', 'four'], [r['requester'] for r in status['requests']])
+        self.assertEqual([other['generation']], status['requests'][1]['holders'])
+        self.assertEqual('unfinished\n', path.read_text())
+        worktree = Path(self.scratch.name) / 'consumer'
+        self.git('worktree', 'add', '-q', '--detach', str(worktree))
+        claims.Project(worktree).claim('two', ['modules/photos/frontend'])
+        with self.assertRaises(ValueError):
+            claims.Project(worktree).claim('two', ['modules/books'])
+
+    def test_scoped_release_rejects_dirty_or_unheld_scopes_atomically(self):
+        self.project.claim('one', ['modules/books', 'modules/photos/frontend'])
+        (self.root / 'modules/books/source.txt').write_text('unfinished\n')
+        before = self.project.status()
+        for paths in (['modules/books'], ['modules/photos'],
+                      ['modules/photos/frontend', 'modules/books'],
+                      ['modules/books/nested']):
+            with self.subTest(paths=paths), self.assertRaises(ValueError):
+                self.project.release('one', paths)
+            self.assertEqual(before, self.project.status())
+        with self.project.writing('one', [self.root / 'modules/books/source.txt']):
+            with self.assertRaises(ValueError):
+                self.project.release('one', ['modules/photos/frontend'])
+        self.assertEqual(before, self.project.status())
+
     def test_recovery_requires_stopped_writer_and_preserves_unfinished_checkout(self):
         worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'])
         try:

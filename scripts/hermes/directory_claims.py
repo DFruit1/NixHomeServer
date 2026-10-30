@@ -211,18 +211,34 @@ class Project:
             self.save(state)
             return receipt
 
-    def release(self, owner):
+    def release(self, owner, paths=()):
+        """Release clean, exactly held scopes without abandoning other work."""
+        requested = sorted(set(self.scope(p) for p in paths))
         with ExitStack() as stack:
             state = stack.enter_context(self.transaction())
             claim = self.own(state, owner)
             self.operation_lock(stack, claim)
-            if self.is_git and any(self.covers(claim, p) for p in changed_paths(self.root)):
+            released = requested or list(claim['paths'])
+            if any(path not in claim['paths'] for path in released):
+                raise ValueError('Release only exact scopes held by this writer')
+            released_claim = {**claim, 'paths': released}
+            if self.is_git and any(self.covers(released_claim, p) for p in changed_paths(self.root)):
                 raise ValueError('Commit owned source before releasing; unfinished files are preserved')
-            state['claims'].remove(claim)
-            state['requests'] = [r for r in state['requests']
-                                 if any(g != claim['generation'] for g in r['holders'])]
+            remaining = [p for p in claim['paths'] if p not in released]
+            if remaining:
+                claim['paths'] = remaining
+            else:
+                state['claims'].remove(claim)
+            requests = []
+            for request in state['requests']:
+                still_blocks = any(overlaps(a, b) for a in remaining for b in request['paths'])
+                request['holders'] = [g for g in request['holders']
+                                      if g != claim['generation'] or still_blocks]
+                if request['holders']:
+                    requests.append(request)
+            state['requests'] = requests
             self.save(state)
-            return claim
+            return {**released_claim, 'remainingPaths': remaining}
 
     def request(self, owner, paths, reason):
         paths = sorted(set(self.scope(p) for p in paths))
@@ -437,7 +453,8 @@ def main():
         if name == 'request':
             command.add_argument('--reason', required=True)
     sub.add_parser('list')
-    sub.add_parser('release')
+    release = sub.add_parser('release')
+    release.add_argument('paths', nargs='*', help='Exact held scopes; omit to release all')
     recover = sub.add_parser('recover')
     recover.add_argument('generation')
     run = sub.add_parser('run')
@@ -457,7 +474,7 @@ def main():
         elif args.command == 'request':
             result = project.request(args.owner, args.paths, args.reason)
         elif args.command == 'release':
-            result = project.release(args.owner)
+            result = project.release(args.owner, args.paths)
         elif args.command == 'recover':
             result = project.recover(args.owner, args.generation)
         elif args.command == 'run':

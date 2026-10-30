@@ -56,6 +56,16 @@ assigned directories, and releases after its validated local commit. Shared
 integration files require the existing `@shared-files` claim. Parent/child
 claims conflict even across isolated worktrees.
 
+Integration prerequisite repair: the maintained directory-claim helper gains an
+optional exact-scope `release DIR...`. It keeps unfinished work under the same
+owner, refuses dirty released scopes, holds the existing operation lock and
+updates holder requests atomically. A dependency handoff reproduced the existing
+all-or-nothing release deadlock. Independent review and the focused ownership
+suite precede its use; no installed runtime is changed. For the regex manifest
+window, the backend writer may acquire the app parent and `@shared-files`
+together after the other holders release, preserving its unfinished source.
+It then validates and commits the dependency input in its assigned checkout.
+
 ## Feature and acceptance ledger
 
 | ID | Capability | Implementation and acceptance |
