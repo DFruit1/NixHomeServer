@@ -1503,12 +1503,64 @@ remain mandatory before any file is changed. Switching to another item
 discards late search/detail responses from the previous item instead of
 attaching them to the new selection.
 
-The Accounts page inventories public sources that need no setup, active
-adapters, and practical sources planned for later adapters. Accounts are owned
-by the stable OIDC subject, not the mutable preferred username. One user cannot
-list, test, replace, or remove another user's account. Keep the recovery copy
-in Vaultwarden, KeePassXC, or another password manager. Media Manager does not
-ask for vault credentials or use Vaultwarden as a live credential backend.
+The Accounts page inventories public sources and active adapters. All eighteen
+catalogued sources have an implemented workflow; user keys, account entitlements
+and connection health remain separate from implementation status. Accounts are
+owned by the stable OIDC subject, not the mutable preferred username. One user
+cannot list, test, replace, or remove another user's account. Keep the recovery
+copy in Vaultwarden, KeePassXC, or another password manager. Media Manager does
+not ask for vault credentials or use Vaultwarden as a live credential backend.
+
+Additional provider controls are in the selected item's metadata editor:
+
+- **OMDb:** search a movie/series title or enter an IMDb `tt…` identifier. Fetch
+  details before comparing fields. IMDb's numeric rating can fill the existing
+  community-rating field; other rating scales are shown as reference evidence.
+- **TheTVDB:** search a movie/series, select details, then choose an episode.
+  Aired, DVD and absolute orders are explicit choices. Use a project key and its
+  subscriber PIN when the key type requires one. Series and episode IDs remain
+  distinct; additional episode pages are opened through **More episodes**.
+- **Wikidata:** search an entity or enter `Q…`; review the external IDs before
+  adding them. Conflicting claims are shown rather than selected automatically.
+- **Fanart.tv:** enter `tmdb:ID`, `imdb:tt…`, `tvdb:ID`,
+  `musicbrainz-artist:UUID` or `musicbrainz-release-group:UUID`. Existing matched
+  identifiers prefill the lookup where possible. Accounts accept a project key,
+  personal key, or both. Choose a cover, background or logo, then prepare and
+  confirm its installation. Only the selected preview image is downloaded.
+- **Discogs:** supply a personal access token. Search a release title with an
+  artist, `barcode:NUMBER`, `catalog:NUMBER`, `release:ID`, or `master:ID`.
+  Master lookups lead to exact releases. Pressing and track-list evidence is
+  reference information; it never changes track order automatically.
+- **TheAudioDB:** supply a permitted v1 key; search an album title with its artist
+  or enter `artist:NAME` / `musicbrainz-release-group:UUID`. Artist biographies
+  are reference information, and artwork uses the separate confirmation flow.
+- **Comic Vine:** choose a volume and then an issue. Fractional issue numbers
+  remain strings; the publisher's volume designation is shown separately.
+  CBZ edits preserve unrelated archive content and XML. Selected provider IDs
+  round-trip through a namespaced ComicInfo extension alongside the Web link.
+- **ISBNdb:** use an existing entitled key. Enter a checksum-valid ISBN or search
+  a title. Compare the edition, binding and publisher evidence. This adapter
+  supplies metadata; it does not assume a printed edition identifies an audiobook.
+- **Audnexus:** enter an audiobook ASIN and select its region. This is identifier
+  lookup rather than title search. Authors, narrators, series and covers can be
+  reviewed before use. No Audible login or self-hosted Audnexus instance is needed.
+- **Podcast Index:** supply its API key/secret pair. Search feeds and inspect
+  recent episodes and identifiers. Editing remains in the linked Audiobookshelf
+  native interface; portable podcast writes remain disabled.
+- **SubDL:** open its source inside the video's subtitle tools. Supply a key,
+  search by the matched title/IDs and language, preview a result, and choose an
+  individual file when a pack contains several subtitles. **Prepare subtitle
+  installation** produces the normal destination preview; **Confirm subtitle
+  installation** queues the write. UTF-8 SRT, WebVTT and ASS are supported.
+
+Backgrounds and logos have separate `backdrop.*` and `logo.*` destinations for
+video/music items. They never replace the cover. A replaced image is archived
+through the same recoverable broker flow. Installing metadata never implicitly
+changes artwork. Provider artwork/download references expire after fifteen
+minutes; search again to refresh an expired reference. Replacing or removing an
+account invalidates its references. See
+[the provider adapter decision](decisions/0011-additional-media-provider-adapters.md)
+for boundaries and verification limits.
 
 Provider account ciphertext, the runtime-generated master key, and non-secret
 test history live under `/var/lib/media-manager-provider`. The provider broker

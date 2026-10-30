@@ -90,6 +90,36 @@ pub fn sidecar_artwork_plan(request: ArtworkEditRequest<'_>) -> ArtworkPlanActio
     }
 }
 
+/// Supplemental artwork has its own destination and never archives an embedded cover.
+pub fn supplemental_artwork_plan(request: ArtworkEditRequest<'_>, role: &str) -> ArtworkPlanAction {
+    if request.existing_artwork.is_some() {
+        return sidecar_artwork_plan(request);
+    }
+    let parent = request
+        .item
+        .relative_path
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or("");
+    let stem = if role == "background" {
+        "backdrop"
+    } else {
+        "logo"
+    };
+    let destination_relative_path = join_relative(parent, &format!("{stem}.{}", request.extension));
+    ArtworkPlanAction {
+        broker_action: BrokerAction::InstallArtwork(InstallArtworkAction {
+            staging_filename: request.staging_filename.to_string(),
+            destination_root_id: request.item.root_id.clone(),
+            destination_relative_path: destination_relative_path.clone(),
+            expected: request.expected.to_string(),
+        }),
+        archive_action: None,
+        archived_relative_path: None,
+        destination_relative_path,
+    }
+}
+
 /// Build the broker action that preserves an extracted embedded cover in the
 /// media folder's superseded subfolder. The archive lives beside the media so
 /// the write never has to cross a filesystem boundary.

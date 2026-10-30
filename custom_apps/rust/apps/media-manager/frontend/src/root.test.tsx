@@ -3217,7 +3217,7 @@ describe("Media Manager library browser", () => {
     expect(screen.querySelector(".mini-player")).toBeUndefined();
   });
 
-  it("hides lookup and portable-metadata actions for a native-only podcast", async () => {
+  it("offers podcast discovery while keeping portable-metadata actions hidden", async () => {
     const podcast = {
       id: "episode-1",
       rootId: "shared-podcasts",
@@ -3272,7 +3272,12 @@ describe("Media Manager library browser", () => {
     await vi.waitFor(() =>
       expect(screen.querySelector(".editor-card")).toBeDefined(),
     );
-    expect(screen.querySelector(".metadata-sources")).toBeUndefined();
+    expect(screen.querySelector(".metadata-sources")?.textContent).toContain(
+      "Podcast Index",
+    );
+    expect(screen.querySelector(".metadata-sources")?.textContent).toContain(
+      "Feed and episode changes belong in Audiobookshelf.",
+    );
     expect(screen.querySelector(".subtitles-accordion")).toBeUndefined();
     expect(
       Array.from(screen.querySelectorAll("button")).some(

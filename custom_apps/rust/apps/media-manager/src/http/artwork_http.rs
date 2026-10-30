@@ -160,6 +160,8 @@ fn artwork_candidates(
 #[serde(rename_all = "camelCase")]
 pub(super) struct ArtworkReplacementQuery {
     format: String,
+    #[serde(default)]
+    role: Option<String>,
 }
 
 fn validate_artwork_upload(format: &str, bytes: &[u8]) -> Result<&'static str, ApiError> {
@@ -206,6 +208,7 @@ fn create_artwork_plan(
     catalog: &mut Catalog,
     item: &CatalogItem,
     artwork_plan: ArtworkPlanAction,
+    role: &str,
     request_id: String,
 ) -> Result<Response, ApiError> {
     let ArtworkPlanAction {
@@ -280,7 +283,16 @@ fn create_artwork_plan(
             );
             ApiError::internal(request_id.clone())
         })?;
-    let mut warnings = if replacing {
+    let mut warnings = if role != "cover" {
+        vec![
+            format!("The {role} image will be installed at {destination_relative_path}."),
+            if replacing {
+                "The current image at this destination will be archived in its superseded subfolder.".to_string()
+            } else {
+                "The staged image is fingerprint-bound and will never overwrite an existing destination.".to_string()
+            },
+        ]
+    } else if replacing {
         vec![
             "The current image will be moved into its superseded subfolder before the replacement is installed.".to_string(),
             "The staged replacement is fingerprint-bound and will never overwrite another destination.".to_string(),
@@ -908,6 +920,18 @@ pub(super) async fn preview_artwork_replacement(
         }
         Err(error) => return error.with_request_id(request_id).into_response(),
     };
+    let role = query.role.as_deref().unwrap_or("cover");
+    if !matches!(role, "cover" | "background" | "logo")
+        || role != "cover" && !matches!(item.media_kind, MediaKind::Video | MediaKind::Music)
+    {
+        return ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "artwork_role_invalid",
+            "Choose a cover, or a background/logo for a video or music item.",
+            request_id,
+        )
+        .into_response();
+    }
     let existing_artwork = if item.media_kind == MediaKind::Artwork {
         Some(item.clone())
     } else {
@@ -924,15 +948,37 @@ pub(super) async fn preview_artwork_replacement(
             Ok(items) => items,
             Err(_) => return ApiError::internal(request_id).into_response(),
         };
-        preferred_artwork(&same_directory, &item.relative_path)
+        if role == "cover" {
+            let covers = same_directory
+                .into_iter()
+                .filter(|image| !crate::artwork::is_supplemental_artwork(&image.relative_path))
+                .collect::<Vec<_>>();
+            preferred_artwork(&covers, &item.relative_path)
+        } else {
+            let stem = if role == "background" {
+                "backdrop"
+            } else {
+                "logo"
+            };
+            same_directory.into_iter().find(|image| {
+                image
+                    .relative_path
+                    .rsplit('/')
+                    .next()
+                    .and_then(|name| name.rsplit_once('.'))
+                    .is_some_and(|(name, _)| name.eq_ignore_ascii_case(stem))
+            })
+        }
     };
     drop(catalog);
-    let embedded_staging =
-        if existing_artwork.is_none() && is_embedded_artwork_capable(item.media_kind) {
-            stage_embedded_artwork(&state, &identity, &item, &request_id).await
-        } else {
-            None
-        };
+    let embedded_staging = if role == "cover"
+        && existing_artwork.is_none()
+        && is_embedded_artwork_capable(item.media_kind)
+    {
+        stage_embedded_artwork(&state, &identity, &item, &request_id).await
+    } else {
+        None
+    };
     let body = match to_bytes(request.into_body(), MAX_ARTWORK_UPLOAD_BYTES).await {
         Ok(body) => body,
         Err(_) => {
@@ -991,7 +1037,9 @@ pub(super) async fn preview_artwork_replacement(
         expected: &staged.expected,
         request_id: &request_id,
     };
-    let artwork_plan = if item.media_kind == MediaKind::Artwork {
+    let artwork_plan = if role != "cover" {
+        crate::artwork_edit::supplemental_artwork_plan(edit_request, role)
+    } else if item.media_kind == MediaKind::Artwork {
         crate::artwork_edit::sidecar_artwork_plan(edit_request)
     } else if let Some(application) = crate::applications::serving(item.media_kind).next() {
         application.plan_artwork_edit(edit_request)
@@ -1020,6 +1068,7 @@ pub(super) async fn preview_artwork_replacement(
         &mut catalog,
         &item,
         artwork_plan,
+        role,
         request_id.clone(),
     ) {
         Ok(response) => response,

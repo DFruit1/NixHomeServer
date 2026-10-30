@@ -172,6 +172,7 @@ struct FolderMetadataQuery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct UploadSubtitleQuery {
     language: String,
+    source_provider: Option<String>,
     #[serde(default)]
     hearing_impaired: bool,
     format: Option<String>,

@@ -24,6 +24,7 @@ use std::{
 use zeroize::Zeroize;
 
 mod accounts;
+mod additional;
 mod artwork_lookups;
 mod google_books;
 mod tmdb_lookups;
@@ -37,6 +38,7 @@ pub struct ProviderBrokerState {
     client: reqwest::Client,
     endpoints: ProviderTestEndpoints,
     open_library_gate: open_library::RequestGate,
+    additional: Arc<additional::Runtime>,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +51,7 @@ pub struct ProviderTestEndpoints {
     pub tmdb_images_base: String,
     pub cover_art_archive_base: String,
     pub google_books_api_base: String,
+    pub additional_api_bases: BTreeMap<String, String>,
 }
 
 impl Default for ProviderTestEndpoints {
@@ -62,6 +65,7 @@ impl Default for ProviderTestEndpoints {
             tmdb_images_base: "https://image.tmdb.org/t/p/".to_string(),
             cover_art_archive_base: "https://coverartarchive.org/".to_string(),
             google_books_api_base: "https://www.googleapis.com/books/v1/".to_string(),
+            additional_api_bases: additional::default_bases(),
         }
     }
 }
@@ -101,11 +105,15 @@ impl ProviderBrokerState {
             .user_agent("NixHomeServer Media Manager/0.1.0")
             .build()
             .map_err(|error| format!("build provider test client: {error}"))?;
+        for endpoint in endpoints.additional_api_bases.values() {
+            trusted_provider_base(endpoint)?;
+        }
         Ok(Self {
             store,
             client,
             endpoints,
             open_library_gate: open_library::RequestGate::default(),
+            additional: Arc::new(additional::Runtime::default()),
         })
     }
 }
@@ -122,6 +130,10 @@ enum SetupKind {
 #[serde(rename_all = "camelCase")]
 enum ImplementationStatus {
     Active,
+    #[expect(
+        dead_code,
+        reason = "Retain the planned state for future catalog adapters and the credential gate."
+    )]
     Planned,
 }
 
@@ -131,6 +143,7 @@ enum ConnectionTestAdapter {
     OpenSubtitles,
     Acoustid,
     GoogleBooks,
+    Additional(&'static str),
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -251,6 +264,31 @@ const PODCAST_INDEX_FIELDS: [CredentialFieldDefinition; 2] = [
     },
 ];
 
+const DISCOGS_FIELDS: [CredentialFieldDefinition; 1] = [CredentialFieldDefinition {
+    id: "apiKey",
+    label: "Personal access token",
+    input_type: "password",
+    is_required: true,
+    help: "Create a personal token in Discogs developer settings.",
+}];
+
+const FANART_FIELDS: [CredentialFieldDefinition; 2] = [
+    CredentialFieldDefinition {
+        id: "apiKey",
+        label: "Project API key",
+        input_type: "password",
+        is_required: false,
+        help: "The application's project key; supply this or a personal key.",
+    },
+    CredentialFieldDefinition {
+        id: "clientKey",
+        label: "Personal API key",
+        input_type: "password",
+        is_required: false,
+        help: "Your optional personal key controls your access tier.",
+    },
+];
+
 const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "tmdb",
@@ -356,7 +394,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         logo_url: Some("/assets/logos/wikidata.svg"),
         media_domains: &["movies", "television", "music", "books", "people"],
         setup_kind: SetupKind::Public,
-        implementation_status: ImplementationStatus::Planned,
+        implementation_status: ImplementationStatus::Active,
         connection_test: None,
         capabilities: &["external-ids", "cross-provider-links"],
         credential_fields: &[],
@@ -370,13 +408,13 @@ const PROVIDERS: &[ProviderDefinition] = &[
         logo_url: None,
         media_domains: &["audiobooks"],
         setup_kind: SetupKind::Public,
-        implementation_status: ImplementationStatus::Planned,
+        implementation_status: ImplementationStatus::Active,
         connection_test: None,
-        capabilities: &["audiobook-search", "authors", "narrators", "series"],
+        capabilities: &["audiobook-details", "authors", "narrators", "series"],
         credential_fields: &[],
         setup_url: "https://audnex.us/",
         documentation_url: "https://api.audnex.us/",
-        notes: "Audiobook search and enrichment with authors, narrators, and series information, where provider availability and terms permit it.",
+        notes: "Audiobook lookup by ASIN and region with authors, narrators, and series information, where provider availability and terms permit it.",
     },
     ProviderDefinition {
         id: "tvdb",
@@ -384,8 +422,8 @@ const PROVIDERS: &[ProviderDefinition] = &[
         logo_url: Some("/assets/logos/tvdb.png"),
         media_domains: &["television", "movies"],
         setup_kind: SetupKind::Account,
-        implementation_status: ImplementationStatus::Planned,
-        connection_test: None,
+        implementation_status: ImplementationStatus::Active,
+        connection_test: Some(ConnectionTestAdapter::Additional("tvdb")),
         capabilities: &["search", "episodes", "artwork", "translations"],
         credential_fields: &TVDB_FIELDS,
         setup_url: "https://thetvdb.com/api-information",
@@ -398,8 +436,8 @@ const PROVIDERS: &[ProviderDefinition] = &[
         logo_url: Some("/assets/logos/omdb.png"),
         media_domains: &["movies", "television"],
         setup_kind: SetupKind::ApiKey,
-        implementation_status: ImplementationStatus::Planned,
-        connection_test: None,
+        implementation_status: ImplementationStatus::Active,
+        connection_test: Some(ConnectionTestAdapter::Additional("omdb")),
         capabilities: &["imdb-lookup", "ratings", "search"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://www.omdbapi.com/apikey.aspx",
@@ -412,10 +450,10 @@ const PROVIDERS: &[ProviderDefinition] = &[
         logo_url: Some("/assets/logos/fanart.png"),
         media_domains: &["movies", "television", "music"],
         setup_kind: SetupKind::ApiKey,
-        implementation_status: ImplementationStatus::Planned,
-        connection_test: None,
+        implementation_status: ImplementationStatus::Active,
+        connection_test: Some(ConnectionTestAdapter::Additional("fanart")),
         capabilities: &["artwork", "logos", "backgrounds"],
-        credential_fields: &API_KEY_FIELD,
+        credential_fields: &FANART_FIELDS,
         setup_url: "https://fanart.tv/get-an-api-key/",
         documentation_url: "https://fanart.tv/api-docs/",
         notes: "Supplemental artwork, logos, and backgrounds once a title has been matched to a stable provider ID.",
@@ -426,10 +464,10 @@ const PROVIDERS: &[ProviderDefinition] = &[
         logo_url: Some("/assets/logos/discogs.svg"),
         media_domains: &["music"],
         setup_kind: SetupKind::ApiKey,
-        implementation_status: ImplementationStatus::Planned,
-        connection_test: None,
+        implementation_status: ImplementationStatus::Active,
+        connection_test: Some(ConnectionTestAdapter::Additional("discogs")),
         capabilities: &["release-search", "labels", "catalog-numbers", "artwork"],
-        credential_fields: &API_KEY_FIELD,
+        credential_fields: &DISCOGS_FIELDS,
         setup_url: "https://www.discogs.com/settings/developers",
         documentation_url: "https://www.discogs.com/developers/",
         notes: "Music release search with label, catalog-number, and pressing details that complement MusicBrainz.",
@@ -440,8 +478,8 @@ const PROVIDERS: &[ProviderDefinition] = &[
         logo_url: Some("/assets/logos/theaudiodb.png"),
         media_domains: &["music"],
         setup_kind: SetupKind::ApiKey,
-        implementation_status: ImplementationStatus::Planned,
-        connection_test: None,
+        implementation_status: ImplementationStatus::Active,
+        connection_test: Some(ConnectionTestAdapter::Additional("theaudiodb")),
         capabilities: &["artist-details", "album-details", "artwork"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://www.theaudiodb.com/api_apply.php",
@@ -468,8 +506,8 @@ const PROVIDERS: &[ProviderDefinition] = &[
         logo_url: Some("/assets/logos/comic-vine.png"),
         media_domains: &["comics", "manga"],
         setup_kind: SetupKind::ApiKey,
-        implementation_status: ImplementationStatus::Planned,
-        connection_test: None,
+        implementation_status: ImplementationStatus::Active,
+        connection_test: Some(ConnectionTestAdapter::Additional("comic-vine")),
         capabilities: &["issues", "volumes", "people", "covers"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://comicvine.gamespot.com/api/",
@@ -482,8 +520,8 @@ const PROVIDERS: &[ProviderDefinition] = &[
         logo_url: Some("/assets/logos/isbndb.svg"),
         media_domains: &["books", "audiobooks"],
         setup_kind: SetupKind::ApiKey,
-        implementation_status: ImplementationStatus::Planned,
-        connection_test: None,
+        implementation_status: ImplementationStatus::Active,
+        connection_test: Some(ConnectionTestAdapter::Additional("isbndb")),
         capabilities: &["isbn", "editions", "publishers"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://isbndb.com/isbn-database",
@@ -496,8 +534,8 @@ const PROVIDERS: &[ProviderDefinition] = &[
         logo_url: Some("/assets/logos/podcast-index.svg"),
         media_domains: &["podcasts"],
         setup_kind: SetupKind::Account,
-        implementation_status: ImplementationStatus::Planned,
-        connection_test: None,
+        implementation_status: ImplementationStatus::Active,
+        connection_test: Some(ConnectionTestAdapter::Additional("podcast-index")),
         capabilities: &["podcast-search", "feeds", "episodes", "podcast-namespace"],
         credential_fields: &PODCAST_INDEX_FIELDS,
         setup_url: "https://api.podcastindex.org/",
@@ -510,8 +548,8 @@ const PROVIDERS: &[ProviderDefinition] = &[
         logo_url: Some("/assets/logos/subdl.png"),
         media_domains: &["subtitles"],
         setup_kind: SetupKind::ApiKey,
-        implementation_status: ImplementationStatus::Planned,
-        connection_test: None,
+        implementation_status: ImplementationStatus::Active,
+        connection_test: Some(ConnectionTestAdapter::Additional("subdl")),
         capabilities: &["subtitle-search", "subtitle-download"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://subdl.com/panel/api",
@@ -628,6 +666,22 @@ pub fn provider_account_router(state: ProviderBrokerState) -> Router {
         .route(
             "/api/v1/provider-lookups/open-library/covers/{cover_id}",
             get(open_library_cover),
+        )
+        .route(
+            "/api/v1/provider-lookups/subdl/download",
+            axum::routing::post(additional::subdl::download),
+        )
+        .route(
+            "/api/v1/provider-lookups/{provider_id}/search",
+            axum::routing::post(additional::search),
+        )
+        .route(
+            "/api/v1/provider-lookups/{provider_id}/details",
+            axum::routing::post(additional::search),
+        )
+        .route(
+            "/api/v1/provider-lookups/{provider_id}/artwork/{handle}",
+            get(additional::image),
         )
         .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(middleware::from_fn(no_store_responses))
@@ -1360,6 +1414,13 @@ fn validate_credentials(
     definition: &ProviderDefinition,
     credentials: &BTreeMap<String, String>,
 ) -> Result<(), String> {
+    if definition.id == "fanart"
+        && !["apiKey", "clientKey"]
+            .iter()
+            .any(|key| credentials.get(*key).is_some_and(|v| !v.trim().is_empty()))
+    {
+        return Err("Supply a project or personal API key.".to_string());
+    }
     if credentials.len() > MAX_CREDENTIAL_FIELDS {
         return Err("The credential document contains too many fields.".to_string());
     }

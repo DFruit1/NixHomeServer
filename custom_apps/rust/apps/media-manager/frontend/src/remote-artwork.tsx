@@ -35,6 +35,7 @@ export const RemoteArtwork = component$<{
   sourceLabel: string;
   title: string;
   actionNoun?: string;
+  role?: "cover" | "background" | "logo";
   canEdit: boolean;
   mutationMode: "read-only" | "enabled";
 }>((props) => {
@@ -43,8 +44,15 @@ export const RemoteArtwork = component$<{
     confirming: boolean;
     error: string;
     notice: string;
+    dimensions: string;
     plan?: ArtworkPlan;
-  }>({ staging: false, confirming: false, error: "", notice: "" });
+  }>({
+    staging: false,
+    confirming: false,
+    error: "",
+    notice: "",
+    dimensions: "",
+  });
 
   useTask$(({ track }) => {
     track(() => props.sourceUrl);
@@ -54,6 +62,7 @@ export const RemoteArtwork = component$<{
     state.error = "";
     state.notice = "";
     state.plan = undefined;
+    state.dimensions = "";
   });
 
   // eslint-disable-next-line qwik/no-use-visible-task -- the artwork preview opens below the candidate list and must be revealed
@@ -82,7 +91,7 @@ export const RemoteArtwork = component$<{
           `${props.sourceLabel} returned an unsupported image format.`,
         );
       const plan = await api<ArtworkPlan>(
-        `/items/${encodeURIComponent(itemId)}/image/replacement?${new URLSearchParams({ format })}`,
+        `/items/${encodeURIComponent(itemId)}/image/replacement?${new URLSearchParams({ format, role: props.role ?? "cover" })}`,
         { method: "POST", headers: { "content-type": blob.type }, body: blob },
       );
       if (props.itemId === itemId && props.sourceUrl === sourceUrl)
@@ -128,7 +137,11 @@ export const RemoteArtwork = component$<{
       <img
         src={`/api/v1${props.sourceUrl}`}
         alt={`${props.sourceLabel} artwork for ${props.title}`}
+        onLoad$={(_, el) => {
+          state.dimensions = `${el.naturalWidth} × ${el.naturalHeight}`;
+        }}
       />
+      {state.dimensions && <p class="quiet-copy">{state.dimensions}</p>}
       {!state.plan ? (
         <button
           class="primary-button"

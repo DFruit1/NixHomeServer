@@ -8,6 +8,7 @@ axum.workspace = true
 homelab-common.workspace = true
 chacha20poly1305.workspace = true
 image.workspace = true
+html2text.workspace = true
 libc.workspace = true
 lofty.workspace = true
 rand.workspace = true
@@ -19,6 +20,7 @@ roxmltree.workspace = true
 rusqlite = { workspace = true, features = ["functions"] }
 serde.workspace = true
 serde_json.workspace = true
+sha1.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal"] }
 tokio-util.workspace = true

@@ -835,11 +835,45 @@ fn parse_comicinfo_fields(text: &str) -> Result<Value, String> {
     if let Some(web) = first_text(root, &["Web"]) {
         provider_ids.insert("web".to_string(), Value::String(web));
     }
+    if let Some(value) = root
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().name() == "providerIds"
+                && node.tag_name().namespace() == Some("urn:nixhomeserver:media-manager:metadata:1")
+        })
+        .and_then(|node| node.text())
+        && let Ok(identifiers) = serde_json::from_str::<BTreeMap<String, String>>(value)
+    {
+        for (key, value) in identifiers.into_iter().take(32) {
+            if !key.is_empty()
+                && key.len() <= 64
+                && !value.is_empty()
+                && value.len() <= 256
+                && !key.chars().chain(value.chars()).any(char::is_control)
+            {
+                provider_ids.insert(key, Value::String(value));
+            }
+        }
+    }
     let year = first_text(root, &["Year"]).and_then(|value| value.parse::<u16>().ok());
+    let premiere_date = year
+        .zip(
+            first_text(root, &["Month"])
+                .and_then(|v| v.parse::<u8>().ok())
+                .filter(|m| (1..=12).contains(m)),
+        )
+        .zip(
+            first_text(root, &["Day"])
+                .and_then(|v| v.parse::<u8>().ok())
+                .filter(|d| (1..=31).contains(d)),
+        )
+        .map(|((year, month), day)| format!("{year:04}-{month:02}-{day:02}"));
     Ok(metadata_fields(&json!({
         "mediaType": "book",
         "title": first_text(root, &["Title"]),
         "year": year,
+        "premiereDate": premiere_date,
         "authors": split_values("Writer"),
         "writers": split_values("Writer"),
         "series": first_text(root, &["Series"]),
@@ -1386,6 +1420,15 @@ pub fn merge_managed_sidecar(existing: &str, generated: &str) -> Result<String, 
         .collect::<Vec<_>>()
         .join("\n  ");
     let mut opening = existing[..=opening_end].to_string();
+    if generated_children.contains("mm:")
+        && existing_root.lookup_namespace_uri(Some("mm"))
+            != Some("urn:nixhomeserver:media-manager:metadata:1")
+    {
+        opening.insert_str(
+            opening.len() - 1,
+            " xmlns:mm=\"urn:nixhomeserver:media-manager:metadata:1\"",
+        );
+    }
     if generated_children.contains("dc:") && !existing.contains("xmlns:dc=") {
         opening.insert_str(
             opening.len() - 1,
@@ -1415,11 +1458,18 @@ fn managed_container<'a, 'input>(root: Node<'a, 'input>) -> Result<Node<'a, 'inp
 fn is_managed_element(node: Node<'_, '_>, root: Node<'_, '_>) -> bool {
     let name = node.tag_name().name().to_ascii_lowercase();
     if root.tag_name().name().eq_ignore_ascii_case("ComicInfo") {
+        if name == "providerids"
+            && node.tag_name().namespace() == Some("urn:nixhomeserver:media-manager:metadata:1")
+        {
+            return true;
+        }
         return matches!(
             name.as_str(),
             "title"
                 | "series"
                 | "number"
+                | "month"
+                | "day"
                 | "summary"
                 | "year"
                 | "writer"

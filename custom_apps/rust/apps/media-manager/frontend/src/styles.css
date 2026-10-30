@@ -7298,7 +7298,29 @@ a:focus-visible {
   padding-top: 4px;
 }
 
+.source-accordion-body .provider-lookup-result strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.provider-lookup-result dl {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.provider-lookup-result dt {
+  color: var(--ink-faint);
+}
+.provider-lookup-result dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 720px) {
+  .source-accordion-body .provider-lookup-result {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .activity-row {
     grid-template-columns: minmax(0, 1fr);
     gap: 10px;

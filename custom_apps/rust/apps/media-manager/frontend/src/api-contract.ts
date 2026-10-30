@@ -33,6 +33,20 @@ const definition = contract as {
   }>;
 };
 
+// Match Axum's static-before-parameter routing. Contract declaration order
+// must not let /provider-lookups/{providerId}/search shadow an existing adapter.
+const responsesBySpecificity = [...definition.responses].sort((left, right) => {
+  const a = left.path.split("/");
+  const b = right.path.split("/");
+  if (a.length !== b.length) return b.length - a.length;
+  for (let index = 0; index < Math.min(a.length, b.length); index++) {
+    const difference =
+      Number(a[index].startsWith("{")) - Number(b[index].startsWith("{"));
+    if (difference) return difference;
+  }
+  return 0;
+});
+
 export function matchesSchema(
   value: unknown,
   schema: Schema,
@@ -112,7 +126,7 @@ export function validateApiResponse(
   value: unknown,
 ): boolean {
   const segments = new URL(path, "http://contract.invalid").pathname.split("/");
-  const response = definition.responses.find(
+  const response = responsesBySpecificity.find(
     (entry) =>
       entry.method === method.toUpperCase() &&
       entry.status === String(status) &&

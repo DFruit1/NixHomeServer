@@ -28,6 +28,7 @@ export type MetadataMatchField = (typeof MATCHABLE_METADATA_FIELDS)[number][0];
 export type MetadataMatchSelection = MetadataMatchField | "providerIds";
 
 export type MetadataMatchProvider =
+  | { kind: "additional"; providerId: string; id: string }
   | {
       kind: "tmdb";
       tmdbId: number;

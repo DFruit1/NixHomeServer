@@ -11,6 +11,94 @@ servers:
 security:
   - forwardedIdentity: []
 paths:
+  /provider-lookups/subdl/download:
+    post:
+      operationId: downloadSubdlSubtitle
+      description: Resolves a short-lived owner-bound download reference, bounds ZIP expansion and requires a file selection for packs. Never writes media.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              additionalProperties: false
+              properties:
+                id: { type: string }
+                entry: { type: string }
+      responses:
+        '200':
+          description: A validated UTF-8 subtitle or a list of selectable archive entries.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubdlDownloadResponse' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '428': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+  /provider-lookups/{providerId}/search:
+    parameters:
+      - in: path
+        name: providerId
+        required: true
+        schema: { $ref: '#/components/schemas/AdditionalProviderId' }
+    post:
+      operationId: searchAdditionalProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdditionalProviderLookupRequest' }
+      responses:
+        '200':
+          description: Bounded candidates; no files are modified.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdditionalProviderLookupResponse' }
+        '401': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '428': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+  /provider-lookups/{providerId}/details:
+    parameters:
+      - in: path
+        name: providerId
+        required: true
+        schema: { $ref: '#/components/schemas/AdditionalProviderId' }
+    post:
+      operationId: getAdditionalProviderDetails
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdditionalProviderLookupRequest' }
+      responses:
+        '200':
+          description: Selected record and its reviewable metadata or child records.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdditionalProviderLookupResponse' }
+        '401': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '428': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+  /provider-lookups/{providerId}/artwork/{handle}:
+    get:
+      operationId: getAdditionalProviderArtwork
+      description: Resolves a short-lived owner-bound reference; never accepts a client-supplied upstream URL.
+      parameters:
+        - { in: path, name: providerId, required: true, schema: { $ref: '#/components/schemas/AdditionalProviderId' } }
+        - { in: path, name: handle, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Bounded content-sniffed raster image. }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '428': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
   /status:
     get:
       operationId: getStatus
@@ -662,6 +750,9 @@ paths:
           name: format
           required: true
           schema: { type: string, enum: [jpg, jpeg, png, gif, webp] }
+        - in: query
+          name: role
+          schema: { type: string, enum: [cover, background, logo], default: cover }
       requestBody:
         required: true
         content:
@@ -826,6 +917,10 @@ paths:
         - in: query
           name: hearingImpaired
           schema: { type: boolean, default: false }
+        - in: query
+          name: sourceProvider
+          description: User-selected source of the reviewed subtitle content.
+          schema: { type: string, enum: [upload, subdl], default: upload }
       requestBody:
         required: true
         content:
@@ -1519,6 +1614,67 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    SubdlDownloadResponse:
+      type: object
+      required: [files, cueCount]
+      properties:
+        files: { type: array, maxItems: 128, items: { type: string } }
+        content: { type: string, maxLength: 2097152 }
+        format: { type: string, enum: [srt, vtt, ass] }
+        cueCount: { type: integer, minimum: 0 }
+    AdditionalProviderId:
+      type: string
+      enum: [omdb, tvdb, wikidata, fanart, discogs, theaudiodb, comic-vine, isbndb, audnexus, podcast-index, subdl]
+    AdditionalProviderLookupRequest:
+      type: object
+      additionalProperties: false
+      description: Supply a query or an identifier. Paging is bounded and always user-triggered.
+      properties:
+        query: { type: string, maxLength: 500 }
+        id: { type: string, maxLength: 160 }
+        mediaType: { type: string }
+        year: { type: integer }
+        artist: { type: string }
+        season: { type: integer, minimum: 0 }
+        episode: { type: integer, minimum: 0 }
+        order: { type: string }
+        language: { type: string }
+        region: { type: string }
+        page: { type: integer, minimum: 0, maximum: 100 }
+    AdditionalProviderCandidate:
+      type: object
+      additionalProperties: false
+      required: [provider, id, title, subtitle, fields, providerIds, evidence, artwork]
+      properties:
+        provider: { $ref: '#/components/schemas/AdditionalProviderId' }
+        id: { type: string }
+        title: { type: string }
+        subtitle: { type: string }
+        fields: { type: object, additionalProperties: { type: string } }
+        providerIds: { type: object, additionalProperties: { type: string } }
+        evidence: { type: object, additionalProperties: { type: string } }
+        artwork:
+          type: array
+          items:
+            type: object
+            required: [sourceUrl, role, language]
+            properties:
+              sourceUrl: { type: string }
+              role: { type: string, enum: [cover, background, logo] }
+              language: { type: string }
+        next:
+          type: object
+          required: [id, mediaType]
+          properties:
+            id: { type: string }
+            mediaType: { type: string }
+    AdditionalProviderLookupResponse:
+      type: object
+      required: [provider, results, requestId]
+      properties:
+        provider: { $ref: '#/components/schemas/AdditionalProviderId' }
+        results: { type: array, maxItems: 20, items: { $ref: '#/components/schemas/AdditionalProviderCandidate' } }
+        requestId: { type: string }
     Status:
       type: object
       required: [schemaVersion, service, mutationMode, integrations, mediaKinds]

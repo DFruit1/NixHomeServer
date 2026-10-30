@@ -10,6 +10,8 @@ import type {
   TmdbCandidate,
   TmdbDetails,
 } from "./api-contract.generated";
+import { MATCHABLE_METADATA_FIELDS } from "./metadata-match-workspace";
+const MATCHABLE_FIELDS = MATCHABLE_METADATA_FIELDS.map(([field]) => field);
 import type {
   MetadataMatchCandidate,
   MetadataMatchField,
@@ -321,3 +323,46 @@ export function googleBooksMetadataMatchCandidate(
     providerIds: { "google-books": candidate.volumeId },
   };
 }
+
+export function additionalMetadataMatchCandidate(
+  itemKey: string,
+  candidate: import("./api-contract.generated").AdditionalProviderCandidate,
+): MetadataMatchCandidate | undefined {
+  if (candidate.next || !candidate.id || !candidate.title) return undefined;
+  const matchedFields: Partial<Record<MetadataMatchField, string>> = {};
+  const allowed = new Set<string>(MATCHABLE_FIELDS);
+  for (const [field, value] of Object.entries(candidate.fields)) {
+    if (!allowed.has(field)) continue;
+    const normalized = metadataSourceEditorValue(
+      field as MetadataMatchField,
+      value,
+    );
+    if (normalized) matchedFields[field as MetadataMatchField] = normalized;
+  }
+  return {
+    itemKey,
+    provider: {
+      kind: "additional",
+      providerId: candidate.provider,
+      id: candidate.id,
+    },
+    providerLabel: ADDITIONAL_PROVIDER_NAMES[candidate.provider],
+    title: candidate.title,
+    provenance: candidate.subtitle,
+    fields: matchedFields,
+    providerIds: candidate.providerIds,
+  };
+}
+export const ADDITIONAL_PROVIDER_NAMES = {
+  omdb: "OMDb",
+  tvdb: "TheTVDB",
+  wikidata: "Wikidata",
+  fanart: "Fanart.tv",
+  discogs: "Discogs",
+  theaudiodb: "TheAudioDB",
+  "comic-vine": "Comic Vine",
+  isbndb: "ISBNdb",
+  audnexus: "Audnexus",
+  "podcast-index": "Podcast Index",
+  subdl: "SubDL",
+};

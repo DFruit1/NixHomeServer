@@ -49,6 +49,12 @@ import {
   OpenLibraryPanel,
   type OpenLibraryCandidate,
 } from "./open-library-panel";
+import { AdditionalProviderPanel } from "./additional-provider-panel";
+import {
+  additionalMetadataMatchCandidate,
+  ADDITIONAL_PROVIDER_NAMES,
+} from "./metadata-provider-candidates";
+import type { AdditionalProviderCandidate } from "./api-contract.generated";
 import { GoogleBooksPanel } from "./google-books-panel";
 import { MusicBrainzPanel } from "./musicbrainz-panel";
 import { TmdbPanel } from "./tmdb-panel";
@@ -69,6 +75,7 @@ import {
   mediaKindForMediaType,
   supportsMediaAction,
 } from "./media-capabilities";
+import { SubdlPanel } from "./subdl-panel";
 import { SubtitleView } from "./subtitle-view";
 import type {
   CatalogItem,
@@ -1275,6 +1282,31 @@ export const ItemEditor = component$<{
     props.state.notice = "";
   });
 
+  const compareAdditionalCandidate = $(
+    (candidate: AdditionalProviderCandidate, itemKey: string) => {
+      if (
+        !props.state.session?.canEdit ||
+        itemKey !== metadata.itemId ||
+        itemKey !==
+          metadataSelectionKey(props.state.selectedItemId, props.folder)
+      )
+        return;
+      if (candidate.provider === "podcast-index") return;
+      const match = additionalMetadataMatchCandidate(itemKey, candidate);
+      if (!match) return;
+      metadata.matchCandidate = match;
+      metadata.matchSelection = defaultMetadataMatchSelection(
+        metadataMatchRows(
+          match,
+          normalizedMetadataValues(metadata),
+          metadata.providerIds,
+        ),
+      );
+      props.state.error = "";
+      props.state.notice = "";
+    },
+  );
+
   const toggleMetadataMatchField = $((field: MetadataMatchSelection) => {
     const candidate = metadata.matchCandidate;
     if (
@@ -1465,6 +1497,58 @@ export const ItemEditor = component$<{
           onCompare$={compareMusicCandidate}
         />
       )}
+      {(metadata.mediaType === "music"
+        ? ["discogs", "theaudiodb", "wikidata", "fanart"]
+        : metadata.mediaType === "audiobook"
+          ? ["audnexus", "isbndb", "wikidata"]
+          : metadata.mediaType === "book"
+            ? ["comic-vine", "isbndb", "wikidata"]
+            : metadata.mediaType === "podcast"
+              ? ["podcast-index"]
+              : ["omdb", "tvdb", "wikidata", "fanart"]
+      ).map((provider) => (
+        <AdditionalProviderPanel
+          key={provider}
+          provider={provider as AdditionalProviderCandidate["provider"]}
+          name={
+            ADDITIONAL_PROVIDER_NAMES[
+              provider as AdditionalProviderCandidate["provider"]
+            ]
+          }
+          itemKey={metadata.itemId}
+          itemId={props.folder ? "" : metadata.itemId}
+          fallbackQuery={
+            provider === "fanart"
+              ? metadata.providerIds["musicbrainz-release-group"]
+                ? `musicbrainz-release-group:${metadata.providerIds["musicbrainz-release-group"]}`
+                : metadata.providerIds.tvdb
+                  ? `tvdb:${metadata.providerIds.tvdb}`
+                  : metadata.providerIds.tmdb
+                    ? `tmdb:${metadata.providerIds.tmdb}`
+                    : metadata.providerIds.imdb
+                      ? `imdb:${metadata.providerIds.imdb}`
+                      : ""
+              : provider === "audnexus"
+                ? (metadata.providerIds.asin ?? "")
+                : provider === "wikidata"
+                  ? (metadata.providerIds.wikidata ?? metadata.title)
+                  : metadata.title
+          }
+          fallbackArtist={metadata.authors}
+          mediaType={metadata.mediaType}
+          providerIds={metadata.providerIds}
+          canEdit={props.state.session?.canEdit ?? false}
+          mutationMode={props.state.status?.mutationMode ?? "read-only"}
+          publicSource={["wikidata", "audnexus"].includes(provider)}
+          inspectOnly={metadata.mediaType === "podcast"}
+          nativeEditorUrl={
+            metadata.consumers.find(
+              (consumer) => consumer.id === "audiobookshelf",
+            )?.nativeUrl
+          }
+          onCompare$={compareAdditionalCandidate}
+        />
+      ))}
     </>
   );
 
@@ -1523,6 +1607,26 @@ export const ItemEditor = component$<{
                     roots={props.state.roots}
                     session={props.state.session}
                     status={props.state.status}
+                  />
+                  <SubdlPanel
+                    itemId={props.state.selectedItemId}
+                    title={metadata.title}
+                    mediaType={metadata.mediaType}
+                    providerIds={metadata.providerIds}
+                    season={
+                      metadata.season === ""
+                        ? undefined
+                        : Number(metadata.season)
+                    }
+                    episode={
+                      metadata.episode === ""
+                        ? undefined
+                        : Number(metadata.episode)
+                    }
+                    canEdit={props.state.session?.canEdit ?? false}
+                    mutationMode={
+                      props.state.status?.mutationMode ?? "read-only"
+                    }
                   />
                 </div>
               )}
