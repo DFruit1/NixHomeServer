@@ -1,6 +1,8 @@
 //! Authenticated Browsertrix crawl queue and WACZ archive service.
 
 pub mod archive;
+#[path = "../archive_engine/mod.rs"]
+pub mod archive_engine;
 pub mod auth;
 pub mod config;
 pub mod crawler;
