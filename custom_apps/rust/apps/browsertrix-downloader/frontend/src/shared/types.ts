@@ -33,6 +33,7 @@ export type ZimListing = { readerUrl?: string | null; zims: ZimFile[] };
 export type Paginated<T> = { items: T[]; total: number; offset: number; limit: number };
 export type PageRecord = { url: string; title: string; ts: string; text: string; bytes: number; status: number; resourceUrls: string[] };
 export type ResourceRecord = { url: string; mime: string; status: number; bytes: number; digest: string; domain: string; pages: string[] };
+export type CoverageRecord = { url: string; kind: string; reason: string; status?: number | null };
 export type Verification = { valid: boolean; checkedAt: string; checks: { name: string; status: string; details: string }[]; warnings: string[] };
 export type ArchiveReport = {
   archiveBytes: number; sha256: string; title: string; description: string; pages?: PageRecord[]; resources?: ResourceRecord[];
