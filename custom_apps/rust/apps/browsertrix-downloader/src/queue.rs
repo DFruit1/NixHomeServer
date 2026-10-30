@@ -34,7 +34,7 @@ impl Resolver {
         })
     }
 
-    async fn resolve(&self, hostname: String) -> Result<Vec<IpAddr>, QueueError> {
+    pub async fn resolve(&self, hostname: String) -> Result<Vec<IpAddr>, QueueError> {
         (self.0)(hostname).await.map_err(QueueError::BadRequest)
     }
 }
@@ -56,7 +56,7 @@ impl JobQueue {
         input: CreateJobInput,
     ) -> Result<String, QueueError> {
         let parsed = parse_create_job(input)?;
-        self.validate_destination(&parsed.hostname).await?;
+        self.validate_request(&parsed.request).await?;
         self.create_unique_job(user, &parsed.request)
     }
 
@@ -94,10 +94,27 @@ impl JobQueue {
             collection: job.request.collection,
             options: Some(job.request.options),
         })?;
-        self.validate_destination(&parsed.hostname).await?;
+        self.validate_request(&parsed.request).await?;
         self.create_unique_job(user, &parsed.request)
     }
 
+    pub async fn resolve_public(&self, hostname: &str) -> Result<Vec<IpAddr>, QueueError> {
+        let addresses = self.resolver.resolve(hostname.to_owned()).await?;
+        assert_public_addresses(&addresses)?;
+        Ok(addresses)
+    }
+    pub async fn validate_request(&self, request: &CreateJobRequest) -> Result<(), QueueError> {
+        for seed in std::iter::once(&request.url).chain(request.options.seeds.iter()) {
+            let url =
+                url::Url::parse(seed).map_err(|_| QueueError::BadRequest("invalid seed".into()))?;
+            self.validate_destination(
+                url.host_str()
+                    .ok_or_else(|| QueueError::BadRequest("seed hostname missing".into()))?,
+            )
+            .await?;
+        }
+        Ok(())
+    }
     async fn validate_destination(&self, hostname: &str) -> Result<(), QueueError> {
         let addresses = self.resolver.resolve(hostname.to_owned()).await?;
         assert_public_addresses(&addresses)?;
@@ -118,8 +135,25 @@ impl JobQueue {
                 "this website is already being archived".to_owned(),
             ));
         }
+        if let Some(id) = &request.options.profile_id {
+            let profile = self
+                .database
+                .record("profile", id, &user.username)?
+                .filter(|v| {
+                    v["available"].as_bool() == Some(true) && v["revoked"].as_bool() != Some(true)
+                })
+                .ok_or_else(|| QueueError::NotFound("profile not found".into()))?;
+            let _ = profile;
+        }
         let id = random_job_id();
-        self.database.create_job(&id, &user.username, request)?;
+        if !self
+            .database
+            .create_unique_capture(&id, &user.username, request)?
+        {
+            return Err(QueueError::BadRequest(
+                "this website is already being archived".into(),
+            ));
+        }
         Ok(id)
     }
 }
@@ -161,7 +195,7 @@ impl From<rusqlite::Error> for QueueError {
     }
 }
 
-fn random_job_id() -> String {
+pub fn random_job_id() -> String {
     let mut bytes = [0_u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;

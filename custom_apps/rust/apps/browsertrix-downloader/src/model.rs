@@ -221,6 +221,9 @@ pub enum Operation {
     Verify {
         archive_id: String,
         sha256: String,
+        mode: String,
+        url: Option<String>,
+        interactions: Vec<Interaction>,
     },
     Repair {
         archive_id: String,
@@ -289,4 +292,14 @@ pub struct ResumeOptions {
     pub additional_pages: u32,
     pub additional_minutes: u32,
     pub additional_bytes: u64,
+}
+
+impl JobRuntime {
+    pub fn storage_json(&self) -> Result<String, serde_json::Error> {
+        let mut value = serde_json::to_value(self)?;
+        value["operation"] = serde_json::to_value(&self.operation)?;
+        value["control"] = serde_json::to_value(&self.control)?;
+        value["resumeConfig"] = serde_json::to_value(&self.resume_config)?;
+        serde_json::to_string(&value)
+    }
 }
