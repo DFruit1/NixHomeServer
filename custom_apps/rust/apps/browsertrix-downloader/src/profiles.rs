@@ -8,7 +8,7 @@ use std::{
 pub const PROFILE_BYTES: usize = 32 * 1024 * 1024;
 pub fn validate_tar(path: &Path) -> Result<(), String> {
     let input = custody::open_nofollow(path)?;
-    let mut decoder = flate2::read::GzDecoder::new(input).take(256 * 1024 * 1024 + 1);
+    let mut decoder = flate2::read::MultiGzDecoder::new(input).take(256 * 1024 * 1024 + 1);
     let mut entries = 0u32;
     let mut total = 0u64;
     let mut names = std::collections::BTreeSet::new();
@@ -26,13 +26,20 @@ pub fn validate_tar(path: &Path) -> Result<(), String> {
             if end.iter().any(|b| *b != 0) {
                 return Err("invalid tar terminator".into());
             }
-            let mut trailing = Vec::new();
-            decoder
-                .take(1024 * 1024)
-                .read_to_end(&mut trailing)
-                .map_err(|e| e.to_string())?;
-            if trailing.iter().any(|b| *b != 0) {
-                return Err("profile has data after tar terminator".into());
+            total += 512;
+            let mut trailing = [0u8; 16384];
+            loop {
+                let n = decoder.read(&mut trailing).map_err(|e| e.to_string())?;
+                if n == 0 {
+                    break;
+                }
+                total = total.checked_add(n as u64).ok_or("profile size overflow")?;
+                if total > 256 * 1024 * 1024 {
+                    return Err("inflated profile size limit exceeded".into());
+                }
+                if trailing[..n].iter().any(|b| *b != 0) {
+                    return Err("profile has data after tar terminator".into());
+                }
             }
             return Ok(());
         }

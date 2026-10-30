@@ -100,7 +100,10 @@ pub fn publish(
 }
 pub fn recover(config: &AppConfig, db: &Database) -> Result<usize, String> {
     let mut count = 0;
-    for intent in db.pending_intents().map_err(|e| e.to_string())? {
+    for id in db.pending_intent_ids().map_err(|e| e.to_string())? {
+        let Some(intent) = db.pending_intent(&id).map_err(|e| e.to_string())? else {
+            continue;
+        };
         recover_one(config, db, &intent)?;
         count += 1;
     }

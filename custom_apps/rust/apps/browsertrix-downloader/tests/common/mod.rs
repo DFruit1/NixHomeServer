@@ -75,6 +75,7 @@ crawl_root="${{volume%:/crawls}}"
 mkdir -p "$crawl_root/collections/$collection/crawls"
 cp '{}' "$crawl_root/collections/$collection/$collection.wacz"
 printf 'state: {{finished: false}}\n' > "$crawl_root/collections/$collection/crawls/fixture.yaml"
+printf '%s\n' '{{"message":"policyReady","version":1}}'
 printf '%s\n' '{{"stats":{{"done":1,"queued":{},"failed":0}}}}'
 exit {}
 "#,

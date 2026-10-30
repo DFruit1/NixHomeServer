@@ -212,7 +212,10 @@ pub struct JobProgress {
 pub enum Operation {
     #[default]
     Capture,
-    Sample,
+    Sample {
+        #[serde(default)]
+        target_pages: u32,
+    },
     Export {
         archive_id: String,
         sha256: String,
@@ -246,6 +249,7 @@ pub struct JobRuntime {
     pub stop_reason: Option<String>,
     pub bytes_downloaded: u64,
     pub bytes_stored: u64,
+    pub warc_bytes: u64,
     pub can_resume: bool,
     pub runtime_seconds: u64,
     pub attempt: u32,

@@ -1,0 +1,21 @@
+// Synthetic material only. Requests are locally intercepted in --network none;
+// cookies and local storage are generated for this test, never imported live.
+import fs from 'node:fs';
+import {execFileSync} from 'node:child_process';
+import {createRequire} from 'node:module';
+const {launch}=createRequire('/app/package.json')('puppeteer-core');
+const owner=process.argv[2];
+if(!['alice','bob'].includes(owner))throw new Error('synthetic test owner required');
+const root='/profile-fixtures';
+const state=`${root}/${owner}-state`;
+const browser=await launch({executablePath:'/usr/bin/chromium-browser',headless:true,userDataDir:state,args:['--no-sandbox','--disable-dev-shm-usage','--password-store=basic']});
+const page=await browser.newPage();
+await page.setRequestInterception(true);
+page.on('request',r=>r.respond({status:200,contentType:'text/html',body:'<!doctype html><title>Synthetic profile only</title>'}));
+await page.goto('http://example.com:18800/');
+await page.setCookie({name:'synthetic-owner',value:owner,url:'http://example.com:18800/',expires:Math.floor(Date.now()/1000)+3600});
+await page.evaluate(owner=>localStorage.setItem('synthetic-owner',owner),owner);
+await browser.close();
+const candidates=['Local State','Default/Preferences','Default/Cookies','Default/Cookies-journal','Default/Network/Cookies','Default/Network/Cookies-journal','Default/Local Storage'];
+const selected=candidates.filter(name=>fs.existsSync(`${state}/${name}`));
+execFileSync('tar',['--format=ustar','-czf',`${root}/${owner}.tar.gz`,'-C',state,'--',...selected]);

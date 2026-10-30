@@ -21,4 +21,6 @@ pub mod library_http;
 
 pub mod library;
 
+pub mod coverage;
+pub mod legacy_export;
 pub mod network;

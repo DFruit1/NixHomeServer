@@ -237,6 +237,7 @@ async fn archive_read(
         }
         "pages" => Ok(value(s.database.pages(&id, &q)?)?.into_response()),
         "resources" => Ok(value(s.database.resources(&id, &q)?)?.into_response()),
+        "coverage" => Ok(value(s.database.coverage(&id, &q)?)?.into_response()),
         "replay" | "replay.json" => {
             let deps = crate::library::authorized_dependencies(&s.config, &s.database, &a)
                 .map_err(conflict)?;
@@ -259,7 +260,7 @@ async fn archive_read(
             )?;
             let left = archive_path(&s, &a)?;
             let right = archive_path(&s, &other)?;
-            let report = tokio::task::spawn_blocking(move || {
+            let report = crate::library::analyze(move || {
                 archive_engine::compare_archives(&left, &right)
             })
             .await
@@ -293,7 +294,7 @@ async fn archive_read(
             let format = format.to_owned();
             let kind = format.clone();
             let content =
-                tokio::task::spawn_blocking(move || archive_engine::reader_export(&path, &kind))
+                crate::library::analyze(move || archive_engine::reader_export(&path, &kind))
                     .await
                     .map_err(ApiError::internal)?
                     .map_err(ApiError::bad_request)?;
@@ -324,7 +325,7 @@ async fn archive_read(
                 return Err(ApiError::bad_request("url too long"));
             }
             let path = archive_path(&s, &a)?;
-            let html = tokio::task::spawn_blocking(move || {
+            let html = crate::library::analyze(move || {
                 archive_engine::preview_document(&path, &target)
             })
             .await
@@ -471,6 +472,7 @@ async fn sample(
     let mut request = parse_create_job(input)
         .map_err(|e| ApiError::bad_request(e.to_string()))?
         .request;
+    let target_pages = request.page_limit;
     request.page_limit = request.page_limit.min(3);
     request.time_limit_minutes = request.time_limit_minutes.min(5);
     request.options.size_limit_bytes = Some(
@@ -481,7 +483,12 @@ async fn sample(
             .min(256 * 1024 * 1024),
     );
     s.queue.validate_request(&request).await?;
-    queue(&s, &u.username, &request, Operation::Sample)
+    queue(
+        &s,
+        &u.username,
+        &request,
+        Operation::Sample { target_pages },
+    )
 }
 async fn batch(State(s): State<AppState>, h: HeaderMap, b: Bytes) -> Result<Json<Value>, ApiError> {
     let u = authenticated_user(&h)?;
@@ -768,6 +775,14 @@ fn bounded_name(input: &Value) -> Result<String, ApiError> {
         .ok_or_else(|| ApiError::bad_request("name must be 1 to 200 characters"))
 }
 fn public_profile(mut v: Value) -> Value {
+    if v["expiresAt"].as_str().is_some_and(|stamp| {
+        chrono::DateTime::parse_from_rfc3339(stamp)
+            .map(|expiry| expiry <= chrono::Utc::now())
+            .unwrap_or(true)
+    }) || v["revoked"] == true
+    {
+        v["available"] = json!(false);
+    }
     if let Some(object) = v.as_object_mut() {
         object.remove("digest");
         object.remove("revoked");
@@ -810,11 +825,28 @@ async fn import_profile(
 ) -> Result<Json<Value>, ApiError> {
     let u = authenticated_user(&h)?;
     raw_mutation(&h)?;
-    let name = bounded_name(&json!({"name":q.get("name")}))?;
-    let id = random_job_id();
+    let (id, v, create) = if let Some(id) = q.get("profileId") {
+        let metadata = s
+            .database
+            .record("profile", id, &u.username)?
+            .filter(|v| v["available"] != true && v["revoked"] != true)
+            .ok_or_else(|| ApiError::not_found("uninitialised profile not found"))?;
+        (id.clone(), metadata, false)
+    } else {
+        let name = bounded_name(&json!({"name":q.get("name")}))?;
+        let expires = q.get("expiresAt");
+        if let Some(stamp) = expires {
+            chrono::DateTime::parse_from_rfc3339(stamp)
+                .map_err(|_| ApiError::bad_request("invalid expiresAt"))?;
+        }
+        let id = random_job_id();
+        let metadata = json!({"id":id,"name":name,"available":false,"revoked":false,"createdAt":catalog::now(),"updatedAt":catalog::now(),"expiresAt":expires});
+        (id, metadata, true)
+    };
     let inbox = upload(&s, b, crate::profiles::PROFILE_BYTES).await?;
-    let v = json!({"id":id,"name":name,"available":false,"revoked":false,"createdAt":catalog::now(),"updatedAt":catalog::now()});
-    s.database.put_record("profile", &id, &u.username, &v)?;
+    if create {
+        s.database.put_record("profile", &id, &u.username, &v)?;
+    }
     let mut result = queue(
         &s,
         &u.username,

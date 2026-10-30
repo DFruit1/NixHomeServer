@@ -31,6 +31,9 @@ pub async fn run(config: AppConfig) -> Result<(), String> {
         .list_jobs_for_recovery()
         .map_err(|e| e.to_string())?
     {
+        // A worker/CLI crash does not guarantee the container exited. Stop only
+        // the exact previously claimed job before reading its durable checkpoint.
+        kill_capture_container(&config, &job.id).await;
         let dir = config.checkpoints_root.join(&job.id);
         if let Some(saved) = find_checkpoint(&dir, &job) {
             let mut rt = job.runtime.clone();
@@ -97,6 +100,20 @@ pub async fn ensure_image(config: &AppConfig) -> Result<(), String> {
     Ok(())
 }
 
+async fn kill_capture_container(config: &AppConfig, id: &str) {
+    if !crate::custody::safe_id(id) {
+        return;
+    }
+    let mut command = Command::new(&config.podman_bin);
+    command
+        .args(["kill", "--signal=KILL", &format!("web-archive-{id}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let _ = tokio::time::timeout(Duration::from_secs(10), command.status()).await;
+}
+
 async fn read_stderr_tail(mut stderr: tokio::process::ChildStderr) -> std::io::Result<String> {
     let mut tail = Vec::new();
     let mut chunk = [0_u8; 8 * 1024];
@@ -151,7 +168,7 @@ pub async fn process_job(config: &AppConfig, database: &Database, job: &Job) -> 
     }
     match &job.runtime.operation {
         crate::model::Operation::Capture
-        | crate::model::Operation::Sample
+        | crate::model::Operation::Sample { .. }
         | crate::model::Operation::Repair { .. } => capture(config, database, job).await,
         _ => {
             let config = config.clone();
@@ -283,12 +300,28 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
     runtime.attempt += 1;
     runtime.control = None;
     runtime.can_resume = false;
-    database
-        .set_runtime(&job.id, &runtime)
-        .map_err(|e| e.to_string())?;
-    database
-        .set_status(&job.id, JobStatus::Running, None)
-        .map_err(|e| e.to_string())?;
+    if !database
+        .begin_capture(&job.id, &runtime)
+        .map_err(|e| e.to_string())?
+    {
+        let current = database
+            .job(&job.id)
+            .map_err(|e| e.to_string())?
+            .ok_or("job disappeared")?;
+        database
+            .set_status(
+                &job.id,
+                if current.status == JobStatus::Cancelling {
+                    JobStatus::Cancelled
+                } else {
+                    JobStatus::Paused
+                },
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
     let mut child = Command::new(&config.podman_bin)
         .args(args)
         .stdin(Stdio::null())
@@ -312,21 +345,23 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
     let mut reason: Option<String> = None;
     let mut progress = job.progress.clone().unwrap_or_default();
     let mut last_write = Instant::now();
+    let mut policy_ready = false;
     let status = loop {
         tokio::select! {
          result=&mut wait=>break result.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?,
-         Some(line)=rx.recv()=>{record_omission(&crawl_dir,&line)?;if let Some(update)=parse_crawl_log_line(&line){progress=merge_progress(&progress,&update);}if last_write.elapsed()>=Duration::from_secs(2){database.set_progress(&job.id,Some(&progress)).map_err(|e|e.to_string())?;last_write=Instant::now();}if reason.is_none(){if let Some(value)=stop_reason_from_log(&line){reason=Some(value.into());}}},
+         Some(line)=rx.recv()=>{read_metrics(&line,&mut runtime,&mut policy_ready);record_omission(&crawl_dir,&line)?;if let Some(update)=parse_crawl_log_line(&line){progress=merge_progress(&progress,&update);}if last_write.elapsed()>=Duration::from_secs(2){database.set_progress(&job.id,Some(&progress)).map_err(|e|e.to_string())?;last_write=Instant::now();}if reason.is_none(){if let Some(value)=stop_reason_from_log(&line){reason=Some(value.into());}}},
          _=poll.tick()=>{
            let current=database.job(&job.id).map_err(|e|e.to_string())?.ok_or("active job disappeared")?;
            if signalled.is_none(){let control=current.runtime.control.as_deref();let next=if current.status==JobStatus::Cancelling{Some("discard")}else if control==Some("pause"){Some("pause")}else if control==Some("stop"){Some("stop-and-save")}else if started.elapsed()>=Duration::from_secs(u64::from(effective.request.time_limit_minutes)*60+30){Some("time-limit")}else{None};
             let disk=if next.is_none(){crate::custody::available_bytes(&crawl_dir)?<reserve||crate::custody::available_bytes(destination_root)?<reserve}else{false};
             if next.is_some()||disk{reason=Some(next.unwrap_or("disk-reserve").into());signal_process(pid,libc::SIGINT)?;signalled=Some(Instant::now());}
-           }else if signalled.is_some_and(|t|t.elapsed()>Duration::from_secs(180)){signal_process(pid,libc::SIGKILL)?;}
-           if last_sync.elapsed()>Duration::from_secs(30){let dir=crawl_dir.clone();tokio::task::spawn_blocking(move||sync_checkpoint(&dir)).await.map_err(|e|e.to_string())??;runtime.bytes_downloaded=warc_bytes(&crawl_dir)?;runtime.runtime_seconds=job.runtime.runtime_seconds+started.elapsed().as_secs();runtime.coverage=Some(progress.clone());runtime.resume_config=find_checkpoint(&crawl_dir,job);database.set_runtime_preserving_control(&job.id,&runtime).map_err(|e|e.to_string())?;last_sync=Instant::now();}
+           }else if signalled.is_some_and(|t|t.elapsed()>Duration::from_secs(180)){kill_capture_container(config,&job.id).await;signal_process(pid,libc::SIGKILL)?;}
+           if last_sync.elapsed()>Duration::from_secs(30){let dir=crawl_dir.clone();tokio::task::spawn_blocking(move||sync_checkpoint(&dir)).await.map_err(|e|e.to_string())??;runtime.warc_bytes=warc_bytes(&crawl_dir)?;runtime.runtime_seconds=job.runtime.runtime_seconds+started.elapsed().as_secs();runtime.coverage=Some(progress.clone());runtime.resume_config=find_checkpoint(&crawl_dir,job);database.set_runtime_preserving_control(&job.id,&runtime).map_err(|e|e.to_string())?;last_sync=Instant::now();}
          }
         }
     };
     while let Some(line) = rx.recv().await {
+        read_metrics(&line, &mut runtime, &mut policy_ready);
         if let Some(update) = parse_crawl_log_line(&line) {
             progress = merge_progress(&progress, &update);
         }
@@ -340,7 +375,7 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
     runtime.runtime_seconds = job.runtime.runtime_seconds + started.elapsed().as_secs();
-    runtime.bytes_downloaded = warc_bytes(&crawl_dir)?;
+    runtime.warc_bytes = warc_bytes(&crawl_dir)?;
     runtime.coverage = Some(progress.clone());
     runtime.resume_config = find_checkpoint(&crawl_dir, job);
     runtime.can_resume = runtime.resume_config.is_some();
@@ -379,6 +414,21 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
         .join("collections")
         .join(collection)
         .join(format!("{collection}.wacz"));
+    let latest = database
+        .job(&job.id)
+        .map_err(|e| e.to_string())?
+        .ok_or("job disappeared")?;
+    if latest.status == JobStatus::Cancelling {
+        database
+            .set_status(&job.id, JobStatus::Cancelled, None)
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    if !policy_ready {
+        return Err(
+            "capture policy driver did not load; retained WACZ/checkpoint was not published".into(),
+        );
+    }
     let partial = runtime.stop_reason.is_some() || !status.success();
     if !source.is_file() {
         let state = if runtime.can_resume {
@@ -568,4 +618,18 @@ fn record_omission(root: &Path, line: &str) -> Result<(), String> {
         .open(path)
         .map_err(|e| e.to_string())?;
     writeln!(file, "{}", line.chars().take(8192).collect::<String>()).map_err(|e| e.to_string())
+}
+
+fn read_metrics(line: &str, runtime: &mut crate::model::JobRuntime, ready: &mut bool) {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+        match value["message"].as_str() {
+            Some("policyReady") => *ready = true,
+            Some("transferBytes") => {
+                runtime.bytes_downloaded = runtime
+                    .bytes_downloaded
+                    .saturating_add(value["bytes"].as_u64().unwrap_or(0));
+            }
+            _ => {}
+        }
+    }
 }

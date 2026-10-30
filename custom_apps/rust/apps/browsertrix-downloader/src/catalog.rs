@@ -122,6 +122,8 @@ pub struct PublicationIntent {
     pub source: String,
     pub job_id: Option<String>,
     pub final_status: String,
+    #[serde(default)]
+    pub coverage: Vec<crate::coverage::CoverageRecord>,
 }
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -155,10 +157,11 @@ pub struct Page<T: Serialize> {
 }
 impl Database {
     pub(crate) fn migrate_catalog(&self) -> rusqlite::Result<()> {
+        self.connect()?.execute_batch("CREATE TABLE IF NOT EXISTS archive_coverage(archive_id TEXT NOT NULL,ordinal INTEGER NOT NULL,url TEXT NOT NULL,kind TEXT NOT NULL,reason TEXT NOT NULL,document TEXT NOT NULL,PRIMARY KEY(archive_id,ordinal));")?;
         self.connect()?.execute_batch("CREATE TABLE IF NOT EXISTS archives(id TEXT PRIMARY KEY,owner TEXT NOT NULL,sha256 TEXT NOT NULL,document TEXT NOT NULL); CREATE INDEX IF NOT EXISTS archives_owner ON archives(owner); CREATE INDEX IF NOT EXISTS archives_hash ON archives(owner,sha256); CREATE TABLE IF NOT EXISTS archive_pages(archive_id TEXT NOT NULL REFERENCES archives(id),ordinal INTEGER NOT NULL,url TEXT NOT NULL,title TEXT NOT NULL,text TEXT NOT NULL,document TEXT NOT NULL,PRIMARY KEY(archive_id,ordinal)); CREATE INDEX IF NOT EXISTS archive_pages_url ON archive_pages(archive_id,url); CREATE TABLE IF NOT EXISTS archive_resources(archive_id TEXT NOT NULL REFERENCES archives(id),ordinal INTEGER NOT NULL,url TEXT NOT NULL,mime TEXT NOT NULL,domain TEXT NOT NULL,document TEXT NOT NULL,PRIMARY KEY(archive_id,ordinal)); CREATE TABLE IF NOT EXISTS publication_intents(id TEXT PRIMARY KEY,document TEXT NOT NULL,completed INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS owned_records(id TEXT NOT NULL,owner TEXT NOT NULL,kind TEXT NOT NULL,document TEXT NOT NULL,PRIMARY KEY(id,kind)); CREATE INDEX IF NOT EXISTS owned_records_owner ON owned_records(owner,kind);")?;
         // Legacy jobs provide authoritative ownership evidence; bare files never do.
         let c = self.connect()?;
-        let mut stmt=c.prepare("SELECT id,created_at,updated_at,created_by,request_json,archive_file,archive_bytes FROM jobs WHERE archive_file IS NOT NULL AND status='completed' AND id NOT IN (SELECT id FROM archives)")?;
+        let mut stmt=c.prepare("SELECT id,created_at,updated_at,created_by,request_json,archive_file,archive_bytes FROM jobs WHERE archive_file IS NOT NULL AND status='completed' AND json_extract(runtime_json,'$.archiveId') IS NULL AND coalesce(json_extract(runtime_json,'$.operation.kind'),'capture')='capture' AND id NOT IN (SELECT id FROM archives)")?;
         let legacy = stmt
             .query_map([], |r| {
                 Ok((
@@ -263,16 +266,39 @@ impl Database {
         )?;
         Ok(())
     }
-    pub fn pending_intents(&self) -> rusqlite::Result<Vec<PublicationIntent>> {
+    pub fn pending_intent_ids(&self) -> rusqlite::Result<Vec<String>> {
         self.connect()?
-            .prepare("SELECT document FROM publication_intents WHERE completed=0 LIMIT 1000")?
-            .query_map([], |r| from_json(&r.get::<_, String>(0)?))?
+            .prepare("SELECT id FROM publication_intents WHERE completed=0 LIMIT 1000")?
+            .query_map([], |r| r.get(0))?
             .collect()
+    }
+    pub fn pending_intent(&self, id: &str) -> rusqlite::Result<Option<PublicationIntent>> {
+        self.connect()?
+            .query_row(
+                "SELECT document FROM publication_intents WHERE id=?1 AND completed=0",
+                [id],
+                |r| from_json(&r.get::<_, String>(0)?),
+            )
+            .optional()
     }
     pub fn finalize_intent(&self, intent: &PublicationIntent) -> rusqlite::Result<()> {
         let mut c = self.connect()?;
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let a = &intent.archive;
+        tx.execute("DELETE FROM archive_coverage WHERE archive_id=?1", [&a.id])?;
+        for (ordinal, row) in intent.coverage.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO archive_coverage VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    a.id,
+                    ordinal as i64,
+                    row.url,
+                    row.kind,
+                    row.reason,
+                    sql_json(row)?
+                ],
+            )?;
+        }
         tx.execute("INSERT INTO archives(id,owner,sha256,document) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO NOTHING",params![a.id,a.created_by,a.sha256,sql_json(a)?])?;
         let identity: (String, String) = tx.query_row(
             "SELECT owner,sha256 FROM archives WHERE id=?1",
@@ -341,6 +367,27 @@ impl Database {
             |r| r.get::<_, i64>(0).map(|v| v as u64),
         )?;
         let items=c.prepare(&format!("SELECT document FROM archive_pages WHERE {filter} ORDER BY ordinal LIMIT ?3 OFFSET ?4"))?.query_map(params![id,q.q,q.limit(),q.offset()],|r|{let mut p:PageRecord=from_json(&r.get::<_,String>(0)?)?;p.text=p.text.chars().take(1000).collect();p.resource_urls.truncate(100);Ok(p)})?.collect::<rusqlite::Result<_>>()?;
+        Ok(Page {
+            items,
+            total,
+            offset: q.offset,
+            limit: q.limit(),
+        })
+    }
+    pub fn coverage(
+        &self,
+        id: &str,
+        q: &ListQuery,
+    ) -> rusqlite::Result<Page<crate::coverage::CoverageRecord>> {
+        let c = self.connect()?;
+        let filter =
+            "archive_id=?1 AND (?2='' OR instr(lower(url||' '||kind||' '||reason),lower(?2))>0)";
+        let total = c.query_row(
+            &format!("SELECT count(*) FROM archive_coverage WHERE {filter}"),
+            params![id, q.q],
+            |r| r.get::<_, i64>(0).map(|n| n as u64),
+        )?;
+        let items=c.prepare(&format!("SELECT document FROM archive_coverage WHERE {filter} ORDER BY ordinal LIMIT ?3 OFFSET ?4"))?.query_map(params![id,q.q,q.limit(),q.offset()],|r|from_json(&r.get::<_,String>(0)?))?.collect::<rusqlite::Result<_>>()?;
         Ok(Page {
             items,
             total,
@@ -504,7 +551,7 @@ impl Database {
             .filter(|n| *n <= 64 * 1024 * 1024 * 1024)
             .ok_or("cumulative byte limit exceeds 64GiB")?;
         if done >= u64::from(pages)
-            || rt.bytes_downloaded >= bytes
+            || rt.warc_bytes >= bytes
             || (rt.stop_reason.as_deref() == Some("time-limit") && ext.additional_minutes == 0)
         {
             return Err("capture budget exhausted; supply an explicit bounded additionalPages, additionalMinutes or additionalBytes extension".into());
@@ -525,12 +572,11 @@ impl Database {
         id: &str,
         rt: &JobRuntime,
     ) -> rusqlite::Result<()> {
-        let current = self.job(id)?;
-        let mut value = rt.clone();
-        if let Some(current) = current {
-            value.control = current.runtime.control;
-        }
-        self.set_runtime(id, &value)
+        self.connect()?.execute("UPDATE jobs SET runtime_json=json_set(json(?2),'$.control',json_extract(runtime_json,'$.control')),updated_at=?3 WHERE id=?1",params![id,rt.storage_json().map_err(|e|rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,now()])?;
+        Ok(())
+    }
+    pub fn begin_capture(&self, id: &str, rt: &JobRuntime) -> rusqlite::Result<bool> {
+        Ok(self.connect()?.execute("UPDATE jobs SET status='running',runtime_json=?2,updated_at=?3 WHERE id=?1 AND status='starting' AND json_extract(runtime_json,'$.control') IS NULL",params![id,rt.storage_json().map_err(|e|rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,now()])?==1)
     }
     pub fn list_jobs_for_recovery(&self) -> rusqlite::Result<Vec<crate::model::Job>> {
         let c = self.connect()?;
@@ -579,6 +625,17 @@ impl Database {
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
             if let Some(recipe) = recipe {
                 let recipe: Value = from_json(&recipe)?;
+                let duplicate:Option<String>=tx.query_row("SELECT id FROM jobs WHERE created_by=?1 AND status IN ('queued','starting','running','packaging') AND json_extract(request_json,'$.url')=?2 AND coalesce(json_extract(runtime_json,'$.operation.kind'),'capture') IN ('capture','sample','repair') LIMIT 1",params![owner,recipe["request"]["url"].as_str().unwrap_or("")],|r|r.get(0)).optional()?;
+                if let Some(existing) = duplicate {
+                    value["lastJobId"] = json!(existing);
+                    value["lastError"] =
+                        json!("Existing active capture retained; duplicate dispatch skipped");
+                    tx.execute(
+                        "UPDATE owned_records SET document=?2 WHERE id=?1 AND kind='schedule'",
+                        params![id, sql_json(&value)?],
+                    )?;
+                    continue;
+                }
                 let job_id = crate::queue::random_job_id();
                 tx.execute("INSERT INTO jobs(id,created_at,updated_at,created_by,status,request_json) VALUES(?1,?2,?2,?3,'queued',?4)",params![job_id,stamp,owner,sql_json(&recipe["request"])?])?;
                 value["lastJobId"] = json!(job_id);

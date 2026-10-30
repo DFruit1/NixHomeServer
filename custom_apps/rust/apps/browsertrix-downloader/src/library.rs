@@ -140,12 +140,17 @@ fn publish(
             "destination headroom insufficient for atomic publication; checkpoint retained".into(),
         );
     }
+    let coverage = crate::coverage::collect(&config.checkpoints_root.join(&job.id), job, &report)?;
+    if coverage.iter().any(|r| r.kind == "coverage-limit") {
+        a.report.warnings.push("Coverage inventory reached its bound; additional native report rows were not catalogued".into());
+    }
     let intent = PublicationIntent {
         archive: a,
         report,
         source: path.to_string_lossy().into_owned(),
         job_id: Some(job.id.clone()),
         final_status: status.as_str().into(),
+        coverage,
     };
     custody::publish(config, db, &intent)
 }
@@ -239,12 +244,20 @@ pub fn publish_capture(
                 .parent()
                 .ok_or("dedupe staging parent missing")?
                 .join(format!("dedupe-{}.wacz", a.id));
-            report = archive_engine::deduplicate_archive(
+            match archive_engine::deduplicate_archive(
                 path,
                 &destination,
                 &engine_dependencies(config, &authorized)?,
-            )?;
-            actual = destination;
+            ) {
+                Ok(result) => {
+                    report = result;
+                    actual = destination;
+                }
+                Err(error) if error == "No matching response payloads in authorized captures" => {
+                    report.warnings.push("Cross-capture deduplication found no matching payloads; original standalone capture retained with zero savings".into());
+                }
+                Err(error) => return Err(error),
+            }
             for id in &report.dependencies {
                 let dep = authorized
                     .iter()
@@ -270,14 +283,8 @@ pub fn publish_capture(
     if a.capture_status == "repair" {
         a.report.warnings.push("Mixed-time repair: selected successful response records take replay precedence; untouched parent records retain original capture times.".into());
     }
-    if matches!(job.runtime.operation, Operation::Sample) {
-        let samples = page_samples(&report);
-        let estimate = archive_engine::estimate_size(
-            &samples,
-            job.request.page_limit as u64,
-            job.request.page_limit,
-            true,
-        );
+    if let Operation::Sample { target_pages } = job.runtime.operation {
+        let estimate = stored_estimate(&report, target_pages.max(job.request.page_limit));
         let mut rt = job.runtime.clone();
         rt.estimate = Some(estimate);
         db.set_runtime(&job.id, &rt).map_err(|e| e.to_string())?;
@@ -285,23 +292,102 @@ pub fn publish_capture(
     publish(config, db, job, &actual, a, report, status)
 }
 pub fn page_samples(report: &ArchiveReport) -> Vec<PageSample> {
+    let page_urls = report
+        .pages
+        .iter()
+        .map(|p| p.url.as_str())
+        .collect::<BTreeSet<_>>();
     report
         .pages
         .iter()
         .take(20)
-        .map(|p| PageSample {
-            url: p.url.clone(),
-            bytes: p.bytes,
-            shared_bytes: 0,
-            resource_digests: report
-                .resources
-                .iter()
-                .filter(|r| r.pages.contains(&p.url) || p.resource_urls.contains(&r.url))
-                .map(|r| (r.digest.clone(), r.bytes))
-                .collect(),
-            measured: true,
+        .map(|p| {
+            let mut resource_digests = std::collections::BTreeMap::<String, u64>::new();
+            for resource in report.resources.iter().filter(|r| {
+                r.url == p.url
+                    || (!page_urls.contains(r.url.as_str())
+                        && (r.pages.contains(&p.url) || p.resource_urls.contains(&r.url)))
+            }) {
+                let key = if resource.digest.is_empty() {
+                    format!("unknown-digest:{}", resource.url)
+                } else {
+                    resource.digest.clone()
+                };
+                resource_digests
+                    .entry(key)
+                    .and_modify(|bytes| *bytes = (*bytes).max(resource.bytes))
+                    .or_insert(resource.bytes);
+            }
+            let own_document = report.resources.iter().any(|r| r.url == p.url);
+            let bytes = resource_digests
+                .values()
+                .fold(0u64, |n, b| n.saturating_add(*b))
+                .saturating_add(if own_document { 0 } else { p.bytes });
+            PageSample {
+                url: p.url.clone(),
+                bytes,
+                shared_bytes: 0,
+                resource_digests,
+                measured: bytes > 0,
+            }
         })
         .collect()
+}
+
+/// Project measured stored bytes, not transfer. Dynamic requests lacking static
+/// page attribution and package/baseline costs stay visible as uncertain overhead.
+pub fn stored_estimate(report: &ArchiveReport, target_pages: u32) -> archive_engine::Estimate {
+    let samples = page_samples(report);
+    let target_pages = target_pages.max(samples.len() as u32);
+    let mut estimate =
+        archive_engine::estimate_size(&samples, u64::from(target_pages), target_pages, true);
+    if !estimate.measured {
+        return estimate;
+    }
+    let mut attributed = std::collections::BTreeMap::<&str, u64>::new();
+    for sample in &samples {
+        for (digest, bytes) in &sample.resource_digests {
+            attributed
+                .entry(digest)
+                .and_modify(|n| *n = (*n).max(*bytes))
+                .or_insert(*bytes);
+        }
+    }
+    let known = attributed.values().fold(0u64, |n, b| n.saturating_add(*b));
+    let overhead = report.archive_bytes.saturating_sub(known);
+    let mut unknown = std::collections::BTreeMap::<&str, u64>::new();
+    for resource in &report.resources {
+        if !attributed.contains_key(resource.digest.as_str()) {
+            unknown
+                .entry(&resource.digest)
+                .and_modify(|n| *n = (*n).max(resource.bytes))
+                .or_insert(resource.bytes);
+        }
+    }
+    let unattributed = unknown.values().fold(0u64, |n, b| n.saturating_add(*b));
+    let scale = u64::from(target_pages)
+        .div_ceil(estimate.sample_pages.max(1))
+        .max(1);
+    estimate.lower_bytes = estimate
+        .lower_bytes
+        .saturating_add(overhead)
+        .max(report.archive_bytes);
+    estimate.expected_bytes = estimate
+        .expected_bytes
+        .saturating_add(overhead.saturating_mul(scale))
+        .max(report.archive_bytes);
+    estimate.upper_bytes = estimate
+        .upper_bytes
+        .saturating_add(overhead.saturating_mul(scale).saturating_mul(2))
+        .max(estimate.expected_bytes)
+        .max(estimate.lower_bytes);
+    estimate.peak_disk_bytes = estimate.upper_bytes.saturating_mul(3);
+    estimate.assumptions.push(format!("Observed sample package {}B; distinct attributed resource spans {}B; measured unattributed/duplicate/ZIP/baseline overhead {}B. Each page includes its own document once plus distinct attributed assets.",report.archive_bytes,known,overhead));
+    estimate.assumptions.push(format!("Overhead projection is uncertain: lower includes observed overhead once, expected scales it {scale}x by target/sample pages, upper allows twice that projection. Stored samples do not measure network transfer."));
+    if !unknown.is_empty() {
+        estimate.warnings.push(format!("{} distinct resource payloads ({}B) have no sampled-page attribution, including possible dynamic API/XHR and browser baselines; counted conservatively in capture overhead, not silently omitted or assumed to be fixed shared assets.",unknown.len(),unattributed));
+    }
+    estimate
 }
 pub fn execute(config: &AppConfig, db: &Database, job: &Job) -> Result<(), String> {
     let current = db
@@ -392,26 +478,14 @@ pub fn execute(config: &AppConfig, db: &Database, job: &Job) -> Result<(), Strin
             url,
             interactions,
         } => {
-            let mut a = if sha256.is_empty() {
-                db.archive_for_user(archive_id, &job.created_by)
-                    .map_err(|e| e.to_string())?
-                    .ok_or("archive not found")?
-            } else {
-                checked_archive(config, db, &job.created_by, archive_id, sha256)?
-            };
-            let deps = authorized_dependencies(config, db, &a)?;
-            let mut input = source(config, &a)?;
-            if !deps.is_empty() {
-                let path = scratch.join("standalone.wacz");
-                archive_engine::materialize_archive(
-                    &input,
-                    &path,
-                    &engine_dependencies(config, &deps)?,
-                    &ExportOptions::default(),
-                )?;
-                input = path;
+            let mut a = db
+                .archive_for_user(archive_id, &job.created_by)
+                .map_err(|e| e.to_string())?
+                .ok_or("archive not found")?;
+            if !sha256.is_empty() && a.sha256 != *sha256 {
+                return Err("queued verification identity differs from archive catalogue".into());
             }
-            let mut verification = archive_engine::verify_archive(&input)?;
+            let (input, mut verification) = verify_custody(config, db, &a, &scratch);
             if a.sha256.is_empty() && verification.valid {
                 let report = archive_engine::inspect_archive(&input)?;
                 a.sha256 = report.sha256.clone();
@@ -424,6 +498,7 @@ pub fn execute(config: &AppConfig, db: &Database, job: &Job) -> Result<(), Strin
                     source: input.to_string_lossy().into_owned(),
                     job_id: None,
                     final_status: "completed".into(),
+                    coverage: vec![],
                 };
                 db.replace_legacy_inventory(&intent)
                     .map_err(|e| e.to_string())?;
@@ -472,7 +547,26 @@ pub fn execute(config: &AppConfig, db: &Database, job: &Job) -> Result<(), Strin
     }
     // These operations have no resumable crawl state. Published output and DB commit
     // are durable before their exact task staging is cleaned.
-    std::fs::remove_dir_all(&scratch).map_err(|e| e.to_string())?;
+    let retain_diagnostics = if let Operation::Verify {
+        archive_id, mode, ..
+    } = &job.runtime.operation
+    {
+        mode == "browser"
+            && db
+                .archive_for_user(archive_id, &job.created_by)
+                .map_err(|e| e.to_string())?
+                .and_then(|a| a.verification)
+                .is_some_and(|v| {
+                    v.checks
+                        .iter()
+                        .any(|c| c.name == "offline-browser-replay" && c.status == "not-run")
+                })
+    } else {
+        false
+    };
+    if !retain_diagnostics {
+        std::fs::remove_dir_all(&scratch).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 fn check(v: &mut Verification, name: &str, status: &str, details: String) {
@@ -508,14 +602,30 @@ fn browser_qa(
     let mut request = a.request.clone().unwrap_or_else(|| job.request.clone());
     request.options.interactions = interactions.to_vec();
     crate::crawler::write_capture_config(&request, scratch, None)?;
+    let config_path = scratch.join("capture.json");
+    let mut qa_config: Value =
+        serde_json::from_slice(&std::fs::read(&config_path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    qa_config["qaMode"] = Value::Bool(true);
+    qa_config["applyViewport"] = Value::Bool(a.request.is_some());
+    qa_config["behaviors"] = serde_json::json!([]);
+    std::fs::write(
+        config_path,
+        serde_json::to_vec(&qa_config).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
     let source = input.canonicalize().map_err(|e| e.to_string())?;
     let mut command = std::process::Command::new(&config.podman_bin);
     command
         .args([
             "run",
+            "--pull=never",
             "--rm",
+            "--name",
+            &format!("web-archive-qa-{}", job.id),
             "--network=none",
             "--shm-size=1g",
+            "--tmpfs=/browser-state:rw,nosuid,nodev,mode=0700,size=512m",
             "--cap-add=SYS_ADMIN",
             "--security-opt=seccomp=unconfined",
             "--pid=host",
@@ -537,7 +647,15 @@ fn browser_qa(
             "--cwd",
             "/crawls",
             "--timeLimit",
-            "240",
+            "120",
+            "--limit",
+            "100",
+            "--pageLoadTimeout",
+            "20",
+            "--behaviorTimeout",
+            "15",
+            "--sizeLimit",
+            "134217728",
             "--workers",
             "1",
         ]);
@@ -577,7 +695,8 @@ fn browser_qa(
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break Some(status);
         }
-        if started.elapsed() > std::time::Duration::from_secs(300) {
+        if started.elapsed() > std::time::Duration::from_secs(150) {
+            stop_qa_container(config, &job.id);
             let _ = child.kill();
             let _ = child.wait();
             break None;
@@ -587,41 +706,81 @@ fn browser_qa(
             .map(|m| m.len() > 16 * 1024 * 1024)
             .unwrap_or(false)
         {
+            stop_qa_container(config, &job.id);
             let _ = child.kill();
             let _ = child.wait();
             break None;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
-    if status.is_none_or(|s| !s.success()) {
+    let bytes = std::fs::read(scratch.join("qa-observations.jsonl")).unwrap_or_default();
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err("QA observation report exceeded bounds".into());
+    }
+    let pages = String::from_utf8_lossy(&bytes)
+        .lines()
+        .take(101)
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    if pages.is_empty() {
         check(
             v,
             "offline-browser-replay",
             "not-run",
-            "Pinned crawler QA could not complete within isolated runtime bounds".into(),
+            format!(
+                "Pinned QA produced no completed page observations ({}); diagnostics retained",
+                status
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "timeout/log cap".into())
+            ),
         );
         return Ok(());
     }
-    let pagefile = scratch.join("collections/qa/pages/pages.jsonl");
-    let bytes = std::fs::read(&pagefile).unwrap_or_default();
-    if bytes.len() > 16 * 1024 * 1024 {
-        return Err("QA report exceeded bounds".into());
+    let expected = if url.is_some() {
+        1
+    } else {
+        a.page_count.min(100)
+    };
+    if url.is_none() && a.page_count > 100 {
+        v.warnings.push(format!(
+            "Browser QA scope bounded to100 of{}pages; remaining pages not tested",
+            a.page_count
+        ));
     }
-    let pages = String::from_utf8_lossy(&bytes)
-        .lines()
-        .take(20001)
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|p| p.get("url").is_some())
-        .collect::<Vec<_>>();
-    let expected = if url.is_some() { 1 } else { a.page_count };
     let loaded = pages.len() as u64;
-    let bad = pages.iter().any(|p| {
-        p["comparison"]["resourceCounts"]["replayBad"]
-            .as_u64()
-            .unwrap_or(0)
-            > 0
-    });
-    check(v,"offline-browser-replay",if loaded>=expected&&loaded>0&&!bad{"pass"}else{"fail"},format!("{loaded}/{expected} pages observed, network=none blocks all live origins including service workers"));
+    let mut gaps = Vec::new();
+    let mut missing = 0usize;
+    let connection = db.connect().map_err(|e| e.to_string())?;
+    for page in &pages {
+        for item in page["badResources"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(100)
+        {
+            let url = item["url"].as_str().unwrap_or("");
+            let status = item["status"].as_i64().unwrap_or(0);
+            use rusqlite::OptionalExtension;
+            let original:Option<i64>=connection.query_row("SELECT json_extract(document,'$.status') FROM archive_resources WHERE archive_id=?1 AND url=?2 LIMIT 1",rusqlite::params![a.id,url],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+            let same = original == Some(status);
+            if !same {
+                missing += 1;
+            }
+            if gaps.len() < 10 {
+                gaps.push(serde_json::json!({"url":url,"replayStatus":status,"capturedStatus":original,"provenance":if same{"captured-error-response"}else{"replay-missing-or-changed"}}));
+            }
+        }
+    }
+    check(v,"offline-browser-replay",if loaded>=expected&&loaded>0{"pass"}else{"fail"},format!("{loaded}/{expected} pages observed; container network=none blocks live origins including service workers"));
+    let comparable = pages
+        .iter()
+        .filter(|p| {
+            p["comparison"]["resourceCounts"]
+                .as_object()
+                .is_some_and(|o| o.contains_key("replayGood"))
+        })
+        .count();
+    check(v,"resource-fidelity",if comparable!=pages.len(){"not-run"}else if missing==0{"pass"}else{"fail"},format!("Native1.14.3 pageinfo comparison; {missing} missing/changed error responses; bounded examples: {}",serde_json::to_string(&gaps).map_err(|e|e.to_string())?));
     for (field, name) in [
         ("screenshotMatch", "screenshot-baseline"),
         ("textMatch", "text-baseline"),
@@ -659,7 +818,9 @@ fn browser_qa(
         .collect::<Vec<_>>();
     let state = if interactions.is_empty() {
         "not-run"
-    } else if checks.len() >= interactions.len() && checks.iter().all(|c| c["status"] == "pass") {
+    } else if checks.len() >= interactions.len().saturating_mul(pages.len())
+        && checks.iter().all(|c| c["status"] == "pass")
+    {
         "pass"
     } else {
         "fail"
@@ -675,4 +836,90 @@ fn browser_qa(
         ),
     );
     Ok(())
+}
+
+fn stop_qa_container(config: &AppConfig, job_id: &str) {
+    let _ = std::process::Command::new(&config.podman_bin)
+        .args([
+            "kill",
+            "--signal",
+            "KILL",
+            &format!("web-archive-qa-{job_id}"),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+static ARCHIVE_READ_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+pub async fn analyze<T: Send + 'static, F: FnOnce() -> Result<T, String> + Send + 'static>(
+    function: F,
+) -> Result<Result<T, String>, tokio::task::JoinError> {
+    let _permit = ARCHIVE_READ_SLOTS
+        .acquire()
+        .await
+        .expect("archive read semaphore remains open");
+    tokio::task::spawn_blocking(function).await
+}
+
+fn verify_custody(
+    config: &AppConfig,
+    db: &Database,
+    a: &Archive,
+    scratch: &Path,
+) -> (PathBuf, Verification) {
+    let result = (|| -> Result<(PathBuf, Verification), String> {
+        let mut input = source(config, a)?;
+        let actual = custody::sha256(&input)?;
+        let deps = authorized_dependencies(config, db, a)?;
+        if !deps.is_empty() {
+            let path = scratch.join("standalone.wacz");
+            archive_engine::materialize_archive(
+                &input,
+                &path,
+                &engine_dependencies(config, &deps)?,
+                &ExportOptions::default(),
+            )?;
+            input = path;
+        }
+        let mut v = archive_engine::verify_archive(&input)?;
+        if !a.sha256.is_empty() && actual != a.sha256 {
+            v.valid = false;
+            check(
+                &mut v,
+                "catalogue-sha256",
+                "fail",
+                "Retained payload differs from immutable catalogue digest".into(),
+            );
+        }
+        Ok((input, v))
+    })();
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            let mut v = Verification {
+                valid: false,
+                checked_at: now(),
+                checks: vec![VerificationCheck {
+                    name: "custody-identity".into(),
+                    status: "fail".into(),
+                    details: error,
+                }],
+                warnings: vec![],
+            };
+            for name in [
+                "offline-browser-replay",
+                "screenshot-baseline",
+                "interaction-assertions",
+            ] {
+                check(
+                    &mut v,
+                    name,
+                    "not-run",
+                    "File custody/fixity must succeed before browser QA".into(),
+                );
+            }
+            (PathBuf::new(), v)
+        }
+    }
 }

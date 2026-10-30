@@ -19,7 +19,7 @@ pub struct CreateJobInput {
     pub time_limit_minutes: Option<u32>,
     #[serde(default)]
     pub collection: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_options")]
     pub options: Option<crate::model::CaptureOptions>,
 }
 
@@ -346,4 +346,26 @@ fn validate_pattern(pattern: &str) -> Result<(), ValidationError> {
         return Err(ValidationError("URL rules support a bounded common Rust/JavaScript regex subset; use simple URL/path patterns without lookarounds, inline flags or repeated groups".into()));
     }
     Ok(())
+}
+
+fn deserialize_options<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<crate::model::CaptureOptions>, D::Error> {
+    let input = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(input) = input else { return Ok(None) };
+    let object = input
+        .as_object()
+        .ok_or_else(|| serde::de::Error::custom("options must be an object"))?;
+    let preset = input
+        .get("preset")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("faithful");
+    let mut defaults = serde_json::to_value(crate::model::CaptureOptions::preset(preset))
+        .map_err(serde::de::Error::custom)?;
+    for (key, value) in object {
+        defaults[key] = value.clone();
+    }
+    serde_json::from_value(defaults)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
 }

@@ -23,12 +23,13 @@ pub fn build_crawl_args(
         "-v".into(),
         format!("{}:/crawls", crawl_dir.display()).into(),
         "--tmpfs".into(),
-        format!("/crawls/collections/{collection_name}/profile:rw,nosuid,nodev,mode=0700").into(),
+        "/browser-state:rw,nosuid,nodev,mode=0700,size=512m".into(),
         "--tmpfs".into(),
         format!("/crawls/collections/{collection_name}/downloads:rw,nosuid,nodev,mode=0700").into(),
         "--network=slirp4netns:allow_host_loopback=false".into(),
         image.into(),
         "crawl".into(),
+        "--headless".into(),
         "--url".into(),
         request.url.clone().into(),
         "--collection".into(),
@@ -60,6 +61,7 @@ pub fn build_crawl_args(
         "30".into(),
         "--saveStateHistory".into(),
         "3".into(),
+        "--reportSkipped".into(),
         "--statsFilename".into(),
         "/crawls/stats.json".into(),
         "--serviceWorker".into(),
@@ -234,6 +236,13 @@ const POLICY_DRIVER: &str = r#"
 import fs from 'node:fs';
 const settings=JSON.parse(fs.readFileSync('/crawls/capture.json','utf8'));
 const p=settings.policy;
+// Native profile installation renames downloads/profile-* into profile. Keep
+// both on the same fresh tmpfs; mounting profile itself would fail with EBUSY.
+const {Browser}=await import('file:///app/dist/util/browser.js');
+const install=Browser.prototype.installProfile;
+Browser.prototype.installProfile=async function(url){this.profileDir='/browser-state/profile';this.downloadsDir='/browser-state/downloads';return install.call(this,url);};
+
+console.log(JSON.stringify({message:'policyReady',version:1}));
 const installed=new WeakSet();
 export default async function({page,data,crawler,seed}) {
   await page.setViewport({width:p.viewportWidth,height:p.viewportHeight});
@@ -241,6 +250,8 @@ export default async function({page,data,crawler,seed}) {
     installed.add(page);
     crawler.browser.interceptRequest(page,async request=>{if(p.allowRules.some(rule=>new RegExp(rule).test(request.url()))){try{await request.continue({},10);}catch{}}});
     const session=await page.createCDPSession();
+    await session.send('Network.enable');
+    session.on('Network.loadingFinished',e=>console.log(JSON.stringify({message:'transferBytes',bytes:e.encodedDataLength||0})));
     await session.send('Fetch.enable',{patterns:[{urlPattern:'*',requestStage:'Response'}]});
     session.on('Fetch.requestPaused',async e=>{
       const headers=e.responseHeaders||[];
@@ -260,6 +271,9 @@ export default async function({page,data,crawler,seed}) {
     },p);
   }
   await crawler.loadPage(page,data,seed);
+  await runAssertions(page,data,crawler);
+}
+async function runAssertions(page,data,crawler) {
   const results=[];
   const context=crawler.recording===false ? (page.frames().slice(2)[0]||page) : page;
   for(const step of p.interactions||[]) {
@@ -275,4 +289,17 @@ export default async function({page,data,crawler,seed}) {
   }
   if(results.length)fs.appendFileSync('/crawls/interactions.jsonl',JSON.stringify({url:data.url,checks:results})+'\n');
 }
+// Browsertrix1.14.3 QA overrides crawlPage, bypassing the driver's default
+// callback. This module is still loaded through --driver. Wrap its native hooks
+// inside this isolated container to retain actual comparisons and assertions.
+if(settings.qaMode){
+ const {ReplayCrawler}=await import('file:///app/dist/replaycrawler.js');
+ const setup=ReplayCrawler.prototype.setupPage;
+ ReplayCrawler.prototype.setupPage=async function(opts){await setup.call(this,opts);if(settings.applyViewport)await opts.page.setViewport({width:p.viewportWidth,height:p.viewportHeight});};
+ const process=ReplayCrawler.prototype.processPageInfo;
+ ReplayCrawler.prototype.processPageInfo=async function(page,state){if(state){const info=this.pageInfos.get(page);if(info)fs.appendFileSync('/crawls/qa-observations.jsonl',JSON.stringify({url:info.url,comparison:info.comparison,badResources:Object.entries(info.urls).filter(([url,value])=>url.startsWith("http")&&value.status>=400).slice(0,100).map(([url,value])=>({url,status:value.status,mime:value.mime}))})+'\n');}return process.call(this,page,state);};
+ const crawl=ReplayCrawler.prototype.crawlPage;
+ ReplayCrawler.prototype.crawlPage=async function(opts){await crawl.call(this,opts);await runAssertions(opts.page,opts.data,this);};
+}
+
 "#;
