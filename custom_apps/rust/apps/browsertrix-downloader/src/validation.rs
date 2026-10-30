@@ -19,6 +19,8 @@ pub struct CreateJobInput {
     pub time_limit_minutes: Option<u32>,
     #[serde(default)]
     pub collection: Option<String>,
+    #[serde(default)]
+    pub options: Option<crate::model::CaptureOptions>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -66,7 +68,9 @@ pub fn parse_create_job(input: CreateJobInput) -> Result<ParsedCreateJob, Valida
     if let Some(address) = literal_address {
         assert_public_addresses(&[address])?;
     }
-    url.set_fragment(None);
+    if input.scope != Some(CrawlScope::PageSpa) {
+        url.set_fragment(None);
+    }
     let page_limit = nonzero_or_default(input.page_limit, DEFAULT_PAGE_LIMIT).min(MAX_PAGE_LIMIT);
     let time_limit_minutes =
         nonzero_or_default(input.time_limit_minutes, DEFAULT_TIME_LIMIT_MINUTES)
@@ -78,6 +82,7 @@ pub fn parse_create_job(input: CreateJobInput) -> Result<ParsedCreateJob, Valida
             page_limit,
             time_limit_minutes,
             collection: input.collection,
+            options: input.options.unwrap_or_default(),
         },
         hostname,
     })

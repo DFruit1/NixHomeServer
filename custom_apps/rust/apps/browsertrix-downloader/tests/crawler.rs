@@ -12,6 +12,7 @@ fn request(scope: CrawlScope) -> CreateJobRequest {
         page_limit: 25,
         time_limit_minutes: 10,
         collection: None,
+        options: Default::default(),
     }
 }
 
@@ -22,6 +23,7 @@ fn request_with_collection(scope: CrawlScope, collection: &str) -> CreateJobRequ
         page_limit: 25,
         time_limit_minutes: 10,
         collection: Some(collection.to_owned()),
+        options: Default::default(),
     }
 }
 

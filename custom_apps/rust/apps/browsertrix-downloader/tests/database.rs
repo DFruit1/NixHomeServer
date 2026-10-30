@@ -10,6 +10,7 @@ fn request() -> CreateJobRequest {
         page_limit: 5,
         time_limit_minutes: 2,
         collection: None,
+        options: Default::default(),
     }
 }
 

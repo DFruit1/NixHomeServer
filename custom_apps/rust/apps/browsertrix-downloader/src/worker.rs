@@ -281,6 +281,7 @@ async fn finish_archive(
         page_limit: Some(job.request.page_limit),
         time_limit_minutes: Some(job.request.time_limit_minutes),
         collection: job.request.collection.clone(),
+        options: Some(job.request.options.clone()),
     })
     .map_err(|error| format!("read archived hostname: {error}"))?;
     tokio::fs::create_dir_all(&config.archive_root)

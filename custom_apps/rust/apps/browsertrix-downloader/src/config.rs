@@ -10,6 +10,11 @@ pub struct AppConfig {
     pub frontend_dir: PathBuf,
     pub replay_dir: PathBuf,
     pub archive_root: PathBuf,
+    pub private_archive_root: PathBuf,
+    pub checkpoints_root: PathBuf,
+    pub profiles_root: PathBuf,
+    pub inbox_root: PathBuf,
+    pub private_archive_gid: u32,
     pub zim_root: Option<PathBuf>,
     pub zim_reader_url: Option<String>,
     pub podman_bin: PathBuf,
@@ -39,6 +44,23 @@ impl AppConfig {
             database_path: std::env::var_os("BROWSERTRIX_DOWNLOADER_DATABASE")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| state_dir.join("browsertrix-downloader.sqlite")),
+            checkpoints_root: std::env::var_os("BROWSERTRIX_DOWNLOADER_CHECKPOINTS_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| state_dir.join("checkpoints")),
+            profiles_root: std::env::var_os("BROWSERTRIX_DOWNLOADER_PROFILES_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| state_dir.join("profiles")),
+            inbox_root: std::env::var_os("BROWSERTRIX_DOWNLOADER_INBOX_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| state_dir.join("inbox")),
+            private_archive_root: path_env(
+                "BROWSERTRIX_DOWNLOADER_PRIVATE_ARCHIVE_ROOT",
+                "/mnt/data/browsertrix-downloader/private-archives",
+            ),
+            private_archive_gid: nonnegative_env(
+                "BROWSERTRIX_DOWNLOADER_PRIVATE_ARCHIVE_GID",
+                unsafe { libc::getegid() },
+            ),
             state_dir,
             crawls_root: path_env(
                 "BROWSERTRIX_DOWNLOADER_CRAWLS_DIR",
@@ -78,6 +100,11 @@ impl AppConfig {
             frontend_dir: root.join("frontend"),
             replay_dir: root.join("replay"),
             archive_root: root.join("archives"),
+            private_archive_root: root.join("private-archives"),
+            checkpoints_root: root.join("state/checkpoints"),
+            profiles_root: root.join("state/profiles"),
+            inbox_root: root.join("state/inbox"),
+            private_archive_gid: unsafe { libc::getegid() },
             zim_root: None,
             zim_reader_url: None,
             podman_bin: PathBuf::from("podman"),

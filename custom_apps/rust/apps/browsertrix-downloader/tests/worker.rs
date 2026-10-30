@@ -53,6 +53,7 @@ printf '%s\n' '{"stats":{"done":1,"queued":0,"failed":0}}'
                 page_limit: 5,
                 time_limit_minutes: 2,
                 collection: None,
+                options: Default::default(),
             },
         )
         .expect("job");

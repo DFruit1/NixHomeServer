@@ -377,6 +377,7 @@ fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
         archive_file: row.get(7)?,
         archive_bytes: archive_bytes.and_then(|value| u64::try_from(value).ok()),
         error: row.get(9)?,
+        runtime: crate::model::JobRuntime::default(),
     })
 }
 

@@ -92,6 +92,7 @@ impl JobQueue {
             page_limit: Some(job.request.page_limit),
             time_limit_minutes: Some(job.request.time_limit_minutes),
             collection: job.request.collection,
+            options: Some(job.request.options),
         })?;
         self.validate_destination(&parsed.hostname).await?;
         self.create_unique_job(user, &parsed.request)

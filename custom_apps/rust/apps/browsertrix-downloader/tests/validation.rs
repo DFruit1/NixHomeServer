@@ -54,6 +54,7 @@ fn create_request_is_normalized_defaulted_and_clamped() {
         page_limit: None,
         time_limit_minutes: None,
         collection: None,
+        options: None,
     })
     .expect("valid request");
     assert_eq!(parsed.hostname, "example.com");
@@ -71,6 +72,7 @@ fn create_request_is_normalized_defaulted_and_clamped() {
         page_limit: Some(u32::MAX),
         time_limit_minutes: Some(u32::MAX),
         collection: None,
+        options: None,
     })
     .expect("clamped request");
     assert_eq!(clamped.request.page_limit, MAX_PAGE_LIMIT);
@@ -94,6 +96,7 @@ fn unsafe_or_non_http_urls_are_rejected() {
                 page_limit: None,
                 time_limit_minutes: None,
                 collection: None,
+                options: None,
             })
             .is_err(),
             "{url} should be rejected"
