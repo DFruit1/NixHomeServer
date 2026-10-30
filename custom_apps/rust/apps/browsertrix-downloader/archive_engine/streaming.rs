@@ -9,7 +9,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
-    io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
+    io::{self, BufRead, BufReader, Read},
     os::unix::fs::FileExt,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -177,7 +177,11 @@ fn full_hash(file: &Arc<File>, size: u64) -> Result<String, String> {
     .trim_start_matches("sha256:")
     .into())
 }
-fn named_bytes(zip: &mut ZipArchive<File>, name: &str, limit: usize) -> Result<Vec<u8>, String> {
+fn named_bytes(
+    zip: &mut ZipArchive<super::zip_directory::Input>,
+    name: &str,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
     read::bounded(zip.by_name(name).map_err(|e| e.to_string())?, limit)
 }
 
@@ -188,12 +192,21 @@ pub(super) fn load(path: &Path) -> Result<Archive, String> {
     if size > MAX_ARCHIVE {
         return Err("Archive exceeds 32 GiB bounded file limit".into());
     }
+    let directory = super::zip_directory::validate(&file, size)?;
+    let member_count = directory.count;
     let sha256 = full_hash(&file, size)?;
-    let mut clone = file.try_clone().map_err(|e| e.to_string())?;
-    clone.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    let mut zip = ZipArchive::new(clone).map_err(|e| e.to_string())?;
-    if zip.len() > 10_000 {
-        return Err("ZIP member count exceeds 10000".into());
+    let input = super::zip_directory::Input::new(file.clone(), directory);
+    let metadata_only = input.metadata_only.clone();
+    let mut zip = ZipArchive::with_config(
+        zip::read::Config {
+            archive_offset: zip::read::ArchiveOffset::Known(0),
+        },
+        input,
+    )
+    .map_err(|e| e.to_string())?;
+    metadata_only.store(false, Ordering::Relaxed);
+    if zip.len() != member_count {
+        return Err("ZIP member identities changed after raw preflight".into());
     }
     let manifest_bytes = named_bytes(&mut zip, "datapackage.json", 4 * 1024 * 1024)?;
     let manifest: Value = serde_json::from_slice(&manifest_bytes).map_err(|e| e.to_string())?;
@@ -256,6 +269,7 @@ pub(super) fn load(path: &Path) -> Result<Archive, String> {
         archive.report.dependencies =
             serde_json::from_value(deps.clone()).map_err(|e| e.to_string())?;
     }
+    read::validate_dependency_relations(&mut archive, &manifest)?;
     let mut members = BTreeMap::new();
     let mut names = std::collections::BTreeSet::new();
     let mut warcs = vec![];

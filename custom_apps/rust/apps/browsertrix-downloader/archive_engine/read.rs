@@ -131,6 +131,71 @@ pub(super) fn load(path: &Path) -> Result<Archive, String> {
     super::streaming::load(path)
 }
 
+pub(super) fn valid_dependency_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 256
+        && !matches!(id, "." | "..")
+        && !id.contains(['/', '\\', ':', '?', '#'])
+        && !id.chars().any(char::is_control)
+}
+pub(super) fn validate_dependency_relations(
+    archive: &mut Archive,
+    manifest: &Value,
+) -> Result<(), String> {
+    let ids: BTreeSet<_> = archive.report.dependencies.iter().collect();
+    if ids.len() > 16
+        || ids.len() != archive.report.dependencies.len()
+        || ids.len() != archive.dependency_hashes.len()
+        || ids
+            .iter()
+            .any(|id| !valid_dependency_id(id) || !archive.dependency_hashes.contains_key(*id))
+        || archive
+            .dependency_hashes
+            .values()
+            .any(|hash| hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return Err("Invalid immutable manifest dependency bindings".into());
+    }
+    let Some(relation) = manifest.get("relation") else {
+        if !ids.is_empty() {
+            archive.report.warnings.push("Legacy dependency manifest lacks relation.requires; materialize or regenerate before standard MultiWACZ replay".into());
+        }
+        return Ok(());
+    };
+    let requires = relation
+        .get("requires")
+        .and_then(Value::as_array)
+        .ok_or("Unsupported WACZ relation.requires layout")?;
+    if requires.len() != ids.len() {
+        return Err("WACZ relation.requires differs from authorized dependency bindings".into());
+    }
+    let mut seen = BTreeSet::new();
+    for requirement in requires {
+        let filename = requirement
+            .get("filename")
+            .and_then(Value::as_str)
+            .ok_or("WACZ dependency relation filename missing")?;
+        let id = filename
+            .strip_suffix(".wacz")
+            .filter(|id| valid_dependency_id(id))
+            .ok_or("Unsupported WACZ dependency filename; expected archive_id.wacz")?;
+        let expected = archive
+            .dependency_hashes
+            .get(id)
+            .ok_or("Unbound WACZ relation.requires dependency")?;
+        let hash = requirement
+            .get("hash")
+            .and_then(Value::as_str)
+            .ok_or("WACZ dependency relation hash missing")?;
+        if !seen.insert(id)
+            || normalize_sha256(hash)? != format!("sha256:{}", expected.to_ascii_lowercase())
+        {
+            return Err("WACZ dependency relation hash/identity mismatch".into());
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn normalize_sha256(value: &str) -> Result<String, String> {
     let (algorithm, encoded) = value
         .split_once(':')
@@ -242,6 +307,7 @@ pub(super) fn validate_indexes(
     let mut count = 0;
     for (name, bytes) in members {
         if name.ends_with(".idx") {
+            let mut previous_block_key = String::new();
             for line in lines(bytes)? {
                 let start = line.find('{').ok_or("Invalid compressed CDX block index")?;
                 let v: Value = serde_json::from_str(&line[start..]).map_err(|e| e.to_string())?;
@@ -291,6 +357,11 @@ pub(super) fn validate_indexes(
                 if line[..start].trim_end() != first[..first_end].trim_end() {
                     return Err("CDX block lookup key mismatch".into());
                 }
+                let block_key = line[..start].trim_end();
+                if block_key < previous_block_key.as_str() {
+                    return Err("CDX block lookup keys are not sorted for range lookup".into());
+                }
+                previous_block_key = block_key.into();
                 block_spans
                     .entry(path.clone())
                     .or_default()
@@ -317,6 +388,7 @@ pub(super) fn validate_indexes(
             bounded(bytes.as_slice(), super::streaming::MAX_METADATA - *inflated)?
         };
         *inflated += raw.len();
+        let mut previous_key = String::new();
         for line in lines(&raw)? {
             count += 1;
             if count > MAX_ITEMS {
@@ -337,6 +409,21 @@ pub(super) fn validate_indexes(
                 .get("url")
                 .and_then(Value::as_str)
                 .ok_or("CDX URL missing")?;
+            let mut prefix = line[..start].split_whitespace();
+            let lookup_key = prefix.next().ok_or("CDX lookup key missing")?;
+            let timestamp = prefix.next().ok_or("CDX timestamp missing")?;
+            if prefix.next().is_some() {
+                return Err("Unsupported CDX lookup prefix layout".into());
+            }
+            let row = value.as_object().ok_or("CDX row must be an object")?;
+            if lookup_key != super::index_key::expected(url, row)? {
+                return Err("CDX lookup key differs from WARC URL/request identity".into());
+            }
+            let sort_key = format!("{lookup_key} {timestamp}");
+            if sort_key < previous_key {
+                return Err("CDX lookup keys are not sorted for range lookup".into());
+            }
+            previous_key = sort_key;
             let group = locations
                 .get(&(
                     filename,
@@ -345,10 +432,6 @@ pub(super) fn validate_indexes(
                     url.into(),
                 ))
                 .ok_or("CDX points outside matching WARC gzip span")?;
-            let timestamp = line[..start]
-                .split_whitespace()
-                .nth(1)
-                .ok_or("CDX timestamp missing")?;
             let candidates: Vec<_> = group
                 .iter()
                 .copied()
@@ -381,11 +464,7 @@ pub(super) fn validate_indexes(
                     }
                 }
             }
-            records[i].index_key = line[..start]
-                .split_whitespace()
-                .next()
-                .ok_or("CDX lookup key missing")?
-                .into();
+            records[i].index_key = lookup_key.into();
             records[i].index = serde_json::from_value(value).map_err(|e| e.to_string())?;
         }
     }
@@ -506,6 +585,13 @@ impl Archive {
         Ok(())
     }
     pub fn report(&self) -> Result<ArchiveReport, String> {
+        self.report_with_analysis_budget(super::streaming::MAX_METADATA, false)
+    }
+    pub fn report_with_analysis_budget(
+        &self,
+        analysis_limit: usize,
+        strict: bool,
+    ) -> Result<ArchiveReport, String> {
         let mut report = self.report.clone();
         let mut pages = BTreeMap::<(String, String), PageRecord>::new();
         for page in &self.page_meta {
@@ -568,7 +654,10 @@ impl Archive {
                 if let Some((text, title, links)) = &analysis.content {
                     let extra =
                         text.len() + title.len() + links.iter().map(String::len).sum::<usize>();
-                    if extracted_bytes.saturating_add(extra) > super::streaming::MAX_METADATA {
+                    if extracted_bytes.saturating_add(extra) > analysis_limit {
+                        if strict {
+                            return Err("Reader analysis exceeds bounded size".into());
+                        }
                         analysis.content = None;
                         analysis.omitted =
                             Some("Aggregate optional text/link analysis budget exhausted".into());

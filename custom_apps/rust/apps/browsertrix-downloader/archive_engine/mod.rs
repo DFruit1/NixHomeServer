@@ -8,11 +8,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 mod content;
+mod index_key;
 mod read;
 mod selectors;
 mod streaming;
 mod transform;
 mod views;
+mod zip_directory;
 
 pub use transform::{
     compose_repair, deduplicate_archive, export_archive, materialize_archive, NO_MATCHING_PAYLOADS,
@@ -20,7 +22,7 @@ pub use transform::{
 pub use views::{
     compare_archives, compare_archives_authorized, estimate_size, preview_document,
     preview_document_authorized, preview_page, reader_export, reader_export_authorized,
-    PreviewDocument,
+    reader_export_authorized_limited, PreviewDocument,
 };
 
 /// Caller authorizes every path for the same owner/visibility before entering

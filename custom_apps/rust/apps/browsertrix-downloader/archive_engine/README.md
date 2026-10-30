@@ -15,8 +15,9 @@ lazy source locations, not payloads. Source bytes are hash-checked before/after
 inspection, and each lazily read body is checked against its scanned block hash.
 A cumulative 256 GiB lazy reread budget prevents gzip seek amplification.
 
-The bounded in-memory limits are 50,000 records/pages/index rows, 10,000 ZIP
-members, 1,024-byte member paths, 64 KiB headers, 4 MiB manifest, 32 MiB each
+The bounded in-memory limits are 50,000 records/pages/index rows, 10,000 raw ZIP
+members, 32 MiB central directory, 1,024-byte member paths, 64 KiB headers,
+4 MiB manifest, 32 MiB each
 for ZIP page/index metadata, combined WARC/HTTP header inventory, inflated CDX,
 and extracted text/link inventory. Dependency metadata is capped at 256 MiB
 across at most 16 explicitly authorized archives. Reader output is capped at
@@ -171,3 +172,88 @@ local dedupe and standalone materialization, guarding against quadratic resolver
 cutoffs producing invalid outputs. Source-record lookup uses stable IDs or
 URL/date tuples plus digest, transport and location checks; URL alone never
 identifies a reference.
+
+Engine review corrections (WA-ENG-001 through WA-ENG-004; WA-INT001):
+
+- Raw ZIP/ZIP64 end records, directory byte/count bounds, raw duplicate names,
+  local-header identities and member spans are checked before constructing the
+  ZIP crate's allocating inventory. The ZIP reader constructs metadata from the
+  same frozen directory snapshot, with payload bytes unavailable to its fallback
+  end-record scanner. This adds at most 32 MiB plus 65,633 bytes for the frozen
+  directory/footer, alongside the bounded crate inventory; it does not retain
+  WARC payloads. Preflight names total at most 10,000 × 1,024 bytes and are dropped
+  before crate construction. Normal ZIP64 end records and STORE output remain
+  supported. Split/prefixed/trailing-junk archives, changing Unicode path
+  overrides, non-UTF8 names and ambiguous nested end signatures in directory
+  metadata are rejected explicitly. The layout reference is
+  [PKWARE APPNOTE 6.3.10](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT),
+  sections 4.3 and 4.5.3.
+- CDX keys must agree with the WARC URL and supported CDX method/requestBody
+  distinction. Query sorting, `www`/numbered prefixes, default ports, fragment
+  removal, native URNs and request-query decoding follow the crawler's pinned
+  [warcio 2.4.11 implementation](https://github.com/webrecorder/warcio.js/blob/v2.4.11/src/lib/utils.ts).
+  CDX and compressed block keys must be sorted for native range lookup. Valid
+  original keys and request metadata remain unchanged on export.
+- Repair composition publishes successful responses for replaced target URLs;
+  later failed alternatives and their page metadata cannot shadow the repair.
+  Failed-only targets keep their parent records. Other parent records, patch
+  assets, actual capture dates and mixed-time provenance remain.
+- Include-page selection uses actual page inventory rather than HTML MIME.
+  Non-page HTML stays a resource. Embedded iframe/frame/object document closure
+  is retained even when those documents also appear in page inventory. Scripts,
+  event handlers, srcdoc and unavailable/bounded analysis retain page inventory
+  conservatively. Explicit resource exclusions still apply and are recorded.
+- Dependent output adds `datapackage.relation.requires` entries with
+  `filename: <archive_id>.wacz` and `hash: sha256:<immutable hash>`, matching the
+  backend's MultiWACZ resource names. The pinned viewer reads those filenames for
+  dependency fallback:
+  [wabac 2.27.2 WACZFile](https://github.com/webrecorder/wabac.js/blob/v2.27.2/src/wacz/waczfile.ts),
+  [MultiWACZ lookup](https://github.com/webrecorder/wabac.js/blob/v2.27.2/src/wacz/multiwacz.ts).
+  Imports require exact agreement with the engine's dependency ID/hash map;
+  relations alone never authorize access or trigger a fetch. Legacy engine
+  dependency manifests without relations remain inspectable/materializable with
+  explicit authorized inputs and a standard-replay warning. Standalone output
+  has no required dependencies.
+
+Six focused risk regressions cover pre-allocation ZIP exhaustion/corruption,
+lookup-key corruption, failed repair replacement, shared HTML resource loss and
+unauthorized dependency relations, plus reader response-memory amplification.
+The focused engine run passes 19 tests, with
+the opt-in native test run separately. With the real 109,406-byte crawler fixture,
+the corrected selector derivative is 101,464 bytes and retains all 18 resources.
+With its older native parent, dedupe produces 53,334 bytes and authorized
+materialization produces 101,675 bytes; verification and both original hashes
+pass. Set `WEB_ARCHIVES_PARENT` alongside `WEB_ARCHIVES_FIXTURE` to include that
+native-pair check in `archive_engine_real_crawler_derivative_corruption_check`.
+These are file/engine checks. The integration owner performs the final native
+ReplayWeb.page dependency replay and independent round-2 review on the committed
+candidate. The prior 335,653,513-byte streaming measurement above was not rerun;
+the payload pipeline and limits remain unchanged.
+
+The additive API for a caller holding aggregate response-lifetime permits is:
+
+```rust
+pub fn reader_export_authorized_limited(
+    path: &Path,
+    format: &str,
+    dependencies: &[AuthorizedDependency],
+    max_output_bytes: usize,
+) -> Result<String, String>;
+```
+
+It caps output at `min(max_output_bytes, 256 MiB)` and retained source/dependency
+metadata plus optional text/link analysis at `min(max_output_bytes, 32 MiB)`.
+Metadata accounting measures inventory bytes rather than allocator/RSS overhead;
+loading can temporarily hold one additional archive under the ordinary per-file
+limits before rejecting the aggregate. This is not a process-memory guarantee.
+It checks the complete escaped HTML/Markdown output length before allocating the
+response, then reserves exactly that length and writes directly, with no escaped
+page-sized temporary or formatted duplicate. Archive inventories and report
+resources are dropped before response allocation. Both text and framing count,
+including the HTML footer. Limits return errors rather than truncating output.
+The existing reader functions retain their signatures and legacy limits. The
+backend must use the limited entry point with a small response cap and hold its
+aggregate permit until the HTTP body is drained or dropped; engine output bounds
+alone do not limit how many slow bodies the server retains. The regression checks
+high-expansion native text, exact HTML/Markdown byte boundaries, aggregate
+dependency metadata rejection, and original hash preservation.

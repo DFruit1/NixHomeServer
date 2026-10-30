@@ -329,61 +329,172 @@ pub fn reader_export_authorized(
     format: &str,
     dependencies: &[AuthorizedDependency],
 ) -> Result<String, String> {
+    reader_export_impl(path, format, dependencies, MAX_BYTES, false)
+}
+
+/// Caller-sized response limit, capped at the legacy 256 MiB ceiling. Checks
+/// escaped output length before allocating it. This entry point also caps
+/// retained source/dependency metadata and optional analysis at the smaller of
+/// max_output_bytes and 32 MiB; it returns an error rather than truncating.
+/// This does not replace the caller's aggregate response-lifetime permit.
+pub fn reader_export_authorized_limited(
+    path: &Path,
+    format: &str,
+    dependencies: &[AuthorizedDependency],
+    max_output_bytes: usize,
+) -> Result<String, String> {
+    reader_export_impl(
+        path,
+        format,
+        dependencies,
+        max_output_bytes.min(MAX_BYTES),
+        true,
+    )
+}
+
+fn reader_export_impl(
+    path: &Path,
+    format: &str,
+    dependencies: &[AuthorizedDependency],
+    max_output_bytes: usize,
+    limited_analysis: bool,
+) -> Result<String, String> {
     if !matches!(format, "markdown" | "html") {
         return Err("Reader format must be markdown or html".into());
     }
-    let report = transform::authorized_archive(path, dependencies)?.report()?;
-    if report.pages.is_empty() {
+    if max_output_bytes == 0 {
+        return Err("Reader output exceeds bounded size".into());
+    }
+    let pages = {
+        let budget = max_output_bytes.min(super::streaming::MAX_METADATA);
+        let archive = if limited_analysis {
+            transform::authorized_archive_limited(path, dependencies, budget)?
+        } else {
+            transform::authorized_archive(path, dependencies)?
+        };
+        // Drop archive inventories and report resources before allocating the
+        // response; only the reader's page data remains live here.
+        if limited_analysis {
+            archive.report_with_analysis_budget(budget, true)?.pages
+        } else {
+            archive.report()?.pages
+        }
+    };
+    if pages.is_empty() {
         return Err("No captured readable pages".into());
     }
-    let mut out = String::new();
-    if format == "html" {
-        out.push_str("<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\"><title>Archived reading export</title><style>body{max-width:76ch;margin:2rem auto;padding:1rem;font:18px/1.6 system-ui}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><h1>Archived reading export</h1><p>Derived reading copy; scripts, layout, images and interactions are omitted.</p>");
-    } else {
-        out.push_str("# Archived reading export\n\nDerived reading copy; layout, images and interactions are omitted.\n\n");
-    }
-    for page in report.pages {
-        if format == "html" {
-            out.push_str(&format!(
-                "<article><h2>{}</h2><p>Source: {}<br>Capture: {}</p><pre>{}</pre></article>",
-                content::escape(&page.title),
-                content::escape(&page.url),
-                content::escape(&page.ts),
-                content::escape(&page.text)
-            ));
+    let mut length = 0usize;
+    reader_parts(&pages, format, |value, escaping| {
+        let remaining = max_output_bytes - length;
+        let count = if escaping == ReaderEscaping::Plain {
+            value.len()
         } else {
-            out.push_str(&format!(
-                "## {}\n\nSource: {}\nCapture: {}\n\n{}\n\n",
-                markdown_safe(&page.title),
-                markdown_safe(&page.url),
-                markdown_safe(&page.ts),
-                markdown_safe(&page.text)
-            ));
+            value.chars().try_fold(0usize, |count, ch| {
+                count
+                    .checked_add(reader_escape(ch, escaping).map_or(ch.len_utf8(), str::len))
+                    .filter(|count| *count <= remaining)
+                    .ok_or("Reader output exceeds bounded size")
+            })?
+        };
+        length = length
+            .checked_add(count)
+            .filter(|n| *n <= max_output_bytes)
+            .ok_or("Reader output exceeds bounded size")?;
+        Ok(())
+    })?;
+    let mut out = String::new();
+    out.try_reserve_exact(length)
+        .map_err(|_| "Reader output allocation failed")?;
+    reader_parts(&pages, format, |value, escaping| {
+        if escaping == ReaderEscaping::Plain {
+            out.push_str(value);
+        } else {
+            for ch in value.chars() {
+                if let Some(escaped) = reader_escape(ch, escaping) {
+                    out.push_str(escaped);
+                } else {
+                    out.push(ch);
+                }
+            }
         }
-        if out.len() > MAX_BYTES {
-            return Err("Reader output exceeds bounded size".into());
-        }
-    }
-    if format == "html" {
-        out.push_str("</body></html>");
-    }
+        Ok(())
+    })?;
+    debug_assert_eq!(out.len(), length);
     Ok(out)
 }
-fn markdown_safe(s: &str) -> String {
-    let mut out = String::new();
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '\\' | '[' | ']' | '!' | '*' | '_' | '#' | '`' | '|' => {
-                out.push('\\');
-                out.push(ch);
+
+#[derive(Clone, Copy, PartialEq)]
+enum ReaderEscaping {
+    Plain,
+    Html,
+    Markdown,
+}
+fn reader_parts(
+    pages: &[PageRecord],
+    format: &str,
+    mut emit: impl FnMut(&str, ReaderEscaping) -> Result<(), String>,
+) -> Result<(), String> {
+    use ReaderEscaping::{Html, Markdown, Plain};
+    if format == "html" {
+        emit("<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\"><title>Archived reading export</title><style>body{max-width:76ch;margin:2rem auto;padding:1rem;font:18px/1.6 system-ui}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><h1>Archived reading export</h1><p>Derived reading copy; scripts, layout, images and interactions are omitted.</p>", Plain)?;
+    } else {
+        emit("# Archived reading export\n\nDerived reading copy; layout, images and interactions are omitted.\n\n", Plain)?;
+    }
+    for page in pages {
+        if format == "html" {
+            for (value, escaping) in [
+                ("<article><h2>", Plain),
+                (&*page.title, Html),
+                ("</h2><p>Source: ", Plain),
+                (&*page.url, Html),
+                ("<br>Capture: ", Plain),
+                (&*page.ts, Html),
+                ("</p><pre>", Plain),
+                (&*page.text, Html),
+                ("</pre></article>", Plain),
+            ] {
+                emit(value, escaping)?;
             }
-            _ => out.push(ch),
+        } else {
+            for (value, escaping) in [
+                ("## ", Plain),
+                (&*page.title, Markdown),
+                ("\n\nSource: ", Plain),
+                (&*page.url, Markdown),
+                ("\nCapture: ", Plain),
+                (&*page.ts, Markdown),
+                ("\n\n", Plain),
+                (&*page.text, Markdown),
+                ("\n\n", Plain),
+            ] {
+                emit(value, escaping)?;
+            }
         }
     }
-    out
+    if format == "html" {
+        emit("</body></html>", Plain)?;
+    }
+    Ok(())
+}
+fn reader_escape(ch: char, escaping: ReaderEscaping) -> Option<&'static str> {
+    use ReaderEscaping::{Html, Markdown};
+    match (escaping, ch) {
+        (Html | Markdown, '&') => Some("&amp;"),
+        (Html | Markdown, '<') => Some("&lt;"),
+        (Html | Markdown, '>') => Some("&gt;"),
+        (Html, '"') => Some("&quot;"),
+        (Html, '\'') => Some("&#39;"),
+        (Markdown, '\\') => Some("\\\\"),
+        (Markdown, '[') => Some("\\["),
+        (Markdown, ']') => Some("\\]"),
+        (Markdown, '!') => Some("\\!"),
+        (Markdown, '*') => Some("\\*"),
+        (Markdown, '_') => Some("\\_"),
+        (Markdown, '#') => Some("\\#"),
+        (Markdown, '`') => Some("\\`"),
+        (Markdown, '|') => Some("\\|"),
+        _ => None,
+    }
 }
 
 pub fn compare_archives(left: &Path, right: &Path) -> Result<ComparisonReport, String> {

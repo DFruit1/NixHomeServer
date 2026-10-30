@@ -18,8 +18,15 @@ pub(super) fn authorized_archive(
     path: &Path,
     dependencies: &[AuthorizedDependency],
 ) -> Result<Archive, String> {
+    authorized_archive_limited(path, dependencies, super::streaming::MAX_METADATA * 8)
+}
+pub(super) fn authorized_archive_limited(
+    path: &Path,
+    dependencies: &[AuthorizedDependency],
+    metadata_limit: usize,
+) -> Result<Archive, String> {
     let mut archive = read::load(path)?;
-    let inputs = dependencies_for(&archive, dependencies)?;
+    let inputs = dependencies_for_limited(&archive, dependencies, metadata_limit)?;
     hydrate(&mut archive, &inputs)?;
     Ok(archive)
 }
@@ -42,6 +49,61 @@ fn page_base(url: &str) -> String {
         })
         .unwrap_or_else(|_| url.into())
 }
+fn selected_pages(archive: &Archive, options: &ExportOptions) -> Result<BTreeSet<String>, String> {
+    let inventory: BTreeSet<_> = archive
+        .page_meta
+        .iter()
+        .map(|p| page_base(&p.url))
+        .collect();
+    if options.include_urls.is_empty() {
+        return Ok(inventory);
+    }
+    let mut retained: BTreeSet<_> = options.include_urls.iter().map(|u| page_base(u)).collect();
+    // All non-page HTML remains an asset, including unlisted iframe documents.
+    // Index by base URL so the closure is linear rather than rescanning every
+    // record for every frame in a long chain.
+    let mut documents = BTreeMap::<String, Vec<&Record>>::new();
+    for r in &archive.records {
+        if matches!(r.mime.as_str(), "text/html" | "application/xhtml+xml") {
+            let base = page_base(r.url());
+            if !inventory.contains(&base) {
+                retained.insert(base.clone());
+            }
+            documents.entry(base).or_default().push(r);
+        }
+    }
+    let mut pending: Vec<_> = retained.iter().cloned().collect();
+    let mut work = 0u64;
+    let mut link_bytes = 0usize;
+    while let Some(url) = pending.pop() {
+        for record in documents.get(&url).into_iter().flatten() {
+            work = work.saturating_add(record.payload_length);
+            // Optional analysis has a fixed aggregate budget. Unknown closure
+            // keeps the complete page inventory; explicit resource exclusions
+            // below are still honored as deliberately lossy user choices.
+            if work > super::streaming::MAX_METADATA as u64 {
+                retained.extend(inventory);
+                return Ok(retained);
+            }
+            let Some(links) = content::embedded_documents(record)? else {
+                retained.extend(inventory);
+                return Ok(retained);
+            };
+            for link in links {
+                link_bytes = link_bytes.saturating_add(link.len());
+                if link_bytes > super::streaming::MAX_METADATA {
+                    retained.extend(inventory);
+                    return Ok(retained);
+                }
+                let base = page_base(&link);
+                if retained.insert(base.clone()) {
+                    pending.push(base);
+                }
+            }
+        }
+    }
+    Ok(retained)
+}
 pub fn materialize_archive(
     source: &Path,
     destination: &Path,
@@ -61,6 +123,12 @@ pub fn materialize_archive(
     {
         return Err("Export filter count limit exceeded".into());
     }
+    let inventory: BTreeSet<_> = archive
+        .page_meta
+        .iter()
+        .map(|p| page_base(&p.url))
+        .collect();
+    let retained_pages = selected_pages(&archive, options)?;
     let mut omitted = vec![];
     let mut records = vec![];
     for record in archive.records {
@@ -80,12 +148,9 @@ pub fn materialize_archive(
                 .exclude_mime_prefixes
                 .iter()
                 .any(|m| record.mime.starts_with(m))
-            || (page
+            || (inventory.contains(&page_base(record.url()))
                 && !options.include_urls.is_empty()
-                && !options
-                    .include_urls
-                    .iter()
-                    .any(|u| u == record.url() || page_base(u) == page_base(record.url())));
+                && !retained_pages.contains(&page_base(record.url())));
         if excluded {
             omitted.push(json!({"url":record.url(),"date":record.field("warc-date"),"recordId":record.field("warc-record-id"),"reason":"explicit export filter"}));
             continue;
@@ -106,7 +171,7 @@ pub fn materialize_archive(
         .page_meta
         .into_iter()
         .filter(|p| {
-            (options.include_urls.is_empty() || options.include_urls.contains(&p.url))
+            (options.include_urls.is_empty() || retained_pages.contains(&page_base(&p.url)))
                 && !options.exclude_urls.contains(&p.url)
                 && retained_bases.contains(&page_base(&p.url))
         })
@@ -124,7 +189,7 @@ pub fn materialize_archive(
         BTreeMap::new(),
         &rules,
         options.deduplicate,
-        json!({"operation":"standalone-derived-export","sourceSha256":source_hash,"omissions":omitted,"removeSelectors":options.remove_selectors,"resourcePolicy":"retain all non-page resources unless explicitly excluded; hidden DOM never proves unused resources","fidelity":"derived content; captured originals retained"}),
+        json!({"operation":"standalone-derived-export","sourceSha256":source_hash,"omissions":omitted,"removeSelectors":options.remove_selectors,"resourcePolicy":"retain non-page resources and embedded page closure; unknown dynamic/analysis closure retains page inventory; only explicit resource exclusions are lossy","fidelity":"derived content; captured originals retained"}),
     )
 }
 
@@ -132,14 +197,23 @@ fn dependencies_for(
     source: &Archive,
     authorized: &[AuthorizedDependency],
 ) -> Result<BTreeMap<String, Archive>, String> {
+    dependencies_for_limited(source, authorized, super::streaming::MAX_METADATA * 8)
+}
+fn dependencies_for_limited(
+    source: &Archive,
+    authorized: &[AuthorizedDependency],
+    metadata_limit: usize,
+) -> Result<BTreeMap<String, Archive>, String> {
     if authorized.len() > 16 {
         return Err("At most 16 authorized dependency inputs".into());
     }
     let mut archives = BTreeMap::new();
     let mut cost = source.cost;
+    if cost > metadata_limit {
+        return Err("Archive metadata exceeds bounded view budget".into());
+    }
     for input in authorized {
-        if input.archive_id.is_empty()
-            || input.archive_id.len() > 256
+        if !read::valid_dependency_id(&input.archive_id)
             || input.sha256.len() != 64
             || !input.sha256.bytes().all(|b| b.is_ascii_hexdigit())
         {
@@ -155,8 +229,8 @@ fn dependencies_for(
         cost = cost
             .checked_add(archive.cost)
             .ok_or("Dependency memory budget overflow")?;
-        if cost > super::streaming::MAX_METADATA * 8 {
-            return Err("Combined archive dependency metadata exceeds 256 MiB".into());
+        if cost > metadata_limit {
+            return Err("Combined archive dependency metadata exceeds bounded view budget".into());
         }
         archives.insert(input.archive_id.clone(), archive);
     }
@@ -449,11 +523,35 @@ pub fn compose_repair(
     if successful.is_empty() {
         return Err("Repair contains no successful selected targets".into());
     }
+    let patch_pages: BTreeMap<_, _> = patch
+        .page_meta
+        .iter()
+        .map(|p| {
+            let ts = chrono::DateTime::parse_from_rfc3339(&p.ts)
+                .map(|d| d.to_rfc3339())
+                .unwrap_or_else(|_| p.ts.clone());
+            ((p.url.clone(), ts), p.clone())
+        })
+        .collect();
+    let successful_pages: BTreeSet<_> = patch
+        .records
+        .iter()
+        .filter(|r| {
+            successful.contains(r.url())
+                && matches!(r.kind(), "response" | "resource")
+                && (200..400).contains(&r.status)
+        })
+        .filter_map(|r| read::page_key(&patch_pages, r, Some(&patch.page_ids)))
+        .collect();
     original.records.retain(|r| !successful.contains(r.url()));
     // Include patch dependencies too; limiting to selected HTML alone drops the
     // assets that make a repaired page render. Failed parent targets stay intact.
     for record in patch.records {
-        if !targets.contains(&record.url().to_owned()) || successful.contains(record.url()) {
+        if !targets.contains(&record.url().to_owned())
+            || (successful.contains(record.url())
+                && matches!(record.kind(), "response" | "resource")
+                && (200..400).contains(&record.status))
+        {
             original.records.push(record);
         }
     }
@@ -462,10 +560,10 @@ pub fn compose_repair(
     }
     original.page_meta.retain(|p| !successful.contains(&p.url));
     original.page_meta.extend(
-        patch
-            .page_meta
+        patch_pages
             .into_iter()
-            .filter(|p| successful.contains(&p.url)),
+            .filter(|(key, _)| successful_pages.contains(key))
+            .map(|(_, page)| page),
     );
     write_archive(
         destination,
@@ -475,34 +573,10 @@ pub fn compose_repair(
         BTreeMap::new(),
         &[],
         false,
-        json!({"operation":"repair-composition","parentSha256":original.report.sha256,"repairSha256":patch.report.sha256,"replacedTargets":successful,"requestedTargets":targets,"selectionPolicy":"successful repair replaces all parent responses for selected URL; other parent responses retained","mixedCaptureTimes":true}),
+        json!({"operation":"repair-composition","parentSha256":original.report.sha256,"repairSha256":patch.report.sha256,"replacedTargets":successful,"requestedTargets":targets,"selectionPolicy":"only successful repair responses replace selected URLs; failed alternatives excluded; other parent responses and patch assets retained","mixedCaptureTimes":true}),
     )
 }
 
-fn surt(url: &str) -> Result<String, String> {
-    let parsed = url::Url::parse(url).map_err(|_| "Cannot index non-URL WARC target")?;
-    if parsed.scheme() == "urn" {
-        return Ok(url.into());
-    }
-    let host = parsed
-        .host_str()
-        .ok_or("Indexed URL missing host")?
-        .trim_start_matches("www.");
-    let mut host = host.split('.').rev().collect::<Vec<_>>().join(",");
-    if let Some(port) = parsed.port() {
-        host.push_str(&format!(":{port}"));
-    }
-    let mut key = format!("{host}){}", parsed.path());
-    if let Some(query) = parsed.query() {
-        key.push('?');
-        key.push_str(query);
-    }
-    if let Some(fragment) = parsed.fragment() {
-        key.push('#');
-        key.push_str(fragment);
-    }
-    Ok(key.to_ascii_lowercase())
-}
 struct OutputHash<'a, W> {
     inner: &'a mut W,
     hash: &'a mut Sha256,
@@ -717,7 +791,7 @@ fn write_archive(
             index.push(format!(
                 "{} {} {}\n",
                 if record.index_key.is_empty() {
-                    surt(record.url())?
+                    super::index_key::surt(record.url())
                 } else {
                     record.index_key.clone()
                 },
@@ -814,7 +888,14 @@ fn write_archive(
         .map_err(|e| e.to_string())?;
         zip.write_all(&data).map_err(|e| e.to_string())?;
     }
-    let manifest=serde_json::to_vec(&json!({"profile":"data-package","wacz_version":"1.1.1","title":title,"description":"Derived archive; provenance.json records omissions and source fixity","created":chrono::Utc::now().to_rfc3339(),"resources":manifest_resources,"webArchivesDependencies":dependencies.keys().collect::<Vec<_>>(),"webArchivesDependencyHashes":dependencies})).map_err(|e|e.to_string())?;
+    // wabac 2.27.2 WACZFile reads relation.requires filenames for revisit
+    // fallback. These labels match the backend's MultiWACZ resources.name;
+    // they are never filesystem paths or permission to fetch a dependency.
+    let requires: Vec<_> = dependencies
+        .iter()
+        .map(|(id, hash)| json!({"filename":format!("{id}.wacz"),"hash":format!("sha256:{hash}")}))
+        .collect();
+    let manifest=serde_json::to_vec(&json!({"profile":"data-package","wacz_version":"1.1.1","title":title,"description":"Derived archive; provenance.json records omissions and source fixity","created":chrono::Utc::now().to_rfc3339(),"resources":manifest_resources,"relation":{"requires":requires},"webArchivesDependencies":dependencies.keys().collect::<Vec<_>>(),"webArchivesDependencyHashes":dependencies})).map_err(|e|e.to_string())?;
     zip.start_file(
         "datapackage.json",
         SimpleFileOptions::default().compression_method(CompressionMethod::Stored),

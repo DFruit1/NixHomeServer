@@ -145,6 +145,66 @@ pub(super) struct HtmlAnalysis {
     pub content: Option<(String, String, Vec<String>)>,
     pub omitted: Option<String>,
 }
+/// Only embedded documents create page-selection dependencies; navigation links
+/// do not. An unavailable/oversized analysis asks the caller to retain pages
+/// conservatively rather than silently break a frame or dynamic dependency.
+pub(super) fn embedded_documents(record: &Record) -> Result<Option<Vec<String>>, String> {
+    if record.payload_length > MAX_HTML as u64 {
+        return Ok(None);
+    }
+    let loaded = record.eager_body_limited(MAX_HTML + 64 * 1024)?;
+    let document = match payload_limited(&loaded, MAX_HTML).and_then(|b| dom(&b)) {
+        Ok(document) => document,
+        Err(_) => return Ok(None),
+    };
+    let Some(mut base) = url::Url::parse(record.url()).ok() else {
+        return Ok(None);
+    };
+    let mut nodes = vec![document.document.clone()];
+    while let Some(node) = nodes.pop() {
+        if node.element_name().as_deref() == Some("base") {
+            if let Some(next) = attr(&node, "href").and_then(|s| base.join(&s).ok()) {
+                base = next;
+                break;
+            }
+        }
+        nodes.extend(node.children.borrow().iter().rev().cloned());
+    }
+    let mut links = BTreeSet::new();
+    let mut nodes = vec![document.document.clone()];
+    while let Some(node) = nodes.pop() {
+        let attribute = match node.element_name().as_deref() {
+            Some("iframe" | "frame" | "embed") => Some("src"),
+            Some("object") => Some("data"),
+            _ => None,
+        };
+        if let Some(link) = attribute
+            .and_then(|key| attr(&node, key))
+            .and_then(|s| base.join(&s).ok())
+            .filter(|u| matches!(u.scheme(), "http" | "https"))
+        {
+            links.insert(link.to_string());
+        }
+        // srcdoc and scripts can introduce documents unavailable to static
+        // dependency analysis, including URLs also listed as standalone pages.
+        let event_handler = if let Element { attrs, .. } = &node.data {
+            attrs
+                .borrow()
+                .iter()
+                .any(|a| a.name.local.as_ref().starts_with("on"))
+        } else {
+            false
+        };
+        if attr(&node, "srcdoc").is_some()
+            || node.element_name().as_deref() == Some("script")
+            || event_handler
+        {
+            return Ok(None);
+        }
+        nodes.extend(node.children.borrow().iter().cloned());
+    }
+    Ok(Some(links.into_iter().collect()))
+}
 /// Optional analysis cannot invalidate fixity. Lazy source IO/fixity remains
 /// fatal; decode/DOM limits retain the original and bounded crawler metadata.
 pub(super) fn analyse(record: &Record) -> Result<HtmlAnalysis, String> {

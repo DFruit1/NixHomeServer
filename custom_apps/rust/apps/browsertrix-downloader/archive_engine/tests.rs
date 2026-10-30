@@ -81,6 +81,651 @@ fn archive_engine_bounded_inflation() {
     assert!(read::bounded(&b"12345"[..], 4).is_err());
 }
 
+#[test]
+fn archive_engine_raw_zip_preflight_before_deduplicating_allocation() {
+    // WA-ENG-001: a tiny declared/deduplicated inventory must not hide an
+    // attacker-controlled raw directory or trigger unbounded zip allocations.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("raw-directory.wacz");
+    fixture(&path);
+    let original = std::fs::read(&path).unwrap();
+    let end_at = original.len() - 22;
+    let start = u32::from_le_bytes(original[end_at + 16..end_at + 20].try_into().unwrap()) as usize;
+    let entry_len = 46
+        + [28, 30, 32]
+            .iter()
+            .map(|p| {
+                u16::from_le_bytes(original[start + p..start + p + 2].try_into().unwrap()) as usize
+            })
+            .sum::<usize>();
+    for (raw_count, declared, expected) in [
+        (10_005, 10_005, "count exceeds"),
+        (2, 2, "Duplicate ZIP"),
+        (10_005, 1, "raw member count"),
+    ] {
+        let mut raw = original[..start].to_vec();
+        for _ in 0..raw_count {
+            raw.extend_from_slice(&original[start..start + entry_len]);
+        }
+        let mut end = original[end_at..].to_vec();
+        end[8..10].copy_from_slice(&(declared as u16).to_le_bytes());
+        end[10..12].copy_from_slice(&(declared as u16).to_le_bytes());
+        end[12..16].copy_from_slice(&((raw_count * entry_len) as u32).to_le_bytes());
+        raw.extend_from_slice(&end);
+        std::fs::write(&path, raw).unwrap();
+        assert_eq!(
+            zip::ZipArchive::new(std::fs::File::open(&path).unwrap())
+                .unwrap()
+                .len(),
+            1,
+            "zip collapses the raw duplicate filenames"
+        );
+        assert!(inspect_archive(&path).unwrap_err().contains(expected));
+    }
+    let mut oversized = original.clone();
+    oversized[end_at + 12..end_at + 16].copy_from_slice(&(32u32 * 1024 * 1024 + 1).to_le_bytes());
+    std::fs::write(&path, oversized).unwrap();
+    assert!(inspect_archive(&path)
+        .unwrap_err()
+        .contains("directory exceeds"));
+
+    // Duplicate EOCD signatures in a directory/comment would let zip's
+    // permissive fallback choose a different, unqualified metadata inventory.
+    let mut nested = original.clone();
+    nested[end_at + 20..end_at + 22].copy_from_slice(&22u16.to_le_bytes());
+    nested.extend_from_slice(&original[end_at..]);
+    // The outer record ends at EOF; the inner record has an impossible length.
+    let inner = nested.len() - 22;
+    nested[inner + 20..inner + 22].copy_from_slice(&u16::MAX.to_le_bytes());
+    std::fs::write(&path, nested).unwrap();
+    assert!(inspect_archive(&path).unwrap_err().contains("nested ZIP"));
+
+    // Exercise true ZIP64 end records without regenerating a multi-GiB body.
+    let mut z = vec![0u8; 56];
+    z[..4].copy_from_slice(b"PK\x06\x06");
+    z[4..12].copy_from_slice(&44u64.to_le_bytes());
+    z[12..14].copy_from_slice(&45u16.to_le_bytes());
+    z[14..16].copy_from_slice(&45u16.to_le_bytes());
+    z[24..32].copy_from_slice(&4u64.to_le_bytes());
+    z[32..40].copy_from_slice(&4u64.to_le_bytes());
+    z[40..48].copy_from_slice(&((end_at - start) as u64).to_le_bytes());
+    z[48..56].copy_from_slice(&(start as u64).to_le_bytes());
+    let mut locator = vec![0u8; 20];
+    locator[..4].copy_from_slice(b"PK\x06\x07");
+    locator[8..16].copy_from_slice(&(end_at as u64).to_le_bytes());
+    locator[16..20].copy_from_slice(&1u32.to_le_bytes());
+    let mut end = original[end_at..].to_vec();
+    end[8..20].fill(0xff);
+    for (valid, count) in [(true, 4u64), (false, u64::MAX)] {
+        z[24..32].copy_from_slice(&count.to_le_bytes());
+        z[32..40].copy_from_slice(&count.to_le_bytes());
+        let raw = [&original[..end_at], &z, &locator, &end].concat();
+        std::fs::write(&path, raw).unwrap();
+        if valid {
+            assert!(verify_archive(&path).unwrap().valid);
+        } else {
+            assert!(inspect_archive(&path)
+                .unwrap_err()
+                .contains("count exceeds"));
+        }
+    }
+}
+
+fn rewrite_package(path: &Path, edit: impl FnOnce(&mut BTreeMap<String, Vec<u8>>)) {
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    let mut entries = BTreeMap::new();
+    for i in 0..zip.len() {
+        let mut member = zip.by_index(i).unwrap();
+        if matches!(
+            member.name(),
+            "datapackage.json" | "datapackage-digest.json"
+        ) {
+            continue;
+        }
+        let name = member.name().to_owned();
+        let mut bytes = vec![];
+        std::io::Read::read_to_end(&mut member, &mut bytes).unwrap();
+        entries.insert(name, bytes);
+    }
+    drop(zip);
+    edit(&mut entries);
+    let resources: Vec<_> = entries
+        .iter()
+        .map(|(name, data)| {
+            serde_json::json!({
+                "path":name,"bytes":data.len(),"hash":format!("sha256:{}",read::hash(data))
+            })
+        })
+        .collect();
+    entries.insert(
+        "datapackage.json".into(),
+        serde_json::to_vec(&serde_json::json!({"resources":resources})).unwrap(),
+    );
+    write_zip(
+        path,
+        entries
+            .iter()
+            .map(|(n, b)| (n.as_str(), b.clone()))
+            .collect(),
+    );
+}
+
+fn rewrite_manifest(path: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    let mut entries = BTreeMap::new();
+    for i in 0..zip.len() {
+        let mut member = zip.by_index(i).unwrap();
+        let name = member.name().to_owned();
+        let mut data = vec![];
+        std::io::Read::read_to_end(&mut member, &mut data).unwrap();
+        entries.insert(name, data);
+    }
+    drop(zip);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&entries["datapackage.json"]).unwrap();
+    edit(&mut manifest);
+    let manifest = serde_json::to_vec(&manifest).unwrap();
+    let digest = serde_json::json!({"path":"datapackage.json","hash":format!("sha256:{}",read::hash(&manifest))});
+    entries.insert("datapackage.json".into(), manifest);
+    entries.insert(
+        "datapackage-digest.json".into(),
+        serde_json::to_vec(&digest).unwrap(),
+    );
+    write_zip(
+        path,
+        entries
+            .iter()
+            .map(|(n, b)| (n.as_str(), b.clone()))
+            .collect(),
+    );
+}
+
+#[test]
+fn archive_engine_standard_dependency_relations_require_authorized_hash_bindings() {
+    // WA-INT001: standard viewers cannot find a parent's payload without
+    // relation.requires, and archive-supplied labels must not grant access.
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("parent.wacz");
+    let source = dir.path().join("source.wacz");
+    let dependent = dir.path().join("dependent.wacz");
+    let payload = noise(32 * 1024);
+    let entries = [(
+        "https://example.test/asset",
+        "image/png",
+        payload.as_slice(),
+    )];
+    multi_fixture(&parent, &entries, "2026-01-01T00:00:00Z");
+    multi_fixture(&source, &entries, "2026-02-01T00:00:00Z");
+    let parent_hash = inspect_archive(&parent).unwrap().sha256;
+    let dependencies = [AuthorizedDependency {
+        archive_id: "parent".into(),
+        sha256: parent_hash.clone(),
+        authorized_local_path: parent.clone(),
+    }];
+    deduplicate_archive(&source, &dependent, &dependencies).unwrap();
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(&dependent).unwrap()).unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_reader(zip.by_name("datapackage.json").unwrap()).unwrap();
+    assert_eq!(
+        manifest["relation"]["requires"],
+        serde_json::json!([{"filename":"parent.wacz","hash":format!("sha256:{parent_hash}")}])
+    );
+    drop(zip);
+    assert!(!verify_archive(&dependent).unwrap().valid);
+    assert!(materialize_archive(
+        &dependent,
+        &dir.path().join("denied.wacz"),
+        &[],
+        &ExportOptions::default()
+    )
+    .is_err());
+    let output = dir.path().join("standalone.wacz");
+    materialize_archive(
+        &dependent,
+        &output,
+        &dependencies,
+        &ExportOptions::default(),
+    )
+    .unwrap();
+    assert!(verify_archive(&output).unwrap().valid);
+    assert!(inspect_archive(&output).unwrap().dependencies.is_empty());
+    for case in 0..7 {
+        let bad = dir.path().join(format!("unbound-{case}.wacz"));
+        std::fs::copy(&dependent, &bad).unwrap();
+        rewrite_manifest(&bad, |manifest| match case {
+            0 => {
+                manifest["relation"]["requires"][0]["hash"] =
+                    serde_json::json!(format!("sha256:{}", "0".repeat(64)));
+            }
+            1 => {
+                manifest["relation"]["requires"][0]["filename"] =
+                    serde_json::json!("https://live.invalid/parent.wacz");
+            }
+            2 => {
+                manifest["relation"]["requires"][0]["filename"] =
+                    serde_json::json!("another-owner.wacz");
+            }
+            3 => {
+                let duplicate = manifest["relation"]["requires"][0].clone();
+                manifest["relation"]["requires"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(duplicate);
+            }
+            4 => {
+                manifest
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("webArchivesDependencies");
+                manifest
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("webArchivesDependencyHashes");
+            }
+            5 => {
+                manifest["relation"]["requires"] = serde_json::json!([]);
+            }
+            _ => {
+                manifest["relation"]["requires"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("hash");
+            }
+        });
+        assert!(
+            inspect_archive(&bad).is_err(),
+            "unbound relation case {case}"
+        );
+        assert!(materialize_archive(
+            &bad,
+            &dir.path().join(format!("bad-output-{case}.wacz")),
+            &dependencies,
+            &ExportOptions::default()
+        )
+        .is_err());
+    }
+    // Previously generated engine archives retain their authorized recovery
+    // path, with a clear standard-replay warning rather than an automatic fetch.
+    rewrite_manifest(&dependent, |manifest| {
+        manifest.as_object_mut().unwrap().remove("relation");
+    });
+    let report = inspect_archive(&dependent).unwrap();
+    assert_eq!(report.dependencies, vec!["parent"]);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|w| w.contains("relation.requires")));
+    materialize_archive(
+        &dependent,
+        &dir.path().join("legacy-recovered.wacz"),
+        &dependencies,
+        &ExportOptions::default(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn archive_engine_reader_cap_prevents_escaped_response_and_dependency_amplification() {
+    // Concrete integration P1: escaped native page text could allocate multiple
+    // response-sized temporaries, then survive as several slow HTTP bodies.
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("reader.wacz");
+    fixture(&source);
+    rewrite_package(&source, |entries| {
+        let text = "&<>'\"é[]!_*#`|\\".repeat(16 * 1024);
+        entries.insert("pages/pages.jsonl".into(), format!("{{\"format\":\"json-pages-1.0\"}}\n{}\n", serde_json::json!({
+            "url":"https://example.test/","title":"Native &<>'\"é[]!_*#`|\\","ts":"2026-01-02T03:04:05Z","text":text
+        })).into_bytes());
+    });
+    let before = inspect_archive(&source).unwrap().sha256;
+    for format in ["html", "markdown"] {
+        let expected = reader_export(&source, format).unwrap();
+        assert!(expected.len() > 512 * 1024);
+        let error = reader_export_authorized_limited(&source, format, &[], 512 * 1024).unwrap_err();
+        assert_eq!(error, "Reader output exceeds bounded size");
+        assert_eq!(
+            reader_export_authorized_limited(&source, format, &[], expected.len()).unwrap(),
+            expected
+        );
+        assert_eq!(
+            reader_export_authorized_limited(&source, format, &[], expected.len() - 1).unwrap_err(),
+            "Reader output exceeds bounded size"
+        );
+    }
+    assert!(reader_export_authorized_limited(&source, "html", &[], 0).is_err());
+    let parent = dir.path().join("parent.wacz");
+    std::fs::copy(&source, &parent).unwrap();
+    let inputs = [AuthorizedDependency {
+        archive_id: "parent".into(),
+        sha256: before.clone(),
+        authorized_local_path: parent,
+    }];
+    let dependent = dir.path().join("dependent.wacz");
+    deduplicate_archive(&source, &dependent, &inputs).unwrap();
+    // Individually these inventories fit; their aggregate is rejected before
+    // hydration/report cloning rather than admitting the legacy 256 MiB pool.
+    let budget = read::load(&source)
+        .unwrap()
+        .cost
+        .max(read::load(&dependent).unwrap().cost)
+        + 1024;
+    assert!(read::load(&dependent).unwrap().cost < budget);
+    let error = reader_export_authorized_limited(&dependent, "html", &inputs, budget).unwrap_err();
+    assert!(
+        error.contains("Combined archive dependency metadata"),
+        "{error}"
+    );
+    assert_eq!(inspect_archive(&source).unwrap().sha256, before);
+}
+
+#[test]
+fn archive_engine_cdx_identity_and_sorted_range_regression() {
+    // WA-ENG-002: recomputed manifests do not make arbitrary lookup keys
+    // replayable. Validate plain and block-compressed indexes, not just hashes.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("index.wacz");
+    for compressed in [false, true] {
+        for key in ["invalid", "wrong)/unrelated"] {
+            fixture(&path);
+            rewrite_package(&path, |entries| {
+                let raw = entries.remove("indexes/index.cdxj").unwrap();
+                let line = String::from_utf8(raw).unwrap();
+                let changed = format!("{key} {}", line.split_once(' ').unwrap().1).into_bytes();
+                if compressed {
+                    let mut enc =
+                        flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
+                    enc.write_all(&changed).unwrap();
+                    let data = enc.finish().unwrap();
+                    entries.insert("indexes/index.idx".into(), format!("{key} 20260102030405 {}\n",serde_json::json!({"filename":"index.cdx.gz","offset":0,"length":data.len()})).into_bytes());
+                    entries.insert("indexes/index.cdx.gz".into(), data);
+                } else {
+                    entries.insert("indexes/index.cdxj".into(), changed);
+                }
+            });
+            assert!(!verify_archive(&path).unwrap().valid);
+            assert!(inspect_archive(&path)
+                .unwrap_err()
+                .contains("lookup key differs"));
+            assert!(export_archive(
+                &path,
+                &dir.path().join("invalid-export.wacz"),
+                &ExportOptions::default()
+            )
+            .is_err());
+        }
+    }
+    // Literal expectations obtained directly from the installed pinned
+    // warcio 2.4.11 getSurt/postToGetUrl (not from this implementation).
+    let url = "https://www2.Example.test:443/Path?B=2&A=1#Section";
+    multi_fixture(
+        &path,
+        &[
+            (url, "text/html", b"<h1>Native key</h1>"),
+            (
+                "urn:screenshot:https://example.test/#Page",
+                "image/png",
+                b"PNG",
+            ),
+        ],
+        "2026-01-01T00:00:00Z",
+    );
+    rewrite_package(&path, |entries| {
+        let raw = String::from_utf8(entries["indexes/index.cdxj"].clone()).unwrap();
+        assert!(raw.starts_with("test,example)/path?a=1&b=2 "));
+        assert!(raw.contains("urn:screenshot:https://example.test/#Page "));
+        // Reversing otherwise valid rows must fail native block range lookup.
+        let mut rows: Vec<_> = raw.lines().collect();
+        rows.reverse();
+        entries.insert(
+            "indexes/index.cdxj".into(),
+            format!("{}\n", rows.join("\n")).into_bytes(),
+        );
+    });
+    assert!(inspect_archive(&path).unwrap_err().contains("not sorted"));
+
+    for (body, key) in [
+        (
+            "Z=%C3%A9&a=hello%20world&b=%2F&&v=one+two",
+            "test,example)/api?&__wb_method=post&a=1&a=hello%20world&b=%2f&b=2&v=one+two&z=%C3%A9",
+        ),
+        ("bad=%FF", "test,example)/api?&__wb_method=post&a=1&b=2"),
+    ] {
+        let url = "https://example.test/api?B=2&A=1";
+        multi_fixture(
+            &path,
+            &[(url, "text/html", b"<h1>POST response</h1>")],
+            "2026-01-01T00:00:00Z",
+        );
+        rewrite_package(&path, |entries| {
+            let raw = String::from_utf8(entries["indexes/index.cdxj"].clone()).unwrap();
+            let mut row: serde_json::Value =
+                serde_json::from_str(&raw[raw.find('{').unwrap()..]).unwrap();
+            row["method"] = serde_json::json!("POST");
+            row["requestBody"] = serde_json::json!(body);
+            entries.insert(
+                "indexes/index.cdxj".into(),
+                format!("{key} 20260101000000 {row}\n").into_bytes(),
+            );
+        });
+        assert!(verify_archive(&path).unwrap().valid);
+        let output = dir.path().join(format!("post-{}.wacz", body.len()));
+        assert!(export_archive(&path, &output, &ExportOptions::default()).is_ok());
+        assert_eq!(read::load(&output).unwrap().records[0].index_key, key);
+    }
+    for (url, key) in [
+        (
+            "https://www.Example.test/Ä?B=%C3%A9&A=%2F",
+            "test,example)/%C3%A4?a=%2f&b=%c3%a9",
+        ),
+        ("https://WWW.Example.test/Path?", "test,example,www)/path"),
+        ("http:example.test/Path", "test,example)/path"),
+    ] {
+        multi_fixture(
+            &path,
+            &[(url, "text/html", b"<h1>SURT variants</h1>")],
+            "2026-01-01T00:00:00Z",
+        );
+        rewrite_package(&path, |entries| {
+            let line = String::from_utf8(entries["indexes/index.cdxj"].clone()).unwrap();
+            entries.insert(
+                "indexes/index.cdxj".into(),
+                format!("{key} {}", line.split_once(' ').unwrap().1).into_bytes(),
+            );
+        });
+        assert!(verify_archive(&path).unwrap().valid, "{url}");
+    }
+}
+
+#[test]
+fn archive_engine_repair_success_cannot_be_shadowed_by_later_failure() {
+    // WA-ENG-003: a later failed retry must never discard a working original
+    // and then become the repaired replay/reader response for that URL.
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("parent.wacz");
+    let patch = dir.path().join("patch.wacz");
+    let output = dir.path().join("repaired.wacz");
+    multi_fixture(
+        &parent,
+        &[
+            (
+                "https://example.test/target",
+                "text/html",
+                b"<h1>Old target</h1>",
+            ),
+            (
+                "https://example.test/untouched",
+                "text/html",
+                b"<h1>Untouched</h1>",
+            ),
+            (
+                "https://example.test/failed",
+                "text/html",
+                b"<h1>Keep parent</h1>",
+            ),
+        ],
+        "2026-01-01T00:00:00Z",
+    );
+    capture_fixture(
+        &patch,
+        &[
+            (
+                "https://example.test/target",
+                "text/html",
+                b"<h1>Successful repair</h1>",
+                "2026-02-01T00:00:00Z",
+                200,
+                true,
+            ),
+            (
+                "https://example.test/target",
+                "text/html",
+                b"<h1>Later failure</h1>",
+                "2026-02-02T00:00:00Z",
+                500,
+                true,
+            ),
+            (
+                "https://example.test/failed",
+                "text/html",
+                b"<h1>Failed patch</h1>",
+                "2026-02-02T00:00:00Z",
+                500,
+                true,
+            ),
+            (
+                "https://example.test/patch.css",
+                "text/css",
+                b"body{color:green}",
+                "2026-02-01T00:00:00Z",
+                200,
+                false,
+            ),
+        ],
+    );
+    let before = inspect_archive(&parent).unwrap().sha256;
+    let report = compose_repair(
+        &parent,
+        &patch,
+        &output,
+        &[],
+        &[
+            "https://example.test/target".into(),
+            "https://example.test/failed".into(),
+        ],
+    )
+    .unwrap();
+    assert!(verify_archive(&output).unwrap().valid);
+    let repaired = read::load(&output).unwrap();
+    let targets: Vec<_> = repaired
+        .records
+        .iter()
+        .filter(|r| r.url().ends_with("/target"))
+        .collect();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].status, 200);
+    assert_eq!(targets[0].field("warc-date"), "2026-02-01T00:00:00Z");
+    let html = preview_page(&output, "https://example.test/target").unwrap();
+    assert!(html.contains("Successful repair"));
+    let reader = reader_export(&output, "html").unwrap();
+    assert!(!reader.contains("Later failure") && !reader.contains("Failed patch"));
+    assert!(reader.contains("Untouched") && reader.contains("Keep parent"));
+    assert!(report
+        .resources
+        .iter()
+        .any(|r| r.url.ends_with("patch.css")));
+    assert!(report.pages.iter().all(|p| !p.ts.starts_with("2026-02-02")));
+    assert_eq!(inspect_archive(&parent).unwrap().sha256, before);
+}
+
+#[test]
+fn archive_engine_selected_pages_keep_embedded_and_dynamic_html() {
+    // WA-ENG-004: HTML MIME is not page inventory; a page-listed iframe can
+    // also be a required resource. Losing either breaks the standalone archive.
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("frames.wacz");
+    for (listed, dynamic) in [(false, false), (true, false), (true, true)] {
+        let html: &[u8] = if dynamic {
+            b"<h1>Selected</h1><script>fetch('/frame')</script>"
+        } else {
+            b"<h1>Selected</h1><iframe src='/frame'></iframe>"
+        };
+        capture_fixture(
+            &source,
+            &[
+                (
+                    "https://example.test/selected",
+                    "text/html",
+                    html,
+                    "2026-01-01T00:00:00Z",
+                    200,
+                    true,
+                ),
+                (
+                    "https://example.test/frame",
+                    "text/html",
+                    b"<frameset><frame src='/nested'></frameset>",
+                    "2026-01-01T00:00:00Z",
+                    200,
+                    listed,
+                ),
+                (
+                    "https://example.test/nested",
+                    "text/html",
+                    b"<p>Nested</p>",
+                    "2026-01-01T00:00:00Z",
+                    200,
+                    listed,
+                ),
+                (
+                    "https://example.test/other",
+                    "text/html",
+                    b"<h1>Other page</h1>",
+                    "2026-01-01T00:00:00Z",
+                    200,
+                    true,
+                ),
+                (
+                    "https://example.test/dynamic.json",
+                    "application/json",
+                    b"{}",
+                    "2026-01-01T00:00:00Z",
+                    200,
+                    false,
+                ),
+            ],
+        );
+        let before = inspect_archive(&source).unwrap().sha256;
+        let output = dir.path().join(format!("selected-{listed}-{dynamic}.wacz"));
+        let options = ExportOptions {
+            include_urls: vec!["https://example.test/selected#section".into()],
+            ..Default::default()
+        };
+        let report = export_archive(&source, &output, &options).unwrap();
+        assert!(verify_archive(&output).unwrap().valid);
+        for suffix in ["/selected", "/frame", "/nested", "/dynamic.json"] {
+            assert!(
+                report.resources.iter().any(|r| r.url.ends_with(suffix)),
+                "missing {suffix}"
+            );
+        }
+        assert_eq!(
+            report.resources.iter().any(|r| r.url.ends_with("/other")),
+            dynamic
+        );
+        if listed {
+            assert!(report.pages.iter().any(|p| p.url.ends_with("/frame")));
+        }
+        let excluded = dir.path().join(format!("explicit-{listed}-{dynamic}.wacz"));
+        let mut options = options;
+        options
+            .exclude_urls
+            .push("https://example.test/frame".into());
+        let report = export_archive(&source, &excluded, &options).unwrap();
+        assert!(!report.resources.iter().any(|r| r.url.ends_with("/frame")));
+        assert_eq!(inspect_archive(&source).unwrap().sha256, before);
+    }
+}
+
 fn noise(size: usize) -> Vec<u8> {
     let mut seed = 0x1020304050607080u64;
     (0..size)
@@ -93,25 +738,35 @@ fn noise(size: usize) -> Vec<u8> {
         .collect()
 }
 fn multi_fixture(path: &Path, entries: &[(&str, &str, &[u8])], date: &str) {
+    let captures: Vec<_> = entries
+        .iter()
+        .map(|(url, mime, payload)| (*url, *mime, *payload, date, 200, *mime == "text/html"))
+        .collect();
+    capture_fixture(path, &captures);
+}
+fn capture_fixture(path: &Path, entries: &[(&str, &str, &[u8], &str, u16, bool)]) {
     let mut warc = vec![];
     let mut index = String::new();
     let mut pages = String::from("{\"format\":\"json-pages-1.0\",\"id\":\"pages\"}\n");
-    for (i, (url, mime, payload)) in entries.iter().enumerate() {
-        let block=[format!("HTTP/1.1 200 OK\r\nContent-Type: {mime}; charset=utf-8\r\nContent-Length: {}\r\n\r\n",payload.len()).as_bytes(),payload].concat();
+    for (i, (url, mime, payload, date, status, is_page)) in entries.iter().enumerate() {
+        let block=[format!("HTTP/1.1 {status} Fixture\r\nContent-Type: {mime}; charset=utf-8\r\nContent-Length: {}\r\n\r\n",payload.len()).as_bytes(),payload].concat();
         let raw=[format!("WARC/1.1\r\nWARC-Type: response\r\nWARC-Target-URI: {url}\r\nWARC-Date: {date}\r\nWARC-Record-ID: <urn:uuid:{}-{i}>\r\nContent-Type: application/http; msgtype=response\r\nContent-Length: {}\r\n\r\n",read::hash(date.as_bytes()),block.len()).as_bytes(),&block,b"\r\n\r\n"].concat();
         let offset = warc.len();
         let mut encoder = flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
         encoder.write_all(&raw).unwrap();
         let bytes = encoder.finish().unwrap();
         warc.extend_from_slice(&bytes);
-        index.push_str(&format!("test,example)/{i} {} {}\n",read::timestamp_of(date).unwrap(),serde_json::json!({"url":url,"filename":"capture.warc.gz","offset":offset.to_string(),"length":bytes.len().to_string(),"status":"200","mime":mime})));
-        if *mime == "text/html" {
+        index.push_str(&format!("{} {} {}\n",super::index_key::surt(url),read::timestamp_of(date).unwrap(),serde_json::json!({"url":url,"filename":"capture.warc.gz","offset":offset.to_string(),"length":bytes.len().to_string(),"status":status.to_string(),"mime":mime})));
+        if *is_page {
             pages.push_str(&format!(
                 "{}\n",
                 serde_json::json!({"url":url,"ts":date,"title":"Fixture"})
             ));
         }
     }
+    let mut rows: Vec<_> = index.lines().collect();
+    rows.sort_unstable();
+    let index = format!("{}\n", rows.join("\n"));
     let entries = vec![
         ("archive/capture.warc.gz", warc),
         ("indexes/index.cdxj", index.into_bytes()),
@@ -431,6 +1086,35 @@ fn archive_engine_real_crawler_derivative_corruption_check() {
     let preview = preview_document(&source, &original.pages[0].url).unwrap();
     assert_eq!(preview.html.matches("<script").count(), 1);
     assert!(reader_export(&source, "html").unwrap().contains("Capture:"));
+    if let Some(parent) = std::env::var_os("WEB_ARCHIVES_PARENT") {
+        let parent = std::path::PathBuf::from(parent);
+        let parent_hash = inspect_archive(&parent).unwrap().sha256;
+        let inputs = [AuthorizedDependency {
+            archive_id: "parent".into(),
+            sha256: parent_hash.clone(),
+            authorized_local_path: parent.clone(),
+        }];
+        let dependent = dir.path().join("native-dependent.wacz");
+        let report = deduplicate_archive(&source, &dependent, &inputs).unwrap();
+        assert_eq!(report.dependencies, vec!["parent"]);
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&dependent).unwrap()).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_reader(zip.by_name("datapackage.json").unwrap()).unwrap();
+        assert_eq!(
+            manifest["relation"]["requires"],
+            serde_json::json!([{"filename":"parent.wacz","hash":format!("sha256:{parent_hash}")}])
+        );
+        drop(zip);
+        let standalone = dir.path().join("native-materialized.wacz");
+        let materialized =
+            materialize_archive(&dependent, &standalone, &inputs, &ExportOptions::default())
+                .unwrap();
+        assert!(verify_archive(&standalone).unwrap().valid);
+        assert_eq!(original.resources.len(), materialized.resources.len());
+        assert_eq!(inspect_archive(&source).unwrap().sha256, original.sha256);
+        assert_eq!(inspect_archive(&parent).unwrap().sha256, parent_hash);
+        println!("actual native pair: {} bytes -> dependent {} bytes -> materialized {} bytes; standard relation parent.wacz; both originals unchanged", original.archive_bytes, report.archive_bytes, materialized.archive_bytes);
+    }
 }
 
 #[test]
