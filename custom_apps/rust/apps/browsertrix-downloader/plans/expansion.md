@@ -1,11 +1,12 @@
 # Web Archives implementation plan
 
-Status: implementation in progress. Baseline: `ff550b82549c`.
+Status: implemented and validated on `feature/web-archives-expansion`.
+Baseline: `ff550b82549c`. Live activation belongs to the deployment coordinator.
 
 Independent plan review: one read-only pass at `13cb1b6`. Findings
 WA-PLAN-01 through WA-PLAN-10 are accepted; the binding corrections below
-supersede the corresponding initial sketches. Implementation acceptance still
-requires evidence against these corrections.
+supersede the corresponding initial sketches. The validation receipt records
+implementation evidence and subsequent independent review dispositions.
 
 The owner requested implementation of the complete 30-feature review, delegated
 work, integration and application-level verification. This document is the scope
@@ -210,12 +211,14 @@ type CaptureOptions = {
   behaviorTimeoutSeconds: number;
   postLoadDelaySeconds: number;
   viewportWidth: number; viewportHeight: number; language: string;
-  sizeLimitBytes?: number;
-  maxResourceBytes?: number;
+  sizeLimitBytes?: number | null;
+  maxResourceBytes?: number | null;
   diskReserveBytes: number;
   selectors: SelectorRule[];
   profileId?: string;
   deduplicate: boolean;
+  alternateImages: boolean;
+  interactions: { selector: string; assertion: 'visible' | 'hidden' | 'text'; expected: string }[];
 };
 type SelectorRule = {
   selector: string; action: 'hide' | 'block'; urlPrefix?: string;
@@ -227,11 +230,15 @@ Old stored requests deserialize with defaults. `scope` additionally permits
 `/cancel` is retained with explicit discard semantics. Added job states are
 `paused`, `partial`, `packaging`. Jobs expose optional `archiveId`, `stopReason`,
 `bytesDownloaded`, `bytesStored`, `canResume`, `coverage` and `estimate`.
+Explicit JSON null disables optional byte thresholds; omission retains defaults.
+Pause/stop apply to capture, sample and repair operations. File operations reject
+those controls with 409 and cancellation guidance; packaging is noncancellable.
 
 `POST /api/preflight` takes the same capture request and returns:
 
 ```typescript
 type Estimate = {
+  measured: boolean;
   lowerBytes: number; upperBytes: number; expectedBytes: number;
   samplePages: number; discoveredPages: number; unknownScope: boolean;
   sharedBytes: number; marginalPageBytes: number; peakDiskBytes: number;
@@ -262,7 +269,9 @@ type Archive = {
   notes: string; trashed: boolean; parentId?: string;
   captureStatus: 'complete' | 'partial' | 'imported' | 'derived' | 'repair';
   stopReason?: string; request?: CreateJobRequest;
-  report?: ArchiveReport; verification?: Verification;
+  report?: { uniquePayloadBytes: number; duplicatePayloadBytes: number;
+             metadataBytes: number; warnings: string[] };
+  verification?: Verification;
   cleanRules: SelectorRule[]; dependencies: string[];
 };
 ```
@@ -271,6 +280,8 @@ type Archive = {
   favorite, notes and cleanRules only. `DELETE` moves metadata to restorable
   trash; `POST /restore` restores. No permanent deletion in this release.
 - `GET /api/archives/:id/wacz` serves defensive byte ranges, `?download=1` attachment.
+- `GET /api/archives/:id/replay.json` serves the authorized hash-bound Multi-WACZ
+  manifest; `/replay` remains an alias. The pinned viewer requires the JSON suffix.
 - `GET /api/archives/:id/pages?q=&offset=&limit=` returns paginated PageRecord.
 - `GET /api/archives/:id/coverage?offset=&limit=` returns bounded persisted
   skipped-page, intentional-resource-omission and captured-HTTP-error receipts.
@@ -286,8 +297,13 @@ type Archive = {
 - `GET /api/archives/:id/preview?url=…` serves an isolated, sanitized element
   selection preview; no original script runs in the app's authenticated origin.
 - `GET /api/archives/:id/reader?format=markdown|html` exports captured readable
-  content. Reader output clearly identifies source and capture timestamp.
+  content. Reader output clearly identifies source and capture timestamp. The API
+  caps output at 8 MiB before allocation, retains analysis permits through body
+  consumption, and directs larger exports to standalone WACZ. Pure worker-side
+  engine limits are separately documented in the engine README.
 - `POST /api/archives/import?filename=NAME` accepts bounded raw WACZ bytes.
+  Uploads stream into exclusive staging; the WACZ cap is 128 MiB and profile
+  material cap is 32 MiB.
   `POST /api/archives/reconcile` reports unclaimed files and restores only
   attributable records; explicit imports establish the importing user's copy.
 - `GET /api/archives/search?q=` returns paginated matching captured pages with
@@ -378,20 +394,21 @@ authentication boundaries and the default compute allocation.
 
 ## Integration evidence (current checkpoints)
 
-All 30 proposals above remain in scope. The final independent backend/engine
-review and integrated application gate are still pending; the following are
-observed results, not blanket acceptance.
+All 30 proposals above are implemented. The integrated Rust gate passed 69 tests;
+all five opt-in checks were executed with actual fixtures/runtime. Frontend checks
+passed 13 tests, typecheck and production replay staging. The following evidence
+and the validation receipt define the tested boundaries.
 
 | Proposals | Implemented boundary | Observed qualification |
 | --- | --- | --- |
 | 01, 04, 05, 22, 27, 29 | Separate catalogue, owner-bound publication intent/recovery, paged inventories/coverage, metadata, imports, trash | Real API imported the 18-resource fixture; paging, metadata, fixity and export completed. Removing all terminal job history preserved the archive and its SHA-256. Other-user detail, payload, preview and mutation requests returned 404. |
-| 02, 03, 09, 11 | Durable native checkpoints, explicit cumulative budgets/extensions, SPA/depth and multiple seeds | Actual native partial one-page capture resumed with an explicit two-page extension and completed all three pages in two attempts and 14 cumulative seconds. The partial hash and parent lineage remained intact. Restart/discard concurrency is under the final backend correction. |
+| 02, 03, 09, 11 | Durable native checkpoints, explicit cumulative budgets/extensions, SPA/depth and multiple seeds | Actual native partial one-page capture resumed with an explicit two-page extension and completed all three pages in two attempts and 14 cumulative seconds. The partial hash and parent lineage remained intact. Restart/discard and unsupported file-control races passed independent backend review. |
 | 07, 08 | DNS-pinned bounded discovery and queued browser samples | Actual 3-page sample freezes target 30. Projection includes document/assets once and reports uncertain dynamic-resource, baseline and packaging overhead separately; transfer remains a different measurement. |
 | 10, 12, 13, 14, 23, 25 | Editable presets, native resource/media/behaviour driver, owner recipes and opt-in schedules | Existing app tests and direct recipe/schedule execution checks pass. Fixture UI preserves SPA hashes, multiple seeds and editable settings. |
-| 06, 15, 16, 17, 21, 24 | Library-first UI, resource/coverage tools, sandbox picker, clean replay, search/deep links and comparisons | Frontend review rounds 1–2 resolved WA-FE-001–003. Actual API responses exposed and corrected bounded-report shape handling. First-use service-worker bootstrap fixed a reproduced replay startup race. Real original → clean → original preserved story/hash and toggled advert display; mobile width 390 had no page overflow and footer remained reachable. New integration UI is in independent round 3. |
+| 06, 15, 16, 17, 21, 24 | Library-first UI, resource/coverage tools, sandbox picker, clean replay, search/deep links and comparisons | Frontend review rounds 1–2 resolved WA-FE-001–003; round 3 qualified first-use replay/report guards and identified coverage retry. Correction `410d9f1` passed direct initial-load/next-page failure-and-retry browser checks. Real original → clean → original preserved story/hash and toggled advert display; mobile width 390 had no page overflow and footer remained reachable. |
 | 18, 20, 26, 28 | Streamed WACZ transforms, repair composition, hash-authorized dependencies, standalone and Reader exports | 335,577,660-byte fixture with five 64 MiB bodies completed inspect/export/fixity/source-preservation/preview/Reader at 15,872 KiB peak RSS (debug run 1,220.6 s). Final text/view refinements passed focused checks separately. Three MiB inline-JSON HTML retains records/native rendered baseline; DOM transforms explicitly refuse their 2 MiB limit. Source/dependency hashes and graphs are checked for pure views too. |
 | 19 | Queued native offline browser QA, separate file/resource/baseline/interaction results | Pinned 1.14.3 with `--network=none --pull=never`: 3/3 pages, screenshots and text passed, zero changed/missing resources. Separate two menu/tab assertions passed. Intentionally removing a captured favicon produced the expected exact resource-fidelity failure while page/baseline/assertion checks passed; captured original HTTP 404 remains distinguishable. |
-| 30 | Immutable selected profile, fresh browser state, private roots and revocation checks | Synthetic sequential Alice, Bob and unprofiled captures returned their own cookie/storage values or empty state. Revoked/expired queued profiles failed before container launch. No live credential material was used. |
+| 30 | Immutable selected profile, fresh browser state, private roots and revocation checks | Synthetic sequential Alice, Bob and unprofiled captures returned their own cookie/storage values or empty state. Revoked/expired queued profiles failed before container launch; concurrent import cannot undo revocation. No live credential material was used. |
 
 Engine file operations have explicit format/resource ceilings, documented in
 [`archive_engine/README.md`](../archive_engine/README.md). Large-file success does

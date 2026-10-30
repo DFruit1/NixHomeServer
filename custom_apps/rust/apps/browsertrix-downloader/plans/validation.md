@@ -1,6 +1,7 @@
 # Web Archives validation receipt
 
-Status: final backend and engine corrections are under independent review.
+Status: implemented, integrated and validated; no required backend or engine
+review findings remain open. Application-code checkpoint: `c32f6de958b926a7150f0443c74d760ba9d14d7f`.
 This receipt supplements the [30-feature implementation plan](expansion.md).
 Passing checks below establish their stated boundaries, not live deployment.
 
@@ -42,7 +43,10 @@ API content. Its original WACZ is 109,406 bytes, SHA-256
 - Synthetic Alice, Bob and unprofiled captures observed only their respective
   cookie/storage values or empty state. Expired and revoked queued profiles were
   rejected before container launch. Concurrent revocation/import is covered by
-  the final backend correction and its separate review.
+  the accepted backend correction and its separate review. Root reran the native
+  profile matrix in 19.38 seconds and native resume in 16.15 seconds after those
+  backend corrections. The later control guard only rejects unsupported
+  pause/stop on file operations and leaves native capture controls intact.
 
 ## WACZ processing and replay
 
@@ -60,6 +64,9 @@ API content. Its original WACZ is 109,406 bytes, SHA-256
   Actual pinned-viewer replay of the dependent capture rendered the story and
   image through hash-bound `relation.requires` parent lookup. Merely listing
   both archives in Multi-WACZ had previously failed and was corrected.
+  Final identity-preserving writer outputs are 101,596-byte selector export,
+  53,470-byte dependent and 101,807-byte materialized standalone; independent
+  native-pair verification retained all 18 resources and both original hashes.
 - A downloaded standalone was ingested through the viewer's file-input path,
   then replayed with the browser offline. Story, image, menu, hidden panel and
   captured API data worked; the explicitly removed advert remained absent.
@@ -74,6 +81,13 @@ API content. Its original WACZ is 109,406 bytes, SHA-256
   export and fixity. Clearing terminal history left archive download/replay and
   the original hash available. A second synthetic owner saw an empty library
   and received 404 for the first owner's detail, payload, preview and mutation.
+- A fresh actual API/worker journey at `084df51` captured the isolated site,
+  recaptured only its selected deep page, composed a complete three-page repair,
+  exported a 61,813-byte standalone, and passed Reader/fixity checks. Parent and
+  repair IDs remained distinct and the original SHA-256 stayed unchanged. Both
+  the untouched homepage (story/image) and repaired deep page rendered through
+  the pinned viewer. Clearing job history preserved the source. The subsequent
+  backend change only adds the unsupported file-control rejection.
 - Discovery's network contract was exercised inside a fresh user/network
   namespace. A synthetic public address accepted a relative redirect; an
   otherwise unresolvable hostname succeeded only through validated address
@@ -86,6 +100,9 @@ API content. Its original WACZ is 109,406 bytes, SHA-256
   range 60,302–132,650; the 30-page projection was 572,920 with range
   64,213–1,326,500. Unattributed dynamic/baseline payloads and package overhead
   remain explicit uncertainty, distinct from transfer bytes.
+  A final run against the 109,406-byte native fixture projected 30 pages at
+  581,520 bytes with range 109,406–4,238,280; its broader unknown-scope range
+  explicitly includes 56,364 bytes of uncertain package/baseline overhead.
 - Desktop 1280 px and mobile 390 px journeys checked capture settings, presets,
   SPA hashes, seeds, recipes, opt-in schedules, metadata, inventories, selector
   messages, export/repair/QA queues, trash/restore and deep links. Mobile content
@@ -114,10 +131,46 @@ API content. Its original WACZ is 109,406 bytes, SHA-256
   committed checkpoint and intended edit, then reran its owning checks. Cleanup
   removed only task-owned reproducible outputs; final gates reuse known caches.
 
-## Remaining qualification
+## Final checks and independent review
 
-The final receipt will record the corrected backend/engine revisions, their
-independent review dispositions and the final integrated app test counts.
+The owning app gate passed **69 tests, zero failures, five ignored** at `c32f6de`:
+
+```sh
+CARGO_TARGET_DIR=/home/dsaw/.t3/worktrees/NixOS/t3-dc8b342f/custom_apps/target \
+  cargo test --locked --offline --manifest-path custom_apps/Cargo.toml \
+  -p browsertrix-downloader --quiet
+```
+
+The five opt-ins were explicitly executed separately: native fixture-pair
+transformation, native browser QA, measured forecast, synthetic private profiles
+and native checkpoint resume. QA was additionally run with deliberately missing
+content. Root's final QA reruns measured three-page success in 24.19 seconds and
+the expected negative resource failure with both interaction assertions passing
+in 12.06 seconds. No skipped opt-in is represented as an automatic pass.
+
+Frontend `pnpm check` passed typecheck, **13 tests**, production build and replay
+asset staging. JavaScript syntax, focused Nix checks, changed-source formatting,
+diff checks and the pinned UI detector also passed. Application tests close the
+earlier interrupted ENOSPC gates; no repository-wide gate was substituted.
+
+| Scope | Exact accepted checkpoint and disposition |
+| --- | --- |
+| Plan | Review at `13cb1b6`; WA-PLAN-01–10 became binding corrections at `a1f0be6`, with implementation evidence above. |
+| Claim helper prerequisite | `bfec700`, one independent pass, 22 focused tests; accepted. No installed runtime change. |
+| Private Nix storage/backup integration | `d1c1b15`, round 2 accepted WA-MOD-001–003 corrections. |
+| Frontend filters/reference races | `155f1fd`, round 2 accepted WA-FE-001–003. Integration round 3 qualified replay/bootstrap/report handling and found WA-FE004 coverage retry; `410d9f1` fixed it with direct browser evidence. That last mechanical correction is available to the coordinator's whole-set review rather than a fourth ordinary frontend round. |
+| Backend custody/memory/controls | `c32f6de`, round 3 approved; WA-BE001–005 fixed. Backend `src/` tree `e2f5f6a7f3fabfb0467dd554ef849ce85db0629d`, `tests/` tree `bda981c280c524a874c45cc2e9caaa4eadc06ff2`. |
+| WACZ engine | `084df51`, round 4 approved; WA-ENG001–005 and WA-INT001 fixed. Engine tree `1ed6a20144b74df7e2e1bbf2dab9f183225187e3`. Round 4 was a bounded extension for reproduced capture-data misattribution; 22 focused tests, native pair and 24 additional identity/re-export checks passed. |
+
+Reader API output is capped at 8 MiB before allocation. Aggregate permits remain
+held through blocking analysis and response-body consumption/drop; uploads stream
+with existing caps. Four concurrent 128 MiB uploads measured approximately
+47 MiB high-water RSS in the rework harness, not a whole-process guarantee.
+Independent memory-budget/lease/cancellation regressions passed.
+
 Maximum-size benchmarking, a repository-wide suite, production egress/service
 activation and a live backup restore have not been performed by this workstream.
-The deployment coordinator owns whole-set review and guarded activation.
+Same-URL/same-second ambiguity within a single gzip member remains explicitly
+rejected. Picker fidelity and transformations retain their documented bounds;
+size forecasts remain heuristic. The deployment coordinator owns whole-set
+review and guarded activation; feature publication does not activate services.
