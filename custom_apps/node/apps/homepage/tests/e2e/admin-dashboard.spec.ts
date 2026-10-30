@@ -46,6 +46,29 @@ test('admin dashboard renders the backup widgets from cached status', async ({ p
   await expectNoHorizontalOverflow(page);
 });
 
+test('recent errors shows only bounded metadata and stays usable on desktop and phone', async ({ page }) => {
+  await page.goto('/admin-dashboard');
+  const panel = page.getByRole('region', { name: 'Recent errors' });
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText('Priority 0–3 journal events in the past hour, with message content withheld.');
+  await expect(panel).toContainText('Homepage');
+  await expect(panel).toContainText('2 retained');
+  await expect(panel).toContainText('Service access canary');
+  await expect(panel).toContainText('No events observed');
+
+  await panel.getByRole('button', { name: 'View events' }).click();
+  await expect(panel.getByRole('list', { name: 'Recent journal error metadata' }).getByRole('listitem')).toHaveCount(2);
+  await expect(panel).toContainText('Critical');
+  await expect(panel).toContainText('Error');
+  await expect(panel).toContainText('Journal error event; message withheld');
+  await expect(panel).not.toContainText('raw journal text');
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(panel.locator('select[name="unit"]')).toBeVisible();
+  await expect(panel.getByLabel('Time range')).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+});
+
 test('admin dashboard reports stale and missing items instead of showing healthy', async ({ page }) => {
   await page.route('**/api/admin-dashboard', async (route) => {
     await route.fulfill({

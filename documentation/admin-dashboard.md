@@ -70,6 +70,32 @@ one, and the page shows a notice naming the cache age.
 
 A widget whose backing service is disabled is omitted rather than rendered green.
 
+## Recent error metadata
+
+The same administrator-only page also summarizes priority 0–3 journal events for
+Homepage, the authenticated service-access canary, and the offsite backup service
+only when the MEGA mirror is enabled. `homepage-admin-dashboard-logs.service`
+refreshes `/run/homepage-admin-dashboard-logs/status.json` every five minutes;
+the allowlisted systemd-unit manifest and collector are Nix-generated. The
+collector bounds each journal query to the previous 24 hours and keeps at most
+the newest 100 events per service. It selects only the trusted timestamp,
+priority, and systemd-unit fields. Event message text, command output, environment
+values, credentials, and arbitrary journal fields are never cached or returned.
+
+`GET /api/admin-dashboard/recent-errors` and
+`POST /api/admin-dashboard/logs` are private, uncached and administrator-only.
+The latter accepts a fixed service id, a bounded time range, an optional safe
+metadata query, and a result limit. The API revalidates the root-owned cache and
+manifest without following symlinks, reports stale, invalid, and unavailable
+sources distinctly, and returns only a fixed message stating that journal text is
+withheld. Summary counts cover the past hour; a `+` indicates a lower bound when
+the retained-event cap affects that window. Results identify their submitted
+service, time range, and source timestamp. A fresh empty scan says “No events
+observed”; it is not a health check.
+The collector runs as root only for journal access and writes a mode-`0640`
+root:homepage cache in a mode-`0750` volatile directory. It has a five-second
+child-process deadline, bounded output, no network, and systemd CPU/memory limits.
+
 ## Adding a widget
 
 1. Add a raw measurement section to the collector (no severity decisions there).

@@ -179,6 +179,39 @@ export type AdminDashboardResponse = {
   widgets: AdminDashboardWidget[];
 };
 
+export type AdminLogEntry = {
+  timestamp: string;
+  priority: 0 | 1 | 2 | 3;
+  message: string;
+};
+
+export type AdminLogsResponse = {
+  schemaVersion: 1;
+  state: 'available' | 'unavailable' | 'stale' | 'invalid';
+  generatedAt: string;
+  unit: string | null;
+  windowSeconds: number;
+  entries: AdminLogEntry[];
+  sourceGeneratedAt: string | null;
+  truncated: boolean;
+  privacyMode: 'metadata-only';
+  reasonCode: string | null;
+};
+
+export type RecentErrorSummary = {
+  schemaVersion: 1;
+  generatedAt: string;
+  units: Array<{
+    id: string;
+    label: string;
+    state: 'available' | 'unavailable' | 'stale' | 'invalid';
+    count: number;
+    lowerBound: boolean;
+    sourceGeneratedAt: string | null;
+    reasonCode: string | null;
+  }>;
+};
+
 export type MkvConversionProgress = {
   title: string;
   mediaKind: 'movie' | 'tv';

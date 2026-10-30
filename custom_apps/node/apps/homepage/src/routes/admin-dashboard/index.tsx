@@ -2,6 +2,7 @@ import { component$, useContext, useSignal, useVisibleTask$ } from '@builder.io/
 import { HomepageContext } from '../../shared/homepage-context.js';
 import type { AdminDashboardResponse, AdminDashboardWidget } from '../../shared/types.js';
 import { WidgetCard } from '../../components/dashboard/WidgetCard.js';
+import { RecentErrors } from '../../components/dashboard/RecentErrors.js';
 import { dashboardWidgetDefinitions } from '../../components/dashboard/registry.js';
 
 // Timestamps render from the ISO string so server and client markup agree.
@@ -99,6 +100,8 @@ export default component$(() => {
           ))}
         </div>
       )}
+
+      <RecentErrors />
 
       <p class="admin-dashboard__footer">
         Widgets whose backing service is disabled are left out rather than shown as healthy.

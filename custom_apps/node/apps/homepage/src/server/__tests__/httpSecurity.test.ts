@@ -246,6 +246,26 @@ describe('homepage mutation request security', () => {
     }, disabledConfig);
     expect(response.statusCode).toBe(404);
   });
+
+  it('admin logs APIs are private and uncached, including access denials', async () => {
+    const denied = await request('GET', '/api/admin-dashboard/recent-errors', '', {
+      'x-forwarded-preferred-username': 'alice',
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.headers['cache-control']).toBe('private, no-store');
+    expect(denied.headers.vary).toBe('Cookie');
+
+    const adminConfig: AppConfig = {
+      ...config,
+      homepage: { ...config.homepage, adminUsers: ['admin'] },
+    };
+    const allowed = await request('GET', '/api/admin-dashboard/recent-errors', '', {
+      'x-forwarded-preferred-username': 'admin',
+    }, adminConfig);
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.headers['cache-control']).toBe('private, no-store');
+    expect(JSON.parse(allowed.body)).toMatchObject({ schemaVersion: 1, units: [] });
+  });
 });
 
 const request = async (
@@ -254,18 +274,18 @@ const request = async (
   body: string,
   headers: IncomingMessage['headers'],
   appConfig: AppConfig = config,
-): Promise<{ statusCode: number; body: string }> => {
+): Promise<{ statusCode: number; body: string; headers: Record<string, string> }> => {
   const incoming = Readable.from([body]) as IncomingMessage;
   incoming.method = method;
   incoming.url = url;
   incoming.headers = headers;
   const response = makeResponse();
   expect(await handleApiRequest(appConfig, incoming, response.res)).toBe(true);
-  return { statusCode: response.statusCode, body: response.body };
+  return { statusCode: response.statusCode, body: response.body, headers: response.headers };
 };
 
-const makeResponse = (): { res: ServerResponse; readonly statusCode: number; readonly body: string } => {
-  const state = { statusCode: 200, body: '' };
+const makeResponse = (): { res: ServerResponse; readonly statusCode: number; readonly body: string; readonly headers: Record<string, string> } => {
+  const state = { statusCode: 200, body: '', headers: {} as Record<string, string> };
   const res = {
     get statusCode() {
       return state.statusCode;
@@ -273,7 +293,8 @@ const makeResponse = (): { res: ServerResponse; readonly statusCode: number; rea
     set statusCode(value: number) {
       state.statusCode = value;
     },
-    setHeader() {
+    setHeader(name: string, value: string | number | readonly string[]) {
+      state.headers[name.toLowerCase()] = String(value);
       return undefined;
     },
     end(value?: unknown) {
@@ -287,6 +308,9 @@ const makeResponse = (): { res: ServerResponse; readonly statusCode: number; rea
     },
     get body() {
       return state.body;
+    },
+    get headers() {
+      return state.headers;
     },
   };
 };

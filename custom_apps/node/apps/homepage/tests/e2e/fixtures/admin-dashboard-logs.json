@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "horizonSeconds": 86400,
+  "units": [
+    {
+      "unit": "homepage.service",
+      "state": "available",
+      "reasonCode": null,
+      "truncated": false,
+      "entries": [
+        {
+          "ageSeconds": 120,
+          "timestamp": "2024-01-01T00:00:00.000000Z",
+          "priority": 3,
+          "message": "Journal error event; message withheld"
+        },
+        {
+          "ageSeconds": 240,
+          "timestamp": "2024-01-01T00:00:00.000000Z",
+          "priority": 2,
+          "message": "Journal error event; message withheld"
+        }
+      ]
+    },
+    {
+      "unit": "homepage-canary.service",
+      "state": "available",
+      "reasonCode": null,
+      "truncated": false,
+      "entries": []
+    }
+  ]
+}

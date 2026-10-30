@@ -7,6 +7,7 @@ import type { AppConfig } from './config.js';
 import { enrollOfflineMediaDevice, getOfflineMediaSetup, OfflineMediaInputError, removeOfflineMediaDevice } from './offlineMedia.js';
 import { applyBuildMode, getBuildMode, BuildModeInputError } from './buildMode.js';
 import { getAdminDashboard } from './adminDashboard.js';
+import { AdminLogsInputError, getAdminLogs, getRecentErrorSummary, unavailableAdminLogs } from './adminLogs.js';
 import { applyPowerSchedule, getPowerSchedule, PowerScheduleInputError } from './power.js';
 import { installSftpPublicKey, normalisePublicKey } from './sftpKey.js';
 import { assertFeatureAccess, buildHomepageData } from './homepageData.js';
@@ -53,6 +54,10 @@ export const handleRequest = async (config: AppConfig, request: IncomingMessage,
 
 export const handleApiRequest = async (config: AppConfig, request: IncomingMessage, response: ServerResponse): Promise<boolean> => {
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+  if (url.pathname.startsWith('/api/admin-dashboard/recent-errors')
+    || url.pathname.startsWith('/api/admin-dashboard/logs')) {
+    return handleAdminLogsApiRequest(config, request, response, url.pathname);
+  }
   try {
     if (await handleVaultApiRequest(config, request, response, url.pathname)) {
       return true;
@@ -190,6 +195,55 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
     }
     return true;
   }
+};
+
+const handleAdminLogsApiRequest = async (
+  config: AppConfig,
+  request: IncomingMessage,
+  response: ServerResponse,
+  pathname: string,
+): Promise<boolean> => {
+  response.setHeader('cache-control', 'private, no-store');
+  response.setHeader('vary', 'Cookie');
+  const summaryPath = '/api/admin-dashboard/recent-errors';
+  const logsPath = '/api/admin-dashboard/logs';
+  if (pathname !== summaryPath && pathname !== logsPath) {
+    sendJson(response, 404, { error: 'api route not found' });
+    return true;
+  }
+  const expectedMethod = pathname === summaryPath ? 'GET' : 'POST';
+  if (request.method !== expectedMethod) {
+    response.setHeader('allow', expectedMethod);
+    sendJson(response, 405, { error: 'method not allowed' });
+    return true;
+  }
+  try {
+    if (pathname === summaryPath) {
+      sendJson(response, 200, await getRecentErrorSummary(config, request.headers));
+      return true;
+    }
+    const body = await readMutationJson<unknown>(request, 1024);
+    sendJson(response, 200, await getAdminLogs(config, request.headers, body));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    const status = error instanceof AdminLogsInputError || error instanceof SyntaxError ? 400
+      : message.includes('authenticated user') ? 401
+        : message.includes('not authorised') || message.includes('origin') || message.includes('same-origin') ? 403
+          : message.includes('content type') ? 415
+            : message.includes('too large') ? 413
+              : 500;
+    const reasonCode = status === 400 ? 'invalid-request'
+      : status === 401 ? 'authentication-required'
+        : status === 403 ? 'not-authorised'
+          : status === 413 ? 'request-too-large'
+            : status === 415 ? 'json-required'
+              : 'source-unavailable';
+    sendJson(response, status, {
+      error: reasonCode,
+      data: unavailableAdminLogs(reasonCode, status === 400 || status === 413 ? 'invalid' : 'unavailable'),
+    });
+  }
+  return true;
 };
 
 const sendVaultResponse = (response: ServerResponse, result: VaultHttpResponse): void => {

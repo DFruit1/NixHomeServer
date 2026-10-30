@@ -35,6 +35,26 @@ for (const section of [report.kopiaSnapshot, report.kopiaVerify, report.logicalB
 }
 await writeFile(statusFile, JSON.stringify(report));
 
+const logsSource = path.join(homepageDir, 'tests/e2e/fixtures/admin-dashboard-logs.json');
+const logsFile = path.join(stateDir, 'admin-dashboard-logs.json');
+const unitsFile = path.join(stateDir, 'admin-dashboard-log-units.json');
+const logs = JSON.parse(await readFile(logsSource, 'utf8'));
+logs.generatedAt = at(0);
+for (const unit of logs.units) {
+  unit.entries = unit.entries.map(({ ageSeconds, ...entry }) => ({
+    ...entry,
+    timestamp: at(ageSeconds),
+  }));
+}
+await writeFile(logsFile, JSON.stringify(logs));
+await writeFile(unitsFile, JSON.stringify({
+  schemaVersion: 1,
+  units: [
+    { id: 'homepage', label: 'Homepage', unit: 'homepage.service' },
+    { id: 'service-access-canary', label: 'Service access canary', unit: 'homepage-canary.service' },
+  ],
+}));
+
 const kanidm = spawn(process.execPath, [path.join(homepageDir, 'tests/e2e/bin/fake-kanidm.mjs')], {
   env: { ...process.env, FAKE_KANIDM_PORT: String(kanidmPort) },
   stdio: 'inherit',
@@ -50,6 +70,8 @@ const server = spawn('sh', ['-c', serverCommand], {
     HOMEPAGE_STATIC_DIR: staticDir,
     HOMEPAGE_CONFIG_FILE: path.join(homepageDir, 'tests/e2e/fixtures/homepage-config.json'),
     HOMEPAGE_ADMIN_DASHBOARD_STATUS_FILE: statusFile,
+    HOMEPAGE_ADMIN_LOG_STATUS_FILE: logsFile,
+    HOMEPAGE_ADMIN_LOG_UNITS_FILE: unitsFile,
     HOMEPAGE_SUDO: path.join(homepageDir, 'tests/e2e/bin/fake-sudo.mjs'),
     HOMEPAGE_SFTP_KEY_INSTALL_COMMAND: path.join(homepageDir, 'tests/e2e/bin/fake-install-sftp-key.mjs'),
     HOMEPAGE_SFTP_KEY_LIST_COMMAND: path.join(homepageDir, 'tests/e2e/bin/fake-sftp-key-list.mjs'),

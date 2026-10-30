@@ -80,6 +80,11 @@ export type AppConfig = {
     available: true;
     statusFile: string;
   };
+  adminLogs?: {
+    available: true;
+    statusFile: string;
+    unitsFile: string;
+  };
   homepage: HomepageConfig;
 };
 
@@ -335,6 +340,13 @@ const normaliseBuildModeConfig = (): AppConfig['buildMode'] | undefined => {
   };
 };
 
+const normaliseAdminLogsConfig = (): AppConfig['adminLogs'] | undefined => {
+  const statusFile = process.env.HOMEPAGE_ADMIN_LOG_STATUS_FILE;
+  const unitsFile = process.env.HOMEPAGE_ADMIN_LOG_UNITS_FILE;
+  if (!statusFile || !unitsFile) return undefined;
+  return { available: true, statusFile, unitsFile };
+};
+
 const normaliseAdminDashboardConfig = (): AppConfig['adminDashboard'] | undefined => {
   const statusFile = process.env.HOMEPAGE_ADMIN_DASHBOARD_STATUS_FILE;
   if (!statusFile) {
@@ -370,5 +382,6 @@ export const loadConfig = (): AppConfig => ({
   powerSchedule: normalisePowerScheduleConfig(),
   buildMode: normaliseBuildModeConfig(),
   adminDashboard: normaliseAdminDashboardConfig(),
+  adminLogs: normaliseAdminLogsConfig(),
   homepage: loadHomepageConfig(process.env.HOMEPAGE_CONFIG_FILE),
 });
