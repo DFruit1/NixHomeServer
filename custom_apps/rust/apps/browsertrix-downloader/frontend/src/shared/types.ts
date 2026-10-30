@@ -36,8 +36,8 @@ export type ResourceRecord = { url: string; mime: string; status: number; bytes:
 export type CoverageRecord = { url: string; kind: string; reason: string; status?: number | null };
 export type Verification = { valid: boolean; checkedAt: string; checks: { name: string; status: string; details: string }[]; warnings: string[] };
 export type ArchiveReport = {
-  archiveBytes: number; sha256: string; title: string; description: string; pages?: PageRecord[]; resources?: ResourceRecord[];
-  uniquePayloadBytes: number; duplicatePayloadBytes: number; metadataBytes: number; warnings: string[]; dependencies: string[];
+  archiveBytes?: number; sha256?: string; title?: string; description?: string; pages?: PageRecord[]; resources?: ResourceRecord[];
+  uniquePayloadBytes: number; duplicatePayloadBytes: number; metadataBytes: number; warnings: string[]; dependencies?: string[];
 };
 export type Archive = {
   id: string; createdAt: string; updatedAt: string; createdBy: string; url: string; title: string; archiveFile: string;
