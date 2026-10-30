@@ -543,6 +543,14 @@ impl Database {
             return Err("job cannot be paused or stopped in its current state".into());
         }
         let mut rt: JobRuntime = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+        // File operations have no crawler checkpoint or pause/stop handler.
+        // Reject atomically with admission, before a control can strand a claim.
+        if !matches!(
+            rt.operation,
+            Operation::Capture | Operation::Sample { .. } | Operation::Repair { .. }
+        ) {
+            return Err("pause and stop are not supported for file operations; cancel before packaging begins".into());
+        }
         rt.control = Some(control.into());
         let next = if status == "queued" {
             "paused"

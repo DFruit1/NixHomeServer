@@ -54,6 +54,75 @@ async fn call(
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
 }
+// WA-BE005 repeatedly stranded claimed imports with accepted pause/stop. The
+// HTTP error must explain unsupported controls, and rejected jobs must still run.
+#[tokio::test]
+async fn file_operation_controls_return_actionable_conflicts_and_imports_finish() {
+    use browsertrix_downloader::model::{JobStatus, Operation};
+    let temp = tempfile::tempdir().unwrap();
+    let config = common::config(temp.path());
+    let db = Database::open(&config.database_path).unwrap();
+    let app = router(AppState {
+        config: config.clone(),
+        database: db.clone(),
+        queue: JobQueue::new(
+            db.clone(),
+            Resolver::new(|_| async { Ok(vec!["93.184.216.34".parse().unwrap()]) }),
+        ),
+    });
+    std::fs::create_dir_all(&config.inbox_root).unwrap();
+    for action in ["pause", "stop"] {
+        for claimed in [false, true] {
+            let id = format!("http-{action}-{claimed}");
+            let inbox = config.inbox_root.join(&id);
+            common::fixture(&inbox, &id);
+            db.queue_operation(
+                &id,
+                "alice",
+                &common::request(),
+                Operation::Import {
+                    inbox_id: id.clone(),
+                },
+            )
+            .unwrap();
+            let mut job = if claimed {
+                db.claim_next_queued_job().unwrap()
+            } else {
+                None
+            };
+            let path = format!("/api/jobs/{id}/{action}");
+            assert_eq!(
+                call(&app, "POST", &path, "bob", json!({})).await.0,
+                StatusCode::NOT_FOUND
+            );
+            let (status, body) = call(&app, "POST", &path, "alice", json!({})).await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            let error = body["error"].as_str().unwrap();
+            assert!(error.contains("not supported"), "{body}");
+            assert!(error.contains("cancel"), "{body}");
+            let stored = db.job(&id).unwrap().unwrap();
+            assert_eq!(
+                stored.status,
+                if claimed {
+                    JobStatus::Starting
+                } else {
+                    JobStatus::Queued
+                }
+            );
+            assert!(stored.runtime.control.is_none());
+            assert!(inbox.exists());
+            if job.is_none() {
+                job = db.claim_next_queued_job().unwrap();
+            }
+            library::execute(&config, &db, &job.unwrap()).unwrap();
+            let finished = db.job(&id).unwrap().unwrap();
+            assert_eq!(finished.status, JobStatus::Completed);
+            assert!(finished.runtime.archive_id.is_some());
+            assert!(!inbox.exists(), "completed import must drain its inbox");
+        }
+    }
+    assert_eq!(db.archives("alice", &Default::default()).unwrap().total, 4);
+}
 #[tokio::test]
 async fn durable_library_routes_use_summaries_and_owner_bound_writer_jobs() {
     let temp = tempfile::tempdir().unwrap();
