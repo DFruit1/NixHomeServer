@@ -272,6 +272,7 @@ const ExternalProvidersDialog = component$<{
   providers: ProviderDefinition[];
   primary: ProviderDefinition;
   itemId: string;
+  rootId: string;
   query: string;
   onSelect$: QRL<(value: unknown, source: string) => void>;
   onClose$: QRL<() => void>;
@@ -473,8 +474,22 @@ const ExternalProvidersDialog = component$<{
             </>
           ) : (
             <p class="health-lookup-note">
-              {props.primary.name} is not set up yet. Configure it below to
-              search online metadata for this item.
+              {props.primary.implementationStatus === "active" ? (
+                <>
+                  Use {props.primary.name} in{" "}
+                  <a
+                    href={`?view=library&root=${encodeURIComponent(props.rootId)}&item=${encodeURIComponent(props.itemId)}`}
+                  >
+                    this item's metadata tools
+                  </a>{" "}
+                  to select the correct edition, artwork or subtitle.
+                </>
+              ) : (
+                <>
+                  {props.primary.name} is planned. Its adapter is not available
+                  yet.
+                </>
+              )}
             </p>
           )}
           <ul class="health-source-list">
@@ -490,6 +505,13 @@ const ExternalProvidersDialog = component$<{
                   </div>
                   <p>{provider.notes}</p>
                   <div class="health-source-links">
+                    {provider.implementationStatus === "active" && (
+                      <a
+                        href={`?view=library&root=${encodeURIComponent(props.rootId)}&item=${encodeURIComponent(props.itemId)}`}
+                      >
+                        Use in metadata tools
+                      </a>
+                    )}
                     <a
                       href={provider.documentationUrl}
                       target="_blank"
@@ -892,6 +914,7 @@ export const MetadataHealthView = component$<{
     mediaKind: MediaKind;
     primary: ProviderDefinition;
     itemId: string;
+    rootId: string;
     query: string;
     selectionKey: string;
   } | null>(null);
@@ -1173,6 +1196,7 @@ export const MetadataHealthView = component$<{
                         mediaKind: target.mediaKind,
                         primary,
                         itemId: target.itemId,
+                        rootId: target.rootId,
                         query: groupHeading(group).text,
                         selectionKey: `${group.key}:${grouped.key}`,
                       };
@@ -1209,6 +1233,7 @@ export const MetadataHealthView = component$<{
           providers={providerCatalog.providers}
           primary={providersDialogFor.value.primary}
           itemId={providersDialogFor.value.itemId}
+          rootId={providersDialogFor.value.rootId}
           query={providersDialogFor.value.query}
           onSelect$={(value, source) => {
             const active = providersDialogFor.value;

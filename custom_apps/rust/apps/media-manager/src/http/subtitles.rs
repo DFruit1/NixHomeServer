@@ -1111,6 +1111,16 @@ pub(super) async fn upload_subtitle(
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };
+    let source_provider = query.source_provider.as_deref().unwrap_or("upload");
+    if !matches!(source_provider, "upload" | "subdl") {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "subtitle_source_invalid",
+            "Choose an upload or SubDL subtitle source.",
+            request_id,
+        )
+        .into_response();
+    }
     if !valid_object_id(&item_id) {
         return ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -1193,7 +1203,7 @@ pub(super) async fn upload_subtitle(
         &mut catalog,
         &item,
         action,
-        "upload",
+        source_provider,
         request_id.clone(),
     ) {
         Ok(response) => response,

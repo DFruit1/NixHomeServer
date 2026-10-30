@@ -126,6 +126,7 @@ const AUDIOBOOK_ACTIONS: &[MediaAction] = &[
 ];
 
 const PODCAST_ACTIONS: &[MediaAction] = &[
+    MediaAction::LookupMetadata,
     MediaAction::PlayExternal,
     MediaAction::EditArtwork,
     MediaAction::EditNativeMetadata,
@@ -288,7 +289,7 @@ mod tests {
         assert!(profile.supports(MediaAction::EditNativeMetadata));
         assert!(profile.supports(MediaAction::TrackOrder));
         assert!(!profile.supports(MediaAction::EditPortableMetadata));
-        assert!(!profile.supports(MediaAction::LookupMetadata));
+        assert!(profile.supports(MediaAction::LookupMetadata));
         assert!(!profile.supports(MediaAction::PlayInline));
     }
 

@@ -617,14 +617,15 @@ fn validate_install_artwork_action(
     let (stem, extension) = destination_leaf
         .rsplit_once('.')
         .ok_or_else(|| BrokerError::new("artwork destination must have a file extension"))?;
-    if !stem.eq_ignore_ascii_case("cover")
-        || !matches!(
-            extension.to_ascii_lowercase().as_str(),
-            "jpg" | "jpeg" | "png" | "gif" | "webp"
-        )
-    {
+    if !matches!(
+        stem.to_ascii_lowercase().as_str(),
+        "cover" | "backdrop" | "logo"
+    ) || !matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "jpg" | "jpeg" | "png" | "gif" | "webp"
+    ) {
         return Err(BrokerError::new(
-            "new artwork must use a supported cover image filename",
+            "new artwork must use a supported cover, backdrop or logo image filename",
         ));
     }
     Ok(())

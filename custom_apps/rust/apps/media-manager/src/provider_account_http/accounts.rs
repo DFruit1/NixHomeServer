@@ -101,6 +101,7 @@ pub(super) async fn save_provider_account(
     if let Err(error) = result {
         return storage_failure(error, &request_id).into_response();
     }
+    state.additional.invalidate(&identity, definition.id).await;
     let summary = match state.store.list(&identity) {
         Ok(summaries) => summaries
             .into_iter()
@@ -134,7 +135,10 @@ pub(super) async fn delete_provider_account(
         .into_response();
     }
     match state.store.delete(&identity, &provider_id) {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => {
+            state.additional.invalidate(&identity, &provider_id).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(error) => storage_failure(error, &request_id).into_response(),
     }
 }
@@ -189,7 +193,7 @@ pub(super) async fn test_provider_account(
         }
         Err(error) => return storage_failure(error, &request_id).into_response(),
     };
-    let outcome = test_live_provider(&state, connection_test, &credentials).await;
+    let outcome = test_live_provider(&state, connection_test, &credentials, &identity).await;
     zeroize_credentials(&mut credentials);
     if let Err(error) = state.store.record_test_result(
         &identity,
@@ -237,8 +241,20 @@ async fn test_live_provider(
     state: &ProviderBrokerState,
     adapter: ConnectionTestAdapter,
     credentials: &BTreeMap<String, String>,
+    identity: &Identity,
 ) -> ProviderTestOutcome {
+    if let ConnectionTestAdapter::Additional(provider) = adapter {
+        return match additional::test(state, identity, provider, credentials).await {
+            Ok(()) => ProviderTestOutcome::READY,
+            Err(error) if error.status == StatusCode::TOO_MANY_REQUESTS => {
+                ProviderTestOutcome::RATE_LIMITED
+            }
+            Err(error) if error.status == StatusCode::UNAUTHORIZED => ProviderTestOutcome::REJECTED,
+            Err(_) => ProviderTestOutcome::UNAVAILABLE,
+        };
+    }
     let response = match adapter {
+        ConnectionTestAdapter::Additional(_) => unreachable!("handled above"),
         ConnectionTestAdapter::Tmdb => {
             let url = provider_test_url(&state.endpoints.tmdb_api_base, "authentication");
             match (url, credentials.get("apiKey")) {

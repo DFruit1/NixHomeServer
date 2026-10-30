@@ -59,7 +59,7 @@ async fn response_json(response: axum::response::Response) -> Value {
 }
 
 #[tokio::test]
-async fn provider_catalog_shows_public_configurable_and_planned_sources() {
+async fn provider_catalog_shows_public_and_configurable_implemented_sources() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let response = test_app(&temp)
         .oneshot(account_request(
@@ -123,13 +123,13 @@ async fn provider_catalog_shows_public_configurable_and_planned_sources() {
         .is_some_and(|fields| { fields.iter().all(|field| field["inputType"] == "password") }));
     assert!(providers
         .iter()
-        .any(|provider| provider["implementationStatus"] == "planned"));
+        .all(|provider| provider["implementationStatus"] == "active"));
     let tvdb = providers
         .iter()
         .find(|provider| provider["id"] == "tvdb")
         .expect("TheTVDB");
-    assert_eq!(tvdb["canConfigure"], false);
-    assert_eq!(tvdb["canTest"], false);
+    assert_eq!(tvdb["canConfigure"], true);
+    assert_eq!(tvdb["canTest"], true);
 
     let opensubtitles = providers
         .iter()
@@ -406,23 +406,23 @@ async fn open_library_editions_and_covers_are_bounded_normalized_proxies() {
 }
 
 #[tokio::test]
-async fn planned_provider_credentials_are_rejected_without_being_saved() {
+async fn new_provider_credentials_are_write_only_and_scoped() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let app = test_app(&temp);
     let response = app
         .clone()
         .oneshot(account_request(
             "PUT",
-            "/api/v1/provider-accounts/tvdb",
+            "/api/v1/provider-accounts/subdl",
             "subject-1",
             Body::from(r#"{"credentials":{"apiKey":"must-not-be-stored"}}"#),
         ))
         .await
         .expect("save response");
 
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await;
-    assert_eq!(body["error"]["code"], "provider_adapter_unavailable");
+    assert_eq!(body["provider"]["account"]["state"], "configured");
     assert!(!body.to_string().contains("must-not-be-stored"));
 
     let listed = app
@@ -435,13 +435,13 @@ async fn planned_provider_credentials_are_rejected_without_being_saved() {
         .await
         .expect("list response");
     let listed = response_json(listed).await;
-    let tvdb = listed["providers"]
+    let subdl = listed["providers"]
         .as_array()
         .expect("providers")
         .iter()
-        .find(|provider| provider["id"] == "tvdb")
-        .expect("TheTVDB");
-    assert_eq!(tvdb["account"]["state"], "notConfigured");
+        .find(|provider| provider["id"] == "subdl")
+        .expect("SubDL");
+    assert_eq!(subdl["account"]["state"], "configured");
 }
 
 #[tokio::test]

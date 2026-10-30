@@ -279,7 +279,9 @@ pub(crate) fn preferred_artwork(items: &[CatalogItem], target_path: &str) -> Opt
     items
         .iter()
         .filter_map(|candidate| {
-            if candidate.media_kind != MediaKind::Artwork {
+            if candidate.media_kind != MediaKind::Artwork
+                || is_supplemental_artwork(&candidate.relative_path)
+            {
                 return None;
             }
             let candidate_parent = candidate
@@ -302,4 +304,16 @@ pub(crate) fn preferred_artwork(items: &[CatalogItem], target_path: &str) -> Opt
             )
         })
         .map(|(candidate, _)| candidate.clone())
+}
+
+pub(crate) fn is_supplemental_artwork(path: &str) -> bool {
+    let stem = path
+        .rsplit('/')
+        .next()
+        .and_then(|name| name.rsplit_once('.'))
+        .map(|(stem, _)| stem.to_ascii_lowercase())
+        .unwrap_or_default();
+    ["fanart", "backdrop", "background", "logo", "clearlogo"]
+        .iter()
+        .any(|role| stem == *role || stem.ends_with(&format!("-{role}")))
 }

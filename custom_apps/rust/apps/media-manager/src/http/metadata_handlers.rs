@@ -458,12 +458,18 @@ fn file_override_marker(request: &MetadataSidecarRequest) -> String {
 }
 
 fn comicinfo_sidecar(request: &MetadataSidecarRequest) -> String {
-    let mut xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ComicInfo>\n".to_string();
+    let mut xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ComicInfo xmlns:mm=\"urn:nixhomeserver:media-manager:metadata:1\">\n".to_string();
     xml.push_str(&xml_element("Title", Some(&request.title)));
     xml.push_str(&xml_element("Series", request.series.as_deref()));
     xml.push_str(&xml_element("Number", request.volume_number.as_deref()));
     xml.push_str(&xml_element("Summary", request.description.as_deref()));
-    if let Some(year) = request.year {
+    if let Some(year) = request.year.or_else(|| {
+        request
+            .premiere_date
+            .as_deref()
+            .and_then(|date| date.get(..4))
+            .and_then(|year| year.parse::<u16>().ok())
+    }) {
         xml.push_str(&format!("  <Year>{year}</Year>\n"));
     }
     let writers = if request.writers.is_empty() {
@@ -479,12 +485,24 @@ fn comicinfo_sidecar(request: &MetadataSidecarRequest) -> String {
         xml.push_str(&xml_element("Genre", Some(&request.genres.join(", "))));
     }
     xml.push_str(&xml_element("LanguageISO", request.language.as_deref()));
+    if let Some(date) = request.premiere_date.as_deref() {
+        if let Some(month) = date.get(5..7).and_then(|v| v.parse::<u8>().ok()) {
+            xml.push_str(&format!("  <Month>{month}</Month>\n"));
+        }
+        if let Some(day) = date.get(8..10).and_then(|v| v.parse::<u8>().ok()) {
+            xml.push_str(&format!("  <Day>{day}</Day>\n"));
+        }
+    }
     if let Some(web) = request
         .provider_ids
         .get("web")
         .or_else(|| request.provider_ids.get("comicVine"))
     {
         xml.push_str(&xml_element("Web", Some(web)));
+    }
+    if !request.provider_ids.is_empty() {
+        let identifiers = serde_json::to_string(&request.provider_ids).unwrap_or_default();
+        xml.push_str(&xml_element("mm:providerIds", Some(&identifiers)));
     }
     xml.push_str("</ComicInfo>\n");
     xml

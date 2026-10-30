@@ -56,6 +56,7 @@ const mediaKindProfiles = [
       "play-external",
       "edit-artwork",
       "edit-native-metadata",
+      "lookup-metadata",
       "guided-rename",
       "track-order",
     ],
