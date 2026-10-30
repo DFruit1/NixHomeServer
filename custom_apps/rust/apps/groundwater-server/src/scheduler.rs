@@ -24,14 +24,7 @@ pub fn attributed<'a>(
 ) -> Option<&'a crate::adapter::Binding> {
     let binding = registry.binding_for_topic(topic)?;
     let enrolled = registry.enrollment(&binding.device_id)?;
-    // A flat firmware channel carries no identity. Its binding is valid only
-    // for a single legacy enrollment; verified v1-only units do not use it.
-    let flat = crate::topics::TopicMap::default()
-        .subscribe_topics()
-        .iter()
-        .any(|t| t == topic);
-    let ambiguous = flat && registry.shared_topics_ambiguous();
-    (!enrolled.revoked && enrolled.profile == binding.profile && !ambiguous).then_some(binding)
+    (!enrolled.revoked && enrolled.profile == binding.profile).then_some(binding)
 }
 
 pub async fn ancillary<C: tokio_postgres::GenericClient + Sync>(
@@ -192,7 +185,7 @@ pub async fn tick(
         let bindings = tx
             .query(
                 "SELECT b.topic FROM device_bindings b JOIN devices d ON d.device_id=b.device_id
-             WHERE b.device_id=$1 AND b.source_profile=d.source_profile AND b.revoked_at IS NULL
+             WHERE b.device_id=$1 AND groundwater_profile_id(b.source_profile)=groundwater_profile_id(d.source_profile) AND b.revoked_at IS NULL
                AND (b.topic=$3 OR (b.topic NOT LIKE 'gwl/v%' AND (b.topic=$2 OR right(b.topic,length($2)+1)='/'||$2))) ORDER BY b.topic",
                 &[&device, &base, &scoped],
             )

@@ -46,7 +46,7 @@ async fn versioned_topics_isolate_device_commands() {
             .unwrap();
         for channel in ["status", "cmd/danger"] {
             let topic = format!("gwl/v1/{device}/{channel}");
-            client.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES($1,$2,$1,'V21')", &[&topic,&device]).await.unwrap();
+            client.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES($1,$2,$1,'2.1')", &[&topic,&device]).await.unwrap();
         }
         platform::queue(
             &client,

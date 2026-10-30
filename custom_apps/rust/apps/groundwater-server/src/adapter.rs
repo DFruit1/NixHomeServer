@@ -195,6 +195,16 @@ impl EnrollmentRegistry {
     /// Two bindings on one topic are ambiguous — the platform cannot know
     /// which device a message came from — so neither is trusted.
     pub fn binding_for_topic(&self, topic: &str) -> Option<&Binding> {
+        // Shared firmware channels cannot identify their sender, even when
+        // only one of several legacy units has an explicit binding here.
+        if self.shared_topics_ambiguous()
+            && TopicMap::default()
+                .subscribe_topics()
+                .iter()
+                .any(|t| t == topic)
+        {
+            return None;
+        }
         let mut matches = self
             .bindings
             .iter()
@@ -1074,6 +1084,33 @@ mod tests {
             .iter()
             .any(|reason| reason == "identity-from-binding"));
         assert_eq!(observation.profile, ProfileId::V20);
+    }
+
+    // Misattributed samples persist as another bore's history and alert inputs.
+    #[test]
+    fn shared_reading_requires_an_unambiguous_legacy_cohort() {
+        let mut registry = registry();
+        registry.bind(Binding::new(
+            "shared-reading",
+            crate::profiles::TOPIC_READING,
+            fixtures::DEVICE_B,
+            ProfileId::V20,
+        ));
+        let message = fixtures::v20_reading();
+        let mut delivery = message.delivery();
+        delivery.topic = crate::profiles::TOPIC_READING;
+        let ambiguous = intake(&delivery, &registry, &topics());
+        assert_eq!(reason_of(&ambiguous), QuarantineReason::UnboundSharedTopic);
+        assert_eq!(ambiguous.record.device_id, None);
+
+        // Dedicated paths remain attributable, including identity-free V20.
+        observation_of(&intake(&message.delivery(), &registry, &topics()));
+        // SQL cohort metadata excludes physically verified v1-only units.
+        registry.set_shared_legacy_count(1);
+        assert_eq!(
+            observation_of(&intake(&delivery, &registry, &topics())).device_id,
+            fixtures::DEVICE_B
+        );
     }
 
     #[test]
