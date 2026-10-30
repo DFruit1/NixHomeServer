@@ -43,7 +43,7 @@ unclaimed and require explicit import. Never assign orphan files to the first
 user who opens the library.
 
 Pause retains checkpoints, stop saves partial work, and discard is a separate
-action. Resume keeps the frozen recipe and accumulated page/WARC budgets;
+action. Resume keeps the frozen recipe and accumulated page/WARC/time budgets;
 exhausted limits require an explicit bounded extension. Published partial
 versions remain immutable. A stopped or interrupted capture is not evidence
 that the entire website was archived.
@@ -66,6 +66,8 @@ Discovery has separate time, byte and URL bounds. Its estimate describes the
 selected recipe and known scope, not an exact total for an arbitrary dynamic
 website. Queued browser samples supply measured stored bytes. The UI separates
 shared and marginal storage, transfer bytes, WARC bytes and peak disk headroom.
+Unattributed dynamic resources, browser baselines and packaging remain explicit
+uncertain overhead in the sample projection; they are not silently omitted.
 
 Faithful, Balanced and Reader presets expose editable scope/depth, SPA hashes,
 multiple seeds, path/query patterns, resource rules, media choices, viewport,
@@ -92,6 +94,22 @@ Rollback must preserve expanded catalogue/checkpoint state and the new private
 storage boundary. Previous binaries cannot consume every new scope/status; never
 point an incompatible binary at the expanded database or resume profile-backed
 work with an older crawler adapter.
+
+For a deliberately selected legacy read-only service, use the current package's
+maintenance command against a stopped service or consistent database snapshot:
+
+```bash
+browsertrix-downloader-legacy-export SOURCE_DB /canonical/private/NEW_LEGACY_DB
+```
+
+The destination parent must be caller-owned and not group/world writable. The
+command creates an exclusive mode-0600 database and returns JSON counts of
+exported and parked records, with reasons. It preserves the source database and
+copies only compatible completed shared standalone history. Private captures,
+new scopes/statuses, dependencies and unfinished work stay parked in the newer
+source. It copies no payloads and enables no legacy worker. Retain the current
+Nix private-storage and service-group isolation during binary rollback; never
+substitute the legacy export for the preserved expanded database.
 
 ## Kiwix archives (optional integration)
 

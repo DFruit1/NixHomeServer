@@ -69,8 +69,8 @@ It then validates and commits the dependency input in its assigned checkout.
 ## Feature and acceptance ledger
 
 Module review at `514cf7c` found WA-MOD-001 through WA-MOD-003. Corrections
-await re-review: remove Search's service-group membership and retain its narrow
-shared-tree ACL; add the private root to actual Kopia snapshot roots with a
+accepted at `d1c1b15` by module review round 2: remove Search's service-group
+membership and retain its narrow shared-tree ACL; add the private root to actual Kopia snapshot roots with a
 scoped policy that includes WACZ while preserving model exclusions; mount the
 profile root inaccessible in the API namespace. The two focused module checks
 pass. An isolated Kopia 0.23.1 repository restored the 54,088-byte synthetic WACZ
@@ -123,8 +123,11 @@ or credential store was used.
    material in a persistent worker-owned checkpoint directory under stateRoot,
    rather than relying on disposable cache. Atomic state transitions prevent two
    attempts resuming together. Resume never passes --overwrite or deletes saved
-   material. Page/byte limits are cumulative; time is bounded per attempt with
-   accumulated runtime reported. `/resume` additionally accepts bounded
+   material. Page/byte/time limits are cumulative; native attempts receive only the
+   remaining time, with accumulated runtime reported. An interrupted attempt
+   conservatively charges its persisted deadline to prevent restart budget resets.
+   This tightens the initial per-attempt time sketch after a reproduced pause/
+   restart budget reset. `/resume` additionally accepts bounded
    `additionalPages`, `additionalMinutes`, `additionalBytes`; an exhausted budget
    without an explicit valid extension returns a useful conflict. A published
    partial version remains immutable while the next attempt resumes its checkpoint.
@@ -248,7 +251,8 @@ addresses through preflight, redirects, sitemaps, profiles or resource repair.
 ### Archives
 
 `GET /api/archives?q=&offset=&limit=&sort=&favorite=&collection=&trashed=` returns
-`{ items: Archive[], total, offset, limit }`.
+`{ items: ArchiveSummary[], total, offset, limit }`. Summaries contain metadata
+and counts only; full page/resource inventories never appear in polling lists.
 
 ```typescript
 type Archive = {
@@ -268,13 +272,16 @@ type Archive = {
   trash; `POST /restore` restores. No permanent deletion in this release.
 - `GET /api/archives/:id/wacz` serves defensive byte ranges, `?download=1` attachment.
 - `GET /api/archives/:id/pages?q=&offset=&limit=` returns paginated PageRecord.
+- `GET /api/archives/:id/coverage?offset=&limit=` returns bounded persisted
+  skipped-page, intentional-resource-omission and captured-HTTP-error receipts.
 - `GET /api/archives/:id/resources?…` returns paginated ResourceRecord with
   `q`, `mime` and `domain` filters.
 - `POST /api/archives/:id/verify` starts/records bounded fixity/offline QA. Return
   explicit pending/unsupported dimensions; never fabricate successful QA.
 - `POST /api/archives/:id/repair` accepts `{ urls: string[] }` and returns jobId.
 - `POST /api/archives/:id/export` accepts ExportOptions and returns a newly
-  catalogued derivative (`archiveId`) or downloadable reading export URL.
+  queued worker job (`jobId`); the completed job identifies the new derivative.
+  Reader exports use the separate read endpoint.
 - `GET /api/archives/:id/compare?other=ID` returns ComparisonReport.
 - `GET /api/archives/:id/preview?url=…` serves an isolated, sanitized element
   selection preview; no original script runs in the app's authenticated origin.
@@ -360,6 +367,37 @@ features use existing checks and direct isolated acceptance exercises. Record
 actual commands, fixture/crawler versions, measured output sizes, failures and
 unverified dimensions in a final validation receipt beside this plan.
 
-Migrations are additive. Rollback uses the previous committed binaries and
-retained originals; do not roll a newer database back by deleting data. Preserve
-backup/persistence/authentication boundaries and the default compute allocation.
+Migrations are additive, but old binaries cannot read expanded scope/status
+values. The explicit `browsertrix-downloader-legacy-export SOURCE_DB NEW_DB`
+maintenance tool preserves the newer source and exports only compatible completed
+shared standalone history to an exclusive private database. All incompatible,
+private, dependent and unfinished work remains parked. Retain the new Nix
+private-storage boundary and do not enable an old worker against profile data.
+Never roll a newer database back by deleting data. Preserve backup/persistence/
+authentication boundaries and the default compute allocation.
+
+## Integration evidence (current checkpoints)
+
+All 30 proposals above remain in scope. The final independent backend/engine
+review and integrated application gate are still pending; the following are
+observed results, not blanket acceptance.
+
+| Proposals | Implemented boundary | Observed qualification |
+| --- | --- | --- |
+| 01, 04, 05, 22, 27, 29 | Separate catalogue, owner-bound publication intent/recovery, paged inventories/coverage, metadata, imports, trash | Real API imported the 18-resource fixture; paging, metadata, fixity and export completed. Removing all terminal job history preserved the archive and its SHA-256. Other-user detail, payload, preview and mutation requests returned 404. |
+| 02, 03, 09, 11 | Durable native checkpoints, explicit cumulative budgets/extensions, SPA/depth and multiple seeds | Native partial/resume extension qualification is the final backend acceptance check; bounded request/queue/custody checks pass. |
+| 07, 08 | DNS-pinned bounded discovery and queued browser samples | Actual 3-page sample freezes target 30. Projection includes document/assets once and reports uncertain dynamic-resource, baseline and packaging overhead separately; transfer remains a different measurement. |
+| 10, 12, 13, 14, 23, 25 | Editable presets, native resource/media/behaviour driver, owner recipes and opt-in schedules | Existing app tests and direct recipe/schedule execution checks pass. Fixture UI preserves SPA hashes, multiple seeds and editable settings. |
+| 06, 15, 16, 17, 21, 24 | Library-first UI, resource/coverage tools, sandbox picker, clean replay, search/deep links and comparisons | Frontend review rounds 1–2 resolved WA-FE-001–003. Actual API responses exposed and corrected bounded-report shape handling. First-use service-worker bootstrap fixed a reproduced replay startup race. Real original → clean → original preserved story/hash and toggled advert display; mobile width 390 had no page overflow and footer remained reachable. New integration UI is in independent round 3. |
+| 18, 20, 26, 28 | Streamed WACZ transforms, repair composition, hash-authorized dependencies, standalone and Reader exports | 335,577,660-byte fixture with five 64 MiB bodies completed inspect/export/fixity/source-preservation/preview/Reader at 15,872 KiB peak RSS (debug run 1,220.6 s). Final text/view refinements passed focused checks separately. Three MiB inline-JSON HTML retains records/native rendered baseline; DOM transforms explicitly refuse their 2 MiB limit. Source/dependency hashes and graphs are checked for pure views too. |
+| 19 | Queued native offline browser QA, separate file/resource/baseline/interaction results | Pinned 1.14.3 with `--network=none --pull=never`: 3/3 pages, screenshots and text passed, zero changed/missing resources. Separate two menu/tab assertions passed. Intentionally removing a captured favicon produced the expected exact resource-fidelity failure while page/baseline/assertion checks passed; captured original HTTP 404 remains distinguishable. |
+| 30 | Immutable selected profile, fresh browser state, private roots and revocation checks | Synthetic sequential Alice, Bob and unprofiled captures returned their own cookie/storage values or empty state. Revoked/expired queued profiles failed before container launch. No live credential material was used. |
+
+Engine file operations have explicit format/resource ceilings, documented in
+[`archive_engine/README.md`](../archive_engine/README.md). Large-file success does
+not establish a benchmark at the maximum configured ceiling. Picker/Reader are
+bounded views, and forecasts remain heuristic ranges for a bounded recipe.
+Independent module review accepted private ACLs, actual backup-root policy and
+API profile mounts; isolated Kopia restored a synthetic WACZ byte-for-byte while
+excluding a synthetic GGUF. No live service switch or real credential change has
+been performed by this workstream.
