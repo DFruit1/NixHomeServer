@@ -194,6 +194,9 @@ impl Database {
             ),
             params![job_id, next, message],
         )?;
+        // Invalidate pre-upgrade intents in the same cancellation transaction,
+        // so clearing terminal history cannot erase the only discard evidence.
+        transaction.execute("UPDATE publication_intents SET completed=-1 WHERE completed=0 AND json_extract(document,'$.jobId')=?1", [job_id])?;
         transaction.commit()?;
         Ok(changed)
     }

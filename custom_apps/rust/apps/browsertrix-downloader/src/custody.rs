@@ -118,6 +118,12 @@ fn recover_one(
     if !safe_id(&a.id) {
         return Err("invalid archive identity in intent".into());
     }
+    if !db
+        .admit_pending_publication(intent)
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(());
+    }
     let destination_root = root(config, a);
     fs::create_dir_all(destination_root).map_err(|e| e.to_string())?;
     let meta = fs::symlink_metadata(destination_root).map_err(|e| e.to_string())?;

@@ -260,11 +260,59 @@ impl Database {
         })
     }
     pub fn put_intent(&self, intent: &PublicationIntent) -> rusqlite::Result<()> {
-        self.connect()?.execute(
+        let mut c = self.connect()?;
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(id) = &intent.job_id {
+            let allowed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE id=?1 AND created_by=?2 AND status='packaging' AND coalesce(json_extract(runtime_json,'$.control'),'')!='discard')", params![id, intent.archive.created_by], |r| r.get(0))?;
+            if !allowed {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+        }
+        tx.execute(
             "INSERT INTO publication_intents(id,document) VALUES(?1,?2)",
             params![intent.archive.id, sql_json(intent)?],
         )?;
-        Ok(())
+        tx.commit()
+    }
+    /// Reclaim an existing intent before filesystem publication. Old candidates
+    /// could persist intents while still cancellable. Atomically either honor
+    /// that cancellation or freeze recovery in the noncancellable packaging state.
+    pub fn admit_pending_publication(&self, intent: &PublicationIntent) -> rusqlite::Result<bool> {
+        let mut c = self.connect()?;
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let pending: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM publication_intents WHERE id=?1 AND completed=0)",
+            [&intent.archive.id],
+            |r| r.get(0),
+        )?;
+        if !pending {
+            return Ok(false);
+        }
+        if let Some(id) = &intent.job_id {
+            let current: Option<(String, String, Option<String>)> = tx.query_row("SELECT status,created_by,json_extract(runtime_json,'$.control') FROM jobs WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
+            if let Some((status, owner, control)) = current {
+                if owner != intent.archive.created_by {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+                if matches!(status.as_str(), "cancelling" | "cancelled")
+                    || control.as_deref() == Some("discard")
+                {
+                    tx.execute(
+                        "UPDATE publication_intents SET completed=-1 WHERE id=?1",
+                        [&intent.archive.id],
+                    )?;
+                    tx.execute("UPDATE jobs SET status='cancelled',runtime_json=json_set(runtime_json,'$.control','discard','$.canResume',json('false'),'$.discardCleanupPending',json('true')),updated_at=?2 WHERE id=?1", params![id, now()])?;
+                    tx.commit()?;
+                    return Ok(false);
+                }
+                tx.execute(
+                    "UPDATE jobs SET status='packaging',updated_at=?2 WHERE id=?1",
+                    params![id, now()],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(true)
     }
     pub fn pending_intent_ids(&self) -> rusqlite::Result<Vec<String>> {
         self.connect()?
@@ -585,6 +633,20 @@ impl Database {
     }
     pub fn begin_capture(&self, id: &str, rt: &JobRuntime) -> rusqlite::Result<bool> {
         Ok(self.connect()?.execute("UPDATE jobs SET status='running',runtime_json=?2,updated_at=?3 WHERE id=?1 AND status='starting' AND json_extract(runtime_json,'$.control') IS NULL",params![id,rt.storage_json().map_err(|e|rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,now()])?==1)
+    }
+    /// File operations have one explicit noncancellable execution/publication
+    /// phase. Acquire it before inspection or metadata writes. A cancel accepted
+    /// before this transaction wins; afterwards the cancel API rejects it.
+    /// Returning false also makes repeated delivery of completed jobs harmless.
+    pub fn begin_file_operation(&self, id: &str, owner: &str) -> rusqlite::Result<bool> {
+        let mut c = self.connect()?;
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute("UPDATE jobs SET status='packaging',updated_at=?3 WHERE id=?1 AND created_by=?2 AND status='starting' AND json_extract(runtime_json,'$.control') IS NULL", params![id, owner, now()])? == 1;
+        if !changed {
+            tx.execute("UPDATE jobs SET status='cancelled',updated_at=?3 WHERE id=?1 AND created_by=?2 AND status='cancelling'", params![id, owner, now()])?;
+        }
+        tx.commit()?;
+        Ok(changed)
     }
     /// Freeze stop/discard controls atomically with the packaging transition.
     /// Once this commits, new controls are rejected by the existing state gate.

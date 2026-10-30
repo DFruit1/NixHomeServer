@@ -108,6 +108,9 @@ fn corrupt_import_is_not_catalogued_and_valid_import_is_idempotent() {
         .unwrap();
         let job = db.claim_next_queued_job().unwrap().unwrap();
         library::execute(&config, &db, &job).unwrap();
+        // Re-delivery after the source was removed must not restart inspection,
+        // publish another version, or change a completed operation's status.
+        library::execute(&config, &db, &job).unwrap();
         assert_eq!(db.job(&id).unwrap().unwrap().status, JobStatus::Completed);
     }
     assert_eq!(
@@ -382,6 +385,10 @@ fn no_savings_deduplication_publishes_changed_standalone_capture() {
         let id = format!("changed-{index}");
         db.create_job(&id, "alice", &request).unwrap();
         let job = db.claim_next_queued_job().unwrap().unwrap();
+        assert!(db.begin_capture(&job.id, &job.runtime).unwrap());
+        db.prepare_publication(&job.id, &job.runtime)
+            .unwrap()
+            .unwrap();
         library::publish_capture(&config, &db, &job, &path, false, JobStatus::Completed).unwrap();
         assert_eq!(db.job(&id).unwrap().unwrap().status, JobStatus::Completed);
     }
@@ -474,4 +481,141 @@ fn measured_stored_forecast_accounts_for_assets_and_unattributed_overhead() {
     );
     assert!(expanded.expected_bytes > bounded.expected_bytes);
     assert!(expanded.warnings.iter().any(|w| w.contains("attribution")));
+}
+
+// Risk basis: accepted cancellation during file inspection formerly published a
+// new archive anyway. Cover both orders at the execution and recovery boundaries.
+#[test]
+fn file_operations_atomically_reject_execution_after_accepted_cancel() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = common::config(temp.path());
+    let db = Database::open(&config.database_path).unwrap();
+    for (index, operation) in [
+        Operation::Import {
+            inbox_id: "not-inspected".into(),
+        },
+        Operation::Export {
+            archive_id: "not-read".into(),
+            sha256: "0".repeat(64),
+            options: Default::default(),
+        },
+        Operation::ProfileImport {
+            profile_id: "not-activated".into(),
+            inbox_id: "not-read".into(),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = format!("cancel-first-{index}");
+        db.queue_operation(&id, "alice", &common::request(), operation)
+            .unwrap();
+        let job = db.claim_next_queued_job().unwrap().unwrap();
+        assert!(db.request_cancel(&id).unwrap());
+        library::execute(&config, &db, &job).unwrap();
+        library::execute(&config, &db, &job).unwrap();
+        assert_eq!(db.job(&id).unwrap().unwrap().status, JobStatus::Cancelled);
+        assert!(!config.checkpoints_root.join(&id).exists());
+    }
+    db.queue_operation(
+        "execution-first",
+        "alice",
+        &common::request(),
+        Operation::Import {
+            inbox_id: "frozen".into(),
+        },
+    )
+    .unwrap();
+    let job = db.claim_next_queued_job().unwrap().unwrap();
+    assert!(db.begin_file_operation(&job.id, "alice").unwrap());
+    assert_eq!(
+        db.job(&job.id).unwrap().unwrap().status,
+        JobStatus::Packaging
+    );
+    assert!(
+        !db.request_cancel(&job.id).unwrap(),
+        "packaging explicitly rejects cancellation"
+    );
+    assert!(
+        !db.begin_file_operation(&job.id, "alice").unwrap(),
+        "duplicate execution cannot enter twice"
+    );
+    assert_eq!(db.archives("alice", &Default::default()).unwrap().total, 0);
+}
+
+#[test]
+fn publication_recovery_serializes_against_cancel_and_retains_legacy_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = common::config(temp.path());
+    let db = Database::open(&config.database_path).unwrap();
+    std::fs::create_dir_all(&config.checkpoints_root).unwrap();
+    for cancel_first in [true, false] {
+        let id = if cancel_first {
+            "cancel-first"
+        } else {
+            "recovery-first"
+        };
+        let input = config.checkpoints_root.join(format!("{id}.wacz"));
+        common::fixture(&input, id);
+        let report = archive_engine::inspect_archive(&input).unwrap();
+        let mut archive = Archive::new(id.into(), "alice".into(), None, &report);
+        archive.archive_file = format!("{id}.wacz");
+        archive.visibility = "private".into();
+        let intent = PublicationIntent {
+            archive: archive.clone(),
+            report,
+            source: input.to_string_lossy().into_owned(),
+            job_id: Some(id.into()),
+            final_status: "completed".into(),
+            coverage: vec![],
+        };
+        db.queue_operation(
+            id,
+            "alice",
+            &common::request(),
+            Operation::Import {
+                inbox_id: "legacy".into(),
+            },
+        )
+        .unwrap();
+        db.claim_next_queued_job().unwrap().unwrap();
+        db.set_status(id, JobStatus::Running, None).unwrap();
+        // Reconstruct the exact pre-fix durable state: old imports persisted an
+        // intent without first freezing cancellation in packaging.
+        let connection = rusqlite::Connection::open(db.path()).unwrap();
+        connection
+            .execute(
+                "INSERT INTO publication_intents(id,document) VALUES(?1,?2)",
+                rusqlite::params![id, serde_json::to_string(&intent).unwrap()],
+            )
+            .unwrap();
+        if cancel_first {
+            assert!(db.request_cancel(id).unwrap());
+            assert!(!db.admit_pending_publication(&intent).unwrap());
+            assert!(db.put_intent(&intent).is_err());
+            assert_eq!(custody::recover(&config, &db).unwrap(), 0);
+            db.set_status(id, JobStatus::Completed, None).unwrap();
+            assert_eq!(db.job(id).unwrap().unwrap().status, JobStatus::Cancelled);
+            assert!(db.archive_for_user(id, "alice").unwrap().is_none());
+            assert!(!config
+                .private_archive_root
+                .join(&archive.archive_file)
+                .exists());
+        } else {
+            assert!(db.admit_pending_publication(&intent).unwrap());
+            assert!(!db.request_cancel(id).unwrap());
+            assert_eq!(custody::recover(&config, &db).unwrap(), 1);
+            assert_eq!(db.job(id).unwrap().unwrap().status, JobStatus::Completed);
+            assert_eq!(
+                custody::sha256(&config.private_archive_root.join(&archive.archive_file)).unwrap(),
+                archive.sha256
+            );
+            assert_eq!(custody::recover(&config, &db).unwrap(), 0);
+        }
+        assert_eq!(
+            custody::sha256(&input).unwrap(),
+            archive.sha256,
+            "source custody survives either ordering"
+        );
+    }
 }

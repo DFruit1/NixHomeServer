@@ -164,6 +164,7 @@ fn publish(
     };
     custody::publish(config, db, &intent)
 }
+/// Caller must freeze controls with Database::prepare_publication first.
 pub fn publish_capture(
     config: &AppConfig,
     db: &Database,
@@ -424,17 +425,12 @@ pub fn stored_estimate(report: &ArchiveReport, target_pages: u32) -> archive_eng
     estimate
 }
 pub fn execute(config: &AppConfig, db: &Database, job: &Job) -> Result<(), String> {
-    let current = db
-        .job(&job.id)
+    if !db
+        .begin_file_operation(&job.id, &job.created_by)
         .map_err(|e| e.to_string())?
-        .ok_or("job not found")?;
-    if current.status == JobStatus::Cancelling {
-        db.set_status(&job.id, JobStatus::Cancelled, None)
-            .map_err(|e| e.to_string())?;
+    {
         return Ok(());
     }
-    db.set_status(&job.id, JobStatus::Running, None)
-        .map_err(|e| e.to_string())?;
     let scratch = config.checkpoints_root.join(&job.id);
     custody::private_directory(&scratch)?;
     match &job.runtime.operation {
@@ -899,7 +895,7 @@ fn stop_qa_container(config: &AppConfig, job_id: &str) {
 // Two retained responses total at most 16 MiB of content. This is a content and
 // concurrency bound, not a claim about allocator/DOM/SQLite or whole-process RSS.
 pub const API_VIEW_BYTES: usize = 8 * 1024 * 1024;
-pub const API_VIEW_LIMIT: &str = "API view exceeds its 8 MiB analysis/output limit; download the original WACZ or queue a smaller standalone export and read it with standalone tools";
+pub const API_VIEW_LIMIT: &str = "API view input/output limit is 8 MiB; download the original WACZ or queue a smaller standalone export and read it with standalone tools";
 static ARCHIVE_READ_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
 
