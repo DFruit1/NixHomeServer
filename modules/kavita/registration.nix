@@ -11,7 +11,7 @@
       url = "https://books.${vars.domain}";
       enabled = builtins.hasAttr "books.${vars.domain}" config.services.caddy.virtualHosts;
       category = "media";
-      description = "Ebooks, comics, and manga in Kavita.";
+      description = "Read novels, general-interest ebooks, comics, and manga in Kavita, with reading progress, reading lists, and OPDS access for reader apps.";
       loginNotes = "Use Kanidm; first login provisions the local account.";
       projectUrl = "https://www.kavitareader.com";
       logoUrl = "/logos/kavita.svg";

@@ -11,7 +11,7 @@
       url = "https://calibre.${vars.domain}";
       enabled = builtins.hasAttr "calibre.${vars.domain}" config.services.caddy.virtualHosts;
       category = "knowledge";
-      description = "Searchable Calibre catalogue of technical books and reference manuals.";
+      description = "Catalogue technical books, textbooks, handbooks, and reference manuals in Calibre-Web for looking things up, with tags and full-text search.";
       loginNotes = "Use Kanidm for gateway access, then the Calibre-Web local account for uploads and management.";
       projectUrl = "https://github.com/janeczku/calibre-web";
       logoUrl = "/logos/calibre-web.svg";
