@@ -18,3 +18,5 @@ The Homepage vendors these application logos so cards do not depend on third-par
 - `bonsai.svg`: repository-local Bonsai attribution mark drawn for this project (green square with a stylised bonsai glyph).
 - `ai-tools.svg`: repository-local AI Tools attribution mark drawn for this project (indigo square with a plug glyph).
 - `qwen-27b.svg`: repository-local Local AI attribution mark drawn for this project (amber square with a neural-node glyph).
+
+- `prowlarr.svg`: embeds the existing `prowlarr.png` tiger-in-a-box mark, matching the owner-provided reference without the wordmark (approved 2026-10-31). Keep the Kanidm copy identical.

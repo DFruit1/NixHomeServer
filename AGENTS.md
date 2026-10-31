@@ -236,6 +236,10 @@ If a broad search is needed, prefer `rg`/`glob` (they skip gitignored files) ove
 
 ## Frontend Design Workflow
 
+* Do not replace, redraw, restyle, or substitute any Homepage logo without the
+  owner's explicit consent for that logo change. Preserve approved assets during
+  unrelated work. Update logo regression pins only for explicitly approved changes.
+
 Load `frontend-design` for every rendered UI change or review. It owns UI/UX Kit
 implementation, focused review, desktop/mobile rendering and scroll checks,
 media-manager coverage and the stopping condition. Project anti-slop rules and

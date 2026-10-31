@@ -80,8 +80,8 @@ require_fixed scripts/tests/run-script-tests.sh \
   "Kanidm branding regression coverage must run in the lean repository gate."
 
 # Pin Prowlarr's cute tiger logo so it cannot silently regress to the
-# upstream/ugly variant. Both copies must keep this exact content.
-expected_prowlarr_hash="82f86383c34ff908df396dbadc0db7cb78246ff33ba71476b454483b7c038ae0"
+# unapproved variant. Both copies must keep this exact content.
+expected_prowlarr_hash="403dc15cb69809c1ee88900f2cb5868ac263ea44745bc72fb68c153622c38ada"
 for prowlarr_logo in "$homepage_logo_dir/prowlarr.svg" "$kanidm_logo_dir/prowlarr.svg"; do
   actual_prowlarr_hash="$(sha256sum "$prowlarr_logo" | awk '{print $1}')"
   if [[ "$actual_prowlarr_hash" != "$expected_prowlarr_hash" ]]; then
