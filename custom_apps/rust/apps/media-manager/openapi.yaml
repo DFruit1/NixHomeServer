@@ -1065,6 +1065,36 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
+  /items/{itemId}/metadata/health-decisions:
+    parameters:
+      - in: path
+        name: itemId
+        required: true
+        schema: { type: string }
+    post:
+      operationId: saveMetadataHealthDecision
+      description: >-
+        Saves the authenticated subject's decision for one visible item's issue.
+        Matching proposals stay hidden across devices and scans. A changed set
+        of proposed values or sources makes the issue visible again. This
+        preference does not modify metadata; current/proposed values use the
+        existing sidecar mutation and confirmation endpoints.
+        Decisions associated with a failed mutation plan become visible again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MetadataHealthDecision' }
+      responses:
+        '200':
+          description: Decision saved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SavedResponse' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
   /folders/metadata:
     get:
       operationId: getFolderMetadata
@@ -2231,6 +2261,17 @@ components:
           description: Ordered sources the application reads for this kind, highest priority first, so users know where the program gets its metadata.
           type: string
         nativeUrl: { type: string, format: uri }
+    MetadataHealthDecision:
+      type: object
+      additionalProperties: false
+      required: [issueKey, proposalSignature, choice]
+      properties:
+        issueKey: { type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9_-]+$' }
+        proposalSignature: { type: string, minLength: 64, maxLength: 64, pattern: '^[a-fA-F0-9]{64}$' }
+        choice: { type: string, enum: [current, proposed, unsure] }
+        planId:
+          description: Confirmed mutation plan owned by this account, if a value was queued. Failed plans do not suppress the issue.
+          type: string
     MetadataHealthIssue:
       type: object
       required: [code, severity, title, message, sources]
@@ -2244,6 +2285,13 @@ components:
         currentValue:
           description: Effective catalog value for the affected field; null when missing.
         currentSources: { type: array, items: { type: string } }
+        proposalSignature:
+          description: Stable signature of the current alternatives and sources, used to expire saved health decisions when proposals change.
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        fileOverride:
+          description: The field already has an explicit file-sidecar choice; bulk actions preserve it, including explicitly cleared fields.
+          type: boolean
         affectedFiles:
           description: Files affected by a folder-grouped problem (track order, ...); empty for per-item issues.
           type: array

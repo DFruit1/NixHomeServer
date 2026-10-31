@@ -299,7 +299,7 @@ it("keeps distinct file values in one album issue table", async () => {
   expect(screen.textContent).toContain("Current 01");
   expect(screen.textContent).toContain("Proposed 02");
   expect(screen.querySelector(".health-provenance")?.textContent).toContain(
-    "The current value comes from “Sidecar” and differs from it, so confirm which one matches the file in Review metadata.",
+    "The current values come from “Sidecar” and differ from the proposals, so confirm which values match the files in Review metadata.",
   );
 });
 
@@ -646,7 +646,7 @@ it("queues a metadata change when a proposed value is clicked", async () => {
   ).find((button) => button.textContent?.includes("Grantlee Kieza"));
   expect(proposedButton).toBeTruthy();
   expect(proposedButton?.textContent).toContain("Use proposed");
-  const comparison = screen.querySelector(".health-comparison");
+  const comparison = screen.querySelector(".health-issue-header");
   expect(comparison?.firstElementChild?.textContent).toContain(
     "Author or creator is missing",
   );

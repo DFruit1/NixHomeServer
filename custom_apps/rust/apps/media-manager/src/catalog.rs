@@ -224,6 +224,20 @@ impl Catalog {
                 version => return Err(unsupported_schema(version)),
             }
         }
+        // Create additive preference tables after historical plan migrations,
+        // which can rename mutation_plans and rewrite existing foreign keys.
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS metadata_health_decisions (
+               item_id TEXT NOT NULL REFERENCES catalog_items(id) ON DELETE CASCADE,
+               actor_subject TEXT NOT NULL,
+               issue_key TEXT NOT NULL,
+               proposal_signature TEXT NOT NULL,
+               choice TEXT NOT NULL CHECK(choice IN ('current', 'proposed', 'unsure')),
+               plan_id TEXT REFERENCES mutation_plans(id) ON DELETE CASCADE,
+               updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+               PRIMARY KEY(item_id, actor_subject, issue_key)
+             );",
+        )?;
         transaction.commit()?;
         Ok(Self { connection })
     }
@@ -572,6 +586,45 @@ impl Catalog {
                  position_seconds = excluded.position_seconds,
                  updated_at = CURRENT_TIMESTAMP"#,
             rusqlite::params![item_id, username, position_seconds],
+        )?;
+        Ok(())
+    }
+
+    pub fn health_decisions(
+        &self,
+        item_id: &str,
+        subject: &str,
+    ) -> rusqlite::Result<HashMap<String, String>> {
+        self.connection
+            .prepare(
+                "SELECT d.issue_key, d.proposal_signature FROM metadata_health_decisions d
+                      LEFT JOIN mutation_plans p ON p.id = d.plan_id
+                      WHERE d.item_id = ?1 AND d.actor_subject = ?2
+                        AND (d.plan_id IS NULL OR p.state IN ('queued', 'running', 'completed'))",
+            )?
+            .query_map(rusqlite::params![item_id, subject], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect()
+    }
+
+    pub fn save_health_decision(
+        &self,
+        item_id: &str,
+        subject: &str,
+        issue_key: &str,
+        signature: &str,
+        choice: &str,
+        plan_id: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "INSERT INTO metadata_health_decisions (item_id, actor_subject, issue_key, proposal_signature, choice, plan_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(item_id, actor_subject, issue_key) DO UPDATE SET
+               proposal_signature = excluded.proposal_signature, choice = excluded.choice,
+               plan_id = excluded.plan_id,
+               updated_at = CURRENT_TIMESTAMP",
+            rusqlite::params![item_id, subject, issue_key, signature, choice, plan_id],
         )?;
         Ok(())
     }

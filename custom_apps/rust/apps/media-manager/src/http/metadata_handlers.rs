@@ -1383,6 +1383,124 @@ async fn item_metadata_value(
     response
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HealthDecisionBody {
+    issue_key: String,
+    proposal_signature: String,
+    choice: String,
+    plan_id: Option<String>,
+}
+
+pub(super) async fn save_health_decision(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<String>,
+    body: Bytes,
+) -> Response {
+    let request_id = request_id();
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let body: HealthDecisionBody = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_body",
+                "A health decision requires an issue key, proposal signature and choice.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    if !valid_object_id(&item_id)
+        || body.issue_key.is_empty()
+        || body.issue_key.len() > 128
+        || !body
+            .issue_key
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+        || body.proposal_signature.len() != 64
+        || !body
+            .proposal_signature
+            .bytes()
+            .all(|c| c.is_ascii_hexdigit())
+        || !matches!(body.choice.as_str(), "current" | "proposed" | "unsure")
+    {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_health_decision",
+            "The health decision is invalid.",
+            request_id,
+        )
+        .into_response();
+    }
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(_) => return ApiError::internal(request_id).into_response(),
+    };
+    if let Err(error) = visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
+        return error.with_request_id(request_id).into_response();
+    }
+    if let Some(plan_id) = body.plan_id.as_deref() {
+        match catalog.mutation_plan_status_for_owner(plan_id, &identity.username) {
+            Ok(Some(plan)) if matches!(plan.state.as_str(), "queued" | "running" | "completed") => {
+            }
+            Ok(_) => {
+                return ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_health_plan",
+                    "The health decision must refer to one of your confirmed plans.",
+                    request_id,
+                )
+                .into_response()
+            }
+            Err(_) => return ApiError::internal(request_id).into_response(),
+        }
+    }
+    if catalog
+        .save_health_decision(
+            &item_id,
+            &identity.subject,
+            &body.issue_key,
+            &body.proposal_signature,
+            &body.choice,
+            body.plan_id.as_deref(),
+        )
+        .is_err()
+    {
+        return ApiError::internal(request_id).into_response();
+    }
+    Json(json!({ "saved": true })).into_response()
+}
+
+fn health_proposal_signature(issue: &Value) -> String {
+    let mut proposals = issue
+        .get("proposedValues")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for proposal in &mut proposals {
+        if let Some(sources) = proposal.get_mut("sources").and_then(Value::as_array_mut) {
+            sources.sort_by_key(Value::to_string);
+        }
+    }
+    proposals.sort_by_key(Value::to_string);
+    let mut sources = issue
+        .get("sources")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    sources.sort_by_key(Value::to_string);
+    sha256_hex(
+        json!({ "proposals": proposals, "sources": sources })
+            .to_string()
+            .as_bytes(),
+    )
+}
+
 pub(super) async fn metadata_issues(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1470,11 +1588,40 @@ pub(super) async fn metadata_issues(
         inspected_items += 1;
         let metadata =
             item_metadata_value(&state, &identity, &item, Some(&application_caches)).await;
-        let health = metadata
+        let mut health = metadata
             .get("health")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let decisions = match catalog.health_decisions(&item.id, &identity.subject) {
+            Ok(decisions) => decisions,
+            Err(_) => return ApiError::internal(request_id).into_response(),
+        };
+        health.retain_mut(|issue| {
+            let signature = health_proposal_signature(issue);
+            let key = issue
+                .get("field")
+                .or_else(|| issue.get("code"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if decisions.get(key) == Some(&signature) {
+                return false;
+            }
+            let file_override = metadata
+                .get("observations")
+                .and_then(Value::as_array)
+                .is_some_and(|observations| {
+                    observations.iter().any(|observation| {
+                        observation.get("label").and_then(Value::as_str) == Some("File sidecar")
+                            && observation
+                                .get("fields")
+                                .is_some_and(|fields| fields.get(key).is_some())
+                    })
+                });
+            issue["fileOverride"] = json!(file_override);
+            issue["proposalSignature"] = json!(signature);
+            true
+        });
         if health.is_empty() {
             continue;
         }

@@ -19,6 +19,14 @@ import {
 } from "@builder.io/qwik";
 import { api, readableError } from "./api";
 import { Icon } from "./icon";
+import { HealthPlayback, HealthPlayButton } from "./health-playback";
+import {
+  healthIssueKey,
+  saveHealthDecision,
+  withoutHealthEntry,
+  type HealthChoice,
+  type HealthIssueEntry,
+} from "./health-decisions";
 import type { IconName } from "./root-types";
 import {
   candidateSources,
@@ -67,28 +75,41 @@ function renderValue(value: unknown) {
   return <em class="health-unset">Not set</em>;
 }
 
-function proposedProvenance(issue: MetadataHealthIssue): string {
+function proposedProvenance(
+  issue: MetadataHealthIssue,
+  multipleFiles = false,
+): string {
   const proposed = issue.proposedValues ?? [];
   if (proposed.length === 0)
-    return "No configured source produced a value for this field, so there is nothing to propose yet.";
+    return multipleFiles
+      ? "No configured source produced values for this field in these files, so there is nothing to propose yet."
+      : "No configured source produced a value for this field, so there is nothing to propose yet.";
   const sources = quotedList([
     ...new Set(proposed.flatMap((candidate) => candidate.sources)),
   ]);
   const sentences = [
-    proposed.length > 1
-      ? `These proposed values come from ${sources || "an unidentified source"}.`
-      : `The proposed value comes from ${sources || "an unidentified source"}.`,
+    multipleFiles
+      ? `The proposed values for these files come from ${sources || "an unidentified source"}.`
+      : proposed.length > 1
+        ? `These proposed values come from ${sources || "an unidentified source"}.`
+        : `The proposed value comes from ${sources || "an unidentified source"}.`,
   ];
   if (proposed.length > 1) {
     sentences.push(
-      "The sources disagree on this field, so check the file in Review metadata before choosing one.",
+      multipleFiles
+        ? "The sources disagree on this field, so check the files in Review metadata before choosing values."
+        : "The sources disagree on this field, so check the file in Review metadata before choosing one.",
     );
   } else if (!isUnset(issue.currentValue)) {
     const current = quotedList(issue.currentSources ?? []);
     sentences.push(
-      current
-        ? `The current value comes from ${current} and differs from it, so confirm which one matches the file in Review metadata.`
-        : "A different value is already set, so confirm which one matches the file in Review metadata.",
+      multipleFiles
+        ? current
+          ? `The current values come from ${current} and differ from the proposals, so confirm which values match the files in Review metadata.`
+          : "Different values are already set, so confirm which values match the files in Review metadata."
+        : current
+          ? `The current value comes from ${current} and differs from it, so confirm which one matches the file in Review metadata.`
+          : "A different value is already set, so confirm which one matches the file in Review metadata.",
     );
   }
   return sentences.join(" ");
@@ -106,6 +127,18 @@ const SETTABLE_HEALTH_FIELDS = new Set([
 
 function isSettableField(field: string): boolean {
   return SETTABLE_HEALTH_FIELDS.has(field);
+}
+
+function editableHealthIssue(
+  issue: MetadataHealthIssue,
+  target: MetadataHealthResult,
+  canEdit: boolean,
+) {
+  return (
+    canEdit &&
+    isSettableField(issue.field ?? "") &&
+    target.mediaKind !== "podcast"
+  );
 }
 
 function asStringList(value: unknown): string[] {
@@ -540,11 +573,6 @@ const ExternalProvidersDialog = component$<{
   );
 });
 
-interface HealthIssueEntry {
-  issue: MetadataHealthIssue;
-  target: MetadataHealthResult;
-}
-
 interface GroupedIssue {
   key: string;
   issue: MetadataHealthIssue;
@@ -613,6 +641,9 @@ const HealthDecisionRow = component$<{
   entries: HealthIssueEntry[];
   album?: AlbumTarget;
   showFile: boolean;
+  sharedReason?: boolean;
+  sharedSources?: boolean;
+  multipleFiles?: boolean;
   canEdit: boolean;
   applying: boolean;
   onApply$: ApplyHealthValue;
@@ -647,14 +678,18 @@ const HealthDecisionRow = component$<{
     <tr>
       {props.showFile && (
         <th scope="row">
-          <a
-            class="health-review-link"
-            href={`?view=library&root=${encodeURIComponent(target.rootId)}&item=${encodeURIComponent(target.itemId)}`}
-          >
-            <span title={target.relativePath}>
-              {target.relativePath.split("/").at(-1)}
-            </span>
-          </a>
+          <div class="health-file-heading">
+            <a
+              class="health-review-link health-file-link"
+              href={`?view=library&root=${encodeURIComponent(target.rootId)}&item=${encodeURIComponent(target.itemId)}`}
+            >
+              <span title={target.relativePath}>
+                {target.relativePath.split("/").at(-1)}
+              </span>
+            </a>
+            <HealthPlayButton target={target} />
+          </div>
+          {issue.fileOverride && <small>Individual choice</small>}
         </th>
       )}
       <td class="health-value">
@@ -662,7 +697,7 @@ const HealthDecisionRow = component$<{
         {currents.map((candidate, index) => (
           <div class="health-candidate" key={index}>
             {valueButton(candidate.value, "Current")}
-            {!!candidate.sources.length && (
+            {!props.sharedSources && !!candidate.sources.length && (
               <small>{candidate.sources.join(" · ")}</small>
             )}
           </div>
@@ -684,14 +719,18 @@ const HealthDecisionRow = component$<{
           </p>
         )}
       </td>
-      <td class="health-provenance">
-        {[
-          ...new Set(
-            props.entries.map(({ issue }) => proposedProvenance(issue)),
-          ),
-        ].map((reason) => (
-          <p key={reason}>{reason}</p>
-        ))}
+      <td
+        class={{ "health-provenance": !props.sharedReason }}
+        hidden={props.sharedReason}
+      >
+        {!props.sharedReason &&
+          [
+            ...new Set(
+              props.entries.map(({ issue }) =>
+                proposedProvenance(issue, props.multipleFiles),
+              ),
+            ),
+          ].map((reason) => <p key={reason}>{reason}</p>)}
       </td>
     </tr>
   );
@@ -705,6 +744,9 @@ const HealthIssueReview = component$<{
   applying: boolean;
   selectedOnline?: { value: unknown; source: string };
   onApply$: ApplyHealthValue;
+  onDecision$: QRL<
+    (entry: HealthIssueEntry, choice: HealthChoice) => Promise<boolean>
+  >;
   onLookup$: QRL<
     (
       issue: MetadataHealthIssue,
@@ -714,6 +756,8 @@ const HealthIssueReview = component$<{
   >;
 }>((props) => {
   const individually = useSignal(false);
+  const bulkWorking = useSignal(false);
+  const bulkStatus = useSignal("");
   const { issue, entries } = props.grouped;
   const target = entries[0].target;
   const field = issue.field ?? "";
@@ -742,58 +786,151 @@ const HealthIssueReview = component$<{
     files.length,
     ...entries.map(({ issue }) => issue.affectedFileCount ?? 0),
   );
+  const sharedReason =
+    entries.length > 1 &&
+    entries.every(
+      (entry) => proposedProvenance(entry.issue) === proposedProvenance(issue),
+    );
+  const currentSources = (issue.currentSources ?? []).slice().sort();
+  const sharedSources =
+    entries.length > 1 &&
+    currentSources.length > 0 &&
+    entries.every(
+      (entry) =>
+        JSON.stringify((entry.issue.currentSources ?? []).slice().sort()) ===
+        JSON.stringify(currentSources),
+    );
+  const bulk$ = $(async (choice: HealthChoice) => {
+    if (bulkWorking.value || props.applying) return;
+    bulkWorking.value = true;
+    bulkStatus.value = "";
+    try {
+      const eligible = entries.filter(
+        ({ issue }) =>
+          choice === "unsure" ||
+          (!issue.fileOverride &&
+            (choice !== "proposed" || issue.proposedValues?.length === 1)),
+      );
+      const selected = (entry: HealthIssueEntry) =>
+        choice === "current"
+          ? entry.issue.currentValue
+          : entry.issue.proposedValues![0].value;
+      if (
+        choice !== "unsure" &&
+        eligible.length &&
+        album &&
+        entries.every(
+          (entry) => entry.issue.fileOverride || eligible.includes(entry),
+        ) &&
+        eligible.every(
+          (entry) =>
+            displayValue(selected(entry)) ===
+            displayValue(selected(eligible[0])),
+        ) &&
+        !isUnset(selected(eligible[0]))
+      ) {
+        await props.onApply$(
+          selected(eligible[0]),
+          choice === "current" ? "Current" : "Proposed",
+          issue,
+          target,
+          album,
+        );
+      } else {
+        for (const entry of eligible) {
+          const saved =
+            choice === "unsure" ||
+            (choice === "current" &&
+              (!compares || isUnset(entry.issue.currentValue)))
+              ? await props.onDecision$(entry, choice)
+              : await props.onApply$(
+                  selected(entry),
+                  choice === "current" ? "Current" : "Proposed",
+                  entry.issue,
+                  entry.target,
+                );
+          if (!saved) break;
+        }
+      }
+      if (eligible.length < entries.length)
+        bulkStatus.value =
+          "Individual choices were retained. Files without one clear proposal still need review.";
+    } finally {
+      bulkWorking.value = false;
+    }
+  });
   return (
     <section class="health-result-issue">
-      <div class="health-comparison">
+      <header class="health-issue-header">
+        {count > 1 && (
+          <span class="health-issue-context">
+            {groupHeading(props.group).text}
+          </span>
+        )}
         <div class="health-reason">
           <h4>{issue.title}</h4>
-          {!compares && <p>{issue.message}</p>}
         </div>
+        {count === 1 && (
+          <a
+            class="health-review-link health-file-link"
+            href={`?view=library&root=${encodeURIComponent(target.rootId)}&item=${encodeURIComponent(target.itemId)}`}
+            title={target.relativePath}
+          >
+            {files[0]}
+          </a>
+        )}
+        <div class="health-issue-actions">
+          <HealthPlayButton target={target} />
+          <button
+            type="button"
+            disabled={
+              !props.canEdit ||
+              props.applying ||
+              bulkWorking.value ||
+              entries.every((entry) => entry.issue.fileOverride)
+            }
+            onClick$={() => bulk$("current")}
+          >
+            Keep all
+          </button>
+          <button
+            type="button"
+            disabled={
+              !editableHealthIssue(issue, target, props.canEdit) ||
+              props.applying ||
+              bulkWorking.value ||
+              !entries.some(
+                (entry) =>
+                  !entry.issue.fileOverride &&
+                  entry.issue.proposedValues?.length === 1,
+              )
+            }
+            onClick$={() => bulk$("proposed")}
+          >
+            Replace all
+          </button>
+          <button
+            type="button"
+            disabled={props.applying || bulkWorking.value}
+            onClick$={() => bulk$("unsure")}
+          >
+            Unsure
+          </button>
+        </div>
+        {bulkStatus.value && <p role="status">{bulkStatus.value}</p>}
+      </header>
+      <div class="health-comparison">
+        {!compares && <p>{issue.message}</p>}
         {compares && (
           <>
-            {albumField && (
-              <div class="health-album-scope">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={individually.value}
-                    disabled={props.applying}
-                    onChange$={(_, input) =>
-                      (individually.value = input.checked)
-                    }
-                  />
-                  Edit files individually
-                </label>
-                <p>
-                  {album
-                    ? "One value for this folder and its files. Individual overrides take priority; embedded tags are retained."
-                    : "File choices override the album in Media Manager. Other apps continue to read the album sidecar."}
-                </p>
-              </div>
-            )}
-            <table
-              class={{
-                "health-issue-table": true,
-                "health-issue-table-files": !album && entries.length > 1,
-              }}
-            >
-              <colgroup>
-                {!album && entries.length > 1 && (
-                  <col class="health-file-column" />
-                )}
-                <col class="health-current-column" />
-                <col class="health-proposed-column" />
-                <col />
-              </colgroup>
+            <table class="health-issue-table">
               <caption class="sr-only">{issue.title}</caption>
-              <thead>
+              <thead class="sr-only">
                 <tr>
                   {!album && entries.length > 1 && <th scope="col">File</th>}
                   <th scope="col">Current</th>
                   <th scope="col">Proposed</th>
-                  <th scope="col" class="health-reason-heading">
-                    Reason
-                  </th>
+                  <th scope="col">Reason</th>
                 </tr>
               </thead>
               <tbody>
@@ -803,6 +940,9 @@ const HealthIssueReview = component$<{
                     entries={entries}
                     album={album}
                     showFile={false}
+                    sharedReason={sharedReason}
+                    sharedSources={sharedSources}
+                    multipleFiles={count > 1}
                     canEdit={props.canEdit}
                     applying={props.applying}
                     onApply$={props.onApply$}
@@ -813,6 +953,8 @@ const HealthIssueReview = component$<{
                       key={entry.target.itemId}
                       entries={[entry]}
                       showFile={entries.length > 1}
+                      sharedReason={sharedReason}
+                      sharedSources={sharedSources}
                       canEdit={props.canEdit}
                       applying={props.applying}
                       onApply$={props.onApply$}
@@ -821,6 +963,20 @@ const HealthIssueReview = component$<{
                 )}
               </tbody>
             </table>
+            {(sharedReason || sharedSources) && (
+              <div class="health-provenance">
+                {sharedSources &&
+                  (!sharedReason ||
+                    !issue.proposedValues?.length ||
+                    issue.proposedValues.length > 1 ||
+                    isUnset(issue.currentValue)) && (
+                    <p>
+                      Current values come from {quotedList(currentSources)}.
+                    </p>
+                  )}
+                {sharedReason && <p>{proposedProvenance(issue, true)}</p>}
+              </div>
+            )}
             {!albumField &&
               ["audiobook", "music"].includes(target.mediaKind) &&
               props.canEdit && (
@@ -858,11 +1014,29 @@ const HealthIssueReview = component$<{
           </>
         )}
       </div>
-      {count === 1 ? (
-        <p class="health-file-details">Affects 1 file: {files[0]}</p>
-      ) : (
+      {(count > 1 || (compares && albumField)) && (
         <details class="health-file-details">
-          <summary>Affects {count} files</summary>
+          <summary>
+            {count > 1 ? `Affects ${count} files` : "Files in this folder"}
+          </summary>
+          {compares && albumField && (
+            <div class="health-album-scope">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={individually.value}
+                  disabled={props.applying}
+                  onChange$={(_, input) => (individually.value = input.checked)}
+                />
+                Edit files individually
+              </label>
+              <p>
+                {album
+                  ? "One value for this folder and its files. Individual overrides take priority; embedded tags are retained."
+                  : "File choices override the album in Media Manager. Other apps continue to read the album sidecar."}
+              </p>
+            </div>
+          )}
           <p>
             {files.slice(0, MAX_GROUPED_FILES).join(", ")}
             {count > MAX_GROUPED_FILES ? "…" : ""}
@@ -889,11 +1063,14 @@ const HealthArtwork = component$<{ itemId: string }>((props) => {
   );
 });
 
-export const MetadataHealthView = component$<{
+interface MetadataHealthProps {
   roots: HealthRoot[];
   initialRootId?: string;
   canEdit?: boolean;
-}>((props) => {
+  onPlayAudio$?: QRL<(itemId: string) => void>;
+}
+
+const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
   const inbox = useStore({
     rootId: props.roots.some((root) => root.id === props.initialRootId)
       ? props.initialRootId!
@@ -923,6 +1100,31 @@ export const MetadataHealthView = component$<{
   >({});
   const feedback = useStore({ error: "", notice: "" });
   const applyingValue = useSignal(false);
+  const rememberDecision$ = $(
+    async (entry: HealthIssueEntry, choice: HealthChoice, planId?: string) => {
+      try {
+        await saveHealthDecision(entry, choice, planId);
+        const remaining = withoutHealthEntry(inbox.results, entry);
+        const removed =
+          inbox.results.reduce(
+            (count, result) => count + result.health.length,
+            0,
+          ) -
+          remaining.reduce((count, result) => count + result.health.length, 0);
+        inbox.results = remaining;
+        inbox.issueCount = Math.max(0, inbox.issueCount - removed);
+        if (choice === "unsure")
+          feedback.notice =
+            "Hidden until the proposed values or sources change.";
+        else if (choice === "current")
+          feedback.notice = "The current values were retained.";
+        return true;
+      } catch (cause) {
+        feedback.error = readableError(cause);
+        return false;
+      }
+    },
+  );
 
   const inspectLibraries = $(async (rootId: string) => {
     const revision = ++requestRevision.value;
@@ -1057,6 +1259,33 @@ export const MetadataHealthView = component$<{
           method: "POST",
           headers: { "if-match": `"${preview.digest}"` },
         });
+        const decided = album
+          ? inbox.results
+              .filter(
+                (result) =>
+                  result.rootId === album.rootId &&
+                  result.albumGroup === album.path,
+              )
+              .flatMap((result) =>
+                result.health
+                  .filter(
+                    (candidate) =>
+                      !candidate.fileOverride &&
+                      healthIssueKey(candidate) === healthIssueKey(issue),
+                  )
+                  .map((candidate) => ({ issue: candidate, target: result })),
+              )
+          : [{ issue, target }];
+        for (const entry of decided) {
+          if (
+            !(await rememberDecision$(
+              entry,
+              origin === "Current" ? "current" : "proposed",
+              preview.id,
+            ))
+          )
+            return false;
+        }
         feedback.notice = `The ${origin.toLowerCase()} “${field}” value was queued for ${album ? "this album" : "this file"}. See Activity to revisit the decision.`;
         return true;
       } catch (error) {
@@ -1190,6 +1419,7 @@ export const MetadataHealthView = component$<{
                       onlineSelections[`${group.key}:${grouped.key}`]
                     }
                     onApply$={applyValue$}
+                    onDecision$={rememberDecision$}
                     onLookup$={(issue, target, primary) => {
                       providersDialogFor.value = {
                         issue,
@@ -1246,3 +1476,9 @@ export const MetadataHealthView = component$<{
     </section>
   );
 });
+
+export const MetadataHealthView = component$<MetadataHealthProps>((props) => (
+  <HealthPlayback onPlayAudio$={props.onPlayAudio$}>
+    <MetadataHealthContent {...props} />
+  </HealthPlayback>
+));

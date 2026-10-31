@@ -725,6 +725,9 @@ export default component$((props: RootProps) => {
             )}
             initialRootId={route.initialRootId}
             canEdit={state.session?.canEdit ?? false}
+            onPlayAudio$={(itemId) => {
+              state.miniPlayerItemId = itemId;
+            }}
           />
         ) : view.value === "conversions" ? (
           <ConversionsView initial={state.conversions} />

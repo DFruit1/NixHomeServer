@@ -317,6 +317,10 @@ pub fn router(state: AppState) -> Router {
             get(metadata_handlers::metadata_issues),
         )
         .route(
+            "/api/v1/items/{item_id}/metadata/health-decisions",
+            post(metadata_handlers::save_health_decision),
+        )
+        .route(
             "/api/v1/folders/metadata",
             get(metadata_handlers::folder_metadata),
         )

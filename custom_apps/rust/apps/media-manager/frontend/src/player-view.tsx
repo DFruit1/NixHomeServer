@@ -222,7 +222,7 @@ export const PlayerView = component$<{
   // pre-selects the first track) so the stream URL is actually set. Reveal the
   // track's album so the linked song, not just the album grid, is in view.
   useVisibleTask$(
-    ({ track }) => {
+    async ({ track }) => {
       track(() => playerState.loading);
       track(() => props.initialItemId);
       track(() => props.initialPath);
@@ -236,15 +236,34 @@ export const PlayerView = component$<{
       if (playerState.loading || initialTargetApplied.value === targetKey) {
         return;
       }
-      const index = findTargetIndex(
+      let index = findTargetIndex(
         playerState.tracks,
         requestId || props.initialItemId,
         requestId ? undefined : props.initialPath,
       );
+      if (index < 0 && requestId) {
+        initialTargetApplied.value = targetKey;
+        try {
+          const item = await api<CatalogItem>(
+            `/items/${encodeURIComponent(requestId)}`,
+          );
+          if (props.state.miniPlayerItemId !== requestId) return;
+          if (item.mediaKind !== "music" && item.mediaKind !== "audiobook") {
+            throw new Error("This file is not playable audio.");
+          }
+          index = playerState.tracks.length;
+          playerState.tracks = [...playerState.tracks, item];
+        } catch (cause) {
+          playerState.error = readableError(cause);
+          props.state.miniPlayerItemId = "";
+          return;
+        }
+      }
       if (index < 0) {
         return;
       }
       initialTargetApplied.value = targetKey;
+      if (requestId) pipEnabled.value = true;
       const target = playerState.tracks[index];
       const albumDir = target.relativePath.split("/").slice(0, -1).join("/");
       if (albumDir) {
