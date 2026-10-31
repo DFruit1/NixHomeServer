@@ -32,9 +32,15 @@ let
       # Match the SDK's verified offline manifest; inference gets a read-only
       # model directory and never downloads or replaces weights itself.
       mkdir -p .dal-meta
-      printf 'DAL1\nR\teye.tflite\nR\teye_meta.json\nF\teye.tflite\t66038240\t25ba485c959a47961ac9243e74e6ad4997bfc88e1267f62aa88827fc9d92894b\nF\teye_meta.json\t280890\t3678669c840378bca191250597e3a77e5b478e12d3e70c48f827b860551f791c' > .dal-meta/manifest
+      # A pre-existing SDK manifest can belong to the earlier interactive user.
+      # Publish through our directory rather than truncating that user's file.
+      manifest_tmp=$(mktemp .dal-meta/.manifest.XXXXXX)
+      trap 'rm -f -- "$manifest_tmp"' EXIT
+      printf 'DAL1\nR\teye.tflite\nR\teye_meta.json\nF\teye.tflite\t66038240\t25ba485c959a47961ac9243e74e6ad4997bfc88e1267f62aa88827fc9d92894b\nF\teye_meta.json\t280890\t3678669c840378bca191250597e3a77e5b478e12d3e70c48f827b860551f791c' > "$manifest_tmp"
       chmod 0755 .dal-meta
-      chmod 0644 .dal-meta/manifest
+      chmod 0644 "$manifest_tmp"
+      mv -- "$manifest_tmp" .dal-meta/manifest
+      trap - EXIT
     '';
   };
 in
@@ -55,7 +61,6 @@ in
       "d ${vars.dataRoot}/eye 0755 media-manager-eye media-manager-eye - -"
       "d ${models} 0755 media-manager-eye media-manager-eye - -"
       "d ${models}/.dal-meta 0755 media-manager-eye media-manager-eye - -"
-      "z ${models}/.dal-meta/manifest 0644 media-manager-eye media-manager-eye - -"
     ];
     systemd.services.media-manager-eye-model-prepare = {
       description = "Verify pinned EYE weights on the data pool";
