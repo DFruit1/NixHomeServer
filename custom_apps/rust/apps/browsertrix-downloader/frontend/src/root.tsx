@@ -36,14 +36,18 @@ export default component$(()=>{
   });
   return <main class="shell" id="main"><a class="skip-link" href="#workspace">Skip to workspace</a>
     <header class="toolbar"><a class="brand" href="/"><h1><span>Web</span> Archives</h1></a><div class="toolbar-user"><span>{me.value?.username||''}</span><a href="/oauth2/sign_out">Log out</a></div></header>
-    <nav class="main-nav" aria-label="Main"><a class="button" href="/" aria-current={!archiveId.value&&view.value==='library'?'page':undefined}>Library</a><a class="button primary" href="/?view=capture" aria-current={!archiveId.value&&view.value==='capture'?'page':undefined}>New capture</a><a class="button" href="/?view=automation" aria-current={!archiveId.value&&view.value==='automation'?'page':undefined}>Recipes & schedules</a></nav>
+    <nav class="main-nav" aria-label="Main"><a class="nav-link" href="/" aria-current={!archiveId.value&&view.value==='library'?'page':undefined}>Library</a><a class="nav-link" href="/?view=automation" aria-current={!archiveId.value&&view.value==='automation'?'page':undefined}>Recipes & schedules</a><a class="button primary capture-link" href="/?view=capture" aria-current={!archiveId.value&&view.value==='capture'?'page':undefined}>New capture</a></nav>
     {!booted.value&&<p role="status">Loading your archive workspace…</p>}
     {authError.value&&<section class="panel"><p class="error" role="alert">Authentication or session refresh failed: {authError.value}</p><p>Archive data is hidden until your session is verified.</p><button type="button" disabled={busy.value} onClick$={refresh}>Retry session</button></section>}
     {me.value&&<div id="workspace" class="workspace" key={me.value.username}>
       {archiveId.value?<ArchiveDetail id={archiveId.value} username={me.value.username} initialUrl={targetUrl.value} initialTs={targetTs.value}/>:view.value==='capture'?<CaptureForm key={editing.value?.id||'new'} initial={editing.value?.request} recipe={editing.value} onQueued$={refresh}/>:view.value==='automation'?<Automation onQueued$={refresh} onEdit$={$((recipe:Recipe)=>{editing.value=recipe;view.value='capture';window.history.replaceState({},'','/?view=capture');window.scrollTo({top:0,behavior:'instant'});})}/>:<Library/>}
       <Jobs jobs={jobs.value} error={jobError.value} loading={busy.value} onRefresh$={refresh}/>
-      {(zims.value||zimError.value)&&<section class="panel" aria-labelledby="kiwix-title"><div class="section-head"><h2 id="kiwix-title">Kiwix archives</h2>{safeExternal(zims.value?.readerUrl)&&<a class="button" href={safeExternal(zims.value?.readerUrl)} target="_blank" rel="noopener noreferrer">Open Kiwix reader</a>}</div>{zimError.value&&<p class="warning" role="alert">Kiwix refresh failed: {zimError.value}. {zims.value?'Showing last received listing.':'No listing available.'}</p>}{zims.value?.zims.length===0&&<p class="hint">No ZIM archives are available.</p>}{zims.value?.zims.map(z=><article class="list-row" key={z.name}><div class="row-head"><strong class="break">{z.name}</strong><span>{bytes(z.bytes)}</span></div><a class="button" href={`/api/zims/${segment(z.name)}?download=1`}>Download ZIM</a></article>)}</section>}
+      {(zims.value||zimError.value)&&<details class="auxiliary kiwix"><summary>Kiwix archives{zimError.value&&<span class="summary-status">Listing unavailable</span>}</summary>
+        {safeExternal(zims.value?.readerUrl)&&<p><a href={safeExternal(zims.value?.readerUrl)} target="_blank" rel="noopener noreferrer">Open Kiwix reader ↗</a></p>}
+        {zimError.value&&<p class="warning" role="alert">Could not refresh Kiwix: {zimError.value}. {zims.value?'Showing the previous listing.':'Try refreshing the page.'}</p>}
+        {zims.value?.zims.length===0&&<p class="hint">No Kiwix archives available.</p>}
+        {zims.value?.zims.map(z=><div class="zim-row" key={z.name}><span class="break">{z.name}</span><span class="hint">{bytes(z.bytes)}</span><a href={`/api/zims/${segment(z.name)}?download=1`} aria-label={`Download ${z.name}`}>Download</a></div>)}
+      </details>}
     </div>}
-    <footer><p>Archived content can be incomplete. File integrity, replay fidelity and coverage are separate checks.</p></footer>
   </main>;
 });

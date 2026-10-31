@@ -13,12 +13,12 @@ export const Coverage = component$<{id:string}>(({id})=>{
       .finally(()=>{if(!abort.signal.aborted)busy.value=false;});
   });
   return <section aria-labelledby="coverage-title"><h3 id="coverage-title">Coverage & omissions</h3>
-    <p class="hint">These saved receipts distinguish skipped pages, intentional resource omissions and captured HTTP errors. An empty receipt does not establish complete website coverage.</p>
-    <Feedback error={error.value} pending={busy.value?'Loading coverage receipts…':''}/>
+    <p class="hint">Skipped pages, omitted resources and captured errors. This list may not include every missed page.</p>
+    <Feedback error={error.value} pending={busy.value?'Loading coverage…':''}/>
     {error.value&&<button type="button" disabled={busy.value} onClick$={()=>revision.value++}>Retry coverage</button>}
     {error.value&&data.value&&<p class="warning">Coverage is stale; the latest request failed.</p>}
     {data.value?.items.map((row,i)=><article class="list-row" key={`${data.value?.offset}:${i}`}><h4>{row.kind.replaceAll('-',' ')}</h4>{row.url&&<p class="break">{row.url}</p>}<p>{row.reason}</p>{row.status!=null&&<p class="hint">Captured HTTP status: {row.status}</p>}</article>)}
-    {data.value&&!data.value.items.length&&<p>No saved coverage receipts were reported for this capture.</p>}
+    {data.value&&!data.value.items.length&&<p>No coverage information recorded for this capture.</p>}
     {data.value&&<Pager offset={data.value.offset} limit={data.value.limit} total={data.value.total} busy={busy.value} onPage$={$((n:number)=>offset.value=n)}/>}
   </section>;
 });
