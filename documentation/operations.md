@@ -565,6 +565,96 @@ integral safety checks of explicitly requested deploy/release operations.
 - External USB media auto-mount root: `/mnt/external-usb/` (drives mount on insertion; shared `_USB` view at `/mnt/usb-access-view` is gated to `usb-access`)
 - Guarded server shutdown from the desktop: `scripts/admin/desktop-server-shutdown.sh`
 
+## Void desktop boot timing
+
+The administrator's desktop uses Void/runit and Niri. It is separate from the
+NixOS server; `systemd-analyze` and the NixOS deployment helper do not apply.
+[`desktop-boot-setup.sh`](../scripts/admin/desktop-boot-setup.sh) sets
+`GRUB_TIMEOUT=1`, regenerates and syntax-checks the menu before replacing it,
+and installs two passive timestamp hooks in `/etc/runit/core-services/`.
+It backs up both GRUB files and any existing owned hooks under
+`/var/backups/desktop-boot/change.*`, restoring them on an ordinary command
+failure. It does not reboot or change the bootloader installation.
+
+Install from this checkout:
+
+```bash
+sudo scripts/admin/desktop-boot-setup.sh
+install -m 0755 scripts/admin/desktop-boot-timing.py ~/.local/bin/desktop-boot-timing
+```
+
+Add this startup command once in `~/.config/niri/config.kdl`, using the actual
+absolute home path if installing on another desktop:
+
+```kdl
+spawn-at-startup "/home/dsaw/.local/bin/desktop-boot-timing" "mark-session"
+```
+
+Validate with `niri validate`, then reboot when convenient. The hooks record
+Linux uptime after pseudo-filesystem setup and before runit's final boot-log
+capture/cleanup. Their difference measures the intervening core initialization
+(including udev settling, filesystem checks and mounts). The session marker
+records when Niri dispatches startup commands; it does **not** establish that the
+shell, network or applications are ready. The tool uses existing Python 3 and
+its standard library for `/proc` parsing and JSON, without a resident service.
+
+After each boot, run the ready marker as soon as the desktop feels usable:
+
+```bash
+desktop-boot-timing mark-ready
+desktop-boot-timing report
+desktop-boot-timing history
+```
+
+Reports and first-per-boot markers persist under
+`${XDG_STATE_HOME:-~/.local/state}/desktop-boot-timing/<boot-id>/`. Missing
+measurements show as `not recorded`; installation during an existing session
+cannot recover its earlier hooks. The report also lists live process creation
+times from `/proc/<pid>/stat` for runsvdir, greetd, Niri, Noctalia and T3. A
+restart replaces that process's original creation time, so these values are
+clues, not readiness measurements or proof of a slow initial boot. Capture a
+report soon after boot, before restarting applications.
+
+For kernel and driver investigation, collect raw monotonic timestamps and look
+for gaps without changing kernel logging or filesystem checks:
+
+```bash
+sudo dmesg --color=never | desktop-boot-timing kernel-gaps
+sudo less /var/log/dmesg.log
+```
+
+The first command ranks gaps between available messages in the first 120
+seconds. A gap is a lead to investigate; the message following it is not
+necessarily its cause, and a truncated ring buffer cannot recover old messages.
+The second is Void's stage-one kernel-log snapshot. It is captured before the
+graphical session starts.
+
+Niri starts Noctalia as the wallpaper provider; keep the old `swaybg` startup
+command removed to avoid decoding and retaining a second wallpaper image.
+Verify the provider with `niri msg layers`: `noctalia-wallpaper` should be present
+without a second `wallpaper` surface. Noctalia v5 uses TOML configuration and
+state overrides; the older `~/.config/noctalia/settings.json` is not its active
+configuration. Use `noctalia config export full` for local inspection and
+`noctalia config validate` before tuning; exports may contain private settings
+and must not be committed wholesale.
+
+Linux timestamps exclude firmware and GRUB. Use a phone recording or stopwatch
+from power-on to the GRUB menu, kernel start and usable desktop to measure those
+segments. Compare three similar cold boots, separately from warm reboots, with
+the same peripherals and network. Firmware and initramfs are not individually
+measured by the passive hooks. Keep checks enabled; do not disable fsck or udev
+settling based solely on a gap.
+
+To undo, remove the two `*-desktop-boot-timing.sh` hooks installed by the setup
+script and the Niri startup line, and remove `~/.local/bin/desktop-boot-timing`.
+Restore `/etc/default/grub` from the selected backup and regenerate the menu
+with `sudo grub-mkconfig -o /boot/grub/grub.cfg`; this accounts for kernels
+installed since the backup. Historical reports can be retained.
+
+References: [Void startup configuration](https://docs.voidlinux.org/config/rc-files.html),
+[GRUB timeout configuration](https://www.gnu.org/software/grub/manual/grub/html_node/Simple-configuration.html),
+and [Linux process start timestamps](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html).
+
 ## Deploy Archive Staging Rollout (human-gated)
 
 Remote archive upload requires
