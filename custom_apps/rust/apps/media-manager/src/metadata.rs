@@ -1400,22 +1400,82 @@ pub fn merge_managed_sidecar(existing: &str, generated: &str) -> Result<String, 
         .rfind("</")
         .map(|offset| target_range.start + offset)
         .ok_or_else(|| "metadata container has no closing tag".to_string())?;
-    let mut preserved = existing[opening_end + 1..closing_start].to_string();
-    let mut managed_ranges = existing_target
-        .children()
-        .filter(|node| node.is_element() && is_managed_element(*node, existing_root))
-        .map(|node| {
-            let range = node.range();
-            (range.start - opening_end - 1)..(range.end - opening_end - 1)
-        })
-        .collect::<Vec<_>>();
-    managed_ranges.sort_by_key(|range| range.start);
-    for range in managed_ranges.into_iter().rev() {
-        preserved.replace_range(range, "");
-    }
-    let generated_children = generated_target
+    let is_opf = existing_root
+        .tag_name()
+        .name()
+        .eq_ignore_ascii_case("package");
+    let mut replacements = Vec::new();
+    let mut generated_nodes = generated_target
         .children()
         .filter(|node| node.is_element() && is_managed_element(*node, generated_root))
+        .collect::<Vec<_>>();
+    for node in existing_target
+        .children()
+        .filter(|node| node.is_element() && is_managed_element(*node, existing_root))
+    {
+        // Publication identifiers belong to the publication, including the
+        // package's unique-identifier. Provider identifiers may be added.
+        if is_opf && node.tag_name().name() == "identifier" {
+            continue;
+        }
+        if is_opf && node.tag_name().name() == "meta" && node.attribute("id").is_some() {
+            return Err(
+                "OPF managed meta with an ID cannot be rewritten unambiguously".to_string(),
+            );
+        }
+        let replacement = if is_opf
+            && node.tag_name().name() != "meta"
+            && node.attributes().len() > 0
+        {
+            let candidates = generated_nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, candidate)| candidate.tag_name() == node.tag_name())
+                .collect::<Vec<_>>();
+            let existing_count = existing_target
+                .children()
+                .filter(|candidate| {
+                    candidate.is_element() && candidate.tag_name() == node.tag_name()
+                })
+                .count();
+            if existing_count != 1
+                || candidates.len() != 1
+                || node.children().any(|child| child.is_element())
+            {
+                return Err("OPF attributed metadata cannot be rewritten unambiguously".to_string());
+            }
+            let index = candidates[0].0;
+            let value = generated_nodes.remove(index);
+            let original = &existing[node.range()];
+            let start = original.find('>').ok_or("invalid OPF element")?;
+            let end = original
+                .rfind("</")
+                .ok_or("cannot rewrite an empty attributed OPF element")?;
+            format!(
+                "{}{}{}",
+                &original[..=start],
+                value
+                    .text()
+                    .unwrap_or("")
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;"),
+                &original[end..]
+            )
+        } else {
+            String::new()
+        };
+        replacements.push((node.range(), replacement));
+    }
+    let mut preserved = existing[opening_end + 1..closing_start].to_string();
+    for (range, replacement) in replacements.into_iter().rev() {
+        preserved.replace_range(
+            (range.start - opening_end - 1)..(range.end - opening_end - 1),
+            &replacement,
+        );
+    }
+    let generated_children = generated_nodes
+        .into_iter()
         .map(|node| generated[node.range()].trim().to_string())
         .collect::<Vec<_>>()
         .join("\n  ");
@@ -1439,7 +1499,32 @@ pub fn merge_managed_sidecar(existing: &str, generated: &str) -> Result<String, 
         "{opening}\n  {generated_children}{preserved}{}",
         &existing[closing_start..]
     );
-    Document::parse(&merged).map_err(|error| format!("merged sidecar is invalid XML: {error}"))?;
+    let document = Document::parse(&merged)
+        .map_err(|error| format!("merged sidecar is invalid XML: {error}"))?;
+    if is_opf {
+        let mut ids = std::collections::BTreeSet::new();
+        for node in document.descendants().filter(|node| node.is_element()) {
+            if let Some(id) = node.attribute("id") {
+                if !ids.insert(id) {
+                    return Err("OPF has duplicate metadata IDs".to_string());
+                }
+            }
+        }
+        for node in document.descendants().filter(|node| node.is_element()) {
+            for reference in [
+                node.attribute("unique-identifier"),
+                node.attribute("refines")
+                    .and_then(|value| value.strip_prefix('#')),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if !ids.contains(reference) {
+                    return Err(format!("OPF has dangling reference: {reference}"));
+                }
+            }
+        }
+    }
     Ok(merged)
 }
 
@@ -1621,6 +1706,24 @@ mod tests {
         assert_eq!(fields["title"], "Book");
         assert_eq!(fields["authors"][0], "Author");
         assert_eq!(fields["series"], "Series");
+    }
+
+    // A dangling publication identity/refinement can corrupt every ordinary
+    // metadata edit of the user's EPUB; retain permanent regression coverage.
+    #[test]
+    fn opf_rewrite_preserves_publication_identity_and_refinements() {
+        let old = r##"<package unique-identifier="book-id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="book-id">urn:book:1</dc:identifier><dc:creator id="author" role="aut">Old</dc:creator><meta refines="#author" property="role">aut</meta></metadata></package>"##;
+        let new = r#"<package><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>New &amp; Co</dc:creator></metadata></package>"#;
+        let merged = merge_managed_sidecar(old, new).expect("safe rewrite");
+        assert!(merged.contains("id=\"book-id\">urn:book:1"));
+        assert!(merged.contains("id=\"author\" role=\"aut\">New &amp; Co"));
+        assert!(merged.contains("refines=\"#author\""));
+        assert!(merge_managed_sidecar(&old.replace("#author", "#missing"), new).is_err());
+        assert!(merge_managed_sidecar(
+            old,
+            &new.replace("</metadata>", "<dc:creator>Other</dc:creator></metadata>")
+        )
+        .is_err());
     }
 
     #[test]
