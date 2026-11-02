@@ -393,6 +393,33 @@ pub fn move_destination_matches(
 ) -> Result<bool, BrokerError> {
     let identity = Identity::try_new(username, ["users"])
         .map_err(|_| BrokerError::new("plan owner is not a safe identity component"))?;
+    // A matching destination alone is not proof of a completed rename: size
+    // and mtime can collide with an unrelated file. A live source is a conflict.
+    let source_root = config
+        .resolve_visible_root(&identity, &action.source_root_id)
+        .ok_or_else(|| BrokerError::new("source root ID is not registered"))?;
+    let (source_parent, source_leaf) = safe_parent_and_leaf(&action.source_relative_path)?;
+    let source_root_fd = open_root(Path::new(&source_root.resolved_path))?;
+    let source_parent_fd = open_directory_chain(source_root_fd.as_raw_fd(), &source_parent, false)?;
+    let source_name = c_string(source_leaf)?;
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let exists = unsafe {
+        libc::fstatat(
+            source_parent_fd.as_raw_fd(),
+            source_name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if exists == 0 {
+        return Ok(false);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() != Some(libc::ENOENT) {
+        return Err(BrokerError::new(format!(
+            "inspect recovery source: {error}"
+        )));
+    }
     let destination_root = config
         .resolve_visible_root(&identity, &action.destination_root_id)
         .ok_or_else(|| BrokerError::new("destination root ID is not registered"))?;

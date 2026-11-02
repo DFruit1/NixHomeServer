@@ -39,16 +39,34 @@ fn run() -> Result<(), String> {
         .claim_discardable_preview_action(unix_timestamp())
         .map_err(|error| format!("claim expired preview cleanup: {error}"))?
     {
-        discard_staged_broker_action(&config, &expired.action)
-            .map_err(|error| format!("clean expired preview staging: {error}"))?;
-        catalog
-            .complete_discarded_preview_action(&expired.plan_id, expired.ordinal)
-            .map_err(|error| format!("record expired preview cleanup: {error}"))?;
-        log(
-            "info",
-            "discardable_preview_cleaned",
-            json!({ "planId": expired.plan_id, "ordinal": expired.ordinal }),
-        );
+        match discard_staged_broker_action(&config, &expired.action) {
+            Ok(()) => {
+                catalog
+                    .complete_discarded_preview_action(&expired.plan_id, expired.ordinal)
+                    .map_err(|error| format!("record expired preview cleanup: {error}"))?;
+                log(
+                    "info",
+                    "discardable_preview_cleaned",
+                    json!({ "planId": expired.plan_id, "ordinal": expired.ordinal }),
+                );
+            }
+            Err(error) => {
+                catalog
+                    .defer_discarded_preview_action(
+                        &expired.plan_id,
+                        expired.ordinal,
+                        &error.to_string(),
+                    )
+                    .map_err(|error| format!("defer conflicting preview cleanup: {error}"))?;
+                // Cleanup is best-effort. Preserve mismatched staging and allow
+                // unrelated confirmed mutations to make progress.
+                log(
+                    "error",
+                    "discardable_preview_cleanup_failed",
+                    json!({ "planId": expired.plan_id, "ordinal": expired.ordinal, "error": error.to_string() }),
+                );
+            }
+        }
     }
     let Some(plan) = catalog
         .claim_or_resume_mutation_plan()
@@ -63,14 +81,17 @@ fn run() -> Result<(), String> {
         json!({ "planId": plan.id, "actionCount": plan.actions.len() }),
     );
     for claimed in &plan.actions {
-        let already_applied = recover_broker_action(&config, &plan.owner_username, &claimed.action)
-            .map_err(|error| format!("verify action recovery state: {error}"))?;
-        let result = if already_applied {
-            Ok(())
-        } else {
-            apply_broker_action(&config, &plan.owner_username, &claimed.action)
-                .map_err(|error| error.to_string())
-        };
+        let recovery = recover_broker_action(&config, &plan.owner_username, &claimed.action)
+            .map_err(|error| format!("verify action recovery state: {error}"));
+        let already_applied = matches!(recovery, Ok(true));
+        let result = recovery.and_then(|applied| {
+            if applied {
+                Ok(())
+            } else {
+                apply_broker_action(&config, &plan.owner_username, &claimed.action)
+                    .map_err(|error| error.to_string())
+            }
+        });
         if let Err(error) = result {
             catalog
                 .finish_mutation_plan(&plan.id, Some(&error))

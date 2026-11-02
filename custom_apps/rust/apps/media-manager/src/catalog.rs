@@ -1029,6 +1029,7 @@ impl Catalog {
                    FROM mutation_plans AS plan
                    JOIN mutation_actions AS action ON action.plan_id = plan.id
                   WHERE plan.state IN ('expired', 'rejected') AND action.state = 'pending'
+                    AND action.error IS NULL
                   ORDER BY plan.expires_at, plan.created_at, plan.id, action.ordinal
                   LIMIT 1",
                 [],
@@ -1051,6 +1052,24 @@ impl Catalog {
             .optional()?;
         transaction.commit()?;
         Ok(action)
+    }
+
+    /// Preserve conflicting staging for operator inspection, without starving
+    /// automatic cleanup. Clearing this action's error explicitly retries it.
+    pub fn defer_discarded_preview_action(
+        &self,
+        plan_id: &str,
+        ordinal: usize,
+        error: &str,
+    ) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE mutation_actions SET error = ?3
+             WHERE plan_id = ?1 AND ordinal = ?2 AND state = 'pending'
+             AND EXISTS (SELECT 1 FROM mutation_plans
+                         WHERE id = ?1 AND state IN ('expired', 'rejected'))",
+            rusqlite::params![plan_id, ordinal as i64, error],
+        )?;
+        Ok(())
     }
 
     pub fn complete_discarded_preview_action(
