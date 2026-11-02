@@ -845,8 +845,7 @@ async fn items_with_video_probes(
         if pending {
             // Return the snapshot immediately; one bounded worker fills misses.
             // Polling schedules the next batch if this slot is currently busy.
-            static REFRESH_LIMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
-            if let Ok(permit) = REFRESH_LIMIT.try_acquire() {
+            if let Ok(permit) = crate::video_probe::PROBE_LIMIT.try_acquire() {
                 tokio::task::spawn_blocking(move || {
                     let _permit = permit;
                     let mut cache = VideoProbeCache::open_for_root(

@@ -9,6 +9,8 @@ use std::{
 
 const PROBE_CACHE_SCHEMA_VERSION: i64 = 1;
 const MAX_PROBES_PER_REFRESH: usize = 50;
+pub static PROBE_LIMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -261,6 +263,8 @@ fn parse_fps(value: &str) -> Option<f64> {
 struct CachedProbe {
     fingerprint: String,
     probe: Option<VideoProbe>,
+    #[serde(default)]
+    attempted_at: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -274,6 +278,13 @@ pub struct VideoProbeCache {
     path: PathBuf,
     changed: BTreeSet<String>,
     entries: BTreeMap<String, CachedProbe>,
+}
+
+fn probe_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 impl VideoProbeCache {
@@ -312,9 +323,12 @@ impl VideoProbeCache {
     }
 
     pub fn has_probe(&self, relative_path: &str, fingerprint: &str) -> bool {
-        self.entries
-            .get(relative_path)
-            .is_some_and(|entry| entry.fingerprint == fingerprint)
+        self.entries.get(relative_path).is_some_and(|entry| {
+            entry.fingerprint == fingerprint
+                && (entry.probe.is_some()
+                    || (entry.attempted_at != 0
+                        && probe_timestamp().saturating_sub(entry.attempted_at) < 300))
+        })
     }
 
     pub fn set(&mut self, relative_path: &str, fingerprint: &str, probe: Option<VideoProbe>) {
@@ -324,6 +338,7 @@ impl VideoProbeCache {
             CachedProbe {
                 fingerprint: fingerprint.to_string(),
                 probe,
+                attempted_at: probe_timestamp(),
             },
         );
     }

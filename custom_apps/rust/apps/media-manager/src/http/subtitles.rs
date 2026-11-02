@@ -361,11 +361,40 @@ async fn probe_for_video(
     let item_id = item.id.clone();
     let request_id_for_probe = request_id.clone();
     let item_id_for_probe = item_id.clone();
+    // Warm and backed-off results need no encoder slot. Recheck inside the
+    // slot below so concurrent cold callers share the first persisted result.
+    let cached = tokio::task::spawn_blocking({
+        let state_dir = state_dir.clone();
+        let root_id = root_id.clone();
+        let root_path = root_path.clone();
+        let relative_path = relative_path.clone();
+        let fingerprint = fingerprint.clone();
+        move || {
+            let cache =
+                VideoProbeCache::open_for_root(&state_dir, &root_id, FilePath::new(&root_path));
+            cache
+                .has_probe(&relative_path, &fingerprint)
+                .then(|| cache.probe_for(&relative_path, &fingerprint))
+        }
+    })
+    .await
+    .ok()?;
+    if let Some(probe) = cached {
+        return probe;
+    }
+    let permit = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        crate::video_probe::PROBE_LIMIT.acquire(),
+    )
+    .await
+    .ok()?
+    .ok()?;
     match tokio::task::spawn_blocking(move || {
         let mut cache =
             VideoProbeCache::open_for_root(&state_dir, &root_id, FilePath::new(&root_path));
-        if let Some(probe) = cache.probe_for(&relative_path, &fingerprint) {
-            return Some(probe);
+        let _permit = permit;
+        if cache.has_probe(&relative_path, &fingerprint) {
+            return cache.probe_for(&relative_path, &fingerprint);
         }
         let probe = match probe_video_beneath(
             FilePath::new(&ffprobe),
@@ -966,82 +995,91 @@ pub(super) async fn installed_subtitle_content(
         Some(root) => root,
         None => return ApiError::internal(request_id).into_response(),
     };
-    let mut file = match open_regular_file_beneath(
-        FilePath::new(&root.resolved_path),
-        &subtitle.relative_path,
-    ) {
-        Ok(file) => file,
-        Err(_) => {
+    let worker_request_id = request_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        let request_id = worker_request_id;
+        let mut file = match open_regular_file_beneath(
+            FilePath::new(&root.resolved_path),
+            &subtitle.relative_path,
+        ) {
+            Ok(file) => file,
+            Err(_) => {
+                return ApiError::new(
+                    StatusCode::CONFLICT,
+                    "subtitle_file_missing",
+                    "The installed subtitle is no longer available.",
+                    request_id,
+                )
+                .into_response()
+            }
+        };
+        let mut bytes = Vec::new();
+        if file
+            .by_ref()
+            .take(MAX_SUBTITLE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .is_err()
+            || bytes.is_empty()
+            || bytes.len() > MAX_SUBTITLE_BYTES
+            || bytes.contains(&0)
+        {
             return ApiError::new(
-                StatusCode::CONFLICT,
-                "subtitle_file_missing",
-                "The installed subtitle is no longer available.",
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "subtitle_file_invalid",
+                "The installed subtitle is empty, binary, or too large to preview.",
                 request_id,
             )
-            .into_response()
+            .into_response();
         }
-    };
-    let mut bytes = Vec::new();
-    if file
-        .by_ref()
-        .take(MAX_SUBTITLE_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .is_err()
-        || bytes.is_empty()
-        || bytes.len() > MAX_SUBTITLE_BYTES
-        || bytes.contains(&0)
+        let text = match std::str::from_utf8(&bytes) {
+            Ok(text) => text,
+            Err(_) => {
+                return ApiError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "subtitle_encoding_unsupported",
+                    "Installed subtitle previews require UTF-8 text encoding.",
+                    request_id,
+                )
+                .into_response()
+            }
+        };
+        let format = subtitle
+            .relative_path
+            .rsplit_once('.')
+            .map(|(_, extension)| extension.to_ascii_lowercase())
+            .unwrap_or_default();
+        let cues = match parse_subtitle(&format, text) {
+            Ok(cues) => cues,
+            Err(_) => {
+                return ApiError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "subtitle_syntax_invalid",
+                    "The installed subtitle could not be parsed.",
+                    request_id,
+                )
+                .into_response()
+            }
+        };
+        const MAX_PREVIEW_CUES: usize = 40;
+        let validation = subtitle_validation(&cues);
+        let truncated = cues.len() > MAX_PREVIEW_CUES;
+        Json(json!({
+            "source": "installed",
+            "itemId": subtitle.id,
+            "relativePath": subtitle.relative_path,
+            "format": format,
+            "cues": cues.into_iter().take(MAX_PREVIEW_CUES).collect::<Vec<_>>(),
+            "truncated": truncated,
+            "validation": validation,
+            "requestId": request_id,
+        }))
+        .into_response()
+    })
+    .await
     {
-        return ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "subtitle_file_invalid",
-            "The installed subtitle is empty, binary, or too large to preview.",
-            request_id,
-        )
-        .into_response();
+        Ok(response) => response,
+        Err(_) => ApiError::internal(request_id).into_response(),
     }
-    let text = match std::str::from_utf8(&bytes) {
-        Ok(text) => text,
-        Err(_) => {
-            return ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "subtitle_encoding_unsupported",
-                "Installed subtitle previews require UTF-8 text encoding.",
-                request_id,
-            )
-            .into_response()
-        }
-    };
-    let format = subtitle
-        .relative_path
-        .rsplit_once('.')
-        .map(|(_, extension)| extension.to_ascii_lowercase())
-        .unwrap_or_default();
-    let cues = match parse_subtitle(&format, text) {
-        Ok(cues) => cues,
-        Err(_) => {
-            return ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "subtitle_syntax_invalid",
-                "The installed subtitle could not be parsed.",
-                request_id,
-            )
-            .into_response()
-        }
-    };
-    const MAX_PREVIEW_CUES: usize = 40;
-    let validation = subtitle_validation(&cues);
-    let truncated = cues.len() > MAX_PREVIEW_CUES;
-    Json(json!({
-        "source": "installed",
-        "itemId": subtitle.id,
-        "relativePath": subtitle.relative_path,
-        "format": format,
-        "cues": cues.into_iter().take(MAX_PREVIEW_CUES).collect::<Vec<_>>(),
-        "truncated": truncated,
-        "validation": validation,
-        "requestId": request_id,
-    }))
-    .into_response()
 }
 
 fn subtitle_belongs_to_video(video: &CatalogItem, subtitle: &CatalogItem) -> bool {
