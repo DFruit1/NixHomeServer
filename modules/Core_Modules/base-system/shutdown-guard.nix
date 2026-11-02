@@ -39,6 +39,9 @@ in
       media-manager-refresh-dispatch.service
       media-manager-scanner.service
       rclone-mega-kopia-sync.service
+      transcribe-worker.service
+      transcribe-model-prepare.service
+      media-manager-immich-provision.service
     )
     CRITICAL_PROCESSES=(
       aapt2

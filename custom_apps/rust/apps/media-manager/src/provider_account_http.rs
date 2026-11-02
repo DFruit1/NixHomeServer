@@ -121,6 +121,14 @@ impl ProviderBrokerState {
     }
 
     /// Deployment-owned endpoints only; callers cannot choose an Immich host.
+    pub fn with_managed_immich(mut self) -> Self {
+        if let Some(runtime) = &mut self.images {
+            Arc::make_mut(runtime).managed = true;
+        }
+        self
+    }
+
+    /// Deployment-owned endpoints only; callers cannot choose an Immich host.
     pub fn with_images(
         mut self,
         api_base: &str,
@@ -142,6 +150,7 @@ impl ProviderBrokerState {
 #[serde(rename_all = "camelCase")]
 enum SetupKind {
     Public,
+    Managed,
     ApiKey,
     Account,
 }

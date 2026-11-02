@@ -1342,8 +1342,11 @@ queue protocol rather than restoring this removed wiring.
 
 ### Media Manager
 
-The [Images page](media-manager-images.md) connects to each user's Immich API key,
-runs EYE locally on previews, and adds reviewed tags through Immich's API.
+The [Images page](media-manager-images.md) connects automatically to each user's
+linked Immich account, runs EYE locally on previews, and adds reviewed tags
+through Immich's API. EYE releases its model after five idle minutes.
+The optional [local transcription module](transcription.md) adds Parakeet and
+Whisper inbox jobs and subtitle artifacts to Conversions.
 
 Media Manager is an always-present core application at
 `https://media.<domain>`. It is private-DNS-only and uses the shared OAuth2

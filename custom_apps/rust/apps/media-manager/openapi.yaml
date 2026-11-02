@@ -1624,6 +1624,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConversionError'
+  /transcriptions:
+    get:
+      responses:
+        '200':
+          description: Current user's transcription jobs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptionEnvelope'
+        '503':
+          description: Optional transcription module unavailable
+  /transcriptions/{job}/artifacts/{name}:
+    get:
+      responses:
+        '200':
+          description: Current user's completed transcript artifact
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+  /items/{itemId}/subtitles/transcript:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jobId, artifact, language]
+              properties:
+                jobId: {type: string}
+                artifact: {enum: [subtitles.srt, subtitles.vtt, diarized.srt]}
+                language: {type: string}
+      responses:
+        '201':
+          description: Subtitle installation preview; confirmation is required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MutationPreview'
   /metadata/tmdb/search:
     post:
       responses:
@@ -1911,7 +1952,7 @@ components:
         name: { type: string }
         logoUrl: { type: string, nullable: true }
         mediaDomains: { type: array, items: { type: string } }
-        setupKind: { type: string, enum: [public, apiKey, account] }
+        setupKind: { type: string, enum: [public, apiKey, account, managed] }
         implementationStatus: { type: string, enum: [active, planned] }
         canConfigure:
           type: boolean
@@ -3167,6 +3208,39 @@ components:
       properties:
         saved:
           const: true
+    TranscriptionJob:
+      type: object
+      required: [id, name, backend, state, queuedAt, updatedAt]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        backend: {enum: [parakeet, whisper]}
+        state: {enum: [queued, extracting, transcribing, diarising, writing, completed, failed]}
+        queuedAt: {type: integer}
+        updatedAt: {type: integer}
+        durationMs: {type: integer}
+        outputDir: {type: string}
+        error: {type: string}
+        ignored:
+          type: array
+          items:
+            type: object
+            required: [field, reason]
+            properties:
+              field: {type: string}
+              reason: {type: string}
+        artifacts:
+          type: array
+          items: {type: string}
+    TranscriptionEnvelope:
+      type: object
+      required: [available, jobs, requestId]
+      properties:
+        available: {type: boolean}
+        jobs:
+          type: array
+          items: {$ref: '#/components/schemas/TranscriptionJob'}
+        requestId: {type: string}
     ConversionError:
       type: object
       required:

@@ -628,6 +628,62 @@ a:focus-visible {
   overflow: hidden;
   background: rgba(33, 29, 21, 0.12);
 }
+
+.transcript-artifacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.transcription-panel progress {
+  width: 100%;
+  max-width: 20rem;
+  accent-color: var(--accent);
+}
+
+.transcript-job .side-item-name strong {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.transcript-options {
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.transcript-options summary {
+  cursor: pointer;
+  padding-block: 6px;
+}
+
+.transcript-options pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.transcript-artifacts a {
+  font-size: 12px;
+  padding-block: 4px;
+}
+
+.transcript-artifacts a,
+.transcript-picker {
+  overflow-wrap: anywhere;
+}
+
+.transcript-picker {
+  display: grid;
+  gap: 0.75rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.transcript-picker select {
+  max-width: 100%;
+  min-width: 0;
+}
 .progress-track span {
   display: block;
   height: 100%;

@@ -46,6 +46,39 @@ let
 in
 {
   config = lib.mkIf config.services.immich.enable {
+    systemd.services.media-manager-immich-provision = {
+      description = "Provision least-privilege Immich provider keys for linked users";
+      requires = [ "media-manager-provider-broker.service" "postgresql.service" "immich-oidc-reconcile.service" "immich-server.service" ];
+      after = [ "media-manager-provider-broker.service" "postgresql.service" "immich-oidc-reconcile.service" "immich-server.service" ];
+      environment = {
+        MEDIA_MANAGER_PROVIDER_STATE_DIR = cfg.providerStateDir;
+        IMMICH_PROVISION_USERS_JSON = builtins.toJSON (vars.kanidmAppUsers or [ ]);
+        IMMICH_PROVISION_VERSION = config.services.immich.package.version;
+        IMMICH_PROVISION_RUNUSER = "${pkgs.util-linux}/bin/runuser";
+        IMMICH_PROVISION_SQLITE = "${pkgs.sqlite}/bin/sqlite3";
+        IMMICH_PROVISION_PSQL = "${pkgs.postgresql}/bin/psql";
+        IMMICH_PROVISION_DB_USER = config.services.immich.database.user;
+        IMMICH_PROVISION_DB = "dbname=${config.services.immich.database.name} host=/run/postgresql user=${config.services.immich.database.user}";
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = lib.getExe' cfg.package "media-manager-immich-provision";
+        TimeoutStartSec = "2min";
+        UMask = "0077";
+        LimitCORE = 0;
+        PrivateTmp = true;
+        PrivateNetwork = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ReadWritePaths = [ cfg.providerStateDir ];
+        Nice = 15; CPUWeight = 10; IOWeight = 10;
+        MemoryHigh = "128M"; MemoryMax = "256M";
+      };
+    };
+    systemd.timers.media-manager-immich-provision = {
+      wantedBy = [ "timers.target" ];
+      timerConfig = { OnBootSec = "3min"; OnUnitInactiveSec = "2min"; AccuracySec = "15s"; };
+    };
     repo.mediaManager.integrations.immich = {
       label = "Immich";
       available = true;
@@ -92,6 +125,7 @@ in
       environment = {
         MEDIA_MANAGER_EYE_SOCKET = socket;
         MEDIA_MANAGER_EYE_MODELS = models;
+        MEDIA_MANAGER_EYE_IDLE_SECONDS = "300";
         SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
       };
       serviceConfig = {
@@ -112,6 +146,7 @@ in
         MemoryHigh = "2G";
         MemoryMax = "3G";
         MemorySwapMax = 0;
+        LimitCORE = 0;
         CPUWeight = 20;
         Nice = 10;
         NoNewPrivileges = true;
@@ -138,6 +173,7 @@ in
       after = [ "media-manager-eye.service" ];
       environment = {
         MEDIA_MANAGER_IMMICH_API_BASE = "http://${config.services.immich.host}:${toString config.services.immich.port}/api/";
+        MEDIA_MANAGER_IMMICH_MANAGED = "true";
         MEDIA_MANAGER_EYE_SOCKET = socket;
         MEDIA_MANAGER_EDITOR_GROUP = cfg.editorGroup;
         MEDIA_MANAGER_MUTATION_MODE = cfg.mutationMode;

@@ -1,7 +1,40 @@
 # Local transcription from the inbox
 
-- Status: proposed
+- Status: implemented
 - Date: 2026-10-05
+
+## Implementation adjustments (2026-11-03)
+
+The operational contract is documented in [Local transcription](../transcription.md).
+The original proposal below remains the design rationale. These details were
+resolved against the actual pinned runtimes during implementation:
+
+- whisper.cpp **1.9.5** provides both CLIs; the channel's 1.8.4 does not include
+  Parakeet. The CLIs reload per invocation. The worker therefore releases ASR
+  memory after **every job**, retaining backend affinity and the five-minute
+  starvation cutoff in scheduling, without claiming cross-job model reuse.
+  There is no permanent ASR daemon or grace-period allocation.
+- Descriptor-based input uses seekable `fd:` with an `fd`-only protocol
+  whitelist rather than non-seekable `pipe:0`, allowing MP4 seeking while
+  preventing a crafted playlist from opening another local file as root. All inbox components
+  are opened relative to directory descriptors with `O_NOFOLLOW`.
+- Existing test-only subtitle serializers were promoted to production use,
+  preserving their validation and round-trip coverage. Library installation
+  uses the existing `ManageSubtitles` capability and broker action; no duplicate
+  action is added solely for a different subtitle source.
+- Personal folders are provisioned by the module's contained root provisioning
+  service, with Media Manager read ACLs and the existing user-root ACL contract.
+  Failed sources remain in place, accompanied by error markers and a `_Failed`
+  index. Source archival/removal is not enabled or implemented; retaining inputs
+  is the explicit safe default for this phase.
+- Parakeet's CLI reports no detected language, so that field is unknown (`null`).
+  The old English-only statement below is not used as an automatic selection
+  rule. Language hints remain explicitly ignored by that adapter.
+- Optional application-initiated extraction from a selected library item remains
+  outside this phase, as proposed. Completed transcript installation is available
+  through the existing subtitle preview/confirm workflow.
+- Validation uses focused local checks. The proposal's blanket lean/full frontend
+  commands below do not supersede the current `AGENTS.md` test-scope policy.
 
 ## Context
 

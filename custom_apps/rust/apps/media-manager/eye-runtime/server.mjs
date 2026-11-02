@@ -11,8 +11,26 @@ const directory = process.env.MEDIA_MANAGER_EYE_MODELS;
 if (!socket?.startsWith("/") || !directory?.startsWith("/")) {
   throw new Error("An absolute EYE socket and model directory are required");
 }
-const eye = await Eye.load({ directory });
+const idleSeconds = Number(process.env.MEDIA_MANAGER_EYE_IDLE_SECONDS ?? "300");
+if (!Number.isSafeInteger(idleSeconds) || idleSeconds < 1 || idleSeconds > 86400) {
+  throw new Error("EYE idle timeout must be between 1 and 86400 seconds");
+}
+// Health probes must not allocate the model. Only /analyze loads it, while the
+// busy guard serializes loading, inference and disposal of the native runtime.
+let eye;
+let idleTimer;
 let busy = false;
+const release = () => {
+  clearTimeout(idleTimer);
+  if (eye) eye.dispose();
+  eye = undefined;
+};
+const releaseWhenIdle = () => {
+  idleTimer = setTimeout(() => {
+    if (!busy) release();
+  }, idleSeconds * 1000);
+  idleTimer.unref();
+};
 const reply = (response, status, body) => {
   response.writeHead(status, {
     "content-type": "application/json",
@@ -23,7 +41,7 @@ const reply = (response, status, body) => {
 
 const server = http.createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/health") {
-    reply(response, 200, { ready: true });
+    reply(response, 200, { ready: true, loaded: !!eye });
     return;
   }
   if (request.method !== "POST" || request.url !== "/analyze") {
@@ -36,9 +54,16 @@ const server = http.createServer(async (request, response) => {
     return;
   }
   busy = true;
+  clearTimeout(idleTimer);
   // A stuck native call is recovered by systemd restarting this helper.
   const deadline = setTimeout(() => process.exit(1), 25_000);
   try {
+    const declaredLength = request.headers["content-length"];
+    if (declaredLength && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > 16 * 1024 * 1024)) {
+      reply(response, 413, { error: "image_too_large" });
+      request.resume();
+      return;
+    }
     const chunks = [];
     let length = 0;
     for await (const chunk of request) {
@@ -60,6 +85,7 @@ const server = http.createServer(async (request, response) => {
       .toColourspace("srgb")
       .raw()
       .toBuffer({ resolveWithObject: true });
+    eye ??= await Eye.load({ directory });
     const photo = await eye.analyze({ data, width: info.width, height: info.height });
     const suggestions = photo.tags()
       .filter((tag) => /^[a-z0-9_]{1,96}$/.test(tag))
@@ -67,11 +93,13 @@ const server = http.createServer(async (request, response) => {
       .map((tag) => ({ tag, confidence: photo.confidence(tag) }));
     reply(response, 200, { model: photo.model, suggestions, scores: photo.scores });
   } catch {
+    request.resume();
     // Neither image contents, filenames, nor upstream errors belong in logs.
     reply(response, 422, { error: "analysis_failed" });
   } finally {
     clearTimeout(deadline);
     busy = false;
+    releaseWhenIdle();
   }
 });
 server.requestTimeout = 15_000;
@@ -85,5 +113,6 @@ try {
 }
 server.listen(socket, () => chmodSync(socket, 0o660));
 process.on("SIGTERM", () => {
-  server.close(() => { eye.dispose(); process.exit(0); });
+  clearTimeout(idleTimer);
+  server.close(() => { release(); process.exit(0); });
 });

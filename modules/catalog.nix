@@ -55,6 +55,7 @@ rec {
       "immich-server"
       "media-manager-eye-model-prepare"
       "media-manager-eye"
+      "media-manager-immich-provision"
     ];
     ipfs = app ./ipfs "IPFS Distribution" "operations" [ ] [ "ipfs" "ipfs-alias" "fdroid-ipfs-publish" ];
     jellyfin = app ./jellyfin "Jellyfin" "media" [ "jellyfinOidcClientSecret" ] [
@@ -165,6 +166,7 @@ rec {
       "sonarr"
       "media-automation-bootstrap-sonarr"
     ];
+    transcribe = app ./transcribe "Local transcription" "automation" [ ] [ "transcribe-model-prepare" "transcribe-provision" "transcribe-worker" ];
     vaultwarden = app ./vaultwarden "Vaultwarden" "security" [ "vaultwardenAdminToken" ] [ ];
     youtube-downloader = app ./youtube-downloader "YouTube Downloader" "media" [
       "youtubeDownloaderOauth2ProxyClientSecret"

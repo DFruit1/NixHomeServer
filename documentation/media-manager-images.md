@@ -7,13 +7,11 @@ sidecar writes. Archived, trashed and locked photos are excluded.
 
 ## Connect and use
 
-1. In Immich, open User settings → API keys and create a key named Media Manager.
-   Grant `asset.read`, `asset.view`, `user.read`, `tag.read`, `tag.create` and
-   `tag.asset`. Each person should use their own key and retain a recovery copy
-   in their password manager. Original-download and deletion scopes are unused.
-2. In Media Manager → Metadata sources → Immich, save the key and test it.
-   The existing provider broker encrypts the key for that authenticated subject;
-   saved values cannot be read back in the browser.
+1. Sign into Photos with Kanidm once if your Immich account does not yet exist.
+   The local provisioner automatically connects your own linked account within
+   a few minutes. No API key needs to be generated, copied or saved by the user.
+2. Open Media Manager. Metadata sources reports the automatically managed Immich
+   connection; the browser cannot view, replace or remove its credential.
 3. Open **Images**, browse or search by filename, and choose a photo. **Load more
    photos** retrieves another bounded page rather than loading the whole library.
 4. Choose **Analyze photo**, review EYE's tag suggestions and relative aesthetic,
@@ -47,6 +45,42 @@ limits image bytes and decoded dimensions, and has a 3 GiB memory ceiling. Its
 private cache is disposable. Photo inference runs locally; the SDK retains its
 upstream licensing behavior. No photos are sent to a cloud inference provider.
 
+The model loads only when an analysis is requested and is disposed after five
+idle minutes (`MEDIA_MANAGER_EYE_IDLE_SECONDS=300`). Health checks report whether
+it is loaded and do not load it or extend that timer. The next analysis reloads
+automatically and can take longer. Loading shares the inference concurrency
+guard and request deadline; neither idle time nor browsing runs photo inference.
+
+## Automatic Immich credentials
+
+`media-manager-immich-provision.service` discovers linked Immich accounts every
+two minutes, including users added after deployment. It matches the authoritative Kanidm UUID to Immich's exact
+`oauthId`; names and email addresses are never fallback identity matches.
+An account must already exist through Immich's SSO auto-registration. Missing
+accounts are skipped; ambiguous identity matches stop provisioning.
+
+Immich's API only creates keys for its authenticated caller. A separate local
+root maintenance process therefore writes only the Immich 3.x `api_key` table,
+using the existing database Unix socket and database OS account. It does not
+grant the web broker database or administrator credentials, change photos,
+change users, or modify an existing human-managed key. Unexpected schema or
+ownership fails closed. The supported API remains the only photo/tag data path.
+
+The managed key has only `asset.read`, `asset.view`, `user.read`, `tag.read`,
+`tag.create` and `tag.asset`. Its deterministic ID makes reconciliation and crash
+recovery idempotent; unchanged keys are not rewritten. Secrets are encrypted in
+the existing provider store under the authenticated subject and a separate
+`immich-managed` namespace. Plaintext moves only through a private process pipe;
+it is never placed in argv, logs, the Nix store or browser responses.
+Existing manually saved keys are retained but are not used as an automatic
+fallback. The broker also requires `immich-users` membership in each authenticated
+request supplied by the shared authentication gateway.
+
+The provider store remains in its existing central persistence/backup boundary.
+The provisioner disappears with Immich; it does not delete retained credentials
+or model artifacts. Administrators can revoke a managed key in Immich, but while
+automatic provisioning is enabled the next reconciliation restores it.
+
 The npm dependency graph is locked and the EYE SDK is pinned to `4.2.3`. The
 model-prepare unit verifies SHA-256 hashes for `eye.tflite` and `eye_meta.json`
 from the immutable model revision `22f84595225252153fc8e11e7f5fba152fe13718`.
@@ -56,7 +90,7 @@ Inference reads these files; only preparation may replace downloaded artifacts.
 Inspect the affected units after an authorized deployment:
 
 ```bash
-systemctl status media-manager-provider-broker media-manager-eye-model-prepare media-manager-eye
+systemctl status media-manager-provider-broker media-manager-eye-model-prepare media-manager-eye media-manager-immich-provision
 journalctl -u media-manager-eye -u media-manager-provider-broker -n 50 --no-pager
 ```
 

@@ -147,6 +147,7 @@ let
   blockerUnits = lib.escapeShellArgs (
     power.blockerUnits
     ++ lib.optionals (hasModule "mkvmaker") [ "mkvmaker-import-worker.service" ]
+    ++ lib.optionals (moduleEnabled "transcribe") [ "transcribe-worker.service" "transcribe-model-prepare.service" ]
   );
   wakeTime = lib.escapeShellArg nightlySuspend.wakeTime;
   nightlySuspendPath = with pkgs; [

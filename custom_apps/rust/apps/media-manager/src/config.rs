@@ -64,6 +64,7 @@ pub struct AppConfig {
     pub editor_group: String,
     pub mutation_mode: MutationMode,
     pub mkvmaker_progress_file: PathBuf,
+    pub transcribe_state_dir: Option<PathBuf>,
     pub open_subtitles_credentials_file: Option<PathBuf>,
     pub provider_broker_base_url: Option<String>,
     pub jellyfin_metadata_cache_file: Option<PathBuf>,
@@ -190,6 +191,7 @@ impl AppConfig {
                 "MEDIA_MANAGER_MKVMAKER_PROGRESS_FILE",
                 "/run/mkvmaker/progress.json",
             )),
+            transcribe_state_dir: env::var_os("MEDIA_MANAGER_TRANSCRIBE_STATE").map(PathBuf::from),
             open_subtitles_credentials_file: env::var_os(
                 "MEDIA_MANAGER_OPENSUBTITLES_CREDENTIALS_FILE",
             )
@@ -242,6 +244,7 @@ impl AppConfig {
             editor_group: DEFAULT_EDITOR_GROUP.to_string(),
             mutation_mode: MutationMode::ReadOnly,
             mkvmaker_progress_file: PathBuf::from("progress.json"),
+            transcribe_state_dir: None,
             open_subtitles_credentials_file: None,
             provider_broker_base_url: None,
             jellyfin_metadata_cache_file: None,

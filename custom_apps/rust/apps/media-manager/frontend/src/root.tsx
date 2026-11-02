@@ -730,7 +730,14 @@ export default component$((props: RootProps) => {
             }}
           />
         ) : view.value === "conversions" ? (
-          <ConversionsView initial={state.conversions} />
+          <ConversionsView
+            initial={state.conversions}
+            transcriptionAvailable={
+              state.status?.integrations.some(
+                (i) => i.id === "transcribe" && i.available,
+              ) ?? false
+            }
+          />
         ) : view.value === "activity" ? (
           <ActivityView canEdit={state.session?.canEdit ?? false} />
         ) : view.value === "player" ? null : view.value === "videos" ? (
@@ -1093,7 +1100,7 @@ const ProviderAccountsView = component$(() => {
                   >
                     Documentation
                   </a>
-                  {configured && (
+                  {configured && provider.setupKind !== "managed" && (
                     <button
                       class="text-button danger"
                       type="button"

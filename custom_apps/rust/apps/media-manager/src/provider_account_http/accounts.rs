@@ -19,9 +19,26 @@ pub(super) async fn list_provider_accounts(
         Ok(summaries) => summaries,
         Err(error) => return storage_failure(error, &request_id).into_response(),
     };
+    let managed = state.images.as_ref().is_some_and(|r| r.managed);
+    let mut views = provider_views(&summaries);
+    if managed && let Some(view) = views.iter_mut().find(|v| v["id"] == "immich") {
+        let summary = summaries.iter().find(|s| s.provider_id == "immich-managed");
+        if let Some(summary) = summary {
+            let mut summary = summary.clone();
+            summary.provider_id = "immich".into();
+            *view = provider_view(provider_definition("immich").unwrap(), Some(&summary));
+        } else {
+            *view = provider_view(provider_definition("immich").unwrap(), None);
+        }
+        view["canConfigure"] = json!(false);
+        view["canTest"] = json!(false);
+        view["credentialFields"] = json!([]);
+        view["setupKind"] = json!(SetupKind::Managed);
+        view["notes"] = json!("Automatically connected to your own Immich account. Sign into Photos once if your account has not been created yet; no API key is required.");
+    }
     Json(json!({
         "schemaVersion": 1,
-        "providers": provider_views(&summaries),
+        "providers": views,
         "recoveryAdvice": "Saved credentials cannot be viewed again. Keep the recovery copy in Vaultwarden, KeePassXC, or another password manager.",
         "requestId": request_id,
     }))
@@ -61,6 +78,16 @@ pub(super) async fn save_provider_account(
         )
         .into_response();
     };
+    if provider_id == "immich" && state.images.as_ref().is_some_and(|r| r.managed) {
+        zeroize_credentials(&mut request.credentials);
+        return ApiError::new(
+            StatusCode::CONFLICT,
+            "provider_automatically_managed",
+            "Immich access is provisioned automatically for your account.",
+            request_id,
+        )
+        .into_response();
+    }
     if definition.implementation_status != ImplementationStatus::Active {
         zeroize_credentials(&mut request.credentials);
         return ApiError::new(
@@ -125,6 +152,15 @@ pub(super) async fn delete_provider_account(
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };
+    if provider_id == "immich" && state.images.as_ref().is_some_and(|r| r.managed) {
+        return ApiError::new(
+            StatusCode::CONFLICT,
+            "provider_automatically_managed",
+            "Immich access is managed with your Photos account.",
+            request_id,
+        )
+        .into_response();
+    }
     if provider_definition(&provider_id).is_none() {
         return ApiError::new(
             StatusCode::NOT_FOUND,
@@ -153,6 +189,15 @@ pub(super) async fn test_provider_account(
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };
+    if provider_id == "immich" && state.images.as_ref().is_some_and(|r| r.managed) {
+        return ApiError::new(
+            StatusCode::CONFLICT,
+            "provider_automatically_managed",
+            "Immich access is checked automatically when you browse Photos.",
+            request_id,
+        )
+        .into_response();
+    }
     let Some(definition) = provider_definition(&provider_id) else {
         return ApiError::new(
             StatusCode::NOT_FOUND,

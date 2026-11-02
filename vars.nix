@@ -45,6 +45,7 @@ let
         "searxng"
         "search"
         "sonarr"
+        "transcribe"
         "vaultwarden"
         "youtube-downloader"
       ];

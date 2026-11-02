@@ -8,7 +8,9 @@ use zeroize::Zeroizing;
 const PAGE_SIZE: usize = 48;
 const MAX_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
 
+#[derive(Clone)]
 pub(super) struct Runtime {
+    pub(super) managed: bool,
     pub(super) base: reqwest::Url,
     eye: reqwest::Client,
     editor_group: String,
@@ -30,10 +32,11 @@ impl Runtime {
             .unix_socket(socket)
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(20))
+            .timeout(Duration::from_secs(28))
             .build()
             .map_err(|_| "could not initialize EYE client")?;
         Ok(Self {
+            managed: false,
             base,
             eye,
             editor_group: editor_group.into(),
@@ -61,7 +64,12 @@ fn unavailable(id: &str) -> ApiError {
 }
 
 fn upstream_error(id: &str) -> ApiError {
-    error(StatusCode::BAD_GATEWAY, "immich_request_failed", "Immich could not complete this request. Check the connection and your API key permissions.", id)
+    error(
+        StatusCode::BAD_GATEWAY,
+        "immich_request_failed",
+        "Immich could not complete this request. Try again or check the Photos service.",
+        id,
+    )
 }
 
 fn account(
@@ -70,15 +78,23 @@ fn account(
     id: &str,
 ) -> Result<Account, ApiError> {
     let runtime = state.images.clone().ok_or_else(|| unavailable(id))?;
+    if runtime.managed && !identity.groups.iter().any(|g| g == "immich-users") {
+        return Err(error(
+            StatusCode::FORBIDDEN,
+            "immich_access_required",
+            "Your account does not have access to Photos.",
+            id,
+        ));
+    }
     let mut credentials = state
         .store
-        .load_credentials(identity, "immich")
+        .load_credentials(identity, if runtime.managed { "immich-managed" } else { "immich" })
         .map_err(|e| storage_failure(e, id))?
         .ok_or_else(|| {
             error(
                 StatusCode::PRECONDITION_REQUIRED,
-                "immich_account_required",
-                "Connect your Immich API key in Metadata sources to browse your photos.",
+                if runtime.managed { "immich_provisioning_pending" } else { "immich_account_required" },
+                if runtime.managed { "Sign into Photos once to create your Immich account. Media Manager connects automatically within a few minutes." } else { "Connect your Immich API key in Metadata sources to browse your photos." },
                 id,
             )
         })?;

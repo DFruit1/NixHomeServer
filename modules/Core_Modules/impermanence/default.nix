@@ -70,6 +70,7 @@ let
     "/var/lib/search/pdf-archive"
     "/var/lib/sonarr"
     "/var/lib/solr"
+    "/var/lib/transcribe"
     "/var/lib/vaultwarden"
     "/var/lib/youtube-downloader"
     "/var/log/filestash"

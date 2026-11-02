@@ -55,6 +55,9 @@ async fn run() -> Result<(), String> {
             &env_string("MEDIA_MANAGER_EDITOR_GROUP", "media-manager-editors"),
             env_string("MEDIA_MANAGER_MUTATION_MODE", "read-only") == "enabled",
         )?;
+        if env_string("MEDIA_MANAGER_IMMICH_MANAGED", "false") == "true" {
+            state = state.with_managed_immich();
+        }
     }
     let app = provider_account_router(state);
     let socket = std::net::SocketAddr::new(address, port);

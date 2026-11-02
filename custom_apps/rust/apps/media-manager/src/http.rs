@@ -36,6 +36,7 @@ mod artwork_http;
 pub use artwork_http::{ArtworkCandidateCache, JellyfinImageCache};
 mod conversions;
 mod metadata_handlers;
+mod transcriptions;
 pub use metadata_handlers::MetadataCacheMemo;
 mod metadata_lookups;
 mod plans;
@@ -325,6 +326,15 @@ pub fn router(state: AppState) -> Router {
             get(metadata_handlers::folder_metadata),
         )
         .route("/api/v1/conversions", get(conversions::conversions))
+        .route("/api/v1/transcriptions", get(transcriptions::jobs))
+        .route(
+            "/api/v1/transcriptions/{job}/artifacts/{name}",
+            get(transcriptions::download),
+        )
+        .route(
+            "/api/v1/items/{itemId}/subtitles/transcript",
+            post(transcriptions::install),
+        )
         .route(
             "/api/v1/conversions/inbox",
             get(conversions::conversions_inbox),

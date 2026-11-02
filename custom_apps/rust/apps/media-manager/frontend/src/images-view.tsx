@@ -36,6 +36,7 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
     error: "",
     detailError: "",
     setupRequired: false,
+    automaticConnection: false,
     notice: "",
     imageFailed: false,
     failedPreviews: [] as string[],
@@ -70,7 +71,13 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
     } catch (error) {
       state.error = readableError(error);
       state.setupRequired =
-        error instanceof ApiError && error.code === "immich_account_required";
+        error instanceof ApiError &&
+        ["immich_account_required", "immich_provisioning_pending"].includes(
+          error.code,
+        );
+      state.automaticConnection =
+        error instanceof ApiError &&
+        error.code === "immich_provisioning_pending";
     } finally {
       state.loading = false;
       state.loadingMore = false;
@@ -209,11 +216,21 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
             <Icon name="image" size={32} />
             <h2>Connect your Immich library</h2>
             <p>
-              Add your Immich API key under Metadata sources → Immich, then
-              return here.
+              {state.automaticConnection
+                ? "Sign into Photos once to create your account. Media Manager connects automatically within a few minutes, without an API key."
+                : "Add your Immich API key under Metadata sources → Immich, then return here."}
             </p>
-            <a class="secondary-button" href="?view=accounts">
-              Open Metadata sources
+            <a
+              class="secondary-button"
+              href={
+                state.automaticConnection
+                  ? (props.immichUrl ?? "?view=accounts")
+                  : "?view=accounts"
+              }
+            >
+              {state.automaticConnection
+                ? "Open Photos"
+                : "Open Metadata sources"}
             </a>
             <button
               type="button"

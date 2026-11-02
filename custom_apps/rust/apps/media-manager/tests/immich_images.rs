@@ -22,6 +22,116 @@ const OLD_TAG: &str = "20000000-0000-4000-8000-000000000001";
 const NEW_TAG: &str = "20000000-0000-4000-8000-000000000002";
 const ROOT: &str = "/api/v1/provider-lookups/immich/images";
 
+// Automatic keys must remain subject-bound even when a username is reused,
+// and removing Photos membership must immediately stop broker access.
+#[tokio::test]
+async fn managed_immich_never_falls_back_or_crosses_identity_or_group_boundaries() {
+    let temp = tempfile::Builder::new()
+        .prefix("immich-managed-boundary-")
+        .tempdir()
+        .unwrap();
+    let fixture = Fixture::default();
+    let mock = Router::new()
+        .route("/api/search/metadata", post(search))
+        .with_state(fixture.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, mock).await.unwrap();
+    });
+    let store = ProviderAccountStore::open(
+        &temp.path().join("accounts.sqlite3"),
+        &temp.path().join("master.key"),
+    )
+    .unwrap();
+    let subject = "10000000-0000-4000-8000-000000000010";
+    let alice = Identity::try_new_with_subject(subject, "alice", ["immich-users"]).unwrap();
+    store
+        .save(
+            &alice,
+            "immich-managed",
+            &[("apiKey".into(), "fixture-alice".into())].into(),
+            1,
+        )
+        .unwrap();
+    let reused = Identity::try_new_with_subject(
+        "10000000-0000-4000-8000-000000000011",
+        "alice",
+        ["immich-users"],
+    )
+    .unwrap();
+    store
+        .save(
+            &reused,
+            "immich",
+            &[("apiKey".into(), "wrong-manual-key".into())].into(),
+            1,
+        )
+        .unwrap();
+    let runtime = ProviderBrokerState::new(Arc::new(store))
+        .unwrap()
+        .with_images(
+            &format!("http://{address}/api/"),
+            &temp.path().join("eye.sock"),
+            "media-manager-editors",
+            true,
+        )
+        .unwrap()
+        .with_managed_immich();
+    let app = provider_account_router(runtime);
+    let managed_request = |who: &str, groups: &str, path: &str| {
+        Request::builder()
+            .uri(path)
+            .header("x-forwarded-user", who)
+            .header("x-forwarded-preferred-username", "alice")
+            .header("x-forwarded-groups", groups)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let response = app
+        .clone()
+        .oneshot(managed_request(subject, "users,immich-users", ROOT))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!json_response(response)
+        .await
+        .to_string()
+        .contains("fixture-alice"));
+    let response = app
+        .clone()
+        .oneshot(managed_request(&reused.subject, "users,immich-users", ROOT))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PRECONDITION_REQUIRED);
+    let response = app
+        .clone()
+        .oneshot(managed_request(subject, "users", ROOT))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(fixture.calls.lock().unwrap().as_slice(), ["fixture-alice"]);
+    let response = app
+        .oneshot(managed_request(
+            subject,
+            "users,immich-users",
+            "/api/v1/provider-accounts",
+        ))
+        .await
+        .unwrap();
+    let body = json_response(response).await;
+    let provider = body["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["id"] == "immich")
+        .unwrap();
+    assert_eq!(provider["canConfigure"], false);
+    assert_eq!(provider["credentialFields"], json!([]));
+    assert_eq!(provider["account"]["state"], "configured");
+    task.abort();
+}
+
 #[derive(Clone, Default)]
 struct Fixture {
     calls: Arc<Mutex<Vec<String>>>,

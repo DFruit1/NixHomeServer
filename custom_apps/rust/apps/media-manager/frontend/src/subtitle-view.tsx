@@ -9,6 +9,7 @@ import type {
   SubtitleContent,
   BatchSubtitleResult,
   InstalledSubtitlesResponse,
+  TranscriptionEnvelope,
 } from "./api-contract.generated";
 import {
   $,
@@ -543,6 +544,23 @@ export const SubtitleView = component$<{
   status?: Status;
 }>((props) => {
   const uploadInput = useSignal<HTMLInputElement>();
+  const transcriptPreview = useSignal<HTMLElement>();
+  const transcriptError = useSignal("");
+  const transcripts = useSignal<TranscriptionEnvelope>();
+  const selectedTranscript = useSignal("");
+  useTask$(async ({ track }) => {
+    const available = track(() =>
+      props.status?.integrations.some(
+        (i) => i.id === "transcribe" && i.available,
+      ),
+    );
+    if (!available) return;
+    try {
+      transcripts.value = await api<TranscriptionEnvelope>("/transcriptions");
+    } catch {
+      transcripts.value = undefined;
+    }
+  });
   const videoRoots = props.roots.filter((root) => root.category === "videos");
   const providerAvailable =
     props.status?.integrations.some(
@@ -1241,6 +1259,95 @@ export const SubtitleView = component$<{
             </div>
           </div>
           <div class="upload-copy">
+            {!!transcripts.value?.jobs.some(
+              (job) =>
+                job.state === "completed" &&
+                job.artifacts?.some(
+                  (f) => f.endsWith(".srt") || f.endsWith(".vtt"),
+                ),
+            ) && (
+              <div class="transcript-picker">
+                <label for="transcript-selection">
+                  Use a completed transcript
+                </label>
+                <select
+                  id="transcript-selection"
+                  value={selectedTranscript.value}
+                  onChange$={(_, element) =>
+                    (selectedTranscript.value = element.value)
+                  }
+                >
+                  <option value="">Choose subtitles</option>
+                  {transcripts.value.jobs
+                    .filter((job) => job.state === "completed")
+                    .flatMap((job) =>
+                      (job.artifacts ?? [])
+                        .filter(
+                          (file) =>
+                            file.endsWith(".srt") || file.endsWith(".vtt"),
+                        )
+                        .map((file) => (
+                          <option
+                            key={`${job.id}/${file}`}
+                            value={`${job.id}/${file}`}
+                          >
+                            {`${job.name} · ${job.backend} · ${file}`}
+                          </option>
+                        )),
+                    )}
+                </select>
+                <button
+                  class="secondary-button"
+                  type="button"
+                  disabled={
+                    !props.session?.canEdit ||
+                    !subtitle.itemId ||
+                    !subtitle.language ||
+                    !selectedTranscript.value ||
+                    subtitle.installing
+                  }
+                  onClick$={async () => {
+                    subtitle.installing = true;
+                    subtitle.error = "";
+                    subtitle.notice = "";
+                    transcriptError.value = "";
+                    try {
+                      const [jobId, artifact] =
+                        selectedTranscript.value.split("/");
+                      subtitle.preview = await api<MutationPreview>(
+                        `/items/${encodeURIComponent(subtitle.itemId)}/subtitles/transcript`,
+                        {
+                          method: "POST",
+                          body: JSON.stringify({
+                            jobId,
+                            artifact,
+                            language: subtitle.language,
+                          }),
+                        },
+                      );
+                      await new Promise<void>((resolve) =>
+                        requestAnimationFrame(() => resolve()),
+                      );
+                      transcriptPreview.value?.scrollIntoView({
+                        block: "nearest",
+                      });
+                      transcriptPreview.value?.focus({ preventScroll: true });
+                    } catch (error) {
+                      transcriptError.value = readableError(error);
+                    } finally {
+                      subtitle.installing = false;
+                    }
+                  }}
+                >
+                  Preview transcript installation
+                </button>
+                {transcriptError.value && (
+                  <p class="message error" role="alert">
+                    {transcriptError.value}
+                  </p>
+                )}
+              </div>
+            )}
             <div class="workflow-icon small">
               <Icon name="captions" size={24} />
             </div>
@@ -1302,7 +1409,11 @@ export const SubtitleView = component$<{
       </div>
 
       {subtitle.preview && (
-        <section class="panel subtitle-preview">
+        <section
+          class="panel subtitle-preview"
+          ref={transcriptPreview}
+          tabIndex={-1}
+        >
           <div class="panel-heading">
             <div>
               <h3>Confirm sidecar destination</h3>
