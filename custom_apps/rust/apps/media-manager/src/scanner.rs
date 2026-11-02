@@ -118,7 +118,7 @@ pub fn scan_root_now(
 }
 
 fn scan_found_change(result: &ScanResult) -> bool {
-    result.items_changed > 0 || result.items_removed > 0
+    result.items_changed > 0 || result.items_removed > 0 || result.entries_skipped > 0
 }
 
 fn unix_timestamp() -> i64 {
@@ -164,13 +164,11 @@ fn with_root_scan_lock<T>(
 
 pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, String> {
     if !root.path.is_dir() {
-        let outcome = catalog
-            .reconcile_root(&root.id, root.owner_username.as_deref(), &[])
-            .map_err(|error| format!("clear unavailable root catalog: {error}"))?;
-        return Ok(ScanResult {
-            items_removed: outcome.removed,
-            ..ScanResult::default()
-        });
+        return Err(format!(
+            "scan root {} is unavailable: {}",
+            root.id,
+            root.path.display()
+        ));
     }
 
     let mut result = ScanResult::default();
@@ -270,9 +268,12 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
     }
 
     result.items_indexed = scanned.len();
-    let outcome = catalog
-        .reconcile_root(&root.id, root.owner_username.as_deref(), &scanned)
-        .map_err(|error| format!("reconcile catalog: {error}"))?;
+    let outcome = if result.entries_skipped == 0 {
+        catalog.reconcile_root(&root.id, root.owner_username.as_deref(), &scanned)
+    } else {
+        catalog.reconcile_partial_root(&root.id, root.owner_username.as_deref(), &scanned)
+    }
+    .map_err(|error| format!("reconcile catalog: {error}"))?;
     result.items_changed = outcome.changed;
     result.items_removed = outcome.removed;
     Ok(result)

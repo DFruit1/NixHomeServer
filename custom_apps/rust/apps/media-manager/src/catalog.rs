@@ -348,14 +348,8 @@ impl Catalog {
             rusqlite::functions::FunctionFlags::SQLITE_UTF8
                 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
             move |ctx| {
-                // ASCII paths skip the allocation; only non-ASCII rows are
-                // lowercased before the substring check.
                 let candidate = ctx.get::<String>(0)?;
-                Ok(if candidate.is_ascii() {
-                    candidate.contains(&needle)
-                } else {
-                    candidate.to_lowercase().contains(&needle)
-                })
+                Ok(candidate.to_lowercase().contains(&needle))
             },
         )?;
         self.connection
@@ -791,6 +785,26 @@ impl Catalog {
         owner_username: Option<&str>,
         items: &[ScannedItem],
     ) -> rusqlite::Result<ReconcileOutcome> {
+        self.reconcile_root_snapshot(root_id, owner_username, items, true)
+    }
+
+    /// Merge a partial scan without deleting unseen items or their user decisions.
+    pub fn reconcile_partial_root(
+        &mut self,
+        root_id: &str,
+        owner_username: Option<&str>,
+        items: &[ScannedItem],
+    ) -> rusqlite::Result<ReconcileOutcome> {
+        self.reconcile_root_snapshot(root_id, owner_username, items, false)
+    }
+
+    fn reconcile_root_snapshot(
+        &mut self,
+        root_id: &str,
+        owner_username: Option<&str>,
+        items: &[ScannedItem],
+        complete: bool,
+    ) -> rusqlite::Result<ReconcileOutcome> {
         // Acquire the write reservation before reading the existing rows. A
         // deferred transaction can read alongside another writer in WAL mode,
         // then fail immediately with SQLITE_BUSY when it tries to upgrade;
@@ -866,7 +880,7 @@ impl Catalog {
 
         let removed_ids = existing
             .keys()
-            .filter(|id| !scanned_ids.contains(id.as_str()))
+            .filter(|id| complete && !scanned_ids.contains(id.as_str()))
             .collect::<Vec<_>>();
         let mut delete = transaction.prepare("DELETE FROM catalog_items WHERE id = ?1")?;
         for id in &removed_ids {

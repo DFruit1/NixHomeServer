@@ -611,3 +611,54 @@ fn reconcile_reports_changed_and_removed_items() {
     assert_eq!(changed.changed, 1);
     assert_eq!(changed.removed, 1);
 }
+
+// A failed walk must not cascade-delete saved user decisions. This guards the
+// irreversible data-loss risk, beyond merely hiding a transiently missing file.
+#[test]
+fn incomplete_and_unavailable_scans_preserve_user_decisions() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root_path = temp.path().join("videos");
+    let hidden = root_path.join("restricted");
+    std::fs::create_dir_all(&hidden).unwrap();
+    std::fs::write(hidden.join("Movie.mkv"), b"movie").unwrap();
+    let mut catalog = Catalog::initialize(&temp.path().join("catalog.sqlite3")).unwrap();
+    let root = ScanRoot {
+        id: "shared-videos".to_string(),
+        owner_username: None,
+        path: root_path.clone(),
+        category: LibraryCategory::Videos,
+    };
+    scan_root(&mut catalog, &root).unwrap();
+    let item = catalog
+        .list_items("shared-videos", None, 10)
+        .unwrap()
+        .remove(0);
+    catalog
+        .save_health_decision(&item.id, "alice", "title", "chosen", "current", None)
+        .unwrap();
+    std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let partial = scan_root(&mut catalog, &root);
+    // Restore permissions even if a regression makes the following checks fail.
+    std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let partial = partial.unwrap();
+    assert_eq!(partial.entries_skipped, 1);
+    assert_eq!(partial.items_removed, 0);
+    assert_eq!(
+        catalog.health_decisions(&item.id, "alice").unwrap()["title"],
+        "chosen"
+    );
+    let unavailable = ScanRoot {
+        path: temp.path().join("missing"),
+        ..root.clone()
+    };
+    assert!(scan_root(&mut catalog, &unavailable).is_err());
+    assert!(catalog.catalog_item(&item.id).unwrap().is_some());
+    assert_eq!(
+        catalog.health_decisions(&item.id, "alice").unwrap()["title"],
+        "chosen"
+    );
+    // A complete scan still observes an actual removal.
+    std::fs::remove_file(hidden.join("Movie.mkv")).unwrap();
+    assert_eq!(scan_root(&mut catalog, &root).unwrap().items_removed, 1);
+}
