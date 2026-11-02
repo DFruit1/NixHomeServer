@@ -71,6 +71,7 @@ in {
     megaSyncCalendar = cfg.systemd.timers.rclone-mega-kopia-sync.timerConfig.OnCalendar;
   };
   immich = {
+    expectedPackageVersion = (builtins.getAttr cfg.nixpkgs.hostPlatform.system f.inputs.nixpkgs-immich.legacyPackages).immich.version;
     packageVersion = cfg.services.immich.package.version;
     machineLearningExecStart = toString cfg.systemd.services.immich-machine-learning.serviceConfig.ExecStart;
     clipModel = cfg.services.immich.settings.machineLearning.clip.modelName or null;
@@ -147,8 +148,8 @@ jq -e '
   and (.backupSchedule.fullMaintenanceScript | contains("kopia maintenance run --full --no-progress"))
   and (.backupSchedule.fullMaintenanceScript | contains("--safety=none") | not)
   and (.backupSchedule.megaSyncCalendar == "*-*-* 04,16:30:00")
-  and (.immich.packageVersion == "3.3.5")
-  and (.immich.machineLearningExecStart | contains("-immich-machine-learning-3.3.5/bin/machine-learning"))
+  and (.immich.packageVersion == .immich.expectedPackageVersion)
+  and (.immich as $immich | $immich.machineLearningExecStart | contains("-immich-machine-learning-\($immich.packageVersion)/bin/machine-learning"))
   and (.immich.clipModel == "ViT-SO400M-16-SigLIP2-384__webli")
   and (.immich.smartSearchConcurrency == 2)
   and (.immich.gunicornArgs == "--no-control-socket")

@@ -2683,13 +2683,21 @@ Immich's server and matching machine-learning package come from the dedicated
 their own locked revisions. An unstable input still uses the revision in
 `flake.lock`; rebuilding alone does not fetch newer releases.
 
-To refresh only Immich's package source, run `nix flake update nixpkgs-immich`.
-Check the resulting Immich version against upstream release notes and mobile
-clients, update the runtime reliability check's expected server and ML versions,
-and verify a recent database backup before activation. Commit the validated
-change, then use the guarded `nix run .#deploy -- --action test` and matching
-`--action switch` procedure. Verify phone search after the update; updating this
-input is deliberate and does not happen automatically on each rebuild.
+`system.refreshImmichOnDeploy = true` in `vars.nix` makes each real guarded
+`nix run .#deploy -- --action test` refresh only `nixpkgs-immich` before staging.
+This policy applies only while Immich is enabled. The refresh requests current
+upstream metadata rather than relying on Nix's fetch cache, and a failed refresh
+stops deployment. Nixpkgs packaging can still lag an upstream Immich release.
+
+Have a recent database backup before invoking the test deployment. The updated
+`flake.lock` stays in the checkout; inspect it and the resulting version's release
+notes, and commit the validated change before switching where possible.
+The matching `--action switch` never refreshes inputs: it requires the same source
+and lock file as the successful test and commits that exact tested closure.
+Dry-runs do not update inputs. Set `system.refreshImmichOnDeploy = false` to
+deploy the existing lock without refreshing. Raw Nix evaluations and rebuilds
+do not refresh inputs; this policy belongs to the guarded deploy helper. There
+is no scheduled unattended activation. Verify phone search after an update.
 
 ## Compute Offload (workstation and server)
 

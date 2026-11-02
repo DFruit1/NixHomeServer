@@ -5,7 +5,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    # Update Immich independently: nix flake update nixpkgs-immich
+    # Refreshed before guarded test deployments by system.refreshImmichOnDeploy.
     nixpkgs-immich.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     crane.url = "github:ipetkov/crane";
     agenix.url = "github:ryantm/agenix";

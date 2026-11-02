@@ -78,6 +78,7 @@ let
     };
 
     system = {
+      refreshImmichOnDeploy = true; # Refresh Immich's unstable input before each guarded test deployment.
       hostPlatform = "x86_64-linux"; # Nix target platform. Supported values: "x86_64-linux" and "aarch64-linux".
       hardwareProfile = "existing-server"; # Hardware profile: "generated", "existing-server", or "generic-uefi".
       cpuVendor = "auto"; # Microcode vendor: "auto" trusts the generated hardware module, or force "intel"/"amd".

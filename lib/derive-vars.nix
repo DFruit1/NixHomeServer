@@ -153,6 +153,7 @@ rec {
   timeZone = system.timeZone;
   hostId = system.hostId;
   buildMode = system.buildMode or "remote";
+  refreshImmichOnDeploy = system.refreshImmichOnDeploy or false;
   nixStoreMaxSizeGiB = system.nixStoreMaxSizeGiB or 80;
   nixGcRetentionDays = system.nixGcRetentionDays or 45;
   localNixGCMode = system.localNixGCMode or (

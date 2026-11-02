@@ -32,6 +32,11 @@ Fast mode performs high-value checks: host evaluation, build and target
 free-space checks, a live test activation, failed-unit and route checks, and the
 authenticated Homepage canary when enabled.
 
+When vars.system.refreshImmichOnDeploy is enabled and Immich is enabled,
+real test deployments refresh only nixpkgs-immich before staging. Switch and
+dry-run actions never update inputs. The refreshed flake.lock remains in the
+checkout for review and commit; switching requires the same tested lock file.
+
 `--console` runs the guarded deploy as this machine's root identity instead of
 reaching the target over SSH. It is the implemented route for a host whose
 vars.identity.localAdminSudo policy is "password-authenticated": run it from the
@@ -149,6 +154,7 @@ deploy_config_json="$(NIXHOMESERVER_DEPLOY_NEED_HOSTNAME="$([[ -z "$hostname" ]]
     nixGcRetentionDays = vars.nixGcRetentionDays;
     localDiskCleanup = vars.localDiskCleanup;
     buildMode = vars.buildMode;
+    refreshImmichOnDeploy = vars.refreshImmichOnDeploy && builtins.elem "immich" vars.enabledApps;
     buildSlots = vars.buildSlots;
     buildCores = vars.buildCores;
     hostPlatform = vars.hostPlatform;
@@ -183,6 +189,7 @@ local_disk_cleanup_monitor_paths="$(jq -er '.localDiskCleanup.monitorPaths | joi
 local_disk_cleanup_journal_vacuum_time="$(jq -er '.localDiskCleanup.journalVacuumTime' <<<"$deploy_config_json")"
 
 configured_build_mode="$(jq -er '.buildMode' <<<"$deploy_config_json")"
+refresh_immich_on_deploy="$(jq -r '.refreshImmichOnDeploy // false' <<<"$deploy_config_json")"
 
 # Resolve the deployment hostname and target before build-mode selection: the
 # dashboard-selected build mode is stored on the target server and is read as
@@ -349,6 +356,7 @@ if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
   echo "action=${action}"
   echo "console=${console_mode}"
   echo "debug=${debug}"
+  echo "immich_refresh=$([[ "$action" == "test" && "$refresh_immich_on_deploy" == "true" ]] && echo would-refresh || echo skip)"
   case "$local_nix_gc_mode" in
     capacity)
       echo "local_gc=would run conservative workstation disk cleanup (nix gc + log/tmpfile) at ${local_disk_cleanup_trigger_percent}% on ${local_disk_cleanup_monitor_paths} before staging"
@@ -372,6 +380,13 @@ if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
   fi
   echo "rollback=restore previous live and boot generations on failure"
   exit 0
+fi
+
+if [[ "$action" == "test" && "$refresh_immich_on_deploy" == "true" ]]; then
+  echo "refreshing Immich's unstable input before the guarded test deployment"
+  # Fail closed on an update error. Switch must never refresh: its source hash
+  # and exact closure must continue to match the preceding successful test.
+  nix flake update --refresh nixpkgs-immich
 fi
 
 case "$local_nix_gc_mode" in

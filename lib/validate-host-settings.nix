@@ -39,6 +39,10 @@ let
       message = "system.buildMode must be local, remote, balanced, or maximum-effort";
     }
     {
+      valid = builtins.isBool (settings.refreshImmichOnDeploy or false);
+      message = "system.refreshImmichOnDeploy must be a boolean";
+    }
+    {
       valid = builtins.isInt settings.nixStoreMaxSizeGiB
         && settings.nixStoreMaxSizeGiB >= 1
         && settings.nixStoreMaxSizeGiB <= 1048576;
