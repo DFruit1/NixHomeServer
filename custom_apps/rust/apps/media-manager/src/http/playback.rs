@@ -283,6 +283,7 @@ pub(super) async fn item_stream(
     };
     let mut root_path = root.resolved_path.clone();
     let mut relative_path = item.relative_path.clone();
+    let mut prepared_file = None;
     let content_type = if item.media_kind == crate::media::MediaKind::Video {
         if transcode {
             let Some(ffprobe_path) = state.config.ffprobe_path.clone() else {
@@ -311,8 +312,19 @@ pub(super) async fn item_stream(
                 &homelab_common::sha256_hex(request_id.as_bytes())[..12]
             );
             let temp = cache_root.join(temp_name);
+            // Open a warm result once and retain its descriptor. A pathname
+            // existence check can race eviction and must never bypass the slot.
+            let cached = tokio::task::spawn_blocking({
+                let cache_root = cache_root.clone();
+                let cache_name = cache_name.clone();
+                move || crate::broker::open_regular_file_beneath(&cache_root, &cache_name).ok()
+            })
+            .await
+            .ok()
+            .flatten();
+            let worker_cache_name = cache_name.clone();
             let failure_key = cache_name.clone();
-            if preparation && !output.is_file() {
+            if preparation && cached.is_none() {
                 if let Ok(mut failures) = TRANSCODE_FAILURES.lock() {
                     failures.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(60));
                     if failures.contains_key(&failure_key) {
@@ -326,7 +338,7 @@ pub(super) async fn item_stream(
                     }
                 }
             }
-            let permit = if output.is_file() {
+            let permit = if cached.is_some() {
                 None
             } else if preparation {
                 match VIDEO_TRANSCODE_LIMIT.try_acquire() {
@@ -341,10 +353,15 @@ pub(super) async fn item_stream(
             };
             let background = preparation && permit.is_some();
             let job = tokio::task::spawn_blocking(move || {
-                let _permit = permit;
                 use crate::broker::open_regular_file_beneath;
-                if output.is_file() {
-                    return Ok::<(), String>(());
+                if let Some(file) = cached {
+                    return Ok::<_, String>(file);
+                }
+                let _permit = permit.ok_or("encoding requires the transcode permit")?;
+                if let Ok(file) =
+                    open_regular_file_beneath(&cache_root_for_worker, &worker_cache_name)
+                {
+                    return Ok(file);
                 }
                 std::fs::create_dir_all(&cache_root_for_worker)
                     .map_err(|error| error.to_string())?;
@@ -437,13 +454,14 @@ pub(super) async fn item_stream(
                 } else {
                     let _ = std::fs::remove_file(&temp);
                 }
-                Ok(())
+                open_regular_file_beneath(&cache_root_for_worker, &worker_cache_name)
+                    .map_err(|error| error.to_string())
             });
             if background {
                 let background_request = request_id.clone();
                 tokio::spawn(async move {
                     let error = match job.await {
-                        Ok(Ok(())) => None,
+                        Ok(Ok(_)) => None,
                         Ok(Err(error)) => Some(error),
                         Err(error) => Some(error.to_string()),
                     };
@@ -466,7 +484,8 @@ pub(super) async fn item_stream(
             }
             let result = job.await;
             match result {
-                Ok(Ok(())) => {
+                Ok(Ok(file)) => {
+                    prepared_file = Some(file);
                     root_path = cache_root.to_string_lossy().into_owned();
                     relative_path = cache_name;
                 }
@@ -499,8 +518,11 @@ pub(super) async fn item_stream(
         let relative_path = relative_path.clone();
         move || {
             use crate::broker::open_regular_file_beneath;
-            let file = open_regular_file_beneath(FilePath::new(&root_path), &relative_path)
-                .map_err(|error| error.to_string())?;
+            let file = match prepared_file {
+                Some(file) => file,
+                None => open_regular_file_beneath(FilePath::new(&root_path), &relative_path)
+                    .map_err(|error| error.to_string())?,
+            };
             let size = file.metadata().map_err(|e| e.to_string())?.len();
             Ok::<_, String>((file, size))
         }
