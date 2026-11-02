@@ -51,6 +51,7 @@
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
+  html { -webkit-font-smoothing: antialiased; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 1rem/1.5 var(--font); }
   ::selection { background: var(--selected); color: var(--text); }
   button, input, select, summary, a { -webkit-tap-highlight-color: transparent; }
@@ -67,7 +68,7 @@
   button:disabled, button[aria-disabled="true"] { opacity: 0.55; cursor: wait; }
   button[type="submit"] { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); font-weight: 600; }
   button[type="submit"]:hover { filter: brightness(1.1); background: var(--accent); }
-  .shell { max-width: 76rem; margin: auto; padding: 0 var(--space-6) var(--space-7); }
+  .shell { max-width: 72rem; margin: auto; padding: 0 var(--space-6) var(--space-7); }
   header { display: flex; align-items: center; justify-content: space-between; padding: var(--space-5) 0; margin-bottom: var(--space-5); border-bottom: 1px solid var(--border); }
   h1 { font-size: 1.5rem; margin: 0; letter-spacing: -0.02em; }
   h2 { font-size: 1.125rem; margin: 0; font-weight: 600; }
@@ -96,6 +97,8 @@
   .result-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-4); }
   .result-options { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
   .result-options label { display: flex; align-items: center; gap: var(--space-2); font-size: 0.875rem; }
+  .view-options summary { min-height: var(--control-height); padding: var(--space-2); cursor: pointer; }
+  .view-options__controls { display: flex; flex-wrap: wrap; gap: var(--space-2); padding-block: var(--space-2); }
   .result-options select { width: auto; }
   #status { color: var(--text-muted); font-size: 0.875rem; }
   .results { list-style: none; padding: 0; margin: 0; }
@@ -109,7 +112,7 @@
   .result__snippet { margin-top: var(--space-2); max-width: 75ch; overflow-wrap: anywhere; }
   .result__snippet em { font-style: normal; font-weight: 600; background: var(--mark); color: var(--text); }
   .result__details { margin-top: var(--space-2); font-size: 0.8125rem; color: var(--text-muted); overflow-wrap: anywhere; }
-  .result__details summary { display: inline-block; cursor: pointer; padding: var(--space-1) 0; text-decoration: underline; text-underline-offset: 0.2em; }
+  .result__details summary { display: inline-block; cursor: pointer; min-height: var(--control-height); padding: var(--space-2) 0; text-decoration: underline; text-underline-offset: 0.2em; }
   .result__details p { margin-top: var(--space-2); }
   .empty { padding: var(--space-7) 0; }
   .empty h2 { font-size: 1.5rem; margin-bottom: var(--space-2); letter-spacing: -0.02em; }
@@ -117,8 +120,36 @@
   .notice { margin-top: var(--space-3); color: var(--error); overflow-wrap: anywhere; }
   .notice button { margin-top: var(--space-2); }
   .source-health { color: var(--text-muted); margin-top: var(--space-4); font-size: 0.875rem; }
-  .source-health summary { cursor: pointer; padding: var(--space-2) 0; }
+  .source-health summary { cursor: pointer; min-height: var(--control-height); padding: var(--space-2) 0; }
   .source-health ul { padding-left: var(--space-5); }
+  h1, h2 { text-wrap: balance; }
+  p { text-wrap: pretty; }
+  .skip-link { position: absolute; top: -5rem; left: 1rem; z-index: 2; padding: var(--space-3); background: var(--bg); }
+  .skip-link:focus { top: 1rem; }
+  .search-types { display: flex; flex-wrap: wrap; gap: var(--space-1); padding-bottom: var(--space-3); }
+  .search-type { border-color: transparent; background: transparent; font-size: 0.9375rem; }
+  .search-type[aria-pressed="true"] { color: var(--accent); background: var(--selected); border-color: var(--accent); font-weight: 600; }
+  .mobile-type { display: none; }
+  .search-help { margin-left: auto; }
+  .search-guide { margin-top: var(--space-3); border-left: 3px solid var(--border); padding: var(--space-3) var(--space-4); max-width: 75ch; }
+  .search-guide ul { margin: 0; padding-left: var(--space-4); }
+  .search-guide li + li { margin-top: var(--space-2); }
+  .search-guide p { margin-top: var(--space-3); color: var(--text-muted); font-size: 0.875rem; }
+  .starters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--space-6); margin-top: var(--space-5); max-width: 58rem; }
+  .starter { text-align: left; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: var(--space-4) 0; background: transparent; }
+  .starter strong, .starter span { display: block; }
+  .starter strong { color: var(--accent); font-weight: 600; }
+  .starter span { color: var(--text-muted); font-size: 0.875rem; margin-top: var(--space-1); }
+  .examples { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-4); align-items: center; }
+  .examples button { font-size: 0.875rem; }
+  #resultsHeading { overflow-wrap: anywhere; margin-bottom: var(--space-2); }
+  #status { font-variant-numeric: tabular-nums; }
+  .result__byline { margin-top: var(--space-1); font-size: 0.875rem; color: var(--text-muted); overflow-wrap: anywhere; }
+  .results[data-compact="true"] .result__snippet { display: none; }
+  .results[data-compact="true"] .result { padding-block: var(--space-3); }
+  #compactView[aria-pressed="true"] { background: var(--selected); border-color: var(--accent); }
+  .empty-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-4); }
+  #copyStatus { font-size: 0.875rem; color: var(--text-muted); }
   @media (max-width: 48rem) {
     .shell { padding-inline: var(--space-4); }
     header { margin-bottom: var(--space-4); padding-block: var(--space-4); }
@@ -127,6 +158,14 @@
     #showResults { display: block; width: 100%; }
     .filter-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--space-3); }
     .result-tools { align-items: flex-start; }
+    .result-options { gap: var(--space-2); }
+    .search-types { display: none; }
+    .mobile-type { display: flex; }
+    .search-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .source-field { flex-direction: column; align-items: stretch; gap: var(--space-1); font-size: 0.875rem; }
+    .search-help { margin-left: 0; }
+    .starters { grid-template-columns: minmax(0, 1fr); }
+    .empty { padding-block: var(--space-4); }
     .source-field { max-width: none; }
   }
   @media (max-width: 24rem) {
@@ -140,6 +179,7 @@
 </head>
 <body>
 <!--LOGOUT_URL-->
+<a class="skip-link" href="#resultsRegion">Skip to results</a>
 <div class="shell">
 <header>
   <h1>Search</h1>
@@ -147,29 +187,38 @@
 </header>
 <main>
   <form id="searchForm" role="search">
+    <div id="searchTypes" class="search-types" role="group" aria-label="What to search"></div>
     <div class="search__row">
       <label class="sr-only" for="query">Search terms</label>
-      <input id="query" type="search" placeholder="Search your server…" maxlength="2048" autocomplete="off" autofocus aria-keyshortcuts="Control+k Meta+k">
+      <input id="query" type="search" placeholder="Search titles, people, phrases or topics…" maxlength="2048" autocomplete="off" autofocus aria-keyshortcuts="Control+k Meta+k">
       <button type="submit">Search</button>
     </div>
     <div class="search-tools">
-      <label class="source-field" for="kind">Type
-        <select id="kind"><option value="">All saved types</option></select>
-      </label>
+      <label class="source-field mobile-type">Type <select id="kind"><option value="">All saved types</option></select></label>
       <label class="source-field" for="source" id="sourceField">Source
         <select id="source"><option value="">All sources</option></select>
       </label>
       <button type="button" id="filterToggle" aria-expanded="false" aria-controls="filtersPanel">Filters</button>
       <button type="button" class="ghost" id="clearFilters" hidden>Clear filters</button>
+      <button type="button" class="ghost search-help" id="helpToggle" aria-expanded="false" aria-controls="searchGuide">Search tips</button>
     </div>
     <div class="active-filters" id="activeFilters" aria-label="Active filters" hidden></div>
+    <div id="searchGuide" class="search-guide" hidden>
+      <ul>
+        <li><strong>Find a specific item:</strong> try a distinctive title, a sender’s email address, an author or an invoice number.</li>
+        <li><strong>Explore a topic:</strong> start with a few words across All saved, then narrow by type or source.</li>
+        <li><strong>Narrow the matches:</strong> use Filters for format, author, tag, series, year or a content-date range.</li>
+      </ul>
+      <p>Ctrl/Cmd + K focuses search. Search links include the query and filters. Sources can return limited samples; see Search coverage alongside results.</p>
+    </div>
+    <p id="inputError" class="notice" role="alert" hidden></p>
   </form>
   <p id="sourcesError" class="notice" role="status" hidden></p>
   <details class="source-health" id="sourceHealth" hidden><summary>Source sync issues</summary><ul id="sourceIssues"></ul></details>
   <div class="workspace" id="workspace">
     <aside class="filter-panel" id="filtersPanel" aria-label="Search filters" hidden>
       <h2>Refine results</h2>
-      <p class="filter-note">Counts show library matches and sampled live matches separately.</p>
+      <p class="filter-note">Filters update results as you choose. Counts separate library matches from live samples.</p>
       <div class="filter-fields">
         <label class="field"><span>Format</span><select id="type"><option value="">All formats</option></select></label>
         <label class="field"><span>Owner</span><select id="owner"><option value="">All owners</option></select></label>
@@ -178,20 +227,34 @@
         <label class="field"><span>Series</span><select id="series"><option value="">All series</option></select></label>
         <label class="field"><span>Year</span><select id="year"><option value="">All years</option></select></label>
         <label class="field"><span>Content date, from</span><input id="after" type="date"></label>
-        <label class="field"><span>Content date, to</span><input id="before" type="date"></label>
+        <label class="field"><span>Content date, to</span><input id="before" type="date" aria-describedby="inputError"></label>
       </div>
       <button type="button" id="showResults">Show results</button>
     </aside>
     <section id="resultsRegion" aria-labelledby="resultsHeading" tabindex="-1">
-      <h2 id="resultsHeading" class="sr-only">Search results</h2>
+      <h2 id="resultsHeading" hidden>Search results</h2>
       <div class="result-tools" id="resultTools" hidden>
         <p id="status" role="status"></p>
         <div class="result-options">
           <label>Sort <select id="sort"><option value="relevance">Relevance</option><option value="newest">Newest first</option></select></label>
+          <details class="view-options"><summary>Result options</summary><div class="view-options__controls">
+          <button type="button" class="ghost" id="compactView" aria-pressed="false">Compact view</button>
+          <button type="button" class="ghost" id="copySearch">Copy search link</button>
           <label id="pageSizeField">Per page <select id="pageSize"><option value="25" selected>25</option><option value="50">50</option><option value="100">100</option></select></label>
+          </div></details>
         </div>
       </div>
-      <div class="empty" id="emptyState"><h2 id="emptyTitle">Search across your server</h2><p class="muted" id="emptyMessage">Enter a title, phrase, name or topic.</p></div>
+      <p id="copyStatus" role="status"></p>
+      <div class="empty" id="emptyState">
+        <h2 id="emptyTitle">What are you looking for?</h2>
+        <p class="muted" id="emptyMessage">Search your saved collections, or choose a starting point.</p>
+        <div class="starters" id="starters"></div>
+        <div class="examples" id="examples" hidden></div>
+        <div class="empty-actions" id="emptyActions" hidden>
+          <button type="button" id="broadenSearch">Search all saved types</button>
+          <button type="button" class="ghost" id="editQuery">Edit search</button>
+        </div>
+      </div>
       <div class="notice" id="searchError" role="alert" hidden><p id="errorMessage"></p><button type="button" id="retrySearch">Retry search</button></div>
       <details class="source-health" id="searchCoverage" hidden><summary>Search coverage</summary><p id="coverageText"></p></details>
       <div class="notice" id="liveError" role="status" hidden><p id="liveErrorMessage"></p><button type="button" id="retryLive">Retry connected sources</button></div>
@@ -218,11 +281,63 @@ const controls = { source: sourceEl, kind: el('kind'), type: typeEl, owner: owne
 const filterLabels = { source: 'Source', kind: 'Type', type: 'Format', owner: 'Owner', author: 'Author', tag: 'Tag', series: 'Series', year: 'Year', after: 'From', before: 'To' };
 const kindLabels = { email: 'Email', document: 'Document', book: 'Book', 'web-page': 'Web page', 'zim-article': 'Offline article', 'zim-archive': 'Offline archive', video: 'Video', audiobook: 'Audiobook' };
 if (window.SEARCH_ONLINE_PAPERS) kindLabels['online-paper'] = 'Online papers';
-const formatLabels = { 'message/rfc822': 'Email', 'application/pdf': 'PDF', 'text/html': 'Web page', 'application/epub+zip': 'EPUB', 'text/plain': 'Text' };
+const formatLabels = { 'message/rfc822': 'Email', 'application/pdf': 'PDF', 'text/html': 'Web page', 'application/epub+zip': 'EPUB', 'text/plain': 'Text', 'video/mp4': 'MP4 video', 'video/x-matroska': 'MKV video', 'audio/mpeg': 'MP3 audio', 'audio/mp4': 'MP4 audio' };
 const sourceNames = new Map();
 sourceNames.set('online-papers', 'Online papers');
 const state = { hits: [], liveHits: [], page: 0, total: 0, hasMore: false, generation: 0, controller: null, submitted: null, loading: false, liveLoading: false,
   indexedDone: false, liveDone: false, indexedFailed: false, liveFailed: false, indexedFacets: {}, liveFacets: {}, resultNodes: new Map() };
+
+// These are example queries, never fabricated matches or promises of coverage.
+const searchModes = {
+  '': {label: 'All saved', placeholder: 'Search titles, people, phrases or topics…'},
+  document: {label: 'Documents', title: 'Find paperwork', hint: 'Invoices, receipts, statements and manuals', placeholder: 'Search a document title, company or reference number…', examples: ['electricity invoice', 'insurance policy', 'user manual']},
+  email: {label: 'Email', title: 'Recover a conversation', hint: 'People, email addresses, subjects and messages', placeholder: 'Search a sender, subject or words from a message…', examples: ['booking confirmation', 'meeting notes']},
+  book: {label: 'Books', title: 'Find something to read', hint: 'Book titles, authors, series and topics', placeholder: 'Search a book title, author, series or topic…', examples: ['gardening', 'Jane Austen']},
+  audiobook: {label: 'Audiobooks', title: 'Find something to listen to', hint: 'Titles, authors, narrators and series', placeholder: 'Search an audiobook, author or narrator…', examples: ['history', 'Sherlock Holmes']},
+  video: {label: 'Video', title: 'Find something to watch', hint: 'Films, shows, episodes and documentaries', placeholder: 'Search a film, show, episode or topic…', examples: ['nature', 'space exploration']},
+  'web-page': {label: 'Web pages', title: 'Rediscover an article', hint: 'Saved websites, feed articles and archived pages', placeholder: 'Search words from a saved page or article…', examples: ['solar energy', 'sourdough']},
+  'zim-article': {label: 'Offline articles', title: 'Look up a topic offline', hint: 'Reference articles in offline collections', placeholder: 'Search a topic in offline articles…', examples: ['photosynthesis', 'Australian history']},
+  'zim-archive': {label: 'Offline archives', placeholder: 'Search an offline archive title…', examples: ['Wikipedia']},
+};
+if (window.SEARCH_ONLINE_PAPERS) searchModes['online-paper'] = {label: 'Online papers', title: 'Research a topic', hint: 'Scholarly results from online sources', placeholder: 'Search a research topic, paper title or author…', examples: ['groundwater recharge', 'battery recycling']};
+function chooseKind(kind, fresh = false) {
+  if (fresh) for (const control of Object.values(controls)) control.value = '';
+  setSelectValue(controls.kind, kind);
+  runSearch();
+  if (!queryEl.value.trim()) queryEl.focus();
+}
+function initDiscovery() {
+  for (const [kind, mode] of Object.entries(searchModes)) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'search-type'; button.textContent = mode.label;
+    button.dataset.kind = kind; button.setAttribute('aria-pressed', 'false');
+    button.addEventListener('click', () => chooseKind(kind));
+    el('searchTypes').appendChild(button);
+    if (!mode.title) continue;
+    const starter = document.createElement('button'); starter.type = 'button'; starter.className = 'starter';
+    const title = document.createElement('strong'); title.textContent = mode.title;
+    const hint = document.createElement('span'); hint.textContent = mode.hint;
+    starter.append(title, hint); starter.addEventListener('click', () => chooseKind(kind, true));
+    el('starters').appendChild(starter);
+  }
+}
+function showDiscovery() {
+  const mode = searchModes[controls.kind.value] || searchModes[''];
+  el('emptyTitle').textContent = mode.title || (controls.kind.value ? `Search ${mode.label.toLowerCase()}` : 'What are you looking for?');
+  el('emptyMessage').textContent = controls.kind.value === 'online-paper' ? 'Search online scholarly sources. Papers are not downloaded or saved.' : mode.hint || 'Search your saved collections, or choose a starting point.';
+  el('starters').hidden = Boolean(controls.kind.value);
+  el('emptyActions').hidden = true;
+  el('examples').replaceChildren();
+  el('examples').hidden = !mode.examples;
+  if (mode.examples) {
+    const label = document.createElement('span'); label.textContent = 'Try a search:'; label.className = 'muted'; el('examples').appendChild(label);
+    for (const query of mode.examples) {
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = query;
+      button.addEventListener('click', () => { queryEl.value = query; runSearch(); el('resultsRegion').focus(); });
+      el('examples').appendChild(button);
+    }
+  }
+}
 
 function safeHref(value) {
   if (!value) return '';
@@ -258,7 +373,8 @@ function updateSearchMode() {
   el('pageSizeField').hidden = online;
   el('sourcesError').hidden = online || !el('sourcesError').textContent;
   el('sourceHealth').hidden = online || !el('sourceIssues').children.length;
-  queryEl.placeholder = online ? 'Search online papers…' : 'Search your server…';
+  queryEl.placeholder = (searchModes[controls.kind.value] || searchModes['']).placeholder;
+  for (const button of el('searchTypes').children) button.setAttribute('aria-pressed', String(button.dataset.kind === controls.kind.value));
   if (online) toggleFilters(false);
 }
 function params() {
@@ -274,7 +390,7 @@ function updateActiveFilters() {
   const container = el('activeFilters');
   container.replaceChildren();
   for (const [key, control] of Object.entries(controls)) {
-    if (control.disabled || !control.value) continue;
+    if (key === 'kind' || control.disabled || !control.value) continue;
     const value = displayValue(key, control.value);
     const button = document.createElement('button');
     button.type = 'button'; button.className = 'active-filter';
@@ -289,6 +405,8 @@ function updateActiveFilters() {
   }
   container.hidden = container.children.length === 0;
   el('clearFilters').hidden = container.hidden;
+  const count = Object.entries(controls).filter(([key, control]) => !['kind', 'source'].includes(key) && !control.disabled && control.value).length;
+  el('filterToggle').textContent = count ? `Filters (${count})` : 'Filters';
 }
 function toggleFilters(open = el('filterToggle').getAttribute('aria-expanded') !== 'true') {
   el('filterToggle').setAttribute('aria-expanded', String(open));
@@ -379,8 +497,9 @@ function resultNode(hit) {
   const summary = document.createElement('summary'); summary.textContent = 'Details';
   const metadataText = document.createElement('p');
   const originLink = document.createElement('a'); originLink.textContent = 'Open original';
-  details.append(summary, metadataText, originLink); item.append(context, heading, snippet, details);
-  item._parts = {source, info, title, snippet, details, metadataText, originLink};
+  const byline = document.createElement('p'); byline.className = 'result__byline';
+  details.append(summary, metadataText, originLink); item.append(context, heading, byline, snippet, details);
+  item._parts = {source, info, title, byline, snippet, details, metadataText, originLink};
   updateResultNode(item, hit);
   return item;
 }
@@ -393,6 +512,11 @@ function updateResultNode(item, hit) {
   text(parts.info, [hit._live ? 'Live' : '', formatLabels[hit.contentType] || hit.contentType, hit.owner === 'shared' ? '' : hit.owner, date].filter(Boolean).join(' · '));
   const href = safeHref(hit.appUrl) || safeHref(hit.originUrl);
   text(parts.title, hit.title || 'Untitled');
+  const meta = hit.metadata || {};
+  const value = key => Array.isArray(meta[key]) ? meta[key].join(', ') : meta[key];
+  const creator = value('from') || value('authors') || value('author') || value('correspondent');
+  const byline = [creator ? `${meta.from ? 'From: ' : ''}${creator}` : '', value('series') ? `Series: ${value('series')}` : '', value('narrators') ? `Narrated by ${value('narrators')}` : ''].filter(Boolean).join(' · ');
+  text(parts.byline, byline); parts.byline.hidden = !byline;
   if (href) parts.title.href = href; else parts.title.removeAttribute('href');
   parts.snippet.hidden = !hit.snippet;
   // API contract: escaped text, with only generated <em> highlights.
@@ -440,6 +564,7 @@ function resetResults() {
   state.indexedFacets = {}; state.liveFacets = {}; state.resultNodes.clear();
   resultsEl.replaceChildren();
   for (const id of ['moreWrap', 'searchError', 'liveError', 'searchCoverage']) el(id).hidden = true;
+  renderFacets({});
   updateActiveFilters();
 }
 function updateResultsStatus() {
@@ -452,7 +577,9 @@ function updateResultsStatus() {
   el('loadMore').textContent = state.loading ? 'Loading more…' : 'Load more results';
   el('emptyState').hidden = count > 0 || pending || (!state.indexedDone && !state.liveDone);
   el('emptyTitle').textContent = state.indexedFailed && state.liveFailed ? 'Search is unavailable' : state.indexedFailed || !el('liveError').hidden ? 'No matches from available sources' : 'No matches';
-  el('emptyMessage').textContent = state.indexedFailed && state.liveFailed ? 'Retry the unavailable sources above, or try again shortly.' : Object.values(controls).some(control => control.value) ? 'Try a broader search or clear some filters.' : 'Try a different phrase or fewer words.';
+  el('emptyMessage').textContent = state.indexedFailed && state.liveFailed ? 'Retry the unavailable sources below, or try again shortly.' : Object.values(controls).some(control => control.value) ? 'Try a broader search or clear some filters.' : 'Try a different phrase or fewer words.';
+  el('emptyActions').hidden = el('emptyState').hidden || (state.indexedFailed && state.liveFailed);
+  el('broadenSearch').hidden = onlinePapers() || !Object.values(controls).some(control => !control.disabled && control.value);
   el('searchCoverage').hidden = !state.submitted || (!state.indexedDone && !state.liveDone);
   el('coverageText').textContent = `${state.indexedFailed ? 'Library search is unavailable' : state.indexedDone ? `${state.total.toLocaleString()} library matches` : 'Library search is still running'}. ${state.liveFailed ? 'Connected search is unavailable' : state.liveDone ? `${state.liveHits.length} matches returned by available connected sources` : 'Connected sources are still being searched'}. Connected sources return up to 20 matches each, with up to five per offline archive; filters apply to that sample.`;
   if (onlinePapers()) {
@@ -500,6 +627,15 @@ async function runSearch(event, {append = false, pushHistory = true} = {}) {
   if (event) event.preventDefault();
   if (append && (state.loading || !state.hasMore || !state.submitted)) return;
   if (!append) {
+    el('inputError').hidden = true;
+    beforeEl.removeAttribute('aria-invalid');
+    if (controls.kind.value !== 'online-paper' && afterEl.value && beforeEl.value && afterEl.value > beforeEl.value) {
+      el('inputError').textContent = 'The end date must be on or after the start date.';
+      el('inputError').hidden = false;
+      beforeEl.setAttribute('aria-invalid', 'true');
+      toggleFilters(true); beforeEl.focus(); return;
+    }
+    el('copyStatus').textContent = '';
     updateSearchMode();
     state.controller?.abort(); state.controller = new AbortController(); state.generation++;
     state.submitted = params().toString(); state.loading = false; state.liveLoading = false;
@@ -508,10 +644,15 @@ async function runSearch(event, {append = false, pushHistory = true} = {}) {
     if (!queryEl.value.trim()) {
       resultsEl.removeAttribute('aria-busy');
       el('resultTools').hidden = true; el('emptyState').hidden = false;
-      el('emptyTitle').textContent = onlinePapers() ? 'Search online papers' : 'Search across your server'; el('emptyMessage').textContent = 'Enter a title, phrase, name or topic.';
+      document.title = 'Search';
+      el('resultsHeading').hidden = true;
+      showDiscovery();
       return;
     }
     el('resultTools').hidden = false; el('emptyState').hidden = true; statusEl.textContent = 'Searching your library…';
+    el('resultsHeading').hidden = false; el('resultsHeading').textContent = `Results for “${queryEl.value.trim()}”`;
+    document.title = `${queryEl.value.trim()} — Search`;
+    el('starters').hidden = true; el('examples').hidden = true;
     if (onlinePapers()) {
       state.indexedDone = true;
       resultsEl.setAttribute('aria-busy', 'true');
@@ -558,7 +699,10 @@ async function runIndexed(append = false) {
     }
   }
 }
-function clearFilters() { for (const control of Object.values(controls)) control.value = ''; runSearch(); el('filterToggle').focus(); }
+function clearFilters(resetKind = false) {
+  for (const [key, control] of Object.entries(controls)) if (key !== 'kind' || resetKind) control.value = '';
+  runSearch(); el('filterToggle').focus();
+}
 async function loadSources() {
   try {
     const response = await fetch('/api/sources');
@@ -577,11 +721,26 @@ async function loadSources() {
     updateActiveFilters();
   } catch (error) { el('sourcesError').textContent = error.message; el('sourcesError').hidden = controls.kind.value === 'online-paper'; }
 }
+el('broadenSearch').addEventListener('click', () => { queryEl.value = new URLSearchParams(state.submitted || '').get('q') || ''; clearFilters(true); });
+el('editQuery').addEventListener('click', () => { queryEl.focus(); queryEl.select(); });
+el('helpToggle').addEventListener('click', () => {
+  const open = el('searchGuide').hidden; el('searchGuide').hidden = !open; el('helpToggle').setAttribute('aria-expanded', String(open));
+});
+el('compactView').addEventListener('click', () => {
+  const compact = el('compactView').getAttribute('aria-pressed') !== 'true';
+  resultsEl.setAttribute('data-compact', String(compact)); el('compactView').setAttribute('aria-pressed', String(compact));
+});
+el('copySearch').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(`${location.origin}${location.pathname}?${state.submitted}`);
+    el('copyStatus').textContent = 'Search link copied. Recipients need access to the same sources.';
+  } catch { el('copyStatus').textContent = 'Could not copy. Copy the search link from your browser’s address bar.'; }
+});
 el('searchForm').addEventListener('submit', runSearch);
 for (const control of [...Object.values(controls), sortEl, pageSizeEl]) control.addEventListener('change', runSearch);
 el('filterToggle').addEventListener('click', () => toggleFilters());
 el('showResults').addEventListener('click', () => { toggleFilters(false); el('resultsRegion').focus(); });
-el('clearFilters').addEventListener('click', clearFilters);
+el('clearFilters').addEventListener('click', () => clearFilters());
 el('loadMore').addEventListener('click', () => runSearch(null, {append: true}));
 el('retrySearch').addEventListener('click', () => runIndexed(state.hits.length > 0));
 el('retryLive').addEventListener('click', () => { if (!state.liveLoading && state.submitted) void runLive(state.generation, state.submitted, state.controller.signal); });
@@ -592,7 +751,9 @@ window.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !el('filtersPanel').hidden) { toggleFilters(false); el('filterToggle').focus(); }
 });
 window.addEventListener('popstate', () => { readUrlState(); runSearch(null, {pushHistory: false}); });
+initDiscovery();
 const hadQuery = readUrlState();
+if (!hadQuery) showDiscovery();
 renderFacets({});
 void loadSources();
 if (hadQuery) void runSearch(null, {pushHistory: false});
