@@ -197,6 +197,9 @@ spawn_terminal() {
     kitty) setsid kitty "$@" >/dev/null 2>&1 & ;;
     *) setsid "$terminal" -e "$@" >/dev/null 2>&1 & ;;
   esac
+  # Keep the launching terminal alive until its child has finished. Otherwise
+  # closing the parent PTY can send SIGHUP before the new terminal calls setsid.
+  wait "$!"
 }
 
 broadcast_local_shutdown() {
