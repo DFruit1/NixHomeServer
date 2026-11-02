@@ -1389,6 +1389,27 @@ original fingerprint, and is applied by a network-isolated broker with
 no-overwrite semantics. Movie and TV years remain absent when unknown; the
 current/conversion year is never substituted.
 
+Expired preview staging that fails fingerprint verification stays pending with an
+error recorded on its mutation action. Automatic cleanup skips these conflicts;
+inspect the preserved staging and action error before explicitly clearing the
+error to retry cleanup. Recovery failures mark the plan failed, retaining pending
+actions for the existing explicit plan retry flow.
+
+Video probe failures retry after five minutes; successful probes remain cached
+until the source fingerprint changes. List refresh and subtitle search share one
+probe slot. Browser fallback conversion keeps the existing quality and range
+behavior, with an eight-hour wall deadline and a twenty-minute output-growth
+deadline. Cold playback still waits for a whole-file encode and faststart before
+headers; these bounds prevent a wedged encoder monopolizing the slot but do not
+make cold playback immediate.
+
+Completed fallback MP4s under `video-transcodes` have a 20 GiB byte budget and
+seven-day retention, maintained lazily during cold conversions. Oldest completed
+files are evicted first; a single larger output is rejected. An active temporary
+encode may temporarily add up to another 20 GiB. Request-specific temporary
+files are excluded from eviction, and already-open streams survive unlinking.
+Crash-left temporary files are not reclaimed by this maintenance.
+
 The metadata editor opens in inspection mode. It compares filename and sidecar
 values with fresh, bounded Jellyfin, Audiobookshelf, or Kavita API snapshots
 and shows the effective source for each field. Create a draft to unlock the

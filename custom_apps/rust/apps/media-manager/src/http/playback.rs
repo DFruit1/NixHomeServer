@@ -1,10 +1,57 @@
 use super::*;
 use crate::capabilities::MediaAction;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 
 static VIDEO_TRANSCODE_LIMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+// Lazy maintenance runs under the existing sole encoder permit. Completed
+// files only: request-specific temporary outputs have an additional '-' part.
+// Unlinking preserves Unix descriptors already opened by active streams.
+const TRANSCODE_CACHE_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+fn trim_transcode_cache(root: &FilePath, budget: u64, reserve: u64) -> Result<(), String> {
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let parts = name.trim_end_matches(".mp4").split('-').collect::<Vec<_>>();
+        if !name.ends_with(".mp4")
+            || parts.len() != 3
+            || parts[0] != "item"
+            || parts[1].len() != 32
+            || parts[2].len() != 64
+            || parts[1..]
+                .iter()
+                .any(|part| !part.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            continue;
+        }
+        let meta = entry.metadata().map_err(|error| error.to_string())?;
+        if !entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_file()
+        {
+            continue;
+        }
+        let modified = meta.modified().map_err(|error| error.to_string())?;
+        entries.push((modified, meta.len(), entry.path()));
+    }
+    entries.sort_by_key(|entry| entry.0);
+    let mut total = entries
+        .iter()
+        .fold(reserve, |sum, entry| sum.saturating_add(entry.1));
+    for (modified, size, path) in entries {
+        let expired = modified.elapsed().unwrap_or_default() > Duration::from_secs(7 * 86400);
+        if expired || total > budget {
+            std::fs::remove_file(path).map_err(|error| error.to_string())?;
+            total = total.saturating_sub(size);
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -266,10 +313,11 @@ pub(super) async fn item_stream(
                 }
                 std::fs::create_dir_all(&cache_root_for_worker)
                     .map_err(|error| error.to_string())?;
+                trim_transcode_cache(&cache_root_for_worker, TRANSCODE_CACHE_BYTES, 0)?;
                 let input =
                     open_regular_file_beneath(FilePath::new(&source_root), &source_relative)
                         .map_err(|error| error.to_string())?;
-                let status = Command::new(ffmpeg_path)
+                let mut child = Command::new(ffmpeg_path)
                     .args([
                         "-hide_banner",
                         "-loglevel",
@@ -296,14 +344,61 @@ pub(super) async fn item_stream(
                     ])
                     .arg(&temp)
                     .stdin(Stdio::from(input))
-                    .status()
+                    .spawn()
                     .map_err(|error| format!("start ffmpeg: {error}"))?;
+                let started = Instant::now();
+                let mut changed = started;
+                let mut previous = 0;
+                let status = loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => break status,
+                        Ok(None) => {}
+                        Err(error) => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            let _ = std::fs::remove_file(&temp);
+                            return Err(format!("wait for ffmpeg: {error}"));
+                        }
+                    }
+                    let size = std::fs::metadata(&temp).map(|meta| meta.len()).unwrap_or(0);
+                    if size != previous {
+                        previous = size;
+                        changed = Instant::now();
+                    }
+                    // Preserve quality; bound a wedged encoder and faststart pass.
+                    if size > TRANSCODE_CACHE_BYTES
+                        || started.elapsed() > Duration::from_secs(8 * 3600)
+                        || changed.elapsed() > Duration::from_secs(20 * 60)
+                    {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = std::fs::remove_file(&temp);
+                        return Err("ffmpeg exceeded encode or no-progress deadline".to_string());
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                };
                 if !status.success() {
                     let _ = std::fs::remove_file(&temp);
                     return Err(format!("ffmpeg exited with status {status}"));
                 }
+                let size = std::fs::metadata(&temp)
+                    .map_err(|error| error.to_string())?
+                    .len();
+                if size > TRANSCODE_CACHE_BYTES {
+                    let _ = std::fs::remove_file(&temp);
+                    return Err("converted video exceeds cache admission limit".to_string());
+                }
+                if let Err(error) =
+                    trim_transcode_cache(&cache_root_for_worker, TRANSCODE_CACHE_BYTES, size)
+                {
+                    let _ = std::fs::remove_file(&temp);
+                    return Err(error);
+                }
                 if !output.is_file() {
-                    std::fs::rename(&temp, &output).map_err(|error| error.to_string())?;
+                    if let Err(error) = std::fs::rename(&temp, &output) {
+                        let _ = std::fs::remove_file(&temp);
+                        return Err(error.to_string());
+                    }
                 } else {
                     let _ = std::fs::remove_file(&temp);
                 }
