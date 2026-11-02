@@ -241,4 +241,40 @@ describe("music player playback options", () => {
     expect(panel).toContain("Random order inside Blue Hour (2 tracks).");
     expect(panel).toContain("Random order across all 3 tracks");
   });
+  // Resume handling regressed during two review fixes; exercise the real QRL
+  // path so an unplayed preselection cannot overwrite retained progress.
+  it("resumes a preselected audiobook without saving its initial zero", async () => {
+    const fallback = playerFetch();
+    const writes: number[] = [];
+    let reads = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path.endsWith("/roots")) return new Response(wireJson([roots[2]]));
+        if (path.endsWith("/items/book-1/playback")) {
+          if (init?.method === "PUT") {
+            writes.push(JSON.parse(String(init.body)).position);
+            return new Response(wireJson({ saved: true }));
+          }
+          reads++;
+          return new Response(wireJson({ position: 600 }));
+        }
+        return fallback(input);
+      }),
+    );
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="player" />);
+    await vi.waitFor(() => expect(screen.textContent).toContain("A Novel"));
+    const audio = screen.querySelector<HTMLAudioElement>("audio")!;
+    Object.assign(audio, {
+      currentTime: 0,
+      load: () => {},
+      play: () => Promise.resolve(),
+    });
+    await userEvent(screen.querySelector('button[aria-label="Play"]'), "click");
+    await vi.waitFor(() => expect(audio.currentTime).toBe(600));
+    expect(reads).toBe(1);
+    expect(writes).toEqual([]);
+  });
 });

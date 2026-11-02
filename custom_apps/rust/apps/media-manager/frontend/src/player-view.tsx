@@ -39,6 +39,8 @@ export const PlayerView = component$<{
   const search = useSignal("");
   const lastSavedPosition = useSignal(0);
   const playbackGeneration = useSignal(0);
+  const activeTrackId = useSignal("");
+  const resumedGeneration = useSignal(-1);
   const localPositions = useStore<Record<string, number>>({});
   const positionWrites = useStore({
     running: false,
@@ -150,44 +152,58 @@ export const PlayerView = component$<{
     await loadTracks();
   });
 
-  const savePlaybackPosition = $(async () => {
-    const track = playerState.tracks[playerState.currentIndex];
-    if (!track || track.mediaKind !== "audiobook") return;
-    const position = Math.floor(playerState.currentTime);
-    if (!Number.isFinite(position) || position < 0) return;
-    localPositions[track.id] = position;
-    if (position === lastSavedPosition.value && !positionWrites.running) return;
-    const pending = {
-      id: track.id,
-      position,
-      generation: playbackGeneration.value,
-    };
-    const queued = positionWrites.pending.findIndex(
-      (write) => write.id === track.id,
-    );
-    if (queued >= 0) positionWrites.pending[queued] = pending;
-    else positionWrites.pending.push(pending);
-    if (positionWrites.running) return;
-    positionWrites.running = true;
-    try {
-      while (positionWrites.pending.length) {
-        const write = positionWrites.pending.shift()!;
-        try {
-          await api(`/items/${encodeURIComponent(write.id)}/playback`, {
-            method: "PUT",
-            body: JSON.stringify({ position: write.position }),
-          });
-          if (write.generation === playbackGeneration.value) {
-            lastSavedPosition.value = write.position;
+  const savePlaybackPosition = $(
+    async (snapshot?: { id: string; position: number; generation: number }) => {
+      const track = playerState.tracks[playerState.currentIndex];
+      if (
+        !snapshot &&
+        (!track ||
+          track.mediaKind !== "audiobook" ||
+          activeTrackId.value !== track.id ||
+          resumedGeneration.value !== playbackGeneration.value)
+      )
+        return;
+      const pending = snapshot ?? {
+        id: track!.id,
+        position: Math.floor(playerState.currentTime),
+        generation: playbackGeneration.value,
+      };
+      const position = pending.position;
+      if (!Number.isFinite(position) || position < 0) return;
+      localPositions[pending.id] = position;
+      if (
+        pending.generation === playbackGeneration.value &&
+        position === lastSavedPosition.value &&
+        !positionWrites.running
+      )
+        return;
+      const queued = positionWrites.pending.findIndex(
+        (write) => write.id === pending.id,
+      );
+      if (queued >= 0) positionWrites.pending[queued] = pending;
+      else positionWrites.pending.push(pending);
+      if (positionWrites.running) return;
+      positionWrites.running = true;
+      try {
+        while (positionWrites.pending.length) {
+          const write = positionWrites.pending.shift()!;
+          try {
+            await api(`/items/${encodeURIComponent(write.id)}/playback`, {
+              method: "PUT",
+              body: JSON.stringify({ position: write.position }),
+            });
+            if (write.generation === playbackGeneration.value) {
+              lastSavedPosition.value = write.position;
+            }
+          } catch {
+            // Leave the saved marker unchanged so the next pause/timer can retry.
           }
-        } catch {
-          // Leave the saved marker unchanged so the next pause/timer can retry.
         }
+      } finally {
+        positionWrites.running = false;
       }
-    } finally {
-      positionWrites.running = false;
-    }
-  });
+    },
+  );
 
   const loadPlaybackPosition = $(
     async (track: CatalogItem, generation: number): Promise<void> => {
@@ -216,8 +232,9 @@ export const PlayerView = component$<{
               localPositions[track.id] != null ? -1 : Math.floor(position);
           }
         }
+        resumedGeneration.value = generation;
       } catch {
-        /* position unavailable */
+        // An unknown resume record must not be replaced by the initial zero.
       }
     },
   );
@@ -244,8 +261,23 @@ export const PlayerView = component$<{
   const playTrack = $((index: number) => {
     const audio = audioRef.value;
     if (!audio || index < 0 || index >= playerState.tracks.length) return;
-    savePlaybackPosition();
+    const previous = playerState.tracks[playerState.currentIndex];
+    if (
+      previous?.mediaKind === "audiobook" &&
+      activeTrackId.value === previous.id &&
+      resumedGeneration.value === playbackGeneration.value
+    ) {
+      const snapshot = {
+        id: previous.id,
+        position: Math.floor(playerState.currentTime),
+        generation: playbackGeneration.value,
+      };
+      // Capture before a lazy QRL save can run against the next track's state.
+      localPositions[previous.id] = snapshot.position;
+      void savePlaybackPosition(snapshot);
+    }
     const generation = ++playbackGeneration.value;
+    resumedGeneration.value = -1;
     playerState.currentIndex = index;
     playerState.dismissedNext = [];
     started.value = true;
@@ -258,6 +290,7 @@ export const PlayerView = component$<{
       playerState.shuffleOrder,
     );
     const track = playerState.tracks[index];
+    activeTrackId.value = track.id;
     audio.src = `/api/v1/items/${encodeURIComponent(track.id)}/stream`;
     audio.load?.();
 
@@ -385,6 +418,7 @@ export const PlayerView = component$<{
     const audio = audioRef.value;
     if (audio) {
       playbackGeneration.value++;
+      resumedGeneration.value = playbackGeneration.value;
       audio.currentTime = time;
       playerState.currentTime = time;
     }
