@@ -39,6 +39,7 @@ export const PlayerView = component$<{
   const search = useSignal("");
   const lastSavedPosition = useSignal(0);
   const playbackGeneration = useSignal(0);
+  const localPositions = useStore<Record<string, number>>({});
   const positionWrites = useStore({
     running: false,
     pending: [] as { id: string; position: number; generation: number }[],
@@ -154,6 +155,7 @@ export const PlayerView = component$<{
     if (!track || track.mediaKind !== "audiobook") return;
     const position = Math.floor(playerState.currentTime);
     if (!Number.isFinite(position) || position < 0) return;
+    localPositions[track.id] = position;
     if (position === lastSavedPosition.value && !positionWrites.running) return;
     const pending = {
       id: track.id,
@@ -191,20 +193,27 @@ export const PlayerView = component$<{
     async (track: CatalogItem, generation: number): Promise<void> => {
       if (track.mediaKind !== "audiobook") return;
       try {
-        const result = await api<{ position: number | null }>(
-          `/items/${encodeURIComponent(track.id)}/playback`,
-        );
+        const result =
+          localPositions[track.id] != null
+            ? { position: localPositions[track.id] }
+            : await api<{ position: number | null }>(
+                `/items/${encodeURIComponent(track.id)}/playback`,
+              );
         if (
           generation !== playbackGeneration.value ||
           playerState.tracks[playerState.currentIndex]?.id !== track.id
         )
           return;
-        if (result.position != null && result.position > 0) {
+        // A queued/in-flight write is newer than the server's resume record.
+        const position = localPositions[track.id] ?? result.position;
+        if (position != null && position >= 0) {
           const audio = audioRef.value;
           if (audio) {
-            audio.currentTime = result.position;
-            playerState.currentTime = result.position;
-            lastSavedPosition.value = Math.floor(result.position);
+            audio.currentTime = position;
+            playerState.currentTime = position;
+            // A local resume may still need persistence, including a failed PUT.
+            lastSavedPosition.value =
+              localPositions[track.id] != null ? -1 : Math.floor(position);
           }
         }
       } catch {

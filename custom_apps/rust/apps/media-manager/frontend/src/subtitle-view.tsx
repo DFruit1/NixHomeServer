@@ -602,7 +602,7 @@ export const SubtitleView = component$<{
     subtitle.content = undefined;
     subtitle.error = "";
     try {
-      for (let attempt = 0; attempt < 20; attempt += 1) {
+      for (let attempt = 0; current(); attempt += 1) {
         if (!current()) return;
         const result = await catalogItems(rootId, current, true);
         if (!current()) return;
@@ -618,7 +618,8 @@ export const SubtitleView = component$<{
           subtitle.itemId = firstVideo?.id ?? "";
         }
         if (!result.probePending) break;
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        const delay = Math.min(1000 * 2 ** Math.min(attempt, 4), 15000);
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     } catch (error) {
       if (current()) subtitle.error = readableError(error);
@@ -627,8 +628,11 @@ export const SubtitleView = component$<{
     }
   });
 
-  useVisibleTask$(async () => {
-    if (!props.item && subtitle.rootId) await loadVideos(subtitle.rootId);
+  useVisibleTask$(({ cleanup }) => {
+    cleanup(() => {
+      loadGeneration.value++;
+    });
+    if (!props.item && subtitle.rootId) void loadVideos(subtitle.rootId);
   });
 
   const search = $(async () => {
