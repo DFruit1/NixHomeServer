@@ -316,7 +316,44 @@ def parse_handbrake_json(text: str) -> dict[str, Any]:
     return value
 
 
-def scan_titles(handbrake: str, source: Path) -> list[Title]:
+def stop_process_tree(process: subprocess.Popen) -> None:
+    # Converter and HandBrake use distinct process groups. Snapshot descendant
+    # groups before interruption so escalation still reaches orphaned children.
+    groups = {process.pid}
+    def collect(pid: int) -> None:
+        try:
+            children = Path(f"/proc/{pid}/task/{pid}/children").read_text().split()
+        except OSError:
+            return
+        for child in children:
+            try:
+                group = os.getpgid(int(child))
+                if group != os.getpgrp():
+                    groups.add(group)
+                collect(int(child))
+            except ProcessLookupError:
+                pass
+    collect(process.pid)
+    for group in groups:
+        try:
+            os.killpg(group, signal.SIGINT)
+        except ProcessLookupError:
+            pass
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
+    finally:
+        for group in groups:
+            try:
+                os.killpg(group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        process.wait()
+
+
+def scan_titles(handbrake: str, source: Path, renew_lease: Any | None = None,
+                renew_interval: float = 40) -> list[Title]:
     command = [
         handbrake,
         "--input",
@@ -332,14 +369,30 @@ def scan_titles(handbrake: str, source: Path) -> list[Title]:
     # Those labels are not guaranteed to be valid UTF-8, while the JSON title
     # set itself is ASCII/UTF-8. Preserve the scan and replace only malformed
     # diagnostic characters instead of failing the entire queue item.
-    result = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, encoding="utf-8", errors="replace",
+                          start_new_session=True) as process:
+        try:
+            deadline = time.monotonic() + 10 * 60
+            renew_after = time.monotonic()
+            while True:
+                if shutdown_signal is not None:
+                    raise ShutdownRequested("shutdown during HandBrake scan")
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("HandBrake scan exceeded 10-minute deadline")
+                if renew_lease is not None and time.monotonic() >= renew_after:
+                    if not renew_lease():
+                        raise LeaseLost("queue lease was lost during HandBrake scan")
+                    renew_after = time.monotonic() + max(1.0, renew_interval)
+                try:
+                    stdout, stderr = process.communicate(timeout=0.5)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        except BaseException:
+            stop_process_tree(process)
+            raise
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()[-2000:]
         raise RuntimeError(f"HandBrake scan failed ({result.returncode}): {detail}")
@@ -779,8 +832,10 @@ def provider_id(show: dict[str, Any]) -> str | None:
     return None
 
 
-def build_plan(args: argparse.Namespace, source: Path) -> dict[str, Any]:
-    titles = scan_titles(args.handbrake, source)
+def build_plan(args: argparse.Namespace, source: Path,
+               renew_lease: Any | None = None) -> dict[str, Any]:
+    titles = scan_titles(args.handbrake, source, renew_lease,
+                         getattr(args, "lease_seconds", 120) / 3)
     hints = source_hints(source)
     trailing_existing = None
     if hints.trailing_series is not None:
@@ -1175,7 +1230,7 @@ def process_source(
 ) -> None:
     plan = entry.get("plan")
     if not isinstance(plan, dict):
-        plan = build_plan(args, source)
+        plan = build_plan(args, source, renew_lease)
         entry["plan"] = plan
         entry["status"] = "planned"
     print(
@@ -1189,34 +1244,28 @@ def process_source(
     process = subprocess.Popen(
         command,
         env={**os.environ, "MKVMAKER_WORKER_ID": args.worker_id},
+        start_new_session=True,
     )
     renew_after = time.monotonic() + max(1.0, args.lease_seconds / 3)
-    while True:
-        if shutdown_signal is not None:
-            if process.poll() is None:
-                process.send_signal(signal.SIGINT)
+    deadline = time.monotonic() + 24 * 3600
+    try:
+        while True:
+            if shutdown_signal is not None:
+                raise ShutdownRequested(f"received {signal.Signals(shutdown_signal).name}")
+            if time.monotonic() >= deadline:
+                raise RuntimeError("converter exceeded 24-hour deadline")
+            if renew_lease is not None and time.monotonic() >= renew_after:
+                if not renew_lease():
+                    raise LeaseLost(f"queue lease for {source.name} could not be renewed")
+                renew_after = time.monotonic() + max(1.0, args.lease_seconds / 3)
             try:
-                process.wait(timeout=30)
+                return_code = process.wait(timeout=0.5)
+                break
             except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-            raise ShutdownRequested(f"received {signal.Signals(shutdown_signal).name}")
-        if renew_lease is not None and time.monotonic() >= renew_after:
-            if not renew_lease():
-                if process.poll() is None:
-                    process.send_signal(signal.SIGINT)
-                try:
-                    process.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-                raise LeaseLost(f"queue lease for {source.name} could not be renewed")
-            renew_after = time.monotonic() + max(1.0, args.lease_seconds / 3)
-        try:
-            return_code = process.wait(timeout=0.5)
-            break
-        except subprocess.TimeoutExpired:
-            continue
+                continue
+    except BaseException:
+        stop_process_tree(process)
+        raise
     if return_code in (130, -signal.SIGINT, -signal.SIGTERM):
         raise ShutdownRequested(f"converter stopped with status {return_code}")
     if return_code != 0:

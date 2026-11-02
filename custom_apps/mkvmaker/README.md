@@ -130,6 +130,17 @@ Run `./disc-to-jellyfin --help` for every option.
   `~/.local/state/disc-to-jellyfin/jobs`.
 - `--dry-run` prints the complete plan and exact HandBrake commands.
 
+## Process deadlines
+
+HandBrake scans have a ten-minute deadline. Encodes keep the selected quality
+and have a 24-hour wall deadline plus a thirty-minute output-growth deadline.
+Output validation has a sixty-second deadline and a 4 MiB output limit per
+stream. Cancellation and timeout kill the child process group and reap the
+leader; failed active partial outputs are removed through the normal error path.
+The import supervisor also bounds the converter to 24 hours and terminates its
+descendant groups on shutdown, lease loss, or timeout, allowing queue retry and
+later items to proceed.
+
 ## Developer verification
 
 ```sh

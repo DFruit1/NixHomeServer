@@ -11,8 +11,8 @@ use std::{
     ffi::{OsStr, OsString},
     fs,
     hash::{Hash, Hasher},
-    io::{BufRead, BufReader, Write},
-    os::unix::fs::PermissionsExt,
+    io::{BufRead, BufReader, Read, Write},
+    os::unix::{fs::PermissionsExt, process::CommandExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -20,7 +20,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 mod progress;
@@ -924,8 +924,8 @@ fn handbrake_version() -> Result<String> {
 }
 
 fn scan_disc(iso: &Path) -> Result<DiscScan> {
-    let output = Command::new(handbrake_program())
-        .args([
+    let output = bounded_output(
+        Command::new(handbrake_program()).args([
             "--input",
             &iso.to_string_lossy(),
             "--title",
@@ -934,9 +934,10 @@ fn scan_disc(iso: &Path) -> Result<DiscScan> {
             "0",
             "--scan",
             "--json",
-        ])
-        .output()
-        .with_context(|| format!("could not scan {}", iso.display()))?;
+        ]),
+        Duration::from_secs(10 * 60),
+    )
+    .with_context(|| format!("could not scan {}", iso.display()))?;
     if !output.status.success() {
         bail!(
             "HandBrake scan failed for {}:\n{}",
@@ -1492,6 +1493,7 @@ fn encode(job: &Job, cancelled: &AtomicBool, progress: Option<ProgressContext>) 
         eprintln!("Warning: could not publish encode progress: {error:#}");
     }
     let mut child = cmd
+        .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1510,20 +1512,41 @@ fn encode(job: &Job, cancelled: &AtomicBool, progress: Option<ProgressContext>) 
     let error_log = Arc::clone(&log);
     let error_thread = thread::spawn(move || relay_log(stderr, error_log));
     println!("HandBrake output is being saved to {}", log_path.display());
+    let started = Instant::now();
+    let mut changed = started;
+    let mut previous_size = 0;
     let status = loop {
-        if cancelled.load(AtomicOrdering::SeqCst) {
-            child.kill().ok();
-            child.wait().ok();
+        let size = fs::metadata(&partial)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        if size != previous_size {
+            previous_size = size;
+            changed = Instant::now();
+        }
+        if cancelled.load(AtomicOrdering::SeqCst)
+            || started.elapsed() > Duration::from_secs(24 * 3600)
+            || changed.elapsed() > Duration::from_secs(30 * 60)
+        {
+            stop_child_group(&mut child);
             let _ = progress_thread.join();
             let _ = error_thread.join();
             let _ = fs::remove_file(&partial);
-            bail!("encoding cancelled");
+            bail!("encoding cancelled or exceeded encode/no-progress deadline");
         }
-        if let Some(status) = child.try_wait()? {
-            break status;
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                stop_child_group(&mut child);
+                let _ = progress_thread.join();
+                let _ = error_thread.join();
+                let _ = fs::remove_file(&partial);
+                return Err(error.into());
+            }
         }
         thread::sleep(Duration::from_millis(250));
     };
+    stop_child_group(&mut child);
     progress_thread
         .join()
         .map_err(|_| anyhow::anyhow!("progress reader panicked"))??;
@@ -1539,7 +1562,14 @@ fn encode(job: &Job, cancelled: &AtomicBool, progress: Option<ProgressContext>) 
         let _ = fs::remove_file(&partial);
         return Err(error).context("could not remove the encode date from the Matroska output");
     }
-    if !validate_output(&partial, job)? {
+    let valid = match validate_output(&partial, job) {
+        Ok(valid) => valid,
+        Err(error) => {
+            let _ = fs::remove_file(&partial);
+            return Err(error);
+        }
+    };
+    if !valid {
         let _ = fs::remove_file(&partial);
         bail!("output validation failed; see {}", log_path.display());
     }
@@ -1893,11 +1923,64 @@ fn track_list(count: usize, duplicate: bool) -> String {
         .join(",")
 }
 
+fn stop_child_group(child: &mut std::process::Child) {
+    // Every bounded child starts its own process group. Kill descendants before
+    // reaping the leader, including processes holding progress pipes open.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.wait();
+}
+
+fn bounded_output(command: &mut Command, timeout: Duration) -> Result<std::process::Output> {
+    let mut child = command
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child.stdout.take().context("missing stdout")?;
+    let stderr = child.stderr.take().context("missing stderr")?;
+    fn capture(reader: impl Read) -> std::io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        reader.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+    let out = thread::spawn(move || capture(stdout));
+    let err = thread::spawn(move || capture(stderr));
+    let started = Instant::now();
+    let result = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(100)),
+            Ok(None) => break Err(anyhow::anyhow!("subprocess exceeded deadline")),
+            Err(error) => break Err(error.into()),
+        }
+    };
+    // Also kill lingering descendants after a leader exits, before pipe joins.
+    stop_child_group(&mut child);
+    let stdout = out
+        .join()
+        .map_err(|_| anyhow::anyhow!("stdout reader panicked"))??;
+    let stderr = err
+        .join()
+        .map_err(|_| anyhow::anyhow!("stderr reader panicked"))??;
+    let status = result?;
+    if stdout.len() > 4 * 1024 * 1024 || stderr.len() > 4 * 1024 * 1024 {
+        bail!("subprocess output exceeds safe limit");
+    }
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 fn validate_output(path: &Path, job: &Job) -> Result<bool> {
     if !path.exists() || fs::metadata(path)?.len() == 0 {
         return Ok(false);
     }
-    let output = Command::new(ffprobe_program())
+    let output = bounded_output(Command::new(ffprobe_program())
         .args([
             "-v",
             "error",
@@ -1906,8 +1989,7 @@ fn validate_output(path: &Path, job: &Job) -> Result<bool> {
             "-of",
             "json",
         ])
-        .arg(path)
-        .output()?;
+        .arg(path), Duration::from_secs(60))?;
     if !output.status.success() {
         return Ok(false);
     }
