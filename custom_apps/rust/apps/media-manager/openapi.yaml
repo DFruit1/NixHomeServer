@@ -764,6 +764,41 @@ paths:
             image/jxl: {}
         "404":
           $ref: "#/components/responses/Error"
+  /items/{itemId}/stream:
+    parameters:
+      - in: path
+        name: itemId
+        required: true
+        schema: { type: string }
+      - in: query
+        name: transcode
+        description: Request the cached browser-compatible MP4 for a video.
+        schema: { type: integer, enum: [1] }
+    get:
+      operationId: streamCatalogItem
+      description: Streams authorized audio/video with byte-range support. Cold converted streams wait for preparation; browser clients should first poll HEAD.
+      responses:
+        "200":
+          description: Media bytes.
+          content:
+            application/octet-stream: {}
+        "206":
+          description: Requested byte range.
+        "415":
+          $ref: "#/components/responses/Error"
+    head:
+      operationId: prepareCatalogItemStream
+      description: With transcode=1, starts bounded background video preparation or checks readiness without waiting for encoding. Poll 202 responses until 200 before issuing GET. Recent conversion failures return 415 for one minute before retry is allowed. Authentication and root visibility match GET.
+      responses:
+        "200":
+          description: The stream is ready.
+        "202":
+          description: Video preparation is running, or the sole encoder is busy. Retry this check.
+          headers:
+            Retry-After:
+              schema: { type: integer }
+        "415":
+          $ref: "#/components/responses/Error"
   /items/{itemId}/playback-targets:
     get:
       operationId: getItemPlaybackTargets

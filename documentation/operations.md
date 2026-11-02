@@ -1399,9 +1399,13 @@ Video probe failures retry after five minutes; successful probes remain cached
 until the source fingerprint changes. List refresh and subtitle search share one
 probe slot. Browser fallback conversion keeps the existing quality and range
 behavior, with an eight-hour wall deadline and a twenty-minute output-growth
-deadline. Cold playback still waits for a whole-file encode and faststart before
-headers; these bounds prevent a wedged encoder monopolizing the slot but do not
-make cold playback immediate.
+deadline. Browser players poll authenticated HEAD requests to the converted
+stream: 202 means preparation is pending (or the encoder is busy), 200 means
+ready, and 415 reports a recent failed conversion. The first HEAD starts bounded
+background preparation and returns promptly; only then does the player request
+the range-capable MP4 with GET. Recent failures back off for one minute. Encoding
+and faststart still need to finish before video can play; this readiness flow
+keeps the interface responsive without a long-lived media request.
 
 Completed fallback MP4s under `video-transcodes` have a 20 GiB byte budget and
 seven-day retention, maintained lazily during cold conversions. Oldest completed

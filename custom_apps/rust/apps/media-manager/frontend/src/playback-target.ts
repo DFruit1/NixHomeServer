@@ -34,3 +34,43 @@ export function findTargetIndex(
     catalogItemMatchesTarget(item, itemId, path),
   );
 }
+
+/** HEAD prepares the existing range-capable stream without holding a request
+ * open for the encode. GET is used only once the cached MP4 is ready. */
+export async function prepareBrowserPlayback(
+  itemId: string,
+  current: () => boolean,
+): Promise<boolean> {
+  let attempt = 0;
+  while (current()) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
+    let response: Response;
+    try {
+      response = await fetch(
+        `/api/v1/items/${encodeURIComponent(itemId)}/stream?transcode=1`,
+        {
+          method: "HEAD",
+          credentials: "same-origin",
+          cache: "no-store",
+          signal: controller.signal,
+        },
+      );
+    } catch (error) {
+      if (controller.signal.aborted)
+        throw new Error(
+          "Video preparation took too long to respond. Try again.",
+        );
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!current()) return false;
+    if (response.status === 200) return true;
+    if (response.status !== 202)
+      throw new Error("The video could not be prepared for browser playback.");
+    const delay = Math.min(1000 * 2 ** Math.min(attempt++, 3), 8000);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+  return false;
+}

@@ -8,7 +8,7 @@ import {
 } from "@builder.io/qwik";
 import { api, catalogItems, readableError } from "./api";
 import { Icon } from "./icon";
-import { findTargetIndex } from "./playback-target";
+import { findTargetIndex, prepareBrowserPlayback } from "./playback-target";
 import type { CatalogItem, MediaRoot } from "./root-types";
 
 export const VideosView = component$<{
@@ -37,6 +37,7 @@ export const VideosView = component$<{
   );
 
   const loadGeneration = useSignal(0);
+  const preparationGeneration = useSignal(0);
 
   const loadVideos = $(async () => {
     const generation = ++loadGeneration.value;
@@ -96,10 +97,17 @@ export const VideosView = component$<{
   });
 
   const chooseVideo = $((id: string) => {
+    preparationGeneration.value++;
     state.selectedId = id;
     state.transcode = false;
     state.transcodeLoading = false;
     state.error = "";
+  });
+
+  useVisibleTask$(({ cleanup }) => {
+    cleanup(() => {
+      preparationGeneration.value++;
+    });
   });
 
   // Picture-in-Picture is available in Chrome for Android and on desktop
@@ -218,14 +226,26 @@ export const VideosView = component$<{
             playsInline
             preload="metadata"
             src={streamUrl()}
-            onError$={() => {
-              if (!state.transcode) {
-                state.transcode = true;
-                state.transcodeLoading = true;
-              } else {
-                state.transcodeLoading = false;
+            onError$={async () => {
+              if (state.transcodeLoading) return;
+              if (state.transcode) {
                 state.error =
                   "This video could not be played after conversion.";
+                return;
+              }
+              const id = state.selectedId;
+              const generation = ++preparationGeneration.value;
+              const current = () =>
+                generation === preparationGeneration.value &&
+                state.selectedId === id;
+              state.transcodeLoading = true;
+              try {
+                if (await prepareBrowserPlayback(id, current))
+                  state.transcode = true;
+              } catch (error) {
+                if (current()) state.error = readableError(error);
+              } finally {
+                if (current()) state.transcodeLoading = false;
               }
             }}
             onCanPlay$={() => (state.transcodeLoading = false)}

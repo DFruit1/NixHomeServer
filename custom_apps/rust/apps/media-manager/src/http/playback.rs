@@ -7,6 +7,19 @@ use tokio_util::io::ReaderStream;
 
 static VIDEO_TRANSCODE_LIMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
+// Remember bounded recent failures so readiness polls report a failed job
+// rather than immediately launching the same failed encode again.
+static TRANSCODE_FAILURES: std::sync::LazyLock<Mutex<HashMap<String, (Instant, String)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn pending_transcode() -> Response {
+    (
+        StatusCode::ACCEPTED,
+        [("retry-after", "2"), ("cache-control", "no-store")],
+    )
+        .into_response()
+}
+
 // Lazy maintenance runs under the existing sole encoder permit. Completed
 // files only: request-specific temporary outputs have an additional '-' part.
 // Unlinking preserves Unix descriptors already opened by active streams.
@@ -263,6 +276,7 @@ pub(super) async fn item_stream(
         .uri()
         .query()
         .is_some_and(|query| query.split('&').any(|part| part == "transcode=1"));
+    let preparation = transcode && request.method() == axum::http::Method::HEAD;
     let root = match state.config.resolve_visible_root(&identity, &item.root_id) {
         Some(root) => root,
         None => return ApiError::internal(request_id).into_response(),
@@ -297,15 +311,36 @@ pub(super) async fn item_stream(
                 &homelab_common::sha256_hex(request_id.as_bytes())[..12]
             );
             let temp = cache_root.join(temp_name);
+            let failure_key = cache_name.clone();
+            if preparation && !output.is_file() {
+                if let Ok(mut failures) = TRANSCODE_FAILURES.lock() {
+                    failures.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(60));
+                    if failures.contains_key(&failure_key) {
+                        return ApiError::new(
+                            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                            "video_transcode_failed",
+                            "The video could not be converted for browser playback.",
+                            request_id,
+                        )
+                        .into_response();
+                    }
+                }
+            }
             let permit = if output.is_file() {
                 None
+            } else if preparation {
+                match VIDEO_TRANSCODE_LIMIT.try_acquire() {
+                    Ok(permit) => Some(permit),
+                    Err(_) => return pending_transcode(),
+                }
             } else {
                 match VIDEO_TRANSCODE_LIMIT.acquire().await {
                     Ok(permit) => Some(permit),
                     Err(_) => return ApiError::internal(request_id).into_response(),
                 }
             };
-            let result = tokio::task::spawn_blocking(move || {
+            let background = preparation && permit.is_some();
+            let job = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 use crate::broker::open_regular_file_beneath;
                 if output.is_file() {
@@ -403,8 +438,33 @@ pub(super) async fn item_stream(
                     let _ = std::fs::remove_file(&temp);
                 }
                 Ok(())
-            })
-            .await;
+            });
+            if background {
+                let background_request = request_id.clone();
+                tokio::spawn(async move {
+                    let error = match job.await {
+                        Ok(Ok(())) => None,
+                        Ok(Err(error)) => Some(error),
+                        Err(error) => Some(error.to_string()),
+                    };
+                    if let Some(error) = error {
+                        log_event(
+                            "video_transcode_failed",
+                            &background_request,
+                            json!({ "error": error, "cacheKey": failure_key }),
+                        );
+                        if let Ok(mut failures) = TRANSCODE_FAILURES.lock() {
+                            failures.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(60));
+                            if failures.len() >= 64 {
+                                failures.clear();
+                            }
+                            failures.insert(failure_key, (Instant::now(), error));
+                        }
+                    }
+                });
+                return pending_transcode();
+            }
+            let result = job.await;
             match result {
                 Ok(Ok(())) => {
                     root_path = cache_root.to_string_lossy().into_owned();
@@ -434,19 +494,20 @@ pub(super) async fn item_stream(
         audio_content_type(&relative_path)
     };
 
-    let file_size = match tokio::task::spawn_blocking({
+    let (file, file_size) = match tokio::task::spawn_blocking({
         let root_path = root_path.clone();
         let relative_path = relative_path.clone();
         move || {
             use crate::broker::open_regular_file_beneath;
             let file = open_regular_file_beneath(FilePath::new(&root_path), &relative_path)
                 .map_err(|error| error.to_string())?;
-            Ok::<u64, String>(file.metadata().map_err(|e| e.to_string())?.len())
+            let size = file.metadata().map_err(|e| e.to_string())?.len();
+            Ok::<_, String>((file, size))
         }
     })
     .await
     {
-        Ok(Ok(size)) => size,
+        Ok(Ok(file)) => file,
         Ok(Err(error)) => {
             log_event(
                 "audio_read_failed",
@@ -478,36 +539,13 @@ pub(super) async fn item_stream(
         };
         let length = end - start + 1;
 
-        let file = match tokio::task::spawn_blocking({
-            let root_path = root_path.clone();
-            let relative_path = relative_path.clone();
-            move || {
-                use crate::broker::open_regular_file_beneath;
-                let mut file = open_regular_file_beneath(FilePath::new(&root_path), &relative_path)
-                    .map_err(|error| error.to_string())?;
-                use std::io::{Seek, SeekFrom};
-                file.seek(SeekFrom::Start(start))
-                    .map_err(|error| error.to_string())?;
-                Ok::<std::fs::File, String>(file)
-            }
-        })
-        .await
-        {
-            Ok(Ok(file)) => file,
-            Ok(Err(error)) => {
-                log_event(
-                    "audio_read_failed",
-                    &request_id,
-                    json!({ "error": error, "itemId": item_id }),
-                );
-                return ApiError::internal(request_id).into_response();
-            }
-            Err(_) => return ApiError::internal(request_id).into_response(),
-        };
-
-        let body = Body::from_stream(ReaderStream::new(
-            tokio::fs::File::from_std(file).take(length),
-        ));
+        // Keep the same descriptor used for metadata, including across cache
+        // eviction. Reopening by name could fail after an unlink or race a rename.
+        let mut file = tokio::fs::File::from_std(file);
+        if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+            return ApiError::internal(request_id).into_response();
+        }
+        let body = Body::from_stream(ReaderStream::new(file.take(length)));
 
         return (
             StatusCode::PARTIAL_CONTENT,
@@ -530,30 +568,6 @@ pub(super) async fn item_stream(
         )
             .into_response();
     }
-
-    let file = match tokio::task::spawn_blocking({
-        let root_path = root_path.clone();
-        let relative_path = relative_path.clone();
-        move || {
-            use crate::broker::open_regular_file_beneath;
-            let file = open_regular_file_beneath(FilePath::new(&root_path), &relative_path)
-                .map_err(|error| error.to_string())?;
-            Ok::<std::fs::File, String>(file)
-        }
-    })
-    .await
-    {
-        Ok(Ok(file)) => file,
-        Ok(Err(error)) => {
-            log_event(
-                "audio_read_failed",
-                &request_id,
-                json!({ "error": error, "itemId": item_id }),
-            );
-            return ApiError::internal(request_id).into_response();
-        }
-        Err(_) => return ApiError::internal(request_id).into_response(),
-    };
 
     let body = Body::from_stream(ReaderStream::new(tokio::fs::File::from_std(file)));
 

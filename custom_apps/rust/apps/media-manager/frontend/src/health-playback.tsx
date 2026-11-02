@@ -6,11 +6,13 @@ import {
   useContext,
   useContextProvider,
   useSignal,
+  useVisibleTask$,
   type QRL,
 } from "@builder.io/qwik";
 import type { MetadataHealthResult } from "./api-contract.generated";
 import { readableError } from "./api";
 import { Icon } from "./icon";
+import { prepareBrowserPlayback } from "./playback-target";
 
 const PlaybackContext = createContextId<{
   play$: QRL<(target: MetadataHealthResult) => Promise<void>>;
@@ -24,6 +26,13 @@ export const HealthPlayback = component$<{
   const inPip = useSignal(false);
   const transcoded = useSignal(false);
   const error = useSignal("");
+  const preparationGeneration = useSignal(0);
+  const preparing = useSignal(false);
+  useVisibleTask$(({ cleanup }) => {
+    cleanup(() => {
+      preparationGeneration.value++;
+    });
+  });
   const playVideo$ = $(async () => {
     const element = video.value;
     if (!element) return;
@@ -51,6 +60,8 @@ export const HealthPlayback = component$<{
     const element = video.value;
     if (!element) return;
     if (selected.value?.itemId !== target.itemId) {
+      preparationGeneration.value++;
+      preparing.value = false;
       selected.value = target;
       transcoded.value = false;
       element.src = `/api/v1/items/${encodeURIComponent(target.itemId)}/stream`;
@@ -75,12 +86,31 @@ export const HealthPlayback = component$<{
           aria-label={selected.value?.relativePath.split("/").at(-1)}
           onEnterPictureInPicture$={() => (inPip.value = true)}
           onLeavePictureInPicture$={() => (inPip.value = false)}
-          onError$={() => {
-            if (!transcoded.value && selected.value && video.value) {
-              transcoded.value = true;
-              video.value.src = `/api/v1/items/${encodeURIComponent(selected.value.itemId)}/stream?transcode=1`;
-              video.value.load();
-              void playVideo$();
+          onError$={async () => {
+            if (preparing.value) return;
+            const id = selected.value?.itemId;
+            if (!transcoded.value && id && video.value) {
+              const generation = ++preparationGeneration.value;
+              const current = () =>
+                generation === preparationGeneration.value &&
+                selected.value?.itemId === id;
+              preparing.value = true;
+              error.value = "Preparing this video for browser playback…";
+              try {
+                if (
+                  !(await prepareBrowserPlayback(id, current)) ||
+                  !video.value
+                )
+                  return;
+                transcoded.value = true;
+                video.value.src = `/api/v1/items/${encodeURIComponent(id)}/stream?transcode=1`;
+                video.value.load();
+                await playVideo$();
+              } catch (cause) {
+                if (current()) error.value = readableError(cause);
+              } finally {
+                if (current()) preparing.value = false;
+              }
             } else
               error.value = "This video could not be played after conversion.";
           }}
@@ -99,6 +129,8 @@ export const HealthPlayback = component$<{
             type="button"
             class="secondary-button compact-action"
             onClick$={() => {
+              preparationGeneration.value++;
+              preparing.value = false;
               video.value?.pause();
               selected.value = undefined;
             }}
