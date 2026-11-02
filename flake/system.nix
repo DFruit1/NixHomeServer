@@ -30,6 +30,7 @@ let
         inherit lib pkgs vars;
       };
       unstablePkgs = inputs.nixpkgs-unstable.legacyPackages.${system};
+      immichPkgs = inputs.nixpkgs-immich.legacyPackages.${system};
     };
   };
   bootstrapBaseModules = [

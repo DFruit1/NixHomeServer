@@ -16,6 +16,7 @@ let
   });
   pkgs = flake.inputs.nixpkgs.legacyPackages.${vars.hostPlatform};
   unstablePkgs = flake.inputs.nixpkgs-unstable.legacyPackages.${vars.hostPlatform};
+  immichPkgs = flake.inputs.nixpkgs-immich.legacyPackages.${vars.hostPlatform};
   packageData = import ../../flake/packages.nix {
     inherit lib pkgs;
     crane = flake.inputs.crane;
@@ -29,7 +30,7 @@ let
       lib.splitString "," requestedVariants;
 in
 import ../../flake/module-removal-matrix.nix {
-  inherit lib vars pkgs unstablePkgs;
+  inherit lib vars pkgs unstablePkgs immichPkgs;
   inherit (flake.inputs) agenix impermanence filestashNix;
   inherit (packageData) appPackages;
   sourcePath = flake.outPath;

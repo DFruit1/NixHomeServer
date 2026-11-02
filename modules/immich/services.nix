@@ -1,4 +1,4 @@
-{ vars, config, lib, pkgs, unstablePkgs, ... }:
+{ vars, config, lib, pkgs, immichPkgs, ... }:
 
 let
   immichPort = vars.networking.ports.immich;
@@ -24,7 +24,7 @@ in
   config = {
     services.immich = {
       enable = true;
-      package = unstablePkgs.immich;
+      package = immichPkgs.immich;
       host = vars.networking.loopbackIPv4;
       port = immichPort;
       mediaLocation = config.repo.immich.paths.managed;

@@ -5,6 +5,8 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    # Update Immich independently: nix flake update nixpkgs-immich
+    nixpkgs-immich.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     crane.url = "github:ipetkov/crane";
     agenix.url = "github:ryantm/agenix";
     agenix.inputs.nixpkgs.follows = "nixpkgs";
@@ -84,6 +86,7 @@
         impermanence = mkOfflineInput inputs.impermanence;
         nixpkgs = mkOfflineInput inputs.nixpkgs;
         nixpkgs-unstable = mkOfflineInput inputs.nixpkgs-unstable;
+        nixpkgs-immich = mkOfflineInput inputs.nixpkgs-immich;
         parts = mkOfflineInput inputs.filestashNix.inputs.parts;
         systems = mkOfflineInput inputs.agenix.inputs.systems;
         systems_2 = mkOfflineInput inputs.filestashNix.inputs.systems;

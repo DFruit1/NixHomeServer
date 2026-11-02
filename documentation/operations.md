@@ -2673,6 +2673,21 @@ DEPLOY_DRY_RUN=1 ./scripts/deploy.sh --action test
 Use `--build-mode <value>` for a one-shot override. The older
 `--build-locally` flag remains an alias for `--build-mode local`.
 
+## Immich updates
+
+Immich's server and matching machine-learning package come from the dedicated
+`nixpkgs-immich` unstable input. The main OS and other unstable packages keep
+their own locked revisions. An unstable input still uses the revision in
+`flake.lock`; rebuilding alone does not fetch newer releases.
+
+To refresh only Immich's package source, run `nix flake update nixpkgs-immich`.
+Check the resulting Immich version against upstream release notes and mobile
+clients, update the runtime reliability check's expected server and ML versions,
+and verify a recent database backup before activation. Commit the validated
+change, then use the guarded `nix run .#deploy -- --action test` and matching
+`--action switch` procedure. Verify phone search after the update; updating this
+input is deliberate and does not happen automatically on each rebuild.
+
 ## Compute Offload (workstation and server)
 
 Both offload paths already exist and are verified against this server. The
