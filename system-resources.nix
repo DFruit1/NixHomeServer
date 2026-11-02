@@ -3,10 +3,11 @@
 let
   power = {
     enable = true;
-    # This host now runs CPU-side MoE expert evaluation for local inference, and
-    # the amd-pstate-epp driver is already biased to balance_performance. Pin the
-    # governor to performance so bursty prompt processing is not clock-limited.
-    cpuGovernor = "performance";
+    # With amd-pstate-epp, powersave permits workload-driven boosting while
+    # balance_power favours efficiency. The dense language model runs on GPU;
+    # CPU vision encoding and other services can still boost when needed.
+    cpuGovernor = "powersave";
+    cpuEnergyPreference = "balance_power";
     nightlySuspend = {
       # Suspends to RAM (S3): while suspended, Cloudflare Tunnel, DNS, and all
       # hosted services are offline until the RTC wake. The host is re-checked
@@ -538,6 +539,15 @@ in
     environment.systemPackages = systemPackages;
 
     powerManagement.cpuFreqGovernor = power.cpuGovernor;
+    # Apply EPP after cpupower sets the governor: the performance governor
+    # prevents an energy-biased preference on amd-pstate-epp. Older drivers
+    # without EPP retain the configured governor.
+    systemd.services.cpufreq.postStart = ''
+      for preference in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference; do
+        [[ -e "$preference" ]] || continue
+        echo ${lib.escapeShellArg power.cpuEnergyPreference} > "$preference"
+      done
+    '';
     powerManagement.powertop.enable = power.powertopAutoTune;
     powerManagement.scsiLinkPolicy = power.scsiLinkPolicy;
 

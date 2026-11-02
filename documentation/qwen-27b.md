@@ -5,13 +5,22 @@ llama.cpp build and an OpenAI-compatible API. The model is a 27B-parameter dense
 vision-language model with native image and video understanding, tool calling,
 flexible thinking control, and a 262,144-token native context.
 
-For this server, Qwen is the primary local inference endpoint. It starts at boot
-as a loopback-only llama-server with the upstream chat UI. The UI is available at
+This server retains settings for Qwen as its primary local inference endpoint,
+but `qwen-27b` is currently omitted from `applications.enabled` in `vars.nix`.
+When enabled, it starts at boot as a loopback-only llama-server with the upstream
+chat UI. The UI is available at
 `https://ai.<domain>` through the shared Kanidm authentication gateway; access is
 granted to `ai-users`. The same host exposes the OpenAI compatible API to
 signed-in browsers and trusted local clients. Bonsai is currently disabled. If
 both apps are enabled later, the optional background-job integration reserves
 Qwen for on-demand use and coordinates the shared GPU.
+
+When enabled on this server, llama-server unloads the model and KV cache after
+15 minutes without incoming tasks (`--sleep-idle-seconds 900`). The API process stays
+running and reloads the model automatically for the next task, adding a cold
+start delay and requiring the prompt cache to be rebuilt. Health, properties,
+model-list and metrics requests neither wake the model nor reset its idle timer.
+The downloaded model files are retained.
 
 Local clients use the loopback OpenAI-compatible API:
 

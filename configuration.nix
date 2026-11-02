@@ -97,6 +97,9 @@ in
         # generations, and keeps the 128K context inside the card.
         kvCacheType = "q8_0";
         extraArgs = [
+          # Release weights and KV cache after 15 idle minutes. llama-server
+          # stays available and reloads automatically on the next request.
+          "--sleep-idle-seconds" "900"
           # Expose the Prometheus /metrics endpoint so operators can read the
           # active and queued request counters (llamacpp:requests_processing and
           # llamacpp:requests_deferred) as a read-only scalar, without inspecting
