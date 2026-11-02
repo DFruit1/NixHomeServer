@@ -72,7 +72,9 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   doCheck = true;
   checkPhase = ''
     runHook preCheck
-    pnpm run check
+    HOMEPAGE_PROWLARR_REGISTRATION=${../../../../modules/prowlarr/registration.nix} \
+      HOMEPAGE_PROWLARR_IDENTITY_LOGO=${../../../../modules/Core_Modules/kanidm/assets/apps/prowlarr.svg} \
+      pnpm run check
     test -f dist/server/entry.node-server.js || {
       echo "homepage server build did not produce dist/server/entry.node-server.js" >&2
       exit 1

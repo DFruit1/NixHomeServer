@@ -11,8 +11,13 @@ describe('approved Homepage logos', () => {
   it('retains the approved text-free Prowlarr mark and its catalog mapping', () => {
     const logo = read('../../../public/logos/prowlarr.svg');
     expect(createHash('sha256').update(logo).digest('hex')).toBe(approvedProwlarrHash);
-    const registration = read('../../../../../../../modules/prowlarr/registration.nix').toString();
+    const registration = readFileSync(
+      process.env.HOMEPAGE_PROWLARR_REGISTRATION ?? new URL('../../../../../../../modules/prowlarr/registration.nix', import.meta.url),
+    ).toString();
     expect(registration).toMatch(/logoUrl\s*=\s*"\/logos\/prowlarr\.svg"/);
-    expect(read('../../../../../../../modules/Core_Modules/kanidm/assets/apps/prowlarr.svg')).toEqual(logo);
+    const identityLogo = readFileSync(
+      process.env.HOMEPAGE_PROWLARR_IDENTITY_LOGO ?? new URL('../../../../../../../modules/Core_Modules/kanidm/assets/apps/prowlarr.svg', import.meta.url),
+    );
+    expect(identityLogo).toEqual(logo);
   });
 });
