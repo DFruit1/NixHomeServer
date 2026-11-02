@@ -1374,6 +1374,28 @@ fn parse_sidecar_fields(text: &str) -> Result<Value, String> {
     Ok(fields)
 }
 
+fn replace_opf_element_text(
+    source: &str,
+    node: Node<'_, '_>,
+    text: &str,
+) -> Result<String, String> {
+    let original = &source[node.range()];
+    let start = original.find('>').ok_or("invalid OPF element")?;
+    let end = original
+        .rfind("</")
+        .ok_or("cannot rewrite an empty attributed OPF element")?;
+    let text = text
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    Ok(format!(
+        "{}{}{}",
+        &original[..=start],
+        text,
+        &original[end..]
+    ))
+}
+
 pub fn merge_managed_sidecar(existing: &str, generated: &str) -> Result<String, String> {
     if existing.len() > MAX_SIDECAR_BYTES as usize || generated.len() > MAX_SIDECAR_BYTES as usize {
         return Err("metadata sidecar exceeds the safe edit limit".to_string());
@@ -1416,6 +1438,27 @@ pub fn merge_managed_sidecar(existing: &str, generated: &str) -> Result<String, 
         // Publication identifiers belong to the publication, including the
         // package's unique-identifier. Provider identifiers may be added.
         if is_opf && node.tag_name().name() == "identifier" {
+            // Reusing a generated provider identifier must not duplicate its ID
+            // on every ordinary edit. Keep the package's identity immutable.
+            if let Some(id) = node.attribute("id") {
+                if let Some(index) = generated_nodes.iter().position(|candidate| {
+                    candidate.tag_name() == node.tag_name() && candidate.attribute("id") == Some(id)
+                }) {
+                    let value = generated_nodes.remove(index);
+                    if node.text() != value.text() {
+                        if existing_root.attribute("unique-identifier") == Some(id) {
+                            return Err(
+                                "the publication identifier cannot be changed by a metadata edit"
+                                    .to_string(),
+                            );
+                        }
+                        replacements.push((
+                            node.range(),
+                            replace_opf_element_text(existing, node, value.text().unwrap_or(""))?,
+                        ));
+                    }
+                }
+            }
             continue;
         }
         if is_opf && node.tag_name().name() == "meta" && node.attribute("id").is_some() {
@@ -1446,22 +1489,7 @@ pub fn merge_managed_sidecar(existing: &str, generated: &str) -> Result<String, 
             }
             let index = candidates[0].0;
             let value = generated_nodes.remove(index);
-            let original = &existing[node.range()];
-            let start = original.find('>').ok_or("invalid OPF element")?;
-            let end = original
-                .rfind("</")
-                .ok_or("cannot rewrite an empty attributed OPF element")?;
-            format!(
-                "{}{}{}",
-                &original[..=start],
-                value
-                    .text()
-                    .unwrap_or("")
-                    .replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;"),
-                &original[end..]
-            )
+            replace_opf_element_text(existing, node, value.text().unwrap_or(""))?
         } else {
             String::new()
         };
