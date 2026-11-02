@@ -1226,15 +1226,6 @@ administrator recovery/audit surface, not something users edit directly.
   device is detached.
 - Users in `backup-storage-users` also see read-only `_Backups`, backed by
 `/mnt/data/backups`. This role is independent of `backup-admin`.
-- With `repo.storage.desktopBackups.enable`, the local administrator has a
-  writable `_Backups/Desktop-<localAdminUser>` folder for desktop backups
-  (`Desktop-dsaw` on this host). `desktop-backup-upload.service` creates its
-  owner-only directory on the backup dataset and bind-mounts that directory
-  into the personal and SFTP views. The shared backup root and existing server
-  backup repositories retain their read-only views. Restarting a parent view
-  restarts the upload mount; a busy mount fails to unmount rather than forcing
-  an active backup off the filesystem. The desktop can use SFTP directly to
-  this folder, avoiding an extra full local copy or a cloud-sync dependency.
 - GID `2005` is the fixed on-disk identity of `backup-storage-users`. It is
   intentionally derived outside `vars.nix`; changing it requires a deliberate
   ownership and ACL migration.

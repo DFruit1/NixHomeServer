@@ -17,7 +17,7 @@ in
   # Support generic Linux binaries used by local development tools on NixOS.
   programs.nix-ld.enable = true;
 
-  repo = { storage.desktopBackups.enable = true; }
+  repo = { }
   // lib.optionalAttrs (builtins.elem "ai-tools" vars.enabledApps) {
       # MCP tools for the llama.cpp web UI, attached per client so the shared
       # inference endpoint stays tool-free for other consumers. Reads span the
