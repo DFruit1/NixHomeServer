@@ -1,4 +1,4 @@
-import { $, component$, useStore, useTask$ } from "@builder.io/qwik";
+import { $, component$, useSignal, useStore, useTask$ } from "@builder.io/qwik";
 import { api, ApiError, readableError } from "./api";
 import { Icon } from "./icon";
 import type {
@@ -87,85 +87,104 @@ export const ActivityView = component$<{ canEdit: boolean }>((props) => {
     filter: "all",
   });
 
+  const requestSequence = useSignal(0);
+  const requestsInFlight = useSignal(0);
   const load$ = $(async () => {
+    const request = ++requestSequence.value;
+    requestsInFlight.value++;
     const generation = activity.generation;
-    const query = activity.scope === "all" ? "?scope=all" : "";
-    const response = await api<PlanListResponse>(`/plans${query}`);
-    if (generation !== activity.generation) return;
-    activity.plans = response.plans;
-    activity.mutationMode = response.mutationMode;
-    if (activity.drainRunning) return;
-    const missing = [
-      ...new Set(response.plans.flatMap((plan) => plan.itemIds)),
-    ].filter((id) => !(id in activity.itemPaths) && !activity.pendingItems[id]);
-    if (!missing.length) return;
-    activity.drainRunning = true;
-    void (async () => {
-      try {
-        for (
-          let offset = 0;
-          offset < missing.length && activity.generation === generation;
-          offset += 8
-        ) {
-          const batch = missing.slice(offset, offset + 8);
-          for (const id of batch) activity.pendingItems[id] = true;
-          await Promise.all(
-            batch.map(async (id) => {
-              try {
-                const item = await api<CatalogItem>(
-                  `/items/${encodeURIComponent(id)}`,
-                );
-                if (activity.generation !== generation) return;
-                activity.itemPaths[id] = item.relativePath || null;
-                delete activity.itemErrors[id];
-              } catch (error) {
-                if (activity.generation !== generation) return;
-                if (
-                  error instanceof ApiError &&
-                  (error.status === 403 || error.status === 404)
-                ) {
-                  activity.itemPaths[id] = null;
+    try {
+      const query = activity.scope === "all" ? "?scope=all" : "";
+      const response = await api<PlanListResponse>(`/plans${query}`);
+      if (
+        generation !== activity.generation ||
+        request !== requestSequence.value
+      )
+        return;
+      activity.plans = response.plans;
+      activity.mutationMode = response.mutationMode;
+      if (activity.drainRunning) return;
+      const missing = [
+        ...new Set(response.plans.flatMap((plan) => plan.itemIds)),
+      ].filter(
+        (id) => !(id in activity.itemPaths) && !activity.pendingItems[id],
+      );
+      if (!missing.length) return;
+      activity.drainRunning = true;
+      void (async () => {
+        try {
+          for (
+            let offset = 0;
+            offset < missing.length && activity.generation === generation;
+            offset += 8
+          ) {
+            const batch = missing.slice(offset, offset + 8);
+            for (const id of batch) activity.pendingItems[id] = true;
+            await Promise.all(
+              batch.map(async (id) => {
+                try {
+                  const item = await api<CatalogItem>(
+                    `/items/${encodeURIComponent(id)}`,
+                  );
+                  if (activity.generation !== generation) return;
+                  activity.itemPaths[id] = item.relativePath || null;
                   delete activity.itemErrors[id];
-                } else {
-                  activity.itemErrors[id] = true;
+                } catch (error) {
+                  if (activity.generation !== generation) return;
+                  if (
+                    error instanceof ApiError &&
+                    (error.status === 403 || error.status === 404)
+                  ) {
+                    activity.itemPaths[id] = null;
+                    delete activity.itemErrors[id];
+                  } else {
+                    activity.itemErrors[id] = true;
+                  }
+                } finally {
+                  delete activity.pendingItems[id];
                 }
-              } finally {
-                delete activity.pendingItems[id];
-              }
-            }),
-          );
+              }),
+            );
+          }
+        } finally {
+          activity.drainRunning = false;
         }
-      } finally {
-        activity.drainRunning = false;
-      }
-    })();
+      })();
+    } catch (error) {
+      if (
+        generation === activity.generation &&
+        request === requestSequence.value
+      )
+        throw error;
+    } finally {
+      requestsInFlight.value--;
+    }
   });
 
   useTask$(({ cleanup, track }) => {
     track(() => activity.scope);
     const generation = ++activity.generation;
     let stopped = false;
-    const tick = async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async (initial = false) => {
       try {
+        if (!initial && requestsInFlight.value) return;
         await load$();
         if (!stopped) activity.error = "";
       } catch (error) {
         if (!stopped) activity.error = readableError(error);
       } finally {
-        if (!stopped) activity.loading = false;
+        if (!stopped) {
+          activity.loading = false;
+          if (typeof window !== "undefined") timer = setTimeout(tick, 4000);
+        }
       }
     };
-    void tick();
-    // Polling is a browser lifecycle concern. Starting an interval during SSR
-    // (or a DOM-less component test) leaves work alive after the render ends.
-    cleanup(() => {
-      if (activity.generation === generation) activity.generation++;
-    });
-    if (typeof window === "undefined") return;
-    const timer = setInterval(tick, 4000);
+    void tick(true);
     cleanup(() => {
       stopped = true;
-      clearInterval(timer);
+      if (activity.generation === generation) activity.generation++;
+      clearTimeout(timer);
     });
   });
 

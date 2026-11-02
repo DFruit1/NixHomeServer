@@ -6,7 +6,7 @@ import {
   useTask$,
   useVisibleTask$,
 } from "@builder.io/qwik";
-import { api, readableError } from "./api";
+import { api, catalogItems, readableError } from "./api";
 import { Icon } from "./icon";
 import { findTargetIndex } from "./playback-target";
 import type { CatalogItem, MediaRoot } from "./root-types";
@@ -36,7 +36,11 @@ export const VideosView = component$<{
     (root) => root.category === "videos" && root.available,
   );
 
+  const loadGeneration = useSignal(0);
+
   const loadVideos = $(async () => {
+    const generation = ++loadGeneration.value;
+    const current = () => generation === loadGeneration.value;
     state.loading = true;
     state.error = "";
     try {
@@ -44,16 +48,27 @@ export const VideosView = component$<{
         ? videoRoots.filter((root) => root.id === state.rootId)
         : videoRoots;
       const results = await Promise.all(
-        roots.map((root) =>
-          api<{ items: CatalogItem[] }>(
-            `/items?rootId=${encodeURIComponent(root.id)}`,
-          ),
-        ),
+        roots.map((root) => catalogItems(root.id, current)),
       );
+      if (!current()) return;
       state.items = results
         .flatMap((result) => result.items)
         .filter((item) => item.mediaKind === "video")
         .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+      if (
+        !state.rootId &&
+        props.initialItemId &&
+        !state.items.some((item) => item.id === props.initialItemId)
+      ) {
+        const targetId = props.initialItemId;
+        const item = await api<CatalogItem>(
+          `/items/${encodeURIComponent(targetId)}`,
+        );
+        if (!current() || props.initialItemId !== targetId) return;
+        if (item.mediaKind !== "video")
+          throw new Error("This file is not a video.");
+        state.items = [...state.items, item];
+      }
       if (!state.items.some((item) => item.id === state.selectedId)) {
         const requestedIndex = findTargetIndex(
           state.items,
@@ -68,9 +83,9 @@ export const VideosView = component$<{
         state.transcodeLoading = false;
       }
     } catch (error) {
-      state.error = readableError(error);
+      if (current()) state.error = readableError(error);
     } finally {
-      state.loading = false;
+      if (current()) state.loading = false;
     }
   });
 

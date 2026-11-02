@@ -19,7 +19,7 @@ import {
   useTask$,
   useVisibleTask$,
 } from "@builder.io/qwik";
-import { api, readableError } from "./api";
+import { api, catalogItems, readableError } from "./api";
 import { Icon } from "./icon";
 import type {
   CatalogItem,
@@ -266,9 +266,7 @@ function subtitleStatusMap(
     const hasSidecar = subtitleItems.some((subtitle) => {
       const subtitleStem = subtitle.relativePath.replace(/\.[^/.]+$/, "");
       return (
-        subtitleStem === videoStem ||
-        subtitleStem.startsWith(`${videoStem}.`) ||
-        videoStem.startsWith(`${subtitleStem}.`)
+        subtitleStem === videoStem || subtitleStem.startsWith(`${videoStem}.`)
       );
     });
     const hasEmbedded = item.videoProbe?.hasEmbeddedSubtitles === true;
@@ -591,7 +589,10 @@ export const SubtitleView = component$<{
     batchResults: [],
   });
 
+  const loadGeneration = useSignal(0);
   const loadVideos = $(async (rootId: string) => {
+    const generation = ++loadGeneration.value;
+    const current = () => generation === loadGeneration.value;
     subtitle.rootId = rootId;
     subtitle.loadingItems = true;
     subtitle.itemId = "";
@@ -601,30 +602,28 @@ export const SubtitleView = component$<{
     subtitle.content = undefined;
     subtitle.error = "";
     try {
-      let items: CatalogItem[] = [];
       for (let attempt = 0; attempt < 20; attempt += 1) {
-        const result = await api<{
-          items: CatalogItem[];
-          probePending: boolean;
-        }>(
-          `/items?rootId=${encodeURIComponent(rootId)}&includeVideoProbes=true`,
-        );
-        items = result.items;
+        if (!current()) return;
+        const result = await catalogItems(rootId, current, true);
+        if (!current()) return;
+        subtitle.items = result.items;
+        subtitle.subtitleStatus = subtitleStatusMap(result.items);
+        subtitle.loadingItems = false;
+        if (!subtitle.itemId) {
+          const firstVideo = result.items.find(
+            (item) =>
+              item.mediaKind === "video" &&
+              subtitle.subtitleStatus[item.relativePath] === "none",
+          );
+          subtitle.itemId = firstVideo?.id ?? "";
+        }
         if (!result.probePending) break;
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-      subtitle.items = items;
-      subtitle.subtitleStatus = subtitleStatusMap(items);
-      const firstVideo = items.find(
-        (item) =>
-          item.mediaKind === "video" &&
-          subtitle.subtitleStatus[item.relativePath] === "none",
-      );
-      subtitle.itemId = firstVideo?.id ?? "";
     } catch (error) {
-      subtitle.error = readableError(error);
+      if (current()) subtitle.error = readableError(error);
     } finally {
-      subtitle.loadingItems = false;
+      if (current()) subtitle.loadingItems = false;
     }
   });
 

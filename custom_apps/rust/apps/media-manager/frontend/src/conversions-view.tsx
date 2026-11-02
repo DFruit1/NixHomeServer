@@ -205,14 +205,16 @@ export const ConversionsView = component$<{
         if (!stopped) conv.error = readableError(error);
       }
     };
-    void load();
-    // Polling is a browser lifecycle concern. Starting an interval during SSR
-    // (or a DOM-less component test) leaves work alive after the render ends.
-    if (typeof window === "undefined") return;
-    const timer = setInterval(load, 5000);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      await load();
+      if (!stopped && typeof window !== "undefined")
+        timer = setTimeout(tick, 5000);
+    };
+    void tick();
     cleanup(() => {
       stopped = true;
-      clearInterval(timer);
+      clearTimeout(timer);
     });
   });
 

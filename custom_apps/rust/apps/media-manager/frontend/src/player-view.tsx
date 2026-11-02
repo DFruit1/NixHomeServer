@@ -6,7 +6,7 @@ import {
   useTask$,
   useVisibleTask$,
 } from "@builder.io/qwik";
-import { api, readableError } from "./api";
+import { api, catalogItems, readableError } from "./api";
 import { Icon } from "./icon";
 import { LibraryMiniPlayer } from "./mini-player";
 import { PlaybackSettings } from "./playback-settings";
@@ -38,6 +38,11 @@ export const PlayerView = component$<{
   const settingsRef = useSignal<HTMLElement>();
   const search = useSignal("");
   const lastSavedPosition = useSignal(0);
+  const playbackGeneration = useSignal(0);
+  const positionWrites = useStore({
+    running: false,
+    pending: [] as { id: string; position: number; generation: number }[],
+  });
   const saveTimerRef = useSignal<number | undefined>();
   const initialTargetApplied = useSignal("");
   const pipEnabled = useSignal(true);
@@ -89,7 +94,11 @@ export const PlayerView = component$<{
     (root) => root.category === "music" || root.category === "audiobooks",
   );
 
+  const loadGeneration = useSignal(0);
+
   const loadTracks = $(async (rootId?: string) => {
+    const generation = ++loadGeneration.value;
+    const current = () => generation === loadGeneration.value;
     playerState.loading = true;
     playerState.error = "";
     const playingTrack = playerState.tracks[playerState.currentIndex];
@@ -98,12 +107,9 @@ export const PlayerView = component$<{
         ? musicRoots.filter((r) => r.id === rootId)
         : musicRoots;
       const results = await Promise.all(
-        rootsToLoad.map((root) =>
-          api<{ items: CatalogItem[] }>(
-            `/items?rootId=${encodeURIComponent(root.id)}`,
-          ),
-        ),
+        rootsToLoad.map((root) => catalogItems(root.id, current)),
       );
+      if (!current()) return;
       const allItems = results.flatMap((r) => r.items);
       const audioItems = allItems.filter(
         (item) => item.mediaKind === "music" || item.mediaKind === "audiobook",
@@ -133,9 +139,9 @@ export const PlayerView = component$<{
         playerState.shuffleOrder,
       );
     } catch (error) {
-      playerState.error = readableError(error);
+      if (current()) playerState.error = readableError(error);
     } finally {
-      playerState.loading = false;
+      if (current()) playerState.loading = false;
     }
   });
 
@@ -143,36 +149,69 @@ export const PlayerView = component$<{
     await loadTracks();
   });
 
-  const savePlaybackPosition = $(() => {
+  const savePlaybackPosition = $(async () => {
     const track = playerState.tracks[playerState.currentIndex];
     if (!track || track.mediaKind !== "audiobook") return;
-    const pos = Math.floor(playerState.currentTime);
-    if (pos <= lastSavedPosition.value) return;
-    lastSavedPosition.value = pos;
-    api(`/items/${encodeURIComponent(track.id)}/playback`, {
-      method: "PUT",
-      body: JSON.stringify({ position: pos }),
-    }).catch(() => {});
-  });
-
-  const loadPlaybackPosition = $(async (track: CatalogItem): Promise<void> => {
-    if (track.mediaKind !== "audiobook") return;
+    const position = Math.floor(playerState.currentTime);
+    if (!Number.isFinite(position) || position < 0) return;
+    if (position === lastSavedPosition.value && !positionWrites.running) return;
+    const pending = {
+      id: track.id,
+      position,
+      generation: playbackGeneration.value,
+    };
+    const queued = positionWrites.pending.findIndex(
+      (write) => write.id === track.id,
+    );
+    if (queued >= 0) positionWrites.pending[queued] = pending;
+    else positionWrites.pending.push(pending);
+    if (positionWrites.running) return;
+    positionWrites.running = true;
     try {
-      const result = await api<{ position: number | null }>(
-        `/items/${encodeURIComponent(track.id)}/playback`,
-      );
-      if (result.position != null && result.position > 0) {
-        const audio = audioRef.value;
-        if (audio) {
-          audio.currentTime = result.position;
-          playerState.currentTime = result.position;
-          lastSavedPosition.value = Math.floor(result.position);
+      while (positionWrites.pending.length) {
+        const write = positionWrites.pending.shift()!;
+        try {
+          await api(`/items/${encodeURIComponent(write.id)}/playback`, {
+            method: "PUT",
+            body: JSON.stringify({ position: write.position }),
+          });
+          if (write.generation === playbackGeneration.value) {
+            lastSavedPosition.value = write.position;
+          }
+        } catch {
+          // Leave the saved marker unchanged so the next pause/timer can retry.
         }
       }
-    } catch {
-      /* position unavailable */
+    } finally {
+      positionWrites.running = false;
     }
   });
+
+  const loadPlaybackPosition = $(
+    async (track: CatalogItem, generation: number): Promise<void> => {
+      if (track.mediaKind !== "audiobook") return;
+      try {
+        const result = await api<{ position: number | null }>(
+          `/items/${encodeURIComponent(track.id)}/playback`,
+        );
+        if (
+          generation !== playbackGeneration.value ||
+          playerState.tracks[playerState.currentIndex]?.id !== track.id
+        )
+          return;
+        if (result.position != null && result.position > 0) {
+          const audio = audioRef.value;
+          if (audio) {
+            audio.currentTime = result.position;
+            playerState.currentTime = result.position;
+            lastSavedPosition.value = Math.floor(result.position);
+          }
+        }
+      } catch {
+        /* position unavailable */
+      }
+    },
+  );
 
   const stopSaveTimer = $(() => {
     if (saveTimerRef.value != null) {
@@ -197,6 +236,7 @@ export const PlayerView = component$<{
     const audio = audioRef.value;
     if (!audio || index < 0 || index >= playerState.tracks.length) return;
     savePlaybackPosition();
+    const generation = ++playbackGeneration.value;
     playerState.currentIndex = index;
     playerState.dismissedNext = [];
     started.value = true;
@@ -212,7 +252,7 @@ export const PlayerView = component$<{
     audio.src = `/api/v1/items/${encodeURIComponent(track.id)}/stream`;
     audio.load?.();
 
-    loadPlaybackPosition(track);
+    loadPlaybackPosition(track, generation);
     audio.play?.()?.catch(() => {});
   });
 
@@ -241,13 +281,14 @@ export const PlayerView = component$<{
         requestId || props.initialItemId,
         requestId ? undefined : props.initialPath,
       );
-      if (index < 0 && requestId) {
+      const targetId = requestId || props.initialItemId;
+      if (index < 0 && targetId) {
         initialTargetApplied.value = targetKey;
         try {
           const item = await api<CatalogItem>(
-            `/items/${encodeURIComponent(requestId)}`,
+            `/items/${encodeURIComponent(targetId)}`,
           );
-          if (props.state.miniPlayerItemId !== requestId) return;
+          if (requestId && props.state.miniPlayerItemId !== requestId) return;
           if (item.mediaKind !== "music" && item.mediaKind !== "audiobook") {
             throw new Error("This file is not playable audio.");
           }
@@ -333,7 +374,11 @@ export const PlayerView = component$<{
 
   const seek = $((time: number) => {
     const audio = audioRef.value;
-    if (audio) audio.currentTime = time;
+    if (audio) {
+      playbackGeneration.value++;
+      audio.currentTime = time;
+      playerState.currentTime = time;
+    }
   });
 
   const playAllTracks = $(() => {

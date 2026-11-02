@@ -1,4 +1,5 @@
 import { validateApiResponse } from "./api-contract";
+import type { CatalogItem } from "./api-contract.generated";
 export interface ServerError {
   error?: {
     code?: string;
@@ -72,8 +73,46 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
       headers,
       signal: controller.signal,
     });
+
+    if (
+      response.status === 204 &&
+      validateApiResponse(path, init.method ?? "GET", response.status, null)
+    )
+      return undefined as T;
+    const payload: unknown = await response.json().catch((error: unknown) => {
+      if (controller.signal.aborted) throw error;
+      return undefined;
+    });
+    const serverError =
+      payload !== null && typeof payload === "object"
+        ? (payload as ServerError).error
+        : undefined;
+    if (!response.ok) {
+      throw new ApiError(
+        response.status,
+        serverError?.code ?? "request_failed",
+        serverError?.message ?? "The request could not be completed.",
+        serverError?.requestId ?? "unknown",
+      );
+    }
+    if (
+      !validateApiResponse(
+        path,
+        init?.method ?? "GET",
+        response.status,
+        payload,
+      )
+    ) {
+      throw new ApiError(
+        response.status,
+        "invalid_response",
+        "The server returned an invalid response.",
+        "unknown",
+      );
+    }
+    return payload as T;
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (controller.signal.aborted) {
       throw new ApiError(
         408,
         "timeout",
@@ -85,35 +124,6 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   } finally {
     clearTimeout(timeout);
   }
-  if (
-    response.status === 204 &&
-    validateApiResponse(path, init.method ?? "GET", response.status, null)
-  )
-    return undefined as T;
-  const payload: unknown = await response.json().catch(() => undefined);
-  const serverError =
-    payload !== null && typeof payload === "object"
-      ? (payload as ServerError).error
-      : undefined;
-  if (!response.ok) {
-    throw new ApiError(
-      response.status,
-      serverError?.code ?? "request_failed",
-      serverError?.message ?? "The request could not be completed.",
-      serverError?.requestId ?? "unknown",
-    );
-  }
-  if (
-    !validateApiResponse(path, init?.method ?? "GET", response.status, payload)
-  ) {
-    throw new ApiError(
-      response.status,
-      "invalid_response",
-      "The server returned an invalid response.",
-      "unknown",
-    );
-  }
-  return payload as T;
 }
 
 export async function apiBlob(path: string): Promise<Blob> {
@@ -126,8 +136,22 @@ export async function apiBlob(path: string): Promise<Blob> {
       headers: { accept: "image/jpeg,image/png,image/gif,image/webp" },
       signal: controller.signal,
     });
+
+    if (!response.ok) {
+      const payload = (await response.json().catch((error: unknown) => {
+        if (controller.signal.aborted) throw error;
+        return {};
+      })) as ServerError;
+      throw new ApiError(
+        response.status,
+        payload.error?.code ?? "request_failed",
+        payload.error?.message ?? "The image could not be downloaded.",
+        payload.error?.requestId ?? "unknown",
+      );
+    }
+    return await response.blob();
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (controller.signal.aborted) {
       throw new ApiError(
         408,
         "timeout",
@@ -139,14 +163,38 @@ export async function apiBlob(path: string): Promise<Blob> {
   } finally {
     clearTimeout(timeout);
   }
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => ({}))) as ServerError;
-    throw new ApiError(
-      response.status,
-      payload.error?.code ?? "request_failed",
-      payload.error?.message ?? "The image could not be downloaded.",
-      payload.error?.requestId ?? "unknown",
-    );
-  }
-  return response.blob();
+}
+
+// Cursor pages are fetched sequentially so one library cannot flood the server.
+export async function catalogItems(
+  rootId: string,
+  current: () => boolean,
+  probes = false,
+): Promise<{
+  items: CatalogItem[];
+  probePending: boolean;
+}> {
+  const items = new Map<string, CatalogItem>();
+  let cursor: string | null = null;
+  let probePending = false;
+  const cursors = new Set<string>();
+  do {
+    if (!current()) break;
+    const query = new URLSearchParams({ rootId, pageSize: "500" });
+    if (cursor) query.set("cursor", cursor);
+    if (probes) query.set("includeVideoProbes", "true");
+    const page = await api<{
+      items: CatalogItem[];
+      nextCursor?: string | null;
+      probePending?: boolean;
+    }>(`/items?${query}`);
+    if (!current()) break;
+    for (const item of page.items) items.set(item.id, item);
+    probePending ||= page.probePending === true;
+    cursor = page.nextCursor ?? null;
+    if (cursor && cursors.has(cursor))
+      throw new Error("Library pagination did not advance.");
+    if (cursor) cursors.add(cursor);
+  } while (cursor);
+  return { items: [...items.values()], probePending };
 }
