@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    os::fd::AsRawFd,
     path::{Path, PathBuf},
-    process::Command,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 const PROBE_CACHE_SCHEMA_VERSION: i64 = 1;
@@ -43,19 +44,88 @@ pub struct SubtitleStreamProbe {
 }
 
 pub fn probe_video(ffprobe: &Path, path: &Path) -> Result<VideoProbe, String> {
-    let output = Command::new(ffprobe)
-        .arg("-v")
-        .arg("error")
-        .arg("-analyzeduration")
-        .arg("1000000")
-        .arg("-probesize")
-        .arg("5000000")
-        .arg("-print_format")
-        .arg("json")
-        .arg("-show_streams")
-        .arg(path)
-        .output()
-        .map_err(|error| format!("run ffprobe: {error}"))?;
+    let input = std::fs::File::open(path).map_err(|error| format!("open video: {error}"))?;
+    probe_open_file(ffprobe, input)
+}
+
+pub fn probe_video_beneath(
+    ffprobe: &Path,
+    root: &Path,
+    relative_path: &str,
+) -> Result<VideoProbe, String> {
+    let input = crate::broker::open_regular_file_beneath(root, relative_path)
+        .map_err(|error| format!("open video beneath root: {error}"))?;
+    probe_open_file(ffprobe, input)
+}
+
+fn probe_open_file(ffprobe: &Path, input: std::fs::File) -> Result<VideoProbe, String> {
+    // This synchronous entrypoint is called on blocking workers. Bound child
+    // lifetime as well as FFprobe's media-analysis budget.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("probe runtime: {error}"))?;
+    let output = runtime.block_on(async {
+        let mut command = tokio::process::Command::new(ffprobe);
+        command
+            .args([
+                "-v",
+                "error",
+                "-analyzeduration",
+                "1000000",
+                "-probesize",
+                "5000000",
+                "-print_format",
+                "json",
+                "-show_streams",
+            ])
+            .arg("/proc/self/fd/0")
+            .stdin(std::process::Stdio::from(input))
+            .kill_on_drop(true);
+        use std::process::Stdio;
+        use tokio::io::AsyncReadExt;
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("run ffprobe: {error}"))?;
+        let stdout = child.stdout.take().ok_or("ffprobe stdout missing")?;
+        let stderr = child.stderr.take().ok_or("ffprobe stderr missing")?;
+        let result = tokio::time::timeout(Duration::from_secs(15), async {
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let read = async {
+                let mut stdout = stdout.take(1024 * 1024 + 1);
+                let mut stderr = stderr.take(1024 * 1024 + 1);
+                tokio::try_join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err))
+                    .map_err(|error| error.to_string())?;
+                if out.len() > 1024 * 1024 || err.len() > 1024 * 1024 {
+                    return Err("ffprobe output exceeded limit".to_string());
+                }
+                Ok((out, err))
+            };
+            let ((stdout, stderr), status) = tokio::try_join!(read, async {
+                child.wait().await.map_err(|error| error.to_string())
+            })?;
+            Ok::<_, String>(std::process::Output {
+                status,
+                stdout,
+                stderr,
+            })
+        })
+        .await;
+        match result {
+            Ok(Ok(output)) => Ok(output),
+            result => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                Err(match result {
+                    Ok(Err(error)) => error,
+                    _ => "ffprobe timed out".to_string(),
+                })
+            }
+        }
+    })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("ffprobe failed: {}", stderr.trim()));
@@ -202,7 +272,7 @@ struct VideoProbeCacheFile {
 
 pub struct VideoProbeCache {
     path: PathBuf,
-    dirty: bool,
+    changed: BTreeSet<String>,
     entries: BTreeMap<String, CachedProbe>,
 }
 
@@ -219,9 +289,19 @@ impl VideoProbeCache {
             .unwrap_or_default();
         Self {
             path,
-            dirty: false,
+            changed: BTreeSet::new(),
             entries,
         }
+    }
+
+    pub fn open_for_root(state_dir: &Path, root_id: &str, root_path: &Path) -> Self {
+        // Personal root IDs are shared by all users; bind cache identity to the
+        // actual root too, so equal paths/fingerprints cannot cross accounts.
+        let key = format!(
+            "{root_id}-{}",
+            homelab_common::sha256_hex(root_path.as_os_str().as_encoded_bytes())
+        );
+        Self::open(state_dir, &key)
     }
 
     pub fn probe_for(&self, relative_path: &str, fingerprint: &str) -> Option<VideoProbe> {
@@ -238,7 +318,7 @@ impl VideoProbeCache {
     }
 
     pub fn set(&mut self, relative_path: &str, fingerprint: &str, probe: Option<VideoProbe>) {
-        self.dirty = true;
+        self.changed.insert(relative_path.to_string());
         self.entries.insert(
             relative_path.to_string(),
             CachedProbe {
@@ -249,13 +329,39 @@ impl VideoProbeCache {
     }
 
     pub fn save(&mut self) -> Result<(), String> {
-        if !self.dirty {
+        if self.changed.is_empty() {
             return Ok(());
         }
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|error| format!("create probe cache directory: {error}"))?;
         }
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.path.with_extension("lock"))
+            .map_err(|error| format!("open probe cache lock: {error}"))?;
+        // Lock covers reading the latest snapshot through atomic replacement.
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(format!(
+                "lock probe cache: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let mut latest = std::fs::read(&self.path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<VideoProbeCacheFile>(&bytes).ok())
+            .filter(|file| file.schema_version == PROBE_CACHE_SCHEMA_VERSION)
+            .map(|file| file.entries)
+            .unwrap_or_default();
+        for path in &self.changed {
+            if let Some(entry) = self.entries.get(path) {
+                latest.insert(path.clone(), entry.clone());
+            }
+        }
+        self.entries = latest;
         let file = VideoProbeCacheFile {
             schema_version: PROBE_CACHE_SCHEMA_VERSION,
             entries: self.entries.clone(),
@@ -277,7 +383,7 @@ impl VideoProbeCache {
             .map_err(|error| format!("write probe cache: {error}"))?;
         std::fs::rename(&temporary, &self.path)
             .map_err(|error| format!("replace probe cache: {error}"))?;
-        self.dirty = false;
+        self.changed.clear();
         Ok(())
     }
 }
@@ -296,7 +402,7 @@ pub fn refresh_root_probes(
         if cache.has_probe(relative_path, fingerprint) {
             continue;
         }
-        let probe = probe_video(ffprobe, &root_path.join(relative_path)).ok();
+        let probe = probe_video_beneath(ffprobe, root_path, relative_path).ok();
         cache.set(relative_path, fingerprint, probe);
         probed += 1;
     }

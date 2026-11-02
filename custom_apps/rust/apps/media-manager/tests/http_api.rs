@@ -1007,17 +1007,30 @@ async fn items_report_unprobeable_videos_as_null_probes() {
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
 
-    let response = app
-        .oneshot(editor_get_request(
-            "/api/v1/items?rootId=shared-videos&includeVideoProbes=true",
-        ))
-        .await
-        .expect("items response");
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), 64 * 1024)
-        .await
-        .expect("body");
-    let value: Value = serde_json::from_slice(&body).expect("JSON");
+    // Probes now fill in the background; null failures become final on a
+    // later poll rather than holding the first catalog response open.
+    let value: Value = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let response = app
+                .clone()
+                .oneshot(editor_get_request(
+                    "/api/v1/items?rootId=shared-videos&includeVideoProbes=true",
+                ))
+                .await
+                .expect("items response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .expect("body");
+            let value: Value = serde_json::from_slice(&body).expect("JSON");
+            if value["probePending"] == false {
+                break value;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background probe completes");
     assert_eq!(value["probePending"], false);
     let video = value["items"]
         .as_array()

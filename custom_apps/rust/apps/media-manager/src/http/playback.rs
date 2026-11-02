@@ -276,7 +276,7 @@ pub(super) async fn item_stream(
                         "error",
                         "-y",
                         "-i",
-                        "pipe:0",
+                        "/proc/self/fd/0",
                         "-map",
                         "0:v:0",
                         "-map",

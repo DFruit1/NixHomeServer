@@ -362,13 +362,15 @@ async fn probe_for_video(
     let request_id_for_probe = request_id.clone();
     let item_id_for_probe = item_id.clone();
     match tokio::task::spawn_blocking(move || {
-        let mut cache = VideoProbeCache::open(&state_dir, &root_id);
+        let mut cache =
+            VideoProbeCache::open_for_root(&state_dir, &root_id, FilePath::new(&root_path));
         if let Some(probe) = cache.probe_for(&relative_path, &fingerprint) {
             return Some(probe);
         }
-        let probe = match probe_video(
+        let probe = match probe_video_beneath(
             FilePath::new(&ffprobe),
-            &FilePath::new(&root_path).join(&relative_path),
+            FilePath::new(&root_path),
+            &relative_path,
         ) {
             Ok(probe) => Some(probe),
             Err(error) => {
@@ -841,6 +843,9 @@ pub(super) async fn installed_subtitles(
         }
         Err(error) => return error.with_request_id(request_id).into_response(),
     };
+    let Some(root) = state.config.resolve_visible_root(&identity, &video.root_id) else {
+        return ApiError::internal(request_id).into_response();
+    };
     let owner = video.owner_username.as_deref();
     let directory = video
         .relative_path
@@ -859,7 +864,11 @@ pub(super) async fn installed_subtitles(
         })
         .map(|item| external_subtitle_inventory(&video, item))
         .collect::<Vec<_>>();
-    let probe_cache = VideoProbeCache::open(&state.config.state_dir, &video.root_id);
+    let probe_cache = VideoProbeCache::open_for_root(
+        &state.config.state_dir,
+        &video.root_id,
+        FilePath::new(&root.resolved_path),
+    );
     if let Some(probe) = probe_cache.probe_for(&video.relative_path, &video.fingerprint) {
         if probe.subtitle_streams.is_empty() {
             for language in probe.subtitle_languages {

@@ -30,7 +30,7 @@ use crate::{
     subtitles::{
         opensubtitles_movie_hash, OpenSubtitlesClient, OpenSubtitlesCredentials, SubtitleMatch,
     },
-    video_probe::{probe_video, refresh_root_probes, VideoProbe, VideoProbeCache},
+    video_probe::{probe_video_beneath, refresh_root_probes, VideoProbe, VideoProbeCache},
 };
 mod artwork_http;
 pub use artwork_http::{ArtworkCandidateCache, JellyfinImageCache};
@@ -722,25 +722,36 @@ async fn items(
     let page_size = query.page_size.unwrap_or(200).clamp(1, 500);
     let cursor = query.cursor;
     let search = query.search.unwrap_or_default();
-    let catalog = match state.catalog.open() {
-        Ok(catalog) => catalog,
-        Err(error) => {
+    let catalog_handle = state.catalog.clone();
+    let query_root = root.id.clone();
+    let query_owner = owner.map(str::to_owned);
+    let (mut items, needs_scan) = match tokio::task::spawn_blocking(move || {
+        let catalog = catalog_handle.open()?;
+        let needs_scan = !catalog.root_has_been_scanned(&query_root, query_owner.as_deref())?;
+        let items = catalog.list_items_matching_after(
+            &query_root,
+            query_owner.as_deref(),
+            cursor.as_deref(),
+            &search,
+            page_size.saturating_add(1),
+        )?;
+        Ok::<_, rusqlite::Error>((items, needs_scan))
+    })
+    .await
+    {
+        Ok(Ok(result)) => result,
+        error => {
             log_event(
-                "catalog_open_failed",
+                "catalog_query_failed",
                 &request_id,
-                json!({ "error": error.to_string() }),
+                json!({ "error": format!("{error:?}") }),
             );
             return ApiError::internal(request_id).into_response();
         }
     };
-    // Reads are always served from the catalog cache. A root that has never
-    // been reconciled gets one background scan so a fresh install fills in
-    // promptly; freshness otherwise comes from the periodic scanner and an
-    // explicit manual refresh.
-    if !catalog
-        .root_has_been_scanned(&root.id, owner)
-        .unwrap_or(true)
-    {
+    // Reads use the catalog. Only a never-scanned root needs initial background
+    // discovery; periodic scans and manual refresh otherwise own freshness.
+    if needs_scan {
         let scan_root_spec = ScanRoot {
             id: root.id.clone(),
             owner_username: owner.map(str::to_string),
@@ -761,23 +772,6 @@ async fn items(
             }
         });
     }
-    let mut items = match catalog.list_items_matching_after(
-        &root.id,
-        owner,
-        cursor.as_deref(),
-        &search,
-        page_size.saturating_add(1),
-    ) {
-        Ok(items) => items,
-        Err(error) => {
-            log_event(
-                "catalog_query_failed",
-                &request_id,
-                json!({ "error": error.to_string() }),
-            );
-            return ApiError::internal(request_id).into_response();
-        }
-    };
     let next_cursor = if items.len() > page_size {
         items.truncate(page_size);
         items.last().map(|item| item.relative_path.clone())
@@ -843,17 +837,39 @@ async fn items_with_video_probes(
         .map(|item| (item.relative_path.clone(), item.fingerprint.clone()))
         .collect::<Vec<_>>();
     let videos_for_probe = videos.clone();
-    let (cache, probe_error) = match tokio::task::spawn_blocking(move || {
-        let mut cache = VideoProbeCache::open(&state_dir, &root_id);
-        let error = refresh_root_probes(
-            FilePath::new(&ffprobe),
-            FilePath::new(&root_path),
-            &mut cache,
-            &videos_for_probe,
-        )
-        .err()
-        .map(|error| format!("refresh video probes: {error}"));
-        (cache, error)
+    let (cache, probe_pending) = match tokio::task::spawn_blocking(move || {
+        let cache = VideoProbeCache::open_for_root(&state_dir, &root_id, FilePath::new(&root_path));
+        let pending = videos_for_probe
+            .iter()
+            .any(|(path, fingerprint)| !cache.has_probe(path, fingerprint));
+        if pending {
+            // Return the snapshot immediately; one bounded worker fills misses.
+            // Polling schedules the next batch if this slot is currently busy.
+            static REFRESH_LIMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+            if let Ok(permit) = REFRESH_LIMIT.try_acquire() {
+                tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    let mut cache = VideoProbeCache::open_for_root(
+                        &state_dir,
+                        &root_id,
+                        FilePath::new(&root_path),
+                    );
+                    if let Err(error) = refresh_root_probes(
+                        FilePath::new(&ffprobe),
+                        FilePath::new(&root_path),
+                        &mut cache,
+                        &videos_for_probe,
+                    ) {
+                        log_event(
+                            "video_probe_refresh_failed",
+                            "background",
+                            json!({ "error": error, "rootId": root_id }),
+                        );
+                    }
+                });
+            }
+        }
+        (cache, pending)
     })
     .await
     {
@@ -867,16 +883,6 @@ async fn items_with_video_probes(
             return ApiError::internal(request_id.to_string()).into_response();
         }
     };
-    if let Some(error) = probe_error {
-        log_event(
-            "video_probe_refresh_failed",
-            request_id,
-            json!({ "error": error, "rootId": root.id }),
-        );
-    }
-    let probe_pending = videos
-        .iter()
-        .any(|(path, fingerprint)| !cache.has_probe(path, fingerprint));
     let items = items
         .into_iter()
         .map(|item| {
