@@ -68,6 +68,8 @@ in
   boot.initrd.kernelModules = [ "jitterentropy_rng" ]
     ++ lib.optional vars.enableZfsDataPool "zfs";
   boot.initrd.availableKernelModules = [ "nvme" "ahci" "xhci_pci" "usb_storage" "sd_mod" ];
+  # Prefer PCIe active-state power management where devices tolerate it.
+  boot.kernelParams = [ "pcie_aspm=powersave" ];
   boot.supportedFilesystems = [ "btrfs" "vfat" "ext4" ]
     ++ lib.optional vars.enableZfsDataPool "zfs";
 
@@ -132,8 +134,42 @@ in
       PasswordAuthentication = false;
       KbdInteractiveAuthentication = false;
       PermitRootLogin = "no";
+      MaxAuthTries = 3;
+      LoginGraceTime = 30;
+      ClientAliveInterval = 300;
+      ClientAliveCountMax = 2;
+      X11Forwarding = false;
+      PermitTunnel = "no";
+      AllowTcpForwarding = "no";
+      TCPKeepAlive = "no";
     };
   };
+
+  # Automatic security updates. Reboots remain a deliberate, guarded action.
+  system.autoUpgrade = {
+    enable = true;
+    allowReboot = false;
+    dates = "03:30";
+    randomizedDelaySec = "30m";
+  };
+
+  # Contain SSH brute-force attempts at the service boundary.
+  services.fail2ban = {
+    enable = true;
+    maxretry = 5;
+    bantime = "1h";
+    bantime-increment.enable = true;
+    jails.sshd.settings = {
+      enabled = true;
+      port = "ssh";
+      filter = "sshd";
+      maxretry = 5;
+    };
+  };
+
+  # Lightweight kernel audit for privileged execution and auth events.
+  security.audit.enable = true;
+  security.auditd.enable = true;
 
   users.groups.${localAdminUser} = { };
 
@@ -195,6 +231,32 @@ in
   };
 
   environment.systemPackages = systemPackages;
+
+  # Conservative HDD APM: set standby after ~21 min of idle on rotational disks.
+  # Only touches rotational devices; SSDs/NVMe are skipped. Gated off on ZFS
+  # data pools because ZFS expects disks to remain available. Long timeout avoids
+  # spin-up latency under normal access.
+  systemd.services.nixhomeserver-hdd-apm = lib.mkIf (!(vars.enableZfsDataPool or false)) {
+    description = "Apply conservative APM/spindown to rotational disks";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "local-fs.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    script = ''
+      set -euo pipefail
+      for dev in /sys/block/sd*; do
+        [[ -e "$dev" ]] || continue
+        name="$(basename "$dev")"
+        rot="$(cat "$dev/queue/rotational" 2>/dev/null || echo 0)"
+        [[ "$rot" == "1" ]] || continue
+        if command -v hdparm >/dev/null 2>&1; then
+          hdparm -B 127 -S 241 "/dev/$name" || true
+        fi
+      done
+    '';
+  };
 
   nix = {
     package = pkgs.nixVersions.latest;

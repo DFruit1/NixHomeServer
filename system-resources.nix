@@ -16,7 +16,7 @@ let
       # suspend regardless of load, and the host wakes at wakeTime. These
       # values are only the defaults: the dashboard power schedule at
       # /var/lib/power-schedule/schedule.json overrides them at runtime.
-      enable = false;
+      enable = true;
       wakeTime = "10:30";
       idleWindowStartHour = 22; # Default first hour of usage-gated checks.
       forcedWindowEndHour = 10; # Default end of the forced window (00:00-09:59).
@@ -43,7 +43,7 @@ let
       policy = [ "magic" ];
     };
     powertopAutoTune = false; # Broad auto-tuning can be too aggressive for a storage server.
-    scsiLinkPolicy = null; # Keep the kernel default for SATA/SCSI link power management.
+    scsiLinkPolicy = "medium_power"; # Conservative SATA/SCSI link power management: saves idle power without the latency spikes of min_power on HDD pools.
     usbAutoSuspend = {
       enable = false;
       denyList = [ ];
@@ -304,6 +304,28 @@ in
       "net.core.somaxconn" = 1024;
       "fs.file-max" = 2097152;
       "fs.nr_open" = 1048576;
+      # Kernel hardening: hide kernel pointers and restrict dmesg to privileged
+      # users, disable unprivileged BPF, and enable SYN cookies.
+      "kernel.kptr_restrict" = 2;
+      "kernel.dmesg_restrict" = 1;
+      "kernel.unprivileged_bpf_disabled" = 1;
+      "net.ipv4.tcp_syncookies" = 1;
+      # Source validation and redirect hardening on all interfaces.
+      "net.ipv4.conf.all.rp_filter" = 1;
+      "net.ipv4.conf.default.rp_filter" = 1;
+      "net.ipv4.conf.all.accept_redirects" = 0;
+      "net.ipv4.conf.default.accept_redirects" = 0;
+      "net.ipv4.conf.all.send_redirects" = 0;
+      "net.ipv4.conf.default.send_redirects" = 0;
+      "net.ipv4.icmp_echo_ignore_broadcasts" = 1;
+      "net.ipv4.icmp_ignore_bogus_error_responses" = 1;
+      "net.ipv6.conf.all.accept_ra" = 0;
+      "net.ipv6.conf.default.accept_ra" = 0;
+      "net.ipv6.conf.all.accept_redirects" = 0;
+      "net.ipv6.conf.default.accept_redirects" = 0;
+      "fs.protected_hardlinks" = 1;
+      "fs.protected_symlinks" = 1;
+      "fs.suid_dumpable" = 0;
     };
 
     systemd.services =
@@ -793,6 +815,66 @@ in
     systemd.timers.gpu-power-limit = lib.mkIf power.gpu.enable {
       wantedBy = [ "timers.target" ];
       timerConfig = { OnBootSec = "30s"; OnUnitInactiveSec = "1min"; };
+    };
+
+    # Dynamic GPU power cap: lower the sustained cap when no render client is
+    # using the GPU, restore the configured cap when one appears. Samples every
+    # two minutes and only writes when the target changes.
+    systemd.services.gpu-dynamic-power = lib.mkIf power.gpu.enable {
+      description = "Adjust Intel GPU power limit based on render-node activity";
+      path = [ pkgs.psmisc pkgs.procps ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = pkgs.writeShellScript "gpu-dynamic-power" ''
+          set -euo pipefail
+          idle_watts=100
+          active_watts=${toString power.gpu.powerLimitWatts}
+
+          find_intel_hwmon() {
+            for hwmon in /sys/class/hwmon/hwmon*; do
+              name="$(cat "$hwmon/name" 2>/dev/null || echo "")"
+              if [[ "$name" == "xe" ]] && [[ -f "$hwmon/power1_cap" ]]; then
+                echo "$hwmon"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          hwmon="$(find_intel_hwmon)" || exit 0
+
+          gpu_busy=false
+          if compgen -G "/dev/dri/renderD*" >/dev/null; then
+            for node in /dev/dri/renderD*; do
+              [[ -e "$node" ]] || continue
+              if ${pkgs.psmisc}/bin/fuser "$node" >/dev/null 2>&1; then
+                gpu_busy=true
+                break
+              fi
+            done
+          fi
+          if systemctl is-active --quiet ollama.service 2>/dev/null || systemctl is-active --quiet llamacpp.service 2>/dev/null; then
+            gpu_busy=true
+          fi
+
+          if [[ "$gpu_busy" == "true" ]]; then
+            target=$((active_watts * 1000000))
+          else
+            target=$((idle_watts * 1000000))
+          fi
+
+          current="$(cat "$hwmon/power1_cap" 2>/dev/null || echo 0)"
+          if (( current == target )); then
+            exit 0
+          fi
+          echo "$target" > "$hwmon/power1_cap" || true
+        '';
+      };
+    };
+
+    systemd.timers.gpu-dynamic-power = lib.mkIf power.gpu.enable {
+      wantedBy = [ "timers.target" ];
+      timerConfig = { OnBootSec = "2min"; OnUnitInactiveSec = "2min"; };
     };
 
     systemd.tmpfiles.rules = [

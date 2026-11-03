@@ -58,6 +58,15 @@ in
     serviceConfig = {
       Restart = "on-failure";
       RestartSec = "5s";
+      NoNewPrivileges = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      PrivateDevices = true;
+      StateDirectory = "cloudflared";
+      ReadWritePaths = [ "/var/lib/cloudflared" ];
+      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+      CapabilityBoundingSet = "";
     };
   };
 }

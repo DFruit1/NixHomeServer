@@ -205,9 +205,19 @@ in
       "caddy.service"
       "acme-${vars.kanidmDomain}.service"
     ];
-    serviceConfig.BindReadOnlyPaths = [
-      "${./override.css}:${config.services.kanidm.package}/ui/hpkg/override.css"
-    ];
+    serviceConfig = {
+      BindReadOnlyPaths = [
+        "${./override.css}:${config.services.kanidm.package}/ui/hpkg/override.css"
+      ];
+      NoNewPrivileges = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      PrivateDevices = true;
+      ReadWritePaths = [ "/var/lib/kanidm" ];
+      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+      CapabilityBoundingSet = "";
+    };
   };
 
   systemd.services.kanidm-disable-consent-prompt = lib.mkIf (oauth2ClientsForConsentPrompt != { }) {

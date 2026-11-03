@@ -331,6 +331,16 @@ in
         "acme-${vars.domain}.service"
         "acme-${vars.kanidmDomain}.service"
       ];
+      serviceConfig = {
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ReadWritePaths = [ "/var/log/caddy" "/var/lib/caddy" ];
+        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+        CapabilityBoundingSet = [ "CAP_NET_BIND_SERVICE" ];
+      };
     };
   };
 }
