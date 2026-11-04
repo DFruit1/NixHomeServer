@@ -44,6 +44,10 @@ EXTENSION_BLOCK_MIN="$DEFAULT_EXTEND_MIN"
 # Automatic block extension stops at this much total grace past the deadline.
 # An explicit `extend` is not bounded by it.
 MAX_GRACE_MIN="${SHUTDOWN_GUARD_MAX_GRACE_MIN:-360}"
+# Treat the system as busy when the 1-minute load average exceeds this multiple
+# of the CPU count. Catches compile/backup/agent work that is not named in the
+# configured process lists. Set to 0 to disable.
+SHUTDOWN_GUARD_LOAD_FACTOR="${SHUTDOWN_GUARD_LOAD_FACTOR:-1.0}"
 
 CRITICAL_UNITS=()
 CRITICAL_PROCESSES=()
@@ -169,6 +173,7 @@ launch_watcher() {
     --setenv="SHUTDOWN_GUARD_EXTENSION_BLOCK_MIN=$EXTENSION_BLOCK_MIN" \
     --setenv="SHUTDOWN_GUARD_MAX_GRACE_MIN=$MAX_GRACE_MIN" \
     --setenv="SHUTDOWN_GUARD_DESKTOP_TTL_SEC=$DESKTOP_ACTIVITY_TTL_SEC" \
+    --setenv="SHUTDOWN_GUARD_LOAD_FACTOR=$SHUTDOWN_GUARD_LOAD_FACTOR" \
     "$self" watch --deadline "$deadline" --grace-deadline "$grace_deadline" --poll "$poll"; then
     return 1
   fi
@@ -218,6 +223,16 @@ critical_task() {
       return 1
     fi
   done
+  # Catch unnamed heavy work (compiles, backups, agent tasks) via load average.
+  if awk -v factor="$SHUTDOWN_GUARD_LOAD_FACTOR" 'BEGIN { exit !(factor+0 > 0) }' >/dev/null 2>&1; then
+    if awk -v load="$(awk '{print $1}' /proc/loadavg 2>/dev/null)" \
+           -v cpus="$(nproc 2>/dev/null || echo 1)" \
+           -v factor="$SHUTDOWN_GUARD_LOAD_FACTOR" \
+           'BEGIN { exit !(load+0 > cpus*factor) }' >/dev/null 2>&1; then
+      printf 'load:high\n'
+      return 1
+    fi
+  fi
   return 0
 }
 

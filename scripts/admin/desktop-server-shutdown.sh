@@ -23,6 +23,7 @@ POLL_TIMEOUT_MIN=90
 DRY_RUN=false
 LOCAL_SHUTDOWN=true
 SERVER_SHUTDOWN_COMPLETED=false
+DESKTOP_LOAD_FACTOR="${SHUTDOWN_GUARD_DESKTOP_LOAD_FACTOR:-1.0}"
 
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
 
@@ -135,9 +136,10 @@ server_reachable() {
 
 desktop_work_active() {
   local process pattern
-  for process in aapt2 apksigner cargo cargo-nextest cc1 cc1plus clang esbuild gcc make ninja \
-    nix nix-build nix-instantiate nix-store nixos-rebuild playwright pnpm pytest rustc tsc \
-    vitest wasm-pack zipalign zpool; do
+  for process in aapt2 apksigner cargo cargo-nextest cc1 cc1plus clang cmake dotnet esbuild gcc \
+    go java javac make meson ninja nix nix-build nix-instantiate nix-store nixos-rebuild \
+    node opencode perl python python3 playwright pnpm pytest ruby rustc tsc vitest wasm-pack \
+    zipalign zpool; do
     if pgrep -x "$process" >/dev/null 2>&1; then
       return 0
     fi
@@ -154,14 +156,23 @@ desktop_work_active() {
     '(^|[[:space:]/])nixos-rebuild[[:space:]]' \
     '(^|[[:space:]/])(vite|esbuild|tsc|rollup)[[:space:]]+(build|--build)([[:space:]]|$)' \
     '(^|[[:space:]/])git[[:space:]]+(gc|repack|fetch|clone|fsck)([[:space:]]|$)' \
-    '(^|[[:space:]/])(vitest|playwright|jest|pytest|ctest|bats)([[:space:]]|$)'; do
+    '(^|[[:space:]/])(vitest|playwright|jest|pytest|ctest|bats)([[:space:]]|$)' \
+    '(^|[[:space:]/])(python|python3|node|go|java|dotnet|cmake|meson)([[:space:]]|$)' \
+    '(^|[[:space:]/])(bash|sh|zsh)[[:space:]]+[^[:space:]]+\.(sh|py)([[:space:]]|$)'; do
     if pgrep -f -- "$pattern" >/dev/null 2>&1; then
       return 0
     fi
   done
+  # Catch unnamed heavy desktop work (compiles, backups, agent tasks).
+  if awk -v load="$(awk '{print $1}' /proc/loadavg 2>/dev/null)" \
+         -v cpus="$(nproc 2>/dev/null || echo 1)" \
+         -v factor="$DESKTOP_LOAD_FACTOR" \
+         'BEGIN { exit !(load+0 > cpus*factor) }' >/dev/null 2>&1; then
+    return 0
+  fi
   return 1
 }
-
+ 
 wait_for_server_deadline() {
   local remaining=$(( TIMEOUT_MIN * 60 )) step
   while (( remaining > 0 )); do
