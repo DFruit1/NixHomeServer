@@ -112,7 +112,11 @@
   a.result__title:hover { text-decoration: underline; }
   .result__snippet { margin-top: var(--space-2); max-width: 75ch; overflow-wrap: anywhere; }
   .result__snippet em { font-style: normal; font-weight: 600; background: var(--mark); color: var(--text); }
-  .result__details { margin-top: var(--space-2); font-size: 0.8125rem; color: var(--text-muted); overflow-wrap: anywhere; }
+  .result__actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-3); margin-top: var(--space-2); }
+  .result__copy { font-size: 0.8125rem; padding-inline: var(--space-2); }
+  .result__feedback { flex-basis: 100%; font-size: 0.8125rem; color: var(--text-muted); overflow-wrap: anywhere; }
+  .result__details[open] { flex-basis: 100%; }
+  .result__details { font-size: 0.8125rem; color: var(--text-muted); overflow-wrap: anywhere; }
   .result__details summary { display: list-item; width: fit-content; list-style-position: inside; cursor: pointer; min-height: var(--control-height); padding: var(--space-2) 0; text-decoration: underline; text-underline-offset: 0.2em; }
   .result__details p { margin-block: var(--space-2) var(--space-3); white-space: pre-line; line-height: 1.8; }
   .result__facts { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); margin: var(--space-2) 0 0; padding: 0; list-style: none; font-size: 0.8125rem; color: var(--text-muted); overflow-wrap: anywhere; }
@@ -505,8 +509,22 @@ function resultNode(hit) {
   const facts = document.createElement('ul'); facts.className = 'result__facts'; facts.setAttribute('aria-label', 'Result information');
   const destination = document.createElement('a'); destination.className = 'result__destination';
   const byline = document.createElement('p'); byline.className = 'result__byline';
-  details.append(summary, metadataText); item.append(context, heading, byline, snippet, facts, destination, details);
-  item._parts = {source, kind, info, title, byline, snippet, facts, destination, details, metadataText};
+  const actions = document.createElement('div'); actions.className = 'result__actions';
+  const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'ghost result__copy'; copy.textContent = 'Copy link';
+  const feedback = document.createElement('p'); feedback.className = 'result__feedback'; feedback.setAttribute('role', 'status');
+  copy.addEventListener('click', async () => {
+    const href = item._parts.title.getAttribute('href');
+    if (!href) return;
+    try {
+      await navigator.clipboard.writeText(href);
+      feedback.textContent = 'Link copied.';
+    } catch {
+      feedback.textContent = 'Could not copy. Open the title and copy its address.';
+    }
+  });
+  details.append(summary, metadataText); actions.append(details, copy, feedback);
+  item.append(context, heading, byline, snippet, facts, destination, actions);
+  item._parts = {source, kind, info, title, byline, snippet, facts, destination, details, metadataText, copy, feedback};
   updateResultNode(item, hit);
   return item;
 }
@@ -525,8 +543,8 @@ function updateResultNode(item, hit) {
   const text = (node, value) => { if (node.textContent !== value) node.textContent = value; };
   parts.source.dataset.source = hit.source || '';
   text(parts.kind, kindLabels[hit.kind] || hit.kind || '');
-  parts.kind.hidden = !parts.kind.textContent;
   text(parts.source, sourceNames.get(hit.source) || hit.source || '');
+  parts.kind.hidden = !parts.kind.textContent || parts.kind.textContent === parts.source.textContent;
   const date = Number.isFinite(hit.created) ? new Date(hit.created * 1000).toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'}) : '';
   const format = formatLabels[hit.contentType] || hit.contentType;
   text(parts.info, [format === kindLabels[hit.kind] ? '' : format, hit.owner && hit.owner !== 'shared' ? `Owner: ${hit.owner}` : '', date, hit._live ? 'Live result' : ''].filter(Boolean).join(' · '));
@@ -538,6 +556,11 @@ function updateResultNode(item, hit) {
   const byline = [creator ? `${meta.from ? 'From: ' : ''}${creator}` : '', value('series') ? `Series: ${value('series')}${value('series_index') ? ` #${value('series_index')}` : ''}` : '', value('narrators') ? `Narrated by ${value('narrators')}` : ''].filter(Boolean).join(' · ');
   text(parts.byline, byline); parts.byline.hidden = !byline;
   if (href) parts.title.href = href; else parts.title.removeAttribute('href');
+  parts.copy.hidden = !href;
+  parts.copy.setAttribute('aria-label', `Copy link to ${hit.title || 'Untitled'}`);
+  if (parts.copy.dataset.href !== href) {
+    parts.feedback.textContent = ''; parts.copy.dataset.href = href;
+  }
   parts.snippet.hidden = !hit.snippet;
   // API contract: escaped text, with only generated <em> highlights.
   if (parts.snippet.innerHTML !== (hit.snippet || '')) parts.snippet.innerHTML = hit.snippet || '';
@@ -548,6 +571,7 @@ function updateResultNode(item, hit) {
     ['attachments', 'Attachments'], ['formats', 'Formats'], ['tags', 'Tags'],
     ['genres', 'Genres'], ['feed', 'Feed'], ['archive', 'Archive'], ['crawl', 'Capture'],
     ['publisher', 'Publisher'], ['publication_year', 'Year'],
+    ['languages', 'Languages'], ['language', 'Language'], ['engines', 'Found via'],
   ];
   const facts = factFields.filter(([key]) => value(key));
   const signature = JSON.stringify(facts.map(([key, label]) => [label, value(key)]));
@@ -563,8 +587,12 @@ function updateResultNode(item, hit) {
   parts.facts.hidden = !facts.length;
   const origin = safeHref(hit.originUrl);
   const destination = origin ? new URL(origin, location.href) : null;
-  text(parts.destination, destination ? `Original: ${destination.host}` : '');
-  parts.destination.hidden = !destination || origin === href;
+  const webContext = ['web-page', 'online-paper'].includes(hit.kind);
+  const path = destination && webContext && destination.pathname !== '/' ? destination.pathname : '';
+  const displayPath = path.length > 80 ? `${path.slice(0, 40)}…${path.slice(-24)}` : path;
+  text(parts.destination, destination ? `${origin === href ? '' : 'Original: '}${destination.host}${displayPath}` : '');
+  if (origin) parts.destination.setAttribute('title', origin); else parts.destination.removeAttribute('title');
+  parts.destination.hidden = !destination || (origin === href && !webContext);
   if (origin) parts.destination.href = origin; else parts.destination.removeAttribute('href');
   const metadata = Object.entries(meta).filter(([key, entry]) => key !== 'owner' && metadataValue(entry));
   text(parts.metadataText, metadata.map(([key, entry]) => `${metadataLabel(key)}: ${metadataValue(entry)}`).join('\n'));

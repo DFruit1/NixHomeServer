@@ -430,6 +430,7 @@ async fn api_search(
                     .unwrap_or_else(|| json!({}));
                 hits.push(json!({
                     "id": hit.id,
+                    "kind": hit.kind,
                     "source": hit.source,
                     "title": hit.title,
                     "snippet": snippet,

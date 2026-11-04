@@ -124,6 +124,7 @@ impl SolrDocument {
 #[derive(Debug)]
 pub struct SearchHit {
     pub id: String,
+    pub kind: String,
     pub source: String,
     pub title: String,
     pub origin_url: String,
@@ -529,7 +530,7 @@ impl SolrClient {
             // Postgres after the query.
             (
                 "fl",
-                "id source title origin_url app_url content_type owner_s content_created score"
+                "id kind_s source title origin_url app_url content_type owner_s content_created score"
                     .to_string(),
             ),
             ("defType", "edismax".to_string()),
@@ -667,6 +668,11 @@ pub fn parse_search_response(response: &Value) -> Result<SearchResponse, String>
         let score = doc.get("score").and_then(Value::as_f64).unwrap_or_default();
         hits.push(SearchHit {
             id,
+            kind: doc
+                .get("kind_s")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
             source: doc
                 .get("source")
                 .and_then(Value::as_str)
