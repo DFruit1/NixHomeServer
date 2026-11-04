@@ -162,14 +162,16 @@ launch_watcher() {
   self="$(command -v "$PROGRAM" || true)"
   [[ -n "$self" ]] || die "cannot resolve the guard executable path"
   systemctl stop "$WATCH_UNIT.service" >/dev/null 2>&1 || true
-  systemd-run --unit="$WATCH_UNIT" --collect --quiet \
+  if ! systemd-run --unit="$WATCH_UNIT" --collect --quiet \
     --description="Guarded server shutdown watcher" \
     --setenv="SHUTDOWN_GUARD_STATE_DIR=$STATE_DIR" \
     --setenv="SHUTDOWN_GUARD_CONF=$CONF_FILE" \
     --setenv="SHUTDOWN_GUARD_EXTENSION_BLOCK_MIN=$EXTENSION_BLOCK_MIN" \
     --setenv="SHUTDOWN_GUARD_MAX_GRACE_MIN=$MAX_GRACE_MIN" \
     --setenv="SHUTDOWN_GUARD_DESKTOP_TTL_SEC=$DESKTOP_ACTIVITY_TTL_SEC" \
-    "$self" watch --deadline "$deadline" --grace-deadline "$grace_deadline" --poll "$poll"
+    "$self" watch --deadline "$deadline" --grace-deadline "$grace_deadline" --poll "$poll"; then
+    return 1
+  fi
 }
 
 # Print the first active critical task as "unit:<name>", "process:<name>",
@@ -304,7 +306,11 @@ cmd_start() {
   write_int_file "$GRACE_SECONDS_FILE" "$(( grace * 60 ))"
 
   schedule_shutdown_at "$deadline" "Server shutdown scheduled by ${PROGRAM} in ${timeout} minutes"
-  launch_watcher "$deadline" "$grace_deadline" "$poll"
+  if ! launch_watcher "$deadline" "$grace_deadline" "$poll"; then
+    shutdown -c >/dev/null 2>&1 || true
+    rm -f "$ACTIVITY_FILE" "$DEADLINE_FILE" "$GRACE_DEADLINE_FILE" "$GRACE_SECONDS_FILE"
+    die "failed to launch shutdown watcher"
+  fi
   write_status scheduled "shutdown scheduled in ${timeout} minutes"
   printf 'scheduled: shutdown in %s minutes (grace %s minutes)\n' "$timeout" "$grace"
 }
@@ -359,7 +365,9 @@ cmd_extend() {
   write_int_file "$GRACE_DEADLINE_FILE" "$new_grace"
   schedule_shutdown_at "$new_deadline" "Guarded server shutdown extended by ${PROGRAM}"
   if ! watcher_active; then
-    launch_watcher "$new_deadline" "$new_grace" "$DEFAULT_POLL_SEC"
+    if ! launch_watcher "$new_deadline" "$new_grace" "$DEFAULT_POLL_SEC"; then
+      die "failed to launch shutdown watcher"
+    fi
   fi
   local message="shutdown extended by ${minutes} minutes"
   [[ -n "$reason" ]] && message="${message}: ${reason}"

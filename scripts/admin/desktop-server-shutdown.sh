@@ -22,6 +22,7 @@ POLL_SEC=30
 POLL_TIMEOUT_MIN=90
 DRY_RUN=false
 LOCAL_SHUTDOWN=true
+SERVER_SHUTDOWN_COMPLETED=false
 
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
 
@@ -56,6 +57,16 @@ require_minutes() {
 require_seconds() {
   [[ "$1" =~ ^[0-9]+$ ]] || die "$2 must be a non-negative integer number of seconds"
 }
+
+cleanup_on_exit() {
+  local rc=$?
+  if [[ "$SERVER_SHUTDOWN_COMPLETED" != true && "$DRY_RUN" != true ]]; then
+    ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "$HOST" \
+      "sudo $GUARD cancel" >/dev/null 2>&1 || true
+  fi
+  return "$rc"
+}
+trap cleanup_on_exit INT TERM HUP EXIT
 
 while (($# > 0)); do
   case "$1" in
@@ -153,18 +164,15 @@ desktop_work_active() {
 
 wait_for_server_deadline() {
   local remaining=$(( TIMEOUT_MIN * 60 )) step
-  if (( remaining > 300 )); then
-    sleep "$(( remaining - 300 ))"
-    remaining=300
-  fi
   while (( remaining > 0 )); do
     if desktop_work_active; then
       if ! remote sudo "$GUARD" mark-activity >/dev/null; then
         printf 'Could not report desktop work to the server; retrying at the next check.\n' >&2
       fi
     fi
-    step=30
-    (( remaining < step )) && step="$remaining"
+    step="$POLL_SEC"
+    (( step > remaining )) && step="$remaining"
+    (( step < 1 )) && step=1
     sleep "$step"
     remaining=$(( remaining - step ))
   done
@@ -216,10 +224,15 @@ cancel() {
   exit 0
 }
 trap cancel INT TERM HUP
+cleanup() { rm -f -- "$0"; }
+trap cleanup EXIT
 echo "The NixHomeServer has shut down."
 echo "This PC will power off in ${grace} minutes."
 echo "Cancel with Ctrl-C or 'loginctl -c'. Closing this window also cancels."
-loginctl poweroff "+${grace}" "Desktop poweroff after NixHomeServer shutdown"
+if ! loginctl poweroff "+${grace}" "Desktop poweroff after NixHomeServer shutdown"; then
+  printf '\nFailed to schedule local poweroff.\n' >&2
+  exit 1
+fi
 for ((remaining = grace * 60; remaining > 0; remaining--)); do
   printf '\rPowering off in %02d:%02d  (cancel: Ctrl-C or loginctl -c) ' "\$((remaining / 60))" "\$((remaining % 60))"
   sleep 1
@@ -245,7 +258,7 @@ printf 'Requesting guarded shutdown on %s in %s minutes (grace %s minutes)...\n'
   "$HOST" "$TIMEOUT_MIN" "$GRACE_MIN"
 remote sudo "$GUARD" start --timeout "$TIMEOUT_MIN" --grace "$GRACE_MIN"
 
-printf 'Waiting %s minutes before polling the server; checking desktop work during the final five minutes...\n' "$TIMEOUT_MIN"
+printf 'Waiting up to %s minutes for the server shutdown; reporting desktop work throughout...\n' "$TIMEOUT_MIN"
 wait_for_server_deadline
 
 printf 'Polling %s until it powers off...\n' "$HOST"
@@ -256,6 +269,9 @@ while server_reachable; do
   state="$(printf '%s\n' "$status" | sed -n 's/^state=//p')"
   message="$(printf '%s\n' "$status" | sed -n 's/^message=//p')"
   printf '[%s] server: %s (%s)\n' "$(date +%H:%M:%S)" "${message:-status unavailable}" "${state:-unknown}"
+  if desktop_work_active; then
+    remote sudo "$GUARD" mark-activity >/dev/null 2>&1 || true
+  fi
   if (( $(date +%s) >= poll_deadline )); then
     die "server is still up after ${POLL_TIMEOUT_MIN} minutes of polling; giving up"
   fi
@@ -275,6 +291,7 @@ while :; do
 done
 
 printf 'Server %s is down.\n' "$HOST"
+SERVER_SHUTDOWN_COMPLETED=true
 
 if [[ "$LOCAL_SHUTDOWN" != true ]]; then
   printf 'Local shutdown disabled; leaving this PC running.\n'
