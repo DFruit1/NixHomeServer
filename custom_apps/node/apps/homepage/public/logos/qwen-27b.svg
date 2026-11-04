@@ -1,9 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Local AI">
-  <rect width="64" height="64" rx="14" fill="#b45309"/>
-  <g fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M20 14v10M32 14v10M44 14v10"/>
-    <path d="M14 24h36v6a18 18 0 0 1-36 0z"/>
-    <circle cx="25" cy="33" r="2.5" fill="#ffffff" stroke="none"/>
-    <circle cx="39" cy="33" r="2.5" fill="#ffffff" stroke="none"/>
-  </g>
+  <path d="M32 5c11 0 19 8 19 19 0 4-1 8-4 12L32 57 17 36c-3-4-4-8-4-12C13 13 21 5 32 5z" fill="#d77c24"/>
+  <path d="M8 45c-5-9-2-20 7-25 4-2 8-3 13-2l26 3-11 24c-2 4-5 7-9 9-9 5-21 1-26-9z" fill="#f1b849"/>
+  <path d="M56 45c-5 10-17 13-26 8-4-2-7-5-9-9L10 20l26-3c5-1 9 0 13 2 9 5 12 17 7 26z" fill="#e89432"/>
+  <path d="m32 20 11 7v13l-11 7-11-7V27z" fill="#fff4d9"/>
+  <path d="m32 26 6 4v7l-6 4-6-4v-7z" fill="#a95726"/>
 </svg>

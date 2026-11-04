@@ -1,12 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Chaptarr">
-  <rect x="16" y="16" width="480" height="480" rx="104" fill="#245b9f"/>
-  <path d="M256 118c-40-24-92-30-132-16v276c40-14 92-8 132 16 40-24 92-30 132-16V102c-40-14-92-8-132 16z" fill="#f5f7fa"/>
-  <path d="M256 118v276" stroke="#245b9f" stroke-width="16" stroke-linecap="round"/>
-  <g fill="#245b9f">
-    <rect x="150" y="176" width="64" height="12" rx="6"/>
-    <rect x="150" y="212" width="64" height="12" rx="6"/>
-    <rect x="298" y="176" width="64" height="12" rx="6"/>
-    <rect x="298" y="212" width="64" height="12" rx="6"/>
-  </g>
-  <path d="M256 300v76m0 0-38-38m38 38 38-38" stroke="#b66a16" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Chaptarr">
+  <path d="M32 16C23 9 14 8 5 10v40c9-2 18-1 27 6 9-7 18-8 27-6V10c-9-2-18-1-27 6z" fill="#225a9f"/>
+  <path d="M32 16C24 10 17 8 9 9v35c8 0 15 2 23 8 8-6 15-8 23-8V9c-8-1-15 1-23 7z" fill="#dceef4"/>
+  <path d="M32 16c8-6 15-8 23-7v35c-8 0-15 2-23 8z" fill="#a2d6e5"/>
+  <path d="M32 17v35" stroke="#225a9f" stroke-width="3"/>
+  <path d="M41 11v25l5-4 5 1V9c-3 0-7 1-10 2z" fill="#d89332"/>
+  <path d="M15 21c3 0 6 1 10 3m-10 5c3 0 6 1 10 3" stroke="#4b85b1" stroke-width="3" stroke-linecap="round"/>
 </svg>

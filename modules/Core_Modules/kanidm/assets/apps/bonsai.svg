@@ -1,10 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Bonsai">
-  <rect width="64" height="64" rx="14" fill="#15803d"/>
-  <circle cx="24" cy="24" r="11" fill="#bbf7d0"/>
-  <circle cx="41" cy="27" r="9" fill="#86efac"/>
-  <g fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M32 50V36"/>
-    <path d="M32 42c-3-3-7-4-11-3"/>
-    <path d="M22 50h20"/>
-  </g>
+  <path d="M33 45V26m0 13L20 28m13 6 12-12" fill="none" stroke="#89604a" stroke-width="5" stroke-linecap="round"/>
+  <path d="M8 26c-2-6 2-13 9-14 3-9 16-10 21-3 9-3 18 3 18 11 7 7 2 16-6 16H17C9 36 5 31 8 26z" fill="#187c63"/>
+  <path d="M8 26c-2-6 2-13 9-14 3-9 16-10 21-3 9-3 18 3 18 11-11 8-26 11-48 6z" fill="#48b88b"/>
+  <path d="M33 45V33l10-8" fill="none" stroke="#89604a" stroke-width="5" stroke-linecap="round"/>
+  <path d="M16 44h32l-5 11H21z" fill="#c76b47"/>
+  <rect x="13" y="42" width="38" height="6" rx="3" fill="#e9a169"/>
 </svg>
