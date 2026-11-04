@@ -8,6 +8,7 @@
     ./files-posix-groups.nix
     ./sftp-files.nix
     ./branding.nix
+    ./launcher.nix
     ./account-policy.nix
   ];
 }

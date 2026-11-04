@@ -262,7 +262,9 @@ let
   catalog = import ../../catalog.nix;
   registeredCards = lib.concatMap
     (entry: entry.registration.homepage { inherit config vars; })
-    (lib.attrValues catalog.apps);
+    (lib.attrValues (lib.filterAttrs
+      (name: _: config.nixhomeserver.modules.${name} or false)
+      catalog.apps));
   coreCards = [
     {
       order = 10;

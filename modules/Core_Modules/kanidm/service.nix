@@ -206,9 +206,6 @@ in
       "acme-${vars.kanidmDomain}.service"
     ];
     serviceConfig = {
-      BindReadOnlyPaths = [
-        "${./override.css}:${config.services.kanidm.package}/ui/hpkg/override.css"
-      ];
       NoNewPrivileges = true;
       ProtectSystem = "strict";
       ProtectHome = true;
