@@ -17,10 +17,20 @@ let
   homepageHost = "homepage.${vars.domain}";
   homepageLandingUrl = "https://${homepageHost}";
   fallbackLandingUrl = "https://${vars.kanidmDomain}/ui/apps";
+  securityHeaders = ''
+    header {
+      Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+      X-Content-Type-Options "nosniff"
+      X-Frame-Options "SAMEORIGIN"
+      Referrer-Policy "strict-origin-when-cross-origin"
+      Permissions-Policy "geolocation=(), microphone=(), camera=()"
+    }
+  '';
   rootLandingConfig =
     if homepageEnabled then
       ''
         ${accessLogConfig}
+        ${securityHeaders}
         handle_errors {
           redir ${fallbackLandingUrl} 302
         }
@@ -39,6 +49,7 @@ let
     else
       ''
         ${accessLogConfig}
+        ${securityHeaders}
         redir ${fallbackLandingUrl} 302
       '';
   # Optional applications register their real virtual hosts in their own
@@ -256,6 +267,7 @@ in
         useACMEHost = vars.kanidmDomain;
         extraConfig = ''
           ${accessLogConfig}
+          ${securityHeaders}
           encode zstd gzip
           @edge_http header X-Forwarded-Proto http
           redir @edge_http https://{host}{uri} 308

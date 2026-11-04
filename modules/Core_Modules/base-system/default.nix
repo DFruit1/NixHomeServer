@@ -70,6 +70,19 @@ in
   boot.initrd.availableKernelModules = [ "nvme" "ahci" "xhci_pci" "usb_storage" "sd_mod" ];
   # Prefer PCIe active-state power management where devices tolerate it.
   boot.kernelParams = [ "pcie_aspm=powersave" ];
+  # Disable rarely needed filesystems and network protocols to reduce attack surface.
+  boot.blacklistedKernelModules = [
+    "cramfs"
+    "freevxfs"
+    "jffs2"
+    "hfs"
+    "hfsplus"
+    "udf"
+    "dccp"
+    "sctp"
+    "rds"
+    "tipc"
+  ];
   boot.supportedFilesystems = [ "btrfs" "vfat" "ext4" ]
     ++ lib.optional vars.enableZfsDataPool "zfs";
 
@@ -125,7 +138,8 @@ in
   hardware.cpu.intel.updateMicrocode = lib.mkIf (isX86 && vars.cpuVendor == "intel") true;
   hardware.cpu.amd.updateMicrocode = lib.mkIf (isX86 && vars.cpuVendor == "amd") true;
 
-  networking.firewall.allowedTCPPorts = [ 22 ];
+  networking.firewall.interfaces.${vars.networking.interfaces.lan}.allowedTCPPorts = [ 22 ];
+  networking.firewall.interfaces.${vars.networking.interfaces.netbird}.allowedTCPPorts = [ 22 ];
 
   services.openssh = {
     enable = true;
@@ -165,7 +179,22 @@ in
       filter = "sshd";
       maxretry = 5;
     };
+    jails.caddy-auth.settings = {
+      enabled = true;
+      filter = "caddy-auth";
+      logpath = "/var/log/caddy/access.log";
+      maxretry = 20;
+      findtime = 300;
+      bantime = "1h";
+    };
   };
+
+  environment.etc."fail2ban/filter.d/caddy-auth.conf".text = ''
+    [Definition]
+    failregex = ^.*"remote_ip":"<HOST>".*"status":\s*(401|403).*$
+                ^.*"status":\s*(401|403).*"remote_ip":"<HOST>".*$
+    ignoreregex =
+  '';
 
   # Lightweight kernel audit for privileged execution and auth events.
   security.audit.enable = true;
