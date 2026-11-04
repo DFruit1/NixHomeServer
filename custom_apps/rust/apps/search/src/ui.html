@@ -102,18 +102,23 @@
   .result-options select { width: auto; }
   #status { color: var(--text-muted); font-size: 0.875rem; }
   .results { list-style: none; padding: 0; margin: 0; }
-  .result { padding: var(--space-5) 0; border-bottom: 1px solid var(--border); }
+  .result { max-width: 56rem; padding: var(--space-5) 0; border-bottom: 1px solid var(--border); }
   .result:first-child { padding-top: var(--space-2); }
-  .result__context { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); color: var(--text-muted); font-size: 0.8125rem; margin-bottom: var(--space-1); overflow-wrap: anywhere; }
-  .result__source { font-weight: 600; }
-  .result__title { display: inline-block; font-size: 1.125rem; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; text-decoration: none; }
+  .result__context { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); color: var(--text-muted); font-size: 0.8125rem; margin-bottom: var(--space-2); overflow-wrap: anywhere; }
+  .result__source { font-weight: 600; color: var(--text); }
+  .result__kind { color: var(--accent); }
+  .result__title { display: inline-block; font-size: 1.25rem; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; text-decoration: none; }
   .result h3 { margin: 0; font-size: inherit; line-height: 1.4; }
   a.result__title:hover { text-decoration: underline; }
   .result__snippet { margin-top: var(--space-2); max-width: 75ch; overflow-wrap: anywhere; }
   .result__snippet em { font-style: normal; font-weight: 600; background: var(--mark); color: var(--text); }
   .result__details { margin-top: var(--space-2); font-size: 0.8125rem; color: var(--text-muted); overflow-wrap: anywhere; }
-  .result__details summary { display: inline-block; cursor: pointer; min-height: var(--control-height); padding: var(--space-2) 0; text-decoration: underline; text-underline-offset: 0.2em; }
-  .result__details p { margin-top: var(--space-2); }
+  .result__details summary { display: list-item; width: fit-content; list-style-position: inside; cursor: pointer; min-height: var(--control-height); padding: var(--space-2) 0; text-decoration: underline; text-underline-offset: 0.2em; }
+  .result__details p { margin-block: var(--space-2) var(--space-3); white-space: pre-line; line-height: 1.8; }
+  .result__facts { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); margin: var(--space-2) 0 0; padding: 0; list-style: none; font-size: 0.8125rem; color: var(--text-muted); overflow-wrap: anywhere; }
+  .result__facts li { min-width: 0; max-width: 100%; }
+  .result__facts strong { font-weight: 500; color: var(--text); }
+  .result__destination { display: block; width: fit-content; max-width: 100%; margin-top: var(--space-2); font-size: 0.8125rem; color: var(--text-muted); overflow-wrap: anywhere; }
   .empty { padding: var(--space-7) 0; }
   .empty h2 { font-size: 1.5rem; margin-bottom: var(--space-2); letter-spacing: -0.02em; }
   .more { display: flex; justify-content: center; margin-top: var(--space-5); }
@@ -489,44 +494,81 @@ function resultNode(hit) {
   const item = document.createElement('li'); item.className = 'result';
   const context = document.createElement('div'); context.className = 'result__context';
   const source = document.createElement('span'); source.className = 'result__source';
-  const info = document.createElement('span'); context.append(source, info);
+  const kind = document.createElement('span'); kind.className = 'result__kind';
+  const info = document.createElement('span'); context.append(kind, source, info);
   const heading = document.createElement('h3');
   const title = document.createElement('a'); title.className = 'result__title'; heading.appendChild(title);
   const snippet = document.createElement('div'); snippet.className = 'result__snippet';
   const details = document.createElement('details'); details.className = 'result__details';
   const summary = document.createElement('summary'); summary.textContent = 'Details';
   const metadataText = document.createElement('p');
-  const originLink = document.createElement('a'); originLink.textContent = 'Open original';
+  const facts = document.createElement('ul'); facts.className = 'result__facts'; facts.setAttribute('aria-label', 'Result information');
+  const destination = document.createElement('a'); destination.className = 'result__destination';
   const byline = document.createElement('p'); byline.className = 'result__byline';
-  details.append(summary, metadataText, originLink); item.append(context, heading, byline, snippet, details);
-  item._parts = {source, info, title, byline, snippet, details, metadataText, originLink};
+  details.append(summary, metadataText); item.append(context, heading, byline, snippet, facts, destination, details);
+  item._parts = {source, kind, info, title, byline, snippet, facts, destination, details, metadataText};
   updateResultNode(item, hit);
   return item;
+}
+function metadataValue(value) {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.map(metadataValue).filter(Boolean).join(', ');
+  if (typeof value === 'object') return Object.entries(value).map(([key, entry]) => `${key}: ${metadataValue(entry)}`).join('; ');
+  return String(value).trim();
+}
+function metadataLabel(key) {
+  return ({entry_path: 'Article path', page_count: 'Pages', file: 'File name', from: 'From', to: 'To', cc: 'Cc', series_index: 'Series number', engines: 'Search engines'})[key]
+    || key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
 }
 function updateResultNode(item, hit) {
   const parts = item._parts;
   const text = (node, value) => { if (node.textContent !== value) node.textContent = value; };
   parts.source.dataset.source = hit.source || '';
+  text(parts.kind, kindLabels[hit.kind] || hit.kind || '');
+  parts.kind.hidden = !parts.kind.textContent;
   text(parts.source, sourceNames.get(hit.source) || hit.source || '');
   const date = Number.isFinite(hit.created) ? new Date(hit.created * 1000).toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'}) : '';
-  text(parts.info, [hit._live ? 'Live' : '', formatLabels[hit.contentType] || hit.contentType, hit.owner === 'shared' ? '' : hit.owner, date].filter(Boolean).join(' · '));
+  const format = formatLabels[hit.contentType] || hit.contentType;
+  text(parts.info, [format === kindLabels[hit.kind] ? '' : format, hit.owner && hit.owner !== 'shared' ? `Owner: ${hit.owner}` : '', date, hit._live ? 'Live result' : ''].filter(Boolean).join(' · '));
   const href = safeHref(hit.appUrl) || safeHref(hit.originUrl);
   text(parts.title, hit.title || 'Untitled');
   const meta = hit.metadata || {};
-  const value = key => Array.isArray(meta[key]) ? meta[key].join(', ') : meta[key];
+  const value = key => metadataValue(meta[key]);
   const creator = value('from') || value('authors') || value('author') || value('correspondent');
-  const byline = [creator ? `${meta.from ? 'From: ' : ''}${creator}` : '', value('series') ? `Series: ${value('series')}` : '', value('narrators') ? `Narrated by ${value('narrators')}` : ''].filter(Boolean).join(' · ');
+  const byline = [creator ? `${meta.from ? 'From: ' : ''}${creator}` : '', value('series') ? `Series: ${value('series')}${value('series_index') ? ` #${value('series_index')}` : ''}` : '', value('narrators') ? `Narrated by ${value('narrators')}` : ''].filter(Boolean).join(' · ');
   text(parts.byline, byline); parts.byline.hidden = !byline;
   if (href) parts.title.href = href; else parts.title.removeAttribute('href');
   parts.snippet.hidden = !hit.snippet;
   // API contract: escaped text, with only generated <em> highlights.
   if (parts.snippet.innerHTML !== (hit.snippet || '')) parts.snippet.innerHTML = hit.snippet || '';
-  const metadata = Object.entries(hit.metadata || {}).filter(([key, value]) => key !== 'owner' && value !== null && value !== '');
-  text(parts.metadataText, metadata.map(([key, value]) => `${key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())}: ${value}`).join(' · '));
+  // Promote useful source metadata without inventing missing values or splitting
+  // flattened API strings (a comma can be part of one literal tag).
+  const factFields = [
+    ['to', 'To'], ['document_type', 'Document type'], ['page_count', 'Pages'],
+    ['attachments', 'Attachments'], ['formats', 'Formats'], ['tags', 'Tags'],
+    ['genres', 'Genres'], ['feed', 'Feed'], ['archive', 'Archive'], ['crawl', 'Capture'],
+    ['publisher', 'Publisher'], ['publication_year', 'Year'],
+  ];
+  const facts = factFields.filter(([key]) => value(key));
+  const signature = JSON.stringify(facts.map(([key, label]) => [label, value(key)]));
+  if (parts.facts.dataset.content !== signature) {
+    parts.facts.replaceChildren(...facts.map(([key, label]) => {
+      const fact = document.createElement('li');
+      const name = document.createElement('strong'); name.textContent = `${label}: `;
+      const content = document.createElement('span'); content.textContent = value(key);
+      fact.append(name, content); return fact;
+    }));
+    parts.facts.dataset.content = signature;
+  }
+  parts.facts.hidden = !facts.length;
   const origin = safeHref(hit.originUrl);
-  parts.originLink.hidden = !origin || origin === href;
-  if (origin) parts.originLink.href = origin; else parts.originLink.removeAttribute('href');
-  parts.details.hidden = !metadata.length && parts.originLink.hidden;
+  const destination = origin ? new URL(origin, location.href) : null;
+  text(parts.destination, destination ? `Original: ${destination.host}` : '');
+  parts.destination.hidden = !destination || origin === href;
+  if (origin) parts.destination.href = origin; else parts.destination.removeAttribute('href');
+  const metadata = Object.entries(meta).filter(([key, entry]) => key !== 'owner' && metadataValue(entry));
+  text(parts.metadataText, metadata.map(([key, entry]) => `${metadataLabel(key)}: ${metadataValue(entry)}`).join('\n'));
+  parts.details.hidden = !metadata.length;
 }
 function syncUrl() {
   const qs = params().toString(); const url = qs ? `${location.pathname}?${qs}` : location.pathname;
