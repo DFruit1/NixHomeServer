@@ -194,10 +194,9 @@ test('a refreshed live result updates the existing row when its title or metadat
   h.pending.filter(r=>r.url.includes('scope=live'))[1].resolve({hits:[{id:'d1',source:'docs',title:'New title',metadata:{tags:'Recovered tag'}}]});await flush();
   assert.equal(h.elements.get('results').children[0],original);
   assert.deepEqual(renderedTitles(h),['New title']);
-  const actions=original.children.find(child=>child.className==='result__actions');
-  const details=actions.children.find(child=>child.tagName==='DETAILS');
-  assert.equal(details.hidden,false);
-  assert.match(details.children.find(child=>child.tagName==='P').textContent,/Recovered tag/);
+  const facts=original.children.find(child=>child.className==='result__facts');
+  assert.equal(facts.hidden,false);
+  assert.match(facts.children[0].children[1].textContent,/Recovered tag/);
 });
 
 test('a total outage announces unavailability rather than zero matches', async () => {
