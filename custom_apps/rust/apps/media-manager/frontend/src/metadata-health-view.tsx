@@ -18,6 +18,8 @@ import {
   useVisibleTask$,
 } from "@builder.io/qwik";
 import { api, readableError } from "./api";
+import { metadataFieldLabel } from "./item-editor-helpers";
+import { revealWhenMounted } from "./reveal";
 import { Icon } from "./icon";
 import { HealthPlayback, HealthPlayButton } from "./health-playback";
 import {
@@ -82,37 +84,14 @@ function proposedProvenance(
   const proposed = issue.proposedValues ?? [];
   if (proposed.length === 0)
     return multipleFiles
-      ? "No configured source produced values for this field in these files, so there is nothing to propose yet."
-      : "No configured source produced a value for this field, so there is nothing to propose yet.";
+      ? "No source provided proposed values for these files."
+      : "No source provided a proposed value.";
+  if (proposed.length > 1)
+    return "Sources disagree; compare the attributed values before choosing.";
   const sources = quotedList([
     ...new Set(proposed.flatMap((candidate) => candidate.sources)),
   ]);
-  const sentences = [
-    multipleFiles
-      ? `The proposed values for these files come from ${sources || "an unidentified source"}.`
-      : proposed.length > 1
-        ? `These proposed values come from ${sources || "an unidentified source"}.`
-        : `The proposed value comes from ${sources || "an unidentified source"}.`,
-  ];
-  if (proposed.length > 1) {
-    sentences.push(
-      multipleFiles
-        ? "The sources disagree on this field, so check the files in Review metadata before choosing values."
-        : "The sources disagree on this field, so check the file in Review metadata before choosing one.",
-    );
-  } else if (!isUnset(issue.currentValue)) {
-    const current = quotedList(issue.currentSources ?? []);
-    sentences.push(
-      multipleFiles
-        ? current
-          ? `The current values come from ${current} and differ from the proposals, so confirm which values match the files in Review metadata.`
-          : "Different values are already set, so confirm which values match the files in Review metadata."
-        : current
-          ? `The current value comes from ${current} and differs from it, so confirm which one matches the file in Review metadata.`
-          : "A different value is already set, so confirm which one matches the file in Review metadata.",
-    );
-  }
-  return sentences.join(" ");
+  return `Proposed from ${sources || "an unidentified source"}.`;
 }
 
 const SETTABLE_HEALTH_FIELDS = new Set([
@@ -264,6 +243,19 @@ const MAX_GROUPED_FILES = 25;
 interface OnlineMetadataCandidate {
   title: string;
   values: Record<string, unknown>;
+}
+
+function renderCandidateFields(fields: [string, unknown][]) {
+  return (
+    <dl>
+      {fields.map(([field, value]) => (
+        <div key={field}>
+          <dt>{field === "isbn" ? "ISBN" : metadataFieldLabel(field)}</dt>
+          <dd>{displayValue(value)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
 }
 
 function candidateValues(
@@ -427,8 +419,7 @@ const ExternalProvidersDialog = component$<{
           {searchable ? (
             <>
               <p class="health-lookup-note">
-                Online selections are comparison aids. Use Review metadata to
-                make an edit.
+                Selections are for comparison only; edit in Review metadata.
               </p>
               <form
                 class="health-lookup-query"
@@ -467,55 +458,70 @@ const ExternalProvidersDialog = component$<{
                   <p>No matching online metadata was found.</p>
                 )}
               <ul class="health-lookup-results">
-                {state.candidates.map((candidate, index) => (
-                  <li key={`${candidate.title}-${index}`}>
-                    <strong>{candidate.title}</strong>
-                    <dl>
-                      {Object.entries(candidate.values).map(
-                        ([field, value]) => (
-                          <div key={field}>
-                            <dt>{field}</dt>
-                            <dd>{displayValue(value)}</dd>
-                          </div>
-                        ),
+                {state.candidates.map((candidate, index) => {
+                  // The title already identifies the result. Keep the requested
+                  // field and edition identifiers visible; retain other detail.
+                  const fields = Object.entries(candidate.values).filter(
+                    ([field]) => field !== "title",
+                  );
+                  const primaryFields = new Set([
+                    props.issue.field,
+                    "authors",
+                    "year",
+                    "publisher",
+                    "isbn",
+                  ]);
+                  const extra = fields.filter(
+                    ([field]) => !primaryFields.has(field),
+                  );
+                  return (
+                    <li key={`${candidate.title}-${index}`}>
+                      <strong>{candidate.title}</strong>
+                      {renderCandidateFields(
+                        fields.filter(([field]) => primaryFields.has(field)),
                       )}
-                    </dl>
-                    {props.issue.field &&
-                    props.issue.field in candidate.values ? (
-                      <button
-                        type="button"
-                        class="secondary-button health-lookup-select"
-                        onClick$={() => {
-                          props.onSelect$(
-                            candidate.values[props.issue.field!],
-                            props.primary.name,
-                          );
-                          props.onClose$();
-                        }}
-                      >
-                        Use {props.issue.field} value
-                      </button>
-                    ) : (
-                      <small>
-                        This result has no {props.issue.field ?? "matching"}{" "}
-                        value.
-                      </small>
-                    )}
-                  </li>
-                ))}
+                      {extra.length > 0 && (
+                        <details class="health-lookup-details">
+                          <summary>More metadata</summary>
+                          {renderCandidateFields(extra)}
+                        </details>
+                      )}
+                      {props.issue.field &&
+                      props.issue.field in candidate.values ? (
+                        <button
+                          type="button"
+                          class="secondary-button health-lookup-select"
+                          onClick$={() => {
+                            props.onSelect$(
+                              candidate.values[props.issue.field!],
+                              props.primary.name,
+                            );
+                            props.onClose$();
+                          }}
+                        >
+                          Compare{" "}
+                          {metadataFieldLabel(props.issue.field).toLowerCase()}
+                        </button>
+                      ) : (
+                        <small>
+                          This result has no{" "}
+                          {metadataFieldLabel(
+                            props.issue.field ?? "matching",
+                          ).toLowerCase()}{" "}
+                          value.
+                        </small>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             </>
           ) : (
             <p class="health-lookup-note">
               {props.primary.implementationStatus === "active" ? (
                 <>
-                  Use {props.primary.name} in{" "}
-                  <a
-                    href={`?view=library&root=${encodeURIComponent(props.rootId)}&item=${encodeURIComponent(props.itemId)}`}
-                  >
-                    this item's metadata tools
-                  </a>{" "}
-                  to select the correct edition, artwork or subtitle.
+                  Use {props.primary.name} in Review metadata for editions,
+                  artwork or subtitles.
                 </>
               ) : (
                 <>
@@ -538,13 +544,6 @@ const ExternalProvidersDialog = component$<{
                   </div>
                   <p>{provider.notes}</p>
                   <div class="health-source-links">
-                    {provider.implementationStatus === "active" && (
-                      <a
-                        href={`?view=library&root=${encodeURIComponent(props.rootId)}&item=${encodeURIComponent(props.itemId)}`}
-                      >
-                        Use in metadata tools
-                      </a>
-                    )}
                     <a
                       href={provider.documentationUrl}
                       target="_blank"
@@ -552,21 +551,30 @@ const ExternalProvidersDialog = component$<{
                     >
                       Documentation
                     </a>
-                    <a
-                      href={provider.setupUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open provider setup
-                    </a>
+                    {provider.setupUrl !== provider.documentationUrl && (
+                      <a
+                        href={provider.setupUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {provider.setupKind === "public"
+                          ? "Provider website"
+                          : "Provider setup"}
+                      </a>
+                    )}
                   </div>
                 </li>
               );
             })}
           </ul>
-          <a class="health-source-manage" href="?view=accounts">
-            Manage metadata sources
-          </a>
+          <div class="health-source-manage health-source-links">
+            <a
+              href={`?view=library&root=${encodeURIComponent(props.rootId)}&item=${encodeURIComponent(props.itemId)}`}
+            >
+              Review metadata
+            </a>
+            <a href="?view=accounts">Manage metadata sources</a>
+          </div>
         </div>
       </div>
     </div>
@@ -693,6 +701,7 @@ const HealthDecisionRow = component$<{
         </th>
       )}
       <td class="health-value">
+        {!editable && <span class="health-value-label">Current</span>}
         {currents.length > 1 && <small>Varies by file</small>}
         {currents.map((candidate, index) => (
           <div class="health-candidate" key={index}>
@@ -704,14 +713,27 @@ const HealthDecisionRow = component$<{
         ))}
       </td>
       <td class="health-value">
+        {(!editable || proposals.length === 0) && (
+          <span class="health-value-label">Proposed</span>
+        )}
         {proposals.length ? (
           proposals.map((candidate, index) => (
             <div class="health-candidate" key={index}>
               {valueButton(candidate.value, "Proposed")}
+              {proposals.length > 1 && (
+                <small>
+                  {candidate.sources.join(" · ") || "Unknown source"}
+                </small>
+              )}
             </div>
           ))
         ) : (
-          <p class="health-no-proposal">???</p>
+          <p
+            class="health-value-text health-unset"
+            aria-label="No proposed value"
+          >
+            ???
+          </p>
         )}
         {queuedValue.value && (
           <p class="health-queued-value" role="status">
@@ -758,7 +780,17 @@ const HealthIssueReview = component$<{
   const individually = useSignal(false);
   const bulkWorking = useSignal(false);
   const bulkStatus = useSignal("");
+  const selectionElement = useSignal<HTMLElement>();
+  useVisibleTask$(({ track }) => {
+    const selection = track(() => props.selectedOnline);
+    if (selection) revealWhenMounted(() => selectionElement.value);
+  });
   const { issue, entries } = props.grouped;
+  const mixedIssues =
+    new Set(entries.map((entry) => entry.issue.title)).size > 1;
+  const issueTitle = mixedIssues
+    ? `${metadataFieldLabel(issue.field ?? "metadata")}: review needed`
+    : issue.title;
   const target = entries[0].target;
   const field = issue.field ?? "";
   const compares = Boolean(field) && "currentValue" in issue;
@@ -868,7 +900,7 @@ const HealthIssueReview = component$<{
           </span>
         )}
         <div class="health-reason">
-          <h4>{issue.title}</h4>
+          <h4>{issueTitle}</h4>
         </div>
         {count === 1 && (
           <a
@@ -924,7 +956,7 @@ const HealthIssueReview = component$<{
         {compares && (
           <>
             <table class="health-issue-table">
-              <caption class="sr-only">{issue.title}</caption>
+              <caption class="sr-only">{issueTitle}</caption>
               <thead class="sr-only">
                 <tr>
                   {!album && entries.length > 1 && <th scope="col">File</th>}
@@ -965,15 +997,9 @@ const HealthIssueReview = component$<{
             </table>
             {(sharedReason || sharedSources) && (
               <div class="health-provenance">
-                {sharedSources &&
-                  (!sharedReason ||
-                    !issue.proposedValues?.length ||
-                    issue.proposedValues.length > 1 ||
-                    isUnset(issue.currentValue)) && (
-                    <p>
-                      Current values come from {quotedList(currentSources)}.
-                    </p>
-                  )}
+                {sharedSources && (
+                  <p>Current from {quotedList(currentSources)}.</p>
+                )}
                 {sharedReason && <p>{proposedProvenance(issue, true)}</p>}
               </div>
             )}
@@ -981,12 +1007,19 @@ const HealthIssueReview = component$<{
               ["audiobook", "music"].includes(target.mediaKind) &&
               props.canEdit && (
                 <p class="health-file-scope">
-                  File choices override the album in Media Manager. Other apps
-                  continue to read the album sidecar.
+                  File overrides apply in Media Manager only; other apps use the
+                  album metadata.
                 </p>
               )}
             {props.selectedOnline && (
-              <div class="health-online-selection" role="status">
+              <div
+                class="health-online-selection"
+                role="status"
+                ref={selectionElement}
+              >
+                <span class="health-issue-context">
+                  {groupHeading(props.group).text} · {issueTitle}
+                </span>
                 <span class="health-value-label">Selected online value</span>
                 <p class="health-value-text">
                   {renderValue(props.selectedOnline.value)}
@@ -1038,7 +1071,15 @@ const HealthIssueReview = component$<{
             </div>
           )}
           <p>
-            {files.slice(0, MAX_GROUPED_FILES).join(", ")}
+            {mixedIssues
+              ? entries
+                  .slice(0, MAX_GROUPED_FILES)
+                  .map(
+                    ({ target, issue }) =>
+                      `${target.relativePath.split("/").at(-1)}: ${issue.title}`,
+                  )
+                  .join("; ")
+              : files.slice(0, MAX_GROUPED_FILES).join(", ")}
             {count > MAX_GROUPED_FILES ? "…" : ""}
           </p>
         </details>

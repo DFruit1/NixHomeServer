@@ -299,7 +299,7 @@ it("keeps distinct file values in one album issue table", async () => {
   expect(screen.textContent).toContain("Current 01");
   expect(screen.textContent).toContain("Proposed 02");
   expect(screen.querySelector(".health-provenance")?.textContent).toContain(
-    "The current values come from “Sidecar” and differ from the proposals, so confirm which values match the files in Review metadata.",
+    "Current from “Sidecar”.",
   );
 });
 
@@ -350,7 +350,7 @@ it("names the recommended source for a missing field and lists the alternatives"
     screen.querySelector("td:last-child .health-candidate small"),
   ).toBeFalsy();
   expect(screen.querySelector(".health-provenance")?.textContent).toBe(
-    "The proposed value comes from “Embedded audio tags”.",
+    "Proposed from “Embedded audio tags”.",
   );
   expect(screen.querySelector(".health-unset")?.textContent).toBe("Not set");
 
@@ -382,9 +382,7 @@ it("names the recommended source for a missing field and lists the alternatives"
     screen
       .querySelector('[role="dialog"] .health-lookup-note')
       ?.textContent?.replace(/\s+/g, " "),
-  ).toBe(
-    "Online selections are comparison aids. Use Review metadata to make an edit.",
-  );
+  ).toBe("Selections are for comparison only; edit in Review metadata.");
   const dialog = screen.querySelector('[role="dialog"]');
   expect(dialog?.textContent).toContain("Find from External Providers");
   expect(dialog?.textContent).toContain("Author or creator is missing");
@@ -440,9 +438,7 @@ it("explains conflicting proposals in prose beside the compared values", async (
   });
 
   expect(screen.querySelector(".health-provenance")?.textContent).toBe(
-    "These proposed values come from “Embedded audio tags” and “Sidecar”. " +
-      "The sources disagree on this field, so check the file in Review " +
-      "metadata before choosing one.",
+    "Sources disagree; compare the attributed values before choosing.",
   );
   expect(screen.querySelectorAll(".health-unset")).toHaveLength(1);
   expect(screen.querySelector(".health-value-text")?.textContent).toBe(
