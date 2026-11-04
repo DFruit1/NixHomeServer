@@ -1070,18 +1070,20 @@ const HealthIssueReview = component$<{
               </p>
             </div>
           )}
-          <p>
+          <ul class="health-affected-files">
             {mixedIssues
-              ? entries
+              ? entries.slice(0, MAX_GROUPED_FILES).map(({ target, issue }) => (
+                  <li key={target.itemId}>
+                    {target.relativePath.split("/").at(-1)}: {issue.title}
+                  </li>
+                ))
+              : files
                   .slice(0, MAX_GROUPED_FILES)
-                  .map(
-                    ({ target, issue }) =>
-                      `${target.relativePath.split("/").at(-1)}: ${issue.title}`,
-                  )
-                  .join("; ")
-              : files.slice(0, MAX_GROUPED_FILES).join(", ")}
-            {count > MAX_GROUPED_FILES ? "…" : ""}
-          </p>
+                  .map((file) => <li key={file}>{file}</li>)}
+            {count > MAX_GROUPED_FILES && (
+              <li aria-label="Additional affected files">…</li>
+            )}
+          </ul>
         </details>
       )}
     </section>

@@ -659,6 +659,7 @@ export default component$((props: RootProps) => {
       <main
         class={{
           "main-content": true,
+          "main-content--health": view.value === "health",
           "main-content--library": view.value === "library",
           "main-content--conversions": view.value === "conversions",
           "main-content--videos": view.value === "videos",

@@ -6025,6 +6025,9 @@ a:focus-visible {
 }
 
 /* Runtime metadata-provider accounts */
+.main-content--health > .topbar {
+  margin-bottom: 24px;
+}
 .health-page {
   /* Keep feedback legible without changing status colours on other pages. */
   --danger: #9c3a2b;
@@ -6167,6 +6170,7 @@ a:focus-visible {
   min-width: 0;
   color: var(--ink);
   font-size: 18px;
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 .health-file-heading {
@@ -6182,11 +6186,12 @@ a:focus-visible {
   top: 0;
   z-index: 10;
   display: grid;
-  gap: 4px;
+  gap: 2px;
   padding: 6px 0;
   background: var(--paper);
 }
 .health-issue-actions {
+  margin-top: 6px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -6245,6 +6250,10 @@ a:focus-visible {
 }
 .health-result-issues {
   display: grid;
+  padding-inline: 12px;
+}
+.health-result > .health-file-details {
+  padding-inline: 12px;
 }
 .health-result-issue {
   min-width: 0;
@@ -6285,7 +6294,7 @@ a:focus-visible {
   grid-column: 1 / -1;
 }
 .health-issue-table tbody tr + tr {
-  margin-top: 10px;
+  margin-top: 16px;
 }
 .health-issue-table th,
 .health-issue-table td {
@@ -6506,6 +6515,8 @@ a:focus-visible {
 .health-lookup-query input {
   width: 100%;
   min-width: 0;
+  min-height: 44px;
+  padding: 8px 10px;
   font: inherit;
   font-size: 16px;
   color: var(--ink);
@@ -6582,6 +6593,19 @@ a:focus-visible {
   overflow-wrap: anywhere;
   line-height: 1.5;
 }
+.health-affected-files {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.health-album-scope + .health-affected-files {
+  margin-top: 8px;
+}
 .health-error-state {
   color: var(--danger);
   display: grid;
@@ -6611,6 +6635,11 @@ a:focus-visible {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+.health-lookup-results + .health-source-list {
+  margin-top: 2px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
 }
 .health-source-list li {
   padding: 14px 0;
@@ -6660,6 +6689,9 @@ a:focus-visible {
   width: 100%;
 }
 @media (max-width: 720px) {
+  .main-content--health > .topbar {
+    margin-bottom: 20px;
+  }
   .health-toolbar {
     display: grid;
     gap: 8px;
