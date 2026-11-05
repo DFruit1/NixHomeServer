@@ -48,6 +48,11 @@ MAX_GRACE_MIN="${SHUTDOWN_GUARD_MAX_GRACE_MIN:-360}"
 # of the CPU count. Catches compile/backup/agent work that is not named in the
 # configured process lists. Set to 0 to disable.
 SHUTDOWN_GUARD_LOAD_FACTOR="${SHUTDOWN_GUARD_LOAD_FACTOR:-1.0}"
+# Treat the system as busy when more than this many processes are in the
+# runnable (R) state. Catches unnamed active CPU work such as compiles.
+SHUTDOWN_GUARD_RUNNABLE_THRESHOLD="${SHUTDOWN_GUARD_RUNNABLE_THRESHOLD:-2}"
+# Treat any terminal with input/output within this many seconds as active work.
+SHUTDOWN_GUARD_TTY_ACTIVITY_SEC="${SHUTDOWN_GUARD_TTY_ACTIVITY_SEC:-$ACTIVITY_WINDOW_SEC}"
 
 CRITICAL_UNITS=()
 CRITICAL_PROCESSES=()
@@ -174,6 +179,8 @@ launch_watcher() {
     --setenv="SHUTDOWN_GUARD_MAX_GRACE_MIN=$MAX_GRACE_MIN" \
     --setenv="SHUTDOWN_GUARD_DESKTOP_TTL_SEC=$DESKTOP_ACTIVITY_TTL_SEC" \
     --setenv="SHUTDOWN_GUARD_LOAD_FACTOR=$SHUTDOWN_GUARD_LOAD_FACTOR" \
+    --setenv="SHUTDOWN_GUARD_RUNNABLE_THRESHOLD=$SHUTDOWN_GUARD_RUNNABLE_THRESHOLD" \
+    --setenv="SHUTDOWN_GUARD_TTY_ACTIVITY_SEC=$SHUTDOWN_GUARD_TTY_ACTIVITY_SEC" \
     "$self" watch --deadline "$deadline" --grace-deadline "$grace_deadline" --poll "$poll"; then
     return 1
   fi
@@ -233,6 +240,27 @@ critical_task() {
       return 1
     fi
   fi
+  # Runnable-process signal: catches unnamed active CPU work (compiles, tests).
+  runnable=0
+  for st in /proc/[0-9]*/stat; do
+    [[ -r "$st" ]] || continue
+    state="$(awk '{print $3}' "$st" 2>/dev/null)"
+    [[ "$state" == "R" ]] && runnable=$((runnable + 1))
+  done
+  if (( runnable > SHUTDOWN_GUARD_RUNNABLE_THRESHOLD )); then
+    printf 'runnable:high\n'
+    return 1
+  fi
+  # Terminal-activity signal: catches interactive/agent work on the host.
+  now="$(now_epoch)"
+  for tty in /dev/pts/[0-9]*; do
+    [[ -e "$tty" ]] || continue
+    mtime="$(stat -c %Y "$tty" 2>/dev/null || echo 0)"
+    if (( now - mtime <= SHUTDOWN_GUARD_TTY_ACTIVITY_SEC )); then
+      printf 'tty:active\n'
+      return 1
+    fi
+  done
   return 0
 }
 

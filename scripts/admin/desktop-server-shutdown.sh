@@ -24,6 +24,8 @@ DRY_RUN=false
 LOCAL_SHUTDOWN=true
 SERVER_SHUTDOWN_COMPLETED=false
 DESKTOP_LOAD_FACTOR="${SHUTDOWN_GUARD_DESKTOP_LOAD_FACTOR:-1.0}"
+DESKTOP_RUNNABLE_THRESHOLD="${SHUTDOWN_GUARD_DESKTOP_RUNNABLE_THRESHOLD:-2}"
+DESKTOP_TTY_ACTIVITY_SEC="${SHUTDOWN_GUARD_DESKTOP_TTY_ACTIVITY_SEC:-300}"
 
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
 
@@ -170,6 +172,21 @@ desktop_work_active() {
          'BEGIN { exit !(load+0 > cpus*factor) }' >/dev/null 2>&1; then
     return 0
   fi
+  # Runnable-process signal.
+  runnable=0
+  for st in /proc/[0-9]*/stat; do
+    [[ -r "$st" ]] || continue
+    state="$(awk '{print $3}' "$st" 2>/dev/null)"
+    [[ "$state" == "R" ]] && runnable=$((runnable + 1))
+  done
+  (( runnable > DESKTOP_RUNNABLE_THRESHOLD )) && return 0
+  # Terminal-activity signal.
+  now="$(date +%s)"
+  for tty in /dev/pts/[0-9]*; do
+    [[ -e "$tty" ]] || continue
+    mtime="$(stat -c %Y "$tty" 2>/dev/null || echo 0)"
+    (( now - mtime <= DESKTOP_TTY_ACTIVITY_SEC )) && return 0
+  done
   return 1
 }
  
