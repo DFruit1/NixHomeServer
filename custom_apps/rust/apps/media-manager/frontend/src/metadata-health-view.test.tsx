@@ -248,8 +248,8 @@ it("groups audio files of one album into a single warning", async () => {
   expect(issues[0].textContent).toContain("01_lawson.mp3");
   expect(issues[0].textContent).toContain("02_lawson.mp3");
   expect(screen.textContent).toContain("2 files");
-  expect(screen.textContent).toContain("Lawson/01_lawson.mp3");
-  expect(screen.textContent).toContain("Lawson/02_lawson.mp3");
+  expect(screen.querySelector('a[title="Lawson/01_lawson.mp3"]')).toBeTruthy();
+  expect(screen.querySelector('a[title="Lawson/02_lawson.mp3"]')).toBeTruthy();
 });
 
 it("keeps distinct file values in one album issue table", async () => {

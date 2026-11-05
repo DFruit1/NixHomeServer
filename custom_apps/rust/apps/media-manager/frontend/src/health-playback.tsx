@@ -149,18 +149,14 @@ export const HealthPlayButton = component$<{ target: MetadataHealthResult }>(
     const playable = ["music", "audiobook", "video"].includes(
       props.target.mediaKind,
     );
+    if (!playable) return null;
     const filename = props.target.relativePath.split("/").at(-1);
     return (
       <button
         type="button"
         class="health-play-button"
-        disabled={!playable}
         aria-label={`Play ${filename}${props.target.mediaKind === "video" ? " in picture in picture" : ""}`}
-        title={
-          playable
-            ? `Play ${filename}`
-            : "Playback is available for audio and video files"
-        }
+        title={`Play ${filename}`}
         onClick$={() => playback.play$(props.target)}
       >
         <Icon name="play" size={18} />

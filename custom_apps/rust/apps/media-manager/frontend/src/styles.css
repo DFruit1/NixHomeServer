@@ -6089,6 +6089,11 @@ a:focus-visible {
   gap: 16px;
   padding: 10px 12px;
 }
+.health-result-banner.is-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
 .health-result-art {
   position: absolute;
   z-index: 0;
@@ -6132,9 +6137,15 @@ a:focus-visible {
   content: "";
 }
 .health-result-heading,
-.health-result > header > .health-review-link {
+.health-banner-actions {
   position: relative;
   z-index: 1;
+}
+.health-banner-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .health-result-heading {
   min-width: 0;
@@ -6166,10 +6177,10 @@ a:focus-visible {
   text-underline-offset: 3px;
 }
 .health-file-link {
-  font-weight: 500;
+  font-weight: 400;
   min-width: 0;
   color: var(--ink);
-  font-size: 18px;
+  font-size: 14px;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -6182,16 +6193,19 @@ a:focus-visible {
   flex-shrink: 1;
 }
 .health-issue-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  display: grid;
-  gap: 2px;
   padding: 6px 0;
-  background: var(--paper);
+}
+.health-issue-footer {
+  position: relative;
+}
+.health-issue-footer.has-bulk > .health-file-details > summary {
+  /* Keep the disclosure's hit area separate from the sibling bulk controls. */
+  width: calc(100% - 12rem);
 }
 .health-issue-actions {
-  margin-top: 6px;
+  position: absolute;
+  inset-inline-end: 0;
+  top: 2px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -6250,9 +6264,6 @@ a:focus-visible {
 }
 .health-result-issues {
   display: grid;
-  padding-inline: 12px;
-}
-.health-result > .health-file-details {
   padding-inline: 12px;
 }
 .health-result-issue {
@@ -6449,7 +6460,7 @@ a:focus-visible {
 }
 .health-online-selection {
   margin-top: 4px;
-  scroll-margin-top: 10rem;
+  scroll-margin-top: calc(var(--health-banner-height, 0px) + 12px);
 }
 .health-online-selection p {
   font-weight: 400;
@@ -6588,6 +6599,7 @@ a:focus-visible {
   min-height: 44px;
   display: list-item;
   align-content: center;
+  scroll-margin-top: calc(var(--health-banner-height, 0px) + 12px);
 }
 .health-file-details p {
   overflow-wrap: anywhere;
@@ -6602,6 +6614,23 @@ a:focus-visible {
   font-size: 14px;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+.health-affected-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.health-affected-file > .health-review-link {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.health-affected-file .health-play-button {
+  scroll-margin-top: calc(var(--health-banner-height, 0px) + 12px);
+}
+.health-affected-files > li > p {
+  color: var(--ink-soft);
+  font-size: 13px;
 }
 .health-album-scope + .health-affected-files {
   margin-top: 8px;
