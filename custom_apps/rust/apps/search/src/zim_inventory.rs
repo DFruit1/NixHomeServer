@@ -75,11 +75,12 @@ mod tests {
         let config = Arc::new(fixture(
             root.path(),
             r#"#!/bin/sh
+if [ "$1" = info ]; then exit 0; fi
 for archive do :; done
 root=${archive%/*}
 printf 'probe\n' >> "$root/probes"
 until [ -f "$root/release" ]; do sleep 0.01; done
-printf 'fulltext/xapian\n'
+printf '\017\015Xapian Glass\n'
 "#,
         ));
         let cache = Arc::new(ZimInventoryCache::default());
@@ -129,7 +130,10 @@ printf 'fulltext/xapian\n'
         use std::sync::Arc;
         use std::time::Duration;
         let root = tempfile::tempdir().unwrap();
-        let config = fixture(root.path(), "#!/bin/sh\nprintf 'fulltext/xapian\\n'\n");
+        let config = fixture(
+            root.path(),
+            "#!/bin/sh\nprintf '\\017\\015Xapian Glass\\n'\n",
+        );
         let cache = ZimInventoryCache::default();
         cache.entries.lock().unwrap().insert(
             config.library_root.clone(),
@@ -156,9 +160,10 @@ printf 'fulltext/xapian\n'
         std::fs::write(
             &tool,
             r#"#!/bin/sh
+if [ "$1" = info ]; then exit 0; fi
 for archive do :; done
 printf 'probe\n' >> "${archive%/*}/probes"
-printf 'fulltext/xapian\n'
+printf '\017\015Xapian Glass\n'
 "#,
         )
         .unwrap();

@@ -2167,7 +2167,14 @@ Notes:
   * Kiwix: a ZIM with an embedded Xapian index is detected automatically and
     queried live via `kiwix-search` (body and title are resolved from the
     archive on demand); only ZIMs without an embedded index are extracted into
-    Solr.
+    Solr. Index detection reads at most 16 bytes of the internal Xapian entry
+    through `zimdump show --ns`, with a five-second tool timeout and child
+    cleanup. `zimdump list --ns=X` in zim-tools 3.6 is a content-prefix lookup,
+    so it cannot detect these indexes. The Search-only Kiwix tools variant emits
+    entry paths instead of upstream display titles, keeping snippets and direct
+    result links aligned with the real archive entries. The Kiwix extraction
+    revision refreshes existing archive metadata on the next normal index pass;
+    no full corpus copy or manual Solr rebuild is required.
   * Paperless: Search queries Paperless's own Tantivy index over loopback at
     `http://127.0.0.1:<port>/api/documents/`, using the advanced `query`
     parameter with a fallback to `text` for input the advanced parser rejects.

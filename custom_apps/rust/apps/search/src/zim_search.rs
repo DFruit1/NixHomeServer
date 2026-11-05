@@ -6,7 +6,7 @@ use futures_util::{stream, StreamExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use crate::extract::kiwix::{clean_title_from_path, contains_fulltext_index, entry_origin};
+use crate::extract::kiwix::{clean_title_from_path, entry_origin, probe_fulltext_index};
 use crate::text::{html_title, snippet_from_html};
 
 /// How many ZIM archives a single query searches concurrently. Every Xapian-
@@ -21,8 +21,6 @@ const MAX_TOTAL_ZIM_RESULTS: usize = 20;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 /// Bound for a single title fetch.
 const TITLE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Bound for a cheap namespace listing during inventory discovery.
-const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// HTML considered for a snippet; conversion cost is capped by this.
 const SNIPPET_HTML_LIMIT: usize = 200_000;
 
@@ -92,30 +90,22 @@ pub async fn discover_zims(
         .map(move |path: PathBuf| {
             let zimdump = zimdump.clone();
             async move {
-                let output = timeout(
-                    DISCOVERY_TIMEOUT,
-                    Command::new(zimdump)
-                        .kill_on_drop(true)
-                        .args(["list", "--ns=X", "--"])
-                        .arg(&path)
-                        .output(),
-                )
+                let probe_path = path.clone();
+                let has_xapian = tokio::task::spawn_blocking(move || {
+                    probe_fulltext_index(&zimdump, &probe_path)
+                })
                 .await
-                .map_err(|_| "Archive index discovery timed out.".to_string())?
-                .map_err(|_| "An archive index could not be read.".to_string())?;
-                if !output.status.success() {
-                    return Err("An archive index could not be read.".to_string());
-                }
+                .map_err(|_| "Archive index discovery failed.".to_string())??;
                 let stem = path
                     .file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or_default()
                     .trim_end_matches(".zim")
                     .to_string();
-                Ok(ZimIndexEntry {
+                Ok::<_, String>(ZimIndexEntry {
                     path,
                     stem,
-                    has_xapian: contains_fulltext_index(&String::from_utf8_lossy(&output.stdout)),
+                    has_xapian,
                 })
             }
         })

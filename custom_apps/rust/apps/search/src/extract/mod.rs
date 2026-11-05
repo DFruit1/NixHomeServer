@@ -184,7 +184,7 @@ pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
     // Preserve unaffected sources' revisions so a targeted improvement does
     // not repeat extraction of unrelated, potentially large archives.
     let extraction_version = match source.source_type.as_str() {
-        "mail-archive" | "freshrss" => "3",
+        "mail-archive" | "freshrss" | "kiwix" => "3",
         "browsertrix" => "4",
         "calibre" | "media-snapshot" => "4",
         _ => "2",

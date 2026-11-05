@@ -117,32 +117,77 @@ fn matches_any(file_name: &str, patterns: &[String]) -> bool {
         .any(|pattern| file_name.to_lowercase().contains(&pattern.to_lowercase()))
 }
 
-/// Reports whether the ZIM embeds its own fulltext Xapian index.
-///
-/// Modern ZIMs carry the index as `X/fulltext/xapian`; older ones used
-/// `Z/fulltextIndex/xapian`. The index entries live in the `X` namespace, so
-/// listing that namespace is a cheap way to detect them (unlike listing the
-/// whole archive, which can run to millions of articles). Any failure — a
-/// missing zimdump, an unreadable ZIM, a name-space that does not exist — is
-/// treated as "no index", which lets the caller fall back to extraction.
-pub(crate) fn has_xapian_fulltext(zimdump: &Path, zim: &Path) -> bool {
-    let output = Command::new(zimdump)
-        .arg("list")
-        .arg("--ns=X")
+/// Read only a short prefix and reap the child even if the entry is a huge
+/// uncompressed Xapian index. The timeout also covers a hung tool/read.
+fn zim_prefix(zimdump: &Path, zim: &Path, args: &[&str]) -> Result<(Vec<u8>, bool), String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let mut child = Command::new(zimdump)
+        .args(args)
         .arg("--")
         .arg(zim)
-        .output();
-    let Ok(output) = output else {
-        return false;
-    };
-    if !output.status.success() {
-        return false;
-    }
-    contains_fulltext_index(&String::from_utf8_lossy(&output.stdout))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "An archive index could not be read.".to_string())?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let (sender, receiver) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut prefix = Vec::new();
+        let result = stdout.take(16).read_to_end(&mut prefix).map(|_| prefix);
+        let _ = sender.send(result);
+    });
+    let result = receiver.recv_timeout(Duration::from_secs(5));
+    // A successful prefix read can leave zimdump blocked on the remaining
+    // index bytes. Always kill before waiting, not after draining stdout.
+    let _ = child.kill();
+    let status = child
+        .wait()
+        .map_err(|_| "An archive index could not be read.".to_string())?;
+    let prefix = result
+        .map_err(|_| "Archive index discovery timed out.".to_string())?
+        .map_err(|_| "An archive index could not be read.".to_string())?;
+    Ok((prefix, status.success()))
 }
 
-pub(crate) fn contains_fulltext_index(listing: &str) -> bool {
-    listing.contains("fulltext/xapian") || listing.contains("fulltextIndex/xapian")
+/// `zimdump list --ns=X` is a content-path prefix lookup in zim-tools 3.6,
+/// not a listing of internal metadata. Probe the actual index entries with
+/// `show --ns` instead. Validate the archive first so unreadable/corrupt files
+/// do not silently become successful inventories without an index.
+pub(crate) fn probe_fulltext_index(zimdump: &Path, zim: &Path) -> Result<bool, String> {
+    let (info, success) = zim_prefix(zimdump, zim, &["info"])?;
+    if !success && info.is_empty() {
+        return Err("An archive index could not be read.".to_string());
+    }
+    for args in [
+        ["show", "--ns=X", "--url=fulltext/xapian"],
+        ["show", "--ns=Z", "--url=/fulltextIndex/xapian"],
+        ["show", "--ns=Z", "--url=fulltextIndex/xapian"],
+    ] {
+        let (prefix, _) = zim_prefix(zimdump, zim, &args)?;
+        if contains_fulltext_index(&prefix) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub(crate) fn has_xapian_fulltext(zimdump: &Path, zim: &Path) -> bool {
+    probe_fulltext_index(zimdump, zim).unwrap_or(false)
+}
+
+pub(crate) fn contains_fulltext_index(prefix: &[u8]) -> bool {
+    [
+        b"\x0f\x0dXapian Glass".as_slice(),
+        b"\x0f\x0dChert".as_slice(),
+        b"\x0f\x0dFlint".as_slice(),
+    ]
+    .iter()
+    .any(|magic| prefix.starts_with(magic))
 }
 
 /// Cheap fingerprint of a Kiwix source's inputs: the set of ZIM files and each
@@ -402,14 +447,13 @@ mod tests {
 
     #[test]
     fn detects_embedded_fulltext_index() {
-        // Modern ZIMs expose the Xapian index in the X namespace.
-        assert!(contains_fulltext_index("fulltext/xapian\ntitle/xapian"));
-        assert!(contains_fulltext_index("X/fulltext/xapian"));
-        // Legacy path variant.
-        assert!(contains_fulltext_index("Z/fulltextIndex/xapian"));
-        // A namespace listing with no index must be treated as absent.
-        assert!(!contains_fulltext_index(""));
-        assert!(!contains_fulltext_index("illustration.png\nindex.html"));
-        assert!(!contains_fulltext_index("title/xapian"));
+        assert!(contains_fulltext_index(b"\x0f\x0dXapian Glass\x04"));
+        assert!(contains_fulltext_index(b"\x0f\x0dChert"));
+        assert!(contains_fulltext_index(b"\x0f\x0dFlint"));
+        assert!(!contains_fulltext_index(b""));
+        assert!(!contains_fulltext_index(
+            b"X86-64_Application_Binary_Interface"
+        ));
+        assert!(!contains_fulltext_index(b"fulltext/xapian\ntitle/xapian"));
     }
 }

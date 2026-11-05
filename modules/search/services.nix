@@ -6,6 +6,7 @@ let
   searchPort = vars.networking.ports.search;
   solrPort = vars.networking.ports.searchSolr;
   solrPackage = pkgs.callPackage ./solr-package.nix { };
+  kiwixSearchPackage = pkgs.callPackage ./kiwix-search-package.nix { };
   host = "search.${vars.domain}";
   paths = config.repo.search.paths;
 
@@ -93,7 +94,7 @@ let
     SEARCH_SOLR_CORE = "search";
     SEARCH_SOURCES_FILE = searchSettingsJson;
     SEARCH_ZIMDUMP = "${pkgs.zim-tools}/bin/zimdump";
-    SEARCH_KIWIXSEARCH = "${pkgs.kiwix-tools}/bin/kiwix-search";
+    SEARCH_KIWIXSEARCH = "${kiwixSearchPackage}/bin/kiwix-search";
     SEARCH_PDFTOTEXT = "${pkgs."poppler-utils"}/bin/pdftotext";
   };
 
