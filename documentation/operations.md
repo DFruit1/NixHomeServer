@@ -635,7 +635,11 @@ Critical tasks are the bash arrays `CRITICAL_UNITS`, `CRITICAL_PROCESSES`,
 `modules/Core_Modules/base-system/shutdown-guard.nix`. Only task units belong
 in `CRITICAL_UNITS`; always-on daemons such as `kopia.service`,
 `media-manager.service`, and `youtube-downloader.service` stay active by design
-and must never block a shutdown. Edit the module, not the host, then redeploy.
+and must never block a shutdown. Completed oneshot units in `active (exited)`
+state do not count as work. Interpreter names alone (Node, Python, Java, .NET)
+do not block shutdown because always-on apps use them too; task command lines
+and the load, runnable-process, and terminal-activity signals cover active work.
+Edit the module, not the host, then redeploy.
 The desktop orchestrator also reports local build and test processes during the
 same final five minutes. This covers Nix, Rust, Node test, and Android APK work
 started on the PC, which the server cannot see directly. Idle Gradle and Kotlin

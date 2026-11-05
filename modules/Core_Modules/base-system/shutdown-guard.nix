@@ -5,6 +5,7 @@ let
     name = "nixhomeserver-shutdown-guard";
     runtimeInputs = with pkgs; [
       coreutils
+      gawk
       gnugrep
       procps
       systemd
@@ -53,17 +54,10 @@ in
       cc1plus
       clang
       cmake
-      dotnet
       esbuild
       go
-      java
       meson
-      node
       opencode
-      perl
-      python
-      python3
-      ruby
       ffmpeg
       gcc
       make
@@ -104,7 +98,7 @@ in
       '(^|[[:space:]/])(vite|esbuild|tsc|rollup)[[:space:]]+(build|--build)([[:space:]]|$)'
       '(^|[[:space:]/])git[[:space:]]+(gc|repack|fetch|clone|fsck)([[:space:]]|$)'
       '(^|[[:space:]/])(vitest|playwright|jest|pytest|ctest|bats)([[:space:]]|$)'
-      '(^|[[:space:]/])(python|python3|node|go|java|dotnet|cmake|meson)([[:space:]]|$)'
+      '(^|[[:space:]/])dotnet[[:space:]]+(build|test|publish|restore|pack|msbuild)([[:space:]]|$)'
       '(^|[[:space:]/])(bash|sh|zsh)[[:space:]]+[^[:space:]]+\.(sh|py)([[:space:]]|$)'
     )
     CRITICAL_COMMANDS=(

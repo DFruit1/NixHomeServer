@@ -190,7 +190,7 @@ launch_watcher() {
 # "process-pattern:<pattern>", "command:<text>", or "desktop:active-work".
 # Exit 0 when idle, 1 when busy (with the task on stdout).
 critical_task() {
-  local unit active process pattern check activity_at
+  local unit active substate process pattern check activity_at
   if [[ -r "$ACTIVITY_FILE" ]]; then
     activity_at="$(cat "$ACTIVITY_FILE")"
     if [[ "$activity_at" =~ ^[0-9]+$ ]] &&
@@ -202,6 +202,11 @@ critical_task() {
   for unit in "${CRITICAL_UNITS[@]}"; do
     [[ -n "$unit" ]] || continue
     active="$(systemctl show --property=ActiveState --value "$unit" 2>/dev/null || true)"
+    if [[ "$active" == active ]]; then
+      substate="$(systemctl show --property=SubState --value "$unit" 2>/dev/null || true)"
+      # RemainAfterExit keeps completed oneshot units active without any work.
+      [[ "$substate" == exited ]] && continue
+    fi
     case "$active" in
       active|activating|reloading|deactivating)
         printf 'unit:%s\n' "$unit"
