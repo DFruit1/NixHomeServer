@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use base64::Engine;
 use futures_util::{stream, StreamExt};
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -221,6 +222,32 @@ async fn search_zim(
         .filter(|path| !path.is_empty())
         .collect();
 
+    // Read the collection's own branding once per matching archive. Missing
+    // optional metadata must not prevent its article results being returned.
+    let (archive_title, archive_icon) = if paths.is_empty() {
+        (None, None)
+    } else {
+        let (title, icon) = tokio::join!(
+            show_html(zimdump, zim, "Title", Some("M")),
+            show_html(zimdump, zim, "Illustration_48x48@1", Some("M")),
+        );
+        let title = title
+            .filter(|data| data.len() <= 4096)
+            .and_then(|data| String::from_utf8(data).ok())
+            .map(|title| title.trim().to_string())
+            .filter(|title| !title.is_empty());
+        // Only inline bounded PNGs, never active archive-supplied SVG/HTML.
+        let icon = icon
+            .filter(|data| data.len() <= 65_536 && data.starts_with(b"\x89PNG\r\n\x1a\n"))
+            .map(|data| {
+                format!(
+                    "data:image/png;base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(data)
+                )
+            });
+        (title, icon)
+    };
+
     // Resolve titles and snippets concurrently; each fetch is a `zimdump show`
     // subprocess, so serialising them let a single multi-hit archive dominate
     // the query's latency.
@@ -249,7 +276,10 @@ async fn search_zim(
             snippet,
             origin_url: entry_origin(app_base, stem, &path),
             app_url: entry_origin(app_base, stem, &path),
-            metadata: serde_json::json!({ "archive": stem, "entry_path": path }),
+            metadata: serde_json::json!({
+                "archive": stem, "entry_path": path,
+                "archive_title": archive_title, "archive_icon": archive_icon,
+            }),
         })
         .collect())
 }

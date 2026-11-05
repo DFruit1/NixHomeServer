@@ -1984,9 +1984,17 @@ which have no per-user ownership). Facet
 counts update with the selected filters, so an admin can see the composition of
 a result set and drill in without leaving the page.
 
-The search field and Source control stay visible; **Filters** opens the other
-dimensions in a desktop sidebar or mobile panel. **Show results** closes the
-mobile panel. Active filters can be removed individually or cleared together.
+The search field stays visible. Desktop navigation names configured sources;
+mobile uses the Source selector.
+Selecting a source searches its contents and clears previous refinements.
+The **Filters** symbol opens content kind and the other dimensions in a desktop
+sidebar or mobile panel. **Kiwix collection titles** searches collection names
+only; use the Wiki source with **All content** for topics such as physics.
+Kiwix live matches show the collection title and embedded PNG illustration when
+available, linking to the local collection. Missing branding falls back to the
+collection filename. The icon is read locally, without a third-party favicon
+request. **Show results** closes the mobile panel. Active filters can be removed
+individually or cleared together.
 Dates refer to the content's creation date, not its indexing date. Ctrl/Cmd+K
 focuses the search field. Search state is shareable in the URL and restored by
 browser Back/Forward; loading more uses the submitted query even while the
@@ -2242,10 +2250,10 @@ Notes:
 ### Online paper discovery
 
 When Search and SearXNG are both enabled, choose **Online papers** in Search's
-**Type** selector to search SearXNG's `scientific publications` category.
-**All saved types** and every other type search saved content only; the backend
-contacts SearXNG only for an explicit `kind=online-paper` request. Online papers
-is a separate mode, so library filters and pagination are hidden. It returns up
+**Source** selector (or desktop navigation) to search SearXNG's
+`scientific publications` category. **All sources** and the saved sources search
+saved content only; the backend contacts SearXNG only for an explicit
+`kind=online-paper` request. Online papers is a separate mode, so library filters and pagination are hidden. It returns up
 to 50 titles, links and snippets, with source failures shown alongside results.
 Newest sorts that sample by available publication dates. Queries and papers are
 not saved to the Search index, and full papers are not downloaded.

@@ -194,6 +194,9 @@ async fn api_sources(State(state): State<AppState>, headers: HeaderMap) -> Respo
                 .map(|source| json!({
                     "id": source.id,
                     "displayName": source.display_name,
+                    "appBase": state.inner.settings.sources.iter()
+                        .find(|configured| configured.id == source.id)
+                        .map(|configured| &configured.app_base),
                     "lastSyncedAt": source.last_synced_at,
                     "lastError": source.last_error,
                 }))
