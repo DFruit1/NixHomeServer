@@ -124,13 +124,9 @@ pub struct ZimSearchResult {
     pub failed_archives: usize,
 }
 
-/// Runs the query against every Xapian-bearing ZIM in `entries` and returns
-/// the merged, bounded set of article hits. ZIMs without an embedded index are
-/// skipped: their articles are already indexed into Solr by the fallback
-/// extractor, so searching them here would only duplicate results. Archives
-/// are queried with bounded concurrency; any single ZIM that fails
-/// (missing tool, unreadable archive, timeout) is skipped rather than failing
-/// the whole query, and results keep their archive ordering.
+/// Search each collection's full-text index, using its title index when full
+/// text is unavailable. Interleave archives so an early, broad collection
+/// cannot crowd every later source out of the bounded result sample.
 pub async fn search(
     config: &ZimSearchConfig,
     entries: &[ZimIndexEntry],
@@ -146,10 +142,7 @@ pub async fn search(
 
     // Refill each slot as it finishes. Waiting for an entire batch left slots
     // idle behind one slow archive and delayed archives later in the library.
-    let mut remaining = entries
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| entry.has_xapian);
+    let mut remaining = entries.iter().enumerate();
     let mut tasks = tokio::task::JoinSet::new();
     let mut failed_archives = 0;
     let mut ordered: Vec<(usize, Vec<ZimHit>)> = Vec::new();
@@ -162,12 +155,22 @@ pub async fn search(
             let zimdump = zimdump.clone();
             let zim = entry.path.clone();
             let stem = entry.stem.clone();
+            let has_xapian = entry.has_xapian;
             let app_base = config.app_base.clone();
             let query = query.to_string();
             tasks.spawn(async move {
                 (
                     index,
-                    search_zim(&kiwix_search, &zimdump, &zim, &stem, &app_base, &query).await,
+                    search_zim(
+                        &kiwix_search,
+                        &zimdump,
+                        &zim,
+                        &stem,
+                        &app_base,
+                        &query,
+                        has_xapian,
+                    )
+                    .await,
                 )
             });
         }
@@ -187,8 +190,21 @@ pub async fn search(
         }
     }
     ordered.sort_by_key(|(index, _)| *index);
-    let mut hits: Vec<ZimHit> = ordered.into_iter().flat_map(|(_, hits)| hits).collect();
-    hits.truncate(MAX_TOTAL_ZIM_RESULTS);
+    let mut archives: Vec<_> = ordered
+        .into_iter()
+        .map(|(_, hits)| hits.into_iter())
+        .collect();
+    let mut hits = Vec::new();
+    'rounds: for _ in 0..MAX_RESULTS_PER_ZIM {
+        for archive in &mut archives {
+            if let Some(hit) = archive.next() {
+                hits.push(hit);
+                if hits.len() == MAX_TOTAL_ZIM_RESULTS {
+                    break 'rounds;
+                }
+            }
+        }
+    }
     ZimSearchResult {
         hits,
         failed_archives,
@@ -203,8 +219,16 @@ async fn search_zim(
     stem: &str,
     app_base: &str,
     query: &str,
+    has_xapian: bool,
 ) -> Result<Vec<ZimHit>, String> {
-    let paths = search_paths(kiwix_search, zim, query).await?;
+    let mut title_only = !has_xapian;
+    let mut paths = search_paths(kiwix_search, zim, query, title_only).await?;
+    // Try the collection's title completion only after a plain topic query has
+    // no full-text matches; preserve deliberate quotes/operators unchanged.
+    if paths.is_empty() && has_xapian && crate::text::plain_query_words(query).is_some() {
+        title_only = true;
+        paths = search_paths(kiwix_search, zim, query, true).await?;
+    }
     let paths: Vec<String> = paths
         .into_iter()
         .take(MAX_RESULTS_PER_ZIM)
@@ -269,24 +293,28 @@ async fn search_zim(
             metadata: serde_json::json!({
                 "archive": stem, "entry_path": path,
                 "archive_title": archive_title, "archive_icon": archive_icon,
+                "search_scope": if title_only { "Titles" } else { "Full text" },
             }),
         })
         .collect())
 }
 
 /// Runs `kiwix-search ZIM PATTERN` and returns the matching entry paths.
-async fn search_paths(kiwix_search: &Path, zim: &Path, query: &str) -> Result<Vec<String>, String> {
-    let output = timeout(
-        SEARCH_TIMEOUT,
-        Command::new(kiwix_search)
-            .kill_on_drop(true)
-            .arg(zim)
-            .arg(query)
-            .output(),
-    )
-    .await
-    .map_err(|_| format!("kiwix-search timed out for {}", zim.display()))?
-    .map_err(|err| format!("failed to run kiwix-search: {err}"))?;
+async fn search_paths(
+    kiwix_search: &Path,
+    zim: &Path,
+    query: &str,
+    title_only: bool,
+) -> Result<Vec<String>, String> {
+    let mut command = Command::new(kiwix_search);
+    command.kill_on_drop(true);
+    if title_only {
+        command.arg("--suggestion");
+    }
+    let output = timeout(SEARCH_TIMEOUT, command.arg(zim).arg(query).output())
+        .await
+        .map_err(|_| format!("kiwix-search timed out for {}", zim.display()))?
+        .map_err(|err| format!("failed to run kiwix-search: {err}"))?;
     if !output.status.success() {
         return Err(format!(
             "kiwix-search failed for {}: {}",
@@ -575,8 +603,10 @@ printf 'A/Article\n'
         let multi = make_snippet(html, "QUANTUM other");
         let multi = multi.expect("multi-term snippet");
         assert!(multi.contains("<em>quantum</em>") && multi.contains("<em>other</em>"));
-        // A query whose keyword is absent produces no snippet.
-        assert_eq!(make_snippet(html, "zebra"), None);
+        // A confirmed result still has real context when the literal term is absent.
+        assert!(make_snippet(html, "zebra")
+            .unwrap()
+            .contains("quantum computing"));
         // A query with no alphanumeric keyword produces no snippet.
         assert_eq!(make_snippet(html, "!!!"), None);
         // Empty text produces no snippet.

@@ -426,8 +426,7 @@ async fn api_search(
             let has_more = offset + response.hits.len() < response.total as usize;
             for hit in response.hits.iter() {
                 let enriched = enrichment.get(&hit.id);
-                let snippet =
-                    enriched.and_then(|doc| text::snippet_from_text(&doc.body_text, &query));
+                let snippet = enriched.and_then(|doc| text::result_snippet(&doc.body_text, &query));
                 let metadata = enriched
                     .map(|doc| present_metadata(&doc.metadata))
                     .unwrap_or_else(|| json!({}));

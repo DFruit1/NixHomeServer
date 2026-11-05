@@ -2008,13 +2008,19 @@ last. Rows keep their focus and expanded Details as late matches arrive, and
 retries update changed content in place. A retry affects only its failed scope
 and retains the submitted query even if the search field contains a draft.
 
-Live sources return up to 20 hits each (Kiwix also limits to five per archive);
+Live sources return up to 20 hits each (Kiwix also limits to five per archive
+and interleaves collections before applying the total limit);
 filters apply after that sample is retrieved. The main count says how many
 deduplicated matches are shown. **Search coverage** discloses the library total,
 live sample size and coverage limits. An unavailable live source is named with
 a retry action; another source's results remain usable. An outage is reported
 as unavailable rather than a successful zero-match search. Sync failures are
 disclosed above results because indexed matches may be stale.
+
+The **Video** content filter includes movies and episodes; **Web pages** includes
+feed entries. Other content-kind filters continue to match their exact kind.
+Confirmed matches keep a short excerpt from the real body when an inflection or
+a title match has no literal body highlight. Excerpts remain bounded and escaped.
 
 Filter options merge library facets with live sample facets, labelling their
 counts separately. Live counts ignore that dimension's own filter while
@@ -2174,7 +2180,12 @@ Notes:
     entry paths instead of upstream display titles, keeping snippets and direct
     result links aligned with the real archive entries. The Kiwix extraction
     revision refreshes existing archive metadata on the next normal index pass;
-    no full corpus copy or manual Solr rebuild is required.
+    no full corpus copy or manual Solr rebuild is required. Collections without
+    a full-text index are searched through their title index. A plain topic
+    query with no full-text matches also tries title completion; quoted or
+    operator-based queries retain their precise meaning. The result Details
+    state whether full text or titles supplied the hit. Indexed and live
+    copies of the same article share an identity and display once.
   * Paperless: Search queries Paperless's own Tantivy index over loopback at
     `http://127.0.0.1:<port>/api/documents/`, using the advanced `query`
     parameter with a fallback to `text` for input the advanced parser rejects.

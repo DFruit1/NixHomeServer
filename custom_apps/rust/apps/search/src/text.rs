@@ -170,6 +170,21 @@ pub fn query_terms(query: &str) -> Vec<String> {
     terms
 }
 
+/// Automatic recovery is reserved for short, plain queries. Quotes, field
+/// syntax, wildcards and explicit boolean operators retain their meaning.
+pub fn plain_query_words(query: &str) -> Option<Vec<&str>> {
+    let words: Vec<_> = query.split_whitespace().collect();
+    if words.is_empty()
+        || words.len() > 6
+        || words.iter().any(|word| {
+            matches!(*word, "AND" | "OR" | "NOT" | "TO") || !word.chars().all(char::is_alphanumeric)
+        })
+    {
+        return None;
+    }
+    Some(words)
+}
+
 /// Returns at most `limit` bytes of `text`, rounded down to a character
 /// boundary. The scan bound is a hard input limit, never a hint: a document that
 /// does not slice cleanly inside the limit is truncated rather than scanned in
@@ -267,7 +282,23 @@ pub fn snippet_from_text(text: &str, query: &str) -> Option<String> {
 /// character boundary) then snippets it. Used by runtime-federated sources that
 /// fetch the document body on demand.
 pub fn snippet_from_html(html: &str, query: &str, html_limit: usize) -> Option<String> {
-    snippet_from_text(&html_to_text(bounded_prefix(html, html_limit)), query)
+    result_snippet(&html_to_text(bounded_prefix(html, html_limit)), query)
+}
+
+/// A confirmed hit can match an inflection, a close spelling, or only its title.
+/// Keep real context visible even when the literal query has no body highlight.
+pub fn result_snippet(text: &str, query: &str) -> Option<String> {
+    snippet_from_text(text, query).or_else(|| {
+        if query_terms(query).is_empty() {
+            return None;
+        }
+        let excerpt: String = bounded_prefix(text, SNIPPET_SCAN_LIMIT)
+            .trim()
+            .chars()
+            .take(SNIPPET_CHARS)
+            .collect();
+        (!excerpt.is_empty()).then(|| highlight_terms(&excerpt, &[]))
+    })
 }
 
 /// Wraps every case-insensitive occurrence of each term in `<em>` tags so
@@ -667,10 +698,16 @@ mod tests {
         let split_limit = 3 + 100 + 1;
         assert!(html.is_char_boundary(3 + 100));
         assert!(!html.is_char_boundary(split_limit));
-        assert_eq!(snippet_from_html(&html, "needle", split_limit), None);
+        assert_eq!(
+            snippet_from_html(&html, "needle", split_limit),
+            Some("a".repeat(100))
+        );
 
         // Exact boundary before the term: the term is still outside the bound.
-        assert_eq!(snippet_from_html(&html, "needle", 3 + 100 + 2), None);
+        assert_eq!(
+            snippet_from_html(&html, "needle", 3 + 100 + 2),
+            Some(format!("{}é", "a".repeat(100)))
+        );
 
         // Exact boundary that includes the whole term.
         let inside =

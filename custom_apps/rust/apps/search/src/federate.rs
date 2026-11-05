@@ -32,10 +32,19 @@ impl FederatedHit {
     /// Converts a Kiwix native-index hit. ZIM articles carry no per-user owner
     /// or timestamp, so they are grouped under the shared sentinel.
     pub fn from_zim(source_id: &str, hit: ZimHit) -> Self {
+        // Title-only collections can also have indexed article records. Use
+        // the extractor's identity so the two paths render one result.
+        let remote_id = match (
+            hit.metadata["archive"].as_str(),
+            hit.metadata["entry_path"].as_str(),
+        ) {
+            (Some(archive), Some(path)) => timeutil::sha256_hex(&[&format!("{archive}.zim"), path]),
+            _ => timeutil::sha256_hex(&[&hit.origin_url]),
+        };
         Self {
             source: source_id.to_string(),
             kind: "zim-article".to_string(),
-            remote_id: timeutil::sha256_hex(&[&hit.origin_url]),
+            remote_id,
             title: hit.title,
             snippet: hit.snippet,
             origin_url: hit.origin_url,
@@ -71,9 +80,7 @@ impl FederatedHit {
     /// federator has always behaved and keeps federated results consistent with
     /// the Solr facet filtering they sit beside.
     pub fn matches_filters(&self, filters: &SearchFilters) -> bool {
-        if let Some(kind) = &filters.kind
-            && kind != &self.kind
-        {
+        if !filters.matches_kind(&self.kind) {
             return false;
         }
         if let Some(source) = &filters.source

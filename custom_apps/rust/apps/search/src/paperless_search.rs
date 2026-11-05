@@ -289,10 +289,7 @@ fn snippet_for(document: &Value, query: &str) -> Option<String> {
     if plain.is_empty() {
         return None;
     }
-    text::snippet_from_text(plain, query).or_else(|| {
-        let truncated: String = plain.chars().take(260).collect();
-        (!truncated.trim().is_empty()).then(|| text::highlight_terms(&truncated, &[]))
-    })
+    text::result_snippet(plain, query)
 }
 
 async fn request_json(

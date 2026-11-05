@@ -167,6 +167,12 @@ pub struct SearchFilters {
 }
 
 impl SearchFilters {
+    pub fn matches_kind(&self, kind: &str) -> bool {
+        self.kind
+            .as_deref()
+            .is_none_or(|selected| kind_terms(selected).contains(&kind))
+    }
+
     /// Builds the Solr `fq` clauses for the selected filters.
     fn clauses(&self, selected_sources: &[String]) -> Vec<String> {
         let mut clauses = Vec::new();
@@ -186,7 +192,20 @@ impl SearchFilters {
             clauses.push(format!("{{!tag=src}}source:{}", solr_string_term(source)));
         }
         if let Some(kind) = &self.kind {
-            clauses.push(format!("{{!tag=kind}}kind_s:{}", solr_string_term(kind)));
+            let terms = kind_terms(kind);
+            let term = if terms.len() == 1 {
+                solr_string_term(terms[0])
+            } else {
+                format!(
+                    "({})",
+                    terms
+                        .iter()
+                        .map(|term| solr_string_term(term))
+                        .collect::<Vec<_>>()
+                        .join(" OR ")
+                )
+            };
+            clauses.push(format!("{{!tag=kind}}kind_s:{term}"));
         }
         if let Some(content_type) = &self.content_type {
             clauses.push(format!(
@@ -229,6 +248,14 @@ impl SearchFilters {
             clauses.push(format!("content_created:[{lower} TO {upper}]"));
         }
         clauses
+    }
+}
+
+fn kind_terms(kind: &str) -> Vec<&str> {
+    match kind {
+        "video" => vec!["video", "movie", "episode"],
+        "web-page" => vec!["web-page", "feed-entry"],
+        _ => vec![kind],
     }
 }
 
