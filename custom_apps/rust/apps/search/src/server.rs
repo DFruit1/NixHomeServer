@@ -448,6 +448,7 @@ async fn api_search(
             Json(json!({
                 "hits": hits,
                 "total": response.total + federated.hits.len() as u64,
+                "related": response.related,
                 "hasMore": has_more,
                 "warnings": federated.warnings,
                 "sourceFacets": facet_json(&response.source_facets),

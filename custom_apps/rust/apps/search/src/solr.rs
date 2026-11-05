@@ -139,6 +139,7 @@ pub struct SearchHit {
 pub struct SearchResponse {
     pub hits: Vec<SearchHit>,
     pub total: u64,
+    pub related: bool,
     pub source_facets: Vec<(String, u64)>,
     pub kind_facets: Vec<(String, u64)>,
     pub content_type_facets: Vec<(String, u64)>,
@@ -513,11 +514,11 @@ impl SolrClient {
         offset: usize,
         sort: SortOrder,
     ) -> Result<SearchResponse, String> {
-        match self
+        let response = match self
             .select(query, selected_sources, filters, rows, offset, sort)
             .await
         {
-            Ok(response) => parse_search_response(&response),
+            Ok(response) => response,
             Err(err) => {
                 // A user query can contain Lucene syntax characters (`:`, `[`,
                 // an unbalanced quote, ...) that make Solr reject the whole
@@ -531,12 +532,34 @@ impl SolrClient {
                     return Err(err);
                 }
                 eprintln!("search: solr rejected the query; retrying with escaped terms");
-                let response = self
-                    .select(&escaped, selected_sources, filters, rows, offset, sort)
-                    .await?;
-                parse_search_response(&response)
+                self.select(&escaped, selected_sources, filters, rows, offset, sort)
+                    .await?
+            }
+        };
+        let exact = parse_search_response(&response)?;
+        // Use total, not an empty page: loading past the last exact hit must
+        // never substitute a different result set. Keep every filter/sort and
+        // page offset identical when recovering a truly empty plain query.
+        if exact.total == 0
+            && let Some(query) = close_word_query(query)
+        {
+            match self
+                .select(&query, selected_sources, filters, rows, offset, sort)
+                .await
+                .and_then(|response| parse_search_response(&response))
+            {
+                Ok(mut related) => {
+                    if related.total > 0 {
+                        related.related = true;
+                        return Ok(related);
+                    }
+                }
+                // Optional recovery failing does not invalidate the successful
+                // original query or turn its zero count into a source outage.
+                Err(_) => eprintln!("search: close-word lookup unavailable"),
             }
         }
+        Ok(exact)
     }
 
     /// Issues one Solr select and returns the raw response, surfacing a Solr
@@ -607,6 +630,26 @@ impl SolrClient {
         }
         Ok(response)
     }
+}
+
+/// One conservative spelling/inflection retry, without relaxing query intent.
+/// Solr's documented ~1 syntax allows one edit; short words and identifiers
+/// remain literal, and the shared plain-query guard excludes advanced syntax.
+fn close_word_query(query: &str) -> Option<String> {
+    let words = crate::text::plain_query_words(query)?;
+    let mut changed = false;
+    let words: Vec<_> = words
+        .into_iter()
+        .map(|word| {
+            if (5..=32).contains(&word.chars().count()) && word.chars().all(char::is_alphabetic) {
+                changed = true;
+                format!("{}~1", word.to_lowercase())
+            } else {
+                word.to_string()
+            }
+        })
+        .collect();
+    changed.then(|| words.join(" "))
 }
 
 /// Escapes the Lucene/edismax syntax characters so a literal user query is
@@ -762,6 +805,7 @@ pub fn parse_search_response(response: &Value) -> Result<SearchResponse, String>
     Ok(SearchResponse {
         hits,
         total,
+        related: false,
         source_facets: facets_of("source"),
         kind_facets: facets_of("kind_s"),
         content_type_facets: facets_of("content_type"),

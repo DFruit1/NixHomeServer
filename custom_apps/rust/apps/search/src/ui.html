@@ -297,7 +297,7 @@ const formatLabels = { 'message/rfc822': 'Email', 'application/pdf': 'PDF', 'tex
 const sourceNames = new Map();
 sourceNames.set('online-papers', 'Online papers');
 const state = { hits: [], liveHits: [], page: 0, total: 0, hasMore: false, generation: 0, controller: null, submitted: null, loading: false, liveLoading: false,
-  indexedDone: false, liveDone: false, indexedFailed: false, liveFailed: false, indexedFacets: {}, liveFacets: {}, resultNodes: new Map() };
+  indexedRelated: false, indexedDone: false, liveDone: false, indexedFailed: false, liveFailed: false, indexedFacets: {}, liveFacets: {}, resultNodes: new Map() };
 
 // These are example queries, never fabricated matches or promises of coverage.
 const searchModes = {
@@ -706,7 +706,7 @@ async function fetchPage(page, scope, submitted, signal) {
 }
 function resetResults() {
   state.hits = []; state.liveHits = []; state.page = 0; state.total = 0; state.hasMore = false;
-  state.indexedDone = false; state.liveDone = false; state.indexedFailed = false; state.liveFailed = false;
+  state.indexedRelated = false; state.indexedDone = false; state.liveDone = false; state.indexedFailed = false; state.liveFailed = false;
   state.indexedFacets = {}; state.liveFacets = {}; state.resultNodes.clear();
   resultsEl.replaceChildren();
   for (const id of ['moreWrap', 'searchError', 'liveError', 'searchCoverage']) el(id).hidden = true;
@@ -717,7 +717,7 @@ function updateResultsStatus() {
   const count = combinedHits().length;
   const pending = state.loading || state.liveLoading;
   const failed = state.indexedFailed || state.liveFailed || !el('liveError').hidden;
-  statusEl.textContent = count ? `${count.toLocaleString()} match${count === 1 ? '' : 'es'} shown${pending ? ' · searching…' : ''}` : pending ? 'Searching…' : state.indexedFailed && state.liveFailed ? 'Search is unavailable' : failed ? 'No matches from available sources' : 'No matches';
+  statusEl.textContent = count ? `${count.toLocaleString()} match${count === 1 ? '' : 'es'} shown${state.indexedRelated ? ' · includes close word matches' : ''}${pending ? ' · searching…' : ''}` : pending ? 'Searching…' : state.indexedFailed && state.liveFailed ? 'Search is unavailable' : failed ? 'No matches from available sources' : 'No matches';
   el('moreWrap').hidden = !state.hasMore;
   el('loadMore').disabled = state.loading;
   el('loadMore').textContent = state.loading ? 'Loading more…' : 'Load more results';
@@ -728,6 +728,7 @@ function updateResultsStatus() {
   el('broadenSearch').hidden = onlinePapers() || !Object.values(controls).some(control => !control.disabled && control.value);
   el('searchCoverage').hidden = !state.submitted || (!state.indexedDone && !state.liveDone);
   el('coverageText').textContent = `${state.indexedFailed ? 'Library search is unavailable' : state.indexedDone ? `${state.total.toLocaleString()} library matches` : 'Library search is still running'}. ${state.liveFailed ? 'Connected search is unavailable' : state.liveDone ? `${state.liveHits.length} matches returned by available connected sources` : 'Connected sources are still being searched'}. Connected sources return up to 20 matches each, with up to five per offline archive; filters apply to that sample.`;
+  if (state.indexedRelated) el('coverageText').textContent += ' Close spellings were tried because the original words had no library matches. Your filters remain applied.';
   if (onlinePapers()) {
     if (state.liveFailed) statusEl.textContent = 'Online paper search is unavailable';
     el('emptyTitle').textContent = state.liveFailed ? 'Online paper search is unavailable' : failed ? 'No matches from available sources' : 'No matches';
@@ -824,6 +825,7 @@ async function runIndexed(append = false) {
   try {
     const data = await fetchPage(page, 'indexed', submitted, signal);
     if (generation !== state.generation || !data) return;
+    state.indexedRelated = Boolean(data.related);
     state.page = page; state.total = data.total || 0; state.hasMore = Boolean(data.hasMore);
     const seen = new Set(state.hits.map(hit => hit.id));
     const hits = (data.hits || []).filter(hit => !seen.has(hit.id));

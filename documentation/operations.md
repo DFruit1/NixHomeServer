@@ -2022,6 +2022,17 @@ feed entries. Other content-kind filters continue to match their exact kind.
 Confirmed matches keep a short excerpt from the real body when an inflection or
 a title match has no literal body highlight. Excerpts remain bounded and escaped.
 
+If a library query has zero matches, Search makes at most one close-word retry
+for plain queries of up to six words. Alphabetic words of 5–32 characters allow
+one edit using [Solr's fuzzy term syntax](https://solr.apache.org/guide/solr/latest/query-guide/standard-query-parser.html#fuzzy-searches);
+short words and numeric identifiers stay literal. Quoted phrases, field syntax,
+wildcards and explicit boolean operators do not receive automatic recovery.
+Filters, source scope, sorting and pagination remain applied. Successful recovery
+sets `related: true` in the indexed/combined API response and the visible count
+says **includes close word matches**; Search coverage explains the retry. Existing
+exact matches always win, and an empty page beyond those matches never starts a
+related search. This needs no schema change or reindex.
+
 Filter options merge library facets with live sample facets, labelling their
 counts separately. Live counts ignore that dimension's own filter while
 retaining the other filters, so authors and tags found only in live sources
