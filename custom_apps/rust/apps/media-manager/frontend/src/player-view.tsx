@@ -8,6 +8,8 @@ import {
 } from "@builder.io/qwik";
 import { api, catalogItems, readableError } from "./api";
 import { Icon } from "./icon";
+import { CollectionViewControl, useCollectionView } from "./collection-view";
+import "./music-collection.css";
 import { LibraryMiniPlayer } from "./mini-player";
 import { PlaybackSettings } from "./playback-settings";
 import {
@@ -30,10 +32,12 @@ import { EmptyState, LoadingState } from "./view-states";
 
 export const PlayerView = component$<{
   state: DashboardState;
+  userSubject?: string;
   active?: boolean;
   initialItemId?: string;
   initialPath?: string;
 }>((props) => {
+  const layout = useCollectionView(props, "music", "tiles-3");
   const audioRef = useSignal<HTMLAudioElement>();
   const settingsRef = useSignal<HTMLElement>();
   const search = useSignal("");
@@ -1200,16 +1204,23 @@ export const PlayerView = component$<{
               )}
             </div>
           </div>
-          <label class="video-library-filter">
-            <span class="sr-only">Search loaded albums and tracks</span>
-            <input
-              type="search"
-              aria-label="Search loaded albums and tracks"
-              placeholder="Search loaded albums and tracks"
-              value={search.value}
-              onInput$={(_, input) => (search.value = input.value)}
+          <div class="music-library-tools">
+            <label class="video-library-filter">
+              <span class="sr-only">Search loaded albums and tracks</span>
+              <input
+                type="search"
+                aria-label="Search loaded albums and tracks"
+                placeholder="Search loaded albums and tracks"
+                value={search.value}
+                onInput$={(_, input) => (search.value = input.value)}
+              />
+            </label>
+            <CollectionViewControl
+              label="Music view"
+              value={layout.view.value}
+              onChange$={layout.change}
             />
-          </label>
+          </div>
           {playerState.loading ? (
             <LoadingState />
           ) : playerState.error ? (
@@ -1225,7 +1236,10 @@ export const PlayerView = component$<{
           ) : query && filteredTracks.length === 0 ? (
             <p class="video-library-empty">No matching albums or tracks.</p>
           ) : playerState.albumView && !query ? (
-            <ul class="album-grid">
+            <ul
+              class="album-grid music-collection collection-layout"
+              data-view={layout.view.value}
+            >
               {albums.map((album) => {
                 const isCurrentAlbum =
                   currentTrack &&
@@ -1237,22 +1251,37 @@ export const PlayerView = component$<{
                       class="album-button"
                       onClick$={() => playAlbum(album.dirPath)}
                     >
-                      <div
-                        class={{
-                          "album-artwork": true,
-                          "album-active": isCurrentAlbum,
-                        }}
-                      >
-                        <img
-                          src={`/api/v1/items/${encodeURIComponent(album.artworkTrackId)}/image`}
-                          alt=""
-                          loading="lazy"
-                        />
-                      </div>
-                      <span class="album-name">{album.name}</span>
-                      <span class="album-count">
-                        {album.tracks.length}{" "}
-                        {album.tracks.length === 1 ? "track" : "tracks"}
+                      {layout.view.value !== "simple-list" && (
+                        <div
+                          class={{
+                            "album-artwork": true,
+                            "album-active": isCurrentAlbum,
+                          }}
+                        >
+                          <Icon name="music-note" size={24} />
+                          <img
+                            onError$={(_, image) => {
+                              image.hidden = true;
+                            }}
+                            src={`/api/v1/items/${encodeURIComponent(album.artworkTrackId)}/image`}
+                            alt=""
+                            loading="lazy"
+                          />
+                        </div>
+                      )}
+                      <span class="album-copy">
+                        <span class="album-name">
+                          {album.name || "Unfiled tracks"}
+                        </span>
+                        {layout.view.value !== "simple-list" && (
+                          <span class="album-count">
+                            {album.tracks.length}{" "}
+                            {album.tracks.length === 1 ? "track" : "tracks"}
+                          </span>
+                        )}
+                        {layout.view.value === "detailed-list" && (
+                          <span class="album-path">{album.dirPath || "/"}</span>
+                        )}
                       </span>
                     </button>
                   </li>
@@ -1260,7 +1289,10 @@ export const PlayerView = component$<{
               })}
             </ul>
           ) : (
-            <ul class="track-list">
+            <ul
+              class="track-list music-collection collection-layout"
+              data-view={layout.view.value}
+            >
               {filteredTracks.map((track) => {
                 const filename = track.relativePath.split("/").at(-1) ?? "";
                 const stem = filename.replace(/\.[^.]+$/, "");
@@ -1283,23 +1315,34 @@ export const PlayerView = component$<{
                         playTrack(playerState.tracks.indexOf(track))
                       }
                     >
-                      <div class="track-artwork-thumb">
-                        <img
-                          src={`/api/v1/items/${encodeURIComponent(track.id)}/image`}
-                          alt=""
-                          loading="lazy"
-                        />
-                      </div>
+                      {layout.view.value !== "simple-list" && (
+                        <div class="track-artwork-thumb">
+                          <Icon name="music-note" size={24} />
+                          <img
+                            onError$={(_, image) => {
+                              image.hidden = true;
+                            }}
+                            src={`/api/v1/items/${encodeURIComponent(track.id)}/image`}
+                            alt=""
+                            loading="lazy"
+                          />
+                        </div>
+                      )}
                       <div class="track-info">
                         <span class="track-name">
                           {stem.split(" - ").at(-1) ?? stem}
                         </span>
-                        <span class="track-album">
-                          {query
-                            ? dirPath
-                            : stem.split(" - ").slice(0, -1).join(" - ") ||
-                              dirPath}
-                        </span>
+                        {layout.view.value !== "simple-list" && (
+                          <span class="track-album">
+                            {query
+                              ? dirPath
+                              : stem.split(" - ").slice(0, -1).join(" - ") ||
+                                dirPath}
+                          </span>
+                        )}
+                        {layout.view.value === "detailed-list" && (
+                          <span class="track-path">{track.relativePath}</span>
+                        )}
                       </div>
                       {isActive && playerState.isPlaying && (
                         <span class="playing-indicator" aria-hidden="true">

@@ -9,6 +9,7 @@ import type {
   ImmichImageResponse,
 } from "./api-contract.generated";
 import { Icon } from "./icon";
+import { CollectionViewControl, useCollectionView } from "./collection-view";
 import { LoadingState } from "./view-states";
 import "./images-view.css";
 
@@ -17,7 +18,11 @@ const photoPath = (id: string) =>
 const previewUrl = (id: string) => `/api/v1${photoPath(id)}/preview`;
 const tagLabel = (tag: string) => tag.replaceAll("_", " ");
 
-export const ImagesView = component$<{ immichUrl?: string }>((props) => {
+export const ImagesView = component$<{
+  immichUrl?: string;
+  userSubject?: string;
+}>((props) => {
+  const layout = useCollectionView(props, "images", "tiles-3");
   const detail = useSignal<HTMLElement>();
   const state = useStore({
     items: [] as ImmichImage[],
@@ -320,6 +325,13 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
             </div>
           </details>
         </form>
+        <div class="images-view-options">
+          <CollectionViewControl
+            label="Images view"
+            value={layout.view.value}
+            onChange$={layout.change}
+          />
+        </div>
         {state.index && (
           <div class="images-index-status" role="status">
             <p>
@@ -394,7 +406,10 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
                 </p>
               </div>
             )}
-            <div class="images-grid">
+            <div
+              class="images-grid collection-layout"
+              data-view={layout.view.value}
+            >
               {state.items.map((image) => (
                 <button
                   key={image.id}
@@ -407,27 +422,54 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
                   disabled={busy}
                   onClick$={() => choose(image)}
                 >
-                  {state.failedPreviews.includes(image.id) ? (
-                    <span class="image-tile-placeholder">
-                      <Icon name="image" size={28} />
-                      <span>Preview unavailable</span>
-                    </span>
-                  ) : (
-                    <img
-                      src={previewUrl(image.id)}
-                      alt=""
-                      loading="lazy"
-                      width={240}
-                      height={200}
-                      onError$={() => {
-                        state.failedPreviews = [
-                          ...state.failedPreviews,
-                          image.id,
-                        ];
-                      }}
-                    />
-                  )}
-                  <span>{image.filename}</span>
+                  {layout.view.value !== "simple-list" &&
+                    (state.failedPreviews.includes(image.id) ? (
+                      <span
+                        class="image-tile-placeholder"
+                        role="img"
+                        aria-label="Preview unavailable"
+                      >
+                        <Icon name="image" size={28} />
+                        <span>Preview unavailable</span>
+                      </span>
+                    ) : (
+                      <img
+                        src={previewUrl(image.id)}
+                        alt=""
+                        loading="lazy"
+                        width={240}
+                        height={200}
+                        onError$={() => {
+                          state.failedPreviews = [
+                            ...state.failedPreviews,
+                            image.id,
+                          ];
+                        }}
+                      />
+                    ))}
+                  <span class="image-item-copy">
+                    <span class="image-item-name">{image.filename}</span>
+                    {layout.view.value === "detailed-list" && (
+                      <>
+                        <span class="image-item-meta">
+                          {image.capturedAt.slice(0, 10)}
+                        </span>
+                        <span class="image-item-meta">
+                          {image.analysis
+                            ? `Aesthetic ${Math.round(image.analysis.scores.aesthetic * 100)} · Keeper ${Math.round(image.analysis.scores.keeper * 100)} · Cover ${Math.round(image.analysis.scores.cover * 100)}`
+                            : "Not analyzed"}
+                        </span>
+                        {image.analysis && (
+                          <span class="image-item-meta">
+                            {image.analysis.suggestions
+                              .slice(0, 3)
+                              .map((suggestion) => tagLabel(suggestion.tag))
+                              .join(", ")}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </span>
                 </button>
               ))}
             </div>

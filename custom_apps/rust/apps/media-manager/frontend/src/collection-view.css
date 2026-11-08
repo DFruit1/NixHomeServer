@@ -1,0 +1,47 @@
+.collection-view-choice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14px;
+}
+.collection-view-choice select {
+  min-height: 44px;
+  max-width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+}
+.collection-view-choice select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.collection-layout[data-view] {
+  display: grid;
+  grid-template-columns: repeat(var(--collection-columns, 3), minmax(0, 1fr));
+  align-content: start;
+  gap: 12px;
+}
+.collection-layout[data-view="tiles-1"] {
+  --collection-columns: 1;
+}
+.collection-layout[data-view="tiles-2"] {
+  --collection-columns: 2;
+}
+.collection-layout[data-view="tiles-3"] {
+  --collection-columns: 3;
+}
+.collection-layout[data-view="tiles-4"] {
+  --collection-columns: 4;
+}
+.collection-layout[data-view$="-list"] {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+.collection-layout > * {
+  min-width: 0;
+}

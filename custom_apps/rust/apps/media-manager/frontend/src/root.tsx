@@ -697,6 +697,7 @@ export default component$((props: RootProps) => {
         {!state.loading && playerOpened.value && (
           <PlayerView
             state={state}
+            userSubject={state.session?.subject}
             active={view.value === "player"}
             initialItemId={
               view.value === "player" ? route.initialItemId : undefined
@@ -749,6 +750,7 @@ export default component$((props: RootProps) => {
           />
         ) : view.value === "images" ? (
           <ImagesView
+            userSubject={state.session?.subject}
             immichUrl={
               state.status?.integrations.find(
                 (integration) =>

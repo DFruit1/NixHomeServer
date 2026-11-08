@@ -1,0 +1,84 @@
+.music-library-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.music-library-tools .video-library-filter {
+  flex: 1 1 200px;
+}
+.music-collection .album-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  width: 100%;
+}
+.music-collection
+  :is(.album-name, .track-name, .track-album, .album-path, .track-path) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.music-collection :is(.album-path, .track-path) {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.music-collection :is(.album-button, .track-button) {
+  min-height: 44px;
+  min-width: 0;
+}
+.music-collection :is(.album-artwork, .track-artwork-thumb) {
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+.music-collection :is(.album-artwork, .track-artwork-thumb) img {
+  position: absolute;
+  inset: 0;
+}
+.music-collection img[hidden] {
+  display: none;
+}
+.music-collection :is(.album-button, .track-button):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.music-collection[data-view$="-list"] .album-item {
+  border-bottom: 1px solid var(--line);
+}
+.music-collection[data-view$="-list"] .album-button {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  border-radius: 0;
+  padding: 10px 4px;
+}
+.music-collection[data-view="detailed-list"]
+  :is(.album-artwork, .track-artwork-thumb) {
+  flex: 0 0 60px;
+  width: 60px;
+  height: 60px;
+}
+.music-collection[data-view^="tiles-"] .track-button {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  height: 100%;
+  padding: 8px;
+}
+.music-collection[data-view^="tiles-"] .track-artwork-thumb {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+}
+.music-collection[data-view^="tiles-"] .track-item {
+  border: 0;
+}
+.music-collection[data-view^="tiles-"] .playing-indicator {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 4px;
+  background: var(--card);
+}

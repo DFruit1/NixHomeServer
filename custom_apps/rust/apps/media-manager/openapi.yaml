@@ -1989,6 +1989,7 @@ components:
       type: object
       required: [username, groups, canEdit]
       properties:
+        subject: { type: string, description: Stable account ID for browser-local per-user preferences. }
         username: { type: string }
         groups: { type: array, items: { type: string } }
         canEdit: { type: boolean }

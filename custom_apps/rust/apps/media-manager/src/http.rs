@@ -136,6 +136,7 @@ pub struct AppState {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionResponse {
+    subject: String,
     username: String,
     groups: Vec<String>,
     can_edit: bool,
@@ -677,6 +678,7 @@ async fn session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Resp
     match identity_from_headers(&headers, &request_id) {
         Ok(identity) => Json(SessionResponse {
             can_edit: identity.can_edit(&state.config.editor_group),
+            subject: identity.subject,
             username: identity.username,
             groups: identity.groups,
         })

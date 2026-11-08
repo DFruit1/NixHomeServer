@@ -31,6 +31,15 @@ hidden, trashed and non-image assets are excluded.
    analysis; choose **Analyze again** to replace only its Media Manager analysis.
    Selecting a saved tag searches for that tag with the current other filters.
 
+The **View** selector offers Detailed list, Simple list and 1–4 tiles per row.
+Detailed rows show the capture date, saved scores and a short tag summary;
+simple rows show filenames. Music has the same selector for albums and tracks.
+The two selections are saved independently in this browser, keyed by the signed-in
+account's stable ID. Other users on a shared device do not inherit your choice,
+and another device/browser profile can use a different layout. Clearing site data
+resets these preferences. If browser storage is blocked, the chosen view still
+works for the current visit. Both pages default to three tiles per row.
+
 Scores are relative model judgments, not personal-value decisions. The app never
 deletes a photo or modifies Immich based on a prediction. The legacy tag-write
 endpoint returns 403, including for editors with mutations enabled.
