@@ -154,6 +154,7 @@ pub async fn search(
         .then(|| crate::text::discovery_words(query))
         .flatten()
         .map(|words| {
+            let related = crate::text::related_words(&words);
             words
                 .into_iter()
                 .map(|word| {
@@ -165,6 +166,7 @@ pub async fn search(
                         word.to_string()
                     }
                 })
+                .chain(related)
                 .collect::<Vec<_>>()
                 .join(" OR ")
         });

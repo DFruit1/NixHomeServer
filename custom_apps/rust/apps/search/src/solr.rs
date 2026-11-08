@@ -155,6 +155,7 @@ pub struct SearchHit {
 pub struct SearchResponse {
     pub hits: Vec<SearchHit>,
     pub total: u64,
+    pub related_terms: Vec<String>,
     pub source_facets: Vec<(String, u64)>,
     pub kind_facets: Vec<(String, u64)>,
     pub content_type_facets: Vec<(String, u64)>,
@@ -552,7 +553,13 @@ impl SolrClient {
                     .await?
             }
         };
-        parse_search_response(&response)
+        let mut response = parse_search_response(&response)?;
+        if filters.matching == MatchMode::Broad
+            && let Some(words) = crate::text::discovery_words(query)
+        {
+            response.related_terms = crate::text::related_words(&words);
+        }
+        Ok(response)
     }
 
     /// Issues one Solr select and returns the raw response, surfacing a Solr
@@ -571,7 +578,7 @@ impl SolrClient {
             .then(|| broad_query(query))
             .flatten();
         let mut params: Vec<(&str, String)> = vec![
-            ("q", broad.clone().unwrap_or_else(|| query.to_string())),
+            ("q", broad.clone().or_else(|| literal_reference_query(query)).unwrap_or_else(|| query.to_string())),
             // Stored fields only; the body is index-only and is enriched from
             // Postgres after the query.
             (
@@ -608,6 +615,38 @@ impl SolrClient {
         if broad.is_some() {
             params.push(("q.op", "OR".to_string()));
             params.push(("mm", "1".to_string()));
+            // Reward coverage of the whole topic even when its words are far
+            // apart. This boost never admits a document by itself.
+            if let Some(words) = crate::text::discovery_words(query) {
+                let related = crate::text::related_words(&words);
+                let concepts = words
+                    .iter()
+                    .map(|word| {
+                        let alternatives = crate::text::related_words(std::slice::from_ref(word));
+                        let terms = std::iter::once(word.clone())
+                            .chain(
+                                alternatives
+                                    .into_iter()
+                                    .filter(|term| related.contains(term)),
+                            )
+                            .collect::<Vec<_>>();
+                        let fields = terms
+                            .iter()
+                            .flat_map(|term| {
+                                [("title", 12), ("body", 3), ("discovery_txt", 4)]
+                                    .into_iter()
+                                    .map(move |(field, weight)| {
+                                        format!("{field}:{}^{weight}", solr_string_term(term))
+                                    })
+                            })
+                            .collect::<Vec<_>>();
+                        format!("({})", fields.join(" OR "))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" AND ");
+                params.push(("primaryQuery", concepts));
+                params.push(("bq", "{!lucene v=$primaryQuery}".to_string()));
+            }
             params.push((
                 "bq",
                 format!(
@@ -656,28 +695,61 @@ pub enum MatchMode {
 
 fn broad_query(query: &str) -> Option<String> {
     let words = crate::text::discovery_words(query)?;
-    Some(
-        words
-            .into_iter()
-            .map(|word| {
-                let word = word.to_lowercase();
-                let length = word.chars().count();
-                // Only alphabetic words expand: account numbers, dates and other
-                // identifiers stay exact. Bounds prevent costly very short wildcards.
-                if (4..=32).contains(&length) && word.chars().all(char::is_alphabetic) {
-                    let fuzzy = if length >= 5 {
-                        format!(" OR {word}~1^0.4")
-                    } else {
-                        String::new()
-                    };
-                    format!("({word}^4{fuzzy} OR {word}*^0.2)")
+    let mut clauses = Vec::new();
+    for word in &words {
+        let length = word.chars().count();
+        // Numeric identifiers stay literal. Use at most four fuzzy expansions
+        // (one per word); longer words tolerate two edits at a lower weight.
+        if (4..=32).contains(&length) && word.chars().all(char::is_alphabetic) {
+            let fuzzy = if clauses.len() < 4 {
+                if length >= 8 {
+                    format!(" OR {word}~2^0.2")
+                } else if length >= 5 {
+                    format!(" OR {word}~1^0.4")
                 } else {
-                    word
+                    format!(" OR {word}~1^0.1")
                 }
-            })
-            .collect::<Vec<_>>()
-            .join(" OR "),
-    )
+            } else {
+                String::new()
+            };
+            clauses.push(format!("({word}^4{fuzzy} OR {word}*^0.2)"));
+        } else {
+            clauses.push(word.clone());
+        }
+    }
+    clauses.extend(
+        crate::text::related_words(&words)
+            .into_iter()
+            .map(|word| format!("{word}^0.15")),
+    );
+    Some(clauses.join(" OR "))
+}
+
+/// A plain formatted reference must not become an OR between its numeric
+/// parts (e.g. a date accidentally matching a numbered film). Explicit query
+/// syntax is excluded; only quote reference tokens inside otherwise plain text.
+fn literal_reference_query(query: &str) -> Option<String> {
+    let mut changed = false;
+    let mut terms = Vec::new();
+    for word in query.split_whitespace() {
+        if matches!(word, "AND" | "OR" | "NOT" | "TO")
+            || !word.chars().next().is_some_and(char::is_alphanumeric)
+            || word
+                .chars()
+                .any(|ch| !ch.is_alphanumeric() && !matches!(ch, '-' | '/' | '.' | '\'' | '’'))
+        {
+            return None;
+        }
+        if word.chars().any(char::is_numeric)
+            && word.chars().any(|ch| matches!(ch, '-' | '/' | '.'))
+        {
+            terms.push(solr_string_term(word));
+            changed = true;
+        } else {
+            terms.push(word.to_string());
+        }
+    }
+    changed.then(|| terms.join(" "))
 }
 
 /// Escapes the Lucene/edismax syntax characters so a literal user query is
@@ -833,6 +905,7 @@ pub fn parse_search_response(response: &Value) -> Result<SearchResponse, String>
     Ok(SearchResponse {
         hits,
         total,
+        related_terms: Vec::new(),
         source_facets: facets_of("source"),
         kind_facets: facets_of("kind_s"),
         content_type_facets: facets_of("content_type"),

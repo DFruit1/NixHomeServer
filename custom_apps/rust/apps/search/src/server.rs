@@ -452,6 +452,7 @@ async fn api_search(
                 "hits": hits,
                 "total": response.total + federated.hits.len() as u64,
                 "related": false,
+                "relatedTerms": response.related_terms,
                 "hasMore": has_more,
                 "warnings": federated.warnings,
                 "sourceFacets": facet_json(&response.source_facets),

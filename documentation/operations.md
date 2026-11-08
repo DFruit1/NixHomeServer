@@ -2012,7 +2012,7 @@ last. Rows keep their focus and expanded Details as late matches arrive, and
 retries update changed content in place. A retry affects only its failed scope
 and retains the submitted query even if the search field contains a draft.
 
-Live sources return up to 100 hits each (Kiwix also limits to 10 per archive
+Live sources return up to 100 hits each (Kiwix also limits to 25 per archive
 and interleaves collections before applying the total limit);
 filters apply after that sample is retrieved. The main count says how many
 deduplicated matches are shown. **Search coverage** discloses the library total,
@@ -2026,20 +2026,42 @@ feed entries. Other content-kind filters continue to match their exact kind.
 Confirmed matches keep a short excerpt from the real body when an inflection or
 a title match has no literal body highlight. Excerpts remain bounded and escaped.
 
-**Match → Broad** is the default. For plain queries of up to 12 words, Search
-ignores common conversational filler, matches any main word and includes word
-beginnings (4–32 alphabetic characters) and close spellings (5–32 characters,
-one edit). Literal terms receive more weight than expansions; title and phrase
-boosts favour specific matches. This uses [Solr's query modifiers](https://solr.apache.org/guide/solr/latest/query-guide/standard-query-parser.html#term-modifiers)
-in one stable query, so broad matches remain available even when exact matches
-exist, and pagination uses the same result set. Numeric identifiers stay literal.
+**Match → Broad** is the default. Search accepts ordinary hyphenated words,
+punctuation, and conversational questions such as `Can you find movies about
+mountains?`. Up to 32 input words are reduced to at most 12 distinct main words;
+formatted numeric references match as complete phrases. Domains, quotes, fields,
+wildcard expressions, explicit exclusions and boolean operators keep their native
+interpretation.
+Common conversational filler is ignored. A small list of related-word families
+covers everyday alternatives such as movie/film, car/automobile, wifi/wireless
+and CV/resume, including their common plurals and some regional spellings.
+At most 12 related terms are added, without transitive expansion. **Search
+coverage** names these terms so the user can inspect what was searched.
+The families are deliberately narrow and inspectable in `text.rs`.
+
+Library queries include word beginnings for alphabetic words of 4–32 characters.
+The first four main words also allow close spellings: one edit for 4–7 letters,
+two for 8–32 letters. These use [Solr's query modifiers](https://solr.apache.org/guide/solr/latest/query-guide/standard-query-parser.html#term-modifiers).
+Literal terms receive more weight than expansions. An additional score rewards
+coverage of every main concept, accepting the bounded related terms, even when
+the words are far apart. Phrase and title boosts still favour precise matches.
+The same bounded query drives every page, so related hits remain available even
+when exact matches exist. Filters and source scope remain applied. Broad search
+never falls back to an unfiltered list or a match-all query just to avoid zero.
+
 **All words** requires every word without automatic expansion. Double quotes
 require an exact phrase; explicit fields, wildcards and boolean operators retain
-their meaning in either mode. Search tips and Search coverage explain the modes.
-An empty All words search offers **Try broad matching**, retaining the query and
-filters. Search links and browser history include the selected matching mode.
-Paperless broad queries use OR and word-prefix matching; Kiwix full-text queries
-use OR, while title-only collections retain their native title completion.
+their meaning in either mode. An empty All words search offers **Try broad
+matching**, retaining the query and filters. Shared links and browser history
+include the matching mode. Paperless broad queries use OR, word-prefix matching
+and the same related vocabulary. Kiwix full-text queries use OR and related
+terms. Title-only collections additionally try up to three main/related prefixes
+when their initial sample is small; each optional lookup has a two-second budget
+and at most two run together. Failed optional lookups keep the original sample.
+The packaged Kiwix CLI returns up to 25 results for both full-text and title
+queries. Snippet extraction keeps five subprocesses per archive in flight with
+a three-second enrichment budget; slow excerpts fall back to path-derived titles
+instead of discarding confirmed matches or extending the source deadline.
 
 Library discovery also searches a bounded `discovery_txt` projection of the
 filename, original hostname and allowlisted descriptive metadata, including

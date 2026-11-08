@@ -220,7 +220,7 @@
     <div id="searchGuide" class="search-guide" hidden>
       <ul>
         <li><strong>Find a specific item:</strong> try a distinctive title, a sender’s email address, an author or an invoice number.</li>
-        <li><strong>Explore a topic:</strong> Broad matching looks for your main words, close spellings and word beginnings. Exact words and phrases rank higher in the library.</li>
+        <li><strong>Explore a topic:</strong> Broad matching looks for your main words, common related wording, close spellings and word beginnings. Exact words and phrases rank higher in the library.</li>
         <li><strong>Be precise:</strong> choose All words to require each word, or put a phrase in double quotes. Quotes and search operators keep their meaning.</li>
         <li><strong>Narrow the matches:</strong> use Filters for format, author, tag, series, year or a content-date range.</li>
       </ul>
@@ -305,7 +305,7 @@ const formatLabels = { 'message/rfc822': 'Email', 'application/pdf': 'PDF', 'tex
 const sourceNames = new Map();
 sourceNames.set('online-papers', 'Online papers');
 const state = { hits: [], liveHits: [], page: 0, total: 0, hasMore: false, generation: 0, controller: null, submitted: null, loading: false, liveLoading: false,
-  indexedDone: false, liveDone: false, indexedFailed: false, liveFailed: false, indexedFacets: {}, liveFacets: {}, resultNodes: new Map() };
+  relatedTerms: [], indexedDone: false, liveDone: false, indexedFailed: false, liveFailed: false, indexedFacets: {}, liveFacets: {}, resultNodes: new Map() };
 
 // These are example queries, never fabricated matches or promises of coverage.
 const searchModes = {
@@ -717,7 +717,7 @@ async function fetchPage(page, scope, submitted, signal) {
 }
 function resetResults() {
   state.hits = []; state.liveHits = []; state.page = 0; state.total = 0; state.hasMore = false;
-  state.indexedDone = false; state.liveDone = false; state.indexedFailed = false; state.liveFailed = false;
+  state.relatedTerms = []; state.indexedDone = false; state.liveDone = false; state.indexedFailed = false; state.liveFailed = false;
   state.indexedFacets = {}; state.liveFacets = {}; state.resultNodes.clear();
   resultsEl.replaceChildren();
   for (const id of ['moreWrap', 'searchError', 'liveError', 'searchCoverage']) el(id).hidden = true;
@@ -739,8 +739,9 @@ function updateResultsStatus() {
   el('broadMatching').hidden = onlinePapers() || new URLSearchParams(state.submitted || '').get('matching') !== 'all';
   el('broadenSearch').hidden = onlinePapers() || !Object.values(controls).some(control => !control.disabled && control.value);
   el('searchCoverage').hidden = !state.submitted || (!state.indexedDone && !state.liveDone);
-  el('coverageText').textContent = `${state.indexedFailed ? 'Library search is unavailable' : state.indexedDone ? `${state.total.toLocaleString()} library matches` : 'Library search is still running'}. ${state.liveFailed ? 'Connected search is unavailable' : state.liveDone ? `${state.liveHits.length} matches returned by available connected sources` : 'Connected sources are still being searched'}. Connected sources return up to 100 matches each, with up to 10 per offline archive; filters apply to that sample.`;
-  el('coverageText').textContent += new URLSearchParams(state.submitted || '').get('matching') === 'all' ? ' All words are required. Quotes and operators retain their meaning.' : ' Broad library matching includes close spellings and word beginnings, with exact words and phrases boosted. Connected sources match any main word or word beginning supported by their index. Quotes and operators retain their meaning. Your filters remain applied.';
+  el('coverageText').textContent = `${state.indexedFailed ? 'Library search is unavailable' : state.indexedDone ? `${state.total.toLocaleString()} library matches` : 'Library search is still running'}. ${state.liveFailed ? 'Connected search is unavailable' : state.liveDone ? `${state.liveHits.length} matches returned by available connected sources` : 'Connected sources are still being searched'}. Connected sources return up to 100 matches each, with up to 25 per offline archive; filters apply to that sample.`;
+  el('coverageText').textContent += new URLSearchParams(state.submitted || '').get('matching') === 'all' ? ' All words are required. Quotes and operators retain their meaning.' : ' Broad library matching includes related wording, close spellings and word beginnings. Matches covering more of your topic, exact words and phrases rank higher. Connected sources match any main word or word beginning supported by their index. Quotes and operators retain their meaning. Your filters remain applied.';
+  if (state.relatedTerms.length) el('coverageText').textContent += ` Related wording searched: ${state.relatedTerms.join(', ')}.`;
   if (onlinePapers()) {
     if (state.liveFailed) statusEl.textContent = 'Online paper search is unavailable';
     el('emptyTitle').textContent = state.liveFailed ? 'Online paper search is unavailable' : failed ? 'No matches from available sources' : 'No matches';
@@ -837,6 +838,7 @@ async function runIndexed(append = false) {
   try {
     const data = await fetchPage(page, 'indexed', submitted, signal);
     if (generation !== state.generation || !data) return;
+    state.relatedTerms = Array.isArray(data.relatedTerms) ? data.relatedTerms.filter(term => typeof term === 'string').slice(0, 12) : [];
     state.page = page; state.total = data.total || 0; state.hasMore = Boolean(data.hasMore);
     const seen = new Set(state.hits.map(hit => hit.id));
     const hits = (data.hits || []).filter(hit => !seen.has(hit.id));

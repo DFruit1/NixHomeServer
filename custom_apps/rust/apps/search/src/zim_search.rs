@@ -14,7 +14,7 @@ use crate::text::{html_title, snippet_from_html};
 /// bounds the number of in-flight `kiwix-search` subprocesses instead.
 const MAX_ZIM_CONCURRENCY: usize = 8;
 /// How many article hits are kept per ZIM.
-const MAX_RESULTS_PER_ZIM: usize = 10;
+const MAX_RESULTS_PER_ZIM: usize = 25;
 /// Total ZIM article hits returned for one query.
 const MAX_TOTAL_ZIM_RESULTS: usize = 100;
 /// Bound for a single kiwix-search invocation.
@@ -146,7 +146,10 @@ pub async fn search(
     let broad = (matching == crate::solr::MatchMode::Broad)
         .then(|| crate::text::discovery_words(query))
         .flatten()
-        .map(|words| words.join(" OR "));
+        .map(|mut words| {
+            words.extend(crate::text::related_words(&words));
+            words.join(" OR ")
+        });
 
     // Refill each slot as it finishes. Waiting for an entire batch left slots
     // idle behind one slow archive and delayed archives later in the library.
@@ -238,9 +241,49 @@ async fn search_zim(
     let mut paths = search_paths(kiwix_search, zim, lookup, title_only).await?;
     // Try the collection's title completion only after a plain topic query has
     // no full-text matches; preserve deliberate quotes/operators unchanged.
-    if paths.is_empty() && has_xapian && crate::text::plain_query_words(query).is_some() {
+    if paths.is_empty() && has_xapian && crate::text::discovery_words(query).is_some() {
         title_only = true;
-        paths = search_paths(kiwix_search, zim, query, true).await?;
+        if let Ok(Ok(matches)) = timeout(
+            Duration::from_secs(2),
+            search_paths(kiwix_search, zim, query, true),
+        )
+        .await
+        {
+            paths = matches;
+        }
+    }
+    if title_only
+        && broad.is_some()
+        && paths.len() < MAX_RESULTS_PER_ZIM
+        && let Some(words) = crate::text::discovery_words(query)
+    {
+        // A title index expects a beginning, not an unordered topic. Look up
+        // a few main/related words too, keeping the original completions first.
+        // Optional lookups may add hits but never discard a successful sample.
+        let related = crate::text::related_words(&words);
+        let candidates = words
+            .into_iter()
+            .chain(related)
+            .filter(|word| !word.eq_ignore_ascii_case(query.trim()))
+            .take(3);
+        let mut completions = stream::iter(candidates)
+            .map(|word| async move {
+                timeout(
+                    Duration::from_secs(2),
+                    search_paths(kiwix_search, zim, &word, true),
+                )
+                .await
+            })
+            .buffered(2);
+        while let Some(result) = completions.next().await {
+            if let Ok(Ok(matches)) = result {
+                for path in matches {
+                    if !paths.contains(&path) {
+                        paths.push(path);
+                    }
+                }
+            }
+        }
     }
     let paths: Vec<String> = paths
         .into_iter()
@@ -276,15 +319,25 @@ async fn search_zim(
     };
 
     // Keep snippet subprocesses bounded even when an archive returns more hits.
-    let mut tasks = stream::iter(paths.into_iter().enumerate())
+    let mut tasks = stream::iter(paths.iter().cloned().enumerate())
         .map(|(position, path)| async move {
             let (title, snippet) = fetch_title_and_snippet(zimdump, zim, &path, query).await;
             (position, path, title, snippet)
         })
         .buffer_unordered(5);
     let mut resolved: Vec<(usize, String, String, Option<String>)> = Vec::new();
-    while let Some(hit) = tasks.next().await {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while let Ok(Some(hit)) = tokio::time::timeout_at(deadline, tasks.next()).await {
         resolved.push(hit);
+    }
+    drop(tasks);
+    // Slow excerpts must not turn a larger sample into a source timeout. Keep
+    // every confirmed hit, using its path-derived title when enrichment stalls.
+    for (position, path) in paths.into_iter().enumerate() {
+        if !resolved.iter().any(|(done, ..)| *done == position) {
+            let title = clean_title_from_path(&path);
+            resolved.push((position, path, title, None));
+        }
     }
     resolved.sort_by_key(|(position, ..)| *position);
     Ok(resolved

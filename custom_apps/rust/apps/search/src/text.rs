@@ -170,58 +170,120 @@ pub fn query_terms(query: &str) -> Vec<String> {
     terms
 }
 
-/// Automatic recovery is reserved for short, plain queries. Quotes, field
-/// syntax, wildcards and explicit boolean operators retain their meaning.
-pub fn plain_query_words(query: &str) -> Option<Vec<&str>> {
-    let words: Vec<_> = query.split_whitespace().collect();
-    if words.is_empty()
-        || words.len() > 12
-        || words.iter().any(|word| {
-            matches!(*word, "AND" | "OR" | "NOT" | "TO") || !word.chars().all(char::is_alphanumeric)
-        })
-    {
+/// Interpret ordinary prose without making punctuation into search operators.
+/// Deliberate quotes, fields, wildcards, exclusions and boolean queries bypass
+/// expansion. Formatted numeric references also retain their original meaning.
+pub fn discovery_words(query: &str) -> Option<Vec<String>> {
+    let query = query.trim();
+    const CONVERSATIONAL: &[&str] = &[
+        "what", "what's", "what’s", "how", "where", "when", "why", "which", "can", "could", "show",
+        "find", "tell", "please",
+    ];
+    let conversational = query
+        .split_whitespace()
+        .next()
+        .is_some_and(|word| CONVERSATIONAL.contains(&word.to_lowercase().as_str()));
+    let query = if conversational {
+        query.trim_end_matches(['?', '!', '.'])
+    } else {
+        query
+    };
+    let mut words = Vec::new();
+    let raw: Vec<_> = query.split_whitespace().collect();
+    if raw.is_empty() || raw.len() > 32 {
         return None;
     }
-    Some(words)
-}
-
-/// Ignore conversational filler during broad topic discovery. Keep the
-/// original words when every word is filler (e.g. a short work's title).
-pub fn discovery_words(query: &str) -> Option<Vec<&str>> {
-    let words = plain_query_words(query)?;
+    for word in raw {
+        if matches!(word, "AND" | "OR" | "NOT" | "TO")
+            || word.starts_with('-')
+            || word.trim_end_matches(['.', ',']).contains('.')
+            || word.chars().any(|ch| {
+                !ch.is_alphanumeric() && !matches!(ch, '-' | '–' | '.' | ',' | ';' | '\'' | '’')
+            })
+            || (word.chars().any(|ch| ch.is_numeric())
+                && word.chars().any(|ch| !ch.is_alphanumeric()))
+        {
+            return None;
+        }
+        for word in word
+            .split(|ch: char| !ch.is_alphanumeric() && !matches!(ch, '\'' | '’'))
+            .filter(|word| !word.is_empty())
+        {
+            let word = word.to_lowercase();
+            if !words.contains(&word) {
+                words.push(word);
+            }
+        }
+    }
+    // Remove conversational glue, not arbitrary query words. When a title is
+    // made entirely of these words, keep it searchable as entered.
+    const FILLER: &[&str] = &[
+        "a", "an", "the", "and", "or", "for", "of", "in", "on", "to", "with", "about", "find",
+        "show", "me", "how", "do", "does", "i", "can", "is", "are", "please", "tell", "you",
+        "could", "would", "what", "what's", "what’s", "where", "when", "why", "which", "some",
+        "any",
+    ];
     let meaningful: Vec<_> = words
         .iter()
-        .copied()
-        .filter(|word| {
-            !matches!(
-                word.to_lowercase().as_str(),
-                "a" | "an"
-                    | "the"
-                    | "for"
-                    | "of"
-                    | "in"
-                    | "on"
-                    | "to"
-                    | "with"
-                    | "about"
-                    | "find"
-                    | "show"
-                    | "me"
-                    | "how"
-                    | "do"
-                    | "does"
-                    | "i"
-                    | "can"
-                    | "is"
-                    | "are"
-            )
-        })
+        .filter(|word| !FILLER.contains(&word.as_str()))
+        .cloned()
         .collect();
-    Some(if meaningful.is_empty() {
+    let words = if meaningful.is_empty() {
         words
     } else {
         meaningful
-    })
+    };
+    (!words.is_empty() && words.len() <= 12).then_some(words)
+}
+
+/// Small, explicit families of common alternative wording. These are related
+/// search terms, not semantic equivalence: they receive less weight than the
+/// user's own words, never expand transitively and share a 12-term budget.
+pub fn related_words(words: &[String]) -> Vec<String> {
+    const FAMILIES: &[&[&str]] = &[
+        &["movie", "film", "cinema"],
+        &["tv", "television"],
+        &["photo", "photograph", "photography"],
+        &["car", "automobile", "vehicle"],
+        &["bike", "bicycle", "cycling"],
+        &["phone", "telephone"],
+        &["wifi", "wireless", "wlan"],
+        &["computer", "computing", "pc"],
+        &["invoice", "bill", "billing"],
+        &["manual", "handbook", "guide"],
+        &["resume", "cv"],
+        &["math", "maths", "mathematics"],
+        &["doctor", "physician"],
+        &["lawyer", "solicitor", "attorney"],
+        &["holiday", "vacation"],
+        &["beginner", "introductory", "introduction"],
+        &["garden", "gardening", "horticulture"],
+        &["cook", "cooking", "recipe", "culinary"],
+        &["groundwater", "aquifer", "hydrogeology"],
+        &["colour", "color"],
+        &["organisation", "organization"],
+        &["behaviour", "behavior"],
+    ];
+    let mut related = Vec::new();
+    for word in words {
+        let singular = word.strip_suffix('s').unwrap_or(word);
+        if let Some(family) = FAMILIES
+            .iter()
+            .find(|family| family.contains(&word.as_str()) || family.contains(&singular))
+        {
+            for alternative in *family {
+                if !words.iter().any(|word| word == alternative)
+                    && !related.iter().any(|word| word == alternative)
+                {
+                    related.push((*alternative).to_string());
+                    if related.len() == 12 {
+                        return related;
+                    }
+                }
+            }
+        }
+    }
+    related
 }
 
 /// Returns at most `limit` bytes of `text`, rounded down to a character
