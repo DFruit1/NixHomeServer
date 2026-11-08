@@ -7,7 +7,7 @@ use crate::text;
 use crate::timeutil::parse_date;
 
 /// Default page size requested from the Paperless search endpoint.
-pub const DEFAULT_MAX_RESULTS: usize = 20;
+pub const DEFAULT_MAX_RESULTS: usize = 100;
 /// Page size used when enumerating taxonomy objects.
 const TAXONOMY_PAGE_SIZE: usize = 100;
 /// Safety bound on taxonomy pagination so an oversized instance cannot make a
@@ -144,15 +144,36 @@ pub async fn search(
     config: &PaperlessSearchConfig,
     taxonomy: &Taxonomy,
     query: &str,
+    matching: crate::solr::MatchMode,
 ) -> Result<Vec<FederatedHit>, String> {
     let query = query.trim();
     if query.is_empty() {
         return Ok(Vec::new());
     }
+    let broad = (matching == crate::solr::MatchMode::Broad)
+        .then(|| crate::text::discovery_words(query))
+        .flatten()
+        .map(|words| {
+            words
+                .into_iter()
+                .map(|word| {
+                    if (4..=32).contains(&word.chars().count())
+                        && word.chars().all(char::is_alphabetic)
+                    {
+                        format!("({word} OR {word}*)")
+                    } else {
+                        word.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" OR ")
+        });
+    // Explicit queries pass through unchanged; broad terms use explicit OR.
+    let lookup = broad.as_deref().unwrap_or(query);
     let url = format!("{}/api/documents/", config.base_url);
     let page_size = config.max_results.max(1).to_string();
     let advanced = [
-        ("query", query),
+        ("query", lookup),
         ("page_size", page_size.as_str()),
         ("truncate_content", "true"),
     ];
@@ -411,13 +432,25 @@ mod tests {
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let mut config = config();
         config.base_url = format!("http://{address}/ok");
-        assert!(search(&config, &Taxonomy::default(), "test")
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(search(
+            &config,
+            &Taxonomy::default(),
+            "test",
+            crate::solr::MatchMode::Broad
+        )
+        .await
+        .unwrap()
+        .is_empty());
         for path in ["bad", "invalid"] {
             config.base_url = format!("http://{address}/{path}");
-            assert!(search(&config, &Taxonomy::default(), "test").await.is_err());
+            assert!(search(
+                &config,
+                &Taxonomy::default(),
+                "test",
+                crate::solr::MatchMode::Broad
+            )
+            .await
+            .is_err());
         }
         task.abort();
     }
@@ -618,7 +651,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_query_returns_no_hits() {
-        let hits = search(&config(), &taxonomy(), "   ")
+        let hits = search(&config(), &taxonomy(), "   ", crate::solr::MatchMode::Broad)
             .await
             .expect("empty query");
         assert!(hits.is_empty());

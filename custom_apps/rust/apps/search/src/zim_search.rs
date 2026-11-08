@@ -14,9 +14,9 @@ use crate::text::{html_title, snippet_from_html};
 /// bounds the number of in-flight `kiwix-search` subprocesses instead.
 const MAX_ZIM_CONCURRENCY: usize = 8;
 /// How many article hits are kept per ZIM.
-const MAX_RESULTS_PER_ZIM: usize = 5;
+const MAX_RESULTS_PER_ZIM: usize = 10;
 /// Total ZIM article hits returned for one query.
-const MAX_TOTAL_ZIM_RESULTS: usize = 20;
+const MAX_TOTAL_ZIM_RESULTS: usize = 100;
 /// Bound for a single kiwix-search invocation.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 /// Bound for a single title fetch.
@@ -131,6 +131,7 @@ pub async fn search(
     config: &ZimSearchConfig,
     entries: &[ZimIndexEntry],
     query: &str,
+    matching: crate::solr::MatchMode,
 ) -> ZimSearchResult {
     let query = query.trim();
     let (Some(kiwix_search), Some(zimdump)) = (&config.kiwix_search, &config.zimdump) else {
@@ -139,6 +140,13 @@ pub async fn search(
     if query.is_empty() {
         return ZimSearchResult::default();
     }
+
+    // Xapian supports explicit OR; title completion still uses the original
+    // text because it expects a title prefix rather than a boolean expression.
+    let broad = (matching == crate::solr::MatchMode::Broad)
+        .then(|| crate::text::discovery_words(query))
+        .flatten()
+        .map(|words| words.join(" OR "));
 
     // Refill each slot as it finishes. Waiting for an entire batch left slots
     // idle behind one slow archive and delayed archives later in the library.
@@ -153,22 +161,20 @@ pub async fn search(
             };
             let kiwix_search = kiwix_search.clone();
             let zimdump = zimdump.clone();
-            let zim = entry.path.clone();
-            let stem = entry.stem.clone();
-            let has_xapian = entry.has_xapian;
+            let entry = entry.clone();
             let app_base = config.app_base.clone();
             let query = query.to_string();
+            let broad = broad.clone();
             tasks.spawn(async move {
                 (
                     index,
                     search_zim(
                         &kiwix_search,
                         &zimdump,
-                        &zim,
-                        &stem,
+                        &entry,
                         &app_base,
                         &query,
-                        has_xapian,
+                        broad.as_deref(),
                     )
                     .await,
                 )
@@ -215,14 +221,21 @@ pub async fn search(
 async fn search_zim(
     kiwix_search: &Path,
     zimdump: &Path,
-    zim: &Path,
-    stem: &str,
+    entry: &ZimIndexEntry,
     app_base: &str,
     query: &str,
-    has_xapian: bool,
+    broad: Option<&str>,
 ) -> Result<Vec<ZimHit>, String> {
+    let zim = &entry.path;
+    let stem = &entry.stem;
+    let has_xapian = entry.has_xapian;
     let mut title_only = !has_xapian;
-    let mut paths = search_paths(kiwix_search, zim, query, title_only).await?;
+    let lookup = if title_only {
+        query
+    } else {
+        broad.unwrap_or(query)
+    };
+    let mut paths = search_paths(kiwix_search, zim, lookup, title_only).await?;
     // Try the collection's title completion only after a plain topic query has
     // no full-text matches; preserve deliberate quotes/operators unchanged.
     if paths.is_empty() && has_xapian && crate::text::plain_query_words(query).is_some() {
@@ -262,25 +275,16 @@ async fn search_zim(
         (title, icon)
     };
 
-    // Resolve titles and snippets concurrently; each fetch is a `zimdump show`
-    // subprocess, so serialising them let a single multi-hit archive dominate
-    // the query's latency.
-    let mut tasks = tokio::task::JoinSet::new();
-    for (position, path) in paths.into_iter().enumerate() {
-        let zimdump = zimdump.to_path_buf();
-        let zim = zim.to_path_buf();
-        let query = query.to_string();
-        tasks.spawn(async move {
-            let (title, snippet) = fetch_title_and_snippet(&zimdump, &zim, &path, &query).await;
+    // Keep snippet subprocesses bounded even when an archive returns more hits.
+    let mut tasks = stream::iter(paths.into_iter().enumerate())
+        .map(|(position, path)| async move {
+            let (title, snippet) = fetch_title_and_snippet(zimdump, zim, &path, query).await;
             (position, path, title, snippet)
-        });
-    }
+        })
+        .buffer_unordered(5);
     let mut resolved: Vec<(usize, String, String, Option<String>)> = Vec::new();
-    while let Some(joined) = tasks.join_next().await {
-        match joined {
-            Ok(hit) => resolved.push(hit),
-            Err(err) => eprintln!("search: ZIM snippet task failed: {err}"),
-        }
+    while let Some(hit) = tasks.next().await {
+        resolved.push(hit);
     }
     resolved.sort_by_key(|(position, ..)| *position);
     Ok(resolved
@@ -513,9 +517,12 @@ printf 'A/Article\n'
                 has_xapian: true,
             })
             .collect();
-        let result = timeout(Duration::from_secs(5), search(&config, &entries, "test"))
-            .await
-            .expect("the last archive must start while the first is still pending");
+        let result = timeout(
+            Duration::from_secs(5),
+            search(&config, &entries, "test", crate::solr::MatchMode::Broad),
+        )
+        .await
+        .expect("the last archive must start while the first is still pending");
         let events = std::fs::read_to_string(dir.path().join("events")).unwrap();
         let mut running = 0usize;
         let mut peak = 0;
@@ -530,13 +537,13 @@ printf 'A/Article\n'
         assert_eq!(running, 0);
         assert!(peak > 1 && peak <= MAX_ZIM_CONCURRENCY, "peak {peak}");
         assert_eq!(result.failed_archives, 0);
-        assert_eq!(result.hits.len(), MAX_TOTAL_ZIM_RESULTS);
+        assert_eq!(result.hits.len(), entries.len().min(MAX_TOTAL_ZIM_RESULTS));
         let archives: Vec<_> = result
             .hits
             .iter()
             .map(|hit| hit.metadata["archive"].as_str().unwrap())
             .collect();
-        let expected: Vec<_> = (0..20).map(|i| format!("{i:02}")).collect();
+        let expected: Vec<_> = (0..25).map(|i| format!("{i:02}")).collect();
         assert_eq!(archives, expected);
         assert!(
             dir.path().join("last-started").exists(),
@@ -557,7 +564,7 @@ printf 'A/Article\n'
             stem: "fixture".into(),
             has_xapian: true,
         }];
-        let result = search(&config, &entries, "test").await;
+        let result = search(&config, &entries, "test", crate::solr::MatchMode::Broad).await;
         assert!(result.hits.is_empty());
         assert_eq!(result.failed_archives, 1);
     }
@@ -646,7 +653,12 @@ printf 'A/Article\n'
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("runtime");
-        let hits = runtime.block_on(search(&config, &entries, "quantum"));
+        let hits = runtime.block_on(search(
+            &config,
+            &entries,
+            "quantum",
+            crate::solr::MatchMode::Broad,
+        ));
         assert!(hits.hits.is_empty());
     }
 }

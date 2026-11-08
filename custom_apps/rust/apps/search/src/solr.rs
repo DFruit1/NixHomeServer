@@ -24,10 +24,9 @@ const SOLR_COMMIT_WITHIN_MS: u64 = 10_000;
 /// The body is sent for full-text indexing only; the Solr schema stores it
 /// `stored="false"` so the authoritative copy lives solely in Postgres. Solr
 /// holds the inverted index, and snippets are rebuilt from Postgres at query
-/// time. The full per-key metadata bag also stays in Postgres. The one
-/// deliberate exception is the small, fixed set of normalised facets (owner,
-/// author, tag, series, year): those are copied into Solr dynamic fields
-/// because they are the dimensions the UI filters and facets on.
+/// time. The full per-key metadata bag also stays in Postgres. Bounded
+/// discovery text and normalised facets (owner, author, tag, series, year)
+/// are projected into dynamic fields for discovery, filtering and faceting.
 #[derive(Debug, Clone)]
 pub struct SolrDocument {
     pub id: String,
@@ -38,6 +37,7 @@ pub struct SolrDocument {
     pub kind: String,
     pub title: String,
     pub body: String,
+    pub discovery: String,
     pub content_type: String,
     pub origin_url: String,
     pub app_url: String,
@@ -59,12 +59,27 @@ pub struct SolrDocument {
 impl SolrDocument {
     pub fn from_record(source_id: &str, record: &db::DocumentRecord, owner: &str) -> Self {
         let extracted = facets::extract(&record.metadata, record.content_created_at);
+        // Rebuilds also project metadata from older records whose body predates
+        // metadata enrichment. Never index URL credentials/query strings or full
+        // filesystem paths; only the basename is useful for ordinary discovery.
+        let filename = std::path::Path::new(&record.file_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let mut discovery = format!("{filename}\n{}", filename.replace(['_', '-'], " "));
+        if let Ok(url) = url::Url::parse(&record.origin_url)
+            && let Some(host) = url.host_str()
+        {
+            discovery.push_str(&format!("\n{host}"));
+        }
+        crate::extract::append_search_metadata(&mut discovery, &record.metadata);
         Self {
             id: db::full_document_id(source_id, &record.external_id),
             source: source_id.to_string(),
             kind: record.kind.clone(),
             title: record.title.clone(),
             body: record.body_text.clone(),
+            discovery,
             content_type: record.content_type.clone(),
             origin_url: record.origin_url.clone(),
             app_url: record.app_url.clone(),
@@ -87,6 +102,7 @@ impl SolrDocument {
             "kind_s": self.kind,
             "title": self.title,
             "body": self.body,
+            "discovery_txt": self.discovery,
             "content_type": self.content_type,
             "origin_url": self.origin_url,
             "app_url": self.app_url,
@@ -139,7 +155,6 @@ pub struct SearchHit {
 pub struct SearchResponse {
     pub hits: Vec<SearchHit>,
     pub total: u64,
-    pub related: bool,
     pub source_facets: Vec<(String, u64)>,
     pub kind_facets: Vec<(String, u64)>,
     pub content_type_facets: Vec<(String, u64)>,
@@ -154,6 +169,7 @@ pub struct SearchResponse {
 /// an unset filter does not constrain results.
 #[derive(Debug, Clone, Default)]
 pub struct SearchFilters {
+    pub matching: MatchMode,
     pub source: Option<String>,
     pub kind: Option<String>,
     pub content_type: Option<String>,
@@ -536,30 +552,7 @@ impl SolrClient {
                     .await?
             }
         };
-        let exact = parse_search_response(&response)?;
-        // Use total, not an empty page: loading past the last exact hit must
-        // never substitute a different result set. Keep every filter/sort and
-        // page offset identical when recovering a truly empty plain query.
-        if exact.total == 0
-            && let Some(query) = close_word_query(query)
-        {
-            match self
-                .select(&query, selected_sources, filters, rows, offset, sort)
-                .await
-                .and_then(|response| parse_search_response(&response))
-            {
-                Ok(mut related) => {
-                    if related.total > 0 {
-                        related.related = true;
-                        return Ok(related);
-                    }
-                }
-                // Optional recovery failing does not invalidate the successful
-                // original query or turn its zero count into a source outage.
-                Err(_) => eprintln!("search: close-word lookup unavailable"),
-            }
-        }
-        Ok(exact)
+        parse_search_response(&response)
     }
 
     /// Issues one Solr select and returns the raw response, surfacing a Solr
@@ -574,8 +567,11 @@ impl SolrClient {
         offset: usize,
         sort: SortOrder,
     ) -> Result<Value, String> {
+        let broad = (filters.matching == MatchMode::Broad)
+            .then(|| broad_query(query))
+            .flatten();
         let mut params: Vec<(&str, String)> = vec![
-            ("q", query.to_string()),
+            ("q", broad.clone().unwrap_or_else(|| query.to_string())),
             // Stored fields only; the body is index-only and is enriched from
             // Postgres after the query.
             (
@@ -584,13 +580,13 @@ impl SolrClient {
                     .to_string(),
             ),
             ("defType", "edismax".to_string()),
-            ("qf", "title^4 body".to_string()),
+            ("qf", "title^6 body discovery_txt^2".to_string()),
             // Phrase boosts: documents whose title or body contains the query
             // terms adjacent (within the phrase slop `ps`) rank above documents
             // where the same terms appear scattered.
             ("pf", "title^8 body^2".to_string()),
             ("ps", "2".to_string()),
-            ("qs", "2".to_string()),
+            ("qs", "0".to_string()),
             ("tie", "0.1".to_string()),
             ("rows", rows.to_string()),
             ("start", offset.to_string()),
@@ -607,6 +603,22 @@ impl SolrClient {
             ("facet.limit", "50".to_string()),
             ("wt", "json".to_string()),
         ];
+        // Explicit syntax (quotes, fields, boolean operators) keeps Solr's
+        // normal semantics. Only generated broad clauses use OR by default.
+        if broad.is_some() {
+            params.push(("q.op", "OR".to_string()));
+            params.push(("mm", "1".to_string()));
+            params.push((
+                "bq",
+                format!(
+                    "title:{}~2^12 body:{}~2^3",
+                    solr_string_term(query),
+                    solr_string_term(query)
+                ),
+            ));
+        } else if filters.matching == MatchMode::All {
+            params.push(("q.op", "AND".to_string()));
+        }
         if let Some(clause) = sort.clause() {
             params.push(("sort", clause.to_string()));
         }
@@ -632,24 +644,40 @@ impl SolrClient {
     }
 }
 
-/// One conservative spelling/inflection retry, without relaxing query intent.
-/// Solr's documented ~1 syntax allows one edit; short words and identifiers
-/// remain literal, and the shared plain-query guard excludes advanced syntax.
-fn close_word_query(query: &str) -> Option<String> {
-    let words = crate::text::plain_query_words(query)?;
-    let mut changed = false;
-    let words: Vec<_> = words
-        .into_iter()
-        .map(|word| {
-            if (5..=32).contains(&word.chars().count()) && word.chars().all(char::is_alphabetic) {
-                changed = true;
-                format!("{}~1", word.to_lowercase())
-            } else {
-                word.to_string()
-            }
-        })
-        .collect();
-    changed.then(|| words.join(" "))
+/// Broad discovery is the default; strict searches remain available without
+/// making users learn operators. Existing explicit syntax is never expanded.
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MatchMode {
+    #[default]
+    Broad,
+    All,
+}
+
+fn broad_query(query: &str) -> Option<String> {
+    let words = crate::text::discovery_words(query)?;
+    Some(
+        words
+            .into_iter()
+            .map(|word| {
+                let word = word.to_lowercase();
+                let length = word.chars().count();
+                // Only alphabetic words expand: account numbers, dates and other
+                // identifiers stay exact. Bounds prevent costly very short wildcards.
+                if (4..=32).contains(&length) && word.chars().all(char::is_alphabetic) {
+                    let fuzzy = if length >= 5 {
+                        format!(" OR {word}~1^0.4")
+                    } else {
+                        String::new()
+                    };
+                    format!("({word}^4{fuzzy} OR {word}*^0.2)")
+                } else {
+                    word
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" OR "),
+    )
 }
 
 /// Escapes the Lucene/edismax syntax characters so a literal user query is
@@ -805,7 +833,6 @@ pub fn parse_search_response(response: &Value) -> Result<SearchResponse, String>
     Ok(SearchResponse {
         hits,
         total,
-        related: false,
         source_facets: facets_of("source"),
         kind_facets: facets_of("kind_s"),
         content_type_facets: facets_of("content_type"),
@@ -891,6 +918,7 @@ mod tests {
         );
 
         let filtered = SearchFilters {
+            matching: MatchMode::Broad,
             source: Some("mail-archive".to_string()),
             kind: Some("email".to_string()),
             content_type: Some("message/rfc822".to_string()),
@@ -948,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_indexes_body_and_normalised_facets_only() {
+    fn payload_indexes_body_and_discovery_with_normalised_facets() {
         let record = db::DocumentRecord {
             external_id: "1".to_string(),
             kind: "document".to_string(),

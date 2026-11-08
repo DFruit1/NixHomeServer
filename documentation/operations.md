@@ -2012,7 +2012,7 @@ last. Rows keep their focus and expanded Details as late matches arrive, and
 retries update changed content in place. A retry affects only its failed scope
 and retains the submitted query even if the search field contains a draft.
 
-Live sources return up to 20 hits each (Kiwix also limits to five per archive
+Live sources return up to 100 hits each (Kiwix also limits to 10 per archive
 and interleaves collections before applying the total limit);
 filters apply after that sample is retrieved. The main count says how many
 deduplicated matches are shown. **Search coverage** discloses the library total,
@@ -2026,16 +2026,31 @@ feed entries. Other content-kind filters continue to match their exact kind.
 Confirmed matches keep a short excerpt from the real body when an inflection or
 a title match has no literal body highlight. Excerpts remain bounded and escaped.
 
-If a library query has zero matches, Search makes at most one close-word retry
-for plain queries of up to six words. Alphabetic words of 5–32 characters allow
-one edit using [Solr's fuzzy term syntax](https://solr.apache.org/guide/solr/latest/query-guide/standard-query-parser.html#fuzzy-searches);
-short words and numeric identifiers stay literal. Quoted phrases, field syntax,
-wildcards and explicit boolean operators do not receive automatic recovery.
-Filters, source scope, sorting and pagination remain applied. Successful recovery
-sets `related: true` in the indexed/combined API response and the visible count
-says **includes close word matches**; Search coverage explains the retry. Existing
-exact matches always win, and an empty page beyond those matches never starts a
-related search. This needs no schema change or reindex.
+**Match → Broad** is the default. For plain queries of up to 12 words, Search
+ignores common conversational filler, matches any main word and includes word
+beginnings (4–32 alphabetic characters) and close spellings (5–32 characters,
+one edit). Literal terms receive more weight than expansions; title and phrase
+boosts favour specific matches. This uses [Solr's query modifiers](https://solr.apache.org/guide/solr/latest/query-guide/standard-query-parser.html#term-modifiers)
+in one stable query, so broad matches remain available even when exact matches
+exist, and pagination uses the same result set. Numeric identifiers stay literal.
+**All words** requires every word without automatic expansion. Double quotes
+require an exact phrase; explicit fields, wildcards and boolean operators retain
+their meaning in either mode. Search tips and Search coverage explain the modes.
+An empty All words search offers **Try broad matching**, retaining the query and
+filters. Search links and browser history include the selected matching mode.
+Paperless broad queries use OR and word-prefix matching; Kiwix full-text queries
+use OR, while title-only collections retain their native title completion.
+
+Library discovery also searches a bounded `discovery_txt` projection of the
+filename, original hostname and allowlisted descriptive metadata, including
+identifier dictionaries and document types. Filenames are searchable with their
+original punctuation and with underscores/hyphens treated as spaces. URL query
+strings, credentials and parent filesystem paths are excluded. The existing
+Solr `*_txt` dynamic field supplies the analyzer; no managed-schema change is
+needed. Index mapping revision 2 rebuilds this projection from the authoritative
+Postgres records during the next normal index pass, including older records
+whose bodies predate metadata enrichment. No document re-extraction is required
+for that projection rebuild.
 
 Filter options merge library facets with live sample facets, labelling their
 counts separately. Live counts ignore that dimension's own filter while
@@ -2044,7 +2059,8 @@ remain discoverable. Tag values remain structured internally: a comma inside
 a tag name does not split it into multiple tags.
 
 `GET /api/search` accepts the existing query/filter parameters plus optional
-`scope=indexed|live|all` (`all` is the backward-compatible default). The browser
+`scope=indexed|live|all` (`all` is the backward-compatible default) and
+`matching=broad|all` (`broad` is the default). The browser
 requests `indexed` and `live` concurrently. Live responses include `limited:
 true`, `hasMore: false`, `warnings: [{source, message}]`, and the same facet-field
 names as indexed responses; their `total` counts returned hits only. Combined

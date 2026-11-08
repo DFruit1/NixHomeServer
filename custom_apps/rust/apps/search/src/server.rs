@@ -210,6 +210,8 @@ async fn api_sources(State(state): State<AppState>, headers: HeaderMap) -> Respo
 #[derive(serde::Deserialize)]
 struct SearchParams {
     q: String,
+    #[serde(default)]
+    matching: crate::solr::MatchMode,
     #[serde(default, rename = "type")]
     content_type: Option<String>,
     source: Option<String>,
@@ -293,6 +295,7 @@ impl SearchParams {
     }
     fn filters(&self) -> crate::solr::SearchFilters {
         crate::solr::SearchFilters {
+            matching: self.matching,
             source: nonempty(self.source.as_deref()),
             kind: nonempty(self.kind.as_deref()),
             content_type: nonempty(self.content_type.as_deref()),
@@ -448,7 +451,7 @@ async fn api_search(
             Json(json!({
                 "hits": hits,
                 "total": response.total + federated.hits.len() as u64,
-                "related": response.related,
+                "related": false,
                 "hasMore": has_more,
                 "warnings": federated.warnings,
                 "sourceFacets": facet_json(&response.source_facets),
@@ -580,8 +583,8 @@ async fn federate_runtime_sources(
         .map(|source| async move {
             let operation = async {
                 match source.source_type.as_str() {
-                    "kiwix" => federate_kiwix(state, &source, query).await,
-                    _ => federate_paperless(state, &source, query).await,
+                    "kiwix" => federate_kiwix(state, &source, query, filters.matching).await,
+                    _ => federate_paperless(state, &source, query, filters.matching).await,
                 }
             };
             let result = tokio::time::timeout(std::time::Duration::from_secs(30), operation)
@@ -615,6 +618,7 @@ async fn federate_kiwix(
     state: &AppState,
     source: &crate::config::SourceConfig,
     query: &str,
+    matching: crate::solr::MatchMode,
 ) -> Result<LiveResults, String> {
     let Some(library_root) = source.setting_str("libraryRoot") else {
         return Err("The archive library is not configured.".to_string());
@@ -637,7 +641,7 @@ async fn federate_kiwix(
         .as_deref()
         .map(Vec::as_slice)
         .unwrap_or_default();
-    let result = zim_search::search(&config, entries, query).await;
+    let result = zim_search::search(&config, entries, query, matching).await;
     let mut warnings: Vec<_> = inventory
         .warning
         .into_iter()
@@ -664,6 +668,7 @@ async fn federate_paperless(
     state: &AppState,
     source: &crate::config::SourceConfig,
     query: &str,
+    matching: crate::solr::MatchMode,
 ) -> Result<LiveResults, String> {
     let Some(base_url) = source.setting_str("baseUrl") else {
         return Err("The document server is not configured.".to_string());
@@ -679,8 +684,13 @@ async fn federate_paperless(
         max_results: paperless_search::DEFAULT_MAX_RESULTS,
     };
     let taxonomy = paperless_taxonomy(state, &config).await;
-    let hits =
-        paperless_search::search(&config, &taxonomy.value.unwrap_or_default(), query).await?;
+    let hits = paperless_search::search(
+        &config,
+        &taxonomy.value.unwrap_or_default(),
+        query,
+        matching,
+    )
+    .await?;
     let warnings = taxonomy.warning.into_iter().map(|message| json!({"source": source.id, "message": format!("{message} Metadata filters and labels may be incomplete.")})).collect();
     Ok(LiveResults {
         hits,

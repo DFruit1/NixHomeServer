@@ -24,7 +24,8 @@ const ALLOW_MASS_DELETE_ENV: &str = "SEARCH_ALLOW_MASS_DELETE";
 /// changes: every source whose stored `index_version` differs is rebuilt from
 /// Postgres, so the change reaches documents the checksum-based pass would
 /// otherwise skip. 1 is the first revision (adds `kind_s`).
-const INDEX_VERSION: i64 = 1;
+// Revision 2 adds filename, host and descriptive-metadata discovery text.
+const INDEX_VERSION: i64 = 2;
 
 /// Guards against a source silently producing no documents at all — most often
 /// a mount that is present but empty, or an integration whose data was

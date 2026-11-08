@@ -175,7 +175,7 @@ pub fn query_terms(query: &str) -> Vec<String> {
 pub fn plain_query_words(query: &str) -> Option<Vec<&str>> {
     let words: Vec<_> = query.split_whitespace().collect();
     if words.is_empty()
-        || words.len() > 6
+        || words.len() > 12
         || words.iter().any(|word| {
             matches!(*word, "AND" | "OR" | "NOT" | "TO") || !word.chars().all(char::is_alphanumeric)
         })
@@ -183,6 +183,45 @@ pub fn plain_query_words(query: &str) -> Option<Vec<&str>> {
         return None;
     }
     Some(words)
+}
+
+/// Ignore conversational filler during broad topic discovery. Keep the
+/// original words when every word is filler (e.g. a short work's title).
+pub fn discovery_words(query: &str) -> Option<Vec<&str>> {
+    let words = plain_query_words(query)?;
+    let meaningful: Vec<_> = words
+        .iter()
+        .copied()
+        .filter(|word| {
+            !matches!(
+                word.to_lowercase().as_str(),
+                "a" | "an"
+                    | "the"
+                    | "for"
+                    | "of"
+                    | "in"
+                    | "on"
+                    | "to"
+                    | "with"
+                    | "about"
+                    | "find"
+                    | "show"
+                    | "me"
+                    | "how"
+                    | "do"
+                    | "does"
+                    | "i"
+                    | "can"
+                    | "is"
+                    | "are"
+            )
+        })
+        .collect();
+    Some(if meaningful.is_empty() {
+        words
+    } else {
+        meaningful
+    })
 }
 
 /// Returns at most `limit` bytes of `text`, rounded down to a character

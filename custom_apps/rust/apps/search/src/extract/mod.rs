@@ -80,7 +80,7 @@ impl ExtractedDocument {
     }
 }
 
-fn append_search_metadata(body: &mut String, metadata: &Value) {
+pub(crate) fn append_search_metadata(body: &mut String, metadata: &Value) {
     fn collect(value: &Value, values: &mut Vec<String>, remaining: &mut usize) {
         if *remaining <= 1 {
             return;
@@ -136,9 +136,22 @@ fn append_search_metadata(body: &mut String, metadata: &Value) {
         "identifiers",
         "attachments",
         "year",
+        "document_type",
+        "subject",
+        "subtitle",
     ] {
         if let Some(value) = metadata.get(key) {
-            collect(value, &mut values, &mut remaining);
+            // Identifier dictionaries use provider names as keys (isbn,
+            // doi, ...); their scalar values are the searchable references.
+            if key == "identifiers"
+                && let Some(identifiers) = value.as_object()
+            {
+                for identifier in identifiers.values() {
+                    collect(identifier, &mut values, &mut remaining);
+                }
+            } else {
+                collect(value, &mut values, &mut remaining);
+            }
         }
     }
     let context = values
