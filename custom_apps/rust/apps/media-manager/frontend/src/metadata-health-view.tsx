@@ -30,12 +30,13 @@ import {
   type HealthChoice,
   type HealthIssueEntry,
 } from "./health-decisions";
-import type { IconName } from "./root-types";
 import {
-  candidateSources,
-  sourceStatus,
-  sourceStatusClass,
-} from "./health-source-recommendation";
+  lookupHealthProvider,
+  healthLookupAvailability,
+  matchConfidence,
+} from "./health-provider-lookup";
+import type { IconName } from "./root-types";
+import { candidateSources, sourceStatus } from "./health-source-recommendation";
 
 interface HealthRoot {
   id: string;
@@ -242,6 +243,8 @@ function groupHeading(group: HealthGroup): {
 interface OnlineMetadataCandidate {
   title: string;
   values: Record<string, unknown>;
+  provider: ProviderDefinition;
+  providerIds: Record<string, unknown>;
 }
 
 function renderCandidateFields(fields: [string, unknown][]) {
@@ -261,6 +264,10 @@ function candidateValues(
   providerId: string,
   candidate: Record<string, unknown>,
 ) {
+  candidate = {
+    ...candidate,
+    ...((candidate.fields as Record<string, unknown>) ?? {}),
+  };
   const values: Record<string, unknown> = {};
   const put = (field: string, value: unknown) => {
     if (
@@ -275,7 +282,7 @@ function candidateValues(
     keys
       .map((key) => candidate[key])
       .find((value) => value != null && value !== "");
-  put("title", first("title", "name", "editionTitle"));
+  put("title", first("title", "name", "editionTitle", "fileName"));
   put("year", first("year", "publishYear", "firstPublishYear"));
   put("description", candidate.overview ?? candidate.description);
   put("authors", candidate.artist ?? candidate.authors);
@@ -286,6 +293,18 @@ function candidateValues(
   put("language", Array.isArray(languages) ? languages[0] : candidate.language);
   put("premiereDate", first("releaseDate", "publishDate"));
   put("isbn", first("isbn", "isbn13", "isbn10"));
+  for (const field of [
+    "narrators",
+    "series",
+    "volumeNumber",
+    "trackNumber",
+    "subtitle",
+  ])
+    put(
+      field,
+      candidate[field] ??
+        (field === "subtitle" ? candidate.fileName : undefined),
+    );
   const title = displayValue(values.title);
   return title === "Not set" ? undefined : { title, values };
 }
@@ -306,91 +325,77 @@ const ExternalProvidersDialog = component$<{
     error: "",
     candidates: [] as OnlineMetadataCandidate[],
     query: props.query,
+    context: {} as Record<string, unknown>,
+    statuses: {} as Record<string, string>,
   });
   const recommended = candidateSources(
     props.providers,
     props.mediaKind,
     props.issue.field ?? "",
   );
-  const lookupSupported = [
-    "tmdb",
-    "musicbrainz",
-    "open-library",
-    "google-books",
-  ].includes(props.primary.id);
-  const searchable =
-    lookupSupported && props.primary.implementationStatus === "active";
-
+  const searchable = recommended.length > 0;
   const search = $(async () => {
-    if (!state.query.trim()) return;
+    if (!state.query.trim() || state.loading) return;
+    const itemId = props.itemId;
+    const initialQuery = props.query;
+    const query = state.query.trim();
     state.loading = true;
     state.error = "";
     state.candidates = [];
     try {
-      let raw: Record<string, unknown>[] = [];
-      switch (props.primary.id) {
-        case "tmdb": {
-          const result = await api<{ results: Record<string, unknown>[] }>(
-            "/provider-lookups/tmdb/search",
-            {
-              method: "POST",
-              body: JSON.stringify({ query: state.query, mediaType: "auto" }),
-            },
-          );
-          raw = result.results;
-          break;
-        }
-        case "musicbrainz": {
-          const result = await api<{ candidates: Record<string, unknown>[] }>(
-            `/items/${encodeURIComponent(props.itemId)}/metadata/lookup`,
-            {
-              method: "POST",
-              body: JSON.stringify({ mode: "search", title: state.query }),
-            },
-          );
-          raw = result.candidates;
-          break;
-        }
-        case "open-library": {
-          const result = await api<{ results: Record<string, unknown>[] }>(
-            "/provider-lookups/open-library/search",
-            {
-              method: "POST",
-              body: JSON.stringify({ query: state.query }),
-            },
-          );
-          raw = result.results;
-          break;
-        }
-        case "google-books": {
-          const result = await api<{ results: Record<string, unknown>[] }>(
-            "/provider-lookups/google-books/search",
-            {
-              method: "POST",
-              body: JSON.stringify({ query: state.query }),
-            },
-          );
-          raw = result.results;
-          break;
-        }
-        default:
-          throw new Error(
-            `${props.primary.name} lookup is not available here.`,
-          );
-      }
-      state.candidates = raw.flatMap((candidate) => {
-        const normalized = candidateValues(props.primary.id, candidate);
-        return normalized ? [normalized] : [];
-      });
-    } catch (error) {
-      state.error = readableError(error);
-    } finally {
-      state.loading = false;
+      // Metadata supplies edition identifiers and evidence for matching.
+      state.context = await api<Record<string, unknown>>(
+        `/items/${encodeURIComponent(itemId)}/metadata`,
+      );
+    } catch {
+      state.context = { title: initialQuery };
     }
+    state.context = {
+      ...state.context,
+      title: state.context.title || initialQuery,
+    };
+    await Promise.all(
+      recommended.map(async (provider) => {
+        const unavailable = healthLookupAvailability(provider, state.context);
+        if (unavailable) {
+          state.statuses[provider.id] = unavailable;
+          return;
+        }
+        state.statuses[provider.id] = "Searching…";
+        try {
+          const raw = await lookupHealthProvider(
+            provider.id,
+            query,
+            itemId,
+            state.context,
+          );
+          const candidates = raw.flatMap((candidate) => {
+            const normalized = candidateValues(provider.id, candidate);
+            return normalized
+              ? [
+                  {
+                    ...normalized,
+                    provider,
+                    providerIds: (candidate.providerIds ?? {}) as Record<
+                      string,
+                      unknown
+                    >,
+                  },
+                ]
+              : [];
+          });
+          state.candidates = [...state.candidates, ...candidates];
+          state.statuses[provider.id] = candidates.length ? "" : "No matches";
+        } catch (error) {
+          state.statuses[provider.id] = readableError(error);
+        }
+      }),
+    );
+    state.loading = false;
   });
 
   useVisibleTask$(() => {
-    if (searchable) void search();
+    void search();
   });
 
   return (
@@ -418,7 +423,8 @@ const ExternalProvidersDialog = component$<{
           {searchable ? (
             <>
               <p class="health-lookup-note">
-                Selections are for comparison only; edit in Review metadata.
+                Confidence is a subjective match estimate, not a verified
+                probability. Select a value to compare; edit in Review metadata.
               </p>
               <form
                 class="health-lookup-query"
@@ -426,7 +432,7 @@ const ExternalProvidersDialog = component$<{
                 onSubmit$={search}
               >
                 <label>
-                  <span>Search {props.primary.name}</span>
+                  <span>Search all sources</span>
                   <input
                     value={state.query}
                     maxLength={500}
@@ -443,7 +449,7 @@ const ExternalProvidersDialog = component$<{
               </form>
               {state.loading ? (
                 <p role="status" aria-busy="true">
-                  Searching {props.primary.name}…
+                  Searching available sources…
                 </p>
               ) : null}
               {state.error && (
@@ -457,62 +463,113 @@ const ExternalProvidersDialog = component$<{
                   <p>No matching online metadata was found.</p>
                 )}
               <ul class="health-lookup-results">
-                {state.candidates.map((candidate, index) => {
-                  // The title already identifies the result. Keep the requested
-                  // field and edition identifiers visible; retain other detail.
-                  const fields = Object.entries(candidate.values).filter(
-                    ([field]) => field !== "title",
-                  );
-                  const primaryFields = new Set([
-                    props.issue.field,
-                    "authors",
-                    "year",
-                    "publisher",
-                    "isbn",
-                  ]);
-                  const extra = fields.filter(
-                    ([field]) => !primaryFields.has(field),
-                  );
-                  return (
-                    <li key={`${candidate.title}-${index}`}>
-                      <strong>{candidate.title}</strong>
-                      {renderCandidateFields(
-                        fields.filter(([field]) => primaryFields.has(field)),
-                      )}
-                      {extra.length > 0 && (
+                {state.candidates
+                  .slice()
+                  .sort(
+                    (a, b) =>
+                      matchConfidence(
+                        b,
+                        state.context,
+                        props.issue.field ?? "",
+                        state.candidates,
+                      ).score -
+                      matchConfidence(
+                        a,
+                        state.context,
+                        props.issue.field ?? "",
+                        state.candidates,
+                      ).score,
+                  )
+                  .map((candidate, index) => {
+                    const confidence = matchConfidence(
+                      candidate,
+                      state.context,
+                      props.issue.field ?? "",
+                      state.candidates,
+                    );
+                    // The title already identifies the result. Keep the requested
+                    // field and edition identifiers visible; retain other detail.
+                    const fields = Object.entries(candidate.values).filter(
+                      ([field]) => field !== "title",
+                    );
+                    const primaryFields = new Set([
+                      props.issue.field,
+                      "authors",
+                      "year",
+                      "publisher",
+                      "isbn",
+                    ]);
+                    const extra = fields.filter(
+                      ([field]) => !primaryFields.has(field),
+                    );
+                    return (
+                      <li key={`${candidate.title}-${index}`}>
+                        <div class="health-provider-summary">
+                          {candidate.provider.logoUrl && (
+                            <img
+                              src={candidate.provider.logoUrl}
+                              width="24"
+                              height="24"
+                              alt=""
+                            />
+                          )}
+                          <strong>{candidate.provider.name}</strong>
+                          <span
+                            title={confidence.reasons.join("; ")}
+                            tabIndex={0}
+                            aria-label={`Estimated confidence ${confidence.score} percent. ${confidence.reasons.join("; ")}`}
+                          >
+                            {confidence.score}% estimate
+                          </span>
+                        </div>
                         <details class="health-lookup-details">
-                          <summary>More metadata</summary>
-                          {renderCandidateFields(extra)}
+                          <summary>Confidence evidence</summary>
+                          <ul>
+                            {confidence.reasons.map((reason) => (
+                              <li key={reason}>{reason}</li>
+                            ))}
+                          </ul>
                         </details>
-                      )}
-                      {props.issue.field &&
-                      props.issue.field in candidate.values ? (
-                        <button
-                          type="button"
-                          class="secondary-button health-lookup-select"
-                          onClick$={() => {
-                            props.onSelect$(
-                              candidate.values[props.issue.field!],
-                              props.primary.name,
-                            );
-                            props.onClose$();
-                          }}
-                        >
-                          Compare{" "}
-                          {metadataFieldLabel(props.issue.field).toLowerCase()}
-                        </button>
-                      ) : (
-                        <small>
-                          This result has no{" "}
-                          {metadataFieldLabel(
-                            props.issue.field ?? "matching",
-                          ).toLowerCase()}{" "}
-                          value.
-                        </small>
-                      )}
-                    </li>
-                  );
-                })}
+                        <strong>{candidate.title}</strong>
+                        {renderCandidateFields(
+                          fields.filter(([field]) => primaryFields.has(field)),
+                        )}
+                        {extra.length > 0 && (
+                          <details class="health-lookup-details">
+                            <summary>More metadata</summary>
+                            {renderCandidateFields(extra)}
+                          </details>
+                        )}
+                        {props.issue.field &&
+                        props.issue.field in candidate.values ? (
+                          <button
+                            type="button"
+                            class="secondary-button health-lookup-select"
+                            onClick$={() => {
+                              props.onSelect$(
+                                candidate.values[props.issue.field!],
+                                candidate.provider.name,
+                              );
+                              props.onClose$();
+                            }}
+                          >
+                            Compare{" "}
+                            {metadataFieldLabel(
+                              props.issue.field,
+                            ).toLowerCase()}
+                          </button>
+                        ) : (
+                          <small>
+                            This result has no{" "}
+                            {metadataFieldLabel(
+                              props.issue.field ?? "matching",
+                            ).toLowerCase()}{" "}
+                            value.
+                          </small>
+                        )}
+                      </li>
+                    );
+                  })}
               </ul>
             </>
           ) : (
@@ -531,40 +588,33 @@ const ExternalProvidersDialog = component$<{
             </p>
           )}
           <ul class="health-source-list">
-            {recommended.map((provider) => {
-              const status = sourceStatus(provider);
-              return (
+            {recommended
+              .filter(
+                (provider) =>
+                  state.statuses[provider.id] ||
+                  !state.candidates.some(
+                    (candidate) => candidate.provider.id === provider.id,
+                  ),
+              )
+              .map((provider) => (
                 <li key={provider.id}>
-                  <div class="health-source-heading">
+                  <div class="health-provider-summary">
+                    {provider.logoUrl && (
+                      <img
+                        src={provider.logoUrl}
+                        width="24"
+                        height="24"
+                        alt=""
+                      />
+                    )}
                     <strong>{provider.name}</strong>
-                    <span class={sourceStatusClass(status)}>
-                      {status.label}
+                    <span>
+                      {state.statuses[provider.id] ??
+                        sourceStatus(provider).label}
                     </span>
                   </div>
-                  <p>{provider.notes}</p>
-                  <div class="health-source-links">
-                    <a
-                      href={provider.documentationUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Documentation
-                    </a>
-                    {provider.setupUrl !== provider.documentationUrl && (
-                      <a
-                        href={provider.setupUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {provider.setupKind === "public"
-                          ? "Provider website"
-                          : "Provider setup"}
-                      </a>
-                    )}
-                  </div>
                 </li>
-              );
-            })}
+              ))}
           </ul>
           <div class="health-source-manage health-source-links">
             <a
@@ -865,10 +915,10 @@ const HealthIssueReview = component$<{
           album,
         );
       } else {
-        for (const entry of eligible) {
-          const saved =
-            choice === "current" &&
-            (!compares || isUnset(entry.issue.currentValue))
+        const saved = await Promise.all(
+          eligible.map(async (entry) => {
+            return choice === "current" &&
+              (!compares || isUnset(entry.issue.currentValue))
               ? await props.onDecision$(entry, choice)
               : await props.onApply$(
                   selected(entry),
@@ -876,8 +926,11 @@ const HealthIssueReview = component$<{
                   entry.issue,
                   entry.target,
                 );
-          if (!saved) break;
-        }
+          }),
+        );
+        if (saved.some((result) => !result))
+          bulkStatus.value =
+            "Some files could not be saved. Their issues remain available to retry.";
       }
       if (eligible.length < entries.length)
         bulkStatus.value =
@@ -1224,6 +1277,8 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
   >({});
   const feedback = useStore({ error: "", notice: "" });
   const applyingValue = useSignal(false);
+  const pendingApplies = useSignal(0);
+  const pendingTargets = useStore<Record<string, boolean>>({});
   const rememberDecision$ = $(
     async (entry: HealthIssueEntry, choice: HealthChoice, planId?: string) => {
       try {
@@ -1331,7 +1386,8 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
       target: MetadataHealthResult,
       album?: AlbumTarget,
     ) => {
-      if (!props.canEdit || applyingValue.value) return false;
+      const targetKey = album ? `${album.rootId}:${album.path}` : target.itemId;
+      if (!props.canEdit || pendingTargets[targetKey]) return false;
       const field = issue.field ?? "";
       if (!field || !isSettableField(field)) return false;
       if (isUnset(value)) {
@@ -1343,6 +1399,8 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
         )
           return false;
       }
+      pendingTargets[targetKey] = true;
+      pendingApplies.value++;
       applyingValue.value = true;
       feedback.error = "";
       feedback.notice = "";
@@ -1400,23 +1458,25 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
                   .map((candidate) => ({ issue: candidate, target: result })),
               )
           : [{ issue, target }];
-        for (const entry of decided) {
-          if (
-            !(await rememberDecision$(
+        const saved = await Promise.all(
+          decided.map((entry) =>
+            rememberDecision$(
               entry,
               origin === "Current" ? "current" : "proposed",
               preview.id,
-            ))
-          )
-            return false;
-        }
+            ),
+          ),
+        );
+        if (saved.some((result) => !result)) return false;
         feedback.notice = `The ${origin.toLowerCase()} “${field}” value was queued for ${album ? "this album" : "this file"}. See Activity to revisit the decision.`;
         return true;
       } catch (error) {
         feedback.error = readableError(error);
         return false;
       } finally {
-        applyingValue.value = false;
+        delete pendingTargets[targetKey];
+        pendingApplies.value--;
+        applyingValue.value = pendingApplies.value > 0;
       }
     },
   );

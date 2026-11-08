@@ -382,18 +382,15 @@ it("names the recommended source for a missing field and lists the alternatives"
     screen
       .querySelector('[role="dialog"] .health-lookup-note')
       ?.textContent?.replace(/\s+/g, " "),
-  ).toBe("Selections are for comparison only; edit in Review metadata.");
+  ).toBe(
+    "Confidence is a subjective match estimate, not a verified probability. Select a value to compare; edit in Review metadata.",
+  );
   const dialog = screen.querySelector('[role="dialog"]');
   expect(dialog?.textContent).toContain("Find from External Providers");
   expect(dialog?.textContent).toContain("Author or creator is missing");
   expect(dialog?.textContent).toContain("Open Library");
-  expect(dialog?.textContent).toContain("No setup needed");
   expect(dialog?.textContent).toContain("Audnexus");
   expect(dialog?.textContent).toContain("Coming soon");
-  const documentation = screen.querySelector(
-    '.health-source-links a[href="https://api.audnex.us/"]',
-  );
-  expect(documentation).toBeTruthy();
   await userEvent(
     screen.querySelector('[role="dialog"] .dialog-close'),
     "click",

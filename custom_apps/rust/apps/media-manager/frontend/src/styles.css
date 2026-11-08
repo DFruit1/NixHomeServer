@@ -7765,3 +7765,20 @@ a:focus-visible {
     padding-bottom: 240px;
   }
 }
+
+.health-provider-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+.health-provider-summary img {
+  object-fit: contain;
+  flex-shrink: 0;
+}
+.health-provider-summary span {
+  color: var(--ink-soft);
+  font-size: 14px;
+}
