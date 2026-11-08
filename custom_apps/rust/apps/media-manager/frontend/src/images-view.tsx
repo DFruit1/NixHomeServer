@@ -4,7 +4,8 @@ import type {
   EyeAnalysis,
   ImmichAnalysisResponse,
   ImmichImage,
-  ImmichImagePage,
+  ImmichIndexedPage,
+  ImmichIndexStatus,
   ImmichImageResponse,
 } from "./api-contract.generated";
 import { Icon } from "./icon";
@@ -22,17 +23,31 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
     items: [] as ImmichImage[],
     selected: undefined as ImmichImage | undefined,
     analysis: undefined as EyeAnalysis | undefined,
-    checked: [] as string[],
+    filters: {
+      tags: "",
+      tagMode: "all",
+      confidence: 50,
+      minAesthetic: 0,
+      minKeeper: 0,
+      minCover: 0,
+      sort: "capturedAt",
+      direction: "desc",
+      sortTag: "",
+      aestheticWeight: 1,
+      keeperWeight: 1,
+      coverWeight: 1,
+    },
+    appliedFilters: "",
+    index: undefined as ImmichIndexStatus | undefined,
     query: "",
     appliedQuery: "",
     nextPage: null as number | null,
-    canTag: false,
     loading: true,
     loadingMore: false,
     selecting: false,
     analyzing: false,
-    saving: false,
     selection: 0,
+    listing: 0,
     error: "",
     detailError: "",
     setupRequired: false,
@@ -43,7 +58,9 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
   });
 
   const load = $(async (more = false) => {
-    if (state.loadingMore || (!state.nextPage && more)) return;
+    if (state.loadingMore || (more && (state.loading || !state.nextPage)))
+      return;
+    const listing = ++state.listing;
     if (more) state.loadingMore = true;
     else state.loading = true;
     state.error = "";
@@ -54,9 +71,35 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
         page: String(more ? state.nextPage : 1),
         query,
       });
-      const result = await api<ImmichImagePage>(
-        `/provider-lookups/immich/images?${params}`,
+      const filters = more
+        ? new URLSearchParams(state.appliedFilters)
+        : new URLSearchParams(
+            Object.entries(state.filters).map(([key, value]) => [
+              key,
+              ["confidence", "minAesthetic", "minKeeper", "minCover"].includes(
+                key,
+              )
+                ? String(Number(value) / 100)
+                : String(value),
+            ]),
+          );
+      for (const key of ["tags", "sortTag"]) {
+        const value = filters.get(key) ?? "";
+        filters.set(
+          key,
+          value
+            .split(",")
+            .map((tag) => tag.trim().toLowerCase().replaceAll(/\s+/g, "_"))
+            .join(","),
+        );
+      }
+      filters.forEach((value, key) => params.set(key, value));
+      const result = await api<ImmichIndexedPage>(
+        `/provider-lookups/immich/images/index?${params}`,
       );
+      if (listing !== state.listing) return;
+      state.appliedFilters = filters.toString();
+      state.index = result.index;
       state.items = more
         ? [
             ...state.items,
@@ -67,8 +110,8 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
         : result.items;
       state.appliedQuery = query;
       state.nextPage = result.nextPage;
-      state.canTag = result.canTag;
     } catch (error) {
+      if (listing !== state.listing) return;
       state.error = readableError(error);
       state.setupRequired =
         error instanceof ApiError &&
@@ -79,8 +122,10 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
         error instanceof ApiError &&
         error.code === "immich_provisioning_pending";
     } finally {
-      state.loading = false;
-      state.loadingMore = false;
+      if (listing === state.listing) {
+        state.loading = false;
+        state.loadingMore = false;
+      }
     }
   });
   useTask$(async () => {
@@ -88,11 +133,10 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
   });
 
   const choose = $(async (image: ImmichImage) => {
-    if (state.analyzing || state.saving) return;
+    if (state.analyzing) return;
     const selection = ++state.selection;
     state.selected = image;
-    state.analysis = undefined;
-    state.checked = [];
+    state.analysis = image.analysis ?? undefined;
     state.detailError = "";
     state.notice = "";
     state.imageFailed = false;
@@ -105,7 +149,10 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
     }
     try {
       const response = await api<ImmichImageResponse>(photoPath(image.id));
-      if (selection === state.selection) state.selected = response.image;
+      if (selection === state.selection) {
+        state.selected = response.image;
+        state.analysis = response.analysis ?? undefined;
+      }
     } catch (error) {
       if (selection === state.selection)
         state.detailError = readableError(error);
@@ -116,7 +163,7 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
 
   const analyze = $(async () => {
     const image = state.selected;
-    if (!image || state.analyzing || state.saving || state.selecting) return;
+    if (!image || state.analyzing || state.selecting) return;
     state.analyzing = true;
     state.detailError = "";
     state.notice = "";
@@ -128,15 +175,7 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
       if (response.assetId !== image.id || state.selected?.id !== image.id)
         return;
       state.analysis = response.analysis;
-      state.checked = response.analysis.suggestions
-        .filter(
-          (suggestion) =>
-            !state.selected?.tags.some(
-              (tag) => tag.value === `EYE/${suggestion.tag}`,
-            ),
-        )
-        .slice(0, 32)
-        .map((suggestion) => suggestion.tag);
+      state.notice = "Analysis saved in Media Manager.";
     } catch (error) {
       state.detailError = readableError(error);
     } finally {
@@ -144,41 +183,7 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
     }
   });
 
-  const save = $(async () => {
-    const image = state.selected;
-    if (
-      !image ||
-      !state.canTag ||
-      !state.checked.length ||
-      state.saving ||
-      state.analyzing
-    )
-      return;
-    state.saving = true;
-    state.detailError = "";
-    state.notice = "";
-    try {
-      const response = await api<ImmichImageResponse>(
-        `${photoPath(image.id)}/tags`,
-        {
-          method: "POST",
-          body: JSON.stringify({ tags: state.checked }),
-        },
-      );
-      if (state.selected?.id !== image.id) return;
-      state.selected = response.image;
-      const index = state.items.findIndex((item) => item.id === image.id);
-      if (index >= 0) state.items[index] = response.image;
-      state.checked = [];
-      state.notice = "Tags added in Immich.";
-    } catch (error) {
-      state.detailError = readableError(error);
-    } finally {
-      state.saving = false;
-    }
-  });
-
-  const busy = state.analyzing || state.saving;
+  const busy = state.analyzing;
   return (
     <div class="images-workspace">
       <section class="images-browser" aria-label="Immich photos">
@@ -187,7 +192,7 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
           preventdefault:submit
           onSubmit$={() => load()}
         >
-          <label for="image-search">Find a photo by filename</label>
+          <label for="image-search">Filename</label>
           <div class="images-search-controls">
             <input
               id="image-search"
@@ -195,7 +200,7 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
               maxLength={200}
               value={state.query}
               onInput$={(_, input) => (state.query = input.value)}
-              placeholder="Search Immich filenames"
+              placeholder="Search filenames"
             />
             <button
               class="secondary-button"
@@ -205,7 +210,141 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
               Search
             </button>
           </div>
+          <div class="images-filter-row">
+            <label>
+              Tags (comma separated)
+              <input
+                type="text"
+                maxLength={3104}
+                value={state.filters.tags}
+                placeholder="beach, people"
+                onInput$={(_, el) => (state.filters.tags = el.value)}
+              />
+            </label>
+            <label>
+              Match tags
+              <select
+                value={state.filters.tagMode}
+                onChange$={(_, el) => (state.filters.tagMode = el.value)}
+              >
+                <option value="all">All tags</option>
+                <option value="any">Any tag</option>
+              </select>
+            </label>
+            <label>
+              Sort by
+              <select
+                value={state.filters.sort}
+                onChange$={(_, el) => (state.filters.sort = el.value)}
+              >
+                <option value="capturedAt">Date taken</option>
+                <option value="aesthetic">Aesthetic</option>
+                <option value="keeper">Keeper</option>
+                <option value="cover">Cover</option>
+                <option value="scores">Combined scores</option>
+                <option value="tag">Tag confidence</option>
+              </select>
+            </label>
+            <label>
+              Order
+              <select
+                value={state.filters.direction}
+                onChange$={(_, el) => (state.filters.direction = el.value)}
+              >
+                <option value="desc">Highest / newest first</option>
+                <option value="asc">Lowest / oldest first</option>
+              </select>
+            </label>
+          </div>
+          {state.filters.sort === "tag" && (
+            <label>
+              Tag to sort by
+              <input
+                type="text"
+                required
+                pattern="[a-z0-9_]+"
+                maxLength={96}
+                value={state.filters.sortTag}
+                placeholder="beach"
+                onInput$={(_, el) => (state.filters.sortTag = el.value)}
+              />
+            </label>
+          )}
+          {state.filters.sort === "scores" && (
+            <fieldset class="images-filter-row">
+              <legend>Score weights</legend>
+              {(
+                ["aestheticWeight", "keeperWeight", "coverWeight"] as const
+              ).map((key) => (
+                <label key={key}>
+                  {key.replace("Weight", "")}
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step="any"
+                    value={state.filters[key]}
+                    onInput$={(_, el) =>
+                      (state.filters[key] = Number(el.value))
+                    }
+                  />
+                </label>
+              ))}
+              <p class="muted">
+                Higher weights have more influence. Use 0 to ignore a score; at
+                least one must be above 0.
+              </p>
+            </fieldset>
+          )}
+          <details class="images-filter-details">
+            <summary>Minimum scores and confidence</summary>
+            <div class="images-filter-row">
+              {(
+                ["minAesthetic", "minKeeper", "minCover", "confidence"] as const
+              ).map((key) => (
+                <label key={key}>
+                  {key === "confidence"
+                    ? "Tag confidence (%)"
+                    : `${key.replace("min", "")} (0–100)`}
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={state.filters[key]}
+                    onInput$={(_, el) =>
+                      (state.filters[key] = Number(el.value))
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+          </details>
         </form>
+        {state.index && (
+          <div class="images-index-status" role="status">
+            <p>
+              {state.index.analyzed} of {state.index.discovered} discovered
+              photos analyzed
+              {state.index.error
+                ? " · Retry scheduled"
+                : state.index.scanning
+                  ? " · Indexing…"
+                  : " · Watching for new photos"}
+              {state.index.failed
+                ? ` · ${state.index.failed} awaiting retry`
+                : ""}
+            </p>
+            {state.index.error && <p>{state.index.error}</p>}
+            <button
+              type="button"
+              class="secondary-button"
+              disabled={state.loading || state.loadingMore}
+              onClick$={() => load()}
+            >
+              Refresh results
+            </button>
+          </div>
+        )}
         {state.error && (
           <div class="message error" role="alert">
             <span>{state.error}</span>
@@ -250,8 +389,8 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
                 <h2>No photos found</h2>
                 <p>
                   {state.appliedQuery
-                    ? "Try another filename."
-                    : "Photos in your Immich timeline will appear here."}
+                    ? "Try different tags, scores or a filename."
+                    : "Photos appear as background indexing discovers your library. Refresh to see progress."}
                 </p>
               </div>
             )}
@@ -348,8 +487,7 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
               <div class="images-empty" role="status">
                 <Icon name="image" size={32} />
                 <p>
-                  The preview is unavailable. You can still refresh this photo's
-                  tags.
+                  The preview is unavailable. Saved analysis is shown below.
                 </p>
               </div>
             ) : (
@@ -380,7 +518,7 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
                 disabled={busy || state.selecting}
                 onClick$={() => state.selected && choose(state.selected)}
               >
-                Refresh tags
+                Refresh analysis
               </button>
             </div>
             {state.detailError && (
@@ -393,23 +531,9 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
                 <span>{state.notice}</span>
               </div>
             )}
-            <section class="image-current-tags">
-              <h3>Tags in Immich</h3>
-              {state.selecting ? (
-                <p role="status">Loading current tags…</p>
-              ) : state.selected.tags.length ? (
-                <ul class="image-tag-list">
-                  {state.selected.tags.map((tag) => (
-                    <li key={tag.id}>{tag.value}</li>
-                  ))}
-                </ul>
-              ) : (
-                <p class="muted">No tags yet.</p>
-              )}
-            </section>
             {state.analysis && (
               <section class="image-analysis" aria-label="EYE analysis">
-                <h3>EYE suggestions</h3>
+                <h3>Saved analysis</h3>
                 <dl class="image-scores">
                   {(["aesthetic", "keeper", "cover"] as const).map((score) => (
                     <div key={score}>
@@ -428,71 +552,30 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
                   ))}
                 </dl>
                 <p class="muted">
-                  Relative scores from EYE; higher is better. Review predictions
-                  before adding tags.
+                  Relative scores from EYE; higher is better. Tags and scores
+                  are saved only in Media Manager.
                 </p>
-                <fieldset
-                  class="image-suggestions"
-                  disabled={state.saving || !state.canTag}
-                >
-                  <legend>Select up to 32 tags to add</legend>
-                  {state.analysis.suggestions.map((suggestion) => {
-                    const present = state.selected!.tags.some(
-                      (tag) => tag.value === `EYE/${suggestion.tag}`,
-                    );
-                    return (
-                      <label key={suggestion.tag}>
-                        <input
-                          type="checkbox"
-                          checked={
-                            present || state.checked.includes(suggestion.tag)
-                          }
-                          disabled={
-                            present ||
-                            (!state.checked.includes(suggestion.tag) &&
-                              state.checked.length >= 32)
-                          }
-                          onChange$={(_, input) => {
-                            state.checked = input.checked
-                              ? [...state.checked, suggestion.tag]
-                              : state.checked.filter(
-                                  (tag) => tag !== suggestion.tag,
-                                );
-                          }}
-                        />
-                        <span>{tagLabel(suggestion.tag)}</span>
-                        <small>
-                          {present
-                            ? "Added"
-                            : `${Math.round(suggestion.confidence * 100)}%`}
-                        </small>
-                      </label>
-                    );
-                  })}
-                </fieldset>
+                <ul class="image-suggestions">
+                  {state.analysis.suggestions.map((suggestion) => (
+                    <li key={suggestion.tag}>
+                      <button
+                        type="button"
+                        class="image-tag-filter"
+                        onClick$={() => {
+                          state.filters.tags = suggestion.tag;
+                          return load();
+                        }}
+                        aria-label={`Find photos tagged ${tagLabel(suggestion.tag)}`}
+                      >
+                        {tagLabel(suggestion.tag)}
+                      </button>
+                      <small>{Math.round(suggestion.confidence * 100)}%</small>
+                    </li>
+                  ))}
+                </ul>
                 {!state.analysis.suggestions.length && (
                   <p>No suggested tags for this photo.</p>
                 )}
-                {!state.canTag && (
-                  <p class="muted">
-                    Adding tags requires Media Manager editor access and enabled
-                    changes.
-                  </p>
-                )}
-                <button
-                  type="button"
-                  class="primary-button images-save"
-                  disabled={!state.canTag || busy || !state.checked.length}
-                  onClick$={save}
-                >
-                  {state.saving
-                    ? "Adding tags…"
-                    : `Add ${state.checked.length} ${state.checked.length === 1 ? "tag" : "tags"} to Immich`}
-                </button>
-                <p class="muted">
-                  Added under EYE/. Existing tags and original images stay in
-                  Immich.
-                </p>
               </section>
             )}
           </>
@@ -501,8 +584,8 @@ export const ImagesView = component$<{ immichUrl?: string }>((props) => {
             <Icon name="image" size={36} />
             <h2>Choose a photo</h2>
             <p>
-              Review EYE's tags and quality scores, then add the tags you want
-              in Immich.
+              Browse saved tags and quality scores. Analysis runs automatically
+              without changing your Immich library or image files.
             </p>
           </div>
         )}

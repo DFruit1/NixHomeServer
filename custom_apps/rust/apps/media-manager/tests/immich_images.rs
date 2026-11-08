@@ -73,8 +73,6 @@ async fn managed_immich_never_falls_back_or_crosses_identity_or_group_boundaries
         .with_images(
             &format!("http://{address}/api/"),
             &temp.path().join("eye.sock"),
-            "media-manager-editors",
-            true,
         )
         .unwrap()
         .with_managed_immich();
@@ -197,7 +195,6 @@ async fn redirect(State(state): State<Fixture>) -> Response {
 async fn test_app(
     temp: &tempfile::TempDir,
     state: Fixture,
-    enabled: bool,
 ) -> (Router, tokio::task::JoinHandle<()>) {
     let mock = Router::new()
         .route("/api/search/metadata", post(search))
@@ -231,8 +228,6 @@ async fn test_app(
         .with_images(
             &format!("http://{address}/api/"),
             &temp.path().join("eye.sock"),
-            "media-manager-editors",
-            enabled,
         )
         .unwrap();
     (provider_account_router(runtime), task)
@@ -273,7 +268,7 @@ async fn json_response(response: Response) -> Value {
 async fn caller_credentials_are_isolated_and_private_paths_are_never_returned() {
     let temp = tempfile::tempdir().unwrap();
     let fixture = Fixture::default();
-    let (app, task) = test_app(&temp, fixture.clone(), true).await;
+    let (app, task) = test_app(&temp, fixture.clone()).await;
     for user in ["alice", "bob"] {
         let response = app
             .clone()
@@ -303,10 +298,10 @@ async fn caller_credentials_are_isolated_and_private_paths_are_never_returned() 
 }
 
 #[tokio::test]
-async fn adds_tags_through_immich_without_replacing_existing_tags() {
+async fn refuses_legacy_tag_writes_for_editors() {
     let temp = tempfile::tempdir().unwrap();
     let fixture = Fixture::default();
-    let (app, task) = test_app(&temp, fixture, true).await;
+    let (app, task) = test_app(&temp, fixture.clone()).await;
     let response = app
         .oneshot(request(
             "POST",
@@ -317,11 +312,8 @@ async fn adds_tags_through_immich_without_replacing_existing_tags() {
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = json_response(response).await;
-    assert_eq!(body["image"]["tags"].as_array().unwrap().len(), 2);
-    assert_eq!(body["image"]["tags"][0]["value"], "Family");
-    assert_eq!(body["image"]["tags"][1]["value"], "EYE/beach");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(fixture.calls.lock().unwrap().is_empty());
     task.abort();
 }
 
@@ -329,7 +321,7 @@ async fn adds_tags_through_immich_without_replacing_existing_tags() {
 async fn rejects_cross_origin_viewer_and_read_only_tag_writes_before_contacting_immich() {
     let temp = tempfile::tempdir().unwrap();
     let fixture = Fixture::default();
-    let (app, task) = test_app(&temp, fixture.clone(), true).await;
+    let (app, task) = test_app(&temp, fixture.clone()).await;
     let uri = format!("{ROOT}/{PHOTO}/tags");
     let mut cross = request("POST", &uri, "alice", true, json!({"tags":["beach"]}));
     cross
@@ -346,7 +338,7 @@ async fn rejects_cross_origin_viewer_and_read_only_tag_writes_before_contacting_
     }
     assert!(fixture.calls.lock().unwrap().is_empty());
     task.abort();
-    let (app, task) = test_app(&temp, fixture.clone(), false).await;
+    let (app, task) = test_app(&temp, fixture.clone()).await;
     assert_eq!(
         app.oneshot(request(
             "POST",
@@ -367,7 +359,7 @@ async fn rejects_cross_origin_viewer_and_read_only_tag_writes_before_contacting_
 #[tokio::test]
 async fn never_forwards_credentials_through_a_preview_redirect() {
     let temp = tempfile::tempdir().unwrap();
-    let (app, task) = test_app(&temp, Fixture::default(), true).await;
+    let (app, task) = test_app(&temp, Fixture::default()).await;
     let response = app
         .oneshot(request(
             "GET",
@@ -431,10 +423,10 @@ async fn eye_receives_only_preview_bytes_and_never_immich_credentials() {
             preview_bytes: true,
             ..Fixture::default()
         },
-        true,
     )
     .await;
     let response = app
+        .clone()
         .oneshot(request(
             "POST",
             &format!("{ROOT}/{PHOTO}/analysis"),
@@ -445,6 +437,51 @@ async fn eye_receives_only_preview_bytes_and_never_immich_credentials() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_response(response).await["analysis"]["suggestions"][0]["tag"],
+        "beach"
+    );
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("{ROOT}/index?tags=beach&sort=scores&minAesthetic=0.75"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_response(response).await;
+    assert_eq!(body["items"][0]["analysis"]["scores"]["aesthetic"], 0.8);
+    assert_eq!(body["index"]["analyzed"], 1);
+    assert!(!body.to_string().contains("fixture-alice"));
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("{ROOT}/index?tags=beach"),
+            "bob",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_response(response).await;
+    assert_eq!(body["items"], json!([]));
+    assert_eq!(body["index"]["analyzed"], 0);
+    let response = app
+        .oneshot(request(
+            "GET",
+            &format!("{ROOT}/{PHOTO}"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
     assert_eq!(
         json_response(response).await["analysis"]["suggestions"][0]["tag"],
         "beach"

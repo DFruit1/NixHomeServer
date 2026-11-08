@@ -1594,6 +1594,10 @@ pub(crate) struct ApiError {
 }
 
 impl ApiError {
+    pub(crate) fn status(&self) -> StatusCode {
+        self.status
+    }
+
     pub(crate) fn new(
         status: StatusCode,
         code: &'static str,

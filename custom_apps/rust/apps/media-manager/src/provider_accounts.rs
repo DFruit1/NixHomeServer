@@ -145,6 +145,25 @@ impl ProviderAccountStore {
             .map_err(|_| ProviderAccountError::Decrypt)
     }
 
+    pub(crate) fn image_accounts(
+        &self,
+        managed: bool,
+    ) -> Result<Vec<Identity>, ProviderAccountError> {
+        let db = self.connection()?;
+        let mut stmt = db.prepare("SELECT owner_subject,owner_username FROM provider_accounts WHERE provider_id=?1 ORDER BY owner_subject").map_err(storage_error)?;
+        let rows = stmt
+            .query_map([if managed { "immich-managed" } else { "immich" }], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(storage_error)?;
+        rows.map(|row| {
+            let (subject, username) = row.map_err(storage_error)?;
+            Identity::try_new_with_subject(&subject, &username, std::iter::empty::<&str>())
+                .map_err(ProviderAccountError::Storage)
+        })
+        .collect()
+    }
+
     pub fn list(
         &self,
         identity: &Identity,
@@ -241,16 +260,20 @@ impl ProviderAccountStore {
                  );",
             )
             .map_err(storage_error)?;
+        crate::image_index::initialize(&connection).map_err(storage_error)?;
         connection
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(storage_error)
     }
 
     fn connection(&self) -> Result<Connection, ProviderAccountError> {
-        let connection = Connection::open(&self.database_path).map_err(storage_error)?;
-        connection
-            .busy_timeout(std::time::Duration::from_secs(5))
-            .map_err(storage_error)?;
+        self.index_connection().map_err(storage_error)
+    }
+
+    pub(crate) fn index_connection(&self) -> rusqlite::Result<Connection> {
+        let connection = Connection::open(&self.database_path)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        connection.execute_batch("PRAGMA foreign_keys = ON;")?;
         Ok(connection)
     }
 }

@@ -233,6 +233,13 @@ in
       MemoryDenyWriteExecute = true;
       CapabilityBoundingSet = [ ];
       AmbientCapabilities = [ ];
+      # Background photo indexing shares this broker; inference has its own
+      # separately bounded EYE process and only previews cross the socket.
+      MemoryHigh = "256M";
+      MemoryMax = "512M";
+      Nice = 10;
+      CPUWeight = 20;
+      IOWeight = 20;
       ReadWritePaths = [ cfg.providerStateDir ];
       SystemCallArchitectures = "native";
       SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];

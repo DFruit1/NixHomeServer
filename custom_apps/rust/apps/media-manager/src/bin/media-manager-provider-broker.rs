@@ -49,16 +49,12 @@ async fn run() -> Result<(), String> {
             "MEDIA_MANAGER_EYE_SOCKET",
             "/run/media-manager-eye/eye.sock",
         ));
-        state = state.with_images(
-            &base,
-            &socket,
-            &env_string("MEDIA_MANAGER_EDITOR_GROUP", "media-manager-editors"),
-            env_string("MEDIA_MANAGER_MUTATION_MODE", "read-only") == "enabled",
-        )?;
+        state = state.with_images(&base, &socket)?;
         if env_string("MEDIA_MANAGER_IMMICH_MANAGED", "false") == "true" {
             state = state.with_managed_immich();
         }
     }
+    tokio::spawn(state.clone().run_image_indexer());
     let app = provider_account_router(state);
     let socket = std::net::SocketAddr::new(address, port);
     let listener = tokio::net::TcpListener::bind(socket)

@@ -1,11 +1,12 @@
-//! Immich owns every photo and tag association. Only its authenticated API is
-//! used here; filesystem paths and upstream response bodies never reach clients.
+//! Read-only Immich access; derived EYE tags and scores live in our private index.
 use super::*;
 use reqwest::Method;
 use std::{path::Path as FilePath, time::Duration};
 use zeroize::Zeroizing;
 
-const PAGE_SIZE: usize = 48;
+use crate::image_index::{probability, valid_tag, Analysis, Index, Search, MODEL, PAGE_SIZE};
+mod indexing;
+pub(super) use indexing::{indexed, run_indexer};
 const MAX_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone)]
@@ -13,17 +14,11 @@ pub(super) struct Runtime {
     pub(super) managed: bool,
     pub(super) base: reqwest::Url,
     eye: reqwest::Client,
-    editor_group: String,
-    mutations_enabled: bool,
+    gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Runtime {
-    pub(super) fn new(
-        base: &str,
-        socket: &FilePath,
-        editor_group: &str,
-        mutations_enabled: bool,
-    ) -> Result<Self, String> {
+    pub(super) fn new(base: &str, socket: &FilePath) -> Result<Self, String> {
         let base = trusted_provider_base(base)?;
         if !base.path().ends_with('/') || !socket.is_absolute() {
             return Err("Immich API base must end in / and EYE socket must be absolute".into());
@@ -39,12 +34,12 @@ impl Runtime {
             managed: false,
             base,
             eye,
-            editor_group: editor_group.into(),
-            mutations_enabled,
+            gate: Arc::default(),
         })
     }
 }
 
+#[derive(Clone)]
 struct Account {
     runtime: Arc<Runtime>,
     key: Zeroizing<String>,
@@ -86,6 +81,15 @@ fn account(
             id,
         ));
     }
+    load_account(state, identity, runtime, id)
+}
+
+fn load_account(
+    state: &ProviderBrokerState,
+    identity: &Identity,
+    runtime: Arc<Runtime>,
+    id: &str,
+) -> Result<Account, ApiError> {
     let mut credentials = state
         .store
         .load_credentials(identity, if runtime.managed { "immich-managed" } else { "immich" })
@@ -114,6 +118,17 @@ fn account(
 }
 
 impl Account {
+    fn scope(&self, identity: &Identity) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(identity.subject.as_bytes());
+        hash.update([0]);
+        hash.update(self.runtime.base.as_str().as_bytes());
+        hash.update([0]);
+        hash.update(self.key.as_bytes());
+        format!("{:x}", hash.finalize())
+    }
+
     async fn send(
         &self,
         state: &ProviderBrokerState,
@@ -122,6 +137,14 @@ impl Account {
         body: Option<Value>,
         id: &str,
     ) -> Result<reqwest::Response, ApiError> {
+        if method != Method::GET && !(method == Method::POST && path == "search/metadata") {
+            return Err(error(
+                StatusCode::FORBIDDEN,
+                "immich_read_only",
+                "Immich access is read-only.",
+                id,
+            ));
+        }
         let url = self.runtime.base.join(path).map_err(|_| unavailable(id))?;
         let mut key = HeaderValue::from_str(&self.key).map_err(|_| upstream_error(id))?;
         key.set_sensitive(true);
@@ -188,7 +211,7 @@ impl Account {
         if asset.id != asset_id
             || asset.kind != "IMAGE"
             || asset.is_trashed
-            || asset.visibility != "timeline"
+            || !matches!(asset.visibility.as_str(), "timeline" | "archive")
         {
             return Err(error(
                 StatusCode::NOT_FOUND,
@@ -344,7 +367,7 @@ pub(super) async fn list(
         .map(Asset::public)
         .collect::<Vec<_>>();
     Ok(Json(
-        json!({ "items": items, "nextPage": next_page, "canTag": account.runtime.mutations_enabled && identity.can_edit(&account.runtime.editor_group), "requestId": id }),
+        json!({ "items": items, "nextPage": next_page, "canTag": false, "requestId": id }),
     ))
 }
 
@@ -357,7 +380,16 @@ pub(super) async fn details(
     let identity = identity_from_headers(&headers, &id)?;
     let account = account(&state, &identity, &id)?;
     let asset = account.asset(&state, &asset_id, &id).await?;
-    Ok(Json(json!({ "image": asset.public(), "requestId": id })))
+    let scope = account.scope(&identity);
+    let analysis = Index {
+        store: &state.store,
+        scope: &scope,
+    }
+    .analysis(&asset_id)
+    .map_err(|_| index_error(&id))?;
+    Ok(Json(
+        json!({ "image": asset.public(), "analysis": analysis, "requestId": id }),
+    ))
 }
 
 pub(super) async fn preview(
@@ -380,36 +412,13 @@ pub(super) async fn preview(
         .into_response())
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Suggestion {
-    tag: String,
-    confidence: f64,
-}
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Scores {
-    aesthetic: f64,
-    keeper: f64,
-    cover: f64,
-}
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Analysis {
-    model: String,
-    suggestions: Vec<Suggestion>,
-    scores: Scores,
-}
-
-fn valid_tag(tag: &str) -> bool {
-    !tag.is_empty()
-        && tag.len() <= 96
-        && tag
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
-}
-fn probability(n: f64) -> bool {
-    n.is_finite() && (0.0..=1.0).contains(&n)
+fn index_error(id: &str) -> ApiError {
+    error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "image_index_failed",
+        "The photo index could not be accessed. Try again shortly.",
+        id,
+    )
 }
 
 pub(super) async fn analyze(
@@ -421,8 +430,50 @@ pub(super) async fn analyze(
     let identity = identity_from_headers(&headers, &id)?;
     same_origin(&headers, &id)?;
     let account = account(&state, &identity, &id)?;
-    account.asset(&state, &asset_id, &id).await?;
-    let (bytes, mime) = account.image(&state, &asset_id, &id).await?;
+    let asset = account.asset(&state, &asset_id, &id).await?;
+    let scope = account.scope(&identity);
+    let index = Index {
+        store: &state.store,
+        scope: &scope,
+    };
+    let (_, generation, _) = index.scan().map_err(|_| index_error(&id))?;
+    index
+        .observe(
+            &asset_id,
+            &asset.original_file_name,
+            &asset.file_created_at,
+            generation,
+        )
+        .map_err(|_| index_error(&id))?;
+    let analysis = analyze_asset(&state, &account, &asset_id, &id, false).await?;
+    index
+        .save(&asset_id, &analysis)
+        .map_err(|_| index_error(&id))?;
+    Ok(Json(
+        json!({ "assetId": asset_id, "analysis": analysis, "requestId": id }),
+    ))
+}
+
+async fn analyze_asset(
+    state: &ProviderBrokerState,
+    account: &Account,
+    asset_id: &str,
+    id: &str,
+    wait: bool,
+) -> Result<Analysis, ApiError> {
+    let _guard = if wait {
+        account.runtime.gate.lock().await
+    } else {
+        account.runtime.gate.try_lock().map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "eye_busy",
+                "Background analysis is running. Try this photo again shortly.",
+                id,
+            )
+        })?
+    };
+    let (bytes, mime) = account.image(state, asset_id, id).await?;
     // A distinct Unix-socket client carries pixels only, never the user's key.
     let response = account
         .runtime
@@ -437,7 +488,7 @@ pub(super) async fn analyze(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "eye_unavailable",
                 "EYE is not ready. Try the photo again shortly.",
-                &id,
+                id,
             )
         })?;
     if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
@@ -445,7 +496,7 @@ pub(super) async fn analyze(
             StatusCode::SERVICE_UNAVAILABLE,
             "eye_busy",
             "EYE is analyzing another photo. Try again shortly.",
-            &id,
+            id,
         ));
     }
     if !response.status().is_success() {
@@ -453,7 +504,7 @@ pub(super) async fn analyze(
             StatusCode::BAD_GATEWAY,
             "eye_analysis_failed",
             "EYE could not analyze this photo.",
-            &id,
+            id,
         ));
     }
     let analysis: Analysis = bounded_provider_json(response).await.map_err(|_| {
@@ -461,10 +512,10 @@ pub(super) async fn analyze(
             StatusCode::BAD_GATEWAY,
             "eye_analysis_invalid",
             "EYE returned an invalid analysis.",
-            &id,
+            id,
         )
     })?;
-    if analysis.model != "eye@v1.0.0"
+    if analysis.model != MODEL
         || analysis.suggestions.len() > 64
         || analysis
             .suggestions
@@ -482,12 +533,10 @@ pub(super) async fn analyze(
             StatusCode::BAD_GATEWAY,
             "eye_analysis_invalid",
             "EYE returned an invalid analysis.",
-            &id,
+            id,
         ));
     }
-    Ok(Json(
-        json!({ "assetId": asset_id, "analysis": analysis, "requestId": id }),
-    ))
+    Ok(analysis)
 }
 
 fn same_origin(headers: &HeaderMap, id: &str) -> Result<(), ApiError> {
@@ -501,99 +550,15 @@ fn same_origin(headers: &HeaderMap, id: &str) -> Result<(), ApiError> {
     })
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct AddTagsRequest {
-    tags: Vec<String>,
-}
-#[derive(Deserialize)]
-struct TagCount {
-    count: u64,
-}
-
-pub(super) async fn add_tags(
-    State(state): State<ProviderBrokerState>,
-    headers: HeaderMap,
-    Path(asset_id): Path<String>,
-    payload: Result<Json<AddTagsRequest>, JsonRejection>,
-) -> Result<Json<Value>, ApiError> {
+// Retain a refusal for older clients; this integration cannot mutate Immich.
+pub(super) async fn add_tags(headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     let id = request_id();
-    let identity = identity_from_headers(&headers, &id)?;
+    identity_from_headers(&headers, &id)?;
     same_origin(&headers, &id)?;
-    let account = account(&state, &identity, &id)?;
-    if !identity.can_edit(&account.runtime.editor_group) || !account.runtime.mutations_enabled {
-        return Err(error(
-            StatusCode::FORBIDDEN,
-            "image_tagging_disabled",
-            "Image tagging requires editor access and enabled changes in Media Manager.",
-            &id,
-        ));
-    }
-    let Json(request) = payload.map_err(|_| invalid_json(&id))?;
-    if request.tags.is_empty()
-        || request.tags.len() > 32
-        || request.tags.iter().any(|tag| !valid_tag(tag))
-    {
-        return Err(error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "image_tags_invalid",
-            "Choose between 1 and 32 EYE tags.",
-            &id,
-        ));
-    }
-    account.asset(&state, &asset_id, &id).await?;
-    let names = request
-        .tags
-        .into_iter()
-        .map(|tag| format!("EYE/{tag}"))
-        .collect::<BTreeSet<_>>();
-    // Immich's upsert and bulk-add are additive and idempotent. Never replace an
-    // asset's tag set, manipulate the DB, write EXIF or create image sidecars.
-    let tags: Vec<Tag> = account
-        .json(
-            &state,
-            Method::PUT,
-            "tags",
-            Some(json!({ "tags": names })),
-            &id,
-        )
-        .await?;
-    if tags.len() != names.len()
-        || tags
-            .iter()
-            .any(|tag| !valid_mbid(&tag.id) || !names.contains(&tag.value))
-        || tags
-            .iter()
-            .map(|tag| &tag.value)
-            .collect::<BTreeSet<_>>()
-            .len()
-            != names.len()
-    {
-        return Err(upstream_error(&id));
-    }
-    let tag_ids = tags.iter().map(|tag| &tag.id).collect::<Vec<_>>();
-    let result: TagCount = account
-        .json(
-            &state,
-            Method::PUT,
-            "tags/assets",
-            Some(json!({ "assetIds": [asset_id], "tagIds": tag_ids })),
-            &id,
-        )
-        .await?;
-    if result.count > tags.len() as u64 {
-        return Err(upstream_error(&id));
-    }
-    let asset = account.asset(&state, &asset_id, &id).await?;
-    if !tag_ids
-        .iter()
-        .all(|id| asset.tags.iter().any(|tag| &tag.id == *id))
-    {
-        return Err(error(StatusCode::BAD_GATEWAY, "image_tags_incomplete", "Some tags were not confirmed in Immich. Refresh this photo before retrying; existing tags are preserved.", &id));
-    }
-    eprintln!(
-        "{}",
-        json!({ "level": "info", "service": "media-manager-provider-broker", "event": "immich_tags_added", "requestId": id, "tagCount": tags.len() })
-    );
-    Ok(Json(json!({ "image": asset.public(), "requestId": id })))
+    Err(error(
+        StatusCode::FORBIDDEN,
+        "image_tagging_disabled",
+        "Photo tags are stored only in Media Manager. Immich writes are disabled.",
+        &id,
+    ))
 }

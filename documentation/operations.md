@@ -1347,8 +1347,9 @@ queue protocol rather than restoring this removed wiring.
 ### Media Manager
 
 The [Images page](media-manager-images.md) connects automatically to each user's
-linked Immich account, runs EYE locally on previews, and adds reviewed tags
-through Immich's API. EYE releases its model after five idle minutes.
+linked Immich account and automatically saves EYE tags and scores in Media
+Manager's own database for filtering and sorting. Analysis reads previews without
+changing Immich or image files. EYE releases its model after five idle minutes.
 The optional [local transcription module](transcription.md) adds Parakeet and
 Whisper inbox jobs and subtitle artifacts to Conversions.
 

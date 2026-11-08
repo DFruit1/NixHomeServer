@@ -120,6 +120,11 @@ impl ProviderBrokerState {
         })
     }
 
+    /// Run the resumable photo index for every saved Immich account.
+    pub async fn run_image_indexer(self) {
+        immich::run_indexer(self).await;
+    }
+
     /// Deployment-owned endpoints only; callers cannot choose an Immich host.
     pub fn with_managed_immich(mut self) -> Self {
         if let Some(runtime) = &mut self.images {
@@ -133,15 +138,8 @@ impl ProviderBrokerState {
         mut self,
         api_base: &str,
         eye_socket: &std::path::Path,
-        editor_group: &str,
-        mutations_enabled: bool,
     ) -> Result<Self, String> {
-        self.images = Some(Arc::new(immich::Runtime::new(
-            api_base,
-            eye_socket,
-            editor_group,
-            mutations_enabled,
-        )?));
+        self.images = Some(Arc::new(immich::Runtime::new(api_base, eye_socket)?));
         Ok(self)
     }
 }
@@ -332,7 +330,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://docs.immich.app/features/command-line-interface/#obtain-the-api-key",
         documentation_url: "https://api.immich.app/",
-        notes: "Browse your Immich photos on Images, review EYE suggestions, and add selected tags through Immich. Originals remain managed by Immich.",
+        notes: "Automatically index your Immich photos with private EYE tags and scores in Media Manager. Search and sort without changing Immich or original files.",
     },
     ProviderDefinition {
         id: "tmdb",
@@ -650,6 +648,10 @@ struct AcoustidReleaseGroup {
 
 pub fn provider_account_router(state: ProviderBrokerState) -> Router {
     let router = Router::new()
+        .route(
+            "/api/v1/provider-lookups/immich/images/index",
+            get(immich::indexed),
+        )
         .route("/api/v1/provider-lookups/immich/images", get(immich::list))
         .route(
             "/api/v1/provider-lookups/immich/images/{id}",

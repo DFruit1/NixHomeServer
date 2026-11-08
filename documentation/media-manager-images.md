@@ -1,112 +1,105 @@
 # Images in Media Manager
 
-Media Manager's **Images** page browses the connected user's Immich timeline.
-Immich remains the owner of every image and tag association. The integration
-uses the supported Immich API, with no direct database, original-file, EXIF or
-sidecar writes. Archived, trashed and locked photos are excluded.
+Media Manager automatically analyzes each connected user's Immich photos with
+EYE and saves tags, confidence values and aesthetic, keeper and cover scores in
+its own SQLite database. **Immich and image files are read-only**: no Immich tag
+updates, database writes, original downloads, EXIF changes or sidecars occur in
+the analysis and search paths. Timeline and archived photos are indexed; locked,
+hidden, trashed and non-image assets are excluded.
 
 ## Connect and use
 
 1. Sign into Photos with Kanidm once if your Immich account does not yet exist.
-   The local provisioner automatically connects your own linked account within
-   a few minutes. No API key needs to be generated, copied or saved by the user.
-2. Open Media Manager. Metadata sources reports the automatically managed Immich
-   connection; the browser cannot view, replace or remove its credential.
-3. Open **Images**, browse or search by filename, and choose a photo. **Load more
-   photos** retrieves another bounded page rather than loading the whole library.
-4. Choose **Analyze photo**, review EYE's tag suggestions and relative aesthetic,
-   keeper and cover scores, then select up to 32 tags and add them to Immich.
-   The predictions use Immich's preview, not the full-resolution original.
+   The existing local provisioner connects your linked account within a few
+   minutes. You do not need to copy an API key.
+2. Background indexing starts for every connected account when the provider
+   broker runs, even if the user never opens Media Manager. Open **Images** to
+   see discovered/analyzed counts and any retry notice. **Refresh results** reads
+   current progress. The initial pass can take time for large libraries.
+3. Search by filename and/or comma-separated EYE tags, such as `beach, people`.
+   Choose **All tags** or **Any tag**; spaces within a tag become underscores.
+   **Minimum scores and confidence** sets three independent score thresholds
+   (0–100) and the minimum tag confidence (default 50%).
+4. Sort by date taken, an individual score, tag confidence, or **Combined scores**.
+   Combined ranking uses the weighted average of aesthetic, keeper and cover;
+   weights default to 1 each. Set a weight to 0 to ignore that score; at least one
+   must remain positive. Tag sorting uses the specified tag's confidence, treating
+   an absent tag as 0. Choose ascending or descending order.
+5. Sorting and filtering apply to the whole index before 48-photo pagination.
+   Photos not yet analyzed appear in date order but are excluded from score/tag
+   sorting and positive score/tag filters. Select a photo to inspect saved
+   analysis; choose **Analyze again** to replace only its Media Manager analysis.
+   Selecting a saved tag searches for that tag with the current other filters.
 
-Adding tags requires Media Manager editor access, enabled mutations, and
-permission to modify the asset in Immich. Tags are added under `EYE/` through
-Immich's upsert and bulk-tag APIs. Existing tags are retained, and retries are
-idempotent. **Refresh tags** reads the current state from Immich after another
-client changes it or a request fails partway through. Analysis is shown for the
-current selection; it is not a background library scan or a persisted score index.
+Scores are relative model judgments, not personal-value decisions. The app never
+deletes a photo or modifies Immich based on a prediction. The legacy tag-write
+endpoint returns 403, including for editors with mutations enabled.
 
-## Runtime and boundaries
+## Runtime, persistence and isolation
 
-The catalog integration is imported only with Immich enabled. Disabling Immich
-removes this integration and the EYE services, retaining all downloaded weights.
-The Images page then reports that its integration is unavailable.
+Rust owns upstream authentication, background scheduling, search and storage.
+Analysis and scan checkpoints share
+`/var/lib/media-manager-provider/provider-accounts.sqlite3`, already covered by
+central persistence and the provider database backup. New `image_assets`,
+`image_tags` and `image_scans` tables are additive; existing encrypted credentials
+are unchanged. Every index partition includes the stable identity subject,
+configured Immich origin and a credential fingerprint. A username reuse or
+credential change cannot inherit another library's cached metadata.
 
-Rust owns the authenticated API and talks to the fixed, configuration-owned
-loopback Immich endpoint. Redirects are refused, responses and previews are
-bounded, and neither upstream filesystem paths nor secret values are returned.
-No new public route, host, credential manifest entry or storage mount is added.
+The worker processes one bounded page per account per round, with serialized
+inference and a brief gap between photos. Interactive reanalysis reports busy
+while background inference holds the shared gate, avoiding proxy timeouts. Checkpoints survive broker restarts;
+completed analysis is reused. Completed libraries rescan after 30 minutes for
+new/removed photos. Individual failed photos are retried on a subsequent sweep;
+service failures pause the page and retry after a minute. A completed sweep
+removes stale derived records only; it cannot delete photos. A large initial
+library pass can delay the next full sweep.
 
-The small Node helper is intentional: Desert Ant's official EYE SDK provides its
-native Linux LiteRT implementation through Node, Swift and Kotlin, without a Rust
-SDK. The Rust broker sends only preview bytes over
-`/run/media-manager-eye/eye.sock`; Immich credentials never cross that socket.
-The helper accepts one analysis at a time, rejects concurrent work for retry,
-limits image bytes and decoded dimensions, and has a 3 GiB memory ceiling. Its
-private cache is disposable. Photo inference runs locally; the SDK retains its
-upstream licensing behavior. No photos are sent to a cloud inference provider.
+Every indexed result and selected-photo read is reauthorized through the user's
+current Immich API access before cached metadata is returned. Deleted, locked or
+trashed photos are omitted immediately from search responses; lost Photos group
+membership blocks HTTP access. Cached counts describe the private index and can
+lag upstream changes until a sweep completes. Credential/account removal makes
+that partition inaccessible but does not erase backups or historical partitions.
 
-The model loads only when an analysis is requested and is disposed after five
-idle minutes (`MEDIA_MANAGER_EYE_IDLE_SECONDS=300`). Health checks report whether
-it is loaded and do not load it or extend that timer. The next analysis reloads
-automatically and can take longer. Loading shares the inference concurrency
-guard and request deadline; neither idle time nor browsing runs photo inference.
+The fixed loopback Immich endpoint refuses redirects. Responses and previews are
+bounded. Neither upstream filesystem paths nor secret values reach the browser.
+The existing credential provisioner remains separate and unchanged: it manages
+least-privilege keys for linked accounts using the exact Kanidm UUID/Immich
+`oauthId`, never name or email matching. Indexing never invokes provisioning or
+requests an administrator credential.
 
-## Automatic Immich credentials
+The Node helper uses Desert Ant's official native Linux LiteRT SDK; the Rust
+broker sends only preview bytes over `/run/media-manager-eye/eye.sock`, without
+Immich credentials. The helper retains its existing memory ceiling, image/decode
+bounds and request deadline. Photos are not sent to a cloud inference service.
+Pinned weights live under `/data/eye/models`; the model loads for analysis and
+is released after five idle minutes. Health probes do not keep it loaded.
+Disabling Immich removes the integration and EYE services while retaining weights
+and derived database state.
 
-`media-manager-immich-provision.service` discovers linked Immich accounts every
-two minutes, including users added after deployment. It matches the authoritative Kanidm UUID to Immich's exact
-`oauthId`; names and email addresses are never fallback identity matches.
-An account must already exist through Immich's SSO auto-registration. Missing
-accounts are skipped; ambiguous identity matches stop provisioning.
+## Operations and validation
 
-Immich's API only creates keys for its authenticated caller. A separate local
-root maintenance process therefore writes only the Immich 3.x `api_key` table,
-using the existing database Unix socket and database OS account. It does not
-grant the web broker database or administrator credentials, change photos,
-change users, or modify an existing human-managed key. Unexpected schema or
-ownership fails closed. The supported API remains the only photo/tag data path.
-
-The managed key has only `asset.read`, `asset.view`, `user.read`, `tag.read`,
-`tag.create` and `tag.asset`. Its deterministic ID makes reconciliation and crash
-recovery idempotent; unchanged keys are not rewritten. Secrets are encrypted in
-the existing provider store under the authenticated subject and a separate
-`immich-managed` namespace. Plaintext moves only through a private process pipe;
-it is never placed in argv, logs, the Nix store or browser responses.
-Existing manually saved keys are retained but are not used as an automatic
-fallback. The broker also requires `immich-users` membership in each authenticated
-request supplied by the shared authentication gateway.
-
-The provider store remains in its existing central persistence/backup boundary.
-The provisioner disappears with Immich; it does not delete retained credentials
-or model artifacts. Administrators can revoke a managed key in Immich, but while
-automatic provisioning is enabled the next reconciliation restores it.
-
-The npm dependency graph is locked and the EYE SDK is pinned to `4.2.3`. The
-model-prepare unit verifies SHA-256 hashes for `eye.tflite` and `eye_meta.json`
-from the immutable model revision `22f84595225252153fc8e11e7f5fba152fe13718`.
-Weights and the SDK's offline manifest live under `${dataRoot}/eye/models`.
-Inference reads these files; only preparation may replace downloaded artifacts.
-
-Inspect the affected units after an authorized deployment:
+After an explicitly authorized deployment, inspect:
 
 ```bash
 systemctl status media-manager-provider-broker media-manager-eye-model-prepare media-manager-eye media-manager-immich-provision
 journalctl -u media-manager-eye -u media-manager-provider-broker -n 50 --no-pager
 ```
 
-An `immich_tags_added` event records the request ID and tag count, without photo
-contents, filenames, tags or API keys. If EYE is unavailable, normal photo
-browsing and other metadata providers remain available.
+`image_index_retry` and `image_accounts_unavailable` log fixed diagnostics and
+request IDs, without filenames, tags, subjects, photo contents or credentials.
+Search returns persisted results during indexing; unavailable Immich authorization
+fails closed. Other metadata providers remain independent of EYE.
 
-The focused boundary regressions in `tests/immich_images.rs` address the concrete
-risk of private-photo or credential disclosure: subject isolation, redirection,
-credentials excluded from EYE, same-origin/editor/read-only write gates, and
-additive tag updates. UI work uses existing checks and direct rendered checks.
+Focused boundary regressions in `tests/immich_images.rs` cover private-photo and
+credential disclosure, per-subject saved analysis and refusal of legacy writes.
+Use local fixture libraries to check full-library pagination, filtering, ranking,
+background progress and restart reuse without touching a real Immich instance.
 
 ## Upstream contracts
 
 - [Immich 3.1 API contract](https://github.com/immich-app/immich/blob/v3.1.0/open-api/immich-openapi-specs.json)
-- [Immich tag operations](https://github.com/immich-app/immich/blob/v3.1.0/server/src/services/tag.service.ts)
 - [EYE SDK usage and scores](https://desertant.com/docs/eye/)
 - [EYE SDK model pin](https://github.com/Desert-Ant-Labs/desert-ant-core/blob/v4.2.3/Sources/Eye/Catalog.swift)
 - [Desert Ant model/SDK license](https://license.desertant.com/)

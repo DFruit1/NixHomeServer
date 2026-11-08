@@ -7,6 +7,7 @@ pub mod catalog;
 pub mod config;
 pub mod core;
 pub mod http;
+mod image_index;
 pub mod media;
 pub mod metadata;
 pub mod musicbrainz;
