@@ -143,7 +143,7 @@
   .empty h2 { font-size: 1.5rem; margin-bottom: var(--space-2); letter-spacing: -0.02em; }
   .more { display: flex; justify-content: center; margin-top: var(--space-5); }
   .notice { margin-top: var(--space-3); color: var(--error); overflow-wrap: anywhere; }
-  .notice button { margin-top: var(--space-2); }
+  .notice button, #sourcesNotice button { margin-top: var(--space-2); }
   .source-health { color: var(--text-muted); margin-top: var(--space-4); font-size: 0.875rem; }
   .source-health summary { cursor: pointer; min-height: var(--control-height); padding: var(--space-2) 0; }
   .source-health ul { padding-left: var(--space-5); }
@@ -204,7 +204,7 @@
     <div id="searchTypes" class="search-types" role="group" aria-label="Search sources"></div>
     <div class="search__row">
       <label class="sr-only" for="query">Search terms</label>
-      <input id="query" type="search" placeholder="Search titles, people, phrases or topics…" maxlength="2048" autocomplete="off" autofocus aria-keyshortcuts="Control+k Meta+k">
+      <input id="query" type="search" placeholder="Search titles, people, phrases or topics…" maxlength="2048" autocomplete="off" autofocus aria-keyshortcuts="Control+k Meta+k /">
       <button type="submit" class="icon-button" data-icon="search" aria-label="Search" title="Search"></button>
     </div>
     <div class="search-tools">
@@ -226,11 +226,11 @@
         <li><strong>Be precise:</strong> choose All words to require each word, or put a phrase in double quotes. Quotes and search operators keep their meaning.</li>
         <li><strong>Narrow the matches:</strong> use Filters for format, author, tag, series, year or a content-date range.</li>
       </ul>
-      <p>Ctrl/Cmd + K focuses search. Search links include the query and filters. Sources can return limited samples; see Result options → Search coverage.</p>
+      <p>Ctrl/Cmd + K or / focuses search. Search links include the query and filters. Sources can return limited samples; see Result options → Search coverage.</p>
     </div>
     <p id="inputError" class="notice" role="alert" hidden></p>
   </form>
-  <p id="sourcesError" class="notice" role="status" hidden></p>
+  <div id="sourcesNotice"><p id="sourcesError" class="notice" role="status" hidden></p><button type="button" id="retrySources" hidden>Retry sources</button></div>
   <details class="source-health" id="sourceHealth" hidden><summary>Source sync issues</summary><ul id="sourceIssues"></ul></details>
   <div class="workspace" id="workspace">
     <aside class="filter-panel" id="filtersPanel" aria-label="Search filters" hidden>
@@ -353,6 +353,14 @@ function initDiscovery() {
   el('searchTypes').replaceChildren();
   const choices = [{id: '', displayName: 'All sources'}, ...sources.values()];
   if (window.SEARCH_ONLINE_PAPERS) choices.push({id: 'online-papers', displayName: 'Online papers'});
+  if (!sources.size && !window.SEARCH_ONLINE_PAPERS) {
+    // Before /api/sources returns, name the pending state instead of
+    // pretending "All sources" was the only configured source.
+    const loading = document.createElement('button');
+    loading.type = 'button'; loading.className = 'search-type'; loading.textContent = 'Loading sources…';
+    loading.disabled = true; loading.setAttribute('aria-disabled', 'true');
+    el('searchTypes').appendChild(loading);
+  }
   for (const source of choices) {
     const select = () => source.id === 'online-papers' ? chooseKind('online-paper', true) : chooseSource(source.id);
     const button = document.createElement('button');
@@ -420,6 +428,7 @@ function updateSearchMode() {
   el('pageSizeField').hidden = online;
   el('matchingField').hidden = online;
   el('sourcesError').hidden = online || !el('sourcesError').textContent;
+  el('retrySources').hidden = el('sourcesError').hidden;
   el('sourceHealth').hidden = online || !el('sourceIssues').children.length;
   queryEl.placeholder = (searchModes[controls.kind.value] || searchModes['']).placeholder;
   for (const button of el('searchTypes').children) button.setAttribute('aria-pressed', String(button.dataset.sourceChoice === (online ? 'online-papers' : sourceEl.value)));
@@ -563,9 +572,9 @@ function resultNode(hit) {
   const byline = document.createElement('p'); byline.className = 'result__byline';
   const actions = document.createElement('div'); actions.className = 'result__actions';
   const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'ghost result__copy icon-button'; setIcon(copy, 'copy'); copy.title = 'Copy link';
-  const feedback = document.createElement('p'); feedback.className = 'result__feedback'; feedback.setAttribute('role', 'status');
+  const feedback = document.createElement('p'); feedback.className = 'result__feedback'; feedback.setAttribute('role', 'status'); feedback.hidden = true;
   copy.addEventListener('click', async () => {
-    const href = item._parts.title.getAttribute('href');
+    const href = item._parts.title.href;
     if (!href) return;
     try {
       await navigator.clipboard.writeText(href);
@@ -573,6 +582,7 @@ function resultNode(hit) {
     } catch {
       feedback.textContent = 'Could not copy. Open the title and copy its address.';
     }
+    feedback.hidden = false;
   });
   details.append(summary, metadataText); actions.append(details, copy, feedback);
   item.append(context, heading, byline, snippet, facts, destination, actions);
@@ -647,7 +657,7 @@ function updateResultNode(item, hit) {
   parts.copy.hidden = !href;
   parts.copy.setAttribute('aria-label', `Copy link to ${hit.title || 'Untitled'}`);
   if (parts.copy.dataset.href !== href) {
-    parts.feedback.textContent = ''; parts.copy.dataset.href = href;
+    parts.feedback.textContent = ''; parts.feedback.hidden = true; parts.copy.dataset.href = href;
   }
   parts.snippet.hidden = !hit.snippet;
   // API contract: escaped text, with only generated <em> highlights.
@@ -682,10 +692,14 @@ function updateResultNode(item, hit) {
   parts.facts.hidden = !facts.length;
   const origin = safeHref(hit.originUrl);
   const destination = origin ? new URL(origin, location.href) : null;
+  const sameLink = origin === href;
   const webContext = ['web-page', 'online-paper'].includes(hit.kind);
-  const path = destination && webContext && destination.pathname !== '/' ? destination.pathname : '';
+  // When the title already opens the origin, the host alone is enough; the
+  // full path would repeat what opening the link reveals. A different
+  // original keeps its host and path.
+  const path = destination && !sameLink && webContext && destination.pathname !== '/' ? destination.pathname : '';
   const displayPath = path.length > 80 ? `${path.slice(0, 40)}…${path.slice(-24)}` : path;
-  text(parts.destination, destination ? `${origin === href ? '' : 'Original: '}${destination.host}${displayPath}` : '');
+  text(parts.destination, destination ? `${sameLink ? '' : 'Original: '}${destination.host}${displayPath}` : '');
   if (origin) parts.destination.setAttribute('title', origin); else parts.destination.removeAttribute('title');
   parts.destination.hidden = !destination || (origin === href && !webContext);
   if (origin) parts.destination.href = origin; else parts.destination.removeAttribute('href');
@@ -905,7 +919,13 @@ function clearFilters(resetKind = true) {
   for (const [key, control] of Object.entries(controls)) if (key !== 'kind' || resetKind) control.value = '';
   runSearch(); el('filterToggle').focus();
 }
+function sourceIssueText(source) {
+  const name = sourceNames.get(source.id) || source.displayName || source.id;
+  const synced = Number.isFinite(source.lastSyncedAt) ? new Date(source.lastSyncedAt * 1000).toLocaleString(undefined, {year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}) : '';
+  return `${name}: last sync failed. Results may be out of date.${synced ? ` Last synced ${synced}.` : ''}`;
+}
 async function loadSources() {
+  el('sourcesError').textContent = ''; el('sourcesError').hidden = true; el('retrySources').hidden = true;
   try {
     const response = await fetch('/api/sources');
     if (response.status === 401) { location.href = '/'; return; }
@@ -922,14 +942,15 @@ async function loadSources() {
     const issues = (data.sources || []).filter(source => source.lastError);
     el('sourceHealth').hidden = controls.kind.value === 'online-paper' || !issues.length;
     el('sourceIssues').replaceChildren(...issues.map(source => {
-      const item = document.createElement('li'); item.textContent = `${sourceNames.get(source.id)}: last sync failed. Results may be out of date.`; return item;
+      const item = document.createElement('li'); item.textContent = sourceIssueText(source); return item;
     }));
     updateActiveFilters();
-  } catch (error) { el('sourcesError').textContent = error.message; el('sourcesError').hidden = controls.kind.value === 'online-paper'; }
+  } catch (error) { el('sourcesError').textContent = error.message; el('sourcesError').hidden = controls.kind.value === 'online-paper'; el('retrySources').hidden = el('sourcesError').hidden; }
 }
 el('broadMatching').addEventListener('click', () => { queryEl.value = new URLSearchParams(state.submitted || '').get('q') || ''; matchingEl.value = 'broad'; runSearch(); el('resultsRegion').focus(); });
 el('broadenSearch').addEventListener('click', () => { queryEl.value = new URLSearchParams(state.submitted || '').get('q') || ''; clearFilters(true); });
 el('editQuery').addEventListener('click', () => { queryEl.focus(); queryEl.select(); });
+el('retrySources').addEventListener('click', () => { void loadSources(); });
 el('helpToggle').addEventListener('click', () => {
   const open = el('searchGuide').hidden; el('searchGuide').hidden = !open; el('helpToggle').setAttribute('aria-expanded', String(open));
 });
@@ -962,7 +983,9 @@ el('signOut').addEventListener('click', () => { location.href = safeHref(window.
 queryEl.addEventListener('search', () => { if (!queryEl.value.trim()) runSearch(); });
 window.addEventListener('keydown', event => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); queryEl.focus(); }
-  if (event.key === 'Escape' && !el('filtersPanel').hidden) { toggleFilters(false); el('filterToggle').focus(); }
+  else if (event.key === '/' && !event.ctrlKey && !event.metaKey && !event.altKey && !['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target?.tagName)) { event.preventDefault(); queryEl.focus(); }
+  if (event.key === 'Escape' && !el('searchGuide').hidden) { el('searchGuide').hidden = true; el('helpToggle').setAttribute('aria-expanded', 'false'); el('helpToggle').focus(); }
+  else if (event.key === 'Escape' && !el('filtersPanel').hidden) { toggleFilters(false); el('filterToggle').focus(); }
 });
 window.addEventListener('popstate', () => { readUrlState(); runSearch(null, {pushHistory: false}); });
 for (const node of document.querySelectorAll('[data-icon]')) setIcon(node, node.dataset.icon);

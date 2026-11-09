@@ -30,7 +30,7 @@ class Element {
 function harness(search = '') {
   const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map(([, id]) => [id, new Element()]));
   const pending = [];
-  const location = { origin: 'http://localhost', pathname: '/', search, href: '/' };
+  const location = { origin: 'http://localhost', pathname: '/', search, href: 'http://localhost/' };
   const calls = [];
   const updateUrl = url => { location.search = url.includes('?') ? url.slice(url.indexOf('?')) : ''; };
   const history = {
@@ -39,7 +39,8 @@ function harness(search = '') {
     replaceState(_state, _unused, url) { calls.push('replace'); updateUrl(url); },
   };
   const document = { getElementById(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); }, createElement: tag => new Element(tag), querySelectorAll: () => [], activeElement: null, addEventListener() {} };
-  const window = { addEventListener() {}, location, history, getSelection: () => null, scrollBy() {} };
+  const handlers = {};
+  const window = { handlers, addEventListener(name, fn) { (handlers[name] ||= []).push(fn); }, location, history, getSelection: () => null, scrollBy() {} };
   const context = vm.createContext({ document, window, location, history, URL, URLSearchParams, AbortController, TextEncoder, console, setTimeout, clearTimeout,
     fetch(url, options) {
       if (url === '/api/sources') return Promise.resolve({ ok: true, status: 200, json: async () => ({ sources: [{ id: 'mail', displayName: 'Mail' }] }) });
@@ -47,7 +48,7 @@ function harness(search = '') {
     },
   });
   vm.runInContext(script, context);
-  return { elements, pending, location, history, run: code => vm.runInContext(code, context) };
+  return { elements, pending, location, history, handlers, run: code => vm.runInContext(code, context) };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const response = title => ({ hits: [{id: title, title}], total: 1, hasMore: false });
@@ -253,4 +254,75 @@ test('an overlong query is rejected inline by byte count', () => {
   assert.equal(h.elements.get('inputError').hidden, false);
   assert.match(h.elements.get('inputError').textContent, /2048 bytes/);
   assert.equal(h.pending.length, 0);
+});
+
+test('sources show a loading placeholder before the API returns', () => {
+  const h = harness();
+  assert.ok(h.elements.get('searchTypes').children.some(button => button.textContent === 'Loading sources…'), 'expected loading placeholder');
+});
+
+test('a successful sources load clears a stale error and hides retry', async () => {
+  const h = harness();
+  await flush();
+  h.elements.get('sourcesError').textContent = 'Could not load sources. Refresh to try again.';
+  await h.run('loadSources()');
+  await flush();
+  assert.equal(h.elements.get('sourcesError').hidden, true);
+  assert.equal(h.elements.get('sourcesError').textContent, '');
+  assert.equal(h.elements.get('retrySources').hidden, true);
+});
+
+test('the retry button appears next to a sources error', () => {
+  const h = harness();
+  h.elements.get('sourcesError').textContent = 'Could not load sources. Refresh to try again.';
+  h.run('updateSearchMode()');
+  assert.equal(h.elements.get('sourcesError').hidden, false);
+  assert.equal(h.elements.get('retrySources').hidden, false);
+});
+
+test('sync issues name the last successful sync when known', () => {
+  const h = harness();
+  h.run('sourceNames.set("mail", "Mail")');
+  assert.match(h.run('sourceIssueText({id:"mail", lastSyncedAt: 1760000000})'), /Last synced/);
+  assert.doesNotMatch(h.run('sourceIssueText({id:"mail"})'), /Last synced/);
+});
+
+test('destination shows host alone when the title already opens the same link', async () => {
+  const h = harness();
+  h.elements.get('query').value = 'Topic'; h.run('runSearch()');
+  indexed(h)[0].resolve({hits:[{id:'w1',source:'wiki',kind:'web-page',title:'Article',originUrl:'https://example.org/a/very/long/path',appUrl:'https://example.org/a/very/long/path'}],total:1}); await flush();
+  const item = h.elements.get('results').children[0];
+  const destination = item.children.find(child => child.className === 'result__destination');
+  assert.equal(destination.textContent, 'example.org');
+});
+
+test('copy feedback stays hidden until the user copies', async () => {
+  const h = harness();
+  h.elements.get('query').value = 'Topic'; h.run('runSearch()');
+  indexed(h)[0].resolve({hits:[{id:'l1',title:'Result',appUrl:'https://example.org/r'}],total:1}); await flush();
+  const actions = h.elements.get('results').children[0].children.find(child => child.className === 'result__actions');
+  const feedback = actions.children.find(child => child.className === 'result__feedback');
+  assert.equal(feedback.hidden, true);
+  actions.children.find(child => child.className.includes('result__copy')).listeners.click[0]();
+  await flush();
+  assert.equal(feedback.hidden, false);
+  assert.ok(feedback.textContent.length > 0);
+});
+
+test('slash focuses search outside fields but not while typing', () => {
+  const h = harness();
+  const press = h.handlers.keydown[0];
+  press({key: '/', preventDefault() {}, target: {tagName: 'DIV'}});
+  assert.equal(h.elements.get('query').focused, true);
+  const h2 = harness();
+  h2.handlers.keydown[0]({key: '/', preventDefault() {}, target: {tagName: 'INPUT'}});
+  assert.equal(h2.elements.get('query').focused || false, false);
+});
+
+test('Escape closes the search tips panel', () => {
+  const h = harness();
+  h.elements.get('searchGuide').hidden = false;
+  h.handlers.keydown[0]({key: 'Escape', preventDefault() {}, target: {tagName: 'BODY'}});
+  assert.equal(h.elements.get('searchGuide').hidden, true);
+  assert.equal(h.elements.get('helpToggle').focused, true);
 });
