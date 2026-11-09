@@ -31,17 +31,23 @@ function harness(search = '') {
   const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map(([, id]) => [id, new Element()]));
   const pending = [];
   const location = { origin: 'http://localhost', pathname: '/', search, href: '/' };
-  const history = { pushState(_state, _unused, url) { location.search = url.includes('?') ? url.slice(url.indexOf('?')) : ''; } };
+  const calls = [];
+  const updateUrl = url => { location.search = url.includes('?') ? url.slice(url.indexOf('?')) : ''; };
+  const history = {
+    calls,
+    pushState(_state, _unused, url) { calls.push('push'); updateUrl(url); },
+    replaceState(_state, _unused, url) { calls.push('replace'); updateUrl(url); },
+  };
   const document = { getElementById(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); }, createElement: tag => new Element(tag), querySelectorAll: () => [], activeElement: null, addEventListener() {} };
   const window = { addEventListener() {}, location, history, getSelection: () => null, scrollBy() {} };
-  const context = vm.createContext({ document, window, location, history, URL, URLSearchParams, AbortController, console, setTimeout, clearTimeout,
+  const context = vm.createContext({ document, window, location, history, URL, URLSearchParams, AbortController, TextEncoder, console, setTimeout, clearTimeout,
     fetch(url, options) {
       if (url === '/api/sources') return Promise.resolve({ ok: true, status: 200, json: async () => ({ sources: [{ id: 'mail', displayName: 'Mail' }] }) });
       return new Promise((resolve, reject) => pending.push({ url, options, resolve: data => resolve({ok: true, status: 200, json: async () => data}), reject }));
     },
   });
   vm.runInContext(script, context);
-  return { elements, pending, location, run: code => vm.runInContext(code, context) };
+  return { elements, pending, location, history, run: code => vm.runInContext(code, context) };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const response = title => ({ hits: [{id: title, title}], total: 1, hasMore: false });
@@ -203,4 +209,48 @@ test('a total outage announces unavailability rather than zero matches', async (
   const h=harness();h.elements.get('query').value='Topic';h.run('runSearch()');
   for(const request of h.pending)request.reject(new Error('Offline'));await flush();
   assert.match(h.elements.get('status').textContent,/unavailable/i);
+});
+
+test('filter tweaks replace history while a new query pushes it', () => {
+  const h = harness();
+  h.elements.get('query').value = 'topic'; h.run('runSearch()');
+  assert.deepEqual(h.history.calls, ['push']);
+  h.elements.get('sort').value = 'newest'; h.run('runSearch()');
+  assert.deepEqual(h.history.calls, ['push', 'replace']);
+  h.elements.get('query').value = 'other'; h.run('runSearch()');
+  assert.deepEqual(h.history.calls, ['push', 'replace', 'push']);
+});
+
+test('status names the live sample separately from the library total', async () => {
+  const h = harness();
+  h.elements.get('query').value = 'Topic'; h.run('runSearch()');
+  indexed(h)[0].resolve({hits:[{id:'l1',title:'Library'}], total: 500});
+  h.pending.find(r => r.url.includes('scope=live')).resolve({hits:[{id:'d1',source:'docs',title:'Live'}]});
+  await flush();
+  assert.match(h.elements.get('status').textContent, /2 matches shown · 1 live · 500 in library/);
+});
+
+test('the filter badge counts the source chip too', () => {
+  const h = harness();
+  h.elements.get('source').value = 'mail';
+  h.run('updateActiveFilters()');
+  assert.equal(h.elements.get('filterCount').textContent, '1');
+  assert.equal(h.elements.get('activeFilters').children.length, 1);
+});
+
+test('empty facet dimensions hide their field while populated ones stay', () => {
+  const h = harness();
+  h.run('renderFacets({authorFacets:[{name:"Ada",count:1}]})');
+  assert.equal(h.elements.get('author').hidden, false);
+  assert.equal(h.elements.get('tag').hidden, true);
+  assert.equal(h.elements.get('kind').hidden, false);
+});
+
+test('an overlong query is rejected inline by byte count', () => {
+  const h = harness();
+  h.elements.get('query').value = 'é'.repeat(1500);
+  h.run('runSearch()');
+  assert.equal(h.elements.get('inputError').hidden, false);
+  assert.match(h.elements.get('inputError').textContent, /2048 bytes/);
+  assert.equal(h.pending.length, 0);
 });

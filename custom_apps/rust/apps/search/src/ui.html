@@ -116,13 +116,15 @@
   .results { list-style: none; padding: 0; margin: 0; }
   .result { max-width: 56rem; padding: var(--space-4) 0; border-bottom: 1px solid var(--border); }
   .result:first-child { padding-top: var(--space-2); }
-  .result__context { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1) var(--space-2); color: var(--text-muted); font-size: 0.875rem; margin-bottom: var(--space-1); overflow-wrap: anywhere; }
-  .result__source { font-weight: 600; color: var(--text); }
-  .result__kind { color: var(--accent); }
+  .result__context { display: flex; align-items: center; gap: var(--space-1) var(--space-2); color: var(--text-muted); font-size: 0.875rem; margin-bottom: var(--space-1); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .result__source { font-weight: 600; color: var(--text); flex: none; }
+  .result__kind { color: var(--accent); flex: none; }
+  .result__collection { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: none; max-width: min(22rem, 55%); }
+  .result__context > span:last-child { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .result__title { display: inline-block; font-size: 1.125rem; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; text-decoration: none; }
   .result h3 { margin: 0; font-size: inherit; line-height: 1.4; }
   a.result__title:hover { text-decoration: underline; }
-  .result__snippet { margin-top: var(--space-2); max-width: 75ch; overflow-wrap: anywhere; }
+  .result__snippet { margin-top: var(--space-2); max-width: 75ch; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
   .result__snippet em { font-style: normal; font-weight: 600; background: var(--mark); color: var(--text); }
   .result__actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-3); margin-top: var(--space-1); }
   .result__copy { font-size: 0.875rem; padding-inline: var(--space-2); }
@@ -134,7 +136,7 @@
   .result__details dt, .result__details dd { margin: 0; min-width: 0; }
   .result__details dd { color: var(--text); }
   .result__facts { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); margin: var(--space-2) 0 0; padding: 0; list-style: none; font-size: 0.875rem; color: var(--text-muted); overflow-wrap: anywhere; }
-  .result__facts li { min-width: 0; max-width: 100%; }
+  .result__facts li { min-width: 0; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 14rem; }
   .result__facts strong { font-weight: 500; color: var(--text); }
   .result__destination { display: block; width: fit-content; max-width: 100%; margin-top: var(--space-2); font-size: 0.875rem; color: var(--text-muted); overflow-wrap: anywhere; }
   .empty { padding: var(--space-7) 0; }
@@ -161,7 +163,7 @@
   .examples button { font-size: 0.875rem; }
   #resultsHeading { overflow-wrap: anywhere; margin-bottom: var(--space-1); }
   #status { font-variant-numeric: tabular-nums; }
-  .result__byline { margin-top: var(--space-1); font-size: 0.875rem; color: var(--text-muted); overflow-wrap: anywhere; }
+  .result__byline { margin-top: var(--space-1); font-size: 0.875rem; color: var(--text-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .results[data-compact="true"] .result__snippet { display: none; }
   .results[data-compact="true"] .result { padding-block: var(--space-3); }
   #compactView[aria-pressed="true"] { background: var(--selected); border-color: var(--accent); }
@@ -242,7 +244,7 @@
         <label class="field"><span>Tag</span><select id="tag"><option value="">All tags</option></select></label>
         <label class="field"><span>Series</span><select id="series"><option value="">All series</option></select></label>
         <label class="field"><span>Year</span><select id="year"><option value="">All years</option></select></label>
-        <label class="field"><span>Content date, from</span><input id="after" type="date"></label>
+        <label class="field"><span>Content date, from</span><input id="after" type="date" aria-describedby="inputError"></label>
         <label class="field"><span>Content date, to</span><input id="before" type="date" aria-describedby="inputError"></label>
       </div>
       <button type="button" id="showResults">Show results</button>
@@ -386,14 +388,17 @@ function safeHref(value) {
 function option(value, label) {
   const node = document.createElement('option'); node.value = value; node.textContent = label; return node;
 }
+function controlKey(select) {
+  return Object.entries(controls).find(([, control]) => control === select)?.[0] || '';
+}
 function fillSelect(select, options, allLabel) {
   const current = select.value;
-  if (current && !options.some(item => item.value === current)) options = [{value: current, label: current}, ...options];
+  if (current && !options.some(item => item.value === current)) options = [{value: current, label: displayValue(controlKey(select), current)}, ...options];
   select.replaceChildren(option('', allLabel), ...options.map(item => option(item.value, item.label)));
   select.value = current;
 }
 function setSelectValue(select, value) {
-  if (value && !Array.from(select.options).some(item => item.value === value)) select.appendChild(option(value, value));
+  if (value && !Array.from(select.options).some(item => item.value === value)) select.appendChild(option(value, displayValue(controlKey(select), value)));
   select.value = value || '';
 }
 function displayValue(key, value) {
@@ -449,7 +454,7 @@ function updateActiveFilters() {
   }
   container.hidden = container.children.length === 0;
   el('clearFilters').hidden = container.hidden;
-  const count = Object.entries(controls).filter(([key, control]) => key !== 'source' && !control.disabled && control.value).length;
+  const count = Object.entries(controls).filter(([key, control]) => !control.disabled && control.value && !(controls.kind.value === 'online-paper' && ['source', 'kind'].includes(key))).length;
   el('filterCount').textContent = String(count); el('filterCount').hidden = !count;
   el('filterToggle').setAttribute('aria-label', count ? `Filters (${count} active)` : 'Filters');
   el('filterToggle').setAttribute('title', count ? `Filters (${count} active)` : 'Filters');
@@ -478,6 +483,12 @@ function renderFacets(data, scope = 'indexed') {
       if (!options.some(item => item.value === value)) options.push({value, label});
     }
     fillSelect(controls[key], options, key === 'kind' ? 'All content' : `All ${key === 'type' ? 'formats' : key === 'series' ? 'series' : key + 's'}`);
+    // Empty filters add noise to the panel. Hide a dimension until the current
+    // results provide a real choice; the date fields are not facet-driven and
+    // stay visible. A selected value always keeps its field visible.
+    const fieldWrap = controls[key].closest ? controls[key].closest('.field') : null;
+    const target = fieldWrap || controls[key];
+    if (target && 'hidden' in target) target.hidden = controls[key].options.length <= 1 && !controls[key].value;
   }
 }
 
@@ -631,6 +642,7 @@ function updateResultNode(item, hit) {
   if (value('narrators')) shown.add('narrators');
   const byline = [creatorKey ? `${creatorKey === 'from' ? 'From: ' : ''}${value(creatorKey)}` : '', value('series') ? `${value('series')}${value('series_index') ? ` #${value('series_index')}` : ''}` : '', value('narrators') ? `Narrated by ${value('narrators')}` : ''].filter(Boolean).join(' · ');
   text(parts.byline, byline); parts.byline.hidden = !byline;
+  if (byline) parts.byline.setAttribute('title', byline); else parts.byline.removeAttribute('title');
   if (href) parts.title.href = href; else parts.title.removeAttribute('href');
   parts.copy.hidden = !href;
   parts.copy.setAttribute('aria-label', `Copy link to ${hit.title || 'Untitled'}`);
@@ -654,9 +666,15 @@ function updateResultNode(item, hit) {
   const signature = JSON.stringify(facts.map(([key, label]) => [label, value(key)]));
   if (parts.facts.dataset.content !== signature) {
     parts.facts.replaceChildren(...facts.map(([key, label]) => {
+      const full = value(key);
+      // The row is a scan aid, not a dump: joined tag lists can run to
+      // thousands of characters. Truncate the visible value; the full text
+      // stays in Details and in the title tooltip.
+      const visible = full.length > 160 ? `${full.slice(0, 160).trimEnd()}…` : full;
       const fact = document.createElement('li');
+      fact.title = full.length > 160 ? full : '';
       const name = document.createElement('strong'); name.textContent = `${label}: `;
-      const content = document.createElement('span'); content.textContent = value(key);
+      const content = document.createElement('span'); content.textContent = visible;
       fact.append(name, content); return fact;
     }));
     parts.facts.dataset.content = signature;
@@ -684,9 +702,12 @@ function updateResultNode(item, hit) {
   parts.details.hidden = !additional.length;
   parts.actions.hidden = parts.details.hidden && parts.copy.hidden;
 }
-function syncUrl() {
+function syncUrl(replace = false) {
   const qs = params().toString(); const url = qs ? `${location.pathname}?${qs}` : location.pathname;
-  if (url !== location.pathname + location.search) history.pushState(null, '', url);
+  if (url !== location.pathname + location.search) {
+    if (replace && history.replaceState) history.replaceState(null, '', url);
+    else history.pushState(null, '', url);
+  }
 }
 function readUrlState() {
   const p = new URLSearchParams(location.search);
@@ -726,9 +747,13 @@ function resetResults() {
 }
 function updateResultsStatus() {
   const count = combinedHits().length;
+  const libraryShown = state.hits.length;
+  const liveShown = onlinePapers() ? 0 : state.liveHits.length;
   const pending = state.loading || state.liveLoading;
   const failed = state.indexedFailed || state.liveFailed || !el('liveError').hidden;
-  statusEl.textContent = count ? `${count.toLocaleString()} match${count === 1 ? '' : 'es'} shown${state.total > state.hits.length ? ` · ${state.total.toLocaleString()} in library` : ''}${pending ? ' · searching…' : ''}` : pending ? 'Searching…' : state.indexedFailed && state.liveFailed ? 'Search is unavailable' : failed ? 'No matches from available sources' : 'No matches';
+  // Name the live sample separately: the library total never counted it, so
+  // "N shown · M in library" otherwise implied the live hits were part of M.
+  statusEl.textContent = count ? `${count.toLocaleString()} match${count === 1 ? '' : 'es'} shown${liveShown ? ` · ${liveShown.toLocaleString()} live` : ''}${state.total > libraryShown ? ` · ${state.total.toLocaleString()} in library` : ''}${pending ? ' · searching…' : ''}` : pending ? 'Searching…' : state.indexedFailed && state.liveFailed ? 'Search is unavailable' : failed ? 'No matches from available sources' : 'No matches';
   el('moreWrap').hidden = !state.hasMore;
   el('loadMore').disabled = state.loading;
   el('loadMore').textContent = state.loading ? 'Loading more…' : 'Load more results';
@@ -778,7 +803,9 @@ async function runLive(generation, submitted, signal) {
     if (generation === state.generation) {
       state.liveLoading = false; state.liveDone = true;
       retry.removeAttribute('aria-disabled'); retry.textContent = onlinePapers() ? 'Retry online papers' : 'Retry connected sources';
-      if (onlinePapers()) resultsEl.removeAttribute('aria-busy');
+      // Busy covers both scopes: clear it only when the library search is
+      // also idle, otherwise runIndexed clears it when it finishes.
+      if (!state.loading) resultsEl.removeAttribute('aria-busy');
       updateResultsStatus();
     }
   }
@@ -795,12 +822,24 @@ async function runSearch(event, {append = false, pushHistory = true} = {}) {
       beforeEl.setAttribute('aria-invalid', 'true');
       toggleFilters(true); beforeEl.focus(); return;
     }
+    // maxlength counts characters; the API limits bytes. Multibyte queries
+    // can pass the input but fail the API, so check the byte count here.
+    const queryBytes = typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(queryEl.value.trim()).length : queryEl.value.trim().length;
+    if (queryBytes > 2048) {
+      el('inputError').textContent = 'Search terms must be at most 2048 bytes.';
+      el('inputError').hidden = false;
+      queryEl.setAttribute('aria-invalid', 'true'); queryEl.focus(); return;
+    }
+    queryEl.removeAttribute('aria-invalid');
     el('copyStatus').textContent = '';
     updateSearchMode();
+    const previousQuery = new URLSearchParams(state.submitted || '').get('q') || '';
     state.controller?.abort(); state.controller = new AbortController(); state.generation++;
     state.submitted = params().toString(); state.loading = false; state.liveLoading = false;
     resetResults();
-    if (pushHistory) syncUrl();
+    // Only a new query earns a history entry; filter/sort tweaks replace it,
+    // so Back skips every intermediate filter state.
+    if (pushHistory) syncUrl((new URLSearchParams(state.submitted).get('q') || '') === previousQuery);
     if (!queryEl.value.trim()) {
       resultsEl.removeAttribute('aria-busy');
       el('resultTools').hidden = true; el('emptyState').hidden = false;
@@ -854,7 +893,9 @@ async function runIndexed(append = false) {
     state.indexedDone = true; if (!append) state.indexedFailed = true;
   } finally {
     if (generation === state.generation) {
-      state.loading = false; resultsEl.removeAttribute('aria-busy');
+      state.loading = false;
+      // Busy covers both scopes: keep it while live sources are still running.
+      if (!state.liveLoading) resultsEl.removeAttribute('aria-busy');
       retry.removeAttribute('aria-disabled'); retry.textContent = 'Retry search';
       updateResultsStatus();
     }
@@ -898,7 +939,7 @@ el('compactView').addEventListener('click', () => {
 });
 el('copySearch').addEventListener('click', async () => {
   try {
-    await navigator.clipboard.writeText(`${location.origin}${location.pathname}?${state.submitted}`);
+    await navigator.clipboard.writeText(`${location.origin}${location.pathname}${state.submitted ? `?${state.submitted}` : ''}`);
     el('copyStatus').textContent = 'Search link copied. Recipients need access to the same sources.';
   } catch { el('copyStatus').textContent = 'Could not copy. Copy the search link from your browser’s address bar.'; }
 });
