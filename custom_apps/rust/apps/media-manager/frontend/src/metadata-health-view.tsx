@@ -515,6 +515,7 @@ const ExternalProvidersDialog = component$<{
                           )}
                           <strong>{candidate.provider.name}</strong>
                           <span
+                            class="health-confidence"
                             title={confidence.reasons.join("; ")}
                             tabIndex={0}
                             aria-label={`Estimated confidence ${confidence.score} percent. ${confidence.reasons.join("; ")}`}
@@ -831,7 +832,15 @@ const HealthIssueReview = component$<{
   const selectionElement = useSignal<HTMLElement>();
   useVisibleTask$(({ track }) => {
     const selection = track(() => props.selectedOnline);
-    if (selection) revealWhenMounted(() => selectionElement.value);
+    if (!selection) return;
+    const reveal = () => {
+      const element = selectionElement.value;
+      revealWhenMounted(() => element);
+      element?.focus({ preventScroll: true });
+    };
+    if (typeof requestAnimationFrame === "function")
+      requestAnimationFrame(reveal);
+    else reveal();
   });
   const { issue, entries } = props.grouped;
   const mixedIssues =
@@ -850,6 +859,13 @@ const HealthIssueReview = component$<{
     albumField && !individually.value
       ? { rootId: props.group.rootId, path: props.group.album! }
       : undefined;
+  const editable = editableHealthIssue(issue, target, props.canEdit);
+  const readOnlyTitle =
+    !editable && target.mediaKind === "podcast"
+      ? "Podcast metadata is managed in its source app."
+      : !props.canEdit
+        ? "Metadata editing requires editor access."
+        : undefined;
   const primary = compares
     ? candidateSources(props.providers, target.mediaKind, field)[0]
     : undefined;
@@ -996,18 +1012,20 @@ const HealthIssueReview = component$<{
                 {sharedReason && <p>{proposedProvenance(issue, true)}</p>}
               </div>
             )}
-            {!albumField &&
+            {!album &&
               ["audiobook", "music"].includes(target.mediaKind) &&
-              props.canEdit && (
+              props.canEdit &&
+              !(compares && albumField) && (
                 <p class="health-file-scope">
-                  File overrides apply in Media Manager only; other apps use the
-                  album metadata.
+                  This value is saved for the file in Media Manager. Other apps
+                  use the album metadata.
                 </p>
               )}
             {props.selectedOnline && (
               <div
                 class="health-online-selection"
                 role="status"
+                tabIndex={-1}
                 ref={selectionElement}
               >
                 <span class="health-issue-context">{issueTitle}</span>
@@ -1114,8 +1132,9 @@ const HealthIssueReview = component$<{
             <div class="health-issue-actions">
               <button
                 type="button"
+                title={readOnlyTitle}
                 disabled={
-                  !props.canEdit ||
+                  !editable ||
                   props.applying ||
                   bulkWorking.value ||
                   entries.every((entry) => entry.issue.fileOverride)
@@ -1126,8 +1145,9 @@ const HealthIssueReview = component$<{
               </button>
               <button
                 type="button"
+                title={readOnlyTitle}
                 disabled={
-                  !editableHealthIssue(issue, target, props.canEdit) ||
+                  !editable ||
                   props.applying ||
                   bulkWorking.value ||
                   !entries.some(

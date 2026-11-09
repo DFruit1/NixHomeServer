@@ -6198,18 +6198,26 @@ a:focus-visible {
 .health-issue-footer {
   position: relative;
 }
-.health-issue-footer.has-bulk > .health-file-details > summary {
-  /* Keep the disclosure's hit area separate from the sibling bulk controls. */
-  width: calc(100% - 12rem);
+.health-issue-footer.has-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+.health-issue-footer.has-bulk > .health-file-details {
+  flex: 1 1 12rem;
+  min-width: 0;
 }
 .health-issue-actions {
-  position: absolute;
-  inset-inline-end: 0;
-  top: 2px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+}
+.health-issue-footer.has-bulk > .health-issue-actions {
+  flex: 0 0 auto;
+  margin-inline-start: auto;
 }
 .health-issue-context {
   color: var(--ink-soft);
@@ -6425,9 +6433,11 @@ a:focus-visible {
   font-weight: 600;
 }
 .health-source-trigger {
-  min-height: 32px;
+  min-height: 44px;
   padding: 0;
   border: 0;
+  display: inline-flex;
+  align-items: center;
   background: transparent;
   color: var(--accent);
   font: inherit;
@@ -6571,7 +6581,7 @@ a:focus-visible {
   overflow-wrap: anywhere;
 }
 .health-lookup-select {
-  min-height: 40px;
+  min-height: 44px;
   margin-top: 4px;
 }
 .health-alt-sources {
@@ -7778,7 +7788,15 @@ a:focus-visible {
   object-fit: contain;
   flex-shrink: 0;
 }
+.health-provider-summary strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
 .health-provider-summary span {
   color: var(--ink-soft);
-  font-size: 14px;
+  font-size: 13px;
+}
+.health-confidence {
+  font-variant-numeric: tabular-nums;
 }

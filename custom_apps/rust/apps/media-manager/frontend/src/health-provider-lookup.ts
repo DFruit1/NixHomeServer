@@ -24,7 +24,7 @@ export function healthLookupAvailability(
 ): string {
   if (provider.implementationStatus !== "active") return "Coming soon";
   if (!["configured", "notRequired"].includes(provider.account.state))
-    return "Setup required";
+    return "Not set up";
   if (provider.id === "audnexus")
     return (context.providerIds as Record<string, unknown> | undefined)?.asin
       ? ""

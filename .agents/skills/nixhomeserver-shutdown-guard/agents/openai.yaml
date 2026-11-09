@@ -1,0 +1,4 @@
+interface:
+  display_name: "Guarded Shutdown"
+  short_description: "Guarded shutdown of the desktop and home server"
+  default_prompt: "Use $nixhomeserver-shutdown-guard to run the guarded shutdown script for both the desktop and server."
