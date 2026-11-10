@@ -21,7 +21,7 @@ in {
         # No workflow/import rule adds this opt-in tag. Existing documents
         # remain untouched until the owner requests and applies suggestions.
         AUTO_TAG = "paperless-gpt-auto";
-        CREATE_NEW_TAGS = "false";
+        CREATE_NEW_TAGS = "true";
         PRESERVE_EXISTING_METADATA = "true";
         AUTO_GENERATE_TITLE = "true";
         AUTO_GENERATE_TAGS = "true";

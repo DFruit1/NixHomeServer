@@ -58,8 +58,8 @@ For an initial test:
 1. In Paperless, add the `paperless-gpt` tag to a document you want to test.
 2. Open Paperless-GPT and request suggestions.
 3. Review the proposed title, tags, correspondent and document type before
-   applying them. Existing metadata is preserved by default and new tag
-   creation is disabled initially.
+   applying them. Existing metadata is preserved by default. New tags may be suggested;
+   they are created only when you apply the suggestions.
 
 No import rule adds the automatic-processing tag. Adding `paperless-gpt-auto`
 explicitly opts that document into upstream automatic processing; do not add
