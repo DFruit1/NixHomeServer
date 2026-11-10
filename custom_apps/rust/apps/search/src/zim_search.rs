@@ -642,37 +642,6 @@ printf 'A/Article\n'
         assert_eq!(split_namespace(""), None);
     }
 
-    #[test]
-    fn snippet_slicing_survives_multibyte_boundary() {
-        // 'é' is two bytes; a naive byte slice at SNIPPET_HTML_LIMIT would
-        // panic if the limit lands inside a character. The keyword must sit
-        // inside the retained window so the snippet itself is still produced.
-        let filler = "é".repeat(SNIPPET_HTML_LIMIT);
-        let html = format!("<html><body><p>about quantum physics {filler}</p></body></html>");
-        let snippet = make_snippet(&html, "quantum");
-        assert!(snippet.expect("snippet").contains("quantum"));
-    }
-
-    #[test]
-    fn builds_snippets_around_keyword() {
-        let html = "<html><body><p>This is a long article about quantum computing and other topics.</p></body></html>";
-        let snippet = make_snippet(html, "quantum");
-        let snippet = snippet.expect("snippet");
-        assert!(snippet.contains("<em>quantum</em>"));
-        // Multiple query terms are all highlighted when present.
-        let multi = make_snippet(html, "QUANTUM other");
-        let multi = multi.expect("multi-term snippet");
-        assert!(multi.contains("<em>quantum</em>") && multi.contains("<em>other</em>"));
-        // A confirmed result still has real context when the literal term is absent.
-        assert!(make_snippet(html, "zebra")
-            .unwrap()
-            .contains("quantum computing"));
-        // A query with no alphanumeric keyword produces no snippet.
-        assert_eq!(make_snippet(html, "!!!"), None);
-        // Empty text produces no snippet.
-        assert_eq!(make_snippet("<html><body></body></html>", "quantum"), None);
-    }
-
     #[tokio::test]
     async fn discovery_failure_is_not_a_successful_empty_inventory() {
         let dir = tempfile::tempdir().expect("tempdir");

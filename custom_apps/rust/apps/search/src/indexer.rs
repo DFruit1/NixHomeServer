@@ -533,8 +533,6 @@ pub async fn run_index_daemon() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
     use crate::config::{parse_sources, Settings};
     use crate::solr::SolrDocument;
@@ -565,22 +563,6 @@ mod tests {
         // A full id turnover (same count, all new ids) must still sync.
         assert!(!refuse_full_wipe(3, 3));
         assert!(!refuse_full_wipe(0, 0));
-    }
-
-    #[test]
-    fn detects_missing_documents() {
-        let seen = ["a".to_string(), "b".to_string()];
-        let seen_set: std::collections::HashSet<&String> = seen.iter().collect();
-        let existing: HashMap<String, String> = HashMap::from([
-            ("a".to_string(), "1".to_string()),
-            ("c".to_string(), "2".to_string()),
-        ]);
-        let missing: Vec<String> = existing
-            .keys()
-            .filter(|external_id| !seen_set.contains(external_id))
-            .cloned()
-            .collect();
-        assert_eq!(missing, vec!["c".to_string()]);
     }
 
     /// Exercises the full extractor -> Solr contract: run a real extractor

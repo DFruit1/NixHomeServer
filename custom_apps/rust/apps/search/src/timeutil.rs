@@ -66,12 +66,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn converts_epoch_to_solr_date() {
-        assert_eq!(epoch_to_solr_date(0), "1970-01-01T00:00:00Z");
-        assert_eq!(epoch_to_solr_date(1_700_000_000), "2023-11-14T22:13:20Z");
-    }
-
-    #[test]
     fn parses_common_date_formats() {
         assert_eq!(parse_date("2023-11-14T22:13:20Z"), Some(1_700_000_000));
         assert_eq!(
@@ -85,16 +79,16 @@ mod tests {
     }
 
     #[test]
-    fn hashes_parts_deterministically() {
+    fn formats_hashes_and_encodes_values() {
+        assert_eq!(epoch_to_solr_date(0), "1970-01-01T00:00:00Z");
+        assert_eq!(epoch_to_solr_date(1_700_000_000), "2023-11-14T22:13:20Z");
+
         let first = sha256_hex(&["paperless", "42"]);
         let second = sha256_hex(&["paperless", "42"]);
         let other = sha256_hex(&["paperless", "43"]);
         assert_eq!(first, second);
         assert_ne!(first, other);
-    }
 
-    #[test]
-    fn encodes_unsafe_path_bytes() {
         assert_eq!(percent_encode_path("A/B_1.0~"), "A/B_1.0~");
         assert_eq!(percent_encode_path("a b.html"), "a%20b.html");
     }

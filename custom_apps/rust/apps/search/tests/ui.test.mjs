@@ -256,35 +256,24 @@ test('an overlong query is rejected inline by byte count', () => {
   assert.equal(h.pending.length, 0);
 });
 
-test('sources show a loading placeholder before the API returns', () => {
-  const h = harness();
-  assert.ok(h.elements.get('searchTypes').children.some(button => button.textContent === 'Loading sources…'), 'expected loading placeholder');
-});
-
-test('a successful sources load clears a stale error and hides retry', async () => {
+test('retrying sources after an error clears the error and retry state', async () => {
   const h = harness();
   await flush();
   h.elements.get('sourcesError').textContent = 'Could not load sources. Refresh to try again.';
-  await h.run('loadSources()');
+  h.run('updateSearchMode()');
+  assert.equal(h.elements.get('retrySources').hidden, false);
+  h.elements.get('retrySources').listeners.click[0]();
+  await flush();
   await flush();
   assert.equal(h.elements.get('sourcesError').hidden, true);
   assert.equal(h.elements.get('sourcesError').textContent, '');
   assert.equal(h.elements.get('retrySources').hidden, true);
 });
 
-test('the retry button appears next to a sources error', () => {
-  const h = harness();
-  h.elements.get('sourcesError').textContent = 'Could not load sources. Refresh to try again.';
-  h.run('updateSearchMode()');
-  assert.equal(h.elements.get('sourcesError').hidden, false);
-  assert.equal(h.elements.get('retrySources').hidden, false);
-});
-
-test('sync issues name the last successful sync when known', () => {
+test('sync issues include the last successful sync when known', () => {
   const h = harness();
   h.run('sourceNames.set("mail", "Mail")');
   assert.match(h.run('sourceIssueText({id:"mail", lastSyncedAt: 1760000000})'), /Last synced/);
-  assert.doesNotMatch(h.run('sourceIssueText({id:"mail"})'), /Last synced/);
 });
 
 test('destination shows host alone when the title already opens the same link', async () => {

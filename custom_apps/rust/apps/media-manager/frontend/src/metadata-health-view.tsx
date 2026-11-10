@@ -597,25 +597,40 @@ const ExternalProvidersDialog = component$<{
                     (candidate) => candidate.provider.id === provider.id,
                   ),
               )
-              .map((provider) => (
-                <li key={provider.id}>
-                  <div class="health-provider-summary">
-                    {provider.logoUrl && (
-                      <img
-                        src={provider.logoUrl}
-                        width="24"
-                        height="24"
-                        alt=""
-                      />
+              .map((provider) => {
+                const notSetUp =
+                  provider.account.state !== "configured" &&
+                  provider.account.state !== "notRequired";
+                return (
+                  <li
+                    key={provider.id}
+                    class={notSetUp ? "health-source-unconfigured" : undefined}
+                  >
+                    <div class="health-provider-summary">
+                      {provider.logoUrl && (
+                        <img
+                          src={provider.logoUrl}
+                          width="24"
+                          height="24"
+                          alt=""
+                        />
+                      )}
+                      <strong>{provider.name}</strong>
+                      <span>
+                        {state.statuses[provider.id] ??
+                          sourceStatus(provider).label}
+                      </span>
+                    </div>
+                    {notSetUp && (
+                      <p class="health-source-setup">
+                        <a href="?view=accounts">
+                          Set up {provider.name}
+                        </a>
+                      </p>
                     )}
-                    <strong>{provider.name}</strong>
-                    <span>
-                      {state.statuses[provider.id] ??
-                        sourceStatus(provider).label}
-                    </span>
-                  </div>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
           </ul>
           <div class="health-source-manage health-source-links">
             <a

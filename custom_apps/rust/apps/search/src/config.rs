@@ -172,15 +172,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_minimal_source() {
+    fn parses_sources_with_defaults_and_settings() {
         let raw = r#"[{
             "id": "paperless",
             "source_type": "paperless",
             "app_base": "https://paperless.example.org",
             "settings": { "exportPath": "/mnt/data/paperless/export" }
+        }, {
+            "id": "kiwix",
+            "display_name": "Wiki",
+            "source_type": "kiwix",
+            "app_base": "https://wiki.example.org",
+            "settings": { "libraryRoot": "/mnt/data/kiwix", "fulltextZims": ["wikipedia_en"] }
         }]"#;
         let sources = parse_sources(raw).expect("sources parse");
-        assert_eq!(sources.len(), 1);
+        assert_eq!(sources.len(), 2);
         assert_eq!(sources[0].display_name, "paperless");
         assert_eq!(
             sources[0].require_setting("exportPath").unwrap(),
@@ -188,26 +194,8 @@ mod tests {
         );
         assert!(sources[0].setting_str("missing").is_none());
         assert!(sources[0].setting_str_list("missing").is_empty());
-    }
-
-    #[test]
-    fn parses_named_source_and_lists() {
-        let raw = r#"[{
-            "id": "kiwix",
-            "display_name": "Wiki",
-            "source_type": "kiwix",
-            "app_base": "https://wiki.example.org",
-            "settings": {
-                "libraryRoot": "/mnt/data/kiwix",
-                "fulltextZims": ["wikipedia_en"]
-            }
-        }]"#;
-        let sources = parse_sources(raw).expect("sources parse");
-        assert_eq!(sources[0].display_name, "Wiki");
-        assert_eq!(
-            sources[0].setting_str_list("fulltextZims"),
-            ["wikipedia_en"]
-        );
+        assert_eq!(sources[1].display_name, "Wiki");
+        assert_eq!(sources[1].setting_str_list("fulltextZims"), ["wikipedia_en"]);
     }
 
     #[test]

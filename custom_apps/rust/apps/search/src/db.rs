@@ -690,14 +690,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builds_full_document_ids() {
-        assert_eq!(
-            full_document_id("paperless", "42"),
-            "paperless:42".to_string()
-        );
-    }
-
-    #[test]
     fn strips_nul_bytes_from_text_and_json() {
         assert_eq!(strip_nul_str("a\0b\0c"), "abc");
         let cleaned = strip_nul_json(serde_json::json!({

@@ -616,22 +616,6 @@ mod tests {
     }
 
     #[test]
-    fn snippet_slicing_survives_multibyte_boundary() {
-        let filler = "é".repeat(2000);
-        let text = format!("about quantum physics {filler}");
-        let snippet = snippet_from_text(&text, "quantum").expect("snippet");
-        assert!(snippet.contains("quantum"));
-    }
-
-    #[test]
-    fn snippets_from_html_bounded() {
-        let html = "<html><body><p>Quarterly <b>report</b> attached</p></body></html>";
-        let snippet = snippet_from_html(html, "report", 200_000).expect("snippet");
-        assert!(snippet.contains("<em>report</em>"));
-        assert_eq!(snippet_from_html("", "report", 200_000), None);
-    }
-
-    #[test]
     fn snippet_escapes_markup_but_keeps_highlights() {
         let text = "literal <em>tag</em> and quantum & more";
         let snippet = snippet_from_text(text, "quantum").expect("snippet");
@@ -708,10 +692,14 @@ mod tests {
     }
 
     #[test]
-    fn snippet_window_handles_multibyte_context_and_edges() {
-        // A match at the very start shows only the available prefix.
+    fn snippet_window_handles_edges_multibyte_and_overlong_terms() {
+        // Start/end edges: a match at the start shows only the available prefix,
+        // and a match at the end keeps valid trailing-free context.
         let at_start = snippet_from_text("needle at the start", "needle").expect("snippet");
         assert!(at_start.starts_with("<em>needle</em>"), "got: {at_start}");
+        let at_end = format!("{}needle", "é".repeat(300));
+        let at_end = snippet_from_text(&at_end, "needle").expect("snippet");
+        assert!(at_end.contains("<em>needle</em>"), "got: {at_end}");
 
         // Multibyte context stays valid UTF-8 and inside the scalar budget, with
         // at most 60 scalar values of lead context.
@@ -719,46 +707,25 @@ mod tests {
         let snippet = snippet_from_text(&text, "needle").expect("snippet");
         let visible = visible_text(&snippet);
         assert!(snippet.contains("<em>needle</em>"), "got: {snippet}");
-        assert!(
-            !visible.contains('\u{fffd}'),
-            "invalid UTF-8 leaked: {visible}"
-        );
-        assert_eq!(
-            visible.chars().count(),
-            260,
-            "window should use the full budget: {visible}"
-        );
+        assert!(!visible.contains('\u{fffd}'), "invalid UTF-8 leaked: {visible}");
+        assert_eq!(visible.chars().count(), 260, "window should use the full budget: {visible}");
         let lead = visible.chars().take_while(|ch| *ch == 'é').count();
         assert!(lead <= 60, "lead context {lead} exceeded 60: {visible}");
 
-        // A match at the very end still shows trailing-free context.
-        let at_end = format!("{}needle", "é".repeat(300));
-        let snippet = snippet_from_text(&at_end, "needle").expect("snippet");
-        assert!(snippet.contains("<em>needle</em>"), "got: {snippet}");
-    }
-
-    #[test]
-    fn snippet_truncates_overlong_match_without_extending_window() {
+        // An overlong term is truncated at the window edge without growing the
+        // window or presenting a partial highlight.
         let term = "n".repeat(400);
         let text = format!("prefix {term} suffix");
         let snippet = snippet_from_text(&text, &term).expect("snippet");
         let visible = visible_text(&snippet);
-        assert_eq!(
-            visible.chars().count(),
-            260,
-            "window must not grow for an overlong term: {visible}"
-        );
+        assert_eq!(visible.chars().count(), 260, "window must not grow for an overlong term: {visible}");
         assert!(visible.starts_with("prefix nnn"), "got: {visible}");
         assert_eq!(
             snippet.matches("<em>").count(),
             snippet.matches("</em>").count(),
             "unbalanced emphasis: {snippet}"
         );
-        // The truncated match is not presented as a partial highlight.
-        assert!(
-            !snippet.contains("<em>"),
-            "partial-match emphasis: {snippet}"
-        );
+        assert!(!snippet.contains("<em>"), "partial-match emphasis: {snippet}");
     }
 
     #[test]

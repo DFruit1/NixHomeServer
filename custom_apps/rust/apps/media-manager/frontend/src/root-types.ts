@@ -143,7 +143,7 @@ export type NamingProfile =
   | "filename";
 
 export const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
-  { id: "library", label: "Libraries", icon: "library" },
+  { id: "library", label: "Manage library", icon: "library" },
   { id: "health", label: "Library health", icon: "tag" },
   { id: "conversions", label: "Conversions", icon: "disc" },
   { id: "player", label: "Music", icon: "music-note" },

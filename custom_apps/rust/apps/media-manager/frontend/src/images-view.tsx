@@ -1,4 +1,12 @@
-import { $, component$, useSignal, useStore, useTask$ } from "@builder.io/qwik";
+import {
+  $,
+  component$,
+  useOnWindow,
+  useSignal,
+  useStore,
+  useTask$,
+  useVisibleTask$,
+} from "@builder.io/qwik";
 import { api, ApiError, readableError } from "./api";
 import type {
   EyeAnalysis,
@@ -24,6 +32,7 @@ export const ImagesView = component$<{
 }>((props) => {
   const layout = useCollectionView(props, "images", "tiles-3");
   const detail = useSignal<HTMLElement>();
+  const pushedImageId = useSignal<string | null>(null);
   const state = useStore({
     items: [] as ImmichImage[],
     selected: undefined as ImmichImage | undefined,
@@ -137,15 +146,32 @@ export const ImagesView = component$<{
     await load();
   });
 
-  const choose = $(async (image: ImmichImage) => {
-    if (state.analyzing) return;
+  const choose = $(async (image: ImmichImage | string, pushHistory = true) => {
+    if (state.analyzing && pushHistory) return;
+    const imageId = typeof image === "string" ? image : image.id;
     const selection = ++state.selection;
-    state.selected = image;
-    state.analysis = image.analysis ?? undefined;
+    state.selected =
+      typeof image === "string"
+        ? state.items.find((candidate) => candidate.id === imageId)
+        : image;
+    state.analysis = state.selected?.analysis ?? undefined;
     state.detailError = "";
     state.notice = "";
     state.imageFailed = false;
     state.selecting = true;
+    if (
+      typeof window !== "undefined" &&
+      pushHistory &&
+      pushedImageId.value !== imageId
+    ) {
+      const historyState = { ...window.history.state, imageId };
+      if (pushedImageId.value) {
+        window.history.replaceState(historyState, "", window.location.href);
+      } else {
+        window.history.pushState(historyState, "", window.location.href);
+      }
+    }
+    pushedImageId.value = imageId;
     if (typeof window !== "undefined" && window.innerWidth <= 920) {
       await new Promise<void>((resolve) =>
         requestAnimationFrame(() => resolve()),
@@ -153,7 +179,7 @@ export const ImagesView = component$<{
       detail.value?.scrollIntoView({ block: "start" });
     }
     try {
-      const response = await api<ImmichImageResponse>(photoPath(image.id));
+      const response = await api<ImmichImageResponse>(photoPath(imageId));
       if (selection === state.selection) {
         state.selected = response.image;
         state.analysis = response.analysis ?? undefined;
@@ -187,6 +213,40 @@ export const ImagesView = component$<{
       state.analyzing = false;
     }
   });
+
+  const closeSelectedImage = $(() => {
+    ++state.selection;
+    state.selecting = false;
+    state.selected = undefined;
+    state.analysis = undefined;
+    state.imageFailed = false;
+    state.detailError = "";
+    state.notice = "";
+    pushedImageId.value = null;
+  });
+
+  useVisibleTask$(
+    () => {
+      const imageId = (window.history.state as { imageId?: string } | null)
+        ?.imageId;
+      if (imageId && pushedImageId.value !== imageId)
+        void choose(imageId, false);
+    },
+    { strategy: "document-ready" },
+  );
+
+  useOnWindow(
+    "popstate",
+    $((event: PopStateEvent) => {
+      const imageId =
+        (event.state as { imageId?: string } | null)?.imageId ?? null;
+      if (imageId) {
+        void choose(imageId, false);
+        return;
+      }
+      void closeSelectedImage();
+    }),
+  );
 
   const busy = state.analyzing;
   return (
@@ -513,18 +573,6 @@ export const ImagesView = component$<{
       >
         {state.selected ? (
           <>
-            <header class="image-detail-header">
-              <h2>{state.selected.filename}</h2>
-              {props.immichUrl && (
-                <a
-                  href={`${props.immichUrl}/photos/${encodeURIComponent(state.selected.id)}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Open in Immich <span aria-hidden="true">↗</span>
-                </a>
-              )}
-            </header>
             {state.imageFailed ? (
               <div class="images-empty" role="status">
                 <Icon name="image" size={32} />
@@ -541,6 +589,18 @@ export const ImagesView = component$<{
                 onError$={() => (state.imageFailed = true)}
               />
             )}
+            <header class="image-detail-header">
+              <h2>{state.selected.filename}</h2>
+              {props.immichUrl && (
+                <a
+                  href={`${props.immichUrl}/photos/${encodeURIComponent(state.selected.id)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Open in Immich <span aria-hidden="true">↗</span>
+                </a>
+              )}
+            </header>
             <div class="image-detail-actions">
               <button
                 type="button"

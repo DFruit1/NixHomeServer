@@ -417,29 +417,23 @@ mod tests {
     }
 
     #[test]
-    fn missing_snapshot_is_an_error_so_documents_are_not_pruned() {
-        let source = source(r#"{"snapshotPath":"/nonexistent/media/metadata.json"}"#);
-        assert!(run_with(&source).is_err());
-    }
+    fn rejects_missing_malformed_or_unconfigured_snapshots() {
+        let missing = source(r#"{"snapshotPath":"/nonexistent/media/metadata.json"}"#);
+        assert!(run_with(&missing).is_err(), "missing snapshot must not prune documents");
 
-    #[test]
-    fn malformed_snapshot_without_entries_is_an_error() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("metadata.json");
         std::fs::write(&path, r#"{"schemaVersion":1}"#).expect("write");
-        let source = source(&format!(r#"{{"snapshotPath":"{}"}}"#, path.display()));
-        assert!(run_with(&source).is_err());
+        let malformed = source(&format!(r#"{{"snapshotPath":"{}"}}"#, path.display()));
+        assert!(run_with(&malformed).is_err(), "snapshot without entries must be rejected");
+
+        let unconfigured = source("{}");
+        assert!(run_with(&unconfigured).is_err(), "snapshotPath setting is required");
     }
 
     #[test]
     fn empty_snapshot_emits_nothing() {
         let (_dir, source) = write_snapshot("[]");
         assert!(run_with(&source).expect("extract").is_empty());
-    }
-
-    #[test]
-    fn missing_snapshot_path_setting_is_rejected() {
-        let source = source("{}");
-        assert!(run_with(&source).is_err());
     }
 }

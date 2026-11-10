@@ -356,6 +356,14 @@ export const VideosView = component$<{
                 >
                   <span class="video-list-icon">
                     <Icon name="video" />
+                    <img
+                      src={`/api/v1/items/${encodeURIComponent(item.id)}/image`}
+                      alt=""
+                      loading="lazy"
+                      onError$={(_, image) => {
+                        image.hidden = true;
+                      }}
+                    />
                   </span>
                   <span class="video-list-copy">
                     <strong>{item.relativePath.split("/").at(-1)}</strong>

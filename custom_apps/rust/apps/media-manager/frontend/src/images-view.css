@@ -51,27 +51,52 @@
   gap: 12px;
 }
 .image-tile {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   padding: 0;
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   text-align: left;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
 }
 .image-tile.selected {
-  border-color: var(--accent);
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+.image-tile.selected::after {
+  content: "✓";
+  position: absolute;
+  z-index: 1;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--accent);
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.2);
+  font-size: 13px;
 }
 .image-tile img {
   width: 100%;
   height: auto;
   aspect-ratio: 6 / 5;
   object-fit: cover;
+  border-radius: 10px;
   background: var(--paper-recess);
+  box-shadow: 0 3px 10px rgba(33, 29, 21, 0.08);
+  transition:
+    transform 180ms ease-out,
+    box-shadow 180ms ease-out;
+}
+.image-tile:hover img {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 18px rgba(33, 29, 21, 0.13);
 }
 .image-tile .image-tile-placeholder {
   display: grid;
@@ -79,11 +104,12 @@
   justify-items: center;
   aspect-ratio: 6 / 5;
   gap: 8px;
+  border-radius: 10px;
   color: var(--ink-soft);
   background: var(--paper-recess);
 }
 .image-tile > span {
-  padding: 10px;
+  padding: 10px 4px;
   overflow-wrap: anywhere;
   font-size: 13px;
 }
@@ -109,9 +135,11 @@
 }
 .image-detail.panel {
   display: grid;
-  gap: 20px;
-  padding: 20px;
-  overflow: visible;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 14px;
+  box-shadow: 0 8px 22px rgba(33, 29, 21, 0.06);
   scroll-margin-top: 20px;
 }
 .image-detail h2,
@@ -124,6 +152,7 @@
 .image-detail-header {
   display: grid;
   gap: 8px;
+  padding: 20px 20px 16px;
 }
 .image-detail-header h2 {
   overflow-wrap: anywhere;
@@ -133,17 +162,22 @@
   width: 100%;
   max-height: 50vh;
   object-fit: contain;
-  border: 1px solid var(--line);
+  border: 0;
   background: var(--paper-recess);
 }
 .image-detail-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  padding: 0 20px 20px;
+}
+.image-detail > .message {
+  margin: 0 20px 16px;
 }
 .image-analysis {
   display: grid;
   gap: 12px;
+  margin: 0 20px 20px;
 }
 .image-scores {
   display: grid;
@@ -280,4 +314,13 @@ fieldset.images-filter-row {
 
 .images-grid[data-view="tiles-4"] .image-tile-placeholder > span {
   display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .image-tile img {
+    transition: none;
+  }
+  .image-tile:hover img {
+    transform: none;
+  }
 }

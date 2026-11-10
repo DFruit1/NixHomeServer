@@ -76,7 +76,6 @@ import {
 import {
   type ConversionEnvelope,
   type DashboardState,
-  type IconName,
   type Integration,
   type IntegrationRefresh,
   type MediaRoot,
@@ -1781,12 +1780,12 @@ const ItemQuickActions = component$<{
   );
 });
 
-const CATEGORY_TABS: Array<{ id: string; label: string; icon: IconName }> = [
-  { id: "videos", label: "Videos", icon: "video" },
-  { id: "music", label: "Music", icon: "music-note" },
-  { id: "audiobooks", label: "Audiobooks", icon: "headphones" },
-  { id: "podcasts", label: "Podcasts", icon: "mic" },
-  { id: "books", label: "Books", icon: "book" },
+const CATEGORY_TABS: Array<{ id: string; label: string }> = [
+  { id: "videos", label: "Videos" },
+  { id: "music", label: "Music" },
+  { id: "audiobooks", label: "Audiobooks" },
+  { id: "podcasts", label: "Podcasts" },
+  { id: "books", label: "Books" },
 ];
 
 const LibraryPane = component$<{
@@ -1980,6 +1979,12 @@ const LibraryDetailPane = component$<{
       selectedMediaItem?.mediaKind,
       "edit-artwork",
     );
+  const selectionContext = props.selectedItem
+    ? (props.state.roots.find((root) => root.id === props.selectedItem?.rootId)
+        ?.label ?? "Selected media")
+    : props.activeFolder
+      ? "Selected folder"
+      : "Library details";
   return (
     <div
       class={{
@@ -1998,23 +2003,35 @@ const LibraryDetailPane = component$<{
           Back to libraries
         </button>
       )}
-      <div class="root-picker-image">
-        <MediaImage
-          imageId={imageId}
-          item={imageItem}
-          state={props.state}
-          title={props.imageTitle}
-          canEditCover={canEditCover}
-          onEditCover$={() => (coverEditing.value = !coverEditing.value)}
-        />
-      </div>
-      {selectedMediaItem && (
-        <ItemQuickActions
-          item={selectedMediaItem}
-          state={props.state}
-          editorCommand={editorCommand}
-        />
-      )}
+      <section
+        class="library-selection-hero"
+        aria-label="Selected library item"
+      >
+        <div class="root-picker-image">
+          <MediaImage
+            imageId={imageId}
+            item={imageItem}
+            state={props.state}
+            title={props.imageTitle}
+            canEditCover={canEditCover}
+            onEditCover$={() => (coverEditing.value = !coverEditing.value)}
+          />
+        </div>
+        <div class="library-selection-copy">
+          <span class="library-selection-context">{selectionContext}</span>
+          <h2>{props.imageTitle || "Choose a title or folder"}</h2>
+          {(props.selectedItem || props.activeFolder) && (
+            <p>{props.selectedItem?.relativePath ?? props.activeFolder}</p>
+          )}
+          {selectedMediaItem && (
+            <ItemQuickActions
+              item={selectedMediaItem}
+              state={props.state}
+              editorCommand={editorCommand}
+            />
+          )}
+        </div>
+      </section>
       {selectedMediaItem && coverEditing.value && (
         <CoverArtCard
           item={selectedMediaItem}
@@ -2105,6 +2122,32 @@ const LibraryView = component$<{
       initialRoot?.scope === "shared" ? (props.initialPath ?? "") : "",
   });
   const previousCategory = useSignal(props.state.selectedCategory);
+  const categoryTabs = useSignal<HTMLElement>();
+  useVisibleTask$(({ track }) => {
+    const category = track(() => props.state.selectedCategory);
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    )
+      return;
+    const tabs = categoryTabs.value;
+    const active = tabs?.querySelector<HTMLElement>(
+      `[data-category="${category}"]`,
+    );
+    if (!tabs || !active) return;
+    const behavior: ScrollBehavior = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches
+      ? "auto"
+      : "smooth";
+    tabs.scrollTo({
+      left: Math.max(
+        0,
+        active.offsetLeft - (tabs.clientWidth - active.offsetWidth) / 2,
+      ),
+      behavior,
+    });
+  });
   const filter = useSignal("");
   useTask$(({ track }) => {
     const category = track(() => props.state.selectedCategory);
@@ -2397,6 +2440,46 @@ const LibraryView = component$<{
   });
   return (
     <section class="library-view">
+      <header class="library-header">
+        <span>Catalog and metadata</span>
+        <h1>Manage library</h1>
+      </header>
+      <div
+        ref={categoryTabs}
+        class="library-tabs"
+        role="tablist"
+        aria-label="Library categories"
+      >
+        {CATEGORY_TABS.map((tab) => {
+          const hasRoots = libraryRoots.some(
+            (root) => root.category === tab.id,
+          );
+          return (
+            <button
+              key={tab.id}
+              data-category={tab.id}
+              type="button"
+              role="tab"
+              aria-label={tab.label}
+              aria-selected={activeCategory === tab.id}
+              title={
+                hasRoots
+                  ? undefined
+                  : `No ${tab.label.toLowerCase()} library is configured`
+              }
+              class={{
+                "library-tab": true,
+                active: activeCategory === tab.id,
+                disabled: !hasRoots,
+              }}
+              disabled={!hasRoots}
+              onClick$={() => props.loadCategoryItems$(tab.id)}
+            >
+              <span class="library-tab-label">{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
       <div class="library-toolbar">
         <label class="library-filter">
           <Icon name="search" size={16} />
@@ -2458,37 +2541,6 @@ const LibraryView = component$<{
           [`library-layout--${activeScope || "dual"}`]: true,
         }}
       >
-        <div class="library-tabs" role="tablist" aria-label="Media categories">
-          {CATEGORY_TABS.map((tab) => {
-            const hasRoots = libraryRoots.some(
-              (root) => root.category === tab.id,
-            );
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-label={tab.label}
-                aria-selected={activeCategory === tab.id}
-                title={
-                  hasRoots
-                    ? undefined
-                    : `No ${tab.label.toLowerCase()} library is configured`
-                }
-                class={{
-                  "library-tab": true,
-                  active: activeCategory === tab.id,
-                  disabled: !hasRoots,
-                }}
-                disabled={!hasRoots}
-                onClick$={() => props.loadCategoryItems$(tab.id)}
-              >
-                <Icon name={tab.icon} size={28} />
-                <span class="library-tab-label">{tab.label}</span>
-              </button>
-            );
-          })}
-        </div>
         {activeScope === "shared" ? (
           <LibraryDetailPane
             placement="personal"

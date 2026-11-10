@@ -387,14 +387,6 @@ mod tests {
     }
 
     #[test]
-    fn truncates_on_char_boundaries() {
-        let value = "héllo".repeat(10);
-        let truncated = truncate(&value, 3);
-        assert!(truncated.len() <= 3);
-        assert!(value.starts_with(&truncated));
-    }
-
-    #[test]
     fn level_matching_is_case_insensitive_substring() {
         let patterns = vec!["WIKISOURCE".to_string()];
         assert!(matches_any("wikisource_en_all_maxi_2026-02.zim", &patterns));

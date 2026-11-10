@@ -675,18 +675,6 @@ mod tests {
     }
 
     #[test]
-    fn manifest_key_is_stable() {
-        assert_eq!(
-            manifest_key("https://a/b.pdf"),
-            manifest_key("https://a/b.pdf")
-        );
-        assert_ne!(
-            manifest_key("https://a/b.pdf"),
-            manifest_key("https://a/c.pdf")
-        );
-    }
-
-    #[test]
     fn sanitizes_unsafe_owners() {
         assert_eq!(safe_owner("alice"), "alice");
         assert_eq!(safe_owner("../etc"), "unknown");

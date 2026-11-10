@@ -85,7 +85,7 @@ describe("Media Manager navigation", () => {
     await render(<Root />);
 
     const expectedLinks = new Map([
-      ["Libraries", "?view=library"],
+      ["Manage library", "?view=library"],
       ["Library health", "?view=health"],
       ["Conversions", "?view=conversions"],
       ["Metadata sources", "?view=accounts"],

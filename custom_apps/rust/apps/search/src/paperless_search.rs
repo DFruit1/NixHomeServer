@@ -549,19 +549,6 @@ mod tests {
         assert!(hit.snippet.is_none());
     }
 
-    #[test]
-    fn resolves_tag_names_and_ignores_unknown_ids() {
-        let taxonomy = taxonomy();
-        let names = taxonomy.tag_names(Some(&json!([3, 99, "x"])));
-        assert_eq!(names, vec!["finance".to_string()]);
-        assert!(taxonomy.tag_names(None).is_empty());
-        assert_eq!(
-            taxonomy.correspondent(Some(&json!(7))).as_deref(),
-            Some("ACME")
-        );
-        assert!(taxonomy.correspondent(Some(&json!(99))).is_none());
-    }
-
     fn tag_filter(tag: &str) -> crate::solr::SearchFilters {
         crate::solr::SearchFilters {
             tag: Some(tag.to_string()),
@@ -637,14 +624,20 @@ mod tests {
     }
 
     #[test]
-    fn omits_tags_when_no_name_resolves() {
+    fn tag_resolution_ignores_unknown_values_and_omits_empty_results() {
+        let taxonomy = taxonomy();
+        assert_eq!(taxonomy.tag_names(Some(&json!([3, 99, "x"]))), vec!["finance".to_string()]);
+        assert!(taxonomy.tag_names(None).is_empty());
+        assert_eq!(taxonomy.correspondent(Some(&json!(7))).as_deref(), Some("ACME"));
+        assert!(taxonomy.correspondent(Some(&json!(99))).is_none());
+
         let document = json!({ "id": 44, "title": "Unknown tags", "tags": [99, "x"] });
-        let hit = map_document(&config(), &taxonomy(), &document, "unknown");
+        let hit = map_document(&config(), &taxonomy, &document, "unknown");
         assert!(hit.metadata.get("tags").is_none());
         assert!(hit.to_json()["metadata"].get("tags").is_none());
 
         let mixed = json!({ "id": 45, "title": "Mixed tags", "tags": [3, 99] });
-        let hit = map_document(&config(), &taxonomy(), &mixed, "mixed");
+        let hit = map_document(&config(), &taxonomy, &mixed, "mixed");
         assert_eq!(hit.metadata["tags"], json!(["finance"]));
         assert_eq!(hit.to_json()["metadata"]["tags"], json!("finance"));
         assert!(hit.matches_filters(&tag_filter("finance")));

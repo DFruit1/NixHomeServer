@@ -77,41 +77,190 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
 }
 
+const ICONS = {
+  sync: '<path d="M20 7h-5V2"/><path d="M20 7a8 8 0 0 0-14.9-2M4 17h5v5"/><path d="M4 17a8 8 0 0 0 14.9 2"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/>',
+  check: '<path d="m5 12 4 4L19 6"/>',
+  cloud: '<path d="M17.5 19H6a4 4 0 0 1-.5-8 6.5 6.5 0 0 1 12.4-1.6A4.8 4.8 0 0 1 17.5 19Z"/>',
+  device: '<rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 18h2"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
+  file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
+  arrowRight: '<path d="M5 12h14m-5-5 5 5-5 5"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  close: '<path d="m6 6 12 12M18 6 6 18"/>',
+  warning: '<path d="M10.3 3.6 2.2 18a2 2 0 0 0 1.7 3h16.2a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/>',
+  upload: '<path d="M12 16V3m-5 5 5-5 5 5M5 15v5h14v-5"/>',
+  download: '<path d="M12 3v13m-5-5 5 5 5-5M5 15v5h14v-5"/>',
+  share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 10.5 6.8-4M8.6 13.5l6.8 4"/>',
+  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6"/>',
+  chevronUp: '<path d="m6 15 6-6 6 6"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  server: '<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6"/>',
+} as const;
+
+function icon(name: keyof typeof ICONS, className = ''): string {
+  return `<svg class="icon${className ? ` ${className}` : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${ICONS[name]}</svg>`;
+}
+
+function serverName(): string {
+  if (!state.server) return 'No server configured';
+  try { return new URL(state.server).host; }
+  catch { return state.server; }
+}
+
 function directionText(direction: SyncDirection): string {
   if (direction === 'phone-to-server') return 'Files move from this device to the server';
   if (direction === 'server-to-phone') return 'Files move from the server to this device';
   return 'Files move both ways';
 }
 
+function pendingFiles(estimate: SyncEstimate): string {
+  const count = Math.max(0, Math.round(Number(estimate.pendingCount) || 0));
+  if (count === 1) return '1 file waiting';
+  return count > 1 ? `${count} files waiting` : 'Changes waiting';
+}
+
 function spaceLine(pair: SyncPair, estimate?: SyncEstimate): string {
   if (pair.direction === 'two-way' || !state.user) return '';
   const id = escapeHtml(pair.id);
   if (!estimate) {
-    return state.estimatesDone[pair.id]
-      ? ''
-      : `<p class="pair-space" data-space-for="${id}">Checking size…</p>`;
+    const text = state.estimatesDone[pair.id]
+      ? 'Couldn’t check for changes. You can still try syncing.'
+      : 'Checking for changes and available space…';
+    return `<p class="pair-space${state.estimatesDone[pair.id] ? ' space-warn' : ''}" data-space-for="${id}">${text}</p>`;
   }
-  if (estimate.pendingBytes <= 0) return `<p class="pair-space" data-space-for="${id}">Already in sync</p>`;
+  if (estimate.pendingBytes <= 0) {
+    return `<p class="pair-space" data-space-for="${id}"><span>${escapeHtml(formatBytes(estimate.freeBytes))} free on this device</span></p>`;
+  }
   const status = spaceStatus(pair, estimate);
+  const amount = formatBytes(estimate.pendingBytes);
+  const free = `${formatBytes(estimate.freeBytes)} free`;
   if (pair.direction !== 'server-to-phone') {
-    return `<p class="pair-space" data-space-for="${id}">≈ ${escapeHtml(formatBytes(estimate.pendingBytes))} to upload</p>`;
+    return `<p class="pair-space" data-space-for="${id}"><span>${escapeHtml(pendingFiles(estimate))} · ≈ ${escapeHtml(amount)} to upload</span></p>`;
   }
-  // The blocked case leaves the reason to the disabled Sync button, which
-  // already reads "Not enough space"; repeating it here said the same words
-  // twice within one row. The warn case keeps its prefix because weight alone
-  // is too weak a cue for it.
   const text = status === 'blocked'
-    ? `${formatBytes(estimate.pendingBytes)} needed · ${formatBytes(estimate.freeBytes)} free`
+    ? `${pendingFiles(estimate)} · ${amount} needed`
     : status === 'warn'
-      ? `Low space: ≈ ${formatBytes(estimate.pendingBytes)} to download · ${formatBytes(estimate.freeBytes)} free`
-      : `≈ ${formatBytes(estimate.pendingBytes)} to download · ${formatBytes(estimate.freeBytes)} free`;
+      ? `Low space · ${pendingFiles(estimate)} · ≈ ${amount} to download`
+      : `${pendingFiles(estimate)} · ≈ ${amount} to download`;
   const tone = status === 'blocked' ? ' space-blocked' : status === 'warn' ? ' space-warn' : '';
-  return `<p class="pair-space${tone}" data-space-for="${id}">${escapeHtml(text)}</p>`;
+  return `<p class="pair-space${tone}" data-space-for="${id}"><span>${escapeHtml(text)}</span><span class="pair-space-meta">${escapeHtml(free)}</span></p>`;
 }
 
 function storageSummary(): string {
   if (!state.deviceStorage || !state.user) return '';
-  return ` · ${formatBytes(state.deviceStorage.freeBytes)} free of ${formatBytes(state.deviceStorage.totalBytes)} on this device`;
+  return `${formatBytes(state.deviceStorage.freeBytes)} free of ${formatBytes(state.deviceStorage.totalBytes)}`;
+}
+
+type PairStatus = { label: string; tone: 'active' | 'success' | 'pending' | 'warning' | 'danger' | 'neutral'; icon: keyof typeof ICONS };
+
+function pairIsSyncing(pair: SyncPair): boolean {
+  return state.syncingPairId === pair.id || Boolean(state.progress?.active && (state.progress.pair === pair.name || state.progress.pairs.includes(pair.name)));
+}
+
+function pairStatus(pair: SyncPair): PairStatus {
+  const estimate = state.estimates[pair.id];
+  if (pairIsSyncing(pair)) return { label: 'Syncing now', tone: 'active', icon: 'sync' };
+  if (!state.user || pair.account !== state.user) return { label: state.user ? 'Different account' : 'Sign-in needed', tone: 'neutral', icon: 'user' };
+  if (pair.server && pair.server !== state.server) return { label: 'Different server', tone: 'neutral', icon: 'server' };
+  if (pair.direction === 'two-way') return { label: 'Needs new pair', tone: 'warning', icon: 'warning' };
+  if (state.offline) return { label: 'Offline', tone: 'warning', icon: 'warning' };
+  if (spaceStatus(pair, estimate) === 'blocked') return { label: 'Not enough space', tone: 'danger', icon: 'warning' };
+  if (estimate?.pendingBytes) return { label: 'Changes to sync', tone: 'pending', icon: pair.direction === 'server-to-phone' ? 'download' : 'upload' };
+  if (estimate) return { label: 'Up to date', tone: 'success', icon: 'check' };
+  if (state.estimatesDone[pair.id]) return { label: 'Status unavailable', tone: 'warning', icon: 'warning' };
+  return { label: 'Checking…', tone: 'neutral', icon: 'sync' };
+}
+
+function pairStatusBadge(pair: SyncPair): string {
+  const status = pairStatus(pair);
+  return `<span class="status-badge status-${status.tone}">${icon(status.icon)}<span>${escapeHtml(status.label)}</span></span>`;
+}
+
+function overviewTone(): string {
+  if (!state.user) return 'is-signed-out';
+  if (state.progress?.active || state.syncingPairId) return 'is-active';
+  if (state.offline || state.pairs.some((pair) => spaceStatus(pair, state.estimates[pair.id]) === 'blocked')) return 'is-warning';
+  return 'is-ready';
+}
+
+function overviewContent(): string {
+  const active = Boolean(state.user && (state.progress?.active || state.syncingPairId));
+  const blocked = state.pairs.filter((pair) => spaceStatus(pair, state.estimates[pair.id]) === 'blocked');
+  const pending = state.pairs.filter((pair) => (state.estimates[pair.id]?.pendingBytes ?? 0) > 0);
+  const checked = state.pairs.filter((pair) => state.estimates[pair.id]);
+  let title = 'Your files, right where you need them.';
+  let copy = 'Connect to your home server to choose folders and keep them in sync with this device.';
+  let symbol: keyof typeof ICONS = 'sync';
+
+  if (!state.user) {
+    if (state.pairs.length) {
+      title = 'Sign in to sync your folders';
+      copy = 'Your saved folders are still here. Sign in to check for changes and sync.';
+      symbol = 'user';
+    }
+  } else if (!state.pairs.length) {
+    title = 'What would you like on this device?';
+    copy = 'Choose a recommended folder below. The first copy starts as soon as you set it up.';
+    symbol = 'folder';
+  } else if (active) {
+    title = 'Syncing your files';
+    copy = 'The current file and transfer counts update here as the sync runs.';
+    symbol = 'sync';
+  } else if (state.offline) {
+    title = 'You’re offline';
+    copy = 'Your saved folders are still here. Reconnect to the server to check for changes and sync.';
+    symbol = 'cloud';
+  } else if (blocked.length) {
+    title = 'Not enough device space';
+    copy = `${blocked.length === 1 ? blocked[0]!.name : `${blocked.length} folders`} need${blocked.length === 1 ? 's' : ''} more free space before downloading. Free up space, then try again.`;
+    symbol = 'warning';
+  } else if (state.pairs.some((pair) => !state.estimatesDone[pair.id])) {
+    title = 'Checking your folders';
+    copy = 'Looking for changes and available space. Your folder controls will update as each check finishes.';
+    symbol = 'sync';
+  } else if (state.pairs.length && checked.length < state.pairs.length) {
+    title = 'Some statuses are unavailable';
+    copy = 'File Sync couldn’t check every folder. You can still try syncing each folder below.';
+    symbol = 'warning';
+  } else if (pending.length) {
+    title = 'Changes are ready to sync';
+    copy = `${pending.length} of ${state.pairs.length} ${state.pairs.length === 1 ? 'folder has' : 'folders have'} files waiting. Use Sync now on a folder to bring it up to date.`;
+    symbol = 'download';
+  } else if (state.pairs.length) {
+    title = 'Everything’s in sync';
+    copy = 'All of your configured folders are up to date.';
+    symbol = 'check';
+  }
+
+  const action = !state.user
+    ? state.server
+      ? `<button class="primary-button overview-action" type="button" data-sign-in>Sign in to your server ${icon('arrowRight')}</button>`
+      : `<button class="primary-button overview-action" type="button" data-open-settings>Set up your server ${icon('arrowRight')}</button>`
+    : '';
+  const background = state.user && state.backgroundStatus ? `<span>${icon('sync')}${escapeHtml(state.backgroundStatus)}</span>` : '';
+  return `
+    <div class="overview-main">
+      <div class="overview-copy">
+        <span class="overview-symbol">${icon(symbol)}</span>
+        <h1 id="overview-title">${escapeHtml(title)}</h1>
+        <p>${escapeHtml(copy)}</p>
+        ${action}
+      </div>
+      <span class="overview-watermark" aria-hidden="true">${icon(symbol)}</span>
+    </div>
+    <div class="overview-meta">
+      <span>${icon(state.user ? 'cloud' : 'server')}${escapeHtml(serverName())}</span>
+      ${background}
+    </div>
+    <div class="sync-progress" id="sync-progress" aria-live="polite" aria-atomic="true" ${active ? '' : 'hidden'}>${progressCopy(state.progress, state.syncingPairId)}</div>`;
+}
+
+function updateOverview(): void {
+  const overview = document.querySelector<HTMLElement>('#sync-overview');
+  if (!overview) return;
+  overview.className = `sync-overview ${overviewTone()}`;
+  overview.innerHTML = overviewContent();
 }
 
 // The reserved server root that stands for the personal folder. Browsing it
@@ -141,7 +290,7 @@ function presetSizeLine(preset: SyncPreset, pair?: SyncPair): string {
     }
     const pending = Number(estimate.pendingBytes) || 0;
     if (pending <= 0) {
-      return `<p class="suggest-size" data-preset-size-for="${id}">Already in sync · ${escapeHtml(formatBytes(estimate.remoteTotalBytes))} on the server</p>`;
+      return `<p class="suggest-size" data-preset-size-for="${id}">${escapeHtml(formatBytes(estimate.remoteTotalBytes))} on the server</p>`;
     }
     const verb = preset.direction === 'phone-to-server' ? 'to upload' : 'to download';
     return `<p class="suggest-size" data-preset-size-for="${id}">${escapeHtml(`${formatBytes(estimate.remoteTotalBytes)} on the server · ${formatBytes(pending)} ${verb}`)}</p>`;
@@ -162,11 +311,13 @@ function presetSizeLine(preset: SyncPreset, pair?: SyncPair): string {
 function progressCopy(progress?: SyncProgress, syncingPairId?: string): string {
   if (progress?.active) {
     const names = progress.pairs.length > 1 ? `${progress.pairs.length} folders` : progress.pair;
-    const arrow = progress.direction === 'server-to-phone' ? '↓' : '↑';
-    const file = progress.currentFile ? ` ${arrow} ${escapeHtml(progress.currentFile)}` : ' preparing…';
-    return `<p class="progress-title">Syncing ${escapeHtml(names)}…${file}</p><p class="progress-counts">${progress.transferred} copied · ${progress.skipped} unchanged</p>`;
+    const directionIcon = progress.direction === 'server-to-phone' ? 'download' : 'upload';
+    const file = progress.currentFile
+      ? `<p class="progress-file">${icon(directionIcon)}<span>${escapeHtml(progress.currentFile)}</span></p>`
+      : '<p class="progress-file">Preparing the next file…</p>';
+    return `<div class="progress-heading"><strong>Syncing ${escapeHtml(names)}</strong><span>${progress.transferred} copied · ${progress.skipped} unchanged</span></div><div class="progress-track" aria-hidden="true"><span></span></div>${file}`;
   }
-  if (syncingPairId) return '<p class="progress-title">Syncing…</p>';
+  if (syncingPairId) return '<div class="progress-heading"><strong>Starting sync…</strong></div><div class="progress-track" aria-hidden="true"><span></span></div>';
   return '';
 }
 
@@ -204,7 +355,7 @@ function routeFor(direction: SyncDirection, localValue: string, serverValue: str
 // list so a folder path never changes appearance between the two.
 function routeLine(direction: SyncDirection, localValue: string, serverValue: string): string {
   const route = routeFor(direction, localValue, serverValue);
-  return `<span class="route-line"><span class="route-place">${escapeHtml(route.sourceLabel)}</span> <strong>${escapeHtml(route.sourceValue)}</strong> <span class="route-arrow" aria-hidden="true">${route.arrow}</span> <span class="route-place">${escapeHtml(route.targetLabel)}</span> <strong>${escapeHtml(route.targetValue)}</strong></span>`;
+  return `<span class="route-line"><span class="route-line-endpoint"><span class="route-place">${escapeHtml(route.sourceLabel)}</span><strong>${escapeHtml(route.sourceValue)}</strong></span><span class="route-arrow" aria-hidden="true">${icon(direction === 'two-way' ? 'sync' : 'arrowRight')}</span><span class="route-line-endpoint"><span class="route-place">${escapeHtml(route.targetLabel)}</span><strong>${escapeHtml(route.targetValue)}</strong></span></span>`;
 }
 
 function presetServerLocation(preset: SyncPreset): string {
@@ -241,7 +392,7 @@ function presetActions(preset: SyncPreset, hasPairs: boolean): string {
   const sizing = state.sizingPresetId === preset.id;
   const known = Boolean(state.librarySizes[preset.id]);
   return `<div class="suggest-actions" data-preset-actions="${escapeHtml(preset.id)}">
-    <button class="${hasPairs ? 'secondary-button' : 'primary-button'}" type="button" data-enable-preset="${escapeHtml(preset.id)}" ${state.syncingPairId ? 'disabled' : ''}>Enable</button>
+    <button class="${hasPairs ? 'secondary-button' : 'primary-button'}" type="button" data-enable-preset="${escapeHtml(preset.id)}" aria-label="Set up ${escapeHtml(preset.title)}" ${state.syncingPairId ? 'disabled' : ''}>${icon('plus')}<span>Set up</span></button>
     ${known || sizing
       ? ''
       : `<button class="text-button" type="button" data-calc-size="${escapeHtml(preset.id)}" ${state.syncingPairId || state.sizingPresetId ? 'disabled' : ''}>Calculate size</button>`}
@@ -249,33 +400,31 @@ function presetActions(preset: SyncPreset, hasPairs: boolean): string {
 }
 
 function render(): void {
-  // Most people set up the folders the server already suggests, so the
-  // suggested list is the page's primary content until something is paired.
-  // A suggestion that is already set up stays in the list and reports its
-  // size instead of offering a second Enable, so the list doubles as the
-  // answer to "how big is each of my folders?".
   const hasPairs = state.pairs.length > 0;
   const suggestSection = state.user ? `
-    <section class="suggest-section" ${state.presets.length ? 'aria-labelledby="suggest-heading"' : ''}>
+    <section class="suggest-section" id="suggestions" aria-labelledby="suggest-heading">
+      <div class="section-heading">
+        <h2 id="suggest-heading">${hasPairs ? 'Add another folder' : 'Recommended for you'}</h2>
+      </div>
       ${state.presets.length ? `
-        <h2 id="suggest-heading">Suggested folders</h2>
         <ul class="suggest-list">${state.presets.map((preset) => {
           const pair = pairForPreset(preset);
           const size = presetSizeLine(preset, pair);
           return `<li class="suggest-row${pair ? ' is-set-up' : ''}${size ? ' has-size' : ''}" data-preset-row="${escapeHtml(preset.id)}">
             <span class="service-logo" aria-hidden="true">${serviceMark(preset.service, preset.serviceTitle)}</span>
             <div class="suggest-copy">
-              <h3>${escapeHtml(preset.serviceTitle)}</h3>
-              <p>${escapeHtml(preset.title)}</p>
+              <div class="suggest-title-line"><h3>${escapeHtml(preset.title)}</h3>${pair ? `<span class="preset-added">${icon('check')}Added</span>` : ''}</div>
+              <p class="suggest-service">${escapeHtml(preset.serviceTitle)}</p>
+              <p class="suggest-description">${escapeHtml(preset.description)}</p>
             </div>
             ${pair ? size : `${presetActions(preset, hasPairs)}${size}`}
             ${routeLine(preset.direction, `/${preset.localSubpath}`, presetServerLocation(preset))}
           </li>`;
         }).join('')}</ul>
-      ` : '<p class="services-empty">No suggested folders are available for this account yet.</p>'}
+      ` : '<p class="services-empty">No recommended folders are available for this account yet. You can still pair your own folders below.</p>'}
       <div class="section-actions">
-        <button class="text-button" type="button" id="open-files">Browse server files</button>
-        <button class="text-button" type="button" id="open-pair-form">Pair your own folders</button>
+        <button class="secondary-button" type="button" id="open-files">${icon('folder')}Browse server files</button>
+        <button class="text-button" type="button" id="open-pair-form">${icon('plus')}Pair your own folders</button>
       </div>
     </section>` : '';
   const pairRows = state.pairs.map((pair) => {
@@ -287,126 +436,136 @@ function render(): void {
     const syncLabel = state.syncingPairId === pair.id ? 'Syncing…' : blocked ? 'Not enough space' : pair.direction === 'two-way' ? 'Recreate pair' : pair.server && pair.server !== state.server ? 'Different server' : !state.user ? 'Sign in to sync' : pair.account !== state.user ? 'Different account' : 'Sync now';
     return `
     <li class="pair-row" data-pair-id="${escapeHtml(pair.id)}">
-      <h3 class="pair-name">${escapeHtml(pair.name)}</h3>
+      <div class="pair-heading">
+        <span class="pair-folder-icon" aria-hidden="true">${icon('folder')}</span>
+        <h3 class="pair-name">${escapeHtml(pair.name)}</h3>
+        <div class="pair-status" data-pair-status="${escapeHtml(pair.id)}">${pairStatusBadge(pair)}</div>
+      </div>
       <div class="pair-route">
         <div class="route-endpoint">
-          <span class="route-role">From <span class="route-place">${escapeHtml(route.sourceLabel)}</span></span>
+          <span class="route-role">${icon(route.sourceLabel === 'Server' ? 'server' : 'device')}From ${escapeHtml(route.sourceLabel)}</span>
           <strong class="route-path">${escapeHtml(route.sourceValue)}</strong>
         </div>
-        <span class="route-arrow" aria-label="${escapeHtml(directionText(pair.direction))}">${route.arrow}</span>
+        <span class="pair-route-arrow" role="img" aria-label="${escapeHtml(directionText(pair.direction))}">${icon(pair.direction === 'two-way' ? 'sync' : 'arrowRight')}</span>
         <div class="route-endpoint">
-          <span class="route-role">To <span class="route-place">${escapeHtml(route.targetLabel)}</span></span>
+          <span class="route-role">${icon(route.targetLabel === 'Server' ? 'server' : 'device')}To ${escapeHtml(route.targetLabel)}</span>
           <strong class="route-path">${escapeHtml(route.targetValue)}</strong>
         </div>
       </div>
       ${spaceLine(pair, estimate)}
       <div class="pair-actions">
-        <button class="text-button" type="button" data-sync="${escapeHtml(pair.id)}" ${busy || blocked || unavailable ? 'disabled' : ''}>${syncLabel}</button>
-        <button class="text-button danger-text" type="button" data-remove="${escapeHtml(pair.id)}" aria-label="Remove ${escapeHtml(pair.name)}" ${state.syncingPairId || state.removingPairId ? 'disabled' : ''}>${state.removingPairId === pair.id ? 'Removing…' : 'Remove'}</button>
+        <button class="secondary-button sync-button" type="button" data-sync="${escapeHtml(pair.id)}" ${busy || blocked || unavailable ? 'disabled' : ''}>${icon('sync')}<span>${syncLabel}</span></button>
+        <button class="text-button danger-text" type="button" data-remove="${escapeHtml(pair.id)}" aria-label="Remove ${escapeHtml(pair.name)}" ${state.syncingPairId || state.removingPairId ? 'disabled' : ''}>${icon('trash')}<span>${state.removingPairId === pair.id ? 'Removing…' : 'Remove'}</span></button>
       </div>
     </li>
   `;
   }).join('');
 
   app.innerHTML = `
-    <main class="shell">
+    <div class="app-shell">
       <header class="topbar">
-        <a class="brand" href="#" aria-label="File Sync home"><span class="brand-mark" aria-hidden="true">FS</span><span>File Sync</span></a>
-        <button class="text-button settings-button" type="button" id="open-settings" aria-haspopup="dialog">Settings</button>
+        <a class="brand" href="#main-content" aria-label="File Sync home"><span class="brand-mark" aria-hidden="true">${icon('sync')}</span><span>File Sync</span></a>
+        <div class="topbar-actions">
+          ${state.user ? `<span class="connection-pill${state.offline ? ' is-offline' : ''}"><span class="connection-dot" aria-hidden="true"></span>${state.offline ? 'Offline' : 'Connected'}</span>` : ''}
+          <button class="icon-button settings-button" type="button" id="open-settings" data-open-settings aria-haspopup="dialog" aria-label="Open settings" title="Settings">${icon('settings')}<span>Settings</span></button>
+        </div>
       </header>
 
-      <section class="sync-progress" id="sync-progress" aria-live="polite" ${state.progress?.active || state.syncingPairId ? '' : 'hidden'}>
-        ${progressCopy(state)}
-      </section>
+      <main id="main-content">
+        <section class="sync-overview ${overviewTone()}" id="sync-overview" aria-labelledby="overview-title">${overviewContent()}</section>
 
-      <h1 class="page-title">${hasPairs ? 'Folder pairs' : 'Set up your folders'}</h1>
-      ${!hasPairs && state.user ? '<p class="page-lead">Pick a folder below. File Sync copies it to this device and keeps it up to date.</p>' : ''}
+        ${hasPairs ? `
+          <section class="pairs-section" aria-labelledby="pairs-heading">
+            <div class="section-heading"><h2 id="pairs-heading">${state.user ? 'Synced folders' : 'Saved folders'}</h2>${state.user ? '' : '<p>Sign in to reconnect these folders and resume syncing.</p>'}</div>
+            <ul class="pair-list">${pairRows}</ul>
+          </section>
+        ` : ''}
 
-      ${hasPairs ? `
-        <section class="pairs-section">
-          <ul class="pair-list">${pairRows}</ul>
-        </section>
-      ` : ''}
+        ${suggestSection}
+      </main>
+    </div>
 
-      ${suggestSection}
+    <div class="toast-stack">
+      <div class="toast" role="status" aria-live="polite" ${state.notice ? '' : 'hidden'}>${icon('check')}<span>${escapeHtml(state.notice)}</span></div>
+      <div class="toast error-toast" role="alert" ${state.error ? '' : 'hidden'}>${icon('warning')}<span>${escapeHtml(state.error)}</span></div>
+    </div>
 
-      <div class="toast" role="status" aria-live="polite" ${state.notice ? '' : 'hidden'}>${escapeHtml(state.notice)}</div>
-      <div class="toast error-toast" role="alert" ${state.error ? '' : 'hidden'}>${escapeHtml(state.error)}</div>
-    </main>
-
-    <dialog id="pair-dialog" class="pair-dialog">
+    <dialog id="pair-dialog" class="pair-dialog" aria-labelledby="pair-heading">
       <form method="dialog" id="pair-form">
-        <div class="dialog-heading"><h2>Add a folder pair</h2><button class="close-button" value="cancel" aria-label="Close dialog">×</button></div>
-        <label for="pair-name">Pair name</label>
-        <input id="pair-name" name="name" required maxlength="64" placeholder="For example, Field notes" />
-        <label for="pick-folder">Folder on this device</label>
-        <div class="picker-row"><span id="picked-folder">No folder selected</span><button class="secondary-button" id="pick-folder" type="button">Choose folder</button></div>
-        <label for="browse-server">Folder on server</label>
-        <div class="picker-row"><span id="picked-server-folder">No server folder selected</span><button class="secondary-button" id="browse-server" type="button">Browse server</button></div>
-        <fieldset>
+        <div class="dialog-heading"><div><h2 id="pair-heading">Pair your own folders</h2><p>Choose both locations and which way files should move.</p></div><button class="close-button" value="cancel" aria-label="Close dialog">${icon('close')}</button></div>
+        <div class="field-group"><label for="pair-name">Pair name</label><input id="pair-name" name="name" required maxlength="64" placeholder="For example, Field notes" /></div>
+        <div class="field-group"><label for="pick-folder">Folder on this device</label><div class="picker-row"><span class="picker-symbol">${icon('device')}</span><span id="picked-folder">No folder selected</span><button class="secondary-button" id="pick-folder" type="button">Choose</button></div></div>
+        <div class="field-group"><label for="browse-server">Folder on server</label><div class="picker-row"><span class="picker-symbol">${icon('server')}</span><span id="picked-server-folder">No folder selected</span><button class="secondary-button" id="browse-server" type="button">Browse</button></div></div>
+        <fieldset class="direction-fieldset">
           <legend>Sync direction</legend>
-          <label class="direction-choice"><input type="radio" name="direction" value="phone-to-server" checked /><span>This device <b>→</b> Server</span></label>
-          <label class="direction-choice"><input type="radio" name="direction" value="server-to-phone" /><span>Server <b>→</b> This device</span></label>
+          <label class="direction-choice"><input type="radio" name="direction" value="phone-to-server" checked /><span class="direction-choice-icon">${icon('upload')}</span><span class="direction-choice-copy"><strong>This device to server</strong><small>Upload new and changed files</small></span></label>
+          <label class="direction-choice"><input type="radio" name="direction" value="server-to-phone" /><span class="direction-choice-icon">${icon('download')}</span><span class="direction-choice-copy"><strong>Server to this device</strong><small>Download files for access here</small></span></label>
         </fieldset>
         <p class="form-error" id="form-error" role="alert"></p>
-        <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="save-pair" type="button">Save pair</button></div>
+        <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="save-pair" type="button">${icon('plus')}Save pair</button></div>
       </form>
     </dialog>
 
-    <dialog id="server-browser" class="pair-dialog server-browser">
-      <div class="dialog-heading"><h2>Choose a server folder</h2><button class="close-button" type="button" id="close-server-browser" aria-label="Close dialog">×</button></div>
+    <dialog id="server-browser" class="pair-dialog server-browser" aria-labelledby="server-browser-heading">
+      <div class="dialog-heading"><div><h2 id="server-browser-heading">Choose a server folder</h2><p>Select the folder this pair will use.</p></div><button class="close-button" type="button" id="close-server-browser" aria-label="Close dialog">${icon('close')}</button></div>
       <p class="browser-location" id="server-browser-location">/</p>
       <div class="browser-list" id="server-browser-list"></div>
-      <div class="dialog-actions"><button class="secondary-button" type="button" id="server-browser-up">Up one level</button><button class="primary-button" type="button" id="choose-server-folder">Use this folder</button></div>
+      <div class="dialog-actions"><button class="secondary-button" type="button" id="server-browser-up">${icon('chevronUp')}Up one level</button><button class="primary-button" type="button" id="choose-server-folder">Use this folder</button></div>
     </dialog>
 
     <dialog id="files-dialog" class="pair-dialog files-dialog" aria-labelledby="files-heading">
-      <div class="dialog-heading"><h2 id="files-heading">Server files</h2><button class="close-button" type="button" id="close-files" aria-label="Close files">×</button></div>
+      <div class="dialog-heading"><div><h2 id="files-heading">Server files</h2><p>Browse, download, or share without creating a sync pair.</p></div><button class="close-button" type="button" id="close-files" aria-label="Close files">${icon('close')}</button></div>
       <p class="browser-location" id="files-location">/</p>
       <div class="browser-list" id="files-list"></div>
       <p class="form-error" id="files-error" role="alert"></p>
       <p class="files-status" id="files-status" role="status" aria-live="polite"></p>
-      <div class="dialog-actions"><button class="secondary-button" type="button" id="files-up">Up one level</button></div>
+      <div class="dialog-actions"><button class="secondary-button" type="button" id="files-up">${icon('chevronUp')}Up one level</button></div>
     </dialog>
 
     <dialog id="permission-dialog" class="pair-dialog" aria-labelledby="permission-heading">
-      <div class="dialog-heading"><h2 id="permission-heading">All files access</h2><button class="close-button" type="button" id="cancel-permission-request" aria-label="Close dialog">×</button></div>
+      <div class="dialog-heading"><div><h2 id="permission-heading">All files access</h2><p>Let File Sync create and manage the selected folder.</p></div><button class="close-button" type="button" id="cancel-permission-request" aria-label="Close dialog">${icon('close')}</button></div>
       <p id="permission-status"></p>
       <div class="dialog-actions"><button class="secondary-button" type="button" id="choose-folder-manually">Choose folder manually</button><button class="primary-button" type="button" id="open-all-files-settings">Open settings</button></div>
     </dialog>
 
     <dialog id="settings-dialog" class="pair-dialog settings-dialog" aria-labelledby="settings-heading">
-      <div class="dialog-heading"><h2 id="settings-heading">Settings</h2><button class="close-button" value="cancel" aria-label="Close settings">×</button></div>
-      <div class="settings-account">
-        <p class="account-user">${state.user
-          ? `Signed in as <strong>${escapeHtml(state.user)}</strong>${state.offline ? ' · offline, will retry' : ''}${state.backgroundStatus ? ` · ${escapeHtml(state.backgroundStatus)}` : ''}<span id="storage-summary">${escapeHtml(storageSummary())}</span>`
-          : 'Sign in to sync your folders.'}</p>
+      <div class="dialog-heading"><div><h2 id="settings-heading">Settings</h2></div><button class="close-button" type="button" id="close-settings" aria-label="Close settings">${icon('close')}</button></div>
+      <section class="settings-account" aria-labelledby="connection-heading">
+        <h3 id="connection-heading">Connection</h3>
+        <p class="account-user">${state.user ? `${icon('user')}<span>Signed in as <strong>${escapeHtml(state.user)}</strong>${state.offline ? ' · offline' : ''}</span>` : `${icon('user')}<span>Sign in to sync your folders.</span>`}</p>
+        <div class="settings-facts">
+          <span>${icon('server')}${escapeHtml(serverName())}</span>
+          ${state.backgroundStatus ? `<span>${icon('sync')}${escapeHtml(state.backgroundStatus)}</span>` : ''}
+          <span id="storage-summary" class="storage-fact">${state.deviceStorage ? `${icon('device')}${escapeHtml(storageSummary())}` : ''}</span>
+        </div>
         <div class="settings-account-actions">
           ${state.user
-            ? `${state.settingsAuthorized ? '' : '<button class="secondary-button" type="button" id="unlock-settings">Unlock settings</button>'}<button class="secondary-button" type="button" id="sign-out">Sign out</button>`
-            : '<button class="primary-button" type="button" id="sign-in">Sign in</button>'}
+            ? `${state.settingsAuthorized ? '' : '<button class="secondary-button" type="button" id="unlock-settings">Unlock settings</button>'}<button class="text-button danger-text" type="button" id="sign-out">Sign out</button>`
+            : `<button class="primary-button" type="button" data-sign-in>Sign in ${icon('arrowRight')}</button>`}
         </div>
-      </div>
+      </section>
       <form method="dialog" id="settings-form">
-        <label for="server-address">Server address</label>
-        <input id="server-address" type="url" value="${escapeHtml(state.server)}" autocomplete="url" autocapitalize="none" spellcheck="false" />
-        <fieldset>
-          <legend>Sync storage limits</legend>
-          <p class="settings-hint">Downloads always keep 15% of device storage free.</p>
-          <label for="warn-limit">Warn when a sync would use more than this share of free space (%)</label>
-          <input id="warn-limit" type="number" min="1" max="100" value="${state.warnPercent}" />
-          <label for="block-limit">Stop a sync above this share of free space (%)</label>
-          <input id="block-limit" type="number" min="1" max="100" value="${state.blockPercent}" />
+        <section class="settings-group" aria-labelledby="server-settings-heading">
+          <h3 id="server-settings-heading">Server</h3>
+          <div class="field-group"><label for="server-address">Server address</label><input id="server-address" type="url" value="${escapeHtml(state.server)}" autocomplete="url" autocapitalize="none" spellcheck="false" placeholder="https://filesync-api.example.org" /></div>
+        </section>
+        <fieldset class="settings-group storage-settings">
+          <legend>Storage limits</legend>
+          <p class="settings-hint">Downloads always keep 15% of total device storage free. These limits apply to the remaining space.</p>
+          <div class="limit-grid">
+            <div class="limit-field"><label for="warn-limit">Warn me at</label><div class="input-suffix"><input id="warn-limit" type="number" min="1" max="100" value="${state.warnPercent}" /><span>%</span></div><small>of free space</small></div>
+            <div class="limit-field"><label for="block-limit">Stop downloads at</label><div class="input-suffix"><input id="block-limit" type="number" min="1" max="100" value="${state.blockPercent}" /><span>%</span></div><small>of free space</small></div>
+          </div>
         </fieldset>
         <p class="form-error" id="settings-error" role="alert"></p>
-        <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="save-server" type="button">Save address</button></div>
+        <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="save-server" type="button">Save settings</button></div>
       </form>
     </dialog>
 
     <dialog id="remove-dialog" class="pair-dialog settings-dialog" aria-labelledby="remove-heading">
-      <div class="dialog-heading"><h2 id="remove-heading">Remove folder pair</h2><button class="close-button" type="button" id="cancel-remove" aria-label="Close dialog">×</button></div>
+      <div class="dialog-heading"><div><h2 id="remove-heading">Remove folder pair</h2></div><button class="close-button" type="button" id="cancel-remove" aria-label="Close dialog">${icon('close')}</button></div>
       <p id="remove-copy"></p>
-      <div class="dialog-actions"><button class="secondary-button" type="button" id="cancel-remove-button">Cancel</button><button class="primary-button" type="button" id="confirm-remove">Remove pair</button></div>
+      <div class="dialog-actions"><button class="secondary-button" type="button" id="cancel-remove-button">Keep pair</button><button class="danger-button" type="button" id="confirm-remove">${icon('trash')}Remove pair</button></div>
     </dialog>
   `;
 
@@ -426,7 +585,8 @@ function bindEvents(): void {
   const dialog = document.querySelector<HTMLDialogElement>('#pair-dialog')!;
   const browser = document.querySelector<HTMLDialogElement>('#server-browser')!;
   const settingsDialog = document.querySelector<HTMLDialogElement>('#settings-dialog')!;
-  document.querySelector('#open-settings')?.addEventListener('click', () => settingsDialog.showModal());
+  document.querySelectorAll<HTMLButtonElement>('[data-open-settings]').forEach((button) => button.addEventListener('click', () => settingsDialog.showModal()));
+  document.querySelector('#close-settings')?.addEventListener('click', () => settingsDialog.close());
   dialog.addEventListener('close', () => {
     const abandonedFolder = selectedFolder;
     if (abandonedFolder && !state.pairs.some((pair) => pair.local.uri === abandonedFolder.uri) && invoke) {
@@ -503,21 +663,22 @@ function bindEvents(): void {
     state.blockPercent = blockPercent;
     localStorage.setItem(SPACE_PREFS_KEY, JSON.stringify({ warnPercent, blockPercent }));
     applySpacePrefsToPairs();
-    if (state.user && nextServer !== state.server && invoke) {
+    const serverChanged = nextServer !== state.server;
+    if (state.user && serverChanged && invoke) {
       try { await invoke<void>('logout'); localStorage.removeItem(SESSION_BACKUP_KEY); localStorage.removeItem(USER_KEY); state.user = undefined; state.offline = false; state.settingsAuthorized = false; }
       catch (error) { setError(error); return; }
     }
     state.server = nextServer;
-    state.presets = [];
+    if (serverChanged) state.presets = [];
     localStorage.setItem(SETTINGS_KEY, state.server);
-    state.notice = state.server ? 'Server address saved on this device.' : 'Server address cleared.';
+    state.notice = state.server ? 'Settings saved on this device.' : 'Server address cleared.';
     state.error = '';
     try { await persistPairs(); } catch { /* The notice already explains the save; pairs retry on next change. */ }
     render();
     void refreshEstimates();
   });
 
-  document.querySelector('#sign-in')?.addEventListener('click', async () => {
+  document.querySelectorAll<HTMLButtonElement>('[data-sign-in]').forEach((button) => button.addEventListener('click', async () => {
     if (!invoke) return;
     const server = state.server.trim();
     if (!server) {
@@ -528,7 +689,7 @@ function bindEvents(): void {
     try { await beginInteractiveLogin(); } catch (error) {
       setError(error);
     }
-  });
+  }));
 
   document.querySelector('#unlock-settings')?.addEventListener('click', async () => {
     try { await beginInteractiveLogin(); } catch (error) { setError(error); }
@@ -782,18 +943,13 @@ async function refreshProgress(): Promise<void> {
     raw = await invoke<string | null>('sync_progress');
   } catch { return; }
   const next = parseProgress(raw);
+  const wasActive = state.progress?.active === true;
   const changed = JSON.stringify(next ?? null) !== JSON.stringify(state.progress ?? null);
   state.progress = next;
   if (!changed) return;
-  const banner = document.querySelector<HTMLElement>('#sync-progress');
-  if (!banner) return;
-  if (next?.active || state.syncingPairId) {
-    banner.hidden = false;
-    banner.innerHTML = progressCopy(next, state.syncingPairId);
-  } else {
-    banner.hidden = true;
-    banner.innerHTML = '';
-  }
+  updateOverview();
+  for (const pair of state.pairs) updatePairStatusUi(pair);
+  if (wasActive && !next?.active && !state.syncingPairId) void refreshEstimates(true);
 }
 
 let estimateRun = 0;
@@ -905,11 +1061,17 @@ async function refreshEstimates(force = false): Promise<void> {
     if (run !== estimateRun) return;
     state.estimatesDoneAll = true;
     estimatesFreshUntil = Date.now() + ESTIMATE_FRESH_MS;
+    updateOverview();
   })();
   estimateInFlight = work.finally(() => {
     if (estimateInFlight === work) estimateInFlight = undefined;
   });
   await estimateInFlight;
+}
+
+function updatePairStatusUi(pair: SyncPair): void {
+  const status = document.querySelector(`[data-pair-status="${CSS.escape(pair.id)}"]`);
+  if (status) status.innerHTML = pairStatusBadge(pair);
 }
 
 function updateSpaceUi(pairId: string): void {
@@ -930,11 +1092,14 @@ function updateSpaceUi(pairId: string): void {
     const unavailable = pair.direction === 'two-way' || (pair.server && pair.server !== state.server) || !state.user || pair.account !== state.user;
     button.disabled = blocked || unavailable;
     if (!unavailable && state.syncingPairId !== pairId) {
-      button.textContent = blocked ? 'Not enough space' : 'Sync now';
+      const label = button.querySelector('span');
+      if (label) label.textContent = blocked ? 'Not enough space' : 'Sync now';
     }
   }
   const summary = document.querySelector('#storage-summary');
-  if (summary) summary.textContent = storageSummary();
+  if (summary) summary.innerHTML = state.deviceStorage ? `${icon('device')}${escapeHtml(storageSummary())}` : '';
+  updatePairStatusUi(pair);
+  updateOverview();
 }
 
 // A suggestion that is set up reports the folder's size in its own row, so the
@@ -1103,7 +1268,7 @@ async function renderServerBrowser(): Promise<void> {
     const entries = await invoke<ServerEntry[]>('server_tree', { path: serverBrowserPath, root: selectedServerRoot });
     const directories = directoriesOnly(entries);
     list.innerHTML = directories.length
-      ? directories.map((entry) => `<button class="browser-entry" type="button" data-enter="${escapeHtml(entry.name)}"><span aria-hidden="true">▰</span>${escapeHtml(entry.name)}</button>`).join('')
+      ? directories.map((entry) => `<button class="browser-entry" type="button" data-enter="${escapeHtml(entry.name)}"><span class="browser-entry-icon" aria-hidden="true">${icon('folder')}</span><span>${escapeHtml(entry.name)}</span>${icon('arrowRight')}</button>`).join('')
       : '<p class="browser-empty">No folders here. You can use this folder as the pair destination.</p>';
     list.querySelectorAll<HTMLButtonElement>('[data-enter]').forEach((button) => button.addEventListener('click', async () => {
       const name = button.dataset.enter!;
@@ -1146,12 +1311,12 @@ function filesRow(entry: ServerEntry): string {
   const name = escapeHtml(entry.name);
   const busy = state.transfer?.path === entry.name;
   if (entry.kind === 'directory') {
-    return `<li class="file-row"><button class="file-entry" type="button" data-open="${name}" ${state.transfer ? 'disabled' : ''}><span class="file-icon" aria-hidden="true">▰</span><span class="file-name">${name}</span></button></li>`;
+    return `<li class="file-row"><button class="file-entry" type="button" data-open="${name}" ${state.transfer ? 'disabled' : ''}><span class="file-icon" aria-hidden="true">${icon('folder')}</span><span class="file-name">${name}</span>${icon('arrowRight')}</button></li>`;
   }
   const meta = escapeHtml(entryMeta(entry));
   const size = Number.isFinite(entry.size) && entry.size > 0 ? entry.size : 0;
-  const action = (kind: FileAction) => `<button class="text-button" type="button" data-${kind}="${name}" data-size="${size}" ${state.transfer ? 'disabled' : ''}>${fileActionLabel(kind, busy && state.transfer?.action === kind)}</button>`;
-  return `<li class="file-row"><div class="file-copy"><span class="file-name">${name}</span>${meta ? `<span class="file-meta">${meta}</span>` : ''}</div><div class="file-actions">${action('share')}${action('download')}</div></li>`;
+  const action = (kind: FileAction) => `<button class="text-button" type="button" data-${kind}="${name}" data-size="${size}" ${state.transfer ? 'disabled' : ''}>${icon(kind === 'share' ? 'share' : 'download')}<span>${fileActionLabel(kind, busy && state.transfer?.action === kind)}</span></button>`;
+  return `<li class="file-row"><div class="file-copy"><span class="file-icon" aria-hidden="true">${icon('file')}</span><div><span class="file-name">${name}</span>${meta ? `<span class="file-meta">${meta}</span>` : ''}</div></div><div class="file-actions">${action('share')}${action('download')}</div></li>`;
 }
 
 function setFilesFeedback(status: string, error: string): void {
@@ -1170,7 +1335,8 @@ function updateFileActions(name: string): void {
     const kind: FileAction = button.dataset.share ? 'share' : 'download';
     const isTarget = (button.dataset.share ?? button.dataset.download) === name;
     button.disabled = busy;
-    button.textContent = fileActionLabel(kind, isTarget && state.transfer?.action === kind);
+    const label = button.querySelector('span');
+    if (label) label.textContent = fileActionLabel(kind, isTarget && state.transfer?.action === kind);
   });
   document.querySelectorAll<HTMLButtonElement>('#files-list [data-open]').forEach((button) => { button.disabled = busy; });
   const up = document.querySelector<HTMLButtonElement>('#files-up');

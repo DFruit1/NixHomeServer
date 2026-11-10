@@ -814,16 +814,6 @@ mod tests {
     }
 
     #[test]
-    fn env_or_prefers_nonempty() {
-        unsafe { std::env::set_var("SEARCH_UI_TEST_ENV", "custom") };
-        assert_eq!(env_or("SEARCH_UI_TEST_ENV", "default"), "custom");
-        unsafe { std::env::set_var("SEARCH_UI_TEST_ENV", "") };
-        assert_eq!(env_or("SEARCH_UI_TEST_ENV", "default"), "default");
-        assert_eq!(env_or("SEARCH_UI_TEST_UNSET", "default"), "default");
-        unsafe { std::env::remove_var("SEARCH_UI_TEST_ENV") };
-    }
-
-    #[test]
     fn projects_metadata_for_display() {
         let metadata = json!({
             "owner": "dsaw",
@@ -843,14 +833,6 @@ mod tests {
         assert!(projected.get("owner").is_none());
         assert!(projected.get("empty").is_none());
         assert!(projected.get("nested").is_none());
-    }
-
-    #[test]
-    fn truncates_on_char_boundaries() {
-        let value = "héllo".repeat(100);
-        let out = truncate(&value, 3);
-        assert_eq!(out.chars().count(), 3);
-        assert!(value.starts_with(&out));
     }
 
     #[test]

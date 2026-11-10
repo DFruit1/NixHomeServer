@@ -1085,17 +1085,14 @@ mod tests {
     }
 
     #[test]
-    fn sort_order_maps_to_solr_clause() {
+    fn maps_sort_and_escapes_queries() {
         // Both orders break otherwise equal results by unique id.
         assert_eq!(SortOrder::Relevance.clause(), Some("score desc, id asc"));
         assert_eq!(
             SortOrder::Newest.clause(),
             Some("content_created desc, score desc, id asc")
         );
-    }
 
-    #[test]
-    fn escapes_lucene_syntax_characters() {
         assert_eq!(escape_lucene_query("plain terms"), "plain terms");
         assert_eq!(escape_lucene_query("field:value"), r"field\:value");
         assert_eq!(escape_lucene_query("a[b]"), r"a\[b\]");

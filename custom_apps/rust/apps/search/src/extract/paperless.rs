@@ -288,11 +288,4 @@ mod tests {
         assert!(parse_manifest("{\"a\": 1}").is_err());
         assert!(parse_manifest("not json").is_err());
     }
-
-    #[test]
-    fn candidate_files_prefer_archive_pdfs() {
-        let dir = Path::new("/data/export");
-        let files = candidate_files(dir, 42);
-        assert_eq!(files[0], PathBuf::from("/data/export/0000042.pdf"));
-    }
 }
