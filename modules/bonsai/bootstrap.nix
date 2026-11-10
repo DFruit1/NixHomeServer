@@ -103,7 +103,7 @@ in
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Whether to run the local Ternary Bonsai 27B vision-language model.";
+      description = "Whether to run the local Ternary Bonsai 2 27B vision-language model.";
     };
 
     stateDir = lib.mkOption {
@@ -116,56 +116,56 @@ in
     model = {
       repository = lib.mkOption {
         type = lib.types.str;
-        default = "prism-ml/Ternary-Bonsai-27B-gguf";
+        default = "prism-ml/Ternary-Bonsai-2-27B-gguf";
         readOnly = true;
         description = "Authoritative Hugging Face GGUF repository.";
       };
 
       revision = lib.mkOption {
         type = lib.types.str;
-        default = "86e89f34c93201c3dfd5e5880fedb0022fc7e34d";
+        default = "839bd57023c1558945afea70a74fa83c054f35f9";
         readOnly = true;
         description = "Pinned Hugging Face repository revision containing the verified model artifacts.";
       };
 
       fileName = lib.mkOption {
         type = lib.types.str;
-        default = "Ternary-Bonsai-27B-Q2_g64.gguf";
+        default = "Ternary-Bonsai-2-27B-Q2_0.gguf";
         readOnly = true;
         description = "Official ternary Q2_0 language-model artifact.";
       };
 
       sha256 = lib.mkOption {
         type = lib.types.str;
-        default = "59a45d1ecef702b14531b06d22949f33b25c1897da31a8c0b298e01e4d9138eb";
+        default = "4f99aed01b8a877e153f9aa6569a4440fe17c59701cc0953e36d7f460549e70e";
         readOnly = true;
         description = "SHA-256 digest published by the Hugging Face LFS metadata for the model artifact.";
       };
 
       sizeBytes = lib.mkOption {
         type = lib.types.ints.positive;
-        default = 7585330240;
+        default = 7626008928;
         readOnly = true;
         description = "Expected model artifact size.";
       };
 
       projectorFileName = lib.mkOption {
         type = lib.types.str;
-        default = "Ternary-Bonsai-27B-mmproj-Q8_0.gguf";
+        default = "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf";
         readOnly = true;
         description = "Official Q8 multimodal projector used for image input.";
       };
 
       projectorSha256 = lib.mkOption {
         type = lib.types.str;
-        default = "eb561d41a7bbeb0fcf04883c8af11078ef6cae0a66862a0b68443cfca495269d";
+        default = "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903";
         readOnly = true;
         description = "SHA-256 digest published by the Hugging Face LFS metadata for the projector.";
       };
 
       projectorSizeBytes = lib.mkOption {
         type = lib.types.ints.positive;
-        default = 629246880;
+        default = 629246976;
         readOnly = true;
         description = "Expected multimodal projector artifact size.";
       };
@@ -228,7 +228,7 @@ in
     };
 
     systemd.services.bonsai-model-prepare = {
-      description = "Download and verify Ternary Bonsai 27B model artifacts";
+      description = "Download and verify Ternary Bonsai 2 27B model artifacts";
       wants = [ "network-online.target" ];
       requires = [ "bonsai-storage-layout.service" ];
       after = [ "network-online.target" "bonsai-storage-layout.service" ];

@@ -20,6 +20,7 @@ let
     (mkTarget { id = "offline-media"; name = "Offline Media"; host = "homepage.${vars.domain}"; path = "/services/offline-media"; coverageMode = "gateway"; expectedPattern = "Offline Media"; active = offlineMediaEnabled; })
     (mkTarget { id = "photos"; name = "Photos"; host = "photos.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Immich|Photos"; })
     (mkTarget { id = "documents"; name = "Documents"; host = "paperless.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Paperless|Documents"; })
+    (mkTarget { id = "paperless-gpt"; name = "Paperless GPT"; host = "paperless-gpt.${vars.domain}"; coverageMode = "gateway-boundary"; expectedPattern = ""; expectAccessDenied = true; })
     (mkTarget { id = "files"; name = "Files"; host = "files.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Filestash|Files"; })
     (mkTarget { id = "cloud"; name = "OpenCloud"; host = "cloud.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "OpenCloud|Files|All files"; })
     (mkTarget { id = "media-manager"; name = "Media Manager"; host = "media.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Media Manager|Media"; })

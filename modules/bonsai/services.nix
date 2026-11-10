@@ -31,7 +31,7 @@ let
       set -euo pipefail
 
       ${autoContextScript}
-      echo "Starting Ternary Bonsai 27B with context size $context_size"
+      echo "Starting Ternary Bonsai 2 27B with context size $context_size"
 
       exec ${cfg.runtime.package}/bin/llama-server \
         --path ${cfg.runtime.webui} \
@@ -209,7 +209,7 @@ in
     environment.systemPackages = [ cfg.runtime.package ];
 
     systemd.services.bonsai-llama = {
-      description = "Ternary Bonsai 27B local vision-language inference API";
+      description = "Ternary Bonsai 2 27B local vision-language inference API";
       wantedBy = [ "multi-user.target" ];
       requires = [ "bonsai-model-prepare.service" ];
       after = [ "bonsai-model-prepare.service" ];
@@ -230,6 +230,8 @@ in
         TimeoutStopSec = "2min";
         OOMPolicy = "stop";
         OOMScoreAdjust = 500;
+        MemoryHigh = "16G";
+        MemoryMax = "24G";
         Nice = 10;
         CPUWeight = 20;
         IOWeight = 20;

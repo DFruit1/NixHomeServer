@@ -17,6 +17,7 @@ let
       # imported into this host nor included in its normal build/test worklist.
       enabled = [
         "ai-tools"
+        "bonsai"
         "attic"
         "audiobookshelf"
         "browsertrix-downloader"
@@ -39,6 +40,7 @@ let
         "ntfy"
         "opencloud"
         "paperless"
+        "paperless-gpt"
         "prowlarr"
         "qbittorrent"
         "radarr"

@@ -120,6 +120,9 @@ rec {
       "paperless-exporter"
       "paperless-stale-reference-check"
     ];
+    paperless-gpt = app ./paperless-gpt "Paperless GPT" "knowledge" [ ] [
+      "paperless-gpt-provision" "paperless-gpt"
+    ];
     prowlarr = app ./prowlarr "Prowlarr" "media-automation" [
       "prowlarrOauth2ProxyClientSecret"
       "prowlarrOauth2ProxyCookieSecret"
@@ -175,6 +178,7 @@ rec {
   };
 
   integrationDefinitions = [
+    { module = ./Integrations/connect_paperless_gpt_to_bonsai.nix; allApps = [ "paperless-gpt" "paperless" "bonsai" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_immich_images_to_media_manager.nix; allApps = [ "immich" ]; anyApps = [ ]; }
     { module = ./Integrations/publish_fdroid_to_ipfs.nix; allApps = [ "fdroid" "ipfs" ]; anyApps = [ ]; }
     { module = ./Integrations/publish_filesync_to_fdroid.nix; allApps = [ "fdroid" "filesync" "ipfs" ]; anyApps = [ ]; }

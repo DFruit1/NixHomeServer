@@ -60,6 +60,7 @@ let
     "/var/lib/mkvmaker"
     "/var/lib/ntfy"
     "/var/lib/paperless"
+    "/var/lib/paperless-gpt"
     "/var/lib/postgresql"
     "/var/lib/power-schedule"
     "/var/lib/prowlarr"

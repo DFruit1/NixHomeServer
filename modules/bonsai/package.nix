@@ -2,7 +2,11 @@
 
 let
   cfg = config.repo.bonsai;
-  inherit (import ../../lib/llama-cpp-runtime.nix { inherit pkgs; useVulkan = cfg.gpu.enable; }) runtime revision webui;
+  inherit (import ../../lib/llama-cpp-runtime.nix { inherit pkgs; useVulkan = cfg.gpu.enable;
+    # Bonsai 2 needs the Hadamard activation runtime (upstream b11556+).
+    revision = "cd959bae99ff4bed22bef2604f45241c09bbb8c8"; # v0.9.0
+    sourceUrl = "https://github.com/ggml-org/llama.cpp/archive/cd959bae99ff4bed22bef2604f45241c09bbb8c8.tar.gz";
+    sourceHash = "sha256-6LqtpfqTAbYUr/wPPBAM/dXHv3LDTg+1A81k/cFcAjY="; }) runtime revision webui;
 
 in
 {
@@ -18,7 +22,7 @@ in
       type = lib.types.package;
       default = runtime;
       readOnly = true;
-      description = "Pinned mainline llama.cpp with Bonsai group-64 Q2_0 support.";
+      description = "Pinned mainline llama.cpp with Bonsai 2 Q2_0 Hadamard support.";
     };
 
     revision = lib.mkOption {

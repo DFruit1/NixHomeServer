@@ -39,6 +39,22 @@ in
       # module asserts that no Cloudflare ingress route ever appears.
       ntfy.enable = true;
     }
+  // lib.optionalAttrs (builtins.elem "bonsai" vars.enabledApps) {
+      bonsai = {
+        enable = true;
+        gpu.enable = true;
+        contextSize = 32768;
+        quantizeKvCache = true;
+        # Keep the GPU available for transcription while idle. Medium effort
+        # and a bounded thinking phase leave room for metadata JSON answers.
+        extraArgs = [
+          "--reasoning-effort" "medium"
+          "--reasoning-budget" "1024"
+          "--sleep-idle-seconds" "900"
+          "--no-mmproj-offload"
+        ];
+      };
+    }
   // lib.optionalAttrs (builtins.elem "qwen-27b" vars.enabledApps) {
       # Qwen is the server's primary local inference endpoint. It starts at
       # boot and serves local clients over loopback.
