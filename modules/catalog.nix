@@ -121,7 +121,7 @@ rec {
       "paperless-stale-reference-check"
     ];
     paperless-gpt = app ./paperless-gpt "Paperless GPT" "knowledge" [ ] [
-      "paperless-gpt-provision" "paperless-gpt"
+      "paperless-gpt-state" "paperless-gpt-provision" "paperless-gpt"
     ];
     prowlarr = app ./prowlarr "Prowlarr" "media-automation" [
       "prowlarrOauth2ProxyClientSecret"
