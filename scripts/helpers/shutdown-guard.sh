@@ -370,7 +370,7 @@ cmd_start() {
 cmd_extend() {
   local minutes="$DEFAULT_EXTEND_MIN"
   local reason=""
-  local old_deadline old_grace grace_seconds now new_deadline new_grace
+  local old_deadline old_grace grace_seconds now new_deadline new_grace guard_lock_fd
 
   while (($# > 0)); do
     case "$1" in
@@ -393,6 +393,11 @@ cmd_extend() {
   require_minutes "$minutes" "--minutes"
   (( minutes > 0 )) || die "--minutes must be greater than zero"
 
+  mkdir -p "$STATE_DIR"
+  exec {guard_lock_fd}>"$STATE_DIR/schedule.lock"
+  flock "$guard_lock_fd"
+  # Keep persisted deadlines and the queued shutdown in one transaction with
+  # the watcher; it must not arm grace between our update and rescheduling.
   [[ -r "$DEADLINE_FILE" ]] || die "no guarded shutdown is scheduled; nothing to extend"
   old_deadline="$(read_int_file "$DEADLINE_FILE" "")"
   [[ "$old_deadline" =~ ^[0-9]+$ ]] || die "guarded shutdown deadline is unreadable; restart with start"
@@ -411,7 +416,11 @@ cmd_extend() {
 
   write_int_file "$DEADLINE_FILE" "$new_deadline"
   write_int_file "$GRACE_DEADLINE_FILE" "$new_grace"
-  schedule_shutdown_at "$new_deadline" "Guarded server shutdown extended by ${PROGRAM}"
+  # A shorter extension can leave the window unchanged. Preserve any grace
+  # shutdown the live watcher has already armed for that same window.
+  if (( new_deadline != old_deadline || new_grace != old_grace )) || ! watcher_active; then
+    schedule_shutdown_at "$new_deadline" "Guarded server shutdown extended by ${PROGRAM}"
+  fi
   if ! watcher_active; then
     if ! launch_watcher "$new_deadline" "$new_grace" "$DEFAULT_POLL_SEC"; then
       die "failed to launch shutdown watcher"
@@ -437,7 +446,7 @@ cmd_watch() {
   local deadline=""
   local grace_deadline=""
   local poll="$DEFAULT_POLL_SEC"
-  local remaining task busy_now last_busy=0 grace_scheduled=false quiet_until sleep_for
+  local remaining task busy_now last_busy=0 grace_scheduled_for="" quiet_until sleep_for guard_lock_fd
 
   while (($# > 0)); do
     case "$1" in
@@ -467,8 +476,13 @@ cmd_watch() {
   require_seconds "$poll" "--poll"
   (( poll > 0 )) || die "--poll must be greater than zero"
 
+  mkdir -p "$STATE_DIR"
+  exec {guard_lock_fd}>"$STATE_DIR/schedule.lock"
+  flock "$guard_lock_fd"
   write_status scheduled "shutdown scheduled; waiting for the timeout to expire"
+  flock -u "$guard_lock_fd"
   while :; do
+    flock "$guard_lock_fd"
     # Re-read the deadlines every pass so `extend` and automatic block
     # extensions take effect without restarting the watcher.
     deadline="$(read_int_file "$DEADLINE_FILE" "$deadline")"
@@ -486,21 +500,25 @@ cmd_watch() {
     remaining=$(( deadline - $(now_epoch) ))
 
     if (( remaining > 0 )); then
-      # Before the deadline, only work that is still active in the final
-      # activity window postpones the shutdown. Track last_busy throughout so a
-      # task that just stopped is still respected.
-      if [[ "$busy_now" == true ]] && (( remaining <= ACTIVITY_WINDOW_SEC )); then
-        if [[ "$grace_scheduled" == false ]] && (( grace_deadline > deadline )); then
+      # Before the deadline, active or recently stopped work in the final
+      # activity window postpones shutdown until the quiet window can finish.
+      if (( remaining <= ACTIVITY_WINDOW_SEC )) &&
+         { [[ "$busy_now" == true ]] ||
+           (( last_busy > 0 && $(now_epoch) < last_busy + ACTIVITY_WINDOW_SEC )); }; then
+        if [[ "$grace_scheduled_for" != "$deadline:$grace_deadline" ]] && (( grace_deadline > deadline )); then
           # Replace the original shutdown as soon as work is observed. Waiting
           # until the deadline would race the already queued system shutdown.
           schedule_shutdown_at "$grace_deadline" "Guarded server shutdown grace period"
-          grace_scheduled=true
+          # An explicit extension replaces the queued shutdown. Track the
+          # window we actually armed so its replacement gets fresh protection.
+          grace_scheduled_for="$deadline:$grace_deadline"
           write_status waiting "recent critical task ${task}; grace scheduled"
         fi
       fi
       sleep_for="$poll"
       (( sleep_for > remaining )) && sleep_for="$remaining"
       (( sleep_for < 1 )) && sleep_for=1
+      flock -u "$guard_lock_fd"
       sleep "$sleep_for"
       continue
     fi
@@ -521,9 +539,9 @@ cmd_watch() {
       fi
     fi
 
-    if [[ "$grace_scheduled" == false ]]; then
+    if [[ "$grace_scheduled_for" != "$deadline:$grace_deadline" ]]; then
       schedule_shutdown_at "$grace_deadline" "Guarded server shutdown grace period"
-      grace_scheduled=true
+      grace_scheduled_for="$deadline:$grace_deadline"
     fi
 
     if (( $(now_epoch) >= grace_deadline )); then
@@ -533,6 +551,7 @@ cmd_watch() {
         grace_deadline=$(( grace_deadline + EXTENSION_BLOCK_MIN * 60 ))
         write_int_file "$GRACE_DEADLINE_FILE" "$grace_deadline"
         schedule_shutdown_at "$grace_deadline" "Guarded server shutdown extended"
+        grace_scheduled_for="$deadline:$grace_deadline"
         write_status waiting "critical task ${task} still active; grace extended by ${EXTENSION_BLOCK_MIN} minutes"
       else
         write_status shutting-down "grace expired; shutting down"
@@ -544,6 +563,7 @@ cmd_watch() {
     else
       write_status waiting "recent critical work; waiting for five quiet minutes"
     fi
+    flock -u "$guard_lock_fd"
     sleep "$poll"
   done
 }

@@ -252,7 +252,7 @@ cancel() {
   exit 0
 }
 trap cancel INT TERM HUP
-cleanup() { rm -f -- "$0"; }
+cleanup() { rm -f -- "\$0"; }
 trap cleanup EXIT
 echo "The NixHomeServer has shut down."
 echo "This PC will power off in ${grace} minutes."

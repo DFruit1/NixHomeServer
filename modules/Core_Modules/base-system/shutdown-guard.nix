@@ -9,6 +9,7 @@ let
       gnugrep
       procps
       systemd
+      util-linux
       zfs
     ];
     text = builtins.readFile ../../../scripts/helpers/shutdown-guard.sh;
