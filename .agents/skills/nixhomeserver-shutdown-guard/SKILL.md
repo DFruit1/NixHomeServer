@@ -1,8 +1,6 @@
 ---
 name: nixhomeserver-shutdown-guard
 description: Run the existing NixHomeServer guarded shutdown script for the desktop and server, or inspect and extend a pending shutdown to protect ongoing work. Use when asked for guarded shutdown; creating or editing this skill alone does not authorize powering off either machine.
-disable-model-invocation: true
-user-invocable: true
 ---
 
 # Guarded shutdown
