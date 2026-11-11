@@ -1,28 +1,18 @@
-"""Entry point the Rust server invokes: one JSON request on stdin, one on stdout.
+"""Bounded byte parser behind Rust's Landlock/seccomp exec boundary.
 
-The helper is deliberately a callable rather than an MCP server. An MCP server
-would have to be spawned by llama.cpp, run as the inference account and take
-absolute paths from the model, which is exactly the containment
-`office::resolve_within` exists to provide. Here the Rust process chooses which
-operation runs, hands over only an already-validated absolute path, and reads
-the result back itself.
-
-Request shape, either form:
-
-    {"op": "read", "format": "xlsx", "document": "<base64>"}
-    {"op": "write", "format": "xlsx", "path": "/abs/path", "spec": {...}}
-
-A failure exits non-zero with a JSON error object on stderr, so the caller can
-turn it into a tool error without parsing a Python traceback.
+Production uses read/render/edit requests over stdin and returns JSON/base64.
+The legacy write-path operation remains for existing standalone helper tests;
+Landlock denies all filesystem writes in the production parser process.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import io
 import sys
 
-from ai_tools_office import spreadsheet, word
+from ai_tools_office import spreadsheet, word, ooxml
 
 #: Format to module. Only the two native Microsoft formats reach this helper;
 #: ODF and the legacy binary formats are converted by Collabora first, so there
@@ -35,6 +25,24 @@ MODULES = {
 
 def _dispatch(request: dict) -> dict:
     operation = request.get("op")
+    if operation == "probe":
+        # Exercise actual native creation as well: openpyxl's default save
+        # unexpectedly requires temp files even with a BytesIO destination.
+        spreadsheet.write({"sheets": [{"name": "Probe", "rows": [[1]]}]}, io.BytesIO())
+        word.write({"blocks": [{"text": "Probe"}]}, io.BytesIO())
+        import socket
+        try:
+            with open("/etc/passwd", "rb") as source:
+                source.read(1)
+        except PermissionError:
+            pass
+        else:
+            raise ValueError("parser filesystem isolation failed")
+        try:
+            socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        except PermissionError:
+            return {"sandboxed": True}
+        raise ValueError("parser socket isolation failed")
     module = MODULES.get(request.get("format"))
     if module is None:
         raise ValueError(
@@ -42,7 +50,44 @@ def _dispatch(request: dict) -> dict:
         )
 
     if operation == "read":
-        return module.read(base64.b64decode(request["document"]))
+        document = base64.b64decode(request["document"], validate=True)
+        with ooxml.package(document):
+            result = module.read(document)
+            if "offset" not in request:
+                return result
+            offset = request["offset"]
+            if not isinstance(offset, int) or isinstance(offset, bool) or not 0 <= offset <= 100000:
+                raise ValueError("offset must be an integer from 0 to 100000")
+            if request["format"] == "xlsx":
+                items = [{"sheet": sheet["name"], "row": index + 1, "values": row}
+                         for sheet in result.pop("sheets") for index, row in enumerate(sheet["rows"])]
+            else:
+                items = [{"block": index, **block} for index, block in enumerate(result.pop("blocks"))]
+            selected = []
+            spent = 0
+            for item in items[offset:]:
+                length = len(json.dumps(item, ensure_ascii=True))
+                if length > 24000:
+                    item = {key: item[key] for key in ("sheet", "row", "block") if key in item}
+                    item["content_omitted"] = "Entry exceeds the 24000-character view limit"
+                    length = len(json.dumps(item))
+                if selected and spent + length > 24000:
+                    break
+                selected.append(item)
+                spent += length
+            result.update({"items": selected, "offset": offset, "next_offset": offset + len(selected) if offset + len(selected) < len(items) else None,
+                           "view_only": True, "warning": "Use targeted edits on the original file; never rebuild from this bounded view."})
+            return result
+    if operation in {"render", "edit"}:
+        if operation == "edit":
+            document = ooxml.edit(base64.b64decode(request["document"], validate=True), request["format"], request["spec"])
+        else:
+            output = io.BytesIO()
+            module.write(request["spec"], output)
+            document = output.getvalue()
+        if len(document) > ooxml.MAX_DOCUMENT_BYTES:
+            raise ValueError("document exceeds the 32 MiB output limit")
+        return {"document": base64.b64encode(document).decode("ascii"), "format": request["format"], "recalculated": False}
     if operation == "write":
         return module.write(request["spec"], request["path"])
     raise ValueError(f"unknown operation {operation!r}")

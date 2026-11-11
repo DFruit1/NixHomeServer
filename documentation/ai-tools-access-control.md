@@ -1,110 +1,136 @@
 # Caller-scoped Office access
 
-The owner requested implementation of the first parts of the caller-aware
-restoration on 2026-11-11. This document records that increment's contract and
-the boundaries still required before Office tools can be restored.
+Office operations are offered only by the authenticated gateway. The loopback
+listener and stdio bridge remain web-search-only and explicitly deny cached
+Office calls. The gateway checks the existing `ai-users` admission group and
+passes a private, per-request `AuthenticatedCaller` through HTTP extensions.
 
-## First increment: authenticated request identity
+## Gateway boundary
 
-The existing loopback endpoint and stdio bridge remain `web_search`-only.
-All four Office handlers keep their unconditional denial. No environment
-variable, identity header or model argument can restore them.
+Caddy alone can connect to `/run/ai-tools-gateway.sock` (`caddy:caddy`, 0600).
+Systemd supplies the listening descriptor; the service validates its pathname,
+activation PID, stream/listener type and close-on-exec flag. Caddy removes
+client identity headers and replaces canonical subject/preferred-username
+claims after authentication. Ordinary, JSON and API branches all use this
+socket. The existing private AI host additionally routes `/mcp` here for Bonsai.
 
-The gateway-facing endpoint uses a separate systemd-activated Unix stream
-socket, `/run/ai-tools-gateway.sock`, owned by `caddy:caddy`, mode `0600`.
-Systemd hands the listening descriptor to the unprivileged `ai-tools` process.
-The process validates the activation contract and sets close-on-exec before
-serving it. It never creates, chmods or removes a gateway socket itself.
+The router uses `NeverSessionManager`: every request needs current canonical
+claims, and every `Mcp-Session-Id` header is rejected. Subject/username must be
+single, nonempty, bounded ASCII claims without whitespace or commas. Host and
+Origin checks apply independently; approved browser origins specify HTTPS port
+443. TCP headers, arguments and `_meta` cannot construct the private caller.
+Root, Caddy, systemd, the directory and the Rust gateway process are trusted.
 
-The existing `tools.<domain>` host authenticates through the shared gateway,
-checks its unchanged `ai-users` admission group, then proxies directly to this
-socket. The internal loopback router has no route to it. Caddy replaces the
-canonical subject and preferred-username headers with authenticated gateway
-claims. Loopback clients cannot create a trusted request identity by forging
-headers. Root and the gateway process remain trusted infrastructure.
+Other private tools must start with
+`crate::gateway::AuthenticatedCaller::require(&context)?`. This proves gateway
+authentication, not filesystem access or authorization to use service tokens.
+App tools additionally pass only the current request's SSO cookie to the target
+app gateway; it retains its existing group and ownership checks.
 
-The new endpoint is stateless Streamable HTTP. It uses rmcp's
-`NeverSessionManager`, creates no resumable event store, and rejects every
-request carrying `Mcp-Session-Id`, including empty headers. Every request,
-including initialization and notifications, independently requires exactly one
-nonempty canonical subject and username. There is no username/email fallback,
-identity in tool arguments, identity cache, or session-to-user ownership map.
-Host and browser Origin checks apply independently of identity checks. The
-gateway's browser Origin allowlist explicitly specifies HTTPS port 443; a
-portless rmcp allowlist entry would also admit other ports. Any future chat
-origin added to this list must also specify port 443.
+## Online file identity and credential dropping
 
-Middleware creates a private typed caller value in HTTP request extensions.
-rmcp carries those HTTP parts to each handler. The authenticated handler checks
-for that value again before tool discovery or execution. The value establishes
-gateway authentication only: it is **not** a filesystem principal or a grant of
-document access. The subject is opaque; the username is a directory claim,
-never a path component or an instruction to impersonate a Unix account.
+Only `ai-tools` can connect to `/run/ai-tools-office-io.sock` (0600). A separate
+`ai-tools-io` account has no document ACL grant. Its capability bounding and
+ambient sets contain only `CAP_SETUID` and `CAP_SETGID`, permitting credential
+switching without root, DAC override, filesystem administration or setpcap.
 
-Caller-scoped tools use `crate::gateway::AuthenticatedCaller::require(&context)?`
-at the beginning of each handler. Its `subject()` and `username()` accessors
-return the canonical claims from this request. The fields and constructor are
-private and the type has no deserializer. Require it before arguments are used
-or private upstreams are contacted. Scope stored jobs, caches and result access
-to `subject()`. Independently enforce the source application's permissions:
-this API supplies no access token, current group membership or authorization
-to use an application's service credentials. For filesystem reads it supplies
-no POSIX mapping. Missing identity is an error, never an owner-account default.
+For **each** file operation the broker performs a fresh native anonymous
+Kanidm authentication transaction over certificate-verified HTTPS, pinned to
+loopback. It requests `/v1/account/<subject UUID>/_unix/_token` using the
+anonymous token. No stored credential or user SSO cookie is used. The current
+Unix token must be valid and match the subject UUID and canonical name/SPN.
+Only existing configured human names from `kanidmAdminUser`, `kanidmAppUsers`
+and `filesSftpUsers` are accepted: a Unix token alone also permits service
+identities, so it cannot establish that the caller is a person. Unknown users
+are denied, never enrolled. UIDs/GIDs below 1000 are refused.
 
-Gateway JSON/API routes must use the same direct-handler selection and group
-check as ordinary authenticated routes. Previously those branches always used
-the loopback router, so a direct socket handler could not be used by MCP.
-Unauthenticated JSON requests retain HTTP 401 handling.
+Fresh directory groups determine supplementary groups. NSS only corroborates
+numeric UID/GID-to-name mapping (including primary GID = UID); it supplies no
+cached membership grants. Missing mappings, collisions, disabled accounts,
+directory failures and malformed/oversized responses fail closed. Local
+`dsaw` and directory `admindsaw` are distinct; no privileged alias is inferred.
+Gateway admission continues to follow existing SSO session semantics; this is
+not a claim of immediate non-POSIX `ai-users` revocation. Fresh Unix groups
+prevent using stale file-group membership on subsequent file operations.
 
-## Remaining restoration stages
+The broker serializes requests and spawns the fixed executable as a disposable
+worker. A syscall-only `pre_exec` sets supplementary groups and real/effective/
+saved UID/GID, explicitly clears permitted/effective/inheritable and ambient
+capabilities, sets no-new-privileges, and verifies the result. The worker
+verifies all IDs, filesystem IDs, groups, empty capabilities and no-new-privileges
+again after exec, then closes inherited descriptors before opening documents.
+The broker never parses Office data. No UID, group, root or command is supplied
+by the model. Frames, pipe output, document sizes, concurrency and elapsed time
+are bounded; saves are never automatically retried.
 
-1. Resolve the stable authenticated identity to an approved existing Kanidm
-   POSIX identity. Prove UID/GID mapping, local-name collision handling and
-   freshness of account/group information. Reject unknown, disabled, root and
-   service identities; do not auto-enrol users or use stale/offline group grants.
-   Gateway session authentication alone does not prove immediate revocation of
-   directory membership.
-2. Build a minimal Rust launcher and read worker. Drop to the resolved user's
-   credentials before opening paths, including ancestors. Enforce both the
-   approved root and kernel permissions on the actual opened regular file;
-   handle ACL masks, hidden entries, symlinks, hardlinks and replacement races.
-   Give the parser bounded bytes rather than ambient filesystem access. Never
-   give the parser privileges or use the service account's document grants as
-   an authorization fallback.
-3. Restore native read operations only after the identity/permission checks
-   pass. The initial root remains the existing shared root; personal roots and
-   OpenCloud's application-level shares are separate scope. OpenCloud shares
-   require its user-authorized API rather than storage-directory ACL inference.
-4. Correct the demonstrated document-preservation problems before restoring
-   editing: silent column/text truncation, sheet renaming/visibility changes,
-   and unsupported Word styles. Prefer verified targeted changes and new output
-   copies. Writes need destination permissions, explicit replacement intent,
-   version checks, and authorization at commit time.
-5. Connect the Bonsai browser's per-client MCP configuration through an
-   authenticated route. The shared inference account and identity-free stdio
-   bridge must never substitute for the current user. Verify real authenticated
-   Word/Excel workflows before claiming restoration.
+## Filesystem and save contract
 
-Existing static ACLs and membership are unchanged by the first increment.
-Removing or replacing those grants requires a separately reviewed migration;
-their continued presence does not authorize a read. No new credentials, public
-hosts, file permissions, filesystem privilege launcher or live activation are
-part of this increment.
+Reads initially cover only the existing shared root, subject to the caller's
+actual kernel permissions, including ancestor traversal and ACL masks.
+`openat2` pins the root, requires beneath resolution and refuses symlinks/magic
+links. Hidden components, absolute paths, backslashes and parent traversal are
+refused. Only regular, single-link files up to 32 MiB are eligible; reads use
+the opened handle, bound growth and check for concurrent metadata changes.
+Personal roots and application-level OpenCloud shares are separate scope.
 
-## Verification and failure behavior
+Writes create a **new copy only**, with one filename directly in the existing
+AI workspace. The worker opens the workspace relative to the pinned root and
+requires a root-owned sticky shared root and root-owned workspace. These
+existing storage invariants prevent a caller moving the publication directory.
+It stages with O_EXCL, writes and fsyncs, checks the inode, then publishes using
+`renameat2(RENAME_NOREPLACE)` and verifies the published inode. Existing files
+are never replaced; the original is never modified. New files belong to the
+caller and start mode 0600. Other workspace writers retain their existing
+rights. An interrupted/failed save can retain a hidden `.ai-tools-*.part`
+stage; no pathname cleanup risks deleting a raced replacement. Inspect the
+workspace after an uncertain result before choosing a new output name.
 
-Focused automated checks are warranted by the concrete risk of future
-cross-user document disclosure. They cover missing/malformed/duplicate identity,
-forged arguments/metadata, per-request actor isolation, session replay rejection,
-socket activation, gateway backend selection, and the unchanged Office denials.
-Use a real Unix socket and the MCP client for transport checks. They do not
-prove Kanidm-to-POSIX mapping, filesystem authorization, directory revocation,
-production gateway health or browser usability.
+The main service cannot open the shared root (`InaccessiblePaths`). Existing
+static `ai-tools` ACLs are retained for compatibility with the old provisioning
+unit but are never consulted for authorization and cannot be used through the
+restored path. The broker account receives no new ACL. Their removal is a
+separate migration.
 
-Focused local checks:
+## Parser and preservation boundary
+
+The parser receives only bounded bytes/specifications on stdin. A fresh exec
+installs fully enforced Landlock v3 filesystem restrictions: read/execute from
+`/nix/store`, no filesystem writes, and no other readable tree. Seccomp denies
+network/Unix sockets, io_uring, cross-process memory/FD access, signals and
+process creation; unknown syscall architectures/x32 are killed. All descriptors
+above stderr are closed before the pinned Python helper executes. Memory, CPU,
+core and file-size limits apply. Startup runs the packaged helper's sandbox
+probe; unsupported isolation prevents the service advertising Office tools.
+
+Native edits mutate selected OOXML parts rather than rebuilding a read view.
+Workbook cell patches preserve styles, sheet states and unrelated ZIP members;
+formula caches are cleared and recalculation requested on open. This service
+does **not** calculate formulas. Merged non-anchor cells, protected sheets and
+worksheets containing shared/array formula constructs are refused. Word replacements must uniquely match
+body paragraph text (including tables); formatting/other package parts remain.
+Tracked changes and complex body fields are refused for the whole source;
+fields and non-text constructs in touched paragraphs are refused. Signed/macro packages are refused for editing. Native-preserving
+edits require xlsx-to-xlsx or docx-to-docx; ODF can be read or newly created
+through existing Collabora conversion. Creation rejects demonstrated silent
+text/column truncation and case-insensitive sheet renaming.
+
+Views are capped at 256 sheets, 2000 rows per sheet and 64 columns, or 5000
+Word blocks. `next_offset` paginates within that bounded view, not the omitted
+source content; respect the source truncation flags. A large entry
+can be marked omitted. Never rebuild a source from this view. ZIP member/count/
+expansion limits precede native parsing. The Python exception remains justified
+by the existing pinned openpyxl/python-docx pairing; targeted XML uses their
+existing lxml dependency.
+
+## Focused verification
 
 ```bash
-cargo test --offline --locked --manifest-path custom_apps/Cargo.toml -p ai-tools gateway -- --test-threads=1
+cargo test --offline --locked --manifest-path custom_apps/Cargo.toml -p ai-tools -- --test-threads=1
+# Explicit catastrophic-risk check, outside build sandboxes, in a mapped namespace:
+unshare --user --map-auto --map-root-user --setgroups allow \
+  <ai-tools-test-executable> --exact \
+  office_io::tests::office_worker_drops_nonroot_capabilities_and_cannot_overwrite \
+  --ignored --nocapture
 nix eval --impure --json --expr '
   let f = builtins.getFlake ("git+file://" + toString ./.);
       pkgs = f.inputs.nixpkgs.legacyPackages.${builtins.currentSystem};
@@ -113,7 +139,10 @@ nix eval --impure --json --expr '
   }'
 ```
 
-Rollback must preserve the unconditional Office denials. Never route a caller's
-document operation through the identity-free listener to recover availability.
-Commit focused validated source before a separately authorized guarded test and
-switch. No deployment is implied by this design or its implementation.
+Local checks cover transport separation, online identity validation logic,
+Linux capability dropping/permissions, no-overwrite publication, parser
+isolation and synthetic document preservation. They do not establish deployed
+NSS mappings, production socket activation, live browser/model workflows or
+service health. Guarded test/switch and authenticated post-deploy checks remain
+required before claiming activation. Recovery must never route private calls
+through the identity-free listener or relax failed permission checks.

@@ -24,6 +24,7 @@ value="$(flake_eval_json "
   vars = builtins.getAttr \"$host\" f.lib.nixhomeserverSettings;
   svc = cfg.systemd.services.ai-tools;
   shared = cfg.systemd.services.ai-tools-shared-access;
+  broker = cfg.systemd.services.ai-tools-office-io;
   app = cfg.repo.aiTools;
   gateway = cfg.repo.authGateway.protectedApps.aiTools;
   guarded = cfg.repo.storage.dataPool.guardedServices;
@@ -49,8 +50,8 @@ in {
   onFailure = svc.unitConfig.OnFailure;
   alertTarget = cfg.repo.monitoring.failureAlerts.targetUnit;
   requiresMounts = svc.serviceConfig.RequiresMountsFor;
-  readOnlyPaths = svc.serviceConfig.ReadOnlyPaths;
-  readWritePaths = svc.serviceConfig.ReadWritePaths;
+  readOnlyPaths = broker.serviceConfig.ReadOnlyPaths;
+  readWritePaths = broker.serviceConfig.ReadWritePaths;
   memoryHigh = svc.serviceConfig.MemoryHigh;
   memoryMax = svc.serviceConfig.MemoryMax;
   user = svc.serviceConfig.User;
@@ -71,9 +72,10 @@ in {
   # Nothing but the workspace may be writable, and it must not sit outside the
   # read-only root where the mount would not nest.
   writePathsExactlyWorkspace =
-    svc.serviceConfig.ReadWritePaths == [ app.workspaceRoot ];
+    broker.serviceConfig.ReadWritePaths == [ app.workspaceRoot ];
   readOnlyIsWholeSharedRoot =
-    svc.serviceConfig.ReadOnlyPaths == [ app.sharedRoot ];
+    broker.serviceConfig.ReadOnlyPaths == [ app.sharedRoot ];
+  mainCannotOpenShared = svc.serviceConfig.InaccessiblePaths == [ app.sharedRoot ];
   # The workspace is deliberately unbacked-up; a snapshot root reaching it is
   # the regression to catch.
   snapshotRoots = cfg.repo.backups.snapshotRoots;
@@ -107,6 +109,7 @@ jq -e '
   and (.requiresMounts | index($workspace) != null)
   and (.readOnlyPaths | index($shared) != null)
   and (.readWritePaths | index($workspace) != null)
+  and .mainCannotOpenShared
   and .readOnlyIsWholeSharedRoot
   and .writePathsExactlyWorkspace
   and .workspaceUnderSharedRoot

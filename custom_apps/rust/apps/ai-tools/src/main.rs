@@ -8,15 +8,10 @@
 //! The identity-free loopback and stdio surfaces serve only `web_search`.
 //! Optional app tools are confined to the authenticated gateway socket and
 //! re-authorize each API request through the target app's gateway with the
-//! current user's SSO session. The four office document tools
-//! (`convert_document`, `spreadsheet_read`, `spreadsheet_write` and
-//! `word_document`) are suspended for every caller as an interim containment
-//! measure: their document access was authorized by this service's static ACLs
-//! rather than by the calling user's own permissions. Each one is refused before
-//! it parses, resolves or opens anything, and none of them is advertised. See
-//! `documentation/ai-tools.md` for the reason and the requirements for
-//! restoring them; `office.rs` and `office_write.rs` stay in the tree, dormant,
-//! for that restoration.
+//! current user's SSO session. Gateway Office tools delegate file operations to
+//! a separate broker under fresh caller credentials and parse only bounded
+//! bytes in a Landlock/seccomp sandbox. Saves create new copies. The legacy
+//! handlers below remain explicit denials on identity-free transports.
 //!
 //! It also carries the stdio bridge in [`bridge`], which is how llama.cpp itself
 //! reaches the same tools: it can only spawn MCP servers as child processes, so
@@ -39,10 +34,13 @@ mod app_tools;
 mod bridge;
 mod gateway;
 mod gateway_socket;
-// The office modules are suspended, so nothing in this file calls them. They stay
-// compiled and their own tests stay live so a caller-aware restoration re-enables
-// a working converter and a working confinement check rather than a stale one.
-// Do not delete them as dead code.
+mod office_broker;
+mod office_identity;
+mod office_io;
+mod office_process;
+mod office_sandbox;
+mod office_tools;
+// Retain legacy path adapters/tests; the gateway uses only brokered bytes.
 #[allow(dead_code)]
 mod office;
 #[allow(dead_code)]
@@ -56,23 +54,17 @@ struct Config {
     searxng_base: String,
     searxng_timeout: Duration,
     max_results: usize,
-    // The office tools are suspended, so these four are no longer read by this
-    // process. They stay configured and validated so the deployment keeps
-    // publishing the same environment and a later restoration re-enables a
-    // working endpoint instead of discovering a stale or missing one at
-    // republish time.
-    #[allow(dead_code)]
+    // Gateway Office operations use these configured adapters.
     collabora_base: String,
-    #[allow(dead_code)]
     collabora_timeout: Duration,
     #[allow(dead_code)]
     shared_root: PathBuf,
     #[allow(dead_code)]
     workspace_root: PathBuf,
-    #[allow(dead_code)]
     helper: office_write::Helper,
     public_host: Option<String>,
     apps: app_tools::Config,
+    office_socket: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -413,11 +405,7 @@ fn parse_env() -> Result<Config, String> {
         Err(_) => 8,
     };
 
-    // The office tools are suspended, so the Collabora upstream they used and the
-    // shared root and workspace they served are no longer read by this process.
-    // All of them stay configured and all of them stay validated so a later
-    // restoration re-enables a working converter instead of discovering a stale
-    // or missing endpoint at republish time.
+    // Validate the fixed, operator-configured conversion endpoint.
     let collabora_base = env::var("AI_TOOLS_COLLABORA_URL")
         .map_err(|_| "AI_TOOLS_COLLABORA_URL is not set".to_string())?
         .trim_end_matches('/')
@@ -463,6 +451,7 @@ fn parse_env() -> Result<Config, String> {
         helper,
         public_host: parse_public_host(env::var("AI_TOOLS_PUBLIC_HOST").ok())?,
         apps: app_tools::Config::from_env()?,
+        office_socket: env::var_os("AI_TOOLS_OFFICE_IO_SOCKET").map(PathBuf::from),
     })
 }
 
@@ -539,36 +528,64 @@ fn router(server: Server, public_host: Option<&str>) -> Router {
 enum Transport {
     StreamableHttp,
     Stdio,
+    OfficeParser,
+    OfficeBroker,
+    OfficeWorker,
 }
 
 fn parse_transport(raw: &str) -> Result<Transport, String> {
     match raw {
         "http" | "streamable-http" => Ok(Transport::StreamableHttp),
         "stdio" => Ok(Transport::Stdio),
+        "office-parser" => Ok(Transport::OfficeParser),
+        "office-broker" => Ok(Transport::OfficeBroker),
+        "office-worker" => Ok(Transport::OfficeWorker),
         other => Err(format!(
             "unknown transport {other:?}; expected \"streamable-http\" or \"stdio\""
         )),
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let transport = match env::var("AI_TOOLS_TRANSPORT") {
         Ok(raw) => parse_transport(&raw)?,
         Err(_) => Transport::StreamableHttp,
     };
+    if transport == Transport::OfficeParser {
+        office_sandbox::run();
+    }
+    if transport == Transport::OfficeWorker {
+        let code = match office_broker::worker() {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("{}", serde_json::json!({"error":error}));
+                1
+            }
+        };
+        std::process::exit(code);
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(serve(transport))
+}
+
+async fn serve(transport: Transport) -> Result<(), Box<dyn std::error::Error>> {
     if transport == Transport::Stdio {
         return bridge::serve_stdio().await;
+    }
+    if transport == Transport::OfficeBroker {
+        return office_broker::serve().await;
     }
 
     // Take the inherited descriptor before any local bind can allocate fd 3.
     let gateway_listener = gateway_socket::inherited()?;
     let listen = env::var("AI_TOOLS_LISTEN")?;
     let config = Arc::new(parse_env()?);
-    // No Collabora client is built here: the office tools are denied before any
-    // document path is resolved, so the converter is never reached, and a
-    // suspended tool must not keep an idle HTTP client or an unreachable
-    // upstream in its startup path.
+    if config.office_socket.is_some() {
+        config.helper.probe().await?;
+    }
+    // Conversion clients are constructed only for authorized operations.
     let server = Server {
         config: Arc::clone(&config),
     };
@@ -624,6 +641,7 @@ mod tests {
                 .expect("helper"),
             public_host: None,
             apps: app_tools::Config::default(),
+            office_socket: None,
         }
     }
 

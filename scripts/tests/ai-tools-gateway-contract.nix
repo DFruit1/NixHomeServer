@@ -9,9 +9,11 @@ let
     kopiaDomain = "backups.example.test";
     backupAdminGroup = "backup-admin";
     kanidmDomain = "identity.example.test";
+    kanidmAdminUser = "operator";
+    kanidmAppUsers = [ "alice" ];
     kanidmAuthSessionExpirySeconds = 86400;
     cloudflareTunnelName = "fixture";
-    networking = { loopbackIPv4 = "127.0.0.1"; ports = { kopia = 51515; https = 443; }; };
+    networking = { loopbackIPv4 = "127.0.0.1"; ports = { kopia = 51515; https = 443; kanidm = 8443; }; };
   };
   appDefaults = {
     enable = true;
@@ -92,7 +94,13 @@ assert cfg.systemd.sockets.ai-tools-gateway.socketConfig == {
   SocketUser = "caddy"; SocketGroup = "caddy"; SocketMode = "0600";
   RemoveOnStop = true; Service = "ai-tools.service";
 };
-assert cfg.systemd.services.ai-tools.requires == [ "ai-tools-gateway.socket" ];
+assert cfg.systemd.services.ai-tools.requires == [ "ai-tools-gateway.socket" "ai-tools-office-io.socket" ];
+assert cfg.systemd.services.ai-tools.serviceConfig.InaccessiblePaths == [ appDefaults.sharedRoot ];
+assert cfg.systemd.sockets.ai-tools-office-io.socketConfig.SocketMode == "0600";
+assert cfg.systemd.sockets.ai-tools-office-io.socketConfig.SocketUser == "ai-tools";
+assert cfg.systemd.services.ai-tools-office-io.serviceConfig.CapabilityBoundingSet == [ "CAP_SETUID" "CAP_SETGID" ];
+assert cfg.systemd.services.ai-tools-office-io.serviceConfig.User == "ai-tools-io";
+assert builtins.fromJSON cfg.systemd.services.ai-tools-office-io.environment.AI_TOOLS_OFFICE_HUMANS == [ "operator" "alice" ];
 assert cfg.systemd.services.ai-tools.environment.AI_TOOLS_GATEWAY_SOCKET == "/run/ai-tools-gateway.sock";
 assert !(disabled.systemd.sockets or { } ? ai-tools-gateway);
 assert !(disabled.systemd.services ? ai-tools);

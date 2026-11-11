@@ -11,6 +11,7 @@ in
     repo.storage.dataPool.guardedServices = [
       "ai-tools-shared-access"
       "ai-tools"
+      "ai-tools-office-io"
     ];
 
     # The workspace is the one directory ai-tools may write to. Declaring it
@@ -21,12 +22,9 @@ in
     # networking.nix asserts rather than assumes.
     repo.storage.sharedRoots.contentSubdirs = [ cfg.workspaceDirName ];
 
-    # convert_document reads documents out of the shared root, so the service
-    # account needs to traverse and read it. Every other read-only consumer
-    # (calibre-web, media-manager) is granted the same access here, and
-    # ai-tools is confined to sharedRoot plus the writable workspace by
-    # ProtectSystem plus ReadOnlyPaths/ReadWritePaths in services.nix, so the
-    # read grant cannot be used to read or write anything else.
+    # Retain legacy static ACL provisioning for compatibility. The main service
+    # now has InaccessiblePaths on this tree; the caller-scoped broker account
+    # gets no grant here. These ACLs never establish caller authorization.
     systemd.services.ai-tools-shared-access = {
       description = "Grant the AI Tools service read access to the shared root and write access to its workspace";
       wantedBy = [ "multi-user.target" ];

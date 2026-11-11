@@ -18,12 +18,42 @@ from __future__ import annotations
 import base64
 import datetime
 import io
+import zipfile
 import json
 import math
 import sys
 from typing import Any
 
 import openpyxl
+from openpyxl.writer.excel import ExcelWriter
+from openpyxl.worksheet._writer import WorksheetWriter
+from openpyxl.drawing.spreadsheet_drawing import SpreadsheetDrawing
+
+
+class _MemoryExcelWriter(ExcelWriter):
+    """Pinned openpyxl adapter: its default worksheet writer uses temp files.
+
+    Creation supports plain normal worksheets. Give the existing XML writer a
+    BytesIO and put those bytes directly in the archive, retaining the pinned
+    library's packaging/styles/relationship logic without filesystem writes.
+    """
+    def write_worksheet(self, sheet):
+        if self.workbook.write_only:
+            raise ValueError("streaming worksheets are not supported")
+        sheet._drawing = SpreadsheetDrawing()
+        sheet._drawing.charts = sheet._charts
+        sheet._drawing.images = sheet._images
+        output = io.BytesIO()
+        writer = WorksheetWriter(sheet, out=output)
+        writer.write()
+        sheet._rels = writer._rels
+        self._archive.writestr(sheet.path[1:], output.getvalue())
+        self.manifest.append(sheet)
+
+
+def _save_in_memory(workbook, destination):
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+        _MemoryExcelWriter(workbook, archive).save()
 
 #: Rows returned per sheet before truncation. The shared root is user-writable
 #: and the caller holds a hard MemoryHigh, so a workbook with a million rows is
@@ -182,6 +212,10 @@ def _validate_cell(value: Any, sheet: str) -> Any:
             "written as an empty cell; write it as the text 'nan' or 'inf' "
             "if that is what the value means"
         )
+    if isinstance(value, str) and len(value) > 32767:
+        raise ValueError(f"sheet {sheet!r}: cell text exceeds Excel's 32767-character limit")
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and abs(value) > 2**53:
+        raise ValueError(f"sheet {sheet!r}: number cannot be represented safely; use text")
     return value
 
 
@@ -203,6 +237,11 @@ def write(spec: dict[str, Any], path: str) -> dict[str, Any]:
     # Every name is validated before anything is written, so a bad name in the
     # last sheet cannot leave a half-built workbook on disk.
     names = [_validate_sheet_name(entry.get("name")) for entry in entries]
+    if len({name.casefold() for name in names}) != len(names):
+        raise ValueError("sheet names must be unique, ignoring case")
+    states = [entry.get("state", "visible") for entry in entries]
+    if not any(state == "visible" for state in states) or any(state not in {"visible", "hidden", "veryHidden"} for state in states):
+        raise ValueError("sheet states must be valid and at least one sheet must be visible")
 
     # Every cell is validated before anything is written, so a bad value in the
     # last sheet cannot leave a half-built workbook on disk.
@@ -210,10 +249,14 @@ def write(spec: dict[str, Any], path: str) -> dict[str, Any]:
         rows = entry.get("rows")
         if not isinstance(rows, list):
             raise ValueError(f"sheet {name!r} needs a 'rows' array")
+        if len(rows) > MAX_ROWS_PER_SHEET:
+            raise ValueError(f"sheet {name!r} exceeds the {MAX_ROWS_PER_SHEET}-row creation limit")
         for row in rows:
             if not isinstance(row, list):
                 raise ValueError(f"sheet {name!r} has a row that is not an array")
-            for value in row[:MAX_COLUMNS]:
+            if len(row) > MAX_COLUMNS:
+                raise ValueError(f"sheet {name!r} exceeds the {MAX_COLUMNS}-column creation limit")
+            for value in row:
                 _validate_cell(value, name)
 
     workbook = openpyxl.Workbook()
@@ -226,14 +269,15 @@ def write(spec: dict[str, Any], path: str) -> dict[str, Any]:
         workbook.create_sheet(title=name)
 
     # Rows were validated above, so this loop only builds the workbook.
-    for sheet, entry in zip(workbook.worksheets, entries, strict=True):
+    for sheet, entry, state in zip(workbook.worksheets, entries, states, strict=True):
+        sheet.sheet_state = state
         for row in entry["rows"]:
-            sheet.append(row[:MAX_COLUMNS])
+            sheet.append(row)
 
     workbook.active = 0
-    workbook.save(path)
+    _save_in_memory(workbook, path)
     workbook.close()
-    return {"path": path, "sheets": names, "sheet_count": len(names), "not_retained": NOT_RETAINED}
+    return {"path": path if isinstance(path, str) else None, "sheets": names, "sheet_count": len(names), "not_retained": NOT_RETAINED}
 
 
 def _main() -> int:

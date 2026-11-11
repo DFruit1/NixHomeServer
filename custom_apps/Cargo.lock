@@ -82,6 +82,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
+ "landlock",
  "libc",
  "reqwest",
  "rmcp",
@@ -89,6 +90,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
+ "uuid",
 ]
 
 [[package]]

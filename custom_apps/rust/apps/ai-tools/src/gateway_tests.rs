@@ -12,6 +12,78 @@ use tower::ServiceExt;
 const HOST: &str = "tools.example.test";
 const LIST: &str = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
 
+#[tokio::test]
+async fn office_discovery_and_file_requests_use_only_the_current_gateway_actor() {
+    let socket =
+        std::env::temp_dir().join(format!("office-gateway-test-{}.sock", std::process::id()));
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let mut server = app_server();
+    Arc::make_mut(&mut server.config).office_socket = Some(socket.clone());
+    let app = router(server.clone(), HOST);
+    let response = app
+        .clone()
+        .oneshot(request(Method::POST, LIST, Some("alice")))
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
+    assert_eq!(body["result"]["tools"].as_array().unwrap().len(), 11);
+    let broker = tokio::spawn(async move {
+        for user in ["alice", "bob"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let bytes = crate::office_io::receive(&mut stream).await.unwrap();
+            let value: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["username"], user);
+            assert_eq!(value["subject"], format!("subject-{user}"));
+            assert_eq!(
+                value["operation"],
+                json!({"op":"read","path":"Reports/private.xlsx"})
+            );
+            crate::office_io::send(&mut stream, br#"{"error":"Fixture denies file access"}"#)
+                .await
+                .unwrap();
+        }
+    });
+    let call = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"spreadsheet_read","arguments":{"path":"Reports/private.xlsx"}}}).to_string();
+    assert_eq!(
+        app.clone()
+            .oneshot(request(Method::POST, &call, None))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    // Even a fully configured server exposes no private tools through TCP's
+    // base handler, and forged headers cannot contact the file broker.
+    let mut policy = crate::streamable_http_config(Some(HOST));
+    policy.legacy_session_mode = false;
+    let core = Router::new().fallback_service(StreamableHttpService::new(
+        move || Ok(server.clone()),
+        Arc::new(NeverSessionManager::default()),
+        policy,
+    ));
+    let response = core
+        .oneshot(request(Method::POST, &call, Some("forged")))
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
+    assert!(body["error"].is_object());
+    for user in ["alice", "bob"] {
+        let response = app
+            .clone()
+            .oneshot(request(Method::POST, &call, Some(user)))
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
+        assert_eq!(body["result"]["isError"], true);
+        assert_eq!(
+            body["result"]["content"][0]["text"],
+            "Fixture denies file access"
+        );
+    }
+    broker.await.unwrap();
+    std::fs::remove_file(socket).unwrap();
+}
+
 fn app_server() -> crate::Server {
     let mut server = crate::tests::test_server();
     Arc::make_mut(&mut server.config).apps = crate::app_tools::Config {

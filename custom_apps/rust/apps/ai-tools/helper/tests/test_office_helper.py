@@ -182,15 +182,11 @@ class SpreadsheetTests(unittest.TestCase):
         with ScratchDir("clamp") as directory:
             path = directory / "wide.xlsx"
             wide = list(range(spreadsheet.MAX_COLUMNS + 10))
-            written = spreadsheet.write(
-                {"sheets": [{"name": "W", "rows": [wide, wide]}]}, str(path)
-            )
-            self.assertEqual(len(written["sheets"]), 1)
-
-            read_back = spreadsheet.read(path.read_bytes())
-            sheet = read_back["sheets"][0]
-            self.assertFalse(read_back["truncated_columns"])
-            self.assertEqual(len(sheet["rows"][0]), spreadsheet.MAX_COLUMNS)
+            # Writing a clipped copy would irreversibly drop cells. Reads may
+            # project a bounded view, but writes must reject that loss.
+            with self.assertRaises(ValueError):
+                spreadsheet.write({"sheets": [{"name": "W", "rows": [wide, wide]}]}, str(path))
+            self.assertFalse(path.exists())
 
             # A workbook built outside the helper, wider than the ceiling, is
             # the case the flag exists for.

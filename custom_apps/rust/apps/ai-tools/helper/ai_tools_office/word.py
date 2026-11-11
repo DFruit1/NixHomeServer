@@ -75,7 +75,7 @@ def _iter_blocks(parent: DocumentObject) -> list[Any]:
 
 def _paragraph_payload(paragraph: Paragraph) -> dict[str, Any]:
     text = paragraph.text
-    truncated = len(text) > MAX_BLOCK_CHARS
+    truncated = len(text) > MAX_BLOCK_CHARS or len(paragraph.runs) > 256
     runs = [
         {
             "text": run.text[:MAX_BLOCK_CHARS],
@@ -101,6 +101,7 @@ def _table_payload(table: Table) -> dict[str, Any]:
         rows.append(cells)
     return {
         "kind": "table",
+        "text_truncated": len(table.rows) > MAX_TABLE_ROWS or len(table.columns) > MAX_TABLE_COLUMNS or any(len(cell.text) > MAX_BLOCK_CHARS for row in table.rows[:MAX_TABLE_ROWS] for cell in row.cells[:MAX_TABLE_COLUMNS]),
         "rows": rows,
         "row_count": len(rows),
         "declared_row_count": len(table.rows),
@@ -145,6 +146,8 @@ def write(spec: dict[str, Any], path: str) -> dict[str, Any]:
     blocks = spec.get("blocks")
     if not isinstance(blocks, list) or not blocks:
         raise ValueError("spec must carry a non-empty 'blocks' array")
+    if len(blocks) > MAX_BLOCKS:
+        raise ValueError(f"document exceeds the {MAX_BLOCKS}-block creation limit")
 
     document = docx.Document()
     for entry in blocks:
@@ -164,7 +167,7 @@ def write(spec: dict[str, Any], path: str) -> dict[str, Any]:
 
     document.save(path)
     return {
-        "path": path,
+        "path": path if isinstance(path, str) else None,
         "block_count": len(blocks),
         "not_retained": NOT_RETAINED,
     }
@@ -173,27 +176,37 @@ def write(spec: dict[str, Any], path: str) -> dict[str, Any]:
 def _add_runs(paragraph: Paragraph, runs: Any, text: Any) -> None:
     """Add run-level content, preferring explicit runs over plain text."""
     if isinstance(runs, list) and runs:
+        if len(runs) > 256:
+            raise ValueError("paragraph exceeds the 256-run creation limit")
         for entry in runs:
             if not isinstance(entry, dict):
                 raise ValueError("every run must be an object")
             value = entry.get("text")
             if not isinstance(value, str):
                 raise ValueError("every run needs a 'text' string")
-            run = paragraph.add_run(value[:MAX_BLOCK_CHARS])
+            if len(value) > MAX_BLOCK_CHARS:
+                raise ValueError("run text exceeds the 8192-character creation limit")
+            run = paragraph.add_run(value)
             if entry.get("bold") is True:
                 run.bold = True
             if entry.get("italic") is True:
                 run.italic = True
         return
     if isinstance(text, str):
-        paragraph.add_run(text[:MAX_BLOCK_CHARS])
+        if len(text) > MAX_BLOCK_CHARS:
+            raise ValueError("paragraph text exceeds the 8192-character creation limit")
+        paragraph.add_run(text)
 
 
 def _add_table(document: DocumentObject, entry: dict[str, Any]) -> None:
     rows = entry.get("rows")
     if not isinstance(rows, list) or not rows:
         raise ValueError("a table block needs a non-empty 'rows' array")
-    clamped = [row[:MAX_TABLE_COLUMNS] for row in rows[:MAX_TABLE_ROWS]]
+    if len(rows) > MAX_TABLE_ROWS or any(not isinstance(row, list) or len(row) > MAX_TABLE_COLUMNS for row in rows):
+        raise ValueError("table exceeds the 500-row/64-column creation limit or has an invalid row")
+    if any(len(str(value)) > MAX_BLOCK_CHARS for row in rows for value in row if value is not None):
+        raise ValueError("table cell exceeds the 8192-character creation limit")
+    clamped = rows
     width = max((len(row) for row in clamped), default=0)
     table = document.add_table(rows=len(clamped), cols=max(width, 1))
     for row_index, row in enumerate(clamped):

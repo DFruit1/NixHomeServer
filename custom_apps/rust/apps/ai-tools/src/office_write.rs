@@ -1,36 +1,13 @@
-//! Confined native xlsx/docx reads and writes.
-//!
-//! Three properties drive the design here, and each one is why a piece is where
-//! it is:
-//!
-//! * **Reads span the shared root, writes do not.** The owner's decision is one
-//!   top-level shared content subdirectory for writes. [`resolve_read`] and
-//!   [`resolve_write`] are deliberately separate rather than one function with a
-//!   flag: a single `root` parameter that a call site can pass the wrong value
-//!   to is exactly the mistake this card is guarding against.
-//! * **Paths are validated in Rust, before anything is opened.** The systemd
-//!   unit's `ReadWritePaths` is what makes the refusal real against a future
-//!   tool that forgets; this module is what makes it correct now.
-//! * **Collabora does the ODF and legacy halves.** Producing an `ods` or `odt`
-//!   is a convert-to call on the instance that already runs for OpenCloud, and
-//!   no native ODF writer exists in either language. The Python helper is
-//!   reached only for native xlsx/docx edits, which is why [`format_for`] maps
-//!   an ods request to a Collabora target rather than to the helper.
-//!
-//! The helper is invoked as a child process with the validated absolute path on
-//! its command line for writes and the document on stdin for reads. Reads
-//! deliberately do not hand it a path: nothing in the helper can then open
-//! something the caller did not validate, and there is no path for a
-//! prompt-injected call to redirect.
+//! Native Office byte parser adapter. The gateway never calls the retained
+//! legacy path-resolution adapters; file authorization belongs to office_io.
+//! A fresh exec installs Landlock/seccomp before invoking the pinned helper.
 
 use base64::Engine as _;
 use serde_json::{json, Value};
 use std::{
     path::{Path, PathBuf},
-    process::Stdio,
     time::Duration,
 };
-use tokio::io::AsyncWriteExt;
 
 /// Longest helper result returned to the model, in bytes. Same reasoning as
 /// `office::MAX_OUTPUT_BYTES`: a workbook with a million rows is cheap to
@@ -232,147 +209,80 @@ fn clamp_output(text: &str) -> (String, bool) {
     (text[..boundary].to_string(), true)
 }
 
-/// What the helper is asked to do.
-#[derive(Debug)]
-enum Request<'a> {
-    Read {
-        format: &'static str,
-        document: Vec<u8>,
-    },
-    Write {
-        format: &'static str,
-        path: &'a Path,
-        spec: &'a Value,
-    },
-}
-
-/// The pinned Python helper, invoked as a child of this process.
-///
-/// It holds no filesystem grant of its own: it runs as the same user in the
-/// same sandbox, it is given only a path this module validated, and it never
-/// opens a document itself.
+/// The native parser is always executed through the Landlock/seccomp boundary.
 #[derive(Clone)]
 pub struct Helper {
     command: String,
+    parser_slot: std::sync::Arc<tokio::sync::Semaphore>,
 }
-
 impl Helper {
     pub fn new(command: &str) -> Result<Self, String> {
-        let trimmed = command.trim();
-        if trimmed.is_empty() {
-            return Err("AI_TOOLS_OFFICE_HELPER must name an executable".to_string());
+        if command.trim().is_empty() {
+            return Err("AI_TOOLS_OFFICE_HELPER must name an executable".into());
         }
         Ok(Self {
-            command: trimmed.to_string(),
+            command: command.trim().into(),
+            parser_slot: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
         })
     }
-
-    async fn call(&self, request: Request<'_>) -> Result<Value, String> {
-        let payload = match &request {
-            Request::Read { format, document } => json!({
-                "op": "read",
-                "format": format,
-                // Base64 because the document is a zip archive and a JSON string
-                // cannot carry raw bytes.
-                "document": base64::engine::general_purpose::STANDARD.encode(document),
-            }),
-            Request::Write { format, path, spec } => json!({
-                "op": "write",
-                "format": format,
-                "path": path.display().to_string(),
-                "spec": *spec,
-            }),
-        };
-        let encoded = serde_json::to_vec(&payload)
-            .map_err(|error| format!("helper request could not be encoded: {error}"))?;
-        drop(payload);
-
-        // The request goes over stdin, never argv, so a multi-megabyte document
-        // cannot exceed the exec argument limit and no path ever appears in a
-        // process listing.
-        let mut command = tokio::process::Command::new(&self.command);
+    async fn call(&self, payload: Value, limit: usize) -> Result<Value, String> {
+        let _slot = self
+            .parser_slot
+            .try_acquire()
+            .map_err(|_| "Office parser is busy; try again shortly")?;
+        let payload = serde_json::to_vec(&payload).map_err(|_| "Invalid Office parser request")?;
+        if payload.len() > crate::office_io::MAX_FRAME {
+            return Err("Office parser request exceeds its limit".into());
+        }
+        let mut command = tokio::process::Command::new(
+            std::env::current_exe().map_err(|_| "Office parser unavailable")?,
+        );
         command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            // Nothing is inherited: the helper has no configuration of its own,
-            // and a PYTHONPATH from the parent must not reach it.
             .env_clear()
-            .kill_on_drop(true);
-
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("office helper could not start: {error}"))?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(&encoded)
-                .await
-                .map_err(|error| format!("office helper stopped reading its request: {error}"))?;
-            let _ = stdin.shutdown().await;
-        }
-        drop(encoded);
-
-        let output = tokio::time::timeout(HELPER_TIMEOUT, child.wait_with_output())
-            .await
-            .map_err(|_| "office helper timed out".to_string())?
-            .map_err(|error| format!("office helper failed: {error}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            // The helper's own failure is already a JSON object with a short
-            // message; anything else is an unexpected failure and is reported
-            // as it arrived rather than discarded.
-            let reason = serde_json::from_str::<Value>(stderr.trim())
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
-                .unwrap_or_else(|| stderr.trim().to_string());
-            let reason = if reason.is_empty() {
-                format!("office helper exited with {}", output.status)
-            } else {
-                reason
-            };
-            return Err(reason);
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let (body, truncated) = clamp_output(stdout.trim());
-        let parsed: Value = serde_json::from_str(&body).map_err(|error| {
-            format!(
-                "office helper returned unreadable JSON: {error}; output began: {}",
-                body.chars().take(120).collect::<String>()
-            )
-        })?;
-        // A clamped response is no longer valid JSON, so the truncation flag is
-        // the only honest thing to return; the helper's own `truncated` field
-        // covers the case where the *document* was clamped inside the helper.
-        if truncated {
-            return Err(format!(
-                "office helper produced more than {MAX_OUTPUT_BYTES} bytes of JSON"
-            ));
-        }
-        Ok(parsed)
+            .env("AI_TOOLS_TRANSPORT", "office-parser")
+            .env("AI_TOOLS_PARSER_HELPER", &self.command);
+        let output = crate::office_process::run(command, payload, limit).await?;
+        serde_json::from_slice(&output).map_err(|_| "Invalid Office parser result".into())
     }
-
-    /// Read every sheet of a native workbook, or the structure of a native
-    /// document.
-    pub async fn read(&self, format: &'static str, document: Vec<u8>) -> Result<Value, String> {
-        self.call(Request::Read { format, document }).await
+    pub async fn probe(&self) -> Result<(), String> {
+        let result = self.call(json!({"op":"probe"}), 1024).await?;
+        if result != json!({"sandboxed":true}) {
+            return Err("Office parser sandbox failed its probe".into());
+        }
+        Ok(())
     }
-
-    /// Write a document of `format` at an already-validated absolute path.
-    pub async fn write(
+    pub async fn read_window(
         &self,
         format: &'static str,
-        path: &Path,
-        spec: &Value,
+        document: Vec<u8>,
+        offset: usize,
     ) -> Result<Value, String> {
-        self.call(Request::Write { format, path, spec }).await
+        self.call(json!({"op":"read", "format":format,
+            "document":base64::engine::general_purpose::STANDARD.encode(document), "offset":offset}), 64*1024).await
+    }
+    pub async fn render(
+        &self,
+        format: &'static str,
+        spec: &Value,
+        original: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, String> {
+        let mut payload = json!({"op":"render", "format":format,"spec":spec});
+        if let Some(bytes) = original {
+            payload["op"] = json!("edit");
+            payload["document"] = json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+        }
+        let response = self.call(payload, crate::office_io::MAX_FRAME).await?;
+        let encoded = response
+            .get("document")
+            .and_then(Value::as_str)
+            .ok_or("Invalid Office parser result")?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| "Invalid Office parser result")?;
+        if bytes.len() > crate::office_io::MAX_DOCUMENT {
+            return Err("Output exceeds 32 MiB".into());
+        }
+        Ok(bytes)
     }
 }
 

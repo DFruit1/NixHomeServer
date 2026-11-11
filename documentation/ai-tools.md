@@ -9,33 +9,45 @@ through the shared Kanidm authentication gateway, which admits `ai-users`.
 The gateway-facing transport uses a Caddy-only Unix socket and authenticates
 each request independently; the loopback endpoint and stdio bridge carry no
 trusted caller identity. See the [access-control contract](ai-tools-access-control.md)
-for this foundation and the remaining filesystem-authorization work.
+for the authentication and filesystem-authorization boundaries.
 
-## The office tools are currently unavailable
+## Word and Excel tools
 
-All four office-document tools are suspended for **all** callers:
+The authenticated gateway offers `convert_document`, `spreadsheet_read`,
+`spreadsheet_write` and `word_document`. They require a current approved human
+POSIX identity and operate only on shared-root files that user can access.
+The TCP listener and stdio bridge retain their explicit Office denials.
 
-| Tool | Answer |
-| --- | --- |
-| `convert_document` | `Document conversion is unavailable pending caller-permission enforcement` |
-| `spreadsheet_read` | `Office tools are unavailable pending caller-permission enforcement` |
-| `spreadsheet_write` | `Office tools are unavailable pending caller-permission enforcement` |
-| `word_document` | `Office tools are unavailable pending caller-permission enforcement` |
+Reads use a bounded view (256 sheets, 2000 rows/sheet, 64 columns or 5000
+Word blocks); `next_offset` paginates that view. Respect truncation and omitted-
+entry warnings; pagination does not recover omitted source content. Native xlsx reads retain formula text, not calculated
+results. Word supports docx, odt, doc and rtf reads; spreadsheet reads support
+xlsx and ods. Legacy/ODF conversion uses the existing Collabora instance.
 
-Each call is refused at the start of the tool's handler, before the arguments are
-parsed, before any path is resolved, and before any file is opened, created,
-staged, handed to the office helper or converted by Collabora. The refusal names
-no path, filename or root, so it cannot be used as a probe for the shared
-directory.
+`spreadsheet_write` and `word_document` use `action=create` or `action=edit`.
+Every save needs a **new** `output_name`, one filename in `ai-workspace`.
+Existing files are never overwritten. Creation uses `spec.sheets` (name/rows,
+optional visibility state) or `spec.blocks` (paragraph/table kind, text/runs,
+optional existing style). Edits use `source_path` plus targeted patches:
 
-The refusal is also what a caller gets if it learned a tool from cached
-discovery metadata or invokes it directly by name: none of the four appear in
-`tools/list`, and each dispatch branch is kept as an explicit denial rather than
-folded into the unknown-tool error. The stdio bridge that llama-server spawns
-forwards this reduced list unchanged, so the model is offered `web_search` and
-nothing else.
+```json
+{"action":"edit","source_path":"Reports/budget.xlsx","output_name":"budget-reviewed.xlsx","spec":{"cells":[{"sheet":"Budget","cell":"A1","value":150}]}}
+```
 
-`web_search` is unaffected and still advertised.
+```json
+{"action":"edit","source_path":"Reports/letter.docx","output_name":"letter-reviewed.docx","spec":{"replacements":[{"find":"Pending approval","replace":"Approved"}]}}
+```
+
+Native edits preserve untouched package content and styles. Word phrases must
+match exactly once in body paragraph text; complex body fields, tracked changes and unsupported non-text constructs
+are refused. Editing ODF into a preservation-guaranteed copy is not supported;
+use native xlsx/docx sources. New ODF documents can be created through Collabora.
+Formulas are marked for recalculation when opened, not calculated here. Inspect
+the workspace after a timed-out save before retrying with a new name.
+
+See the [access-control contract](ai-tools-access-control.md) for identity,
+filesystem, parser and preservation limits. Repository configuration alone is
+not proof of live activation or browser connectivity.
 
 ## Search and YouTube tools
 
@@ -104,94 +116,35 @@ snippets and video metadata remain untrusted content, not instructions.
 These optional integrations create no host, credentials, storage grants or
 public exposure. Disabling either app removes its tools/configuration; removing
 Bonsai removes the same-origin chat route and browser default. Office tools
-remain suspended. Validate and deploy through the normal guarded procedure;
+retain their denials on identity-free transports. Validate and deploy through the normal guarded procedure;
 source checks do not establish live browser or authenticated app access.
 
-## Why they were suspended
+## Authorization history
 
-The document tools were authorized by a static service account, not by the
-calling user. The `ai-tools` account holds a read grant on the shared root
-(`g:ai-tools:r-x` plus the default ACL `d:g:ai-tools:r-x` re-applied by
-`ai-tools-shared-access.service`) and the gateway identity headers never
-constrained the open. A caller whose own account cannot read a file could
-therefore have it read or converted and returned by the service account, and the
-write half could create or overwrite documents in the workspace the same way.
-That is a containment gap, not a measured live exposure: it was established
-offline.
+The earlier implementation used the service account's static ACLs for every
+caller. Office tools were suspended after offline review demonstrated that
+this could exceed a caller's own file permissions. The current restoration
+uses the separate credential-dropping broker and sandboxed byte parser; the
+old handlers remain unconditional denials on identity-free transports. Existing
+static ACL provisioning remains, but the main service cannot open the shared
+root and the broker's account has no document grant.
 
-The owner's standing rule is that the model must not inherit any ACL the calling
-user does not have. Until per-caller authorization exists, the smallest
-fail-closed change is to refuse every server-path document operation. The
-tradeoff is that all clients — including callers who *could* legitimately read or
-write the file — lose the office tools. That loss is deliberate and was
-approved; it is not a bug.
+## Operating the services
 
-## What did not change
-
-This is an interim containment measure, not a repair of the underlying
-authorization model.
-
-* The static service ACLs on the shared root and the workspace are unchanged,
-  and the `ai-tools-shared-access` grant still runs on every activation.
-* Live group membership, the ACL migration marker and per-inode effective
-  permissions remain unverified.
-* `office.rs`, `office_write.rs` and the Python office helper stay in the tree,
-  unreferenced by the running handlers, for the caller-aware restoration. Their
-  format-adapter and path-confinement tests still run. Do not delete them as dead
-  code.
-* Collabora configuration and the shared/workspace roots are still parsed and
-  validated at startup, so a restoration re-enables a working endpoint rather
-  than discovering a stale one at republish time.
-* No configuration toggle was added. The denial is unconditional in the source;
-  flipping an environment variable cannot re-enable the tools.
-
-## Operating the service
-
-The MCP endpoint is `https://tools.<domain>` (authenticated, stateless gateway)
-or `http://127.0.0.1:8097` (identity-free loopback). Health is `GET /healthz`.
-Gateway requests require canonical subject and preferred-username claims from
-Caddy and reject `Mcp-Session-Id`. The gateway socket is
-`/run/ai-tools-gateway.sock`, owned by Caddy, mode `0600`, and passed to the
-service through systemd socket activation. A direct loopback client cannot
-authenticate by supplying identity headers.
+The authenticated MCP endpoint is `https://tools.<domain>` or the Bonsai
+same-origin `https://ai.<domain>/mcp`. Loopback `http://127.0.0.1:8097` remains
+web-search-only, with `GET /healthz` for health. No client-provided identity
+header can authenticate a loopback request.
 
 ```bash
-sudo systemctl status ai-tools.service
+sudo systemctl status ai-tools.service ai-tools-office-io.socket ai-tools-office-io.service
 curl -fsS http://127.0.0.1:8097/healthz
 ```
 
-The unit is read-only against the shared root (`ProtectSystem=strict`,
-`ReadOnlyPaths`, `ProtectHome`), confined to loopback
-(`IPAddressDeny=any`, `IPAddressAllow=localhost`), and covered by the
-`ai-tools-shared-access` data-pool guard. The module is in `modules/ai-tools/`;
-the MCP server is `custom_apps/rust/apps/ai-tools/`.
-
-The private host `tools.<domain>` is a canary target, so a deploy that breaks
-routing or access is caught by `homepage-canary-assert`.
-
-## Requirements for restoring the office tools
-
-Restoration needs its own approved change and design; it is not a revert of this
-commit. Rolling the denial back reopens the unbounded document read and write
-paths, so a bad containment build must leave the tools unavailable and be
-repaired, never worked around.
-
-A caller-aware design must establish, at minimum:
-
-* Trusted request identity, bound to the specific MCP request or session.
-* A mapping from that identity to a filesystem principal, with the actual
-  current read and ancestor-traverse permission checked on the opened object —
-  not just membership in the configured shared group.
-* Fail-closed handling of unknown identity and revocation.
-* Effective ACL mask handling, so a granting entry cannot act through a mask
-  that denies it.
-* No reads or writes outside the approved scope, with the hidden/symlink/
-  hardlink, replacement-race and copied-file controls from the original
-  assessment.
-* Any grant being a subset of the caller's actual reach.
-
-Such a change touches trust boundaries and the authorization architecture, so it
-needs its own immutable plan and an explicit owner decision before
-implementation. Do not add descendant grants, revoke existing ACLs, auto-enrol
-users or change `allowedGroups` as an interim substitute — they can widen reach
-without establishing caller permission.
+The file broker is socket-activated; an idle broker need not already be running.
+Both services have memory/CPU/IO limits, loopback egress restrictions and data-
+pool guards. Gateway and broker socket ownership are distinct. The module is
+`modules/ai-tools/`; implementation is `custom_apps/rust/apps/ai-tools/`.
+The private Tools and AI hosts retain authenticated canary coverage. After a
+guarded deployment, verify caller-specific native Office workflows, Search
+admission and downloader job ownership before claiming the tools usable.

@@ -218,6 +218,8 @@ impl Converter {
     pub fn new(base: &str, timeout: Duration) -> Result<Self, String> {
         Ok(Self {
             client: reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
                 .timeout(timeout)
                 .build()
                 .map_err(|error| format!("could not build Collabora client: {error}"))?,
@@ -248,12 +250,23 @@ impl Converter {
         {
             return Err(format!("unsupported conversion target: {target:?}"));
         }
-        let format = format_for(path).ok_or_else(|| {
-            "unsupported document type; supported: docx, odt, rtf, doc, xlsx, ods, pptx, odp"
-                .to_string()
-        })?;
-
         let bytes = read_document(path, MAX_INPUT_BYTES).await?;
+        self.convert_bytes(path, bytes, target).await
+    }
+
+    /// Only broker-authorized bytes reach the converter on the restored path.
+    pub async fn convert_bytes(
+        &self,
+        path: &Path,
+        bytes: Vec<u8>,
+        target: &str,
+    ) -> Result<Value, String> {
+        let format = format_for(path).ok_or("Unsupported source format")?;
+        if bytes.len() > MAX_INPUT_BYTES as usize
+            || !matches!(target, "txt" | "csv" | "xlsx" | "docx" | "ods" | "odt")
+        {
+            return Err("Unsupported conversion or document exceeds 32 MiB".into());
+        }
         let part = reqwest::multipart::Part::bytes(bytes)
             .file_name(upload_name(path))
             .mime_str(format.mime)
@@ -275,13 +288,26 @@ impl Converter {
             return Err(format!("Collabora returned HTTP {status}"));
         }
 
-        let envelope = response
-            .bytes()
+        let mut response = response;
+        let mut envelope = Vec::new();
+        let limit = if is_binary_target(target) {
+            MAX_INPUT_BYTES as usize
+        } else {
+            64 * 1024
+        };
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|error| format!("Collabora response was not readable: {error}"))?;
+            .map_err(|_| "Collabora response unavailable")?
+        {
+            if envelope.len() + chunk.len() > limit {
+                return Err("Conversion exceeds its output limit".into());
+            }
+            envelope.extend_from_slice(&chunk);
+        }
         let raw = &envelope;
         let (body, truncated) = if is_binary_target(target) {
-            if raw.len() as u64 > MAX_OUTPUT_BYTES as u64 * 4 {
+            if raw.len() as u64 > MAX_INPUT_BYTES {
                 return Err(format!(
                     "converted document exceeds the {MAX_OUTPUT_BYTES} byte limit"
                 ));

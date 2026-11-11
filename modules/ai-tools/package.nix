@@ -8,8 +8,8 @@ in
     enable = lib.mkEnableOption ''
       MCP tool server for the llama.cpp web UI. Tools are attached per client,
       so the shared inference endpoint keeps serving other consumers with their
-      own tool choices. Reads span the whole shared root; writes are confined to
-      the shared ai-workspace directory.
+      own tool choices. Authenticated Office reads require current caller file
+      permissions; saves create new copies in the shared ai-workspace directory.
     '';
 
     runtime = {
@@ -73,15 +73,10 @@ in
       type = lib.types.str;
       default = "${vars.sharedRoot}";
       description = ''
-        Directory convert_document and the office read tools may read from, and
-        the only path prefix they resolve against. Python helpers cannot read a
-        native document with the Rust side's path validation, so reads through
-        the helper go through resolve_read instead. Absolute paths, parent
-        traversal and hidden entries are rejected, and the canonical result is
-        re-checked against the root so a symlink cannot escape.
-
-        Reads stay over the helpers' resolved read paths. Writes resolve against
-        workspaceRoot instead, never against this.
+        Approved root for caller-scoped Office reads. The separate credential-
+        dropping broker opens regular non-hidden files beneath this root with
+        openat2 and actual caller credentials. Symlinks/hardlinks are refused;
+        the main service and parser have no ambient access to this tree.
       '';
     };
 
@@ -104,10 +99,9 @@ in
       default = "${vars.sharedRoot}/${cfg.workspaceDirName}";
       readOnly = true;
       description = ''
-        The only directory ai-tools may write to, and the only path prefix its
-        write tools resolve against. Reads remain available over the whole
-        sharedRoot; the sandbox in services.nix is what confines writes, so
-        the unit stays read-only everywhere else.
+        Root-owned workspace directly beneath sharedRoot. The credential-
+        dropping worker requires caller write permission and creates new copies
+        atomically with no overwrite. Nested output directories are refused.
       '';
     };
 
@@ -127,8 +121,8 @@ in
         the comment at the head of helper-package.nix.
 
         The helper holds no grant of its own. It runs as part of ai-tools,
-        receives only absolute paths the Rust side has already validated, and
-        never opens a document itself: reads arrive as bytes on stdin.
+        receives only bounded document bytes/specifications on stdin. Landlock and
+        seccomp confine it to Nix-store code, without file writes or sockets.
       '';
     };
   };
