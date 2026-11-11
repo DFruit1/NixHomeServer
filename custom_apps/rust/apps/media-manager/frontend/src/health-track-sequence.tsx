@@ -66,9 +66,10 @@ export const HealthTrackSequence = component$<{
     state.busy = true;
     state.error = "";
     try {
+      const parent = props.target.relativePath.split("/").slice(0, -1).join("/");
       const [metadata, catalog] = await Promise.all([
         api<ItemMetadata>(
-          `/items/${encodeURIComponent(props.target.itemId)}/metadata`,
+          `/folders/metadata?rootId=${encodeURIComponent(props.target.rootId)}&relativePath=${encodeURIComponent(parent)}`,
         ),
         catalogItems(props.target.rootId, () => true),
       ]);

@@ -1581,6 +1581,7 @@ pub(super) async fn metadata_issues(
     let mut issue_count = 0usize;
     let mut severity_counts =
         HashMap::from([("error", 0usize), ("warning", 0usize), ("info", 0usize)]);
+    let mut folder_track_issues: HashMap<String, Vec<Value>> = HashMap::new();
     for item in page {
         if !item.media_kind.is_primary() {
             continue;
@@ -1593,6 +1594,69 @@ pub(super) async fn metadata_issues(
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        if root.category.profile().supports(MediaAction::TrackOrder)
+            && let Some((folder_path, _)) = item.relative_path.rsplit_once('/')
+        {
+            let folder_issues = if let Some(cached) = folder_track_issues.get(folder_path) {
+                cached.clone()
+            } else {
+                let root_path = root.resolved_path.clone();
+                let folder_path_owned = folder_path.to_string();
+                let category = root.category;
+                let issues = match tokio::task::spawn_blocking(move || {
+                    crate::track_order::inspect_folder_track_order(
+                        std::path::Path::new(&root_path),
+                        &folder_path_owned,
+                        category,
+                    )
+                })
+                .await
+                {
+                    Ok((Some(report), _warnings)) => report
+                        .problems
+                        .iter()
+                        .filter(|problem| {
+                            matches!(
+                                problem.code.as_str(),
+                                "track-sequence-gap-or-duplicate"
+                                    | "track-order-mismatch"
+                                    | "missing-track-numbers"
+                            )
+                        })
+                        .map(|problem| {
+                            json!(crate::metadata::MetadataHealthIssue {
+                                code: problem.code.clone(),
+                                severity: problem.severity.clone(),
+                                field: None,
+                                title: problem.title.clone(),
+                                message: format!(
+                                    "{} Fix the order, then rescan the library and refresh the player app.",
+                                    problem.message
+                                ),
+                                sources: vec!["track-order".to_string()],
+                                current_value: None,
+                                current_sources: Vec::new(),
+                                proposed_values: Vec::new(),
+                                affected_files: problem.affected_files.clone(),
+                                affected_file_count: Some(problem.affected_file_count),
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                };
+                folder_track_issues.insert(folder_path.to_string(), issues.clone());
+                issues
+            };
+            for issue in folder_issues {
+                if let Some(code) = issue.get("code").and_then(Value::as_str)
+                    && !health
+                        .iter()
+                        .any(|existing| existing.get("code").and_then(Value::as_str) == Some(code))
+                {
+                    health.push(issue);
+                }
+            }
+        }
         let decisions = match catalog.health_decisions(&item.id, &identity.subject) {
             Ok(decisions) => decisions,
             Err(_) => return ApiError::internal(request_id).into_response(),
