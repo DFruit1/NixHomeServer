@@ -180,8 +180,10 @@ require_fixed modules/Core_Modules/backups/default.nix 'PRAGMA integrity_check;'
   "SQLite backups must be integrity checked before publication."
 require_fixed modules/Core_Modules/auth-gateway/default.nix '--client-secret-file=/run/auth-gateway/client-secret' \
   "The shared auth gateway must use the newline-normalized runtime client secret."
-require_fixed modules/Core_Modules/auth-gateway/default.nix 'http://:${toString cfg.internalPort}' \
-  "The auth router must accept preserved application Host headers while binding only to loopback."
+require_fixed modules/Core_Modules/auth-gateway/default.nix 'http:// {' \
+  "The auth router must accept preserved application Host headers."
+require_fixed modules/Core_Modules/auth-gateway/default.nix 'bind unix/${routerSocket}|0660' \
+  "The auth router must bind only to its permission-restricted Unix socket."
 require_fixed modules/Core_Modules/rclone/service.nix '--mega-hard-delete' \
   "MEGA mirror deletions must not accumulate in the remote rubbish bin."
 require_fixed modules/Core_Modules/rclone/service.nix '--delete-before' \

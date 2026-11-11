@@ -144,6 +144,12 @@ measurement details live in [Compute Offload](documentation/operations.md#comput
   is not a completed release and must not be reported as one.
 * Keep the Android version code higher than the published version and sign with
   the existing app key so phones can update the installed app.
+* During ongoing Android development, use `pnpm build:android` (an alias for
+  `pnpm release:android`) for each distributable rebuild. It selects a version
+  code above the live F-Droid version, signs, publishes, and verifies F-Droid
+  and IPFS automatically. The display version can stay unchanged. Use
+  `pnpm build:android --build-only` only for intentionally local validation;
+  raw Tauri Android builds do not run the publication workflow.
 
 ---
 

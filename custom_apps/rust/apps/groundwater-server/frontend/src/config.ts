@@ -116,23 +116,3 @@ export const CFG_KEYS = [
   "CLEAR_ERROR_LATCH",
   "Disable_Logging",
 ] as const;
-export const DANGER_COMMANDS = [
-  "Factory reset",
-  "Wipe_MRAM",
-  "Wipe_sd",
-  "Disable Logging",
-  "Reboot",
-  "Erase keys",
-] as const;
-
-export const CFG_LABELS: Record<(typeof CFG_KEYS)[number], string> = {
-  Flush_mqtt: "Flush MQTT data",
-  Flush_sd: "Flush SD data",
-  Self_test: "Run self-test",
-  Get_debuging: "Request debugging",
-  Get_Status: "Request device status",
-  Fetch_File_List: "Request file list",
-  Fetch_File_Chunk: "Request file chunk",
-  CLEAR_ERROR_LATCH: "Clear error latch",
-  Disable_Logging: "Stop / allow logging",
-};

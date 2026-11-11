@@ -1,6 +1,6 @@
 [package]
 name = "filesync"
-version = "0.1.21"
+version = "0.1.22"
 description = "NixHomeServer file sync client"
 edition = "2021"
 publish = false

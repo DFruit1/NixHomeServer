@@ -83,7 +83,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 button, a { touch-action: manipulation; }
 .icon { width: 1.15rem; height: 1.15rem; flex: 0 0 auto; }
 
-.app-shell { width: min(58rem, calc(100% - 3rem)); margin: 0 auto; padding: 1.25rem 0 4rem; }
+.app-shell { width: min(58rem, calc(100% - 3rem)); margin: 0 auto; padding: 1.25rem 0 max(4rem, calc(var(--feedback-space, 0px) + 2rem)); }
 .topbar { display: flex; min-height: 4.25rem; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.4rem; }
 .brand { display: inline-flex; align-items: center; gap: .75rem; color: var(--text-primary); text-decoration: none; font-size: 1.08rem; font-weight: 780; letter-spacing: -.025em; }
 .brand-mark { display: grid; width: 2.55rem; height: 2.55rem; place-items: center; border-radius: .85rem; background: var(--action); color: var(--action-contrast); box-shadow: 0 5px 16px rgb(24 66 46 / 16%); }

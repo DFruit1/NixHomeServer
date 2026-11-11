@@ -10,8 +10,6 @@ import type {
 
 type EditableMetadataField = MetadataMatchField;
 
-export type EditorTab = "explore" | "metadata" | "subtitles";
-
 export type MetadataSection = "basics" | "advanced";
 
 export const METADATA_SECTIONS: Array<{ id: MetadataSection; label: string }> =

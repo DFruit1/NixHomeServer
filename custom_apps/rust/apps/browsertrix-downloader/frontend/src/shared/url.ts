@@ -1,5 +1,3 @@
-export const CRAWL_SCOPES = ['page', 'prefix', 'host'] as const;
-
 export const DEFAULT_PAGE_LIMIT = 25;
 export const MAX_PAGE_LIMIT = 500;
 export const DEFAULT_TIME_LIMIT_MINUTES = 10;

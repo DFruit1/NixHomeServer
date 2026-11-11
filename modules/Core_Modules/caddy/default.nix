@@ -155,6 +155,7 @@ let
     }
   '';
   edgeProtectionCfg = config.repo.caddy.edgeProtection;
+  adminSocket = "/run/caddy-admin/admin.sock";
 in
 {
   imports = [
@@ -240,7 +241,11 @@ in
 
     # Appended after upstream's global block (email/http_port/log) so the
     # per-server resource bounds land inside the same Caddyfile global scope.
-    globalConfig = lib.mkIf edgeProtectionCfg.enable ''
+    globalConfig = ''
+      # Keep reloads available without granting every local service API access.
+      # https://caddyserver.com/docs/caddyfile/options#admin
+      admin unix/${adminSocket}|0600
+    '' + lib.optionalString edgeProtectionCfg.enable ''
       servers {
         timeouts {
           read_header ${edgeProtectionCfg.readHeaderTimeout}
@@ -344,6 +349,10 @@ in
         "acme-${vars.kanidmDomain}.service"
       ];
       serviceConfig = {
+        # This unit change also forces a restart on the first socket rollout;
+        # reloading the old TCP listener with the new address would fail.
+        RuntimeDirectory = "caddy-admin";
+        RuntimeDirectoryMode = "0700";
         NoNewPrivileges = true;
         ProtectSystem = "strict";
         ProtectHome = true;

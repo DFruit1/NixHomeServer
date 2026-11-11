@@ -81,10 +81,6 @@ export type CreateJobRequest = {
   outputFolderCollisionConfirmed?: boolean;
 };
 
-export type CreateJobResponse = {
-  jobIds: string[];
-};
-
 export type JobStatus =
   | 'queued'
   | 'alert'

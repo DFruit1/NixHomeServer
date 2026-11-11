@@ -99,7 +99,6 @@ libc = "0.2.177"
 lofty = "0.24.0"
 mailparse = "0.16.1"
 md-5 = "0.10.6"
-postgres = "0.19.12"
 rand = "0.8.5"
 regex = "=1.13.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }

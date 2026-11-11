@@ -1803,12 +1803,17 @@ modules are enabled, File Sync is published from
 `/var/lib/fdroidserver/incoming/filesync.apk` on boot and whenever that file
 changes. The F-Droid reindex success hook then updates the IPFS mirror.
 
-For either Android app, increase its version first, then run
-`pnpm release:android` in its app directory. The command builds and tests a
-release APK, signs it with the existing Android debug keystore, checks the
+For either Android app, run `pnpm build:android` (or `pnpm release:android`)
+in its app directory for each distributable rebuild. The command selects an
+Android version code above the live F-Droid version; the display version can
+remain unchanged during development. It builds and tests a release APK,
+signs it with the existing Android debug keystore, checks the
 current repository version and signing certificate, uploads it to the watched
 path, and waits for the F-Droid and IPFS indexes to agree. Use
-`bash build-android.sh --build-only` to make a local APK without publishing.
+`pnpm build:android --build-only` to make a local APK without publishing or
+querying the live repository. Raw Tauri builds and ordinary web/server builds
+do not publish an Android APK. Repository unavailability or verification
+failure makes the publishing command fail rather than report a release.
 Deploy the YouTube Downloader server update with the guarded deploy helper
 before publishing a client that depends on a new server API. The target server
 comes from `vars.nix`; `NIXHOMESERVER_ANDROID_RELEASE_TARGET=user@host` can
@@ -2017,19 +2022,40 @@ Nothing is restricted to a test user's documents. Access covers the same
 registered corpus as the web app; it does not crawl arbitrary unindexed files.
 
 The CLI defaults to broad matching, all registered sources, both indexed and
-live scopes, relevance sorting and 25 indexed results. Live results appear on
-page zero and retain the same source-specific limits as the web API. Use
-`--page` (zero-based) and `--page-size` (1–200) for further indexed results;
+live scopes, relevance sorting and 25 indexed results. It submits the same
+independent indexed/live searches as the UI, promotes exact titles, interleaves
+library and per-source rank positions, and removes duplicate source/ID pairs.
+`--sort newest` sorts every loaded match together, with undated hits last.
+Raw backend scores never determine cross-source order.
+
+`--page N` returns the UI after N **Load more** actions: it accumulates indexed
+pages zero through N, stops when no further page exists, and retains the live
+sample and first-page facets. `--page-size` accepts 1–200; the UI offers 25,
+50 and 100. Live results retain the same source-specific limits as the web API.
 `--scope indexed` or `--scope live` isolates either web search scope.
 `--kind`, `--type`, `--owner`, `--author`, `--tag`, `--series`, `--year`,
 `--after`, `--before`, and `--sort newest` mirror the web API filters.
-Online discovery remains opt-in with `--kind online-paper`.
+Online discovery remains opt-in with `--kind online-paper` or
+`--source online-papers`. Like the UI, this exclusive mode omits library-only
+filters and matching controls, has no further pages, and supports newest-first
+ordering of returned papers. Use literal double quotes for an exact phrase
+(for example, `sudo search-cli '"Cold Case"'`); `--` permits terms beginning
+with a hyphen, as in `sudo search-cli -- '-draft invoice'`.
 
-`--json` emits the complete API response, including metadata, facets, related
-terms, pagination and warnings. Text output lists titles, snippets, app links
-and source warnings. A failed search exits nonzero; partial live-source
-failures retain successful matches and report warnings rather than claiming
-complete coverage. An empty successful result exits zero. `--list-sources`
+`--json` includes UI-ordered hits, metadata, combined facets, related terms,
+pagination and warnings. `shown` counts deduplicated loaded matches;
+`libraryTotal` counts all indexed matches and `liveTotal` counts the connected
+sample. `total` retains the API's library-total-plus-live-sample meaning.
+`indexedFacets` and `liveFacets` preserve the contributions used by the UI's
+filter labels. Text output distinguishes shown matches, live samples and the
+library total, and includes related wording and source sync warnings.
+
+A total search failure exits nonzero. A failed indexed or live request retains
+the other scope's successful matches, with `indexedFailed`/`liveFailed` flags
+and warnings; a failed later page retains previously loaded matches. Source
+warnings and stale-index notices stay visible instead of claiming complete
+coverage. An explicitly isolated scope has no fallback and exits nonzero if it
+fails. An empty successful result exits zero. `--list-sources`
 reports indexing errors as well as source names. No indexing or data mutation
 is performed by the CLI. The installed wrapper becomes available after the
 normal guarded deployment of this change.

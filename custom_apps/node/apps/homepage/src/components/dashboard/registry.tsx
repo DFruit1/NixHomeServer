@@ -23,6 +23,3 @@ export const dashboardWidgetDefinitions: DashboardWidgetDefinition[] = [
     description: 'Per-dump sizes and integrity results written by the last logical backup preparation.',
   },
 ];
-
-export const findWidgetDefinition = (id: string): DashboardWidgetDefinition | undefined =>
-  dashboardWidgetDefinitions.find((definition) => definition.id === id);

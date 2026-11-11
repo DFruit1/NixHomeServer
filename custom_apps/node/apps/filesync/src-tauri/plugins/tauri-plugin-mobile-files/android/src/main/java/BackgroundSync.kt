@@ -256,6 +256,7 @@ internal object SyncEngine {
       cleanupStagedFiles(context)
       var transferred = 0
       var completedPairs = 0
+      var retryableFailure = false
       val warnings = mutableListOf<String>()
       val activeNames = (0 until pairs.length())
         .map { pairs.getJSONObject(it).optString("name", "Folder pair").ifBlank { "Folder pair" } }
@@ -267,10 +268,14 @@ internal object SyncEngine {
           completedPairs++
         } catch (error: SyncFailure) {
           if (error.message?.contains("Sign in", ignoreCase = true) == true || error.message?.contains("session expired", ignoreCase = true) == true) throw error
+          retryableFailure = retryableFailure || error.retryable
           warnings.add("${pair.optString("name", "Folder pair")}: ${error.message ?: "needs attention"}")
         }
       }
       if (completedPairs == 0 && warnings.isNotEmpty()) {
+        // Keep WorkManager's retry and periodic checks alive after temporary
+        // server failures. Only persistent pair errors require user repair.
+        if (retryableFailure) throw SyncFailure(warnings.joinToString(" "), true)
         BackgroundSyncScheduler.update(context, false)
         writeStatus(context, warnings.joinToString(" "))
       } else {
@@ -370,6 +375,7 @@ internal object SyncEngine {
       throw SyncFailure("Folder access expired. Open File Sync and choose the device folder again.", false)
     }
     val identity = request(URL("$apiBase/api/v1/me"), "GET", accessToken = session.getString("accessToken"))
+    if (identity.code !in 200..299) failHttp(identity.code, "The sync account could not be checked.")
     if (JSONObject(identity.body).optString("username") != account) {
       throw SyncFailure("This folder pair belongs to another Kanidm account.", false)
     }

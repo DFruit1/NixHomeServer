@@ -14,6 +14,7 @@
     "tauri": "cargo tauri",
     "dev:tauri": "cargo tauri dev",
     "build:tauri": "cargo tauri build",
+    "build:android": "bash build-android.sh",
     "release:android": "bash build-android.sh",
     "check": "pnpm run typecheck && pnpm run test",
     "pretest": "pnpm run sync-shared",

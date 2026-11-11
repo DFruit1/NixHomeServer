@@ -218,7 +218,7 @@ fn sources_body(state: &AppState, sources: Vec<db::UiSource>) -> serde_json::Val
     })
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 pub(crate) struct SearchParams {
     q: String,
     #[serde(default)]
@@ -248,7 +248,7 @@ pub(crate) struct SearchParams {
     scope: SearchScope,
 }
 
-#[derive(Default, serde::Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum SearchScope {
     #[default]
@@ -357,16 +357,136 @@ fn search_error(status: StatusCode, message: &str) -> SearchError {
 /// Local administrative access uses Unix/database/file permissions instead of
 /// gateway identity. It searches exactly the same registered sources as an admin.
 /// No HTTP endpoint can select this authorization path.
-pub(crate) async fn query_local(params: SearchParams) -> Result<serde_json::Value, String> {
+pub(crate) async fn query_local(mut params: SearchParams) -> Result<serde_json::Value, String> {
+    // Mirror params()/updateSearchMode(), rather than relying on the legacy
+    // combined API response: the UI submits two independent search scopes.
+    params.q = crate::view::trim(&params.q).to_string();
+    params.page_size = Some(params.page_size.unwrap_or(25));
+    if params.source.as_deref() == Some("online-papers") {
+        params.kind = Some(online_papers::KIND.into());
+    }
+    let online = params.kind.as_deref() == Some(online_papers::KIND);
+    if online {
+        if params.page.unwrap_or(0) != 0 {
+            return Err("Online paper searches have no further pages.".into());
+        }
+        // These controls are disabled/omitted in the UI's exclusive online mode.
+        params.source = None;
+        params.content_type = None;
+        params.owner = None;
+        params.author = None;
+        params.tag = None;
+        params.series = None;
+        params.year = None;
+        params.after = None;
+        params.before = None;
+        params.matching = crate::solr::MatchMode::Broad;
+    }
+    params.validate().map_err(str::to_string)?;
     let state = AppState::from_env()?;
-    execute_search(&state, params)
-        .await
-        .map_err(|(_, Json(body))| {
-            body["error"]
+    let indexed = async {
+        if online || params.scope == SearchScope::Live {
+            return Ok(json!({"hits": [], "total": 0}));
+        }
+        let mut accumulated = json!({"hits": [], "total": 0});
+        let mut seen = std::collections::HashSet::new();
+        // --page N means the UI after N Load more actions: retain earlier
+        // pages, their rank positions, and the first page's facets.
+        for page in 0..=params.page.unwrap_or(0) {
+            let mut request = params.clone();
+            request.scope = SearchScope::Indexed;
+            request.page = Some(page);
+            let data = match execute_search(&state, request).await {
+                Ok(data) => data,
+                Err(error) if page == 0 => return Err(error),
+                Err(error) => {
+                    accumulated["warnings"] =
+                        json!([{"source": "indexed", "message": error_message(&error)}]);
+                    break;
+                }
+            };
+            if page == 0 {
+                accumulated = data.clone();
+                accumulated["hits"] = json!([]);
+            }
+            for hit in data["hits"].as_array().into_iter().flatten() {
+                if seen.insert(hit["id"].clone()) {
+                    accumulated["hits"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(hit.clone());
+                }
+            }
+            accumulated["total"] = data["total"].clone();
+            accumulated["hasMore"] = json!(data["hasMore"] == true);
+            accumulated["relatedTerms"] = data["relatedTerms"].clone();
+            accumulated["page"] = json!(page);
+            if data["hasMore"] != true {
+                break;
+            }
+        }
+        Ok(accumulated)
+    };
+    let live = async {
+        if params.scope == SearchScope::Indexed {
+            return Ok(json!({"hits": [], "total": 0}));
+        }
+        let mut request = params.clone();
+        request.scope = SearchScope::Live;
+        request.page = Some(0);
+        execute_search(&state, request).await
+    };
+    let (indexed, live) = tokio::join!(indexed, live);
+    if let (Err(indexed), Err(live)) = (&indexed, &live) {
+        return Err(format!(
+            "Library: {} Connected sources: {}",
+            error_message(indexed),
+            error_message(live)
+        ));
+    }
+    let failed = |scope: &str, error: SearchError| json!({"hits": [], "total": 0, "warnings": [{"source": scope, "message": error_message(&error)}]});
+    let indexed_failed = indexed.is_err();
+    let live_failed = live.is_err();
+    let indexed = indexed.unwrap_or_else(|error| failed("indexed", error));
+    let live = live.unwrap_or_else(|error| failed("live", error));
+    let mut body = crate::view::combine(
+        &indexed,
+        &live,
+        &params.q,
+        params.sort_order() == crate::solr::SortOrder::Newest,
+    );
+    body["indexedFailed"] = json!(indexed_failed);
+    body["liveFailed"] = json!(live_failed);
+    if !online
+        && let Ok(client) = shared_db_client(&state).await
+        && let Ok(sources) = db::list_sources(&client).await
+    {
+        body["sourceIssues"] = json!(sources_body(&state, sources)["sources"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|source| source["lastError"]
                 .as_str()
-                .unwrap_or("Search failed.")
-                .to_string()
-        })
+                .is_some_and(|error| !error.is_empty()))
+            .cloned()
+            .collect::<Vec<_>>());
+    }
+    // Exclusive online mode and explicitly isolated scopes have no fallback.
+    if (online && live_failed)
+        || (params.scope == SearchScope::Indexed && indexed_failed)
+        || (params.scope == SearchScope::Live && live_failed)
+    {
+        return Err(body["warnings"][0]["message"]
+            .as_str()
+            .unwrap_or("Search failed.")
+            .to_string());
+    }
+    Ok(body)
+}
+
+fn error_message(error: &SearchError) -> &str {
+    let (_, Json(body)) = error;
+    body["error"].as_str().unwrap_or("Search failed.")
 }
 
 pub(crate) async fn sources_local() -> Result<serde_json::Value, String> {
