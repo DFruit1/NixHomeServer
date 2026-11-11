@@ -1204,6 +1204,7 @@ export const PlayerView = component$<{
               {musicRoots.length > 1 && (
                 <select
                   class="root-filter-select"
+                  aria-label="Music library"
                   value={playerState.selectedRootFilter}
                   onChange$={(_, el) => {
                     playerState.selectedRootFilter = el.value;
@@ -1246,7 +1247,7 @@ export const PlayerView = component$<{
               <input
                 type="search"
                 aria-label="Search loaded albums and tracks"
-                placeholder="Search loaded albums and tracks"
+                placeholder="Find albums or tracks"
                 value={search.value}
                 onInput$={(_, input) => (search.value = input.value)}
               />

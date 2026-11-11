@@ -6,6 +6,8 @@
 }
 .music-library-tools .video-library-filter {
   flex: 1 1 200px;
+  padding: 0;
+  border: 0;
 }
 .music-collection .album-copy {
   display: grid;

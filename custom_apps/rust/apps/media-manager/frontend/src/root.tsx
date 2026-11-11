@@ -984,17 +984,6 @@ const ProviderAccountsView = component$(() => {
 
   return (
     <section class="provider-accounts-page">
-      <section class="provider-account-intro panel">
-        <div>
-          <h2>Provider accounts</h2>
-          <p>
-            Connect metadata and subtitle sources for your signed-in account.
-            Each source uses your saved credentials; the provider may also apply
-            limits shared across a project or the server's outgoing IP address.
-          </p>
-        </div>
-      </section>
-
       {accounts.error && (
         <div class="message error" role="alert">
           <Icon name="alert" size={18} />
@@ -1008,6 +997,16 @@ const ProviderAccountsView = component$(() => {
         </div>
       )}
 
+      <label class="library-filter provider-account-search">
+        <Icon name="search" size={16} />
+        <input
+          type="search"
+          aria-label="Filter metadata sources"
+          placeholder="Find a source"
+          value={accounts.query}
+          onInput$={(_, input) => (accounts.query = input.value)}
+        />
+      </label>
       <div
         class="provider-filter-tabs"
         role="group"
@@ -1038,6 +1037,16 @@ const ProviderAccountsView = component$(() => {
 
       {accounts.loading ? (
         <LoadingState />
+      ) : providers.length === 0 ? (
+        <p class="provider-empty" role="status">
+          {accounts.query.trim()
+            ? `No sources match “${accounts.query.trim()}”.`
+            : accounts.filter === "configured"
+              ? "No sources are configured yet."
+              : accounts.filter === "planned"
+                ? "No upcoming sources."
+                : "No metadata sources available."}
+        </p>
       ) : (
         <div class="provider-account-grid">
           {providers.map((provider) => {
@@ -1046,12 +1055,24 @@ const ProviderAccountsView = component$(() => {
             const connected = provider.account.lastTestStatus === "ready";
             const planned = provider.implementationStatus === "planned";
             return (
-              <article class="provider-account-card" key={provider.id}>
+              <article
+                class={{
+                  "provider-account-card": true,
+                  "is-editing": accounts.selectedProviderId === provider.id,
+                }}
+                key={provider.id}
+              >
                 <div class="provider-account-card-heading">
                   <div>
                     <h3>{provider.name}</h3>
                     <span>{provider.mediaDomains.join(" · ")}</span>
-                    <span class="provider-state">
+                    <span
+                      class={{
+                        "provider-state": true,
+                        ready: connected,
+                        planned,
+                      }}
+                    >
                       {planned
                         ? "Coming soon"
                         : publicSource
@@ -1158,7 +1179,6 @@ const ProviderAccountsView = component$(() => {
         <section class="provider-credential-editor panel">
           <div class="panel-heading">
             <div>
-              <span class="eyebrow">Write-only credentials</span>
               <h3>{selectedProvider.name}</h3>
               <p>
                 Existing values are never loaded into this form. Saving replaces
@@ -1182,56 +1202,25 @@ const ProviderAccountsView = component$(() => {
               <p>{accounts.recoveryAdvice}</p>
             </div>
           </aside>
-          <ol class="provider-setup-steps" aria-label="Provider setup steps">
-            <li>
-              <span>1</span>
-              <div>
-                <strong>Get access for {selectedProvider.name}</strong>
-                {PROVIDER_SETUP_GUIDES[selectedProvider.id] ? (
-                  <ProviderSetupGuide providerId={selectedProvider.id} />
-                ) : (
-                  <>
-                    <p>
-                      Open the provider's account page and create the requested
-                      credentials.
-                    </p>
-                    <a
-                      href={selectedProvider.setupUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open provider setup
-                    </a>
-                  </>
-                )}
-              </div>
-            </li>
-            <li>
-              <span>2</span>
-              <div>
-                <strong>Enter credentials</strong>
+          <details class="provider-access-details">
+            <summary>Get access for {selectedProvider.name}</summary>
+            {PROVIDER_SETUP_GUIDES[selectedProvider.id] ? (
+              <ProviderSetupGuide providerId={selectedProvider.id} />
+            ) : (
+              <>
                 <p>
-                  Paste the complete set below. Existing values cannot be
-                  recovered.
+                  Create the requested credentials in your provider account.
                 </p>
-              </div>
-            </li>
-            <li>
-              <span>3</span>
-              <div>
-                <strong>
-                  {selectedProvider.canTest && accounts.testAfterSave
-                    ? "Save and test"
-                    : "Save securely"}
-                </strong>
-                <p>
-                  {selectedProvider.canTest && accounts.testAfterSave
-                    ? "Save these credentials for your signed-in account and send a small API request to check access. The test may count against provider quota but does not modify your files. Then try the source on an item; a successful test does not verify every match or download allowance."
-                    : "Save these credentials for your signed-in account. Saving alone does not verify API access or change any media files. Use Test connection later if this provider supports it."}
-                </p>
-              </div>
-            </li>
-          </ol>
+                <a
+                  href={selectedProvider.setupUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open provider setup
+                </a>
+              </>
+            )}
+          </details>
           <form
             preventdefault:submit
             onSubmit$={saveProvider}
@@ -1279,6 +1268,11 @@ const ProviderAccountsView = component$(() => {
                 <span>Test the connection after saving</span>
               </label>
             )}
+            <p class="provider-save-help">
+              {selectedProvider.canTest && accounts.testAfterSave
+                ? "Testing checks account access and may count against your provider quota. Try the source on an item to verify matching or downloads."
+                : "Saving replaces these credentials without testing account access. Your media files are unchanged."}
+            </p>
             <div class="provider-credential-footer">
               <span>Credentials are encrypted before storage.</span>
               <div>

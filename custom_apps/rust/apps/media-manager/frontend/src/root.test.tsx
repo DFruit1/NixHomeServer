@@ -273,7 +273,7 @@ describe("Media Manager navigation", () => {
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="accounts" />);
 
-    expect(screen.textContent).toContain("Provider accounts");
+    expect(screen.querySelector("h1")?.textContent).toBe("Metadata sources");
     expect(screen.textContent).not.toContain("Vaultwarden");
     expect(screen.textContent).toContain("The Movie Database (TMDB)");
     expect(screen.textContent).not.toContain("saved-value");
@@ -289,14 +289,11 @@ describe("Media Manager navigation", () => {
       screen.querySelector(".provider-credential-editor")?.textContent,
     ).toContain("Vaultwarden");
     expect(
-      screen.querySelector(".provider-setup-steps")?.textContent,
+      screen.querySelector(".provider-access-details")?.textContent,
     ).toContain("Get access");
-    expect(
-      screen.querySelector(".provider-setup-steps")?.textContent,
-    ).toContain("Enter credentials");
-    expect(
-      screen.querySelector(".provider-setup-steps")?.textContent,
-    ).toContain("Save and test");
+    expect(screen.querySelector(".provider-save-help")?.textContent).toContain(
+      "provider quota",
+    );
     expect(
       screen.querySelector(".provider-credential-footer button[type=submit]")
         ?.textContent,
