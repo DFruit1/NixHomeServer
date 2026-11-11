@@ -3,6 +3,7 @@
 let
   cfg = config.repo.authGateway;
   loopback = vars.networking.loopbackIPv4;
+  routerSocket = "/run/auth-gateway-router/router.sock";
   kopiaPort = vars.networking.ports.kopia;
   # The shared SSO cookie must expire just before the Kanidm auth session it
   # was minted from.  While the Kanidm session is still alive, an expired
@@ -162,8 +163,10 @@ let
       admin off
       auto_https off
     }
-    http://:${toString cfg.internalPort} {
-      bind ${loopback}
+    http:// {
+      # A hostless site preserves each application's original Host header.
+      # https://caddyserver.com/docs/caddyfile/directives/bind
+      bind unix/${routerSocket}|0660
       ${lib.concatStringsSep "\n" (lib.mapAttrsToList mkRouterBlock routerApps)}
       respond "Unknown protected application" 404
     }
@@ -223,7 +226,7 @@ let
   ];
   stripSpoofableHeaders = lib.concatMapStringsSep "\n" (header: "request_header -${header}") spoofableHeaders;
   routerProxy = ''
-    reverse_proxy http://${loopback}:${toString cfg.internalPort} {
+    reverse_proxy unix/${routerSocket} {
       header_up X-Forwarded-Host {host}
       header_up X-Forwarded-User {http.request.header.X-Auth-Request-User}
       header_up X-Forwarded-Email {http.request.header.X-Auth-Request-Email}
@@ -386,7 +389,11 @@ in
     };
     domain = lib.mkOption { type = lib.types.str; default = "auth.${vars.domain}"; };
     port = lib.mkOption { type = lib.types.port; default = 4180; };
-    internalPort = lib.mkOption { type = lib.types.port; default = 4188; };
+    internalPort = lib.mkOption {
+      type = lib.types.port;
+      default = 4188;
+      description = "Legacy compatibility option; the internal router now uses a restricted Unix socket and never listens on this port.";
+    };
     protectedApps = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule {
         options = {
@@ -443,6 +450,12 @@ in
     }
 
     (lib.mkIf (cfg.enable && cfg.mode == "gateway") {
+      users.groups.auth-gateway-router = { };
+      users.users.auth-gateway-router = {
+        isSystemUser = true;
+        group = "auth-gateway-router";
+      };
+
       assertions = lib.mapAttrsToList
         (name: app: {
           assertion = (app.upstream != null) != (app.authenticatedCaddyConfig != null)
@@ -457,14 +470,26 @@ in
         cfg.protectedApps;
 
       systemd.services = (lib.genAttrs sidecarServices (_: { wantedBy = lib.mkForce [ ]; })) // {
+        # Only the front proxy may supply trusted identities to the router.
+        # Keep this group service-scoped, without granting the router access to
+        # Caddy's own group, certificates, or owner-only admin socket.
+        caddy = {
+          wants = [ "auth-gateway-router.service" ];
+          after = [ "auth-gateway-router.service" ];
+          serviceConfig.SupplementaryGroups = [ "auth-gateway-router" ];
+        };
+
         auth-gateway-router = {
           description = "Route authenticated gateway requests to protected applications";
           wantedBy = [ "multi-user.target" ];
           after = [ "network.target" ];
           serviceConfig = {
             Type = "simple";
-            User = "oauth2-proxy";
-            Group = "oauth2-proxy";
+            User = "auth-gateway-router";
+            Group = "auth-gateway-router";
+            RuntimeDirectory = "auth-gateway-router";
+            RuntimeDirectoryMode = "0750";
+            UMask = "0007";
             ExecStart = "${pkgs.caddy}/bin/caddy run --config ${routerCaddyfile}";
             Restart = "on-failure";
             RestartSec = "5s";
