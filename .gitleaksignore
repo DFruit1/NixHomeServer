@@ -1,0 +1,21 @@
+# Exact reviewed historical findings only. No path, rule or value exclusions.
+# New commits/locations still fail the committed-history secret scan.
+# Historical SQL expression, not a literal API credential: excluded.key in a runtime format string.
+b42eb8a1090c8457b4e0d06cdb58f69d9014901f:custom_apps/rust/apps/media-manager/src/bin/media-manager-immich-provision.rs:generic-api-key:221
+
+# Historical synthetic validation fixtures: repeated hexadecimal example keys, not live credentials.
+42e5e8acfd8b05ebfaab2b2c5464640e1f178cc1:scripts/tests/test-secret-definitions.sh:generic-api-key:97
+42e5e8acfd8b05ebfaab2b2c5464640e1f178cc1:scripts/tests/test-secret-definitions.sh:generic-api-key:98
+72bb5b27c0b46dd1bd44af557c6c6081d68e7f14:scripts/tests/test-secret-definitions.sh:generic-api-key:84
+72bb5b27c0b46dd1bd44af557c6c6081d68e7f14:scripts/tests/test-secret-definitions.sh:generic-api-key:85
+
+# Historical PUBLIC DNSCrypt Minisign verification key, identical to upstream example configuration.
+# https://github.com/DNSCrypt/dnscrypt-proxy/blob/master/dnscrypt-proxy/example-dnscrypt-proxy.toml
+# Verified Ed public-key encoding (42 decoded bytes); not a signing/private key.
+048940ec5443303ba21a0ac6a1ef8b7e03412517:modules/Core_Modules/unbound/default.nix:generic-api-key:162
+3a4ddf28244c72e86df43ceb98c29eb914a867c3:modules/Core_Modules/unbound/default.nix:generic-api-key:49
+3a4ddf28244c72e86df43ceb98c29eb914a867c3:modules/Core_Modules/unbound/default.nix:generic-api-key:57
+f0ad6639e3dfd2a357106576b973549aba2e5ede:modules/unbound/default.nix:generic-api-key:26
+f0ad6639e3dfd2a357106576b973549aba2e5ede:modules/unbound/default.nix:generic-api-key:34
+2ad747f2c4e3d8573c1e56ed9bfb4ca3b0d850d5:modules/unbound/default.nix:generic-api-key:25
+2ad747f2c4e3d8573c1e56ed9bfb4ca3b0d850d5:modules/unbound/default.nix:generic-api-key:33
