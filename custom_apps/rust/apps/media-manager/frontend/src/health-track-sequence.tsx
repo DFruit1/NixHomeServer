@@ -5,7 +5,7 @@ import {
   useSignal,
   useVisibleTask$,
 } from "@builder.io/qwik";
-import { api, ApiError, catalogItems, readableError } from "./api";
+import { api, catalogItems, readableError } from "./api";
 import type {
   CatalogItem,
   ItemMetadata,
@@ -17,22 +17,6 @@ import type {
 import "./health-track-sequence.css";
 import { revealWhenMounted } from "./reveal";
 
-function numberedTitle(file: TrackOrderFileRow, index: number, count: number) {
-  const stem = file.fileName.replace(/\.[^.]+$/, "");
-  const title =
-    file.filenameNumber == null
-      ? stem
-      : stem.replace(
-          /^(?:(?:disc|disk|cd|d)[ ._-]*\d+[ ._-]*)?(?:(?:part|track|trk)[ ._#-]*)?\d+[ ._-]*/i,
-          "",
-        );
-  const number = String(index + 1).padStart(
-    Math.max(2, String(count).length),
-    "0",
-  );
-  return title ? `${number} - ${title}` : number;
-}
-
 export const HealthTrackSequence = component$<{
   target: MetadataHealthResult;
   canEdit: boolean;
@@ -43,7 +27,6 @@ export const HealthTrackSequence = component$<{
     files: [] as TrackOrderFileRow[],
     items: [] as CatalogItem[],
     plans: [] as MutationPreview[],
-    warnings: [] as string[],
     error: "",
     notice: "",
     submitted: false,
@@ -61,12 +44,14 @@ export const HealthTrackSequence = component$<{
   const load$ = $(async () => {
     if (state.busy) return;
     state.notice = "";
-    state.warnings = [];
     state.open = true;
     state.busy = true;
     state.error = "";
     try {
-      const parent = props.target.relativePath.split("/").slice(0, -1).join("/");
+      const parent = props.target.relativePath
+        .split("/")
+        .slice(0, -1)
+        .join("/");
       const [metadata, catalog] = await Promise.all([
         api<ItemMetadata>(
           `/folders/metadata?rootId=${encodeURIComponent(props.target.rootId)}&relativePath=${encodeURIComponent(parent)}`,
@@ -82,19 +67,10 @@ export const HealthTrackSequence = component$<{
         throw new Error(
           "A complete folder track list is unavailable. Refresh the library and try again.",
         );
-      if (metadata.inspectionWarnings.length)
-        throw new Error(
-          `Track inspection is incomplete: ${metadata.inspectionWarnings.join(" ")}`,
-        );
       state.files = [...report.files].sort(
         (a, b) => a.effectivePosition - b.effectivePosition,
       );
       state.items = catalog.items;
-      state.warnings = report.playlistName
-        ? [
-            `${report.playlistName} is not rewritten. Update its file references after renaming.`,
-          ]
-        : [];
     } catch (error) {
       state.error = readableError(error);
     } finally {
@@ -121,10 +97,7 @@ export const HealthTrackSequence = component$<{
         .split("/")
         .slice(0, -1)
         .join("/");
-      const plans: MutationPreview[] = [];
-      const destinations = new Set<string>();
-      for (let index = 0; index < state.files.length; index++) {
-        const file = state.files[index];
+      const itemIds = state.files.map((file) => {
         const path = parent ? `${parent}/${file.fileName}` : file.fileName;
         const item = state.items.find(
           (candidate) => candidate.relativePath === path,
@@ -133,53 +106,24 @@ export const HealthTrackSequence = component$<{
           throw new Error(
             `Refresh the library first: ${file.fileName} is not in the catalog.`,
           );
-        const plan = await api<MutationPreview>("/plans", {
+        return item.id;
+      });
+      const plan = await api<MutationPreview>(
+        "/plans",
+        {
           method: "POST",
           body: JSON.stringify({
-            itemIds: [item.id],
-            operation: {
-              kind: "canonicalize_names",
-              profile: "filename",
-              title: numberedTitle(file, index, state.files.length),
-              organizeFolders: false,
-            },
+            itemIds,
+            operation: { kind: "sequence_tracks" },
           }),
-        }).catch((error: unknown) => {
-          if (error instanceof ApiError && error.code === "no_change")
-            return null;
-          throw error;
-        });
-        if (!plan) continue;
-        for (const action of plan.actions) {
-          const destination = action.destinationRelativePath;
-          if (!destination)
-            throw new Error("The server did not return a filename preview.");
-          if (destinations.has(destination))
-            throw new Error(
-              "Two tracks would receive the same filename. Adjust the order before retrying.",
-            );
-          destinations.add(destination);
-          if (
-            destination !== path &&
-            state.items.some(
-              (candidate) => candidate.relativePath === destination,
-            )
-          )
-            throw new Error(
-              `A file already uses ${destination}. Rename that file in Review metadata first; no files have been changed.`,
-            );
-        }
-        if (
-          plan.actions.some(
-            (action) =>
-              action.destinationRelativePath !== action.sourceRelativePath,
-          )
-        )
-          plans.push(plan);
-      }
-      state.plans = plans;
-      if (!plans.length)
-        state.notice = "The filenames already match this sequence.";
+        },
+        300_000,
+      );
+      if (!plan.trackSequence?.length)
+        throw new Error(
+          "The server did not return a complete track sequence preview. No changes were confirmed.",
+        );
+      state.plans = [plan];
     } catch (error) {
       state.error = readableError(error);
     } finally {
@@ -187,10 +131,11 @@ export const HealthTrackSequence = component$<{
     }
   });
   const confirm$ = $(async () => {
-    if (state.busy || !props.canEdit || !state.plans.length) return;
+    if (state.busy || state.submitted || !props.canEdit || !state.plans.length)
+      return;
     state.busy = true;
     state.error = "";
-    let queued = 0;
+    let queued = false;
     try {
       for (const plan of state.plans) {
         const result = await api<PlanStatus>(
@@ -202,11 +147,11 @@ export const HealthTrackSequence = component$<{
         );
         if (!["queued", "running", "completed"].includes(result.state))
           throw new Error(result.error || `The plan was ${result.state}.`);
-        queued++;
+        queued = true;
       }
-      state.notice = `${queued} filename changes queued. Check Activity for completion, then rescan the library and refresh your player.`;
+      state.notice = `Track order queued for ${state.files.length} files. Check Activity for completion, then rescan the library and refresh your players.`;
     } catch (error) {
-      state.error = `${queued} changes queued before stopping. ${readableError(error)} Check Activity before preparing another sequence.`;
+      state.error = `${queued ? "Track order was queued." : "Track order could not be confirmed."} ${readableError(error)} Check Activity before preparing another sequence.`;
     } finally {
       // A partial submission must never be silently resubmitted with stale item IDs.
       state.submitted = true;
@@ -226,9 +171,10 @@ export const HealthTrackSequence = component$<{
         <>
           <h4>Renumber tracks from 01</h4>
           <p>
-            Choose the file order, then preview continuous filename numbers.
-            Embedded tags stay unchanged; players that prefer tags may still use
-            their order.
+            Choose the play order. Confirmation writes track numbers 1–N and the
+            total into the audio files, aligns filenames, and creates matching
+            playlist and metadata sidecars. Disc number and disc total become 1
+            so this sequence stays continuous across the folder.
           </p>
           {state.busy && (
             <p role="status">
@@ -276,11 +222,10 @@ export const HealthTrackSequence = component$<{
                 {state.files.map((file, index) => (
                   <li key={file.fileName}>
                     <span class="health-track-name">
-                      <span>{file.fileName}</span>
-                      <strong>
-                        {numberedTitle(file, index, state.files.length)}
-                        {file.fileName.match(/\.[^.]+$/)?.[0]}
-                      </strong>
+                      <strong>{file.fileName}</strong>
+                      <span>
+                        Track {index + 1}/{state.files.length} · Disc 1/1
+                      </span>
                     </span>
                     <span class="health-track-move">
                       <button
@@ -309,18 +254,24 @@ export const HealthTrackSequence = component$<{
               </ol>
             </>
           )}
-          {state.warnings.map((warning) => (
-            <p key={warning}>{warning}</p>
-          ))}
           {state.plans.length > 0 && !state.submitted && (
             <div class="health-track-preview" ref={previewElement}>
-              <h4>Filename changes to confirm</h4>
+              <h4>Track order to confirm</h4>
               <ul>
                 {state.plans.flatMap((plan) =>
-                  plan.actions.map((action, index) => (
-                    <li key={`${plan.id}-${index}`}>
-                      {action.sourceRelativePath} →{" "}
-                      <strong>{action.destinationRelativePath}</strong>
+                  (plan.trackSequence ?? []).map((track) => (
+                    <li
+                      key={track.sourceRelativePath}
+                      title={`${track.sourceRelativePath} → ${track.destinationRelativePath}`}
+                    >
+                      {track.sourceRelativePath.split("/").at(-1)} →{" "}
+                      <strong>
+                        {track.destinationRelativePath.split("/").at(-1)}
+                      </strong>
+                      <span class="health-track-tag-summary">
+                        Track {track.trackNumber}/{track.trackTotal} · Disc{" "}
+                        {track.discNumber}/{track.discTotal}
+                      </span>
                     </li>
                   )),
                 )}
@@ -348,8 +299,8 @@ export const HealthTrackSequence = component$<{
                     onClick$={state.plans.length ? confirm$ : preview$}
                   >
                     {state.plans.length
-                      ? `Confirm ${state.plans.length} filename changes`
-                      : "Preview filename changes"}
+                      ? `Confirm track order for ${state.files.length} files`
+                      : "Preview track order"}
                   </button>
                 ) : (
                   <p>Editing is unavailable for this account or server.</p>

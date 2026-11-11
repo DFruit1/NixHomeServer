@@ -57,14 +57,18 @@ export function errorDetail(error: unknown): string {
 
 const API_TIMEOUT_MS = 30_000;
 
-export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function api<T>(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = API_TIMEOUT_MS,
+): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
   headers.set("accept", "application/json");
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
   try {
     response = await fetch(`/api/v1${path}`, {

@@ -152,9 +152,13 @@ Library Refresh is a normal right-aligned footer action beside Advanced search,
 sharing its typography. Activity remains addressable but is hidden from navigation.
 
 Media health track-sequence warnings offer an inline “Renumber tracks…” editor.
-It defaults to effective playback order, offers filename/playlist order and
-keyboard-accessible up/down controls, and previews continuous zero-padded filename
-numbers from 01 before explicit confirmation. Exact server filename previews and
-errors scroll into view below the album banner. Renames use existing guarded
-plans and Activity; embedded tags and playlists remain unchanged and are stated
-in the editor. Filename collisions stop preparation without overwriting files.
+It defaults to effective playback order and offers filename/playlist order plus
+keyboard-accessible up/down controls. One guarded album plan previews and writes
+track 1–N, track total N and disc 1/1 into every audio file, matching zero-padded
+filenames, M3U/M3U8/PLS/XSPF playlists and a `track-order.json` sidecar. Exact
+server filename and embedded-number previews, errors and completion guidance
+scroll into view below the album banner. Original audio is archived with a
+non-playable `.backup` suffix; existing ordering sidecars are archived before
+replacement and file-specific metadata follows renames. Unsupported or incomplete
+albums block preparation. Activity owns execution/retry; players need a refresh
+after completion and can still override order through shuffle or manual queues.

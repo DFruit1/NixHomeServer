@@ -11,6 +11,7 @@ import { EmptyState, LoadingState } from "./view-states";
 
 const OPERATION_LABELS: Record<string, string> = {
   canonicalize_names: "Rename",
+  sequence_tracks: "Set track order",
   semantic_move: "Move",
   tombstone: "Archive",
   install_subtitle: "Install subtitle",

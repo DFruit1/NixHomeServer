@@ -6,8 +6,8 @@ use crate::scanner::scan_root_now;
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct PlanRequest {
-    operation: Value,
-    item_ids: Vec<String>,
+    pub(super) operation: Value,
+    pub(super) item_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -265,6 +265,12 @@ pub(super) async fn preview_plan(
             return ApiError::internal(request_id).into_response();
         }
     };
+    if plan.operation.get("kind").and_then(Value::as_str) == Some("sequence_tracks") {
+        return super::track_sequence::preview_sequence(
+            &state, &identity, catalog, &plan, request_id,
+        )
+        .await;
+    }
     let actions = match build_move_actions(&state.config, &identity, &catalog, &plan) {
         Ok(actions) => actions,
         Err(error) => return error.with_request_id(request_id).into_response(),

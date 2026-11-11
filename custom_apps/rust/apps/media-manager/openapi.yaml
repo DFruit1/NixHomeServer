@@ -2562,6 +2562,7 @@ components:
         operation:
           oneOf:
             - $ref: "#/components/schemas/CanonicalizeNames"
+            - $ref: "#/components/schemas/SequenceTracks"
             - $ref: "#/components/schemas/SemanticMove"
             - $ref: "#/components/schemas/Tombstone"
         itemIds:
@@ -2569,6 +2570,23 @@ components:
           minItems: 1
           maxItems: 500
           items: { type: string }
+    SequenceTracks:
+      type: object
+      required: [kind]
+      additionalProperties: false
+      description: Ordered itemIds must contain every audio file in one music or audiobook folder. Stage verified embedded tags, matching names, portable playlists and track-order.json in one guarded plan; preserve original media for recovery.
+      properties:
+        kind: { const: sequence_tracks }
+    SequenceTrack:
+      type: object
+      required: [sourceRelativePath, destinationRelativePath, trackNumber, trackTotal, discNumber, discTotal]
+      properties:
+        sourceRelativePath: { type: string }
+        destinationRelativePath: { type: string }
+        trackNumber: { type: integer, minimum: 1, maximum: 500 }
+        trackTotal: { type: integer, minimum: 1, maximum: 500 }
+        discNumber: { type: integer, const: 1 }
+        discTotal: { type: integer, const: 1 }
     CanonicalizeNames:
       type: object
       required: [kind, profile, title]
@@ -2682,6 +2700,7 @@ components:
               archivedRelativePath: { type: string }
         warnings: { type: array, items: { type: string } }
         affectedConsumers: { type: array, items: { $ref: "#/components/schemas/MetadataConsumer" } }
+        trackSequence: { type: array, items: { $ref: "#/components/schemas/SequenceTrack" } }
     ItemsResponse:
       type: object
       required: [items]
