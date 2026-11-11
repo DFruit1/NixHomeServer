@@ -37,6 +37,8 @@ use rmcp::{
 };
 mod app_tools;
 mod bridge;
+mod gateway;
+mod gateway_socket;
 // The office modules are suspended, so nothing in this file calls them. They stay
 // compiled and their own tests stay live so a caller-aware restoration re-enables
 // a working converter and a working confinement check rather than a stale one.
@@ -559,6 +561,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return bridge::serve_stdio().await;
     }
 
+    // Take the inherited descriptor before any local bind can allocate fd 3.
+    let gateway_listener = gateway_socket::inherited()?;
     let listen = env::var("AI_TOOLS_LISTEN")?;
     let config = Arc::new(parse_env()?);
     // No Collabora client is built here: the office tools are denied before any
@@ -569,7 +573,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: Arc::clone(&config),
     };
 
-    let app = router(server, config.public_host.as_deref());
+    let app = router(server.clone(), config.public_host.as_deref());
 
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     eprintln!(
@@ -577,7 +581,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.searxng_base,
         config.public_host.as_deref().unwrap_or("unset")
     );
-    axum::serve(listener, app).await?;
+    if let Some(gateway_listener) = gateway_listener {
+        let public_host = config
+            .public_host
+            .as_deref()
+            .ok_or("gateway socket requires AI_TOOLS_PUBLIC_HOST")?;
+        let gateway_app = gateway::router(server, public_host);
+        tokio::try_join!(async { axum::serve(listener, app).await }, async {
+            axum::serve(gateway_listener, gateway_app).await
+        },)?;
+    } else {
+        axum::serve(listener, app).await?;
+    }
     Ok(())
 }
 
@@ -612,7 +627,7 @@ mod tests {
         }
     }
 
-    fn test_server() -> Server {
+    pub(super) fn test_server() -> Server {
         Server {
             config: Arc::new(test_config()),
         }
@@ -1297,7 +1312,7 @@ mod tests {
         );
     }
 
-    fn initialize_body() -> String {
+    pub(super) fn initialize_body() -> String {
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"office-pause-test","version":"0.0.0"}}}"#
             .to_string()
     }
@@ -1362,7 +1377,7 @@ mod tests {
         app.clone().oneshot(request).await.expect("router response")
     }
 
-    async fn body_string(response: axum::response::Response<Body>) -> String {
+    pub(super) async fn body_string(response: axum::response::Response<Body>) -> String {
         // Session-routed replies come back as SSE `data:` frames, so each
         // frame is unwrapped before the JSON is inspected.
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -1414,10 +1429,10 @@ mod tests {
     /// A synthetic shared root with a real readable document and a real FIFO, so
     /// the controls below exercise real filesystem objects rather than a
     /// reconstructed permission algorithm.
-    struct SyntheticSharedRoot(PathBuf);
+    pub(super) struct SyntheticSharedRoot(PathBuf);
 
     impl SyntheticSharedRoot {
-        fn new(label: &str) -> Self {
+        pub(super) fn new(label: &str) -> Self {
             static NEXT: AtomicUsize = AtomicUsize::new(0);
             let dir = std::env::temp_dir().join(format!(
                 "ai-tools-office-pause-{label}-{}-{}",
@@ -1429,7 +1444,7 @@ mod tests {
             Self(dir)
         }
 
-        fn join(&self, name: &str) -> PathBuf {
+        pub(super) fn join(&self, name: &str) -> PathBuf {
             self.0.join(name)
         }
 

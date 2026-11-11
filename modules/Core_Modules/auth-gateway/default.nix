@@ -299,12 +299,12 @@ let
         @json_${matcherName name} header Accept *application/json*
         handle @json_${matcherName name} {
           ${forwardAuth false}
-          ${routerProxy}
+          ${protectedBackend name app}
         }
         @api_${matcherName name} path /api /api/*
         handle @api_${matcherName name} {
           ${forwardAuth false}
-          ${routerProxy}
+          ${protectedBackend name app}
         }
       ''}
       handle {
@@ -446,7 +446,7 @@ in
       assertions = lib.mapAttrsToList
         (name: app: {
           assertion = (app.upstream != null) != (app.authenticatedCaddyConfig != null)
-            && (app.authenticatedCaddyConfig == null || (!app.skipAuthPreflight && !app.apiUnauthenticated401))
+            && (app.authenticatedCaddyConfig == null || !app.skipAuthPreflight)
             && ((app.nativeAuthPaths != [ ]) == (app.nativeAuthCaddyConfig != null))
             && (app.nativeAuthCaddyConfig == null || app.authenticatedCaddyConfig != null)
             && lib.length (lib.unique app.nativeAuthPaths) == lib.length app.nativeAuthPaths

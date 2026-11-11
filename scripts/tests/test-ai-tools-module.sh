@@ -2,6 +2,12 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 ensure_tools jq nix
+gateway_contract="$(flake_eval_json '
+  pkgs = f.inputs.nixpkgs.legacyPackages.${builtins.currentSystem};
+  in import ./scripts/tests/ai-tools-gateway-contract.nix { inherit pkgs; inherit (pkgs) lib; }
+')"
+jq -e '.authenticatedBranches == 3 and .protectedSocket and .spoofableInternalRouterExcluded and .preflightBypassRejected and .disabledSocketAbsent' \
+  <<<"$gateway_contract" >/dev/null
 host="$(test_default_host)"
 if [[ "$(flake_eval_json "in builtins.elem \"ai-tools\" (builtins.getAttr \"$host\" f.lib.nixhomeserverSettings).enabledApps")" != true ]]; then
   echo 'AI Tools is disabled; skipping its enabled-module contract.'
@@ -36,6 +42,8 @@ in {
   envSearxng = svc.environment.AI_TOOLS_SEARXNG_URL;
   gatewayHost = gateway.host;
   gatewayUpstream = gateway.upstream;
+  gatewayDirect = gateway.authenticatedCaddyConfig;
+  gatewaySocket = svc.environment.AI_TOOLS_GATEWAY_SOCKET;
   ipDeny = svc.serviceConfig.IPAddressDeny;
   ipAllow = svc.serviceConfig.IPAddressAllow;
   onFailure = svc.unitConfig.OnFailure;
@@ -87,7 +95,9 @@ jq -e '
   and .gatewayHost == .publicHost
   and (.envListen | startswith("127.0.0.1:"))
   and (.envSearxng | startswith("http://127.0.0.1:"))
-  and (.gatewayUpstream | startswith("http://127.0.0.1:"))
+  and .gatewayUpstream == null
+  and .gatewaySocket == "/run/ai-tools-gateway.sock"
+  and (.gatewayDirect | contains("reverse_proxy unix//run/ai-tools-gateway.sock"))
   and (.envSharedRoot | startswith("/"))
   and (.envWorkspace | startswith($shared + "/"))
   and .ipDeny == "any"

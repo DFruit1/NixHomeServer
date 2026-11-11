@@ -298,6 +298,27 @@ in
       ]
       ++ lib.optional cfg.pdfArchive.enable "search-pdf-archive";
 
+    # A local admin command shares the UI's complete merged environment,
+    # including optional integrations, and drops to its existing Unix identity.
+    # No web authentication bypass, credentials or extra listeners are added.
+    environment.systemPackages = [
+      (pkgs.writeShellApplication {
+        name = "search-cli";
+        runtimeInputs = [ pkgs.util-linux ];
+        text = ''
+          if (( EUID != 0 )); then
+            echo 'Run with sudo: search-cli [options] "search terms"' >&2
+            exit 1
+          fi
+          exec runuser -u search -- ${pkgs.coreutils}/bin/env -i \
+            ${lib.concatStringsSep " " (lib.mapAttrsToList
+              (name: value: lib.escapeShellArg "${name}=${value}")
+              config.systemd.services.search-ui.environment)} \
+            ${cfg.package}/bin/search query "$@"
+        '';
+      })
+    ];
+
     users.groups.solr = { };
     users.users.solr = {
       isSystemUser = true;

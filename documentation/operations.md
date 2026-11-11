@@ -1991,6 +1991,51 @@ which have no per-user ownership). Facet
 counts update with the selected filters, so an admin can see the composition of
 a result set and drill in without leaving the page.
 
+### Search CLI
+
+On the server, `sudo search-cli` searches every registered source, including
+all owners' private indexed documents and files, without browser sign-in.
+The wrapper drops to the existing `search` Unix account and supplies the web
+service's merged configuration, including its Paperless token file and Kiwix
+tools. It creates no HTTP authentication bypass or new credentials. Only
+operators with sudo/service-account access should use it.
+
+```bash
+sudo search-cli --list-sources --json
+sudo search-cli "Cold Case Christianity"
+sudo search-cli --source jellyfin --matching all "Golden Thread"
+sudo search-cli --author "Ken Ham" --json "evidence"
+sudo search-cli --scope live --source kiwix "physics"
+sudo search-cli --owner dsaw --after 2026-01-01 "invoice"
+```
+
+`search query` in the application binary is the underlying command and expects
+the same `SEARCH_*` environment as `search-ui.service`. Both entry points call
+the web API's search implementation: query expansion, ranking, filters, snippets,
+indexed Solr/Postgres data, native Kiwix search and live Paperless search.
+Nothing is restricted to a test user's documents. Access covers the same
+registered corpus as the web app; it does not crawl arbitrary unindexed files.
+
+The CLI defaults to broad matching, all registered sources, both indexed and
+live scopes, relevance sorting and 25 indexed results. Live results appear on
+page zero and retain the same source-specific limits as the web API. Use
+`--page` (zero-based) and `--page-size` (1–200) for further indexed results;
+`--scope indexed` or `--scope live` isolates either web search scope.
+`--kind`, `--type`, `--owner`, `--author`, `--tag`, `--series`, `--year`,
+`--after`, `--before`, and `--sort newest` mirror the web API filters.
+Online discovery remains opt-in with `--kind online-paper`.
+
+`--json` emits the complete API response, including metadata, facets, related
+terms, pagination and warnings. Text output lists titles, snippets, app links
+and source warnings. A failed search exits nonzero; partial live-source
+failures retain successful matches and report warnings rather than claiming
+complete coverage. An empty successful result exits zero. `--list-sources`
+reports indexing errors as well as source names. No indexing or data mutation
+is performed by the CLI. The installed wrapper becomes available after the
+normal guarded deployment of this change.
+
+### Search browser interface
+
 The search field stays visible. Desktop navigation names configured sources;
 mobile uses the Source selector.
 Selecting a source searches its contents and clears previous refinements.

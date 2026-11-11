@@ -21,6 +21,9 @@ in
     (lib.mkIf (cfg.enable && bonsai.enable) {
       repo.aiTools.chatHost = host;
       repo.bonsai.extraArgs = [ "--ui-config-file" (toString uiConfig) ];
+      # Select the direct authenticated handler instead of the app's normal
+      # internal-router upstream. The handler below retains the chat fallback.
+      repo.authGateway.protectedApps.bonsai.upstream = lib.mkForce null;
       repo.authGateway.protectedApps.bonsai.authenticatedCaddyConfig = ''
         @chat_mcp path /mcp /mcp/*
         handle @chat_mcp {

@@ -11,6 +11,7 @@ axum = { workspace = true, features = ["http1", "tokio"] }
 # path. It is already in the workspace closure for other apps.
 base64 = { workspace = true }
 chrono = { workspace = true }
+libc = { workspace = true }
 # The bridge's HTTP client must be the same reqwest rmcp implements its
 # Streamable HTTP client for (0.13), so the workspace pin is 0.13 and this app
 # adds no second copy. The "stream" feature is rmcp's requirement, not ours.

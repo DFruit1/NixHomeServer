@@ -6,6 +6,11 @@ consumers (such as Paperless) with their own tool choices. The process speaks MC
 over Streamable HTTP on `127.0.0.1:8097` and is published at `https://tools.<domain>`
 through the shared Kanidm authentication gateway, which admits `ai-users`.
 
+The gateway-facing transport uses a Caddy-only Unix socket and authenticates
+each request independently; the loopback endpoint and stdio bridge carry no
+trusted caller identity. See the [access-control contract](ai-tools-access-control.md)
+for this foundation and the remaining filesystem-authorization work.
+
 ## The office tools are currently unavailable
 
 All four office-document tools are suspended for **all** callers:
@@ -142,8 +147,13 @@ authorization model.
 
 ## Operating the service
 
-The MCP endpoint is `https://tools.<domain>` (gateway) or
-`http://127.0.0.1:8097` (loopback). Health is `GET /healthz`.
+The MCP endpoint is `https://tools.<domain>` (authenticated, stateless gateway)
+or `http://127.0.0.1:8097` (identity-free loopback). Health is `GET /healthz`.
+Gateway requests require canonical subject and preferred-username claims from
+Caddy and reject `Mcp-Session-Id`. The gateway socket is
+`/run/ai-tools-gateway.sock`, owned by Caddy, mode `0600`, and passed to the
+service through systemd socket activation. A direct loopback client cannot
+authenticate by supplying identity headers.
 
 ```bash
 sudo systemctl status ai-tools.service

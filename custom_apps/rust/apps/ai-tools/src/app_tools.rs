@@ -88,7 +88,7 @@ impl AppSession {
     }
 }
 
-fn session_required() -> ErrorData {
+pub(super) fn session_required() -> ErrorData {
     ErrorData::invalid_request(
         "Sign in through the chat's authentication gateway to use app tools",
         None,
@@ -370,6 +370,7 @@ async fn execute(
     request: &CallToolRequestParams,
     context: &RequestContext<RoleServer>,
 ) -> Result<Value, ErrorData> {
+    crate::gateway::AuthenticatedCaller::require(context)?;
     let config = &server.config.apps;
     // A fresh session is extracted on every call, never stored on Server or an
     // MCP connection. The app gateway authenticates it again for every API call.

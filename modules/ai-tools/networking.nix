@@ -9,7 +9,7 @@ in
       type = lib.types.str;
       default = vars.networking.loopbackIPv4;
       readOnly = true;
-      description = "Loopback-only MCP listen address. The gateway is the only client.";
+      description = "Loopback-only, identity-free MCP listener for local web-search clients.";
     };
 
     port = lib.mkOption {
@@ -34,9 +34,22 @@ in
   config = lib.mkIf cfg.enable {
     repo.authGateway.protectedApps.aiTools = {
       host = "tools.${vars.domain}";
-      upstream = "http://${cfg.listenAddress}:${toString cfg.port}";
       allowedGroups = [ "ai-users" ];
       apiUnauthenticated401 = true;
+      # Execute directly after OIDC and group checks. The forgeable loopback
+      # internal router must never gain a route to this trusted socket.
+      authenticatedCaddyConfig = ''
+        reverse_proxy unix//run/ai-tools-gateway.sock {
+          header_up -X-Auth-Request-User
+          header_up -X-Auth-Request-Email
+          header_up -X-Auth-Request-Groups
+          header_up -X-Auth-Request-Preferred-Username
+          header_up X-Forwarded-User {http.request.header.X-Auth-Request-User}
+          header_up X-Forwarded-Preferred-Username {http.request.header.X-Auth-Request-Preferred-Username}
+          header_up -X-Forwarded-Email
+          header_up -X-Forwarded-Groups
+        }
+      '';
     };
 
     services.unbound.privateHosts."tools.${vars.domain}".target = "private";
