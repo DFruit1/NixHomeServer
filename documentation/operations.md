@@ -2022,19 +2022,40 @@ Nothing is restricted to a test user's documents. Access covers the same
 registered corpus as the web app; it does not crawl arbitrary unindexed files.
 
 The CLI defaults to broad matching, all registered sources, both indexed and
-live scopes, relevance sorting and 25 indexed results. Live results appear on
-page zero and retain the same source-specific limits as the web API. Use
-`--page` (zero-based) and `--page-size` (1–200) for further indexed results;
+live scopes, relevance sorting and 25 indexed results. It submits the same
+independent indexed/live searches as the UI, promotes exact titles, interleaves
+library and per-source rank positions, and removes duplicate source/ID pairs.
+`--sort newest` sorts every loaded match together, with undated hits last.
+Raw backend scores never determine cross-source order.
+
+`--page N` returns the UI after N **Load more** actions: it accumulates indexed
+pages zero through N, stops when no further page exists, and retains the live
+sample and first-page facets. `--page-size` accepts 1–200; the UI offers 25,
+50 and 100. Live results retain the same source-specific limits as the web API.
 `--scope indexed` or `--scope live` isolates either web search scope.
 `--kind`, `--type`, `--owner`, `--author`, `--tag`, `--series`, `--year`,
 `--after`, `--before`, and `--sort newest` mirror the web API filters.
-Online discovery remains opt-in with `--kind online-paper`.
+Online discovery remains opt-in with `--kind online-paper` or
+`--source online-papers`. Like the UI, this exclusive mode omits library-only
+filters and matching controls, has no further pages, and supports newest-first
+ordering of returned papers. Use literal double quotes for an exact phrase
+(for example, `sudo search-cli '"Cold Case"'`); `--` permits terms beginning
+with a hyphen, as in `sudo search-cli -- '-draft invoice'`.
 
-`--json` emits the complete API response, including metadata, facets, related
-terms, pagination and warnings. Text output lists titles, snippets, app links
-and source warnings. A failed search exits nonzero; partial live-source
-failures retain successful matches and report warnings rather than claiming
-complete coverage. An empty successful result exits zero. `--list-sources`
+`--json` includes UI-ordered hits, metadata, combined facets, related terms,
+pagination and warnings. `shown` counts deduplicated loaded matches;
+`libraryTotal` counts all indexed matches and `liveTotal` counts the connected
+sample. `total` retains the API's library-total-plus-live-sample meaning.
+`indexedFacets` and `liveFacets` preserve the contributions used by the UI's
+filter labels. Text output distinguishes shown matches, live samples and the
+library total, and includes related wording and source sync warnings.
+
+A total search failure exits nonzero. A failed indexed or live request retains
+the other scope's successful matches, with `indexedFailed`/`liveFailed` flags
+and warnings; a failed later page retains previously loaded matches. Source
+warnings and stale-index notices stay visible instead of claiming complete
+coverage. An explicitly isolated scope has no fallback and exits nonzero if it
+fails. An empty successful result exits zero. `--list-sources`
 reports indexing errors as well as source names. No indexing or data mutation
 is performed by the CLI. The installed wrapper becomes available after the
 normal guarded deployment of this change.

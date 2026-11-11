@@ -10,7 +10,7 @@ use crate::server::{self, SearchParams};
 #[derive(Parser)]
 #[command(name = "search query")]
 struct Args {
-    /// Search terms (quote phrases or Lucene syntax as one argument).
+    /// Search terms; pass literal double quotes for a phrase, or -- before exclusions.
     #[arg(
         required_unless_present = "list_sources",
         conflicts_with = "list_sources"
@@ -19,7 +19,7 @@ struct Args {
     /// List registered sources and their indexing status instead of searching.
     #[arg(long)]
     list_sources: bool,
-    /// Emit the complete web API response, including facets and warnings.
+    /// Emit UI-ordered results, combined facets, coverage and warnings as JSON.
     #[arg(long)]
     json: bool,
     #[arg(long, default_value = "broad", value_parser = ["broad", "all"])]
@@ -48,7 +48,7 @@ struct Args {
     /// Inclusive end date, YYYY-MM-DD.
     #[arg(long)]
     before: Option<String>,
-    /// Zero-based indexed result page (live results appear only on page zero).
+    /// Load through this zero-based page, retaining earlier pages and live hits.
     #[arg(long, default_value_t = 0)]
     page: usize,
     #[arg(long, default_value_t = 25, value_parser = clap::value_parser!(u16).range(1..=200))]
@@ -110,7 +110,14 @@ fn print_text(output: &mut impl Write, body: &Value) -> io::Result<()> {
         }
         return Ok(());
     }
-    writeln!(output, "{} matches", body["total"])?;
+    write!(output, "{} matches shown", body["shown"])?;
+    if body["liveTotal"].as_u64().unwrap_or(0) > 0 {
+        write!(output, " · {} live", body["liveTotal"])?;
+    }
+    if body["libraryTotal"].as_u64().unwrap_or(0) > 0 {
+        write!(output, " · {} in library", body["libraryTotal"])?;
+    }
+    writeln!(output)?;
     if let Some(hits) = body["hits"].as_array() {
         for hit in hits {
             writeln!(
@@ -127,6 +134,19 @@ fn print_text(output: &mut impl Write, body: &Value) -> io::Result<()> {
             }
             writeln!(output, "  {}", string(hit, "appUrl"))?;
         }
+    }
+    if let Some(terms) = body["relatedTerms"].as_array() {
+        let terms: Vec<_> = terms.iter().filter_map(Value::as_str).map(clean).collect();
+        if !terms.is_empty() {
+            writeln!(output, "Related wording: {}", terms.join(", "))?;
+        }
+    }
+    for issue in body["sourceIssues"].as_array().into_iter().flatten() {
+        writeln!(
+            output,
+            "Warning [{}]: last sync failed; results may be out of date.",
+            string(issue, "id")
+        )?;
     }
     if body["hasMore"] == true {
         writeln!(output, "\nMore indexed results available with --page.")?;

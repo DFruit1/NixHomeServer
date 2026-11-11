@@ -16,6 +16,7 @@ mod solr;
 mod source_cache;
 mod text;
 mod timeutil;
+mod view;
 mod zim_inventory;
 mod zim_search;
 
