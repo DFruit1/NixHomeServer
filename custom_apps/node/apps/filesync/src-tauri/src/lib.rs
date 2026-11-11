@@ -180,6 +180,7 @@ struct IdTokenClaims {
     exp: u64,
     nonce: String,
     azp: Option<String>,
+    preferred_username: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -383,14 +384,14 @@ async fn finish_login<R: Runtime>(
         .load_secret("pending-login".into())
         .map_err(|_| "Secure sign-in storage is unavailable.")?
         .ok_or("This sign-in request has expired. Start again.")?;
-    app.mobile_files()
-        .clear_secret("pending-login".into())
-        .map_err(|_| "Secure sign-in storage is unavailable.")?;
     let pending: PendingAuth = serde_json::from_str(&pending_raw)
         .map_err(|_| "This sign-in request is invalid. Start again.")?;
     if !constant_time_equal(returned_state.as_bytes(), pending.state.as_bytes()) {
         return Err("The sign-in response did not match the request. Start again.".into());
     }
+    app.mobile_files()
+        .clear_secret("pending-login".into())
+        .map_err(|_| "Secure sign-in storage is unavailable.")?;
 
     let client = http_client()?;
     let token_response: TokenResponse = client
@@ -420,7 +421,7 @@ async fn finish_login<R: Runtime>(
         .id_token
         .as_deref()
         .ok_or("Kanidm did not issue an OpenID Connect identity token.")?;
-    validate_id_token(&client, id_token, &pending).await?;
+    let claims = validate_id_token(&client, id_token, &pending).await?;
 
     let session = StoredSession {
         access_token: token_response.access_token,
@@ -432,7 +433,6 @@ async fn finish_login<R: Runtime>(
         issuer: pending.issuer,
         api_base: pending.api_base,
     };
-    let username = fetch_current_user(&client, &session).await?;
     #[cfg(target_os = "android")]
     app.mobile_files()
         .acquire_sync_lock()
@@ -458,7 +458,14 @@ async fn finish_login<R: Runtime>(
         }
     }
     store_result?;
-    Ok(username)
+    // Browser authentication is complete once the ID token is verified. Do not
+    // discard its refresh token because the private sync API is temporarily
+    // unreachable after Android returns from the browser. API requests still
+    // authorize the bearer token independently on the server.
+    match claims.preferred_username.filter(|value| !value.is_empty()) {
+        Some(username) => Ok(username),
+        None => fetch_current_user(&client, &session).await,
+    }
 }
 
 #[tauri::command]
@@ -1469,7 +1476,7 @@ async fn validate_id_token(
     client: &reqwest::Client,
     raw: &str,
     pending: &PendingAuth,
-) -> Result<(), String> {
+) -> Result<IdTokenClaims, String> {
     let header = decode_header(raw).map_err(|_| "Kanidm returned an invalid identity token.")?;
     if header.alg != Algorithm::ES256 {
         return Err("Kanidm returned an unsupported identity-token algorithm.".into());
@@ -1506,7 +1513,7 @@ async fn validate_id_token(
     {
         return Err("Kanidm identity token did not match the sign-in request.".into());
     }
-    Ok(())
+    Ok(claims)
 }
 
 async fn fetch_current_user(

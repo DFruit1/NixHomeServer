@@ -22,6 +22,11 @@ const USER_KEY = 'nixhomeserver.filesync.user.v1';
 const SPACE_PREFS_KEY = 'nixhomeserver.filesync.space-limits.v1';
 const DEFAULT_SERVER = import.meta.env.VITE_FILESYNC_DEFAULT_SERVER ?? '';
 const app = document.querySelector<HTMLDivElement>('#app')!;
+// Reserve scroll space for feedback so a persistent connection error cannot
+// cover the final folder controls, including when its text wraps on a phone.
+const feedbackObserver = new ResizeObserver(([entry]) => {
+  app.style.setProperty('--feedback-space', `${entry.borderBoxSize[0]!.blockSize}px`);
+});
 
 const state: { pairs: SyncPair[]; presets: SyncPreset[]; syncingPairId?: string; removingPairId?: string; progress?: SyncProgress; server: string; user?: string; offline: boolean; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string; estimates: Record<string, SyncEstimate | undefined>; estimatesDone: Record<string, boolean>; estimatesDoneAll: boolean; librarySizes: Record<string, LibrarySize>; sizedOnDemand: Record<string, true>; sizingPresetId?: string; deviceStorage?: DeviceStorage; warnPercent: number; blockPercent: number; transfer?: FileTransfer } = {
   pairs: readPairs(),
@@ -568,6 +573,9 @@ function render(): void {
       <div class="dialog-actions"><button class="secondary-button" type="button" id="cancel-remove-button">Keep pair</button><button class="danger-button" type="button" id="confirm-remove">${icon('trash')}Remove pair</button></div>
     </dialog>
   `;
+
+  feedbackObserver.disconnect();
+  feedbackObserver.observe(document.querySelector<HTMLElement>('.toast-stack')!);
 
   bindEvents();
 }
@@ -1365,21 +1373,50 @@ async function runFileAction(name: string, action: FileAction, size: number): Pr
   updateFileActions(name);
 }
 
+let lastAuthCallback: string | undefined;
+
 async function finishCallback(url: string): Promise<void> {
   if (!url.startsWith('filesync://oauth/callback') || !invoke) return;
+  // Android can deliver the same intent through both onOpenUrl and getCurrent
+  // during startup. An authorization code must only be exchanged once.
+  if (lastAuthCallback === url) return;
+  lastAuthCallback = url;
+  state.notice = '';
+  state.error = '';
+  render();
   try {
     state.user = await invoke<string>('finish_login', { callbackUrl: url });
-    state.offline = false;
-    cacheSignedInUser(state.user);
+  } catch (error) {
+    setError(error);
+    return;
+  }
+
+  state.offline = false;
+  cacheSignedInUser(state.user);
+  state.notice = `Signed in as ${state.user}.`;
+  render();
+  await saveSessionBackup();
+  try {
     state.settingsAuthorized = await invoke<boolean>('settings_authorized');
-    await saveSessionBackup();
+  } catch (error) {
+    state.notice = '';
+    setError(error);
+  }
+  try {
     await loadPresets();
+  } catch (error) {
+    state.offline = true;
+    state.notice = '';
+    state.error = `Your sign-in is saved. Could not load your folders. ${error instanceof Error ? error.message : String(error)}`;
+    render();
+    return;
+  }
+  try {
     applySpacePrefsToPairs();
     await persistPairs();
-    state.error = '';
-    state.notice = `Signed in as ${state.user}.`;
   } catch (error) {
-    state.error = error instanceof Error ? error.message : String(error);
+    state.notice = '';
+    setError(error);
   }
   render();
   void refreshEstimates();
@@ -1439,11 +1476,16 @@ async function beginInteractiveLogin(): Promise<void> {
   const server = state.server.trim();
   if (!server) throw new Error('Open Settings to add a sync server address before signing in.');
   const authorizationUrl = await invoke<string>('begin_login', { serverUrl: server });
-  // With no inAppBrowser option, Tauri opens OAuth in the system browser.
-  await openUrl(authorizationUrl);
   state.notice = 'Complete sign-in in your browser, then return to File Sync. Saved syncs remain available.';
   state.error = '';
   render();
+  try {
+    // With no inAppBrowser option, Tauri opens OAuth in the system browser.
+    await openUrl(authorizationUrl);
+  } catch (error) {
+    state.notice = '';
+    throw error;
+  }
 }
 
 function normalizeServerAddress(value: string): string {

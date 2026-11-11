@@ -118,3 +118,7 @@ the public Kanidm client `filesync-native`. The Android release default is
 derived from the declarative NixOS domain in `vars.domain`; users can change the
 address in Settings when connecting to another server. Sign-in opens in the
 system browser and returns to the app through the `filesync://` callback.
+The app saves the session after verifying Kanidm's identity token and uses its
+`preferred_username` claim to complete sign-in. Loading folders from the private
+sync API happens afterward, so an API connection failure keeps the sign-in and
+saved folders available. Syncing still requires working LAN or NetBird access.
