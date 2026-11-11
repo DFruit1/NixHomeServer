@@ -1,4 +1,5 @@
 mod bootstrap_solr;
+mod cli;
 mod config;
 mod db;
 mod extract;
@@ -25,7 +26,7 @@ fn main() -> ExitCode {
         Some(cmd) => cmd,
         None => {
             eprintln!(
-                "usage: search <serve|index|index-daemon|reindex|reconcile|archive-pdfs|bootstrap-solr>"
+                "usage: search <query|serve|index|index-daemon|reindex|reconcile|archive-pdfs|bootstrap-solr>"
             );
             return ExitCode::FAILURE;
         }
@@ -43,6 +44,7 @@ fn main() -> ExitCode {
     };
 
     let result = match command.as_str() {
+        "query" => runtime.block_on(cli::run()),
         "serve" => runtime.block_on(server::run()),
         "index" => runtime.block_on(indexer::run_index()),
         "index-daemon" => runtime.block_on(indexer::run_index_daemon()),
@@ -53,7 +55,7 @@ fn main() -> ExitCode {
         other => {
             eprintln!("unknown command: {other}");
             eprintln!(
-                "usage: search <serve|index|index-daemon|reindex|reconcile|archive-pdfs|bootstrap-solr>"
+                "usage: search <query|serve|index|index-daemon|reindex|reconcile|archive-pdfs|bootstrap-solr>"
             );
             return ExitCode::FAILURE;
         }

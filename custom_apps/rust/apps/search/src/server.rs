@@ -52,13 +52,36 @@ struct Inner {
     db: tokio::sync::Mutex<Option<std::sync::Arc<tokio_postgres::Client>>>,
 }
 
+impl AppState {
+    fn from_env() -> Result<Self, String> {
+        let settings = Settings::from_env()?;
+        Ok(Self {
+            inner: std::sync::Arc::new(Inner {
+                online_papers: OnlinePapers::from_env()?,
+                settings,
+                solr: SolrClient::new(
+                    &env_or("SEARCH_SOLR_URL", "http://127.0.0.1:8983/solr"),
+                    &env_or("SEARCH_SOLR_CORE", "search"),
+                ),
+                zim_cache: ZimInventoryCache::default(),
+                paperless_http: reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(15))
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .map_err(|err| format!("failed to build Paperless HTTP client: {err}"))?,
+                paperless_taxonomy: Mutex::new(HashMap::new()),
+                logout_url: env_or("SEARCH_LOGOUT_REDIRECT_URL", ""),
+                db: tokio::sync::Mutex::new(None),
+            }),
+        })
+    }
+}
+
 pub async fn run() -> Result<(), String> {
-    let settings = Settings::from_env()?;
     let address = env_or("SEARCH_UI_ADDRESS", "127.0.0.1");
     let port: u16 = env_or("SEARCH_UI_PORT", "8092")
         .parse()
         .map_err(|_| "SEARCH_UI_PORT must be a port number".to_string())?;
-    let logout_url = env_or("SEARCH_LOGOUT_REDIRECT_URL", "");
     address
         .parse::<std::net::IpAddr>()
         .ok()
@@ -68,25 +91,7 @@ pub async fn run() -> Result<(), String> {
                 .to_string()
         })?;
 
-    let state = AppState {
-        inner: std::sync::Arc::new(Inner {
-            online_papers: OnlinePapers::from_env()?,
-            settings,
-            solr: SolrClient::new(
-                &env_or("SEARCH_SOLR_URL", "http://127.0.0.1:8983/solr"),
-                &env_or("SEARCH_SOLR_CORE", "search"),
-            ),
-            zim_cache: ZimInventoryCache::default(),
-            paperless_http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .map_err(|err| format!("failed to build Paperless HTTP client: {err}"))?,
-            paperless_taxonomy: Mutex::new(HashMap::new()),
-            logout_url,
-            db: tokio::sync::Mutex::new(None),
-        }),
-    };
+    let state = AppState::from_env()?;
 
     let app = Router::new()
         .route("/", get(index))
@@ -176,39 +181,45 @@ fn not_signed_in() -> Response {
     (StatusCode::UNAUTHORIZED, "not signed in").into_response()
 }
 
-fn database_unavailable(_internal_error: &str) -> Response {
-    // Connection errors can contain a DSN. Keep them out of public responses.
+fn database_unavailable(error: &str) -> Response {
+    search_database_unavailable(error).into_response()
+}
+
+fn search_database_unavailable(_internal_error: &str) -> SearchError {
+    // Connection errors can contain a DSN. Keep them out of responses.
     eprintln!("search: database operation unavailable");
-    (
+    search_error(
         StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({"error": "The search library is unavailable. Try again shortly."})),
+        "The search library is unavailable. Try again shortly.",
     )
-        .into_response()
 }
 
 async fn api_sources(State(state): State<AppState>, headers: HeaderMap) -> Response {
     match gate(&state, &headers).await {
-        Ok(sources) => Json(json!({
-            "sources": sources
-                .into_iter()
-                .map(|source| json!({
-                    "id": source.id,
-                    "displayName": source.display_name,
-                    "appBase": state.inner.settings.sources.iter()
-                        .find(|configured| configured.id == source.id)
-                        .map(|configured| &configured.app_base),
-                    "lastSyncedAt": source.last_synced_at,
-                    "lastError": source.last_error,
-                }))
-                .collect::<Vec<_>>(),
-        }))
-        .into_response(),
+        Ok(sources) => Json(sources_body(&state, sources)).into_response(),
         Err(response) => *response,
     }
 }
 
+fn sources_body(state: &AppState, sources: Vec<db::UiSource>) -> serde_json::Value {
+    json!({
+        "sources": sources
+            .into_iter()
+            .map(|source| json!({
+                "id": source.id,
+                "displayName": source.display_name,
+                "appBase": state.inner.settings.sources.iter()
+                    .find(|configured| configured.id == source.id)
+                    .map(|configured| &configured.app_base),
+                "lastSyncedAt": source.last_synced_at,
+                "lastError": source.last_error,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
 #[derive(serde::Deserialize)]
-struct SearchParams {
+pub(crate) struct SearchParams {
     q: String,
     #[serde(default)]
     matching: crate::solr::MatchMode,
@@ -331,44 +342,83 @@ async fn api_search(
     if Identity::from_headers(&headers).is_err() {
         return not_signed_in();
     }
+    match execute_search(&state, params).await {
+        Ok(body) => Json(body).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+type SearchError = (StatusCode, Json<serde_json::Value>);
+
+fn search_error(status: StatusCode, message: &str) -> SearchError {
+    (status, Json(json!({ "error": message })))
+}
+
+/// Local administrative access uses Unix/database/file permissions instead of
+/// gateway identity. It searches exactly the same registered sources as an admin.
+/// No HTTP endpoint can select this authorization path.
+pub(crate) async fn query_local(params: SearchParams) -> Result<serde_json::Value, String> {
+    let state = AppState::from_env()?;
+    execute_search(&state, params)
+        .await
+        .map_err(|(_, Json(body))| {
+            body["error"]
+                .as_str()
+                .unwrap_or("Search failed.")
+                .to_string()
+        })
+}
+
+pub(crate) async fn sources_local() -> Result<serde_json::Value, String> {
+    let state = AppState::from_env()?;
+    let client = shared_db_client(&state)
+        .await
+        .map_err(|_| "The search library is unavailable.")?;
+    let sources = db::list_sources(&client)
+        .await
+        .map_err(|_| "The search library is unavailable.")?;
+    Ok(sources_body(&state, sources))
+}
+
+async fn execute_search(
+    state: &AppState,
+    params: SearchParams,
+) -> Result<serde_json::Value, SearchError> {
     if let Err(message) = params.validate() {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response();
+        return Err(search_error(StatusCode::BAD_REQUEST, message));
     }
     let query = params.q.trim().to_string();
     if query.is_empty() {
-        return Json(json!({ "hits": [], "total": 0 })).into_response();
+        return Ok(json!({ "hits": [], "total": 0 }));
     }
 
     // No default, saved-type or source-only search may reach SearXNG.
     // Keep discovery independent of the saved library and its database.
     if params.kind.as_deref() == Some(online_papers::KIND) {
         if params.scope == SearchScope::Indexed || params.page.unwrap_or(0) != 0 {
-            return Json(json!({"hits": [], "total": 0, "hasMore": false})).into_response();
+            return Ok(json!({"hits": [], "total": 0, "hasMore": false}));
         }
         let Some(papers) = &state.inner.online_papers else {
-            return (
+            return Err(search_error(
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"error": "Online paper search is not configured on this server."})),
-            )
-                .into_response();
+                "Online paper search is not configured on this server.",
+            ));
         };
         return match papers.search(&query).await {
-            Ok(body) => Json(body).into_response(),
-            Err(message) => {
-                (StatusCode::BAD_GATEWAY, Json(json!({"error": message}))).into_response()
-            }
+            Ok(body) => Ok(body),
+            Err(message) => Err(search_error(StatusCode::BAD_GATEWAY, &message)),
         };
     }
 
-    let client = match shared_db_client(&state).await {
+    let client = match shared_db_client(state).await {
         Ok(client) => client,
-        Err(err) => return database_unavailable(&err),
+        Err(err) => return Err(search_database_unavailable(&err)),
     };
     let sources = match db::list_sources(&client).await {
         Ok(sources) => sources,
         Err(err) => {
             *state.inner.db.lock().await = None;
-            return database_unavailable(&err);
+            return Err(search_database_unavailable(&err));
         }
     };
     let selected: Vec<String> = sources.into_iter().map(|source| source.id).collect();
@@ -387,7 +437,7 @@ async fn api_search(
     // per-source filter is applied inside the federator.
     let live = async {
         if page == 0 && params.scope != SearchScope::Indexed {
-            federate_runtime_sources(&state, &selected, &query, &filters).await
+            federate_runtime_sources(state, &selected, &query, &filters).await
         } else {
             LiveResults::default()
         }
@@ -403,7 +453,7 @@ async fn api_search(
         if let Some(facets) = result.facets.as_object() {
             body.as_object_mut().unwrap().extend(facets.clone());
         }
-        return Json(body).into_response();
+        return Ok(body);
     }
     let indexed = state.inner.solr.search(
         &query,
@@ -453,7 +503,7 @@ async fn api_search(
                     "metadata": metadata,
                 }));
             }
-            Json(json!({
+            Ok(json!({
                 "hits": hits,
                 "total": response.total + federated.hits.len() as u64,
                 "related": false,
@@ -469,15 +519,13 @@ async fn api_search(
                 "seriesFacets": facet_json(&response.series_facets),
                 "yearFacets": facet_json(&response.year_facets),
             }))
-            .into_response()
         }
         Err(err) => {
             eprintln!("search: indexed query failed: {err}");
-            (
+            Err(search_error(
                 StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": "Library search is unavailable. Try again shortly." })),
-            )
-                .into_response()
+                "Library search is unavailable. Try again shortly.",
+            ))
         }
     }
 }
