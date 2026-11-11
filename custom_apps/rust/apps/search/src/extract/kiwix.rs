@@ -156,13 +156,11 @@ fn zim_prefix(zimdump: &Path, zim: &Path, args: &[&str]) -> Result<(Vec<u8>, boo
 
 /// `zimdump list --ns=X` is a content-path prefix lookup in zim-tools 3.6,
 /// not a listing of internal metadata. Probe the actual index entries with
-/// `show --ns` instead. Validate the archive first so unreadable/corrupt files
-/// do not silently become successful inventories without an index.
+/// `show --ns` instead. A readable Xapian header also validates the archive;
+/// avoid `info` before it, since counting a large collection can exceed the
+/// request-time probe deadline. Validate archives without a readable index
+/// separately so unreadable/corrupt files do not become empty inventories.
 pub(crate) fn probe_fulltext_index(zimdump: &Path, zim: &Path) -> Result<bool, String> {
-    let (info, success) = zim_prefix(zimdump, zim, &["info"])?;
-    if !success && info.is_empty() {
-        return Err("An archive index could not be read.".to_string());
-    }
     for args in [
         ["show", "--ns=X", "--url=fulltext/xapian"],
         ["show", "--ns=Z", "--url=/fulltextIndex/xapian"],
@@ -172,6 +170,10 @@ pub(crate) fn probe_fulltext_index(zimdump: &Path, zim: &Path) -> Result<bool, S
         if contains_fulltext_index(&prefix) {
             return Ok(true);
         }
+    }
+    let (info, success) = zim_prefix(zimdump, zim, &["info"])?;
+    if !success && info.is_empty() {
+        return Err("An archive index could not be read.".to_string());
     }
     Ok(false)
 }
