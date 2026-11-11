@@ -48,6 +48,12 @@ in
         # the name the gateway publishes. Without this it starts loopback-only
         # and every proxied request is refused with a 403.
         AI_TOOLS_PUBLIC_HOST = "tools.${vars.domain}";
+      } // lib.optionalAttrs (cfg.searchHost != null) {
+        AI_TOOLS_SEARCH_HOST = cfg.searchHost;
+      } // lib.optionalAttrs (cfg.youtubeHost != null) {
+        AI_TOOLS_YOUTUBE_HOST = cfg.youtubeHost;
+      } // lib.optionalAttrs (cfg.chatHost != null) {
+        AI_TOOLS_CHAT_HOST = cfg.chatHost;
       };
       serviceConfig = {
         Type = "simple";
