@@ -2145,41 +2145,6 @@ h4 {
   color: var(--text-muted);
 }
 
-.app-setup-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 12px;
-}
-
-.app-setup-card {
-  display: grid;
-  align-content: start;
-  gap: 12px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  padding: 14px;
-}
-
-.app-setup-card > div {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.app-setup-card span {
-  color: var(--text-muted);
-  font-size: 13px;
-  font-weight: 800;
-  white-space: nowrap;
-}
-
-.app-setup-card p {
-  margin-bottom: 0;
-  color: var(--text-secondary);
-  line-height: 1.45;
-}
-
 .disabled-list {
   margin-top: 12px;
   padding: 14px;

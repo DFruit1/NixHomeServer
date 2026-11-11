@@ -81,10 +81,6 @@ export type CandidateFolder = {
   collides: boolean;
 };
 
-export const uniqueFolder = async (root: string, segments: string[]): Promise<string> => {
-  return (await allocateUniqueFolder(root, segments)).folder;
-};
-
 export const allocateUniqueFolder = async (root: string, segments: string[]): Promise<CandidateFolder> => {
   const base = path.join(root, ...segments);
   for (let index = 0; index < 1000; index += 1) {

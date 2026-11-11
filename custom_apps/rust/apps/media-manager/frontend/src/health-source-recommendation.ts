@@ -78,12 +78,6 @@ export function sourceStatus(provider: ProviderDefinition): SourceStatus {
   }
 }
 
-export function sourceStatusClass(status: SourceStatus): string {
-  return status.tone === "idle"
-    ? "provider-state"
-    : `provider-state ${status.tone}`;
-}
-
 function capabilityScore(provider: ProviderDefinition, field: string): number {
   const wanted = CAPABILITIES_BY_FIELD[field] ?? DEFAULT_CAPABILITIES;
   for (let index = 0; index < wanted.length; index++) {
