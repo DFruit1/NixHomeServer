@@ -77,6 +77,15 @@ explicit request for that target; deployment alone is not a restart test.
 
 ## Word and Excel tools
 
+For ordinary changes to existing documents, use `office_skill`, `office_inspect`,
+`office_import_table`, `word_edit` and `spreadsheet_edit`. These support revision-bound table row
+insertion/deletion, literal cell changes, mapped cross-document imports and
+actual stable record sorting in one atomic new copy. Word also supports body
+paragraph changes; Excel supports proven row-local formulas and table growth.
+The runtime skills handle conventional user intentions without requiring users
+to supply technical operation details. See the [structural editing contract](office-editing.md)
+and the [packaged skill](../custom_apps/rust/apps/ai-tools/skills/office-editing/SKILL.md).
+
 The authenticated gateway offers `convert_document`, `spreadsheet_read`,
 `spreadsheet_write` and `word_document`. They require a current approved human
 POSIX identity and operate only on shared-root files that user can access.

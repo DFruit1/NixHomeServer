@@ -124,6 +124,11 @@ existing lxml dependency.
 
 ## Focused verification
 
+The additive [structural editing interface](office-editing.md) uses this same
+actor/broker/parser boundary. Every imported file is separately broker-read and
+revision-pinned. Entire operation batches finish in memory before one new-copy
+publication; no preview/rebuild or intermediate file grants bypass permissions.
+
 ```bash
 cargo test --offline --locked --manifest-path custom_apps/Cargo.toml -p ai-tools -- --test-threads=1
 # Explicit catastrophic-risk check, outside build sandboxes, in a mapped namespace:

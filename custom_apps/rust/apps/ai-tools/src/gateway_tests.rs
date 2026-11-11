@@ -86,6 +86,69 @@ async fn administration_discovery_and_calls_are_exact_login_scoped() {
 }
 
 #[tokio::test]
+async fn structural_import_authorizes_each_source_with_the_current_request_actor() {
+    let socket =
+        std::env::temp_dir().join(format!("office-import-test-{}.sock", std::process::id()));
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let mut server = app_server();
+    Arc::make_mut(&mut server.config).office_socket = Some(socket.clone());
+    let app = router(server, HOST);
+    let broker = tokio::spawn(async move {
+        for user in ["alice", "bob"] {
+            for path in ["destination.xlsx", "private.docx"] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let bytes = crate::office_io::receive(&mut stream).await.unwrap();
+                let value: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(value["username"], user);
+                assert_eq!(value["subject"], format!("subject-{user}"));
+                assert_eq!(value["operation"], json!({"op":"read","path":path}));
+                let response = if path == "destination.xlsx" {
+                    json!({"result":{"document":"Zml4dHVyZQ=="}})
+                } else {
+                    json!({"error":format!("source denied for {user}")})
+                };
+                crate::office_io::send(&mut stream, response.to_string().as_bytes())
+                    .await
+                    .unwrap();
+            }
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), listener.accept())
+                .await
+                .is_err(),
+            "a denied import must never publish a file"
+        );
+    });
+    let call = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"spreadsheet_edit","arguments":{
+        "source_path":"destination.xlsx","source_revision":"0".repeat(64),"operations":[{"op":"import_rows","target":{"sheet":"Sales","table":"Data"},"source":{"path":"private.docx","revision":"0".repeat(64),"selector":{"table_index":0}}}]
+    }}}).to_string();
+    assert_eq!(
+        app.clone()
+            .oneshot(request(Method::POST, &call, None))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    for user in ["alice", "bob"] {
+        let response = app
+            .clone()
+            .oneshot(request(Method::POST, &call, Some(user)))
+            .await
+            .unwrap();
+        let value: Value =
+            serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
+        assert_eq!(value["result"]["isError"], true);
+        assert_eq!(
+            value["result"]["content"][0]["text"],
+            format!("source denied for {user}")
+        );
+    }
+    broker.await.unwrap();
+    std::fs::remove_file(socket).unwrap();
+}
+
+#[tokio::test]
 async fn office_discovery_and_file_requests_use_only_the_current_gateway_actor() {
     let socket =
         std::env::temp_dir().join(format!("office-gateway-test-{}.sock", std::process::id()));
@@ -99,7 +162,7 @@ async fn office_discovery_and_file_requests_use_only_the_current_gateway_actor()
         .await
         .unwrap();
     let body: Value = serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
-    assert_eq!(body["result"]["tools"].as_array().unwrap().len(), 11);
+    assert_eq!(body["result"]["tools"].as_array().unwrap().len(), 16);
     let broker = tokio::spawn(async move {
         for user in ["alice", "bob"] {
             let (mut stream, _) = listener.accept().await.unwrap();

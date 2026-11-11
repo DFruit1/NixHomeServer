@@ -550,6 +550,16 @@ fn recover_installed_metadata_sidecar(
     )
 }
 
+fn is_order_sidecar(name: &str) -> bool {
+    name == "track-order.json"
+        || name.rsplit_once('.').is_some_and(|(_, ext)| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "m3u" | "m3u8" | "pls" | "xspf"
+            )
+        })
+}
+
 #[cfg(target_os = "linux")]
 fn validate_metadata_sidecar_action(
     config: &AppConfig,
@@ -576,9 +586,14 @@ fn validate_metadata_sidecar_action(
         ));
     }
     let (_, destination_leaf) = safe_parent_and_leaf(&action.destination_relative_path)?;
-    if ![".nfo", ".opf"]
-        .iter()
-        .any(|extension| destination_leaf.to_ascii_lowercase().ends_with(extension))
+    let audio_order = matches!(
+        destination_root.category,
+        LibraryCategory::Music | LibraryCategory::Audiobooks
+    ) && is_order_sidecar(destination_leaf);
+    if !audio_order
+        && ![".nfo", ".opf"]
+            .iter()
+            .any(|extension| destination_leaf.to_ascii_lowercase().ends_with(extension))
     {
         return Err(BrokerError::new(
             "metadata destination must use .nfo or .opf",
@@ -965,8 +980,16 @@ fn validate_replace_metadata_sidecar_action(
         .rsplit_once('.')
         .map(|(_, extension)| extension);
     if source_extension != replacement_extension
-        || source_extension != archive_extension
-        || !matches!(source_extension, Some("nfo" | "opf"))
+        || if is_order_sidecar(source_leaf) {
+            !source_extension.is_some_and(|ext| archive_leaf.ends_with(&format!(".{ext}.backup")))
+        } else {
+            source_extension != archive_extension
+        }
+        || !(matches!(source_extension, Some("nfo" | "opf"))
+            || (matches!(
+                root.category,
+                LibraryCategory::Music | LibraryCategory::Audiobooks
+            ) && is_order_sidecar(source_leaf)))
     {
         return Err(BrokerError::new(
             "metadata replacement paths must use the same .nfo or .opf extension",
@@ -989,9 +1012,13 @@ fn validate_replace_embedded_metadata_action(
     let root = config
         .resolve_visible_root(&identity, &action.root_id)
         .ok_or_else(|| BrokerError::new("metadata root ID is not registered"))?;
-    if root.category != LibraryCategory::Books {
+    let audio = matches!(
+        root.category,
+        LibraryCategory::Music | LibraryCategory::Audiobooks
+    );
+    if root.category != LibraryCategory::Books && !audio {
         return Err(BrokerError::new(
-            "embedded book metadata may only be replaced in a books root",
+            "embedded metadata may only be replaced in a book or supported audio root",
         ));
     }
     let (source_parent, source_leaf) = safe_parent_and_leaf(&action.source_relative_path)?;
@@ -1020,11 +1047,23 @@ fn validate_replace_embedded_metadata_action(
         .rsplit_once('.')
         .map(|(_, extension)| extension);
     if source_extension != replacement_extension
-        || source_extension != archive_extension
-        || !matches!(source_extension, Some("epub" | "cbz"))
+        || (if audio {
+            !source_extension.is_some_and(|ext| {
+                archive_leaf.ends_with(&format!(".{}.backup", ext.to_ascii_lowercase()))
+            })
+        } else {
+            source_extension != archive_extension
+        })
+        || !(if audio {
+            source_extension.is_some_and(|ext| {
+                crate::audio_sequence::AUDIO_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+            })
+        } else {
+            matches!(source_extension, Some("epub" | "cbz"))
+        })
     {
         return Err(BrokerError::new(
-            "embedded metadata replacement paths must use the same .epub or .cbz extension",
+            "embedded metadata replacement paths must use the same supported book/audio extension",
         ));
     }
     Ok(())

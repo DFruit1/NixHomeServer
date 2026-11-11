@@ -4065,3 +4065,99 @@ async fn busy_handler_budget_returns_retryable_503_without_stalling_requests() {
     release.notify_one();
     assert_eq!(first.await.unwrap().unwrap().status(), StatusCode::OK);
 }
+
+// Rewriting original media has a concrete data-loss risk. Cover preparation,
+// digest/owner-bound confirmation, execution and archived-original preservation.
+#[tokio::test]
+async fn authoritative_track_sequence_is_one_guarded_plan() {
+    use media_manager::broker::{apply_broker_action, file_fingerprint};
+    let temp = tempfile::tempdir().unwrap();
+    let (app, database) = test_app_with_mode(&temp, MutationMode::Enabled);
+    let folder = temp.path().join("shared/_Music/Album");
+    std::fs::create_dir_all(&folder).unwrap();
+    for name in ["00 - First.flac", "05 - Second.flac"] {
+        let mut bytes = b"fLaC\x80\0\0\x22".to_vec();
+        bytes.extend([0u8; 34]);
+        bytes.extend(b"audio payload");
+        std::fs::write(folder.join(name), bytes).unwrap();
+    }
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
+    let response = app
+        .clone()
+        .oneshot(editor_get_request("/api/v1/items?rootId=shared-music"))
+        .await
+        .unwrap();
+    let listing: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    let ids: Vec<_> = listing["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap())
+        .collect();
+    let body =
+        serde_json::json!({"itemIds":ids,"operation":{"kind":"sequence_tracks"}}).to_string();
+    let response = app
+        .clone()
+        .oneshot(editor_post_request("/api/v1/plans", Body::from(body)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let preview: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 512 * 1024).await.unwrap()).unwrap();
+    api_contract::assert_component("MutationPreview", &preview);
+    assert_eq!(preview["trackSequence"][0]["trackNumber"], 1);
+    assert_eq!(preview["trackSequence"][1]["trackTotal"], 2);
+    assert!(folder.join("00 - First.flac").exists());
+    let plan_id = preview["id"].as_str().unwrap();
+    let digest = preview["digest"].as_str().unwrap();
+    let mut catalog = Catalog::initialize(&database).unwrap();
+    assert_eq!(
+        catalog
+            .confirm_mutation_plan(plan_id, "editor", "wrong", 0)
+            .unwrap(),
+        media_manager::catalog::ConfirmPlanOutcome::DigestMismatch
+    );
+    let mut confirmation =
+        editor_post_request(&format!("/api/v1/plans/{plan_id}/confirm"), Body::empty());
+    confirmation
+        .headers_mut()
+        .insert("if-match", format!("\"{digest}\"").parse().unwrap());
+    assert_eq!(
+        app.clone().oneshot(confirmation).await.unwrap().status(),
+        StatusCode::ACCEPTED
+    );
+    let claimed = catalog.claim_next_mutation_plan().unwrap().unwrap();
+    let mut config = AppConfig::for_test(
+        temp.path().join("shared").to_str().unwrap(),
+        temp.path().join("users").to_str().unwrap(),
+    );
+    config.state_dir = temp.path().join("state");
+    for action in claimed.actions {
+        apply_broker_action(&config, "editor", &action.action).unwrap();
+        catalog
+            .complete_mutation_action(plan_id, action.ordinal)
+            .unwrap();
+    }
+    catalog.finish_mutation_plan(plan_id, None).unwrap();
+    assert!(folder.join("01 - First.flac").is_file());
+    assert!(folder.join("02 - Second.flac").is_file());
+    assert!(file_fingerprint(&folder.join("01 - First.flac")).is_ok());
+    assert!(folder.join("track-order.json").is_file());
+    assert_eq!(
+        catalog.mutation_plan_state(plan_id).unwrap().as_deref(),
+        Some("completed")
+    );
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
+    let response = app
+        .oneshot(editor_get_request("/api/v1/items?rootId=shared-music"))
+        .await
+        .unwrap();
+    let after: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(
+        after["items"].as_array().unwrap().len(),
+        2,
+        "archived originals must not reappear as playable tracks"
+    );
+}

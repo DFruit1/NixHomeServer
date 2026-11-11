@@ -12,7 +12,7 @@ import json
 import io
 import sys
 
-from ai_tools_office import spreadsheet, word, ooxml
+from ai_tools_office import spreadsheet, word, ooxml, structured
 
 #: Format to module. Only the two native Microsoft formats reach this helper;
 #: ODF and the legacy binary formats are converted by Collabora first, so there
@@ -48,6 +48,11 @@ def _dispatch(request: dict) -> dict:
         raise ValueError(
             f"helper format {request.get('format')!r} is not one of {sorted(MODULES)}"
         )
+
+    if operation == "inspect":
+        return structured.inspect(base64.b64decode(request["document"], validate=True), request["format"], request.get("options", {}))
+    if operation == "edit_operations":
+        return structured.edit(base64.b64decode(request["document"], validate=True), request["format"], request["source_revision"], request["operations"], request.get("sources", {}))
 
     if operation == "read":
         document = base64.b64decode(request["document"], validate=True)

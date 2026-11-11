@@ -1,6 +1,8 @@
 pub mod applications;
 pub(crate) mod artwork;
 pub mod artwork_edit;
+pub mod audio_sequence;
+pub mod audio_sequence_plan;
 pub mod broker;
 pub mod capabilities;
 pub mod catalog;

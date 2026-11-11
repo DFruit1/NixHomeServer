@@ -14,9 +14,9 @@
 # `gawirable/office-mcp` was considered and rejected: it accepts absolute paths
 # as-is and states that it does not sandbox to a single root, so spawned by
 # llama.cpp it would run as the inference account and turn a prompt-injected
-# call into read/write-anything for that account. Here the Rust process chooses
-# which operation runs, hands over only an already-validated absolute path, and
-# reads the result back itself.
+# call into read/write-anything for that account. Here the Rust gateway obtains
+# document bytes through the caller's file broker; the sandboxed helper receives
+# bytes and bounded operations, never a caller-controlled filesystem path.
 #
 # ODF stays on Collabora. No ODF writer is introduced: no ODF crate exists on
 # crates.io, and `odfpy` is a low-level XML API rather than a document model.

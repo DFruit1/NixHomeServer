@@ -279,6 +279,7 @@ export const ItemEditor = component$<{
   };
   close$?: QRL<() => void>;
   command?: { action: EditorCommandAction; revision: number };
+  showIdentity?: boolean;
 }>((props) => {
   const section = useSignal<MetadataSection>("basics");
   const cardRef = useSignal<HTMLElement>();
@@ -1553,10 +1554,15 @@ export const ItemEditor = component$<{
   );
 
   return (
-    <section class="panel editor-card" ref={cardRef}>
+    <section
+      class="panel editor-card"
+      aria-label={`Metadata for ${selectedFileName}`}
+      ref={cardRef}
+    >
       <div class="editor-heading">
         <div class="editor-heading-main">
-          {selectedFilePath && (
+          {props.showIdentity === false && <h3>Metadata</h3>}
+          {props.showIdentity !== false && selectedFilePath && (
             <div class="editor-file" title={selectedFilePath}>
               <span class="editor-file-icon" aria-hidden="true">
                 <Icon name={props.folder ? "folder" : "file"} size={18} />

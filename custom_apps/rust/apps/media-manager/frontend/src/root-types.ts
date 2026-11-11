@@ -154,6 +154,7 @@ export const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
 ];
 
 export type IconName =
+  | "more"
   | "library"
   | "disc"
   | "captions"

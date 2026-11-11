@@ -3,6 +3,7 @@ import type { IconName } from "./root-types";
 
 export const Icon = component$<{ name: IconName; size?: number }>((props) => {
   const paths: Record<IconName, string[]> = {
+    more: ["M5 12h.01", "M12 12h.01", "M19 12h.01"],
     library: ["M4 5h5l2 2h9v12H4z", "M4 9h16"],
     video: [
       "M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z",

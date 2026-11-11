@@ -43,6 +43,7 @@ mod plans;
 mod playback;
 mod refresh;
 mod subtitles;
+mod track_sequence;
 
 use axum::{
     body::{to_bytes, Body, Bytes},

@@ -27,7 +27,7 @@ pub(crate) async fn run(
         .take()
         .ok_or("Office subprocess errors unavailable")?;
     let work = async {
-        let input = async {
+        let input = async move {
             stdin
                 .write_all(&payload)
                 .await
@@ -35,7 +35,11 @@ pub(crate) async fn run(
             stdin
                 .shutdown()
                 .await
-                .map_err(|_| "Office subprocess rejected input")
+                .map_err(|_| "Office subprocess rejected input")?;
+            // Pipe shutdown does not close ChildStdin. The helper's json.load
+            // reads through EOF, so close the descriptor before awaiting output.
+            drop(stdin);
+            Ok(())
         };
         let output = async {
             let mut bytes = Vec::new();
@@ -78,4 +82,25 @@ pub(crate) async fn run(
         .map_err(|_| {
             "Office operation timed out; inspect the workspace before retrying a save".to_string()
         })?
+}
+
+#[cfg(test)]
+mod tests {
+    // Both Python json.load and the file worker read through EOF. The real
+    // MCP startup trial reproduced a deadlock in both paths without this close.
+    #[tokio::test]
+    async fn delivers_stdin_eof_before_awaiting_output() {
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            super::run(
+                tokio::process::Command::new("cat"),
+                b"bounded fixture".to_vec(),
+                1024,
+            ),
+        )
+        .await
+        .expect("child must receive EOF before the operation timeout")
+        .unwrap();
+        assert_eq!(output, b"bounded fixture");
+    }
 }

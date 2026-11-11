@@ -880,7 +880,12 @@ export const PlayerView = component$<{
     <>
       <section class="player-layout" hidden={props.active === false}>
         <div class="player-main">
-          <div class="now-playing">
+          <div
+            class={{
+              "now-playing": true,
+              "now-playing--no-art": !currentTrack || artworkFailed.value,
+            }}
+          >
             {currentTrack ? (
               <div
                 class={{

@@ -94,7 +94,7 @@ describe("Media Manager navigation", () => {
 
     for (const [label, href] of expectedLinks) {
       const link = Array.from(screen.querySelectorAll("a.nav-item")).find(
-        (element) => element.textContent?.trim() === label,
+        (element) => element.getAttribute("aria-label") === label,
       );
       expect(link, `${label} navigation link`).toBeDefined();
       expect(link?.getAttribute("href")).toBe(href);
