@@ -10,7 +10,7 @@ use crate::extract::kiwix::{clean_title_from_path, entry_origin, probe_fulltext_
 use crate::text::{html_title, snippet_from_html};
 
 /// How many ZIM archives a single query searches concurrently. Every Xapian-
-/// bearing archive in the library is searched (no archive-count cap); this
+/// bearing archive is searched while the query budget permits; this
 /// bounds the number of in-flight `kiwix-search` subprocesses instead.
 const MAX_ZIM_CONCURRENCY: usize = 8;
 /// How many article hits are kept per ZIM.
@@ -19,6 +19,8 @@ const MAX_RESULTS_PER_ZIM: usize = 25;
 const MAX_TOTAL_ZIM_RESULTS: usize = 100;
 /// Bound for a single kiwix-search invocation.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
+/// Return completed archives before the server's 30-second source timeout.
+const QUERY_TIMEOUT: Duration = Duration::from_secs(22);
 /// Bound for a single title fetch.
 const TITLE_TIMEOUT: Duration = Duration::from_secs(5);
 /// HTML considered for a snippet; conversion cost is capped by this.
@@ -155,6 +157,7 @@ pub async fn search(
 
     // Refill each slot as it finishes. Waiting for an entire batch left slots
     // idle behind one slow archive and delayed archives later in the library.
+    let deadline = tokio::time::Instant::now() + QUERY_TIMEOUT;
     let mut remaining = entries.iter().enumerate();
     let mut tasks = tokio::task::JoinSet::new();
     let mut failed_archives = 0;
@@ -186,11 +189,20 @@ pub async fn search(
                 )
             });
         }
-        let Some(joined) = tasks.join_next().await else {
-            break;
+        let joined = match tokio::time::timeout_at(deadline, tasks.join_next()).await {
+            Ok(Some(joined)) => joined,
+            Ok(None) => break,
+            Err(_) => {
+                failed_archives += tasks.len() + remaining.count();
+                tasks.abort_all();
+                break;
+            }
         };
         match joined {
-            Ok((index, Ok(hits))) => ordered.push((index, hits)),
+            Ok((index, Ok(result))) => {
+                failed_archives += result.failed_archives;
+                ordered.push((index, result.hits));
+            }
             Ok((_, Err(err))) => {
                 failed_archives += 1;
                 eprintln!("search: ZIM query failed: {err}");
@@ -217,10 +229,35 @@ pub async fn search(
             }
         }
     }
+    // Keep archive diversity for equal-quality results, but promote direct
+    // title matches across the whole library before returning the sample.
+    hits.sort_by_key(|hit| hit_title_match_rank(hit, query));
     ZimSearchResult {
         hits,
         failed_archives,
     }
+}
+
+fn title_match_rank(title: &str, query: &str) -> u8 {
+    let title = title.trim().to_lowercase();
+    let query = query.trim().trim_matches('"').to_lowercase();
+    if title == query {
+        0
+    } else if title.starts_with(&format!("{query} ")) || title.starts_with(&format!("{query}/")) {
+        1
+    } else {
+        2
+    }
+}
+
+fn hit_title_match_rank(hit: &ZimHit, query: &str) -> u8 {
+    // HTML titles may append a site name; the entry still identifies an exact
+    // page such as Physics even when its displayed title is Physics - Wikiversity.
+    let path_rank = hit.metadata["entry_path"]
+        .as_str()
+        .map(|path| title_match_rank(&clean_title_from_path(path), query))
+        .unwrap_or(2);
+    title_match_rank(&hit.title, query).min(path_rank)
 }
 
 /// Searches one ZIM archive and resolves its hits' titles and snippets.
@@ -232,31 +269,58 @@ async fn search_zim(
     query: &str,
     broad: Option<&str>,
     full_text: bool,
-) -> Result<Vec<ZimHit>, String> {
+) -> Result<ZimSearchResult, String> {
     let zim = &entry.path;
     let stem = &entry.stem;
     let has_xapian = full_text && entry.has_xapian;
     let mut title_only = !has_xapian;
-    let lookup = if title_only {
-        query
-    } else {
-        broad.unwrap_or(query)
-    };
-    let mut paths = search_paths(kiwix_search, zim, lookup, title_only).await?;
-    // Try the collection's title completion only after a plain topic query has
-    // no full-text matches; preserve deliberate quotes/operators unchanged.
-    if paths.is_empty() && has_xapian && crate::text::discovery_words(query).is_some() {
-        title_only = true;
-        if let Ok(Ok(matches)) = timeout(
+    let mut failed_archives = 0;
+    let mut paths = if has_xapian && crate::text::discovery_words(query).is_some() {
+        // Title hits must compete even when the body index has many matches.
+        // Keep subprocess concurrency bounded by querying titles first.
+        let titles = timeout(
             Duration::from_secs(2),
             search_paths(kiwix_search, zim, query, true),
         )
-        .await
-        {
-            paths = matches;
+        .await;
+        let mut titles = match titles {
+            Ok(Ok(titles)) => titles,
+            _ => {
+                failed_archives = 1;
+                Vec::new()
+            }
+        };
+        match search_paths(kiwix_search, zim, broad.unwrap_or(query), false).await {
+            Ok(body_paths) => {
+                for path in body_paths {
+                    if !titles.contains(&path) {
+                        titles.push(path);
+                    }
+                }
+            }
+            Err(err) if !titles.is_empty() => {
+                eprintln!("search: ZIM full-text query failed, retaining titles: {err}");
+                title_only = true;
+                failed_archives = 1;
+            }
+            Err(err) => return Err(err),
         }
-    }
+        titles
+    } else {
+        search_paths(
+            kiwix_search,
+            zim,
+            if title_only {
+                query
+            } else {
+                broad.unwrap_or(query)
+            },
+            title_only,
+        )
+        .await?
+    };
     if title_only
+        && failed_archives == 0
         && broad.is_some()
         && paths.len() < MAX_RESULTS_PER_ZIM
         && let Some(words) = crate::text::discovery_words(query)
@@ -289,6 +353,7 @@ async fn search_zim(
             }
         }
     }
+    paths.sort_by_key(|path| title_match_rank(&clean_title_from_path(path), query));
     let paths: Vec<String> = paths
         .into_iter()
         .take(MAX_RESULTS_PER_ZIM)
@@ -296,15 +361,21 @@ async fn search_zim(
         .filter(|path| !path.is_empty())
         .collect();
 
+    // Share a single budget across optional branding and snippet enrichment.
+    let enrichment_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     // Read the collection's own branding once per matching archive. Missing
     // optional metadata must not prevent its article results being returned.
     let (archive_title, archive_icon) = if paths.is_empty() {
         (None, None)
     } else {
-        let (title, icon) = tokio::join!(
-            show_html(zimdump, zim, "Title", Some("M")),
-            show_html(zimdump, zim, "Illustration_48x48@1", Some("M")),
-        );
+        let (title, icon) = tokio::time::timeout_at(enrichment_deadline, async {
+            tokio::join!(
+                show_html(zimdump, zim, "Title", Some("M")),
+                show_html(zimdump, zim, "Illustration_48x48@1", Some("M")),
+            )
+        })
+        .await
+        .unwrap_or((None, None));
         let title = title
             .filter(|data| data.len() <= 4096)
             .and_then(|data| String::from_utf8(data).ok())
@@ -330,8 +401,7 @@ async fn search_zim(
         })
         .buffer_unordered(5);
     let mut resolved: Vec<(usize, String, String, Option<String>)> = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    while let Ok(Some(hit)) = tokio::time::timeout_at(deadline, tasks.next()).await {
+    while let Ok(Some(hit)) = tokio::time::timeout_at(enrichment_deadline, tasks.next()).await {
         resolved.push(hit);
     }
     drop(tasks);
@@ -344,7 +414,7 @@ async fn search_zim(
         }
     }
     resolved.sort_by_key(|(position, ..)| *position);
-    Ok(resolved
+    let mut hits: Vec<_> = resolved
         .into_iter()
         .map(|(_, path, title, snippet)| ZimHit {
             title,
@@ -357,7 +427,12 @@ async fn search_zim(
                 "search_scope": if title_only { "Titles" } else { "Full text" },
             }),
         })
-        .collect())
+        .collect();
+    hits.sort_by_key(|hit| hit_title_match_rank(hit, query));
+    Ok(ZimSearchResult {
+        hits,
+        failed_archives,
+    })
 }
 
 /// Runs `kiwix-search ZIM PATTERN` and returns the matching entry paths.
@@ -545,6 +620,7 @@ exec sleep 60
             dir.path(),
             "search",
             r#"#!/bin/sh
+if [ "$1" = --suggestion ]; then shift; fi
 root=${1%/*}
 name=${1##*/}
 printf 'start %s\n' "$name" >> "$root/events"
