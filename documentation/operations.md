@@ -1803,12 +1803,17 @@ modules are enabled, File Sync is published from
 `/var/lib/fdroidserver/incoming/filesync.apk` on boot and whenever that file
 changes. The F-Droid reindex success hook then updates the IPFS mirror.
 
-For either Android app, increase its version first, then run
-`pnpm release:android` in its app directory. The command builds and tests a
-release APK, signs it with the existing Android debug keystore, checks the
+For either Android app, run `pnpm build:android` (or `pnpm release:android`)
+in its app directory for each distributable rebuild. The command selects an
+Android version code above the live F-Droid version; the display version can
+remain unchanged during development. It builds and tests a release APK,
+signs it with the existing Android debug keystore, checks the
 current repository version and signing certificate, uploads it to the watched
 path, and waits for the F-Droid and IPFS indexes to agree. Use
-`bash build-android.sh --build-only` to make a local APK without publishing.
+`pnpm build:android --build-only` to make a local APK without publishing or
+querying the live repository. Raw Tauri builds and ordinary web/server builds
+do not publish an Android APK. Repository unavailability or verification
+failure makes the publishing command fail rather than report a release.
 Deploy the YouTube Downloader server update with the guarded deploy helper
 before publishing a client that depends on a new server API. The target server
 comes from `vars.nix`; `NIXHOMESERVER_ANDROID_RELEASE_TARGET=user@host` can

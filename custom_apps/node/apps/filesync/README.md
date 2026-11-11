@@ -53,13 +53,14 @@ root from its own preset configuration; clients cannot supply an absolute path.
 
 ## Publishing the Android prototype
 
-Run `pnpm release:android` from this app directory after increasing the version
-in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. The
-release command builds and tests the ARM64 APK, signs it with the existing
+Run `pnpm build:android` (or `pnpm release:android`) from this app directory
+for each distributable rebuild. The command selects an Android version code
+above the live F-Droid version, so the display version can remain unchanged
+during development. It builds and tests the ARM64 APK, signs it with the existing
 Android debug keystore, checks the app identity, version code, and signing
 certificate against the live F-Droid index, then uploads it to the server's
 watched File Sync path. It waits until both the F-Droid index and IPFS mirror
-serve the new APK. Use `bash build-android.sh --build-only` to create a local
+serve the new APK. Use `pnpm build:android --build-only` to create a local
 APK without publishing it. The same signing key is required for in-place
 updates; back it up before releasing from another workstation.
 
