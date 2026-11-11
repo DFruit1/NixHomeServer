@@ -1071,10 +1071,11 @@ async function refreshEstimates(force = false): Promise<void> {
     estimatesFreshUntil = Date.now() + ESTIMATE_FRESH_MS;
     updateOverview();
   })();
-  estimateInFlight = work.finally(() => {
-    if (estimateInFlight === work) estimateInFlight = undefined;
+  const settled = work.finally(() => {
+    if (estimateInFlight === settled) estimateInFlight = undefined;
   });
-  await estimateInFlight;
+  estimateInFlight = settled;
+  await settled;
 }
 
 function updatePairStatusUi(pair: SyncPair): void {
@@ -1263,6 +1264,9 @@ async function start(): Promise<void> {
     window.setInterval(() => { void refreshProgress(); }, 3000);
   }
   render();
+  startupPending = false;
+  for (const url of startupCallbacks) void finishCallback(url);
+  startupCallbacks.clear();
   void refreshEstimates();
 }
 
@@ -1374,9 +1378,17 @@ async function runFileAction(name: string, action: FileAction, size: number): Pr
 }
 
 let lastAuthCallback: string | undefined;
+let startupPending = true;
+const startupCallbacks = new Set<string>();
 
 async function finishCallback(url: string): Promise<void> {
   if (!url.startsWith('filesync://oauth/callback') || !invoke) return;
+  // Restore the old session before accepting a new one. Otherwise a slow
+  // startup request can overwrite the account/status from a successful return.
+  if (startupPending) {
+    startupCallbacks.add(url);
+    return;
+  }
   // Android can deliver the same intent through both onOpenUrl and getCurrent
   // during startup. An authorization code must only be exchanged once.
   if (lastAuthCallback === url) return;
