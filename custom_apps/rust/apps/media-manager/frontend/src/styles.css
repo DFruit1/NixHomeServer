@@ -3,6 +3,11 @@
   --paper: #f6f3ec;
   --paper-deep: #efeadd;
   --paper-recess: #f1ecdf;
+  --navigation: #263d34;
+  --navigation-ink: #f6f3ec;
+  --navigation-muted: #c4cfc5;
+  --radius-control: 8px;
+  --radius-panel: 14px;
   --card: #fffdf8;
   --ink: #211d15;
   --ink-soft: #57503f;
@@ -76,6 +81,7 @@ li {
 }
 
 .app-shell {
+  --navigation-width: 64px;
   min-height: 100vh;
 }
 .sidebar {
@@ -84,13 +90,14 @@ li {
   top: 0;
   bottom: 0;
   left: 0;
-  width: 48px;
-  height: 100vh;
-  padding: 28px 4px 20px;
+  width: var(--navigation-width);
+  height: 100dvh;
+  padding: 24px 10px 16px;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--line);
-  background: var(--paper-deep);
+  color: var(--navigation-ink);
+  background: var(--navigation);
   white-space: nowrap;
   transition: box-shadow 170ms ease-out;
 }
@@ -119,19 +126,20 @@ li {
 }
 .brand span,
 .sidebar-footer span {
-  color: var(--ink-faint);
+  color: var(--navigation-muted);
   font-family: var(--font-mono);
   font-size: 9px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
-@media (min-width: 641px) {
+@media (min-width: 641px) and (max-width: 1199px) {
   .brand > div:last-child {
     position: absolute;
     left: 100%;
     top: 0;
     padding: 5px 10px;
     margin-left: 8px;
+    color: var(--ink);
     background: var(--paper-deep);
     border: 1px solid var(--line-strong);
     border-radius: 4px;
@@ -151,7 +159,7 @@ li {
   height: 34px;
   flex: 0 0 auto;
   border: 1px solid var(--line-strong);
-  border-radius: 3px;
+  border-radius: var(--radius-control);
   padding: 8px 7px 7px;
   display: flex;
   align-items: flex-end;
@@ -160,6 +168,7 @@ li {
   background: var(--card);
 }
 .brand-mark span {
+  color: var(--accent);
   display: block;
   width: 4px;
   border-radius: 1px 1px 0 0;
@@ -182,35 +191,38 @@ nav {
 }
 .nav-item {
   position: relative;
-  min-height: 40px;
+  min-height: 44px;
   width: 100%;
-  padding: 0 10px;
+  padding: 0 12px;
   display: flex;
   align-items: center;
   gap: 11px;
   border: 0;
-  border-radius: 4px;
-  color: var(--ink-soft);
+  border-radius: var(--radius-control);
+  color: var(--navigation-muted);
   background: transparent;
   cursor: pointer;
   text-align: left;
   text-decoration: none;
-  font-size: 12.5px;
+  font-size: 13px;
   transition-property: background-color, color, scale;
   transition-duration: 120ms;
   transition-timing-function: ease-out;
 }
 .nav-item:hover {
-  color: var(--ink);
-  background: rgba(33, 29, 21, 0.05);
+  color: var(--navigation-ink);
+  background: rgb(255 255 255 / 8%);
 }
 .nav-item.active {
-  color: var(--ink);
-  background: var(--accent-wash);
-  box-shadow: inset 2px 0 0 var(--accent);
+  color: var(--navigation-ink);
+  background: rgb(255 255 255 / 14%);
+  box-shadow: inset 3px 0 0 #d5dea8;
 }
 .nav-item.active .icon {
-  color: var(--accent);
+  color: #d5dea8;
+}
+.sidebar :focus-visible {
+  outline-color: var(--navigation-ink);
 }
 .nav-item:active,
 .primary-button:active,
@@ -230,7 +242,7 @@ a:focus-visible {
 .nav-item .icon {
   flex: 0 0 auto;
 }
-@media (min-width: 641px) {
+@media (min-width: 641px) and (max-width: 1199px) {
   .nav-item > span {
     position: absolute;
     left: 100%;
@@ -238,6 +250,7 @@ a:focus-visible {
     transform: translateY(-50%);
     padding: 4px 10px;
     margin-left: 8px;
+    color: var(--ink);
     background: var(--paper-deep);
     border: 1px solid var(--line-strong);
     border-radius: 4px;
@@ -260,14 +273,14 @@ a:focus-visible {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid rgb(255 255 255 / 16%);
 }
 .sidebar-footer strong {
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 12px;
 }
-@media (min-width: 641px) {
+@media (min-width: 641px) and (max-width: 1199px) {
   .sidebar-footer > div:nth-child(2) {
     position: absolute;
     left: 100%;
@@ -275,6 +288,7 @@ a:focus-visible {
     transform: translateY(-50%);
     padding: 6px 10px;
     margin-left: 8px;
+    color: var(--ink);
     background: var(--paper-deep);
     border: 1px solid var(--line-strong);
     border-radius: 4px;
@@ -358,6 +372,10 @@ a:focus-visible {
   cursor: pointer;
   white-space: nowrap;
 }
+.user-menu-item:focus-visible {
+  outline-color: var(--accent);
+  outline-offset: -3px;
+}
 .user-menu-item:hover {
   background: var(--accent);
   color: var(--accent-ink);
@@ -366,8 +384,8 @@ a:focus-visible {
 .main-content {
   min-width: 0;
   min-height: 100vh;
-  margin-left: 48px;
-  padding: 34px clamp(24px, 4vw, 62px) 70px;
+  margin-left: var(--navigation-width);
+  padding: 28px clamp(24px, 3vw, 48px) 70px;
   background: radial-gradient(
     circle at 75% -10%,
     rgba(30, 77, 56, 0.05),
@@ -377,7 +395,7 @@ a:focus-visible {
 .topbar {
   min-height: 62px;
   padding-bottom: 20px;
-  margin-bottom: 38px;
+  margin-bottom: 24px;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -402,7 +420,7 @@ a:focus-visible {
 }
 .panel {
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-panel);
   background: var(--card);
   box-shadow: 0 1px 2px rgba(33, 29, 21, 0.05);
   overflow: hidden;
@@ -840,14 +858,6 @@ a:focus-visible {
   gap: 5px;
   padding-top: 2px;
 }
-.library-header > span {
-  color: var(--ink-faint);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
 .library-header h1 {
   font-family: var(--font-serif);
   font-size: clamp(28px, 3vw, 38px);
@@ -1204,17 +1214,17 @@ a:focus-visible {
 .folder-filter-button {
   min-width: 0;
   max-width: 100%;
-  min-height: 30px;
+  min-height: 36px;
   padding: 0 12px;
   border: 1px solid var(--line-strong);
-  border-radius: 3px;
+  border-radius: var(--radius-control);
   color: var(--ink-soft);
   background: transparent;
   cursor: pointer;
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-family: var(--font-sans);
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.05em;
+  letter-spacing: normal;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1326,8 +1336,8 @@ a:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-family: var(--font-sans);
+  font-size: 13px;
 }
 .muted {
   color: var(--ink-faint);
@@ -3804,14 +3814,14 @@ a:focus-visible {
 }
 .app-shell.sidebar-right .main-content {
   margin-left: 0;
-  margin-right: 48px;
+  margin-right: var(--navigation-width);
 }
 .app-shell.sidebar-right .user-menu {
   left: auto;
   right: 0;
 }
 /* Flip tooltips to float left when sidebar is on the right */
-@media (min-width: 641px) {
+@media (min-width: 641px) and (max-width: 1199px) {
   .app-shell.sidebar-right .brand > div:last-child {
     left: auto;
     right: 100%;
@@ -3836,6 +3846,34 @@ a:focus-visible {
   }
 }
 
+@media (min-width: 641px) and (max-width: 1199px) {
+  .brand > div:last-child span,
+  .sidebar-footer > div:nth-child(2) span {
+    color: var(--ink-soft);
+  }
+}
+
+@media (min-width: 1200px) {
+  .app-shell {
+    --navigation-width: 216px;
+  }
+  .sidebar {
+    padding-inline: 14px;
+  }
+  .brand {
+    padding-inline: 0;
+  }
+  .sidebar-footer {
+    justify-content: flex-start;
+    gap: 10px;
+    padding-inline: 0;
+  }
+  .sidebar-footer > .role-dot {
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+}
+
 /* ── Player ── */
 .player-layout {
   display: grid;
@@ -3852,6 +3890,7 @@ a:focus-visible {
 }
 .video-player-column {
   min-width: 0;
+  align-self: start;
 }
 .video-screen {
   display: block;
@@ -3872,6 +3911,18 @@ a:focus-visible {
 }
 .video-screen-empty p {
   margin: 0;
+}
+.video-player-column .video-screen-empty {
+  color: var(--navigation-muted);
+}
+.now-playing :focus-visible,
+.video-player-column :focus-visible {
+  outline: 2px solid #f2d58d;
+  outline-offset: 3px;
+}
+.now-playing .playback-settings :focus-visible {
+  outline-color: var(--accent);
+  outline-offset: -2px;
 }
 .video-title {
   display: flex;
@@ -3945,7 +3996,7 @@ a:focus-visible {
   min-height: 40px;
   padding: 8px 10px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-control);
   background: var(--paper);
   color: var(--ink);
   font: inherit;
@@ -4039,7 +4090,7 @@ a:focus-visible {
 /* ── Library mini player ── */
 .mini-player {
   position: fixed;
-  left: 48px;
+  left: var(--navigation-width);
   right: 0;
   bottom: 0;
   z-index: 35;
@@ -4053,7 +4104,7 @@ a:focus-visible {
 }
 .app-shell.sidebar-right .mini-player {
   left: 0;
-  right: 48px;
+  right: var(--navigation-width);
 }
 .mini-player-info {
   min-width: 0;
@@ -4160,6 +4211,7 @@ a:focus-visible {
 }
 
 .player-main {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -4670,13 +4722,12 @@ a:focus-visible {
 
 .playback-settings {
   position: absolute;
-  /* The gear sits at the foot of the now-playing card, so the panel opens
-     upwards and stays on screen instead of hanging off the bottom. */
+  /* Prefer opening upward; measured space flips the panel when needed. */
   bottom: calc(100% + 10px);
   right: 0;
   z-index: 20;
   width: min(320px, calc(100vw - 32px));
-  max-height: min(60vh, 520px);
+  max-height: min(60vh, 520px, var(--settings-space, 520px));
   overflow-y: auto;
   overscroll-behavior: contain;
   display: flex;
@@ -4687,6 +4738,13 @@ a:focus-visible {
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   box-shadow: 0 10px 28px rgba(33, 29, 21, 0.2);
+}
+
+@media (min-width: 641px) {
+  .player-settings[data-settings-placement="below"] .playback-settings {
+    top: calc(100% + 10px);
+    bottom: auto;
+  }
 }
 
 .playback-settings-group {
@@ -4806,18 +4864,19 @@ a:focus-visible {
 }
 
 @media (max-width: 640px) {
-  .sidebar {
+  .sidebar,
+  .app-shell.sidebar-right .sidebar {
     top: auto;
     right: 10px;
-    bottom: 10px;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
     left: 10px;
     width: auto;
-    height: 62px;
-    padding: 7px;
+    height: 72px;
+    padding: 5px;
     display: block;
     border: 1px solid var(--line-strong);
     border-radius: 12px;
-    background: rgba(246, 243, 236, 0.95);
+    background: var(--navigation);
     box-shadow: 0 8px 24px rgba(33, 29, 21, 0.18);
     backdrop-filter: blur(16px);
   }
@@ -4829,21 +4888,31 @@ a:focus-visible {
   .sidebar-footer {
     display: none;
   }
-  nav {
-    width: 100% !important;
-    height: 46px;
-    display: grid;
-    grid-template-columns: repeat(7, 1fr);
-    gap: 2px;
+  .sidebar nav {
+    width: 100%;
+    height: 60px;
+    display: flex;
+    gap: 3px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--navigation-muted) transparent;
   }
   .nav-item {
-    min-height: 46px;
+    flex: 0 0 80px;
+    min-height: 54px;
+    flex-direction: column;
     justify-content: center;
-    padding: 0;
-    border-radius: 8px;
+    gap: 3px;
+    padding: 4px;
+    border-radius: var(--radius-control);
   }
   .nav-item > span {
-    display: none;
+    display: block;
+    font-size: 10px;
+    line-height: 1.15;
+    text-align: center;
+    white-space: normal;
   }
   .nav-item .icon {
     width: 22px;
@@ -4852,17 +4921,18 @@ a:focus-visible {
   .nav-item.active {
     box-shadow: none;
   }
-  .main-content {
+  .main-content,
+  .app-shell.sidebar-right .main-content {
     margin-left: 0;
     margin-right: 0;
-    padding: 24px 16px 96px;
+    padding: 24px 16px calc(110px + env(safe-area-inset-bottom, 0px));
   }
   .main-content--videos {
     min-height: auto;
-    padding-bottom: 72px;
+    padding-bottom: calc(110px + env(safe-area-inset-bottom, 0px));
   }
   .topbar {
-    margin-bottom: 32px;
+    margin-bottom: 24px;
     align-items: flex-start;
   }
   .rename-fields {
@@ -4931,7 +5001,7 @@ a:focus-visible {
     position: fixed;
     left: 12px;
     right: 12px;
-    bottom: 84px;
+    bottom: calc(94px + env(safe-area-inset-bottom, 0px));
     width: auto;
     max-height: min(66vh, 520px);
   }
@@ -5865,7 +5935,7 @@ a:focus-visible {
 /* Panel Base Styles (ensure consistency) */
 .panel {
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-panel);
   background: var(--card);
 }
 
@@ -5897,16 +5967,18 @@ a:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 16px;
   border: 1px solid var(--line-strong);
-  border-radius: 3px;
+  border-radius: var(--radius-control);
   font: inherit;
   font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 120ms ease-out;
+  transition:
+    background-color 120ms ease-out,
+    border-color 120ms ease-out;
 }
 
 .primary-button {
@@ -6716,8 +6788,14 @@ a:focus-visible {
 .health-source-list li.health-source-unconfigured .health-provider-summary {
   opacity: 0.55;
 }
-.health-source-list li.health-source-unconfigured .health-provider-summary strong,
-.health-source-list li.health-source-unconfigured .health-provider-summary span {
+.health-source-list
+  li.health-source-unconfigured
+  .health-provider-summary
+  strong,
+.health-source-list
+  li.health-source-unconfigured
+  .health-provider-summary
+  span {
   color: var(--ink-soft);
 }
 .health-source-setup {
@@ -7520,7 +7598,7 @@ a:focus-visible {
   gap: 8px;
   padding: 0 12px;
   border: 1px solid var(--line-strong);
-  border-radius: 3px;
+  border-radius: var(--radius-control);
   background: var(--card);
 }
 .library-filter:focus-within {
@@ -7534,7 +7612,7 @@ a:focus-visible {
 .library-filter input {
   flex: 1;
   min-width: 0;
-  height: 38px;
+  height: 44px;
   border: 0;
   outline: none;
   color: var(--ink);
@@ -7794,14 +7872,14 @@ a:focus-visible {
 }
 @media (max-width: 640px) {
   .mini-player {
-    bottom: 82px;
+    bottom: calc(94px + env(safe-area-inset-bottom, 0px));
   }
   .app-shell.sidebar-right .mini-player {
     left: 0;
     right: 0;
   }
   .has-mini-player .main-content {
-    padding-bottom: 240px;
+    padding-bottom: calc(240px + env(safe-area-inset-bottom, 0px));
   }
 }
 
@@ -7844,7 +7922,7 @@ a:focus-visible {
   padding: 20px;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius-panel);
   background:
     radial-gradient(
       circle at 100% 0,
@@ -7925,7 +8003,7 @@ a:focus-visible {
   box-shadow: 0 4px 10px rgba(30, 77, 56, 0.17);
 }
 .catalog-panel {
-  border-radius: 14px;
+  border-radius: var(--radius-panel);
   box-shadow: 0 4px 16px rgba(33, 29, 21, 0.04);
 }
 .item-tree {
@@ -7966,10 +8044,10 @@ a:focus-visible {
   background:
     radial-gradient(
       circle at 100% 0,
-      rgba(232, 193, 111, 0.2),
+      rgba(232, 193, 111, 0.12),
       transparent 45%
     ),
-    linear-gradient(135deg, #263d34, #526652 58%, #8b8061);
+    linear-gradient(135deg, #263d34, #455a49 58%, #63684b);
   box-shadow: 0 14px 30px rgba(30, 45, 36, 0.18);
 }
 .now-playing-artwork,
@@ -7985,6 +8063,9 @@ a:focus-visible {
 }
 .now-playing-artwork--landscape {
   aspect-ratio: 4 / 3;
+}
+.now-playing-artwork > .icon {
+  color: var(--accent);
 }
 .now-playing-info {
   grid-area: info;
@@ -8132,7 +8213,7 @@ a:focus-visible {
   background: rgba(246, 243, 236, 0.15);
 }
 .video-library {
-  border-radius: 14px;
+  border-radius: var(--radius-panel);
   box-shadow: 0 4px 16px rgba(33, 29, 21, 0.05);
 }
 .video-list {
@@ -8176,7 +8257,31 @@ a:focus-visible {
   display: none;
 }
 
+/* Adapt to the player column, including beside the expanded desktop nav. */
+@container (max-width: 740px) {
+  .now-playing {
+    grid-template-columns: 180px minmax(0, 1fr);
+    grid-template-areas:
+      "artwork info"
+      "time time"
+      "controls controls"
+      "extras extras";
+    gap: 20px;
+    padding: 24px;
+  }
+  .now-playing > .player-controls {
+    justify-content: center;
+    gap: 8px;
+  }
+  .now-playing-info {
+    align-self: center;
+  }
+}
+
 @media (max-width: 640px) {
+  .folder-filter-button {
+    min-height: 44px;
+  }
   .library-selection-hero {
     grid-template-columns: 108px minmax(0, 1fr);
     gap: 15px;
@@ -8258,6 +8363,12 @@ a:focus-visible {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .nav-item:active,
+  .primary-button:active,
+  .text-button:active,
+  .folder-filter-button:active {
+    scale: none;
+  }
   .album-artwork {
     transition: none;
   }

@@ -164,6 +164,7 @@ export default component$((props: RootProps) => {
   const playerOpened = useSignal(props.initialView === "player");
   const sidebarSide = useSignal<"left" | "right">("left");
   const menuOpen = useSignal(false);
+  const navigation = useSignal<HTMLElement>();
   const state = useStore<DashboardState>({
     roots: [],
     items: [],
@@ -208,6 +209,26 @@ export default component$((props: RootProps) => {
     const currentView = track(() => view.value);
     const requestedTrack = track(() => state.miniPlayerItemId);
     if (currentView === "player" || requestedTrack) playerOpened.value = true;
+  });
+
+  // Reveal the phone navigation's active destination without moving the page.
+  useVisibleTask$(({ track, cleanup }) => {
+    track(() => view.value);
+    const nav = navigation.value;
+    if (!nav) return;
+    const revealActive = () => {
+      const active = nav.querySelector<HTMLElement>('[aria-current="page"]');
+      if (active && nav.scrollWidth > nav.clientWidth) {
+        nav.scrollLeft =
+          active.offsetLeft - (nav.clientWidth - active.offsetWidth) / 2;
+      }
+    };
+    revealActive();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(revealActive);
+      observer.observe(nav);
+      cleanup(() => observer.disconnect());
+    }
   });
 
   const toggleSidebarSide = $(() => {
@@ -594,11 +615,10 @@ export default component$((props: RootProps) => {
           </div>
           <div>
             <strong>Media Manager</strong>
-            <span>Library control</span>
           </div>
         </div>
 
-        <nav aria-label="Media Manager sections">
+        <nav ref={navigation} aria-label="Media Manager sections">
           {NAV_ITEMS.map((item) => (
             <a
               key={item.id}
@@ -2441,7 +2461,6 @@ const LibraryView = component$<{
   return (
     <section class="library-view">
       <header class="library-header">
-        <span>Catalog and metadata</span>
         <h1>Manage library</h1>
       </header>
       <div

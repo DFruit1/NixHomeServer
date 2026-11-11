@@ -724,6 +724,42 @@ export const PlayerView = component$<{
     { strategy: "document-ready" },
   );
 
+  // The artwork-led player can put the gear near either viewport edge.
+  useVisibleTask$(({ track, cleanup }) => {
+    const open = track(() => playerState.settingsOpen);
+    const container = settingsRef.value;
+    const viewport = container?.ownerDocument.defaultView;
+    if (
+      !open ||
+      !container ||
+      !viewport ||
+      typeof container.getBoundingClientRect !== "function"
+    )
+      return;
+    const positionMenu = () => {
+      const bounds = container.getBoundingClientRect();
+      const above = Math.max(0, bounds.top - 26);
+      const below = Math.max(0, viewport.innerHeight - bounds.bottom - 26);
+      const upwards =
+        above >= Math.min(520, viewport.innerHeight * 0.6) || above >= below;
+      container.dataset.settingsPlacement = upwards ? "above" : "below";
+      container.style.setProperty(
+        "--settings-space",
+        `${upwards ? above : below}px`,
+      );
+    };
+    positionMenu();
+    viewport.addEventListener("resize", positionMenu);
+    viewport.addEventListener("scroll", positionMenu, {
+      capture: true,
+      passive: true,
+    });
+    cleanup(() => {
+      viewport.removeEventListener("resize", positionMenu);
+      viewport.removeEventListener("scroll", positionMenu, true);
+    });
+  });
+
   const upNextStep = queuedNext(
     playerState.tracks,
     playerState.shuffleOrder,
