@@ -124,14 +124,16 @@ pub struct ZimSearchResult {
     pub failed_archives: usize,
 }
 
-/// Search each collection's full-text index, using its title index when full
-/// text is unavailable. Interleave archives so an early, broad collection
-/// cannot crowd every later source out of the bounded result sample.
+/// Search titles by default, using full text only for an explicit wiki filter.
+/// Collections without a full-text index always use their title index.
+/// Interleave archives so an early, broad collection cannot crowd every later
+/// source out of the bounded result sample.
 pub async fn search(
     config: &ZimSearchConfig,
     entries: &[ZimIndexEntry],
     query: &str,
     matching: crate::solr::MatchMode,
+    full_text: bool,
 ) -> ZimSearchResult {
     let query = query.trim();
     let (Some(kiwix_search), Some(zimdump)) = (&config.kiwix_search, &config.zimdump) else {
@@ -178,6 +180,7 @@ pub async fn search(
                         &app_base,
                         &query,
                         broad.as_deref(),
+                        full_text,
                     )
                     .await,
                 )
@@ -228,10 +231,11 @@ async fn search_zim(
     app_base: &str,
     query: &str,
     broad: Option<&str>,
+    full_text: bool,
 ) -> Result<Vec<ZimHit>, String> {
     let zim = &entry.path;
     let stem = &entry.stem;
-    let has_xapian = entry.has_xapian;
+    let has_xapian = full_text && entry.has_xapian;
     let mut title_only = !has_xapian;
     let lookup = if title_only {
         query
@@ -572,7 +576,13 @@ printf 'A/Article\n'
             .collect();
         let result = timeout(
             Duration::from_secs(5),
-            search(&config, &entries, "test", crate::solr::MatchMode::Broad),
+            search(
+                &config,
+                &entries,
+                "test",
+                crate::solr::MatchMode::Broad,
+                true,
+            ),
         )
         .await
         .expect("the last archive must start while the first is still pending");
@@ -617,7 +627,14 @@ printf 'A/Article\n'
             stem: "fixture".into(),
             has_xapian: true,
         }];
-        let result = search(&config, &entries, "test", crate::solr::MatchMode::Broad).await;
+        let result = search(
+            &config,
+            &entries,
+            "test",
+            crate::solr::MatchMode::Broad,
+            true,
+        )
+        .await;
         assert!(result.hits.is_empty());
         assert_eq!(result.failed_archives, 1);
     }
@@ -680,6 +697,7 @@ printf 'A/Article\n'
             &entries,
             "quantum",
             crate::solr::MatchMode::Broad,
+            true,
         ));
         assert!(hits.hits.is_empty());
     }

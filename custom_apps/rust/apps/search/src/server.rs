@@ -296,6 +296,7 @@ impl SearchParams {
     fn filters(&self) -> crate::solr::SearchFilters {
         crate::solr::SearchFilters {
             matching: self.matching,
+            wiki_full_text: false,
             source: nonempty(self.source.as_deref()),
             kind: nonempty(self.kind.as_deref()),
             content_type: nonempty(self.content_type.as_deref()),
@@ -371,7 +372,11 @@ async fn api_search(
         }
     };
     let selected: Vec<String> = sources.into_iter().map(|source| source.id).collect();
-    let filters = params.filters();
+    let mut filters = params.filters();
+    filters.wiki_full_text = filters.kind.as_deref() == Some("zim-article")
+        || state.inner.settings.sources.iter().any(|source| {
+            source.source_type == "kiwix" && filters.source.as_deref() == Some(&source.id)
+        });
 
     let page = params.page.unwrap_or(0);
     let rows = params.page_size();
@@ -584,7 +589,16 @@ async fn federate_runtime_sources(
         .map(|source| async move {
             let operation = async {
                 match source.source_type.as_str() {
-                    "kiwix" => federate_kiwix(state, &source, query, filters.matching).await,
+                    "kiwix" => {
+                        federate_kiwix(
+                            state,
+                            &source,
+                            query,
+                            filters.matching,
+                            filters.wiki_full_text,
+                        )
+                        .await
+                    }
                     _ => federate_paperless(state, &source, query, filters.matching).await,
                 }
             };
@@ -620,6 +634,7 @@ async fn federate_kiwix(
     source: &crate::config::SourceConfig,
     query: &str,
     matching: crate::solr::MatchMode,
+    full_text: bool,
 ) -> Result<LiveResults, String> {
     let Some(library_root) = source.setting_str("libraryRoot") else {
         return Err("The archive library is not configured.".to_string());
@@ -642,7 +657,7 @@ async fn federate_kiwix(
         .as_deref()
         .map(Vec::as_slice)
         .unwrap_or_default();
-    let result = zim_search::search(&config, entries, query, matching).await;
+    let result = zim_search::search(&config, entries, query, matching, full_text).await;
     let mut warnings: Vec<_> = inventory
         .warning
         .into_iter()

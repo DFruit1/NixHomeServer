@@ -171,6 +171,8 @@ pub struct SearchResponse {
 #[derive(Debug, Clone, Default)]
 pub struct SearchFilters {
     pub matching: MatchMode,
+    /// Set by the server only when a wiki source or page filter is selected.
+    pub wiki_full_text: bool,
     pub source: Option<String>,
     pub kind: Option<String>,
     pub content_type: Option<String>,
@@ -610,6 +612,18 @@ impl SolrClient {
             ("facet.limit", "50".to_string()),
             ("wt", "json".to_string()),
         ];
+        if !filters.wiki_full_text {
+            // Extracted fallback articles must follow the same title-only
+            // scope as native archive searches. Keep other kinds unrestricted.
+            params.push((
+                "wikiTitleQuery",
+                broad
+                    .clone()
+                    .or_else(|| literal_reference_query(query))
+                    .unwrap_or_else(|| query.to_string()),
+            ));
+            params.push(("fq", r#"{!lucene}(*:* AND -kind_s:"zim-article") OR _query_:"{!edismax qf=title pf=title v=$wikiTitleQuery}""#.to_string()));
+        }
         // Explicit syntax (quotes, fields, boolean operators) keeps Solr's
         // normal semantics. Only generated broad clauses use OR by default.
         if broad.is_some() {
@@ -991,6 +1005,7 @@ mod tests {
         );
 
         let filtered = SearchFilters {
+            wiki_full_text: false,
             matching: MatchMode::Broad,
             source: Some("mail-archive".to_string()),
             kind: Some("email".to_string()),
