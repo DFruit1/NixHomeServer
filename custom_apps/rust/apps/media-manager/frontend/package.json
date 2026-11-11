@@ -15,7 +15,8 @@
     "check": "pnpm run format:check && pnpm run typecheck && pnpm run test && pnpm run build"
   },
   "dependencies": {
-    "@builder.io/qwik": "1.16.0"
+    "@builder.io/qwik": "1.16.0",
+    "extract-colors": "4.2.1"
   },
   "devDependencies": {
     "@types/node": "24.10.3",

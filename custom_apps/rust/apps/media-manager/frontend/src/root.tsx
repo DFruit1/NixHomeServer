@@ -14,6 +14,9 @@ import type { ProviderTestResult } from "./api-contract.generated";
 import { ActivityView } from "./activity-view";
 import { ConversionsView } from "./conversions-view";
 import { Icon } from "./icon";
+import { AppNavigation } from "./app-navigation";
+import { coverColors } from "./cover-palette";
+import "./library-selection.css";
 import {
   allowMetadataDraftDiscard,
   formatBytes,
@@ -164,7 +167,6 @@ export default component$((props: RootProps) => {
   const playerOpened = useSignal(props.initialView === "player");
   const sidebarSide = useSignal<"left" | "right">("left");
   const menuOpen = useSignal(false);
-  const navigation = useSignal<HTMLElement>();
   const state = useStore<DashboardState>({
     roots: [],
     items: [],
@@ -209,26 +211,6 @@ export default component$((props: RootProps) => {
     const currentView = track(() => view.value);
     const requestedTrack = track(() => state.miniPlayerItemId);
     if (currentView === "player" || requestedTrack) playerOpened.value = true;
-  });
-
-  // Reveal the phone navigation's active destination without moving the page.
-  useVisibleTask$(({ track, cleanup }) => {
-    track(() => view.value);
-    const nav = navigation.value;
-    if (!nav) return;
-    const revealActive = () => {
-      const active = nav.querySelector<HTMLElement>('[aria-current="page"]');
-      if (active && nav.scrollWidth > nav.clientWidth) {
-        nav.scrollLeft =
-          active.offsetLeft - (nav.clientWidth - active.offsetWidth) / 2;
-      }
-    };
-    revealActive();
-    if (typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(revealActive);
-      observer.observe(nav);
-      cleanup(() => observer.disconnect());
-    }
   });
 
   const toggleSidebarSide = $(() => {
@@ -618,21 +600,7 @@ export default component$((props: RootProps) => {
           </div>
         </div>
 
-        <nav ref={navigation} aria-label="Media Manager sections">
-          {NAV_ITEMS.map((item) => (
-            <a
-              key={item.id}
-              href={`?view=${item.id}`}
-              class={{ "nav-item": true, active: view.value === item.id }}
-              aria-label={item.label}
-              aria-current={view.value === item.id ? "page" : undefined}
-              title={item.label}
-            >
-              <Icon name={item.icon} />
-              <span>{item.label}</span>
-            </a>
-          ))}
-        </nav>
+        <AppNavigation view={view.value} />
 
         <div class="sidebar-footer">
           <div style={{ position: "relative" }}>
@@ -1401,6 +1369,7 @@ const MediaImage = component$<{
   state: DashboardState;
   canEditCover?: boolean;
   onEditCover$?: QRL<() => void>;
+  onPalette$?: QRL<(imageId: string, colors: string[]) => void>;
 }>(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   (props) => {
@@ -1445,82 +1414,98 @@ const MediaImage = component$<{
       props.onEditCover$?.();
     });
     return (
-      <figure
-        class={{ "media-image": true, editable: coverEditable }}
-        role={coverEditable ? "button" : undefined}
-        tabIndex={coverEditable ? 0 : undefined}
-        aria-label={coverEditable ? "Edit cover image" : undefined}
-        onClick$={coverEditable ? props.onEditCover$ : undefined}
-        onKeyDown$={coverEditable ? editCoverKeyDown$ : undefined}
-      >
-        {props.imageId && !failed.value ? (
-          <>
-            <img
-              src={`/api/v1/items/${encodeURIComponent(props.imageId)}/image`}
-              alt={`Cover artwork for ${props.title}`}
-              loading="lazy"
-              onError$={() => (failed.value = true)}
-            />
-            {coverEditable && (
-              <span class="media-image-edit" aria-hidden="true">
-                <Icon name="image" size={16} />
-                Edit cover
-              </span>
+      <>
+        <figure
+          class={{ "media-image": true, editable: coverEditable }}
+          role={coverEditable ? "button" : undefined}
+          tabIndex={coverEditable ? 0 : undefined}
+          aria-label={coverEditable ? "Edit cover image" : undefined}
+          onClick$={coverEditable ? props.onEditCover$ : undefined}
+          onKeyDown$={coverEditable ? editCoverKeyDown$ : undefined}
+        >
+          {props.imageId && !failed.value ? (
+            <>
+              <img
+                key={props.imageId}
+                data-cover-id={props.imageId}
+                src={`/api/v1/items/${encodeURIComponent(props.imageId)}/image`}
+                alt={`Cover artwork for ${props.title}`}
+                loading="lazy"
+                onLoad$={async (_, image) => {
+                  const id = image.getAttribute("data-cover-id") ?? "";
+                  try {
+                    const colors = await coverColors(image);
+                    if (id === props.imageId)
+                      await props.onPalette$?.(id, colors);
+                  } catch {
+                    if (id === props.imageId) await props.onPalette$?.(id, []);
+                  }
+                }}
+                onError$={(_, image) => {
+                  if (image.getAttribute("data-cover-id") !== props.imageId)
+                    return;
+                  failed.value = true;
+                  props.onPalette$?.(props.imageId, []);
+                }}
+              />
+              {coverEditable && (
+                <span class="media-image-edit" aria-hidden="true">
+                  <Icon name="image" size={16} />
+                  Edit cover
+                </span>
+              )}
+            </>
+          ) : (
+            <span class="cover-thumbnail-empty">
+              <Icon name="image" size={24} />
+              <span>{props.imageId ? "No cover" : "No selection"}</span>
+            </span>
+          )}
+        </figure>
+        {props.imageId && failed.value && (
+          <details class="media-image-placeholder cover-recovery">
+            <summary>Cover options</summary>
+            {sourceInfo.loading && <p role="status">Checking image sources…</p>}
+            <dl class="image-source-list">
+              {sourceInfo.sources.map((source) => (
+                <div key={source.id}>
+                  <dt>{source.label}</dt>
+                  <dd>
+                    {(
+                      {
+                        available: "Image found",
+                        missing: "Not found",
+                        unavailable: "Could not read",
+                        unknown: "Not reported",
+                        unsupported: "Not supported",
+                      } as Record<string, string>
+                    )[source.status] ?? "Not reported"}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            {sourceInfo.error && (
+              <p role="alert">Image sources could not be checked.</p>
             )}
-          </>
-        ) : (
-          <div class="media-image-placeholder">
-            <Icon name="image" size={30} />
-            {props.imageId ? (
-              <>
-                <strong>No image to display</strong>
-                {sourceInfo.loading && (
-                  <p role="status">Checking image sources…</p>
-                )}
-                <dl class="image-source-list">
-                  {sourceInfo.sources.map((source) => (
-                    <div key={source.id}>
-                      <dt>{source.label}</dt>
-                      <dd>
-                        {(
-                          {
-                            available: "Image found",
-                            missing: "Not found",
-                            unavailable: "Could not read",
-                            unknown: "Not reported",
-                            unsupported: "Not supported",
-                          } as Record<string, string>
-                        )[source.status] ?? "Not reported"}
-                      </dd>
-                    </div>
-                  ))}
-                </dl>
-                {sourceInfo.error && (
-                  <p role="alert">Image sources could not be checked.</p>
-                )}
-                {props.item &&
-                  supportsMediaAction(
-                    props.state.status,
-                    props.item.mediaKind,
-                    "edit-artwork",
-                  ) && (
-                    <CoverArtCard
-                      item={props.item}
-                      state={props.state}
-                      compact
-                      heading="Upload image"
-                      note=""
-                      close$={() => {}}
-                      closeLabel="Close image upload"
-                    />
-                  )}
-              </>
-            ) : (
-              <span>Select a title or folder</span>
-            )}
-          </div>
+            {props.item &&
+              supportsMediaAction(
+                props.state.status,
+                props.item.mediaKind,
+                "edit-artwork",
+              ) && (
+                <CoverArtCard
+                  item={props.item}
+                  state={props.state}
+                  compact
+                  heading="Upload image"
+                  note=""
+                  close$={() => {}}
+                  closeLabel="Close image upload"
+                />
+              )}
+          </details>
         )}
-      </figure>
+      </>
     );
   },
 );
@@ -1963,6 +1948,7 @@ const LibraryDetailPane = component$<{
     revision: number;
   }>({ action: "", revision: 0 });
   const coverEditing = useSignal(false);
+  const palette = useSignal({ imageId: "", colors: [] as string[] });
   useTask$(({ track }) => {
     track(() => props.state.selectedItemId);
     track(() => props.activeFolder);
@@ -1993,12 +1979,17 @@ const LibraryDetailPane = component$<{
       selectedMediaItem?.mediaKind,
       "edit-artwork",
     );
-  const selectionContext = props.selectedItem
-    ? (props.state.roots.find((root) => root.id === props.selectedItem?.rootId)
-        ?.label ?? "Selected media")
-    : props.activeFolder
-      ? "Selected folder"
-      : "Library details";
+  const selectionRootId =
+    props.selectedItem?.rootId ?? props.activeFolderRootId;
+  const selectionContext =
+    props.state.roots.find((root) => root.id === selectionRootId)?.label ??
+    "Library details";
+  const selectionParent = (
+    props.selectedItem?.relativePath ?? props.activeFolder
+  )
+    .split("/")
+    .slice(0, -1)
+    .join("/");
   return (
     <div
       class={{
@@ -2019,6 +2010,25 @@ const LibraryDetailPane = component$<{
       )}
       <section
         class="library-selection-hero"
+        style={{
+          "--cover-first":
+            palette.value.imageId === imageId
+              ? (palette.value.colors[0] ?? "var(--card)")
+              : "var(--card)",
+          "--cover-second":
+            palette.value.imageId === imageId
+              ? (palette.value.colors[1] ??
+                palette.value.colors[0] ??
+                "var(--card)")
+              : "var(--card)",
+          "--cover-third":
+            palette.value.imageId === imageId
+              ? (palette.value.colors[2] ??
+                palette.value.colors[1] ??
+                palette.value.colors[0] ??
+                "var(--card)")
+              : "var(--card)",
+        }}
         aria-label="Selected library item"
       >
         <div class="root-picker-image">
@@ -2029,14 +2039,18 @@ const LibraryDetailPane = component$<{
             title={props.imageTitle}
             canEditCover={canEditCover}
             onEditCover$={() => (coverEditing.value = !coverEditing.value)}
+            onPalette$={(id, colors) => {
+              palette.value = { imageId: id, colors };
+            }}
           />
         </div>
         <div class="library-selection-copy">
           <span class="library-selection-context">{selectionContext}</span>
-          <h2>{props.imageTitle || "Choose a title or folder"}</h2>
-          {(props.selectedItem || props.activeFolder) && (
-            <p>{props.selectedItem?.relativePath ?? props.activeFolder}</p>
-          )}
+          <h2>
+            <Icon name={props.selectedItem ? "file" : "folder"} size={16} />
+            <span>{props.imageTitle || "Choose a title or folder"}</span>
+          </h2>
+          {selectionParent && <p>{selectionParent}</p>}
           {selectedMediaItem && (
             <ItemQuickActions
               item={selectedMediaItem}
@@ -2045,6 +2059,7 @@ const LibraryDetailPane = component$<{
             />
           )}
         </div>
+        <span class="cover-palette" aria-hidden="true" />
       </section>
       {selectedMediaItem && coverEditing.value && (
         <CoverArtCard
@@ -2059,6 +2074,7 @@ const LibraryDetailPane = component$<{
       {props.selectedItem &&
         isLibraryKind(props.state.status, props.selectedItem.mediaKind) && (
           <ItemEditor
+            showIdentity={false}
             state={props.state}
             previewRename$={props.previewRename$}
             confirmRename$={props.confirmRename$}
@@ -2079,6 +2095,7 @@ const LibraryDetailPane = component$<{
         props.activeFolder &&
         props.activeFolderRootId && (
           <ItemEditor
+            showIdentity={false}
             state={props.state}
             previewRename$={props.previewRename$}
             confirmRename$={props.confirmRename$}

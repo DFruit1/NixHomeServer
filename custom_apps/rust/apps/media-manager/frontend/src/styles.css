@@ -4914,16 +4914,14 @@ a:focus-visible {
   .sidebar nav {
     width: 100%;
     height: 60px;
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 3px;
-    overflow-x: auto;
-    overscroll-behavior-x: contain;
-    scrollbar-width: thin;
-    scrollbar-color: var(--navigation-muted) transparent;
+    overflow: visible;
   }
   .nav-item {
-    flex: 0 0 80px;
-    min-height: 54px;
+    min-width: 0;
+    min-height: 60px;
     flex-direction: column;
     justify-content: center;
     gap: 3px;
@@ -4932,7 +4930,7 @@ a:focus-visible {
   }
   .nav-item > span {
     display: block;
-    font-size: 10px;
+    font-size: 11px;
     line-height: 1.15;
     text-align: center;
     white-space: normal;
@@ -5998,6 +5996,8 @@ a:focus-visible {
   font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
   cursor: pointer;
   transition:
     background-color 120ms ease-out,
@@ -7963,101 +7963,9 @@ a:focus-visible {
 
 /* Artwork-led media surfaces. Keep the global navigation and editing behavior
    stable while giving selected media and playback a clearer visual identity. */
-.library-selection-hero {
-  position: relative;
-  flex: 0 0 auto;
-  isolation: isolate;
-  display: grid;
-  grid-template-columns: minmax(120px, 170px) minmax(0, 1fr);
-  align-items: center;
-  gap: 22px;
-  min-width: 0;
-  padding: 20px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
-  background:
-    radial-gradient(
-      circle at 100% 0,
-      rgba(255, 255, 255, 0.58),
-      transparent 45%
-    ),
-    linear-gradient(125deg, #dce3d4, #f2e7d1 68%, #e7d5bd);
-  box-shadow: 0 8px 22px rgba(33, 29, 21, 0.07);
-}
-.library-selection-hero .root-picker-image,
-.library-selection-copy {
-  min-width: 0;
-}
-.library-selection-hero .root-picker-image {
-  grid-area: auto;
-}
-.library-selection-hero .media-image img,
-.library-selection-hero .media-image-placeholder {
-  height: 220px;
-  border: 0;
-  border-radius: 10px;
-  box-shadow: 0 12px 25px rgba(33, 29, 21, 0.16);
-}
-.library-selection-hero .media-image img {
-  object-fit: cover;
-}
-.library-selection-hero .media-image-placeholder {
-  height: auto;
-  min-height: 220px;
-  padding: 14px;
-  box-shadow: none;
-}
-.library-selection-hero:has(.image-placeholder-upload) {
-  grid-template-columns: minmax(0, 1fr);
-}
-.library-selection-hero:has(.image-placeholder-upload)
-  .media-image-placeholder {
-  min-height: 260px;
-}
-.library-selection-copy {
-  display: grid;
-  justify-items: start;
-  gap: 9px;
-}
-.library-selection-context {
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  overflow-wrap: anywhere;
-}
-.library-selection-copy h2 {
-  max-width: 100%;
-  font-family: var(--font-serif);
-  font-size: clamp(22px, 2.4vw, 30px);
-  font-weight: 500;
-  line-height: 1.08;
-  letter-spacing: -0.02em;
-  overflow-wrap: anywhere;
-}
-.library-selection-copy > p {
-  max-width: 100%;
-  color: var(--ink-soft);
-  font-size: 11px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-.library-selection-copy .item-quick-actions {
-  margin-top: 5px;
-}
-.library-selection-copy .quick-action-button {
-  min-height: 40px;
-  border-radius: 9px;
-}
-.library-selection-copy .quick-action-button.play {
-  box-shadow: 0 4px 10px rgba(30, 77, 56, 0.17);
-}
 .catalog-panel {
   border-radius: var(--radius-panel);
-  box-shadow: 0 4px 16px rgba(33, 29, 21, 0.04);
+  box-shadow: none;
 }
 .item-tree {
   padding: 7px;
@@ -8101,7 +8009,7 @@ a:focus-visible {
       transparent 45%
     ),
     linear-gradient(135deg, #263d34, #455a49 58%, #63684b);
-  box-shadow: 0 14px 30px rgba(30, 45, 36, 0.18);
+  box-shadow: 0 6px 18px rgba(30, 45, 36, 0.12);
 }
 .now-playing-artwork,
 .now-playing-artwork--landscape {
@@ -8217,14 +8125,14 @@ a:focus-visible {
 .album-artwork {
   border: 0;
   border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(33, 29, 21, 0.1);
+  box-shadow: 0 1px 4px rgba(33, 29, 21, 0.08);
   transition:
     transform 160ms ease-out,
     box-shadow 160ms ease-out;
 }
 .album-button:hover .album-artwork {
-  transform: translateY(-3px);
-  box-shadow: 0 9px 18px rgba(33, 29, 21, 0.15);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 9px rgba(33, 29, 21, 0.1);
 }
 .album-artwork.album-active {
   outline: 3px solid var(--accent);
@@ -8267,7 +8175,7 @@ a:focus-visible {
 }
 .video-library {
   border-radius: var(--radius-panel);
-  box-shadow: 0 4px 16px rgba(33, 29, 21, 0.05);
+  box-shadow: none;
 }
 .video-list {
   padding: 5px;
@@ -8335,26 +8243,7 @@ a:focus-visible {
   .folder-filter-button {
     min-height: 44px;
   }
-  .library-selection-hero {
-    grid-template-columns: 108px minmax(0, 1fr);
-    gap: 15px;
-    padding: 16px;
-  }
-  .library-selection-hero .media-image img,
-  .library-selection-hero .media-image-placeholder {
-    height: 164px;
-    min-height: 164px;
-  }
-  .library-selection-copy {
-    gap: 7px;
-  }
-  .library-selection-copy h2 {
-    font-size: 22px;
-  }
-  .library-selection-copy .quick-action-button {
-    min-height: 44px;
-    padding-inline: 10px;
-  }
+
   .now-playing {
     grid-template-columns: 116px minmax(0, 1fr);
     grid-template-areas:
@@ -8396,16 +8285,6 @@ a:focus-visible {
   }
 }
 @media (max-width: 370px) {
-  .library-selection-hero {
-    grid-template-columns: 92px minmax(0, 1fr);
-    gap: 12px;
-    padding: 13px;
-  }
-  .library-selection-hero .media-image img,
-  .library-selection-hero .media-image-placeholder {
-    height: 140px;
-    min-height: 140px;
-  }
   .now-playing {
     grid-template-columns: 96px minmax(0, 1fr);
     padding: 16px;
@@ -8428,4 +8307,43 @@ a:focus-visible {
   .album-button:hover .album-artwork {
     transform: none;
   }
+}
+
+/* Empty artwork should not take the space reserved for an actual cover. */
+.now-playing.now-playing--no-art {
+  grid-template-columns: 64px minmax(0, 1fr);
+  grid-template-areas:
+    "artwork info"
+    "time time"
+    "controls controls"
+    "extras extras";
+  gap: 12px 18px;
+  padding: 20px;
+  box-shadow: none;
+}
+.now-playing--no-art .now-playing-artwork {
+  width: 64px;
+  height: 64px;
+  background: transparent;
+  border: 1px solid rgb(246 243 236 / 20%);
+  box-shadow: none;
+}
+.now-playing--no-art .now-playing-artwork > .icon {
+  width: 32px;
+  height: 32px;
+  color: var(--navigation-muted);
+}
+.now-playing--no-art .now-playing-info {
+  align-self: center;
+}
+.now-playing--no-art > .player-controls {
+  justify-content: center;
+  gap: 4px;
+}
+.library-refresh,
+.library-advanced-search {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  letter-spacing: normal;
+  text-transform: none;
 }
