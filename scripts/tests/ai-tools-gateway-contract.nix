@@ -22,13 +22,17 @@ let
     workspaceRoot = "/mnt/data/shared/ai-workspace";
     workspaceDirName = "ai-workspace";
     officeHelper = "/nix/store/fixture-office-helper";
+    searchHost = null;
+    youtubeHost = null;
+    chatHost = null;
   };
-  evaluate = enabled: preflight: (lib.evalModules {
+  evaluate = enabled: preflight: chatEnabled: (lib.evalModules {
     specialArgs = { inherit pkgs vars; };
     modules = [
       ../../modules/Core_Modules/auth-gateway
       ../../modules/ai-tools/networking.nix
       ../../modules/ai-tools/services.nix
+      ../../modules/Integrations/serve_ai_tools_through_bonsai.nix
       ({ lib, ... }: {
         options = lib.genAttrs [ "services" "systemd" ] (_: lib.mkOption {
           type = lib.types.attrsOf lib.types.anything;
@@ -38,6 +42,12 @@ let
           nixhomeserver = lib.mkOption { type = lib.types.anything; default.modules = { }; };
           repo = {
             aiTools = lib.mapAttrs (_: value: lib.mkOption { type = lib.types.anything; default = value; }) appDefaults;
+            bonsai = lib.mapAttrs (_: value: lib.mkOption { type = lib.types.anything; default = value; }) {
+              enable = chatEnabled;
+              listenAddress = "127.0.0.1";
+              port = 8094;
+              extraArgs = [ ];
+            };
             monitoring = lib.mkOption { type = lib.types.anything; default.failureAlerts.targetUnit = "failure-alert.target"; };
             backups = lib.mkOption { type = lib.types.anything; default.snapshotRoots = [ "/persist" ]; };
           };
@@ -45,17 +55,25 @@ let
         config.repo.aiTools.enable = enabled;
         config.repo.authGateway.protectedApps = lib.optionalAttrs enabled {
           aiTools.skipAuthPreflight = preflight;
+        } // lib.optionalAttrs chatEnabled {
+          bonsai = {
+            host = "ai.example.test";
+            upstream = "http://127.0.0.1:8094";
+            allowedGroups = [ "ai-users" ];
+          };
         };
       })
     ];
   }).config;
-  cfg = evaluate true false;
-  disabled = evaluate false false;
-  unsafe = evaluate true true;
+  cfg = evaluate true false true;
+  disabled = evaluate false false true;
+  unsafe = evaluate true true true;
+  noChat = evaluate true false false;
   app = cfg.repo.authGateway.protectedApps.aiTools;
   route = cfg.services.caddy.virtualHosts."tools.example.test".extraConfig;
   direct = "reverse_proxy unix//run/ai-tools-gateway.sock";
   split = lib.splitString direct route;
+  chatRoute = cfg.services.caddy.virtualHosts."ai.example.test".extraConfig;
 in
 assert lib.all (check: check.assertion) cfg.assertions;
 assert !(lib.all (check: check.assertion) unsafe.assertions);
@@ -79,10 +97,23 @@ assert cfg.systemd.services.ai-tools.environment.AI_TOOLS_GATEWAY_SOCKET == "/ru
 assert !(disabled.systemd.sockets or { } ? ai-tools-gateway);
 assert !(disabled.systemd.services ? ai-tools);
 assert !(disabled.repo.authGateway.protectedApps ? aiTools);
+assert cfg.repo.aiTools.chatHost == "ai.example.test";
+assert cfg.repo.authGateway.protectedApps.bonsai.allowedGroups == [ "ai-users" ];
+assert lib.length (lib.splitString direct chatRoute) == 4;
+assert lib.hasInfix "@chat_mcp path /mcp /mcp/*" chatRoute;
+assert lib.hasInfix "@denied_bonsai not header_regexp X-Auth-Request-Groups" chatRoute;
+assert lib.hasInfix "reverse_proxy http://127.0.0.1:8094" chatRoute;
+assert lib.elem "--ui-config-file" cfg.repo.bonsai.extraArgs;
+assert disabled.repo.aiTools.chatHost == null;
+assert !(lib.hasInfix "/mcp" disabled.services.caddy.virtualHosts."ai.example.test".extraConfig);
+assert noChat.repo.aiTools.chatHost == null;
+assert !(noChat.repo.authGateway.protectedApps ? bonsai);
 {
   authenticatedBranches = lib.length split - 1;
   protectedSocket = true;
   spoofableInternalRouterExcluded = true;
   preflightBypassRejected = true;
   disabledSocketAbsent = true;
+  sameOriginChatRoute = true;
+  disabledChatRouteAbsent = true;
 }

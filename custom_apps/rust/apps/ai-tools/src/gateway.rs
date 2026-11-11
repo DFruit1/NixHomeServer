@@ -104,7 +104,11 @@ impl ServerHandler for GatewayServer {
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         AuthenticatedCaller::require(&context)?;
-        self.0.list_tools(request, context).await
+        let mut result = self.0.list_tools(request, context).await?;
+        result
+            .tools
+            .extend(super::app_tools::tools(&self.0.config.apps));
+        Ok(result)
     }
 
     async fn call_tool(
@@ -113,19 +117,38 @@ impl ServerHandler for GatewayServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         AuthenticatedCaller::require(&context)?;
+        if let Some(result) = super::app_tools::call(&self.0, &request, &context).await {
+            return result;
+        }
         self.0.call_tool(request, context).await
     }
 }
 
 pub(super) fn router(server: super::Server, public_host: &str) -> Router {
-    authenticated_router(GatewayServer(server), public_host)
+    let chat_host = server.config.apps.chat_host.clone();
+    authenticated_router_with_chat_host(GatewayServer(server), public_host, chat_host.as_deref())
 }
 
+#[cfg(test)]
 fn authenticated_router<S: ServerHandler + Clone>(server: S, public_host: &str) -> Router {
+    authenticated_router_with_chat_host(server, public_host, None)
+}
+
+fn authenticated_router_with_chat_host<S: ServerHandler + Clone>(
+    server: S,
+    public_host: &str,
+    chat_host: Option<&str>,
+) -> Router {
     let mut config = super::streamable_http_config(Some(public_host));
     // rmcp's portless Origin entries also admit non-default ports. The
     // authenticated browser origin is exactly this host over HTTPS on 443.
     config.allowed_origins = vec![format!("https://{public_host}:443")];
+    if let Some(chat_host) = chat_host {
+        config.allowed_hosts.push(chat_host.to_string());
+        config
+            .allowed_origins
+            .push(format!("https://{chat_host}:443"));
+    }
     config.legacy_session_mode = false;
     let mcp = StreamableHttpService::new(
         move || Ok(server.clone()),

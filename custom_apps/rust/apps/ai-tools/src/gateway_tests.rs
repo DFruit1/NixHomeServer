@@ -12,6 +12,122 @@ use tower::ServiceExt;
 const HOST: &str = "tools.example.test";
 const LIST: &str = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
 
+fn app_server() -> crate::Server {
+    let mut server = crate::tests::test_server();
+    Arc::make_mut(&mut server.config).apps = crate::app_tools::Config {
+        search_host: Some("search.example.test".into()),
+        youtube_host: Some("ytdownload.example.test".into()),
+        chat_host: Some("ai.example.test".into()),
+    };
+    server
+}
+
+#[tokio::test]
+async fn private_tools_require_gateway_and_current_cookie_even_when_configured() {
+    let app = router(app_server(), HOST);
+    let mut list = request(Method::POST, LIST, Some("alice"));
+    *list.uri_mut() = "/mcp".parse().unwrap();
+    list.headers_mut()
+        .insert("host", "ai.example.test".parse().unwrap());
+    list.headers_mut()
+        .insert("origin", "https://ai.example.test".parse().unwrap());
+    let response = app.clone().oneshot(list).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
+    assert_eq!(body["result"]["tools"].as_array().unwrap().len(), 7);
+    let mut wrong_port = request(Method::POST, LIST, Some("alice"));
+    wrong_port
+        .headers_mut()
+        .insert("origin", "https://ai.example.test:444".parse().unwrap());
+    assert_eq!(
+        app.clone().oneshot(wrong_port).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let mut config = crate::streamable_http_config(Some(HOST));
+    config.legacy_session_mode = false;
+    let core = Router::new().fallback_service(StreamableHttpService::new(
+        || Ok(app_server()),
+        Arc::new(NeverSessionManager::default()),
+        config,
+    ));
+    let response = core
+        .clone()
+        .oneshot(request(Method::POST, LIST, Some("forged")))
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
+    assert_eq!(body["result"]["tools"].as_array().unwrap().len(), 1);
+    for name in [
+        "document_search",
+        "email_search",
+        "youtube_search",
+        "youtube_info",
+        "youtube_download",
+        "youtube_job",
+    ] {
+        let body = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":name,"arguments":{"query":"test","username":"forged","cookie":"forged"}}}).to_string();
+        let response = app
+            .clone()
+            .oneshot(request(Method::POST, &body, Some("alice")))
+            .await
+            .unwrap();
+        let value: Value =
+            serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
+        assert_eq!(
+            value["error"]["message"],
+            crate::app_tools::session_required().message.as_ref()
+        );
+        let mut forged = request(Method::POST, &body, Some("alice"));
+        forged.headers_mut().insert(
+            "cookie",
+            "__Secure-nixhomeserver_sso=forged".parse().unwrap(),
+        );
+        let response = core.clone().oneshot(forged).await.unwrap();
+        let value: Value =
+            serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
+        assert_eq!(value["error"]["code"], -32602);
+        assert!(value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("unknown tool:"));
+    }
+}
+
+#[tokio::test]
+async fn authenticated_video_search_uses_only_canonical_single_video_results() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let mock = Router::new().route("/search", axum::routing::get(|| async {
+        axum::Json(json!({"results":[
+            {"title":"Tutorial", "url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL1", "content":"Video description"},
+            {"title":"Same video", "url":"https://youtu.be/dQw4w9WgXcQ"},
+            {"title":"Other host", "url":"https://evil.test/watch?v=dQw4w9WgXcQ"},
+            {"title":"Playlist", "url":"https://www.youtube.com/playlist?list=PL1"}
+        ]}))
+    }));
+    let task = tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+    let mut server = app_server();
+    Arc::make_mut(&mut server.config).searxng_base = format!("http://{address}");
+    let app = router(server, HOST);
+    let body = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"youtube_search","arguments":{"query":"repair tutorial"}}}).to_string();
+    let mut req = request(Method::POST, &body, Some("alice"));
+    req.headers_mut().insert(
+        "cookie",
+        "__Secure-nixhomeserver_sso=alice".parse().unwrap(),
+    );
+    let response = app.oneshot(req).await.unwrap();
+    let value: Value = serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
+    let result: Value =
+        serde_json::from_str(value["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(result["returned"], 1);
+    assert_eq!(
+        result["results"][0]["url"],
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    );
+    task.abort();
+}
+
 fn request(method: Method, body: &str, user: Option<&str>) -> HttpRequest<Body> {
     let mut request = HttpRequest::builder()
         .method(method)

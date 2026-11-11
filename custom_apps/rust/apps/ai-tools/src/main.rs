@@ -5,7 +5,10 @@
 //! with their own tool choices. This process speaks MCP over Streamable HTTP on
 //! loopback and is published through the shared authentication gateway.
 //!
-//! Only `web_search` is served. The four office document tools
+//! The identity-free loopback and stdio surfaces serve only `web_search`.
+//! Optional app tools are confined to the authenticated gateway socket and
+//! re-authorize each API request through the target app's gateway with the
+//! current user's SSO session. The four office document tools
 //! (`convert_document`, `spreadsheet_read`, `spreadsheet_write` and
 //! `word_document`) are suspended for every caller as an interim containment
 //! measure: their document access was authorized by this service's static ACLs
@@ -32,6 +35,7 @@ use rmcp::{
     },
     ErrorData, RoleServer, ServerHandler,
 };
+mod app_tools;
 mod bridge;
 mod gateway;
 mod gateway_socket;
@@ -68,6 +72,7 @@ struct Config {
     #[allow(dead_code)]
     helper: office_write::Helper,
     public_host: Option<String>,
+    apps: app_tools::Config,
 }
 
 #[derive(Debug, Deserialize)]
@@ -457,6 +462,7 @@ fn parse_env() -> Result<Config, String> {
         workspace_root,
         helper,
         public_host: parse_public_host(env::var("AI_TOOLS_PUBLIC_HOST").ok())?,
+        apps: app_tools::Config::from_env()?,
     })
 }
 
@@ -617,6 +623,7 @@ mod tests {
             helper: crate::office_write::Helper::new("/nix/store/fake-helper/bin/helper")
                 .expect("helper"),
             public_host: None,
+            apps: app_tools::Config::default(),
         }
     }
 

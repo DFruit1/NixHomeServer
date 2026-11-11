@@ -21,6 +21,22 @@ in
       };
     };
 
+    searchHost = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Authenticated Search hostname, supplied by the optional Search integration.";
+    };
+    youtubeHost = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Authenticated downloader hostname, supplied by its optional integration.";
+    };
+    chatHost = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Existing chat hostname allowed to call the gateway socket through its same-origin /mcp route.";
+    };
+
     searxngUrl = lib.mkOption {
       type = lib.types.str;
       default = "http://${vars.networking.loopbackIPv4}:${toString (vars.networking.ports.searxng or 8098)}";
