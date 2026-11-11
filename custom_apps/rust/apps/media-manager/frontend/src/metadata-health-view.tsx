@@ -23,6 +23,7 @@ import { metadataFieldLabel } from "./item-editor-helpers";
 import { revealWhenMounted } from "./reveal";
 import { Icon } from "./icon";
 import { HealthPlayback, HealthPlayButton } from "./health-playback";
+import { HealthTrackSequence } from "./health-track-sequence";
 import {
   healthIssueKey,
   saveHealthDecision,
@@ -623,9 +624,7 @@ const ExternalProvidersDialog = component$<{
                     </div>
                     {notSetUp && (
                       <p class="health-source-setup">
-                        <a href="?view=accounts">
-                          Set up {provider.name}
-                        </a>
+                        <a href="?view=accounts">Set up {provider.name}</a>
                       </p>
                     )}
                   </li>
@@ -1200,80 +1199,92 @@ const HealthArtwork = component$<{ itemId: string }>((props) => {
   );
 });
 
-const HealthResult = component$<{ group: HealthGroup }>((props) => {
-  const issuesElement = useSignal<HTMLElement>();
-  const bannerElement = useSignal<HTMLElement>();
-  const sticky = useSignal(false);
-  const bannerHeight = useSignal(0);
-  useVisibleTask$(({ cleanup }) => {
-    const issues = issuesElement.value;
-    const banner = bannerElement.value;
-    if (!issues || !banner || typeof ResizeObserver === "undefined") return;
-    const measure = () => {
-      // Measure only the queries, excluding the banner. Sticky positioning
-      // keeps the same flow height, so it cannot change its own threshold.
-      sticky.value = issues.getBoundingClientRect().height > window.innerHeight;
-      bannerHeight.value = sticky.value
-        ? banner.getBoundingClientRect().height
-        : 0;
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(issues);
-    observer.observe(banner);
-    window.addEventListener("resize", measure);
-    cleanup(() => {
-      observer.disconnect();
-      window.removeEventListener("resize", measure);
+const HealthResult = component$<{ group: HealthGroup; canEdit: boolean }>(
+  (props) => {
+    const issuesElement = useSignal<HTMLElement>();
+    const bannerElement = useSignal<HTMLElement>();
+    const sticky = useSignal(false);
+    const bannerHeight = useSignal(0);
+    useVisibleTask$(({ cleanup }) => {
+      const issues = issuesElement.value;
+      const banner = bannerElement.value;
+      if (!issues || !banner || typeof ResizeObserver === "undefined") return;
+      const measure = () => {
+        // Measure only the queries, excluding the banner. Sticky positioning
+        // keeps the same flow height, so it cannot change its own threshold.
+        sticky.value =
+          issues.getBoundingClientRect().height > window.innerHeight;
+        bannerHeight.value = sticky.value
+          ? banner.getBoundingClientRect().height
+          : 0;
+      };
+      measure();
+      const observer = new ResizeObserver(measure);
+      observer.observe(issues);
+      observer.observe(banner);
+      window.addEventListener("resize", measure);
+      cleanup(() => {
+        observer.disconnect();
+        window.removeEventListener("resize", measure);
+      });
     });
-  });
-  const first = props.group.results[0];
-  const heading = groupHeading(props.group);
-  const kind = KIND_SYMBOLS[first.mediaKind] ?? {
-    icon: "file" as IconName,
-    label: first.mediaKind,
-  };
-  return (
-    <article
-      class="health-result"
-      style={{ "--health-banner-height": `${bannerHeight.value}px` }}
-    >
-      <header
-        ref={bannerElement}
-        class={{ "health-result-banner": true, "is-sticky": sticky.value }}
+    const first = props.group.results[0];
+    const heading = groupHeading(props.group);
+    const kind = KIND_SYMBOLS[first.mediaKind] ?? {
+      icon: "file" as IconName,
+      label: first.mediaKind,
+    };
+    return (
+      <article
+        class="health-result"
+        style={{ "--health-banner-height": `${bannerHeight.value}px` }}
       >
-        <HealthArtwork itemId={first.itemId} />
-        <div class="health-result-heading">
-          <h3 class={{ "health-result-title-file": heading.fromFilename }}>
-            {heading.text}
-          </h3>
-          <span
-            class="health-result-kind"
-            role="img"
-            aria-label={kind.label}
-            title={kind.label}
-          >
-            <Icon name={kind.icon} size={18} />
-          </span>
-        </div>
-        <div class="health-banner-actions">
-          <HealthPlayButton target={first} />
-          {props.group.results.length === 1 && (
-            <a
-              class="health-review-link"
-              href={`?view=library&root=${encodeURIComponent(props.group.rootId)}&item=${encodeURIComponent(first.itemId)}`}
+        <header
+          ref={bannerElement}
+          class={{ "health-result-banner": true, "is-sticky": sticky.value }}
+        >
+          <HealthArtwork itemId={first.itemId} />
+          <div class="health-result-heading">
+            <h3 class={{ "health-result-title-file": heading.fromFilename }}>
+              {heading.text}
+            </h3>
+            <span
+              class="health-result-kind"
+              role="img"
+              aria-label={kind.label}
+              title={kind.label}
             >
-              Review metadata
-            </a>
-          )}
+              <Icon name={kind.icon} size={18} />
+            </span>
+          </div>
+          <div class="health-banner-actions">
+            <HealthPlayButton target={first} />
+            {props.group.results.length === 1 && (
+              <a
+                class="health-review-link"
+                href={`?view=library&root=${encodeURIComponent(props.group.rootId)}&item=${encodeURIComponent(first.itemId)}`}
+              >
+                Review metadata
+              </a>
+            )}
+          </div>
+        </header>
+        <div class="health-result-issues" ref={issuesElement}>
+          {props.group.results.some((result) =>
+            result.health.some((issue) =>
+              [
+                "track-sequence-gap-or-duplicate",
+                "track-order-mismatch",
+                "missing-track-numbers",
+              ].includes(issue.code),
+            ),
+          ) && <HealthTrackSequence target={first} canEdit={props.canEdit} />}
+          <Slot />
         </div>
-      </header>
-      <div class="health-result-issues" ref={issuesElement}>
-        <Slot />
-      </div>
-    </article>
-  );
-});
+      </article>
+    );
+  },
+);
 
 interface MetadataHealthProps {
   roots: HealthRoot[];
@@ -1589,7 +1600,11 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
 
       <div class="health-results">
         {groupResults(inbox.results).map((group) => (
-          <HealthResult group={group} key={group.key}>
+          <HealthResult
+            group={group}
+            canEdit={Boolean(props.canEdit)}
+            key={group.key}
+          >
             {groupIssues(group.results).map((grouped) => (
               <HealthIssueReview
                 key={`${group.key}-${grouped.key}`}

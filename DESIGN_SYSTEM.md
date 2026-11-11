@@ -150,3 +150,11 @@ its separate skip control removes only that upcoming candidate. The same queue
 preview drives Next and natural track completion, preserving shuffle/repeat/stop.
 Library Refresh is a normal right-aligned footer action beside Advanced search,
 sharing its typography. Activity remains addressable but is hidden from navigation.
+
+Media health track-sequence warnings offer an inline “Renumber tracks…” editor.
+It defaults to effective playback order, offers filename/playlist order and
+keyboard-accessible up/down controls, and previews continuous zero-padded filename
+numbers from 01 before explicit confirmation. Exact server filename previews and
+errors scroll into view below the album banner. Renames use existing guarded
+plans and Activity; embedded tags and playlists remain unchanged and are stated
+in the editor. Filename collisions stop preparation without overwriting files.
