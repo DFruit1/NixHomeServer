@@ -6,8 +6,8 @@
 # critical task still active near the deadline postpones shutdown into a grace
 # window (default 60 minutes). While work is still active when a grace window
 # ends, the watcher extends the shutdown by a whole extension block (default 10
-# minutes), up to MAX_GRACE_MIN of total grace, instead of cutting the work
-# short. Shutdown happens once critical work has been quiet for the activity
+# minutes), without a forced cutoff. The OS shutdown is requested only once
+# critical work has been quiet for the activity
 # window. `extend` pushes a pending shutdown later by a block so an operator or
 # agent can protect work the watcher cannot see. `status` prints
 # machine-readable state for the desktop orchestrator, and `cancel` aborts both
@@ -21,7 +21,6 @@
 
 set -euo pipefail
 
-PROGRAM="nixhomeserver-shutdown-guard"
 STATE_DIR="${SHUTDOWN_GUARD_STATE_DIR:-/run/nixhomeserver-shutdown-guard}"
 STATUS_FILE="$STATE_DIR/status"
 ACTIVITY_FILE="$STATE_DIR/desktop-activity"
@@ -41,17 +40,14 @@ ACTIVITY_WINDOW_SEC=300
 # is briefly between subprocesses does not look idle.
 DESKTOP_ACTIVITY_TTL_SEC="${SHUTDOWN_GUARD_DESKTOP_TTL_SEC:-$ACTIVITY_WINDOW_SEC}"
 EXTENSION_BLOCK_MIN="$DEFAULT_EXTEND_MIN"
-# Automatic block extension stops at this much total grace past the deadline.
-# An explicit `extend` is not bounded by it.
-MAX_GRACE_MIN="${SHUTDOWN_GUARD_MAX_GRACE_MIN:-360}"
 # Treat the system as busy when the 1-minute load average exceeds this multiple
 # of the CPU count. Catches compile/backup/agent work that is not named in the
 # configured process lists. Set to 0 to disable.
 SHUTDOWN_GUARD_LOAD_FACTOR="${SHUTDOWN_GUARD_LOAD_FACTOR:-1.0}"
 # Treat the system as busy when more than this many processes are in the
-# runnable (R) state. Catches unnamed active CPU work such as compiles.
+# runnable (R) state. Catches unnamed active CPU work such as compiles. Zero disables it.
 SHUTDOWN_GUARD_RUNNABLE_THRESHOLD="${SHUTDOWN_GUARD_RUNNABLE_THRESHOLD:-2}"
-# Treat any terminal with input/output within this many seconds as active work.
+# Treat any terminal with input/output within this many seconds as active work; zero disables it.
 SHUTDOWN_GUARD_TTY_ACTIVITY_SEC="${SHUTDOWN_GUARD_TTY_ACTIVITY_SEC:-$ACTIVITY_WINDOW_SEC}"
 
 CRITICAL_UNITS=()
@@ -151,32 +147,35 @@ write_status() {
   mv -f "$tmp" "$STATUS_FILE"
 }
 
-# Cancel any queued shutdown and reschedule it to fire at the given epoch
-# second, rounding up to whole minutes.
-schedule_shutdown_at() {
-  local target="$1" message="$2" minutes
-  minutes=$(( (target - $(now_epoch) + 59) / 60 ))
-  (( minutes < 1 )) && minutes=1
-  shutdown -c >/dev/null 2>&1 || true
-  shutdown -h "+$minutes" "$message"
-}
-
 watcher_active() {
   systemctl is-active --quiet "$WATCH_UNIT.service" 2>/dev/null
+}
+
+watcher_uses_idle_only_protocol() {
+  systemctl show --property=Environment --value "$WATCH_UNIT.service" 2>/dev/null |
+    tr ' ' '\n' | grep -Fxq 'SHUTDOWN_GUARD_PROTOCOL=idle-only-v1'
+}
+
+monotonic_seconds() {
+  local uptime_seconds
+  read -r uptime_seconds _ <"${SHUTDOWN_GUARD_UPTIME_FILE:-/proc/uptime}"
+  printf '%s\n' "${uptime_seconds%%.*}"
 }
 
 launch_watcher() {
   local deadline="$1" grace_deadline="$2" poll="$3" self
   command -v systemd-run >/dev/null 2>&1 || die "systemd-run command not found"
-  self="$(command -v "$PROGRAM" || true)"
+  # During activation PATH may still resolve the previous system generation.
+  self="$(readlink -f -- "${BASH_SOURCE[0]}")"
   [[ -n "$self" ]] || die "cannot resolve the guard executable path"
   systemctl stop "$WATCH_UNIT.service" >/dev/null 2>&1 || true
+  shutdown -c >/dev/null 2>&1 || true
   if ! systemd-run --unit="$WATCH_UNIT" --collect --quiet \
     --description="Guarded server shutdown watcher" \
     --setenv="SHUTDOWN_GUARD_STATE_DIR=$STATE_DIR" \
     --setenv="SHUTDOWN_GUARD_CONF=$CONF_FILE" \
+    --setenv="SHUTDOWN_GUARD_PROTOCOL=idle-only-v1" \
     --setenv="SHUTDOWN_GUARD_EXTENSION_BLOCK_MIN=$EXTENSION_BLOCK_MIN" \
-    --setenv="SHUTDOWN_GUARD_MAX_GRACE_MIN=$MAX_GRACE_MIN" \
     --setenv="SHUTDOWN_GUARD_DESKTOP_TTL_SEC=$DESKTOP_ACTIVITY_TTL_SEC" \
     --setenv="SHUTDOWN_GUARD_LOAD_FACTOR=$SHUTDOWN_GUARD_LOAD_FACTOR" \
     --setenv="SHUTDOWN_GUARD_RUNNABLE_THRESHOLD=$SHUTDOWN_GUARD_RUNNABLE_THRESHOLD" \
@@ -246,26 +245,30 @@ critical_task() {
     fi
   fi
   # Runnable-process signal: catches unnamed active CPU work (compiles, tests).
-  runnable=0
-  for st in /proc/[0-9]*/stat; do
-    [[ -r "$st" ]] || continue
-    state="$(awk '{print $3}' "$st" 2>/dev/null)"
-    [[ "$state" == "R" ]] && runnable=$((runnable + 1))
-  done
-  if (( runnable > SHUTDOWN_GUARD_RUNNABLE_THRESHOLD )); then
-    printf 'runnable:high\n'
-    return 1
-  fi
-  # Terminal-activity signal: catches interactive/agent work on the host.
-  now="$(now_epoch)"
-  for tty in /dev/pts/[0-9]*; do
-    [[ -e "$tty" ]] || continue
-    mtime="$(stat -c %Y "$tty" 2>/dev/null || echo 0)"
-    if (( now - mtime <= SHUTDOWN_GUARD_TTY_ACTIVITY_SEC )); then
-      printf 'tty:active\n'
+  if (( SHUTDOWN_GUARD_RUNNABLE_THRESHOLD > 0 )); then
+    runnable=0
+    for st in /proc/[0-9]*/stat; do
+      [[ -r "$st" ]] || continue
+      state="$(awk '{print $3}' "$st" 2>/dev/null)"
+      [[ "$state" == "R" ]] && runnable=$((runnable + 1))
+    done
+    if (( runnable > SHUTDOWN_GUARD_RUNNABLE_THRESHOLD )); then
+      printf 'runnable:high\n'
       return 1
     fi
-  done
+  fi
+  # Terminal-activity signal: catches interactive/agent work on the host.
+  if (( SHUTDOWN_GUARD_TTY_ACTIVITY_SEC > 0 )); then
+    now="$(now_epoch)"
+    for tty in /dev/pts/[0-9]*; do
+      [[ -e "$tty" ]] || continue
+      mtime="$(stat -c %Y "$tty" 2>/dev/null || echo 0)"
+      if (( now - mtime <= SHUTDOWN_GUARD_TTY_ACTIVITY_SEC )); then
+        printf 'tty:active\n'
+        return 1
+      fi
+    done
+  fi
   return 0
 }
 
@@ -337,8 +340,8 @@ cmd_start() {
   grace_deadline=$(( deadline + grace * 60 ))
 
   if [[ "$dry_run" == true ]]; then
-    printf 'dry-run: timeout=%sm grace=%sm poll=%ss extend=%sm max_grace=%sm deadline=%s grace_deadline=%s\n' \
-      "$timeout" "$grace" "$poll" "$EXTENSION_BLOCK_MIN" "$MAX_GRACE_MIN" "$deadline" "$grace_deadline"
+    printf 'dry-run: timeout=%sm grace=%sm poll=%ss extend=%sm deadline=%s grace_deadline=%s shutdown=idle-only\n' \
+      "$timeout" "$grace" "$poll" "$EXTENSION_BLOCK_MIN" "$deadline" "$grace_deadline"
     return 0
   fi
 
@@ -353,7 +356,8 @@ cmd_start() {
   write_int_file "$GRACE_DEADLINE_FILE" "$grace_deadline"
   write_int_file "$GRACE_SECONDS_FILE" "$(( grace * 60 ))"
 
-  schedule_shutdown_at "$deadline" "Server shutdown scheduled by ${PROGRAM} in ${timeout} minutes"
+  # Only the watcher may request poweroff, after its final idle check. A raw
+  # OS deadline would outlive a crashed watcher and could cut active work short.
   if ! launch_watcher "$deadline" "$grace_deadline" "$poll"; then
     shutdown -c >/dev/null 2>&1 || true
     rm -f "$ACTIVITY_FILE" "$DEADLINE_FILE" "$GRACE_DEADLINE_FILE" "$GRACE_SECONDS_FILE"
@@ -416,12 +420,10 @@ cmd_extend() {
 
   write_int_file "$DEADLINE_FILE" "$new_deadline"
   write_int_file "$GRACE_DEADLINE_FILE" "$new_grace"
-  # A shorter extension can leave the window unchanged. Preserve any grace
-  # shutdown the live watcher has already armed for that same window.
-  if (( new_deadline != old_deadline || new_grace != old_grace )) || ! watcher_active; then
-    schedule_shutdown_at "$new_deadline" "Guarded server shutdown extended by ${PROGRAM}"
-  fi
-  if ! watcher_active; then
+  # Retire any timer queued by an older helper; deadlines are now logical
+  # watcher state, never an unconditional OS poweroff countdown.
+  shutdown -c >/dev/null 2>&1 || true
+  if ! watcher_active || ! watcher_uses_idle_only_protocol; then
     if ! launch_watcher "$new_deadline" "$new_grace" "$DEFAULT_POLL_SEC"; then
       die "failed to launch shutdown watcher"
     fi
@@ -446,7 +448,7 @@ cmd_watch() {
   local deadline=""
   local grace_deadline=""
   local poll="$DEFAULT_POLL_SEC"
-  local remaining task busy_now last_busy=0 grace_scheduled_for="" quiet_until sleep_for guard_lock_fd
+  local remaining task busy_now quiet_since="" quiet_until sleep_for guard_lock_fd
 
   while (($# > 0)); do
     case "$1" in
@@ -479,12 +481,13 @@ cmd_watch() {
   mkdir -p "$STATE_DIR"
   exec {guard_lock_fd}>"$STATE_DIR/schedule.lock"
   flock "$guard_lock_fd"
+  shutdown -c >/dev/null 2>&1 || true
   write_status scheduled "shutdown scheduled; waiting for the timeout to expire"
   flock -u "$guard_lock_fd"
   while :; do
     flock "$guard_lock_fd"
-    # Re-read the deadlines every pass so `extend` and automatic block
-    # extensions take effect without restarting the watcher.
+    # Re-read the deadlines every pass so extensions take effect without
+    # restarting a watcher already using the idle-only protocol.
     deadline="$(read_int_file "$DEADLINE_FILE" "$deadline")"
     grace_deadline="$(read_int_file "$GRACE_DEADLINE_FILE" "$grace_deadline")"
     [[ "$deadline" =~ ^[0-9]+$ ]] || die "watch deadline is not an epoch second: $deadline"
@@ -492,29 +495,15 @@ cmd_watch() {
 
     if task="$(critical_task)"; then
       busy_now=false
+      if [[ -z "$quiet_since" ]]; then quiet_since="$(monotonic_seconds)"; fi
     else
       busy_now=true
-      last_busy="$(now_epoch)"
+      quiet_since=""
     fi
 
     remaining=$(( deadline - $(now_epoch) ))
 
     if (( remaining > 0 )); then
-      # Before the deadline, active or recently stopped work in the final
-      # activity window postpones shutdown until the quiet window can finish.
-      if (( remaining <= ACTIVITY_WINDOW_SEC )) &&
-         { [[ "$busy_now" == true ]] ||
-           (( last_busy > 0 && $(now_epoch) < last_busy + ACTIVITY_WINDOW_SEC )); }; then
-        if [[ "$grace_scheduled_for" != "$deadline:$grace_deadline" ]] && (( grace_deadline > deadline )); then
-          # Replace the original shutdown as soon as work is observed. Waiting
-          # until the deadline would race the already queued system shutdown.
-          schedule_shutdown_at "$grace_deadline" "Guarded server shutdown grace period"
-          # An explicit extension replaces the queued shutdown. Track the
-          # window we actually armed so its replacement gets fresh protection.
-          grace_scheduled_for="$deadline:$grace_deadline"
-          write_status waiting "recent critical task ${task}; grace scheduled"
-        fi
-      fi
       sleep_for="$poll"
       (( sleep_for > remaining )) && sleep_for="$remaining"
       (( sleep_for < 1 )) && sleep_for=1
@@ -524,41 +513,25 @@ cmd_watch() {
     fi
 
     # At or past the deadline.
-    if (( last_busy == 0 )); then
-      write_status shutting-down "no critical tasks; shutting down"
-      shutdown -h now "Guarded server shutdown: no critical tasks"
-      return 0
-    fi
-
     if [[ "$busy_now" == false ]]; then
-      quiet_until=$(( last_busy + ACTIVITY_WINDOW_SEC ))
-      if (( $(now_epoch) >= quiet_until )); then
+      # Start at the first idle observation, not the previous busy sample.
+      # Monotonic time prevents a wall-clock adjustment shortening this wait.
+      quiet_until=$(( quiet_since + ACTIVITY_WINDOW_SEC ))
+      if (( $(monotonic_seconds) >= quiet_until )); then
         write_status shutting-down "critical tasks quiet for five minutes; shutting down"
         shutdown -h now "Guarded server shutdown: critical tasks quiet"
         return 0
       fi
     fi
 
-    if [[ "$grace_scheduled_for" != "$deadline:$grace_deadline" ]]; then
-      schedule_shutdown_at "$grace_deadline" "Guarded server shutdown grace period"
-      grace_scheduled_for="$deadline:$grace_deadline"
-    fi
-
     if (( $(now_epoch) >= grace_deadline )); then
-      # Work is still active at the end of a grace window. Extend by a whole
-      # block rather than cutting the work short, up to the total grace cap.
-      if [[ "$busy_now" == true ]] && (( grace_deadline - deadline < MAX_GRACE_MIN * 60 )); then
-        grace_deadline=$(( grace_deadline + EXTENSION_BLOCK_MIN * 60 ))
-        write_int_file "$GRACE_DEADLINE_FILE" "$grace_deadline"
-        schedule_shutdown_at "$grace_deadline" "Guarded server shutdown extended"
-        grace_scheduled_for="$deadline:$grace_deadline"
-        write_status waiting "critical task ${task} still active; grace extended by ${EXTENSION_BLOCK_MIN} minutes"
-      else
-        write_status shutting-down "grace expired; shutting down"
-        shutdown -h now "Guarded server shutdown: grace expired"
-        return 0
-      fi
-    elif [[ "$busy_now" == true ]]; then
+      # A grace window is a status/extension interval, never permission to
+      # interrupt active work or the remaining quiet window. Also handle a
+      # suspended watcher or forward clock jump without replaying old windows.
+      grace_deadline=$(( $(now_epoch) + EXTENSION_BLOCK_MIN * 60 ))
+      write_int_file "$GRACE_DEADLINE_FILE" "$grace_deadline"
+    fi
+    if [[ "$busy_now" == true ]]; then
       write_status waiting "waiting for ${task} to finish"
     else
       write_status waiting "recent critical work; waiting for five quiet minutes"

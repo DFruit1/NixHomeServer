@@ -619,15 +619,15 @@ emergency rollback policy.
 ## Guarded Server Shutdown
 
 The server ships `nixhomeserver-shutdown-guard`, a guarded, non-sudo shutdown
-helper for the desktop. It schedules a shutdown after a timeout (default 60
-minutes) and tracks critical work every 30 seconds across the whole run-up to
-the deadline. Work that is still active in the final five minutes postpones the
-shutdown into a grace period (default 60 minutes), and shutdown happens once
-work has been quiet for five minutes. While work is still active when a grace
-window ends, the watcher extends the shutdown by a whole 10-minute block instead
-of cutting the work short, up to a total grace cap of `SHUTDOWN_GUARD_MAX_GRACE_MIN`
-(minutes, default 360). It is covered by the host's existing NOPASSWD admin
-contract, so no sudo password is prompted.
+helper for the desktop. Its watcher tracks critical work every 30 seconds across
+the timeout (default 60 minutes) and any grace period (default 60 minutes).
+After the timeout, it powers off only when work has been quiet for five minutes.
+Active work keeps extending the grace window in 10-minute blocks, with no hard
+cutoff. Deadlines are watcher state; no unconditional OS shutdown timer is armed.
+If the watcher exits unexpectedly, the server stays on. This prevents a stale
+countdown from powering off during a deployment, including after an explicit
+extension. It is covered by the host's existing NOPASSWD admin contract, so no
+sudo password is prompted.
 
 Critical tasks are the bash arrays `CRITICAL_UNITS`, `CRITICAL_PROCESSES`,
 `CRITICAL_PROCESS_PATTERNS`, and `CRITICAL_COMMANDS` in
@@ -656,8 +656,10 @@ sudo nixhomeserver-shutdown-guard check
 ```
 
 `extend` pushes a pending shutdown later by whole blocks of minutes (default 10),
-re-arms a full grace window after it, and updates the running watcher without a
-restart. Use it to protect work the watcher cannot see, such as an agent-launched
+re-arms a full grace window after it, and updates an idle-only watcher without a
+restart. During activation or extension, older watchers are replaced with the
+current implementation while retaining the pending deadlines and desktop work
+marker. Use it to protect work the watcher cannot see, such as an agent-launched
 command that is not on the critical list. The `nixhomeserver-shutdown-guard`
 skill teaches agents to extend in ~10-minute blocks while long builds or tests
 are running.

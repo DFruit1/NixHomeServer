@@ -23,6 +23,16 @@ in
   # password.
   environment.systemPackages = [ shutdownGuard ];
 
+  system.activationScripts.shutdownGuardMigration = {
+    deps = [ "etc" ];
+    text = ''
+      if test -f /run/nixhomeserver-shutdown-guard/deadline; then
+        ${shutdownGuard}/bin/nixhomeserver-shutdown-guard extend --minutes 10 \
+          --reason "preserve pending shutdown protection across activation"
+      fi
+    '';
+  };
+
   environment.etc."nixhomeserver/shutdown-guard.conf".text = ''
     # Critical tasks that postpone a guarded server shutdown. Edit through this
     # module, not directly on the host. Only task units belong here: always-on
