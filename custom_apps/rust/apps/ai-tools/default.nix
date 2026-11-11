@@ -5,7 +5,8 @@ rustLib.mkRustApp {
   version = workspaceVersion;
   binaryName = "ai-tools";
   srcDir = ./.;
+  extraSourcePrefixes = [ "skills" ];
   modulePath = ../../../../modules/ai-tools;
   inherit workspaceSrc workspaceCheckSrc sharedCargoArtifacts cargoLock;
-  meta.description = "Read-only MCP tools (web search via SearXNG) for the llama.cpp web UI.";
+  meta.description = "Caller-scoped MCP search and native document editing tools for the llama.cpp web UI.";
 }

@@ -251,6 +251,27 @@ impl Helper {
         }
         Ok(())
     }
+    pub async fn inspect(
+        &self,
+        format: &str,
+        document: Vec<u8>,
+        options: &Value,
+    ) -> Result<Value, String> {
+        self.call(json!({"op":"inspect", "format":format,
+            "document":base64::engine::general_purpose::STANDARD.encode(document), "options":options}), 64*1024).await
+    }
+    pub async fn edit_operations(
+        &self,
+        format: &str,
+        document: Vec<u8>,
+        revision: &str,
+        operations: &Value,
+        sources: &Value,
+    ) -> Result<Value, String> {
+        self.call(json!({"op":"edit_operations", "format":format,
+            "document":base64::engine::general_purpose::STANDARD.encode(document), "source_revision":revision,
+            "operations":operations, "sources":sources}), crate::office_io::MAX_FRAME).await
+    }
     pub async fn read_window(
         &self,
         format: &'static str,
