@@ -39,15 +39,34 @@ in
       # Execute directly after OIDC and group checks. The forgeable loopback
       # internal router must never gain a route to this trusted socket.
       authenticatedCaddyConfig = ''
-        reverse_proxy unix//run/ai-tools-gateway.sock {
-          header_up -X-Auth-Request-User
-          header_up -X-Auth-Request-Email
-          header_up -X-Auth-Request-Groups
-          header_up -X-Auth-Request-Preferred-Username
-          header_up X-Forwarded-User {http.request.header.X-Auth-Request-User}
-          header_up X-Forwarded-Preferred-Username {http.request.header.X-Auth-Request-Preferred-Username}
-          header_up -X-Forwarded-Email
-          header_up -X-Forwarded-Groups
+        ${lib.optionalString cfg.admin.enable ''
+          @admin_tools path /admin /admin/*
+          handle @admin_tools {
+            @wrong_admin not header X-Auth-Request-Preferred-Username ${vars.kanidmAdminUser}
+            respond @wrong_admin "Forbidden" 403
+            reverse_proxy unix//run/ai-tools-admin.sock {
+              header_up -X-Auth-Request-User
+              header_up -X-Auth-Request-Email
+              header_up -X-Auth-Request-Groups
+              header_up -X-Auth-Request-Preferred-Username
+              header_up X-Forwarded-User {http.request.header.X-Auth-Request-User}
+              header_up X-Forwarded-Preferred-Username {http.request.header.X-Auth-Request-Preferred-Username}
+              header_up -X-Forwarded-Email
+              header_up -X-Forwarded-Groups
+            }
+          }
+        ''}
+        handle {
+          reverse_proxy unix//run/ai-tools-gateway.sock {
+            header_up -X-Auth-Request-User
+            header_up -X-Auth-Request-Email
+            header_up -X-Auth-Request-Groups
+            header_up -X-Auth-Request-Preferred-Username
+            header_up X-Forwarded-User {http.request.header.X-Auth-Request-User}
+            header_up X-Forwarded-Preferred-Username {http.request.header.X-Auth-Request-Preferred-Username}
+            header_up -X-Forwarded-Email
+            header_up -X-Forwarded-Groups
+          }
         }
       '';
     };

@@ -7,6 +7,7 @@
     ./networking.nix
     ./filepaths.nix
     ./services.nix
+    ./admin.nix
     ./backups.nix
   ];
 

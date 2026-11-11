@@ -77,7 +77,7 @@ fn canonical_claim(headers: &HeaderMap, name: &str) -> Option<String> {
     Some(value.to_owned())
 }
 
-async fn authenticate(mut request: Request, next: Next) -> Response {
+pub(super) async fn authenticate(mut request: Request, next: Next) -> Response {
     let Some(caller) = AuthenticatedCaller::from_gateway_headers(request.headers()) else {
         return (StatusCode::UNAUTHORIZED, "Authenticated caller required").into_response();
     };
@@ -106,6 +106,7 @@ impl ServerHandler for GatewayServer {
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         AuthenticatedCaller::require(&context)?;
+        let admin_tools = super::admin_tools::tools(&self.0.config.admin, &context);
         let mut result = self.0.list_tools(request, context).await?;
         result
             .tools
@@ -113,6 +114,7 @@ impl ServerHandler for GatewayServer {
         result
             .tools
             .extend(super::office_tools::tools(&self.0.config));
+        result.tools.extend(admin_tools);
         Ok(result)
     }
 
@@ -122,6 +124,9 @@ impl ServerHandler for GatewayServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         AuthenticatedCaller::require(&context)?;
+        if let Some(result) = super::admin_tools::call(&self.0, &request, &context).await {
+            return result;
+        }
         if let Some(result) = super::app_tools::call(&self.0, &request, &context).await {
             return result;
         }
