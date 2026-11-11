@@ -59,6 +59,17 @@ fn network_and_process_filter() -> io::Result<()> {
         ins(GE, 0, 1, 0x40000000),
         ins(RET, 0, 0, KILL),
     ];
+    // prlimit64(pid, ...) can alter another same-UID process's limits; allow it
+    // only for the parser itself (pid 0) so startup resource tuning remains possible.
+    filter.extend([
+        ins(EQ, 0, 6, libc::SYS_prlimit64 as u32),
+        ins(LOAD, 0, 0, 16),
+        ins(EQ, 0, 2, 0),
+        ins(LOAD, 0, 0, 20),
+        ins(EQ, 1, 0, 0),
+        ins(RET, 0, 0, 0x00050000 | libc::EPERM as u32),
+        ins(RET, 0, 0, 0x7fff0000),
+    ]);
     for syscall in [
         libc::SYS_socket,
         libc::SYS_socketpair,
@@ -199,6 +210,28 @@ mod tests {
                     Some(libc::EPERM)
                 );
             }
+            let denied = libc::rlimit64 {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            assert_eq!(
+                unsafe {
+                    libc::prlimit64(parent, libc::RLIMIT_NOFILE, &denied, std::ptr::null_mut())
+                },
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EPERM)
+            );
+            let mut current = libc::rlimit64 {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            assert_eq!(
+                unsafe { libc::prlimit64(0, libc::RLIMIT_NOFILE, std::ptr::null(), &mut current) },
+                0
+            );
             return;
         }
         let status = std::process::Command::new(std::env::current_exe().unwrap())

@@ -145,6 +145,7 @@ The file broker is socket-activated; an idle broker need not already be running.
 Both services have memory/CPU/IO limits, loopback egress restrictions and data-
 pool guards. Gateway and broker socket ownership are distinct. The module is
 `modules/ai-tools/`; implementation is `custom_apps/rust/apps/ai-tools/`.
-The private Tools and AI hosts retain authenticated canary coverage. After a
+The private AI host retains authenticated canary coverage; the private Tools
+host is API-only and requires explicit MCP handshake verification. After a
 guarded deployment, verify caller-specific native Office workflows, Search
 admission and downloader job ownership before claiming the tools usable.
