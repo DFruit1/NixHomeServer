@@ -14,11 +14,27 @@ let
 in
 {
   config = lib.mkIf cfg.enable {
+    # Only Caddy may connect. ai-tools receives the listening descriptor from
+    # systemd and cannot connect to the pathname as its own Unix user.
+    systemd.sockets.ai-tools-gateway = {
+      description = "Authenticated AI Tools gateway socket";
+      wantedBy = [ "sockets.target" ];
+      socketConfig = {
+        ListenStream = "/run/ai-tools-gateway.sock";
+        SocketUser = "caddy";
+        SocketGroup = "caddy";
+        SocketMode = "0600";
+        RemoveOnStop = true;
+        Service = "ai-tools.service";
+      };
+    };
+
     systemd.services.ai-tools = {
       description = "MCP tools for the llama.cpp web UI, writing only to the shared AI workspace";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" "searxng.service" "ai-tools-shared-access.service" ];
       wants = [ "network-online.target" "ai-tools-shared-access.service" ];
+      requires = [ "ai-tools-gateway.socket" ];
       unitConfig = {
         StartLimitIntervalSec = "15min";
         StartLimitBurst = 5;
@@ -31,6 +47,7 @@ in
       };
       environment = {
         AI_TOOLS_LISTEN = "${cfg.listenAddress}:${toString cfg.port}";
+        AI_TOOLS_GATEWAY_SOCKET = "/run/ai-tools-gateway.sock";
         AI_TOOLS_SEARXNG_URL = cfg.searxngUrl;
         AI_TOOLS_SEARXNG_TIMEOUT_SECS = toString cfg.searxngTimeoutSecs;
         AI_TOOLS_MAX_RESULTS = toString cfg.maxResults;
