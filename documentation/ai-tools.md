@@ -145,6 +145,21 @@ exact date. These refer to the source document/email date, not its import date.
 Search words are required. Email search covers the archive, not a live mailbox;
 no sending, moving, labelling or deleting mail is implemented.
 
+Search `scope` defaults to `all` (indexed plus first-page live archive matches).
+If live matches fill a combined page, repeat with `scope:"indexed"` from page
+zero to retrieve indexed matches separately. `scope:"live"` returns the source
+apps' first-page sample only; it rejects later pages rather than implying that
+live results can be paginated. Existing Search permissions apply to every scope.
+
+Web, document, email and YouTube search results are bounded model views, not
+full documents: JSON output is capped at 24 KiB, title/snippet previews and
+oversized metadata omissions are marked by `truncated_fields`, and omitted
+results carry an explicit warning. `content_truncated` flags text/metadata
+previews; `returned` counts actual displayed hits. `hasMore` describes backend pagination;
+when the view itself omits hits, reduce `max_results` and restart at page zero
+instead of treating the partial response as a complete page. SearXNG's upstream
+response is independently capped at 2 MiB. IDs and source URLs are never cut.
+
 The downloader retains its `downloads-users` access, job ownership and
 shared-write checks. Accepted URLs identify one HTTPS YouTube video, including
 short links and Shorts. Tracking and playlist parameters are stripped;
