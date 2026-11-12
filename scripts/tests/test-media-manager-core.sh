@@ -117,7 +117,10 @@ jq -e '
   and (.providerService.PrivateDevices == true)
   and (.providerService.CapabilityBoundingSet == [])
   and (.providerService.AmbientCapabilities == [])
-  and (.providerService.RestrictAddressFamilies == ["AF_INET", "AF_INET6"])
+  and ((.providerService.RestrictAddressFamilies | sort) ==
+    (["AF_INET", "AF_INET6"] +
+      (if (.providerEnvironment.MEDIA_MANAGER_EYE_SOCKET // "") != "" then ["AF_UNIX"] else [] end)
+    | sort))
   and (.providerService.ReadWritePaths == ["/var/lib/media-manager-provider"])
   and (.providerEnvironment.MEDIA_MANAGER_PROVIDER_ADDRESS == "127.0.0.1")
   and (.providerEnvironment.MEDIA_MANAGER_PROVIDER_PORT == "8089")
@@ -159,7 +162,7 @@ jq -e '
   and (.stateTmpfiles | index("z /var/lib/media-manager/control.sqlite3-wal 0660 media-manager media-manager -") != null)
   and (.stateTmpfiles | index("z /var/lib/media-manager/control.sqlite3-shm 0660 media-manager media-manager -") != null)
   and (.brokerTimer.OnBootSec == "20s")
-  and (.brokerTimer.OnUnitInactiveSec == "10s")
+  and (.brokerTimer.OnUnitInactiveSec == "30s")
   and (.scanner.User == "media-manager")
   and (.scanner.Group == "media-manager")
   and (.scanner.Type == "oneshot")

@@ -30,6 +30,8 @@ use rmcp::{
     },
     ErrorData, RoleServer, ServerHandler,
 };
+mod admin_backend;
+mod admin_tools;
 mod app_tools;
 mod bridge;
 mod gateway;
@@ -65,6 +67,7 @@ struct Config {
     public_host: Option<String>,
     apps: app_tools::Config,
     office_socket: Option<PathBuf>,
+    admin: Option<admin_tools::Config>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -451,6 +454,7 @@ fn parse_env() -> Result<Config, String> {
         helper,
         public_host: parse_public_host(env::var("AI_TOOLS_PUBLIC_HOST").ok())?,
         apps: app_tools::Config::from_env()?,
+        admin: admin_tools::Config::from_env()?,
         office_socket: env::var_os("AI_TOOLS_OFFICE_IO_SOCKET").map(PathBuf::from),
     })
 }
@@ -528,6 +532,7 @@ fn router(server: Server, public_host: Option<&str>) -> Router {
 enum Transport {
     StreamableHttp,
     Stdio,
+    Admin,
     OfficeParser,
     OfficeBroker,
     OfficeWorker,
@@ -537,6 +542,7 @@ fn parse_transport(raw: &str) -> Result<Transport, String> {
     match raw {
         "http" | "streamable-http" => Ok(Transport::StreamableHttp),
         "stdio" => Ok(Transport::Stdio),
+        "admin" => Ok(Transport::Admin),
         "office-parser" => Ok(Transport::OfficeParser),
         "office-broker" => Ok(Transport::OfficeBroker),
         "office-worker" => Ok(Transport::OfficeWorker),
@@ -573,6 +579,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn serve(transport: Transport) -> Result<(), Box<dyn std::error::Error>> {
     if transport == Transport::Stdio {
         return bridge::serve_stdio().await;
+    }
+    if transport == Transport::Admin {
+        return admin_backend::serve().await;
     }
     if transport == Transport::OfficeBroker {
         return office_broker::serve().await;
@@ -642,6 +651,7 @@ mod tests {
             public_host: None,
             apps: app_tools::Config::default(),
             office_socket: None,
+            admin: None,
         }
     }
 

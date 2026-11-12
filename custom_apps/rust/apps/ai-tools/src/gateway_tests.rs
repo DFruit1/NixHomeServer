@@ -13,6 +13,79 @@ const HOST: &str = "tools.example.test";
 const LIST: &str = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
 
 #[tokio::test]
+async fn administration_discovery_and_calls_are_exact_login_scoped() {
+    let mut server = app_server();
+    Arc::make_mut(&mut server.config).admin = Some(crate::admin_tools::Config {
+        username: "admindsaw".into(),
+        host: HOST.into(),
+    });
+    let app = router(server.clone(), HOST);
+    let mut transport = crate::streamable_http_config(Some(HOST));
+    transport.legacy_session_mode = false;
+    let core = Router::new().fallback_service(StreamableHttpService::new(
+        move || Ok(server.clone()),
+        Arc::new(NeverSessionManager::default()),
+        transport,
+    ));
+    let response = core
+        .clone()
+        .oneshot(request(Method::POST, LIST, Some("admindsaw")))
+        .await
+        .unwrap();
+    let value: Value = serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
+    assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 1);
+    for user in ["admindsaw", "dsaw", "AdminDsaw", "admindsaw@example.test"] {
+        let response = app
+            .clone()
+            .oneshot(request(Method::POST, LIST, Some(user)))
+            .await
+            .unwrap();
+        let value: Value =
+            serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
+        let names: Vec<_> = value["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        for name in [
+            "server_health",
+            "server_services",
+            "server_service_status",
+            "server_restart_service",
+        ] {
+            assert_eq!(names.contains(&name), user == "admindsaw");
+            let body=json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":name,"arguments":{"username":"admindsaw"}}}).to_string();
+            let response = app
+                .clone()
+                .oneshot(request(Method::POST, &body, Some(user)))
+                .await
+                .unwrap();
+            let value: Value =
+                serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
+            let expected = if user == "admindsaw" {
+                crate::app_tools::session_required()
+            } else {
+                crate::admin_tools::denied()
+            };
+            assert_eq!(value["error"]["message"], expected.message.as_ref());
+            let mut forged = request(Method::POST, &body, Some("admindsaw"));
+            forged.headers_mut().insert(
+                "cookie",
+                "__Secure-nixhomeserver_sso=forged".parse().unwrap(),
+            );
+            let response = core.clone().oneshot(forged).await.unwrap();
+            let value: Value =
+                serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
+            assert!(value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("unknown tool:"));
+        }
+    }
+}
+
+#[tokio::test]
 async fn structural_import_authorizes_each_source_with_the_current_request_actor() {
     let socket =
         std::env::temp_dir().join(format!("office-import-test-{}.sock", std::process::id()));

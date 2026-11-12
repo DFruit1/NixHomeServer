@@ -77,14 +77,14 @@ pub fn preview_document_authorized(
     let mut saw_base = false;
     let mut stack = vec![dom.document.clone()];
     while let Some(node) = stack.pop() {
-        if !saw_base && node.element_name().as_deref() == Some("base") {
-            if let Some(next) = content::attr(&node, "href")
+        if !saw_base
+            && node.element_name().as_deref() == Some("base")
+            && let Some(next) = content::attr(&node, "href")
                 .and_then(|s| base.join(&s).ok())
                 .filter(|u| matches!(u.scheme(), "http" | "https"))
-            {
-                base = next;
-                saw_base = true;
-            }
+        {
+            base = next;
+            saw_base = true;
         }
         if let Some(id) = content::attr(&node, "id") {
             *ids.entry(id).or_default() += 1;
@@ -167,21 +167,19 @@ pub fn preview_document_authorized(
                 if content::attr(&node, "rel").is_some_and(|r| {
                     r.split_whitespace()
                         .any(|s| s.eq_ignore_ascii_case("stylesheet"))
-                }) {
-                    if let Some(sheet) = content::attr(&node, "href")
-                        .and_then(|s| base.join(&s).ok())
-                        .and_then(|u| resources.get(u.as_str()).copied())
-                        .filter(|r| r.mime == "text/css")
-                    {
-                        let bytes = content::payload(sheet)?;
-                        if css.len() + bytes.len() > 1024 * 1024 {
-                            return Err("Preview captured CSS exceeds 1 MiB".into());
-                        }
-                        let text = std::str::from_utf8(&bytes)
-                            .map_err(|_| "Non-UTF8 captured CSS unsupported")?;
-                        css.push_str(&text.replace('<', "\\3c "));
-                        css.push('\n');
+                }) && let Some(sheet) = content::attr(&node, "href")
+                    .and_then(|s| base.join(&s).ok())
+                    .and_then(|u| resources.get(u.as_str()).copied())
+                    .filter(|r| r.mime == "text/css")
+                {
+                    let bytes = content::payload(sheet)?;
+                    if css.len() + bytes.len() > 1024 * 1024 {
+                        return Err("Preview captured CSS exceeds 1 MiB".into());
                     }
+                    let text = std::str::from_utf8(&bytes)
+                        .map_err(|_| "Non-UTF8 captured CSS unsupported")?;
+                    css.push_str(&text.replace('<', "\\3c "));
+                    css.push('\n');
                 }
                 drop_nodes.push(node.clone());
                 continue;

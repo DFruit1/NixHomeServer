@@ -324,18 +324,19 @@ pub(super) async fn item_stream(
             .flatten();
             let worker_cache_name = cache_name.clone();
             let failure_key = cache_name.clone();
-            if preparation && cached.is_none() {
-                if let Ok(mut failures) = TRANSCODE_FAILURES.lock() {
-                    failures.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(60));
-                    if failures.contains_key(&failure_key) {
-                        return ApiError::new(
-                            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                            "video_transcode_failed",
-                            "The video could not be converted for browser playback.",
-                            request_id,
-                        )
-                        .into_response();
-                    }
+            if preparation
+                && cached.is_none()
+                && let Ok(mut failures) = TRANSCODE_FAILURES.lock()
+            {
+                failures.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(60));
+                if failures.contains_key(&failure_key) {
+                    return ApiError::new(
+                        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                        "video_transcode_failed",
+                        "The video could not be converted for browser playback.",
+                        request_id,
+                    )
+                    .into_response();
                 }
             }
             let permit = if cached.is_some() {

@@ -11,6 +11,70 @@ each request independently; the loopback endpoint and stdio bridge carry no
 trusted caller identity. See the [access-control contract](ai-tools-access-control.md)
 for the authentication and filesystem-authorization boundaries.
 
+## Server-admin tools
+
+Only the exact configured server-admin login (`vars.kanidmAdminUser`, currently
+`admindsaw`) is offered these tools. Other logins cannot discover or execute
+them, including direct calls using cached tool names. Membership in `ai-users`
+alone does not grant administration. The username comes from the authenticated
+gateway request, never tool arguments, email aliases or a shared model account.
+
+| Tool | Operation |
+| --- | --- |
+| `server_health` | Read uptime, load averages, and available/total memory and swap. |
+| `server_services` | List configured diagnostic services, failed services and restartable applications. |
+| `server_service_status` | Read allowlisted systemd state, exit status, PID and resource properties for one service. |
+| `server_restart_service` | Request one explicitly allowed application restart, only when the user asks. |
+
+For example: “Which services have failed?”, “Check Jellyfin's state”, or
+“Restart Jellyfin, then check whether it recovered.” Service arguments use the
+exact `.service` name returned by `server_services`. A restart response means
+the request was accepted, not that the service recovered. Inspect its status
+afterwards; do not automatically repeat an uncertain request after a timeout.
+
+The default restart allowlist contains installed application daemons from
+Audiobookshelf, Bonsai, FreshRSS, Immich, Jellyfin, Kavita, Mail Archive,
+Paperless (web/task queue), Search, SearXNG and YouTube Downloader. Identity,
+routing, networking, storage, backup and the admin backend itself are excluded.
+No shell, arbitrary command, environment dump, raw journal, file/config edit,
+host shutdown/reboot, or deployment operation is exposed. Existing SSO-session
+expiry/revocation semantics still apply; this adds no new session lifetime.
+
+The ordinary AI Tools process retains its existing unprivileged account.
+For each admin call it forwards the current SSO cookie to the existing private
+`tools.<domain>/admin` gateway route over verified local HTTPS. Caddy performs
+its normal authentication/group checks plus an exact admin-login check before
+proxying to `/run/ai-tools-admin.sock`, owned by `caddy:caddy` with mode `0600`.
+The ordinary AI service cannot connect to that socket directly. The separate
+root backend checks the canonical login, Host and HTTPS Origin again on every
+request and accepts only fixed operations with bounded arguments/output. It
+does not trust the identity of the forwarding AI service. Root is required for
+systemd's service-management authorization, not granted to the model or parser.
+
+The backend has a read-only filesystem, no capabilities or IP network access,
+and no access to the shared root, persistence, agenix secrets or `/var/lib`.
+It invokes the Nix-pinned `systemctl` directly with a cleared environment and
+fixed argument lists, never through a shell. Service-state output uses explicit
+safe properties; failed-service listings discard descriptions. Requests are
+serialized and time/output limited. Audit messages contain canonical subject,
+fixed operation, validated service and outcome, not credentials or output.
+The [systemctl reference](https://www.freedesktop.org/software/systemd/man/latest/systemctl.html)
+documents the read-only `show` and asynchronous restart semantics used here.
+
+`repo.aiTools.admin.enable = false` removes the tools' configuration, privileged
+socket/service and gateway route. `repo.aiTools.admin.restartableServices`
+controls the explicit restart allowlist and must be a subset of configured
+diagnostic services. Application removal removes its default restart target.
+The admin backend does not open data-pool content or require persistence.
+
+Focused regression checks are justified by the concrete risk of cross-login
+privilege escalation or unintended service operations. Tests use an inert
+fixture executable, never restart real services. Source checks do not establish
+live SSO or root/systemd behavior: after an authorized guarded deployment,
+verify discovery for the admin versus an ordinary account, read-only resource
+and service calls, and the configured restart list. A real restart requires an
+explicit request for that target; deployment alone is not a restart test.
+
 ## Word and Excel tools
 
 For ordinary changes to existing documents, use `office_skill`, `office_inspect`,

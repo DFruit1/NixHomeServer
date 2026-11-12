@@ -979,7 +979,7 @@ el('clearFilters').addEventListener('click', () => clearFilters());
 el('loadMore').addEventListener('click', () => runSearch(null, {append: true}));
 el('retrySearch').addEventListener('click', () => runIndexed(state.hits.length > 0));
 el('retryLive').addEventListener('click', () => { if (!state.liveLoading && state.submitted) void runLive(state.generation, state.submitted, state.controller.signal); });
-el('signOut').addEventListener('click', () => { location.href = safeHref(window.SEARCH_LOGOUT_URL) || '/'; });
+el('signOut').addEventListener('click', () => { const target = safeHref(window.SEARCH_LOGOUT_URL) || '/'; location.href = target; });
 queryEl.addEventListener('search', () => { if (!queryEl.value.trim()) runSearch(); });
 window.addEventListener('keydown', event => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); queryEl.focus(); }

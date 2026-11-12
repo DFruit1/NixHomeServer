@@ -39,7 +39,7 @@ impl Config {
 }
 
 /// No Debug/Serialize implementation: a session must never become tool output.
-struct AppSession(HeaderValue);
+pub(super) struct AppSession(HeaderValue);
 
 impl AppSession {
     fn from_headers(headers: &HeaderMap) -> Result<Self, ErrorData> {
@@ -79,7 +79,7 @@ impl AppSession {
         Ok(Self(value))
     }
 
-    fn from_context(context: &RequestContext<RoleServer>) -> Result<Self, ErrorData> {
+    pub(super) fn from_context(context: &RequestContext<RoleServer>) -> Result<Self, ErrorData> {
         let parts = context
             .extensions
             .get::<axum::http::request::Parts>()
@@ -105,7 +105,7 @@ fn unavailable(message: &'static str) -> ErrorData {
 /// Pin TLS connections to local Caddy while verifying the configured hostname's
 /// certificate. Never follow redirects (including login redirects), use a proxy,
 /// store cookies, or let model arguments select a host or API route.
-fn app_client(host: &str) -> Result<Client, ErrorData> {
+pub(super) fn app_client(host: &str) -> Result<Client, ErrorData> {
     Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -116,7 +116,7 @@ fn app_client(host: &str) -> Result<Client, ErrorData> {
         .map_err(|_| unavailable("Could not connect to the app gateway"))
 }
 
-async fn request_json(
+pub(super) async fn request_json(
     client: &Client,
     session: &AppSession,
     method: Method,
@@ -135,7 +135,7 @@ async fn request_json(
         request = request.json(&body);
     }
     let mut response = request.send().await.map_err(|_| {
-        unavailable("App request failed; check the app's status before retrying a download")
+        unavailable("App request failed; inspect its status before retrying a change")
     })?;
     match response.status().as_u16() {
         200..=299 => {}

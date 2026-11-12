@@ -135,7 +135,7 @@ async fn durable_attempts_recover_and_reboot_is_terminal_only_after_puback() {
         "pending handoff cannot be withdrawn from rumqttc"
     );
     // Crash before poll: discard all process-local state, recover SQL intent.
-    drop(publisher);
+    let _ = publisher;
     drop(mqtt);
     drop(event_loop);
     publisher::recover(&db).await.unwrap();

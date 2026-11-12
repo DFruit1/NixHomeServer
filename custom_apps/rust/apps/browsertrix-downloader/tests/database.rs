@@ -230,7 +230,7 @@ fn native_capture_operations_keep_pause_and_stop_admission() {
                 let id = format!("native-{index}-{action}-{}", status.as_str());
                 db.queue_operation(&id, "alice", &request(), operation.clone())
                     .unwrap();
-                db.set_status(&id, status.clone(), None).unwrap();
+                db.set_status(&id, status, None).unwrap();
                 db.request_control(&id, "alice", action).unwrap();
                 let after = db.job(&id).unwrap().unwrap();
                 assert_eq!(

@@ -14,10 +14,9 @@ for identity_file in \
   forbid_match "$identity_file" '(uid|gid)[[:space:]]*=[[:space:]]*[0-9]+' \
     "portable app identities in $identity_file must not reserve fixed numeric IDs"
 done
-for service_file in modules/immich/public-proxy.nix; do
-  require_fixed "$service_file" 'chown -R' \
-    "dynamic app identities in $service_file must migrate persistent state ownership"
-done
+service_file=modules/immich/public-proxy.nix
+require_fixed "$service_file" 'chown -R' \
+  "dynamic app identities in $service_file must migrate persistent state ownership"
 require_fixed modules/youtube-downloader/services.nix 'youtube-downloader-ownership-v1' \
   "YouTube Downloader ownership migration must use a durable identity marker"
 require_fixed modules/youtube-downloader/services.nix 'youtube-downloader-ownership-migration.service' \

@@ -81,6 +81,10 @@ fn database(e: String) -> Response {
     eprintln!("groundwater API: {e}");
     error(StatusCode::INTERNAL_SERVER_ERROR, "database request failed")
 }
+#[allow(
+    clippy::result_large_err,
+    reason = "Return the existing Axum error response directly at the HTTP boundary"
+)]
 fn gate(headers: &HeaderMap) -> Result<(Identity, Role), Response> {
     let identity = Identity::from_headers(headers)
         .map_err(|_| error(StatusCode::UNAUTHORIZED, "not signed in"))?;
@@ -92,6 +96,10 @@ fn gate(headers: &HeaderMap) -> Result<(Identity, Role), Response> {
     })?;
     Ok((identity, role))
 }
+#[allow(
+    clippy::result_large_err,
+    reason = "Return the existing Axum error response directly at the HTTP boundary"
+)]
 fn operator(headers: &HeaderMap) -> Result<Identity, Response> {
     let (i, r) = gate(headers)?;
     if r != Role::Operator {
@@ -122,20 +130,19 @@ async fn ids(s: &AppState, h: &HeaderMap) -> Result<Vec<String>, Response> {
 /// method rejections so every API failure is a JSON envelope.
 async fn boundary(request: Request, next: Next) -> Response {
     let api = request.uri().path() == "/api" || request.uri().path().starts_with("/api/");
-    if request.uri().path() != "/healthz" {
-        if let Err(e) = gate(request.headers()) {
-            return e;
-        }
+    if request.uri().path() != "/healthz"
+        && let Err(e) = gate(request.headers())
+    {
+        return e;
     }
     if api
         && !matches!(
             *request.method(),
             axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
         )
+        && let Err(e) = operator(request.headers())
     {
-        if let Err(e) = operator(request.headers()) {
-            return e;
-        }
+        return e;
     }
     let mut response = next.run(request).await;
     if api
@@ -212,6 +219,10 @@ struct Range {
     format: Option<String>,
 }
 impl Range {
+    #[allow(
+        clippy::result_large_err,
+        reason = "Return the existing Axum error response directly at the HTTP boundary"
+    )]
     fn bounds(&self) -> Result<(DateTime<Utc>, DateTime<Utc>), Response> {
         let now = Utc::now();
         let from = self.from.unwrap_or(

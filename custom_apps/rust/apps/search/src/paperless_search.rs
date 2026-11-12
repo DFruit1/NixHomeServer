@@ -626,9 +626,15 @@ mod tests {
     #[test]
     fn tag_resolution_ignores_unknown_values_and_omits_empty_results() {
         let taxonomy = taxonomy();
-        assert_eq!(taxonomy.tag_names(Some(&json!([3, 99, "x"]))), vec!["finance".to_string()]);
+        assert_eq!(
+            taxonomy.tag_names(Some(&json!([3, 99, "x"]))),
+            vec!["finance".to_string()]
+        );
         assert!(taxonomy.tag_names(None).is_empty());
-        assert_eq!(taxonomy.correspondent(Some(&json!(7))).as_deref(), Some("ACME"));
+        assert_eq!(
+            taxonomy.correspondent(Some(&json!(7))).as_deref(),
+            Some("ACME")
+        );
         assert!(taxonomy.correspondent(Some(&json!(99))).is_none());
 
         let document = json!({ "id": 44, "title": "Unknown tags", "tags": [99, "x"] });

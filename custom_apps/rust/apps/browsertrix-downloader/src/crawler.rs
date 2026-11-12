@@ -103,16 +103,16 @@ pub fn parse_crawl_log_line(line: &str) -> Option<CrawlLogProgress> {
         progress.pages_queued = stats.get("queued").and_then(json_u64);
         progress.pages_failed = stats.get("failed").and_then(json_u64);
     }
-    if value.get("message").and_then(Value::as_str) == Some("Crawl statistics") {
-        if let Some(details) = value.get("details") {
-            progress.pages_done = details.get("crawled").and_then(json_u64);
-            progress.pages_failed = details.get("failed").and_then(json_u64);
-            progress.pages_queued = details.get("total").and_then(json_u64).map(|total| {
-                total
-                    .saturating_sub(progress.pages_done.unwrap_or(0))
-                    .saturating_sub(progress.pages_failed.unwrap_or(0))
-            });
-        }
+    if value.get("message").and_then(Value::as_str) == Some("Crawl statistics")
+        && let Some(details) = value.get("details")
+    {
+        progress.pages_done = details.get("crawled").and_then(json_u64);
+        progress.pages_failed = details.get("failed").and_then(json_u64);
+        progress.pages_queued = details.get("total").and_then(json_u64).map(|total| {
+            total
+                .saturating_sub(progress.pages_done.unwrap_or(0))
+                .saturating_sub(progress.pages_failed.unwrap_or(0))
+        });
     }
     if value.get("message").and_then(Value::as_str) == Some("pageCrawled")
         && progress.pages_done.is_none()

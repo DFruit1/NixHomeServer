@@ -235,13 +235,22 @@ fn log_event(level: &str, event: &str, job_id: Option<&str>, error: Option<&str>
 }
 
 pub async fn process_job(config: &AppConfig, database: &Database, job: &Job) -> Result<(), String> {
+    process_job_with_resolver(config, database, job, crate::queue::Resolver::system()).await
+}
+
+pub async fn process_job_with_resolver(
+    config: &AppConfig,
+    database: &Database,
+    job: &Job,
+    resolver: crate::queue::Resolver,
+) -> Result<(), String> {
     if !crate::custody::safe_id(&job.id) {
         return Err("job ID is not a safe path segment".into());
     }
     match &job.runtime.operation {
         crate::model::Operation::Capture
         | crate::model::Operation::Sample { .. }
-        | crate::model::Operation::Repair { .. } => capture(config, database, job).await,
+        | crate::model::Operation::Repair { .. } => capture(config, database, job, resolver).await,
         _ => {
             let config = config.clone();
             let db = database.clone();
@@ -252,7 +261,12 @@ pub async fn process_job(config: &AppConfig, database: &Database, job: &Job) -> 
         }
     }
 }
-async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(), String> {
+async fn capture(
+    config: &AppConfig,
+    database: &Database,
+    job: &Job,
+    resolver: crate::queue::Resolver,
+) -> Result<(), String> {
     let mut effective = job.clone();
     if let crate::model::Operation::Repair {
         archive_id,
@@ -274,7 +288,7 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
     }
     // Revalidate every seed on execution. Firewall still protects subsequent browser
     // requests, DNS rebinding, redirects and dynamically discovered URLs.
-    let queue = crate::queue::JobQueue::new(database.clone(), crate::queue::Resolver::system());
+    let queue = crate::queue::JobQueue::new(database.clone(), resolver);
     queue
         .validate_request(&effective.request)
         .await
@@ -345,10 +359,10 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
     if let Some(index) = args.iter().position(|v| v == "--timeLimit") {
         args[index + 1] = remaining_seconds.to_string().into();
     }
-    if let Some(saved) = saved {
-        if let Some(index) = args.iter().rposition(|v| v == "--config") {
-            args[index + 1] = format!("/crawls/{saved}").into();
-        }
+    if let Some(saved) = saved
+        && let Some(index) = args.iter().rposition(|v| v == "--config")
+    {
+        args[index + 1] = format!("/crawls/{saved}").into();
     }
     if let Some(path) = profile {
         let index = args
@@ -435,7 +449,20 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
     let status = loop {
         tokio::select! {
          result=&mut wait=>break result.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?,
-         Some(line)=rx.recv()=>{read_metrics(&line,&mut runtime,&mut policy_ready);record_omission(&crawl_dir,&line)?;if let Some(update)=parse_crawl_log_line(&line){progress=merge_progress(&progress,&update);}if last_write.elapsed()>=Duration::from_secs(2){database.set_progress(&job.id,Some(&progress)).map_err(|e|e.to_string())?;last_write=Instant::now();}if reason.is_none(){if let Some(value)=stop_reason_from_log(&line){reason=Some(value.into());}}},
+         Some(line)=rx.recv()=>{
+           read_metrics(&line,&mut runtime,&mut policy_ready);
+           record_omission(&crawl_dir,&line)?;
+           if let Some(update)=parse_crawl_log_line(&line){
+             progress=merge_progress(&progress,&update);
+           }
+           if last_write.elapsed()>=Duration::from_secs(2){
+             database.set_progress(&job.id,Some(&progress)).map_err(|e|e.to_string())?;
+             last_write=Instant::now();
+           }
+           if reason.is_none()&& let Some(value)=stop_reason_from_log(&line){
+             reason=Some(value.into());
+           }
+         },
          _=poll.tick()=>{
            let current=database.job(&job.id).map_err(|e|e.to_string())?.ok_or("active job disappeared")?;
            if signalled.is_none(){let control=current.runtime.control.as_deref();let next=if current.status==JobStatus::Cancelling{Some("discard")}else if control==Some("pause"){Some("pause")}else if control==Some("stop"){Some("stop-and-save")}else if started.elapsed()>=Duration::from_secs(remaining_seconds+30){Some("time-limit")}else{None};
@@ -610,10 +637,10 @@ async fn capture(config: &AppConfig, database: &Database, job: &Job) -> Result<(
     Ok(())
 }
 fn stop_reason_from_log(line: &str) -> Option<&'static str> {
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-        if value["details"]["limit"]["hit"].as_bool() == Some(true) {
-            return Some("page-limit");
-        }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line)
+        && value["details"]["limit"]["hit"].as_bool() == Some(true)
+    {
+        return Some("page-limit");
     }
     let lower = line.to_ascii_lowercase();
     if lower.contains("size threshold") {

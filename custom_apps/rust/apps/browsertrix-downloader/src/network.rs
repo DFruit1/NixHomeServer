@@ -278,10 +278,11 @@ async fn discover(
                     discovered.push((url.to_string(), false));
                 }
             }
-            if depth == 0 && request.scope != CrawlScope::Page {
-                if let Ok(url) = base.join("/sitemap.xml") {
-                    pending.push_back((url.to_string(), 1));
-                }
+            if depth == 0
+                && request.scope != CrawlScope::Page
+                && let Ok(url) = base.join("/sitemap.xml")
+            {
+                pending.push_back((url.to_string(), 1));
             }
         }
         for (url, sitemap) in discovered {

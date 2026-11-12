@@ -28,15 +28,16 @@ let
     youtubeHost = null;
     chatHost = null;
   };
-  evaluate = enabled: preflight: chatEnabled: (lib.evalModules {
+  evaluate = enabled: preflight: chatEnabled: adminEnabled: (lib.evalModules {
     specialArgs = { inherit pkgs vars; };
     modules = [
       ../../modules/Core_Modules/auth-gateway
       ../../modules/ai-tools/networking.nix
       ../../modules/ai-tools/services.nix
+      ../../modules/ai-tools/admin.nix
       ../../modules/Integrations/serve_ai_tools_through_bonsai.nix
       ({ lib, ... }: {
-        options = lib.genAttrs [ "services" "systemd" ] (_: lib.mkOption {
+        options = lib.genAttrs [ "services" "systemd" "users" ] (_: lib.mkOption {
           type = lib.types.attrsOf lib.types.anything;
           default = { };
         }) // {
@@ -55,6 +56,9 @@ let
           };
         };
         config.repo.aiTools.enable = enabled;
+        config.repo.aiTools.admin.enable = adminEnabled;
+        config.systemd.services.jellyfin.serviceConfig.User = "jellyfin";
+        config.systemd.services.phpfpm-freshrss.serviceConfig.User = "freshrss";
         config.repo.authGateway.protectedApps = lib.optionalAttrs enabled {
           aiTools.skipAuthPreflight = preflight;
         } // lib.optionalAttrs chatEnabled {
@@ -67,10 +71,16 @@ let
       })
     ];
   }).config;
-  cfg = evaluate true false true;
-  disabled = evaluate false false true;
-  unsafe = evaluate true true true;
-  noChat = evaluate true false false;
+  cfg = evaluate true false true true;
+  disabled = evaluate false false true true;
+  unsafe = evaluate true true true true;
+  noChat = evaluate true false false true;
+  noAdmin = evaluate true false true false;
+  systemdLib = import (pkgs.path + "/nixos/lib/systemd-lib.nix") {
+    inherit lib pkgs; config = {}; utils = {};
+  };
+  renderedAdminService = systemdLib.attrsToSection cfg.systemd.services.ai-tools-admin.serviceConfig;
+  adminConfig = builtins.fromJSON (builtins.unsafeDiscardStringContext cfg.systemd.services.ai-tools-admin.environment.AI_TOOLS_ADMIN_CONFIG);
   app = cfg.repo.authGateway.protectedApps.aiTools;
   route = cfg.services.caddy.virtualHosts."tools.example.test".extraConfig;
   direct = "reverse_proxy unix//run/ai-tools-gateway.sock";
@@ -116,8 +126,34 @@ assert disabled.repo.aiTools.chatHost == null;
 assert !(lib.hasInfix "/mcp" disabled.services.caddy.virtualHosts."ai.example.test".extraConfig);
 assert noChat.repo.aiTools.chatHost == null;
 assert !(noChat.repo.authGateway.protectedApps ? bonsai);
+assert cfg.systemd.sockets.ai-tools-admin.socketConfig.SocketUser == "caddy";
+assert cfg.systemd.sockets.ai-tools-admin.socketConfig.SocketMode == "0600";
+assert cfg.systemd.services.ai-tools-admin.serviceConfig.User == "root";
+assert cfg.systemd.services.ai-tools-admin.serviceConfig.RestrictAddressFamilies == [ "AF_UNIX" ];
+assert lib.hasInfix "CapabilityBoundingSet=\n" renderedAdminService;
+assert !(cfg.systemd.services.ai-tools-admin.serviceConfig ? ReadWritePaths);
+assert adminConfig.username == vars.kanidmAdminUser;
+assert cfg.systemd.services.ai-tools.environment.AI_TOOLS_ADMIN_USERNAME == vars.kanidmAdminUser;
+assert builtins.elem "jellyfin.service" adminConfig.restartable_services;
+assert builtins.elem "phpfpm-freshrss.service" adminConfig.restartable_services;
+assert !(builtins.elem "freshrss.service" adminConfig.restartable_services);
+assert !(builtins.elem "ai-tools-admin.service" adminConfig.restartable_services);
+assert !(builtins.elem "kanidm.service" adminConfig.restartable_services);
+assert !(builtins.elem "caddy.service" adminConfig.restartable_services);
+assert lib.hasInfix "@wrong_admin not header X-Auth-Request-Preferred-Username operator" route;
+assert lib.hasInfix "reverse_proxy unix//run/ai-tools-admin.sock" route;
+assert !(noAdmin.systemd.sockets ? ai-tools-admin);
+assert !(noAdmin.systemd.services ? ai-tools-admin);
+assert !(noAdmin.systemd.services.ai-tools.environment ? AI_TOOLS_ADMIN_USERNAME);
+assert !(lib.hasInfix "ai-tools-admin.sock" noAdmin.services.caddy.virtualHosts."tools.example.test".extraConfig);
+assert !(disabled.systemd.sockets or {} ? ai-tools-admin);
+assert !(disabled.systemd.services ? ai-tools-admin);
+
 {
   authenticatedBranches = lib.length split - 1;
+  adminSocketIsCaddyOnly = true;
+  adminIdentityComesFromOwner = true;
+  adminDisableRemovesPrivileges = true;
   protectedSocket = true;
   spoofableInternalRouterExcluded = true;
   preflightBypassRejected = true;

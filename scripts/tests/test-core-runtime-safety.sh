@@ -159,7 +159,7 @@ jq -e '
   and (.fileshareAclMigration.script | contains("install -D -m 0600 /dev/null \"$marker\""))
   and (.power.available == true)
   and (.power.stateFile == "/var/lib/power-schedule/schedule.json")
-  and (.power.defaults == { enabled: false, wakeTime: "10:30", idleWindowStartHour: 22, forcedWindowEndHour: 10 })
+  and (.power.defaults == { enabled: true, wakeTime: "10:30", idleWindowStartHour: 22, forcedWindowEndHour: 10 })
   and ((.power.defaultsJson | fromjson) == .power.defaults)
   and (.power.timerOnCalendar == ["*-*-* *:00/15:00"])
   and (.power.suspendScript | contains("/var/lib/power-schedule/schedule.json"))

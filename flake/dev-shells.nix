@@ -18,6 +18,7 @@
   ops = pkgs.mkShell {
     name = "ops-dev-shell";
     packages = (with pkgs; [
+      age
       deadnix
       gitMinimal
       jq

@@ -33,6 +33,18 @@ jobs:
       - name: Enable Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
 
+      - name: Enable user namespaces for namespace fixtures
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          for setting in kernel.unprivileged_userns_clone=1 kernel.apparmor_restrict_unprivileged_userns=0; do
+            key="${setting%%=*}"
+            if sysctl -n "$key" >/dev/null 2>&1; then
+              sudo sysctl -w "$setting"
+            fi
+          done
+          unshare --user --map-auto --map-root-user --mount true
+
       - name: Scan committed history for secrets
         run: nix run .#gitleaks -- detect --source . --redact --no-banner
 
@@ -47,7 +59,7 @@ jobs:
         run: nix develop .#eval -c nix-eval-jobs --flake .
 
       - name: Build application checks and validate the catalog
-        run: scripts/validate-repo.sh --build-checks --all-apps --skip-flake-check
+        run: nix develop .#ops -c scripts/validate-repo.sh --build-checks --all-apps --skip-flake-check
 
   full-validation:
     if: github.event_name == 'schedule'
@@ -65,8 +77,20 @@ jobs:
       - name: Enable Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
 
+      - name: Enable user namespaces for namespace fixtures
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          for setting in kernel.unprivileged_userns_clone=1 kernel.apparmor_restrict_unprivileged_userns=0; do
+            key="${setting%%=*}"
+            if sysctl -n "$key" >/dev/null 2>&1; then
+              sudo sysctl -w "$setting"
+            fi
+          done
+          unshare --user --map-auto --map-root-user --mount true
+
       - name: Scan committed history for secrets
         run: nix run .#gitleaks -- detect --source . --redact --no-banner
 
       - name: Run full repository validation
-        run: scripts/validate-repo.sh --full --all-apps
+        run: nix develop .#ops -c scripts/validate-repo.sh --full --all-apps
