@@ -432,31 +432,41 @@ deploy_recovery_complete_marker_path() {
   printf '%s/recovery-complete' "$deploy_lock_dir"
 }
 
+# The sibling mutex survives removal/recreation of the ownership directory.
+# Hold it across each target-side check and mutation, including timer recovery.
+render_transaction_mutex_script() {
+  local -n mutex_output="$1"
+  # shellcheck disable=SC2034 # Assigned through the caller-provided nameref.
+  mutex_output="exec 9>$(printf '%q' "${deploy_lock_dir}.mutex") || exit 1; flock -x 9 || exit 1;"
+}
+
 render_lock_release_script() {
   local -n output_script="$1"
   local owner_path="${deploy_lock_dir}/owner"
-  local recovery_complete_marker recovery_marker
+  local recovery_complete_marker recovery_marker mutex_script
 
   recovery_marker="$(deploy_recovery_marker_path)"
   recovery_complete_marker="$(deploy_recovery_complete_marker_path)"
+  render_transaction_mutex_script mutex_script
 
   # shellcheck disable=SC2034 # Assigned through the caller-provided nameref.
-  output_script="if test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then rm -f $(printf '%q' "$recovery_marker") $(printf '%q' "$recovery_complete_marker") $(printf '%q' "$owner_path") && rmdir $(printf '%q' "$deploy_lock_dir"); else echo 'blocked: deploy transaction no longer owns its lock' >&2; exit 1; fi"
+  output_script="set -e; ${mutex_script} if test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then rm -f $(printf '%q' "$recovery_marker") $(printf '%q' "$recovery_complete_marker") $(printf '%q' "$owner_path") $(printf '%q' "${deploy_lock_dir}/activation-unit") && rmdir $(printf '%q' "$deploy_lock_dir"); else echo 'blocked: deploy transaction no longer owns its lock' >&2; exit 1; fi"
 }
 
 render_lock_expiry_script() {
   local -n output_script="$1"
   local owner_path="${deploy_lock_dir}/owner"
-  local recovery_complete_marker recovery_marker
+  local recovery_complete_marker recovery_marker mutex_script
 
   recovery_marker="$(deploy_recovery_marker_path)"
   recovery_complete_marker="$(deploy_recovery_complete_marker_path)"
+  render_transaction_mutex_script mutex_script
 
   # A failed delayed rollback is a durable blocking state. It must be inspected
   # or superseded by a later, successful recovery rather than silently unlocked
   # by the ordinary stale-lock timer.
   # shellcheck disable=SC2034 # Assigned through the caller-provided nameref.
-  output_script="PATH=${deploy_target_path}; export PATH; if test -e $(printf '%q' "$recovery_marker"); then echo 'blocked: retaining deploy lock after failed delayed recovery' >&2; exit 1; elif test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then rm -f $(printf '%q' "$recovery_complete_marker") $(printf '%q' "$owner_path") && rmdir $(printf '%q' "$deploy_lock_dir"); elif ! test -e $(printf '%q' "$owner_path"); then rmdir $(printf '%q' "$deploy_lock_dir") 2>/dev/null || true; fi"
+  output_script="set -e; PATH=${deploy_target_path}; export PATH; ${mutex_script} if test -e $(printf '%q' "$recovery_marker"); then echo 'blocked: retaining deploy lock after failed delayed recovery' >&2; exit 1; elif test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then rm -f $(printf '%q' "$recovery_complete_marker") $(printf '%q' "$owner_path") $(printf '%q' "${deploy_lock_dir}/activation-unit") && rmdir $(printf '%q' "$deploy_lock_dir"); elif ! test -e $(printf '%q' "$owner_path"); then rmdir $(printf '%q' "$deploy_lock_dir") 2>/dev/null || true; fi"
 }
 
 render_runtime_timer_start_script() {
@@ -571,12 +581,12 @@ release_deploy_lock() {
     echo "blocked: refusing to release deploy lock while rollback unit ${rollback_unit} is not conclusively cancelled" >&2
     return 1
   }
-  assert_deploy_lock_token_owned
+  assert_deploy_lock_token_owned || return 1
   render_lock_release_script release_script
-  target_command "sudo /bin/sh -c $(printf '%q' "$release_script")"
+  target_command "sudo /bin/sh -c $(printf '%q' "$release_script")" || return 1
   if [[ -n "$lock_expiry_unit" ]]; then
     render_runtime_unit_cleanup_script release_script "$lock_expiry_unit"
-    target_command "sudo /bin/sh -c $(printf '%q' "$release_script")"
+    target_command "sudo /bin/sh -c $(printf '%q' "$release_script")" || return 1
   fi
   deploy_lock_acquired=false
   lock_expiry_unit=""
@@ -584,11 +594,13 @@ release_deploy_lock() {
 
 quiesce_active_activation() {
   local unit="${active_activation_unit:-}"
-  local quiesce_script
+  local quiesce_script mutex_script
 
   [[ -n "$unit" ]] || return 0
+  render_transaction_mutex_script mutex_script
   quiesce_script="sudo systemctl stop $(printf '%q' "$unit") >/dev/null 2>&1 || true; load_state=\$(sudo systemctl show -P LoadState $(printf '%q' "$unit") 2>/dev/null || true); active_state=\$(sudo systemctl show -P ActiveState $(printf '%q' "$unit") 2>/dev/null || true); case \"\$load_state:\$active_state\" in loaded:inactive|loaded:failed|not-found:inactive) ;; *) echo \"blocked: activation unit $(printf '%q' "$unit") remained in unsafe state: load=\$load_state active=\$active_state\" >&2; exit 1 ;; esac; sudo rm -f $(printf '%q' "${runtime_unit_dir}/${unit}.service"); sudo systemctl daemon-reload; sudo systemctl reset-failed $(printf '%q' "$unit") >/dev/null 2>&1 || true"
-  if ! target_command "$quiesce_script"; then
+  quiesce_script="set -e; ${mutex_script} ${quiesce_script}; if test -f $(printf '%q' "${deploy_lock_dir}/activation-unit") && test \"\$(cat $(printf '%q' "${deploy_lock_dir}/activation-unit"))\" = $(printf '%q' "$unit"); then rm -f $(printf '%q' "${deploy_lock_dir}/activation-unit"); fi"
+  if ! target_command "sudo /bin/sh -c $(printf '%q' "$quiesce_script")"; then
     echo "blocked: could not prove activation ${unit} was inactive before recovery" >&2
     return 1
   fi
@@ -599,7 +611,7 @@ run_detached_activation() {
   local toplevel="$1"
   local mode="$2"
   local label="$3"
-  local marker_guard recovery_complete_marker unit unit_content state="" result status start_command recovery_marker
+  local marker_guard recovery_complete_marker unit unit_content state="" result status start_command recovery_marker mutex_script
   local terminal_confirmations=0 terminal_confirmed=false
 
   deploy_validate_toplevel_path "$toplevel" || return 1
@@ -608,10 +620,10 @@ run_detached_activation() {
   recovery_complete_marker="$(deploy_recovery_complete_marker_path)"
   recovery_marker="$(deploy_recovery_marker_path)"
   if [[ "$label" == "rollback" ]]; then
-    assert_deploy_lock_token_owned
+    assert_deploy_lock_token_owned || return 1
     marker_guard=":"
   else
-    assert_deploy_lock_owned
+    assert_deploy_lock_owned || return 1
     marker_guard="test ! -e ${recovery_marker} && test ! -e ${recovery_complete_marker}"
   fi
   unit_content="[Unit]
@@ -621,7 +633,8 @@ X-StopOnRemoval=false
 [Service]
 Type=exec
 ExecStart=${toplevel}/bin/switch-to-configuration ${mode}"
-  start_command="sudo /bin/sh -c $(printf '%q' "set -e; test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && ${marker_guard}; printf '%s\\n' $(printf '%q' "$unit_content") > $(printf '%q' "${runtime_unit_dir}/${unit}.service.tmp"); chmod 0600 $(printf '%q' "${runtime_unit_dir}/${unit}.service.tmp"); mv -f $(printf '%q' "${runtime_unit_dir}/${unit}.service.tmp") $(printf '%q' "${runtime_unit_dir}/${unit}.service"); systemctl daemon-reload; systemctl start $(printf '%q' "$unit")")"
+  render_transaction_mutex_script mutex_script
+  start_command="sudo /bin/sh -c $(printf '%q' "set -e; ${mutex_script} test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && ${marker_guard} || exit 1; printf '%s\\n' $(printf '%q' "$unit") > $(printf '%q' "${deploy_lock_dir}/activation-unit"); printf '%s\\n' $(printf '%q' "$unit_content") > $(printf '%q' "${runtime_unit_dir}/${unit}.service.tmp"); chmod 0600 $(printf '%q' "${runtime_unit_dir}/${unit}.service.tmp"); mv -f $(printf '%q' "${runtime_unit_dir}/${unit}.service.tmp") $(printf '%q' "${runtime_unit_dir}/${unit}.service"); systemctl daemon-reload; systemctl start $(printf '%q' "$unit")")"
 
   echo "starting detached ${label} activation as ${unit}"
   active_activation_unit="$unit"
@@ -675,15 +688,68 @@ ExecStart=${toplevel}/bin/switch-to-configuration ${mode}"
 
 schedule_rollback() {
   local delay="$1"
-  local complete_marker_quoted failure_marker_quoted owner_path recovery_complete_marker recovery_marker rollback_script scheduled_unit timer_start_script
+  local complete_marker_quoted failure_marker_quoted owner_path recovery_complete_marker recovery_marker rollback_script scheduled_unit timer_start_script mutex_script
 
-  assert_deploy_lock_owned
+  assert_deploy_lock_owned || return 1
   owner_path="${deploy_lock_dir}/owner"
   recovery_marker="$(deploy_recovery_marker_path)"
   recovery_complete_marker="$(deploy_recovery_complete_marker_path)"
   failure_marker_quoted="$(printf '%q' "$recovery_marker")"
   complete_marker_quoted="$(printf '%q' "$recovery_complete_marker")"
-  rollback_script="PATH=${deploy_target_path}; export PATH; if test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token") && ! test -e ${failure_marker_quoted}; then status=0; $(printf '%q' "$previous_current/bin/switch-to-configuration") test || status=1; $(printf '%q' "$target_nix_env") --profile /nix/var/nix/profiles/system --set $(printf '%q' "$previous_boot") || status=1; $(printf '%q' "$previous_boot/bin/switch-to-configuration") boot || status=1; if test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then umask 077; if test \"\$status\" -eq 0; then rm -f ${failure_marker_quoted}; printf '%s\\n' 'delayed rollback completed; stale executor remains blocked until it exits or the lock expires' > ${complete_marker_quoted}; else rm -f ${complete_marker_quoted}; printf '%s\\n' 'delayed rollback failed; inspect the rollback service before clearing this lock' > ${failure_marker_quoted}; fi; fi; exit \$status; else echo 'stale deploy rollback no longer owns its transaction lock; skipping generation changes' >&2; exit 0; fi"
+  render_transaction_mutex_script mutex_script
+  # Fence before stopping the exact recorded unit. The mutex makes the fence
+  # atomic with starting an activation, recording a stamp, and committing boot.
+  # A crash during recovery retains recovery-failed and blocks stale executors.
+  rollback_script="PATH=${deploy_target_path}; export PATH; ${mutex_script}
+owner_path=$(printf '%q' "$owner_path")
+owner_token=$(printf '%q' "$deploy_lock_token")
+failure_marker=${failure_marker_quoted}
+complete_marker=${complete_marker_quoted}
+activation_path=$(printf '%q' "${deploy_lock_dir}/activation-unit")
+previous_current=$(printf '%q' "$previous_current")
+previous_boot=$(printf '%q' "$previous_boot")
+target_nix_env=$(printf '%q' "$target_nix_env")
+$(cat <<'ROLLBACK_SCRIPT'
+if ! test -f "$owner_path" || test "$(cat "$owner_path")" != "$owner_token"; then
+  echo 'stale deploy rollback no longer owns its transaction lock; skipping generation changes' >&2
+  exit 0
+fi
+if test -e "$failure_marker"; then
+  echo 'blocked: retaining deploy lock after failed delayed recovery' >&2
+  exit 1
+fi
+umask 077
+printf '%s\n' 'delayed recovery in progress or interrupted' >"$failure_marker" || exit 1
+rm -f "$complete_marker" || exit 1
+if test -f "$activation_path"; then
+  unit=$(cat "$activation_path") || exit 1
+  case "$unit" in
+    ''|*[!A-Za-z0-9_.@-]*) echo 'blocked: invalid recorded activation unit' >&2; exit 1 ;;
+    nixos-detached-*) ;;
+    *) echo 'blocked: invalid recorded activation unit' >&2; exit 1 ;;
+  esac
+  systemctl stop "$unit" >/dev/null 2>&1 || true
+  load_state=$(systemctl show -P LoadState "$unit" 2>/dev/null || true)
+  active_state=$(systemctl show -P ActiveState "$unit" 2>/dev/null || true)
+  case "$load_state:$active_state" in
+    loaded:inactive|loaded:failed|not-found:inactive) ;;
+    *) echo 'blocked: delayed recovery could not prove activation inactive' >&2; exit 1 ;;
+  esac
+fi
+status=0
+"$previous_current/bin/switch-to-configuration" test || status=1
+"$target_nix_env" --profile /nix/var/nix/profiles/system --set "$previous_boot" || status=1
+"$previous_boot/bin/switch-to-configuration" boot || status=1
+if test "$status" -eq 0; then
+  printf '%s\n' 'delayed rollback completed; stale executor remains blocked until it exits or the lock expires' >"$complete_marker" || exit 1
+  rm -f "$failure_marker" "$activation_path" || exit 1
+else
+  rm -f "$complete_marker"
+fi
+exit "$status"
+ROLLBACK_SCRIPT
+)"
+
   scheduled_unit="nixhomeserver-deploy-rollback-${HOSTNAME_ARG}-$(date +%s%N)-$$"
   render_runtime_timer_start_script timer_start_script \
     "$scheduled_unit" "$delay" "NixHomeServer interrupted deploy rollback" "$rollback_script"
@@ -697,9 +763,9 @@ cancel_scheduled_rollback() {
 
   [[ -n "$rollback_unit" ]] || return 0
   if [[ "$recovery_mode" == "true" ]]; then
-    assert_deploy_lock_token_owned
+    assert_deploy_lock_token_owned || return 1
   else
-    assert_deploy_lock_owned
+    assert_deploy_lock_owned || return 1
   fi
   rollback_timer="${rollback_unit}.timer"
   rollback_service="${rollback_unit}.service"
@@ -712,7 +778,7 @@ cancel_scheduled_rollback() {
   # second service stop after that proof so cancellation cannot interrupt a
   # rollback that somehow raced its timer shutdown.
   render_runtime_unit_cleanup_script cleanup_script "$rollback_unit" false
-  cancel_script="set -e; test -f $(printf '%q' "$deploy_lock_dir/owner"); test \"\$(cat $(printf '%q' "$deploy_lock_dir/owner"))\" = $(printf '%q' "$deploy_lock_token"); ${marker_guard}; systemctl stop $(printf '%q' "$rollback_timer") >/dev/null 2>&1 || true; for unit in $(printf '%q' "$rollback_timer") $(printf '%q' "$rollback_service"); do state=\$(systemctl show -P ActiveState \"\$unit\" 2>/dev/null || true); case \"\$state\" in inactive|failed) ;; *) echo \"blocked: rollback unit \$unit remained in unsafe state: \$state\" >&2; exit 1 ;; esac; done; ${marker_guard}; ${cleanup_script}"
+  cancel_script="set -e; test -f $(printf '%q' "$deploy_lock_dir/owner"); test \"\$(cat $(printf '%q' "$deploy_lock_dir/owner"))\" = $(printf '%q' "$deploy_lock_token"); ${marker_guard} || exit 1; systemctl stop $(printf '%q' "$rollback_timer") >/dev/null 2>&1 || true; for unit in $(printf '%q' "$rollback_timer") $(printf '%q' "$rollback_service"); do state=\$(systemctl show -P ActiveState \"\$unit\" 2>/dev/null || true); case \"\$state\" in inactive|failed) ;; *) echo \"blocked: rollback unit \$unit remained in unsafe state: \$state\" >&2; exit 1 ;; esac; done; ${marker_guard} || exit 1; ${cleanup_script}"
   # The transaction lock is root-only, so cancellation and its ownership
   # checks must execute in one privileged shell just like acquisition/release.
   target_command "sudo /bin/sh -c $(printf '%q' "$cancel_script")" || return
@@ -721,17 +787,19 @@ cancel_scheduled_rollback() {
 
 rollback_live_generation() {
   [[ -n "$previous_current" ]] || return 1
-  quiesce_active_activation
-  assert_deploy_lock_token_owned
+  quiesce_active_activation || return 1
+  assert_deploy_lock_token_owned || return 1
   echo "rolling live target back to ${previous_current}" >&2
   run_detached_activation "$previous_current" test rollback
 }
 
 restore_boot_generation() {
+  local mutex_script
+  render_transaction_mutex_script mutex_script
   [[ -n "$previous_boot" ]] || return 1
-  assert_deploy_lock_token_owned
+  assert_deploy_lock_token_owned || return 1
   echo "restoring boot profile ${previous_boot}" >&2
-  target_command "sudo /bin/sh -c $(printf '%q' "test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && $(printf '%q' "$target_nix_env") --profile /nix/var/nix/profiles/system --set $(printf '%q' "$previous_boot") && $(printf '%q' "$previous_boot/bin/switch-to-configuration") boot")"
+  target_command "sudo /bin/sh -c $(printf '%q' "set -e; ${mutex_script} test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && $(printf '%q' "$target_nix_env") --profile /nix/var/nix/profiles/system --set $(printf '%q' "$previous_boot") && $(printf '%q' "$previous_boot/bin/switch-to-configuration") boot")"
 }
 
 handle_transaction_failure() {
@@ -806,9 +874,9 @@ clear_deploy_transaction_traps() {
 write_test_stamp() {
   local toplevel="$1"
   local debug_validated="false"
-  local gcroot_dir_quoted gcroot_path_quoted recovery_marker source_hash_quoted stamp_path_quoted toplevel_quoted write_script
+  local gcroot_dir_quoted gcroot_path_quoted recovery_marker source_hash_quoted stamp_path_quoted toplevel_quoted write_script mutex_script
 
-  assert_deploy_lock_owned
+  assert_deploy_lock_owned || return 1
   recovery_marker="$(deploy_recovery_marker_path)"
   # The attestation is only ever true when this very transaction ran the full
   # repository validation, so a validator failure can never leave a usable
@@ -828,7 +896,8 @@ write_test_stamp() {
   toplevel_quoted="$(printf '%q' "$toplevel")"
   debug_validated_quoted="$(printf '%q' "$debug_validated")"
 
-  write_script="set -e; test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && ! test -e ${recovery_marker} && ! test -e $(deploy_recovery_complete_marker_path); install -d -m 0700 $(printf '%q' "$deploy_state_dir"); install -d $gcroot_dir_quoted; if test -e $gcroot_path_quoted && ! test -L $gcroot_path_quoted; then echo 'blocked: tested closure GC root is not a symlink' >&2; exit 1; fi; ln -sfn $toplevel_quoted $gcroot_path_quoted; tmp=\$(mktemp ${stamp_path_quoted}.tmp.XXXXXX); trap 'rm -f \"\$tmp\"' EXIT; printf 'version=2\\nsource_hash=%s\\ntoplevel=%s\\ndebug_validated=%s\\n' $source_hash_quoted $toplevel_quoted $debug_validated_quoted >\"\$tmp\"; chmod 0600 \"\$tmp\"; chown root:root \"\$tmp\"; mv -f \"\$tmp\" $stamp_path_quoted; trap - EXIT"
+  render_transaction_mutex_script mutex_script
+  write_script="set -e; ${mutex_script} test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && ! test -e ${recovery_marker} && ! test -e $(deploy_recovery_complete_marker_path) || exit 1; install -d -m 0700 $(printf '%q' "$deploy_state_dir"); install -d $gcroot_dir_quoted; if test -e $gcroot_path_quoted && ! test -L $gcroot_path_quoted; then echo 'blocked: tested closure GC root is not a symlink' >&2; exit 1; fi; ln -sfn $toplevel_quoted $gcroot_path_quoted; tmp=\$(mktemp ${stamp_path_quoted}.tmp.XXXXXX); trap 'rm -f \"\$tmp\"' EXIT; printf 'version=2\\nsource_hash=%s\\ntoplevel=%s\\ndebug_validated=%s\\n' $source_hash_quoted $toplevel_quoted $debug_validated_quoted >\"\$tmp\"; chmod 0600 \"\$tmp\"; chown root:root \"\$tmp\"; mv -f \"\$tmp\" $stamp_path_quoted; trap - EXIT"
   target_command "sudo /bin/sh -c $(printf '%q' "$write_script")"
 }
 
@@ -883,13 +952,14 @@ run_health_gates() {
 
 commit_boot_generation() {
   local toplevel="$1"
-  local recovery_complete_marker recovery_marker
+  local recovery_complete_marker recovery_marker mutex_script
 
-  assert_deploy_lock_owned
+  assert_deploy_lock_owned || return 1
   recovery_complete_marker="$(deploy_recovery_complete_marker_path)"
   recovery_marker="$(deploy_recovery_marker_path)"
   boot_commit_started=true
-  target_command "sudo /bin/sh -c $(printf '%q' "test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && ! test -e ${recovery_marker} && ! test -e ${recovery_complete_marker} && $(printf '%q' "$target_nix_env") --profile /nix/var/nix/profiles/system --set $(printf '%q' "$toplevel") && $(printf '%q' "$toplevel/bin/switch-to-configuration") boot")"
+  render_transaction_mutex_script mutex_script
+  target_command "sudo /bin/sh -c $(printf '%q' "set -e; ${mutex_script} test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && ! test -e ${recovery_marker} && ! test -e ${recovery_complete_marker} && $(printf '%q' "$target_nix_env") --profile /nix/var/nix/profiles/system --set $(printf '%q' "$toplevel") && $(printf '%q' "$toplevel/bin/switch-to-configuration") boot")"
 }
 
 # The full repository validation is expensive (10-15 minutes) and belongs to
@@ -975,7 +1045,7 @@ case "$ACTION" in
       false
     }
     target_command "test -x $(printf '%q' "$built_toplevel/bin/switch-to-configuration")"
-    assert_deploy_lock_owned
+    assert_deploy_lock_owned || return 1
     schedule_rollback "24h"
     activation_started=true
     run_detached_activation "$built_toplevel" test tested-build
@@ -1012,7 +1082,7 @@ case "$ACTION" in
       false
     fi
     run_health_gates
-    assert_deploy_lock_owned
+    assert_deploy_lock_owned || return 1
     commit_boot_generation "$stamped_toplevel"
     cancel_scheduled_rollback
     release_deploy_lock

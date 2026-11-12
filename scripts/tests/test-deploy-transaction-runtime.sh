@@ -441,11 +441,15 @@ encoded_rollback="${encoded_rollback%% > *}"
 rollback_script=""
 eval "rollback_script=${encoded_rollback}"
 
+# shellcheck disable=SC2016 # Assert the variables retained in the rendered target script.
 for required in \
   "PATH=/run/current-system/sw/bin:/usr/bin:/bin; export PATH" \
-  "$previous_current/bin/switch-to-configuration test" \
-  "$target_nix_env --profile /nix/var/nix/profiles/system --set $previous_boot" \
-  "$previous_boot/bin/switch-to-configuration boot" \
+  "previous_current=$previous_current" \
+  "target_nix_env=$target_nix_env" \
+  "previous_boot=$previous_boot" \
+  '"$previous_current/bin/switch-to-configuration" test' \
+  '"$target_nix_env" --profile /nix/var/nix/profiles/system --set "$previous_boot"' \
+  '"$previous_boot/bin/switch-to-configuration" boot' \
   "$deploy_lock_dir/owner" \
   "$deploy_lock_token"; do
   if [[ "$rollback_script" != *"$required"* ]]; then
@@ -455,9 +459,12 @@ for required in \
   fi
 done
 
-live_position="${rollback_script%%"$previous_current/bin/switch-to-configuration test"*}"
-profile_position="${rollback_script%%"$target_nix_env --profile"*}"
-boot_position="${rollback_script%%"$previous_boot/bin/switch-to-configuration boot"*}"
+# shellcheck disable=SC2016 # These are literal commands in the generated rollback script.
+live_position="${rollback_script%%'"$previous_current/bin/switch-to-configuration" test'*}"
+# shellcheck disable=SC2016
+profile_position="${rollback_script%%'"$target_nix_env" --profile'*}"
+# shellcheck disable=SC2016
+boot_position="${rollback_script%%'"$previous_boot/bin/switch-to-configuration" boot'*}"
 if (( ${#live_position} >= ${#profile_position} || ${#profile_position} >= ${#boot_position} )); then
   echo "❌ Delayed rollback does not restore live, profile, and boot state in order."
   exit 1
@@ -548,6 +555,134 @@ if [[ "$(cat "$rollback_runtime_log")" != "$(printf 'live:test\n%s\nboot:boot' "
   exit 1
 fi
 
+# A real orphan can leave its detached activation alive. Recovery must fence
+# first, stop exactly that unit, and hold the mutex until restoration completes.
+# This protects live/boot data from two switch-to-configuration processes.
+rollback_mock_bin="$rollback_fixture/bin"
+mkdir "$rollback_mock_bin"
+cat >"$rollback_mock_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  stop)
+    test -f "$TEST_RECOVERY_LOCK/recovery-failed"
+    printf 'stop:%s\n' "$2" >>"$TEST_ROLLBACK_RUNTIME_LOG"
+    if [[ "${TEST_RECOVERY_PAUSE:-0}" == 1 ]]; then
+      printf 'ready\n' >"$TEST_RECOVERY_READY"
+      read -r _ <"$TEST_RECOVERY_RELEASE"
+    fi
+    ;;
+  show)
+    case "$3" in
+      LoadState) printf 'loaded\n' ;;
+      ActiveState)
+        if [[ "${TEST_RECOVERY_STILL_ACTIVE:-0}" == 1 ]]; then
+          printf 'active\n'
+        else
+          printf 'inactive\n'
+        fi
+        ;;
+      *) exit 2 ;;
+    esac
+    ;;
+  *) exit 2 ;;
+esac
+EOF
+make_test_executable "$rollback_mock_bin/systemctl"
+export TEST_RECOVERY_LOCK="$deploy_lock_dir"
+export TEST_RECOVERY_READY="$rollback_fixture/recovery-ready"
+export TEST_RECOVERY_RELEASE="$rollback_fixture/recovery-release"
+mkfifo "$TEST_RECOVERY_READY" "$TEST_RECOVERY_RELEASE"
+exec {recovery_ready_fd}<>"$TEST_RECOVERY_READY"
+exec {recovery_release_fd}<>"$TEST_RECOVERY_RELEASE"
+export TEST_RECOVERY_PAUSE=1
+deploy_target_path="$rollback_mock_bin:$PATH"
+rm -f "$deploy_lock_dir/recovery-complete"
+printf '%s\n' 'nixos-detached-orphan-123' >"$deploy_lock_dir/activation-unit"
+: >"$rollback_runtime_log"
+schedule_rollback "15m"
+encoded_rollback="${captured_target_command##* /bin/sh -c }"
+eval "schedule_script=${encoded_rollback}"
+encoded_rollback="${schedule_script#*printf \'%s\\n\' }"
+encoded_rollback="${encoded_rollback%% > *}"
+eval "matching_rollback_script=${encoded_rollback}"
+# Capture the real boot-commit command before recovery starts, as a suspended
+# executor would have already passed the outer ownership check.
+commit_boot_generation "$previous_boot"
+encoded_commit="${captured_target_command#sudo /bin/sh -c }"
+concurrent_commit_script=""
+eval "concurrent_commit_script=${encoded_commit}"
+timeout 15s /bin/sh -c "$matching_rollback_script" &
+recovery_pid=$!
+if ! read -r -t 10 recovery_ready <&"$recovery_ready_fd"; then
+  echo "❌ Delayed recovery never attempted to quiesce its recorded activation."
+  kill "$recovery_pid" 2>/dev/null || true
+  wait "$recovery_pid" 2>/dev/null || true
+  exit 1
+fi
+if [[ "$recovery_ready" != ready ]] \
+  || flock -n "${deploy_lock_dir}.mutex" true; then
+  echo "❌ Delayed recovery did not retain its mutex while stopping activation."
+  exit 1
+fi
+/bin/sh -c "$concurrent_commit_script" &
+concurrent_commit_pid=$!
+printf 'continue\n' >&"$recovery_release_fd"
+wait "$recovery_pid"
+exec {recovery_ready_fd}>&-
+exec {recovery_release_fd}>&-
+if wait "$concurrent_commit_pid"; then
+  echo "❌ A resumed boot commit succeeded across delayed recovery."
+  exit 1
+fi
+if [[ "$(cat "$rollback_runtime_log")" != "$(printf 'stop:nixos-detached-orphan-123\nlive:test\n%s\nboot:boot' "$expected_profile_event")" ]] \
+  || [[ -e "$deploy_lock_dir/activation-unit" ]] \
+  || [[ ! -f "$deploy_lock_dir/recovery-complete" ]]; then
+  echo "❌ Delayed recovery restored generations before fencing and quiescing the exact unit."
+  cat "$rollback_runtime_log"
+  exit 1
+fi
+unset TEST_RECOVERY_PAUSE
+# Failure to prove inactivity must preserve a blocking marker and perform no
+# generation writes, even when systemctl stop itself returns success.
+rm -f "$deploy_lock_dir/recovery-complete"
+printf '%s\n' 'nixos-detached-orphan-456' >"$deploy_lock_dir/activation-unit"
+: >"$rollback_runtime_log"
+export TEST_RECOVERY_STILL_ACTIVE=1
+if /bin/sh -c "$matching_rollback_script" >"$tmpdir/recovery-still-active.log" 2>&1; then
+  echo "❌ Delayed recovery accepted a still-running activation."
+  exit 1
+fi
+if [[ "$(cat "$rollback_runtime_log")" != 'stop:nixos-detached-orphan-456' ]] \
+  || [[ ! -f "$deploy_lock_dir/recovery-failed" ]] \
+  || [[ -e "$deploy_lock_dir/recovery-complete" ]]; then
+  echo "❌ Unproven activation quiescence did not block generation restoration."
+  exit 1
+fi
+# Lock acquisition failure must never fall through into restoration.
+cat >"$rollback_mock_bin/flock" <<'EOF'
+#!/usr/bin/env bash
+exit 73
+EOF
+make_test_executable "$rollback_mock_bin/flock"
+rm -f "$deploy_lock_dir/recovery-failed"
+: >"$rollback_runtime_log"
+if /bin/sh -c "$matching_rollback_script"; then
+  echo "❌ Delayed recovery continued after mutex acquisition failed."
+  exit 1
+fi
+if [[ -s "$rollback_runtime_log" ]]; then
+  echo "❌ Failed mutex acquisition allowed generation or activation mutations."
+  exit 1
+fi
+rm "$rollback_mock_bin/flock"
+# Restore the completed-recovery fixture consumed by cancellation checks below.
+printf 'completed fixture\n' >"$deploy_lock_dir/recovery-complete"
+
+unset TEST_RECOVERY_STILL_ACTIVE
+boot_commit_started=false
+deploy_target_path="$PATH"
+
 failed_rollback_lock="$rollback_fixture/failed.lock"
 deploy_lock_dir="$failed_rollback_lock"
 mkdir "$deploy_lock_dir"
@@ -598,7 +733,7 @@ activation_state_calls="$tmpdir/activation-state-calls"
 activation_poll_attempts=5
 activation_poll_interval=0
 target_command() {
-  if [[ "$1" == *"sudo systemctl stop"* ]]; then
+  if [[ "$1" == *"systemctl\\ stop"* ]]; then
     printf 'quiesce\n' >>"$activation_events"
     return 0
   fi
@@ -643,7 +778,7 @@ fi
 activation_poll_attempts=1
 activation_poll_interval=0
 target_command() {
-  if [[ "$1" == *"sudo systemctl stop"* ]]; then
+  if [[ "$1" == *"systemctl\\ stop"* ]]; then
     printf 'quiesce\n' >>"$activation_events"
     return 0
   fi
@@ -926,6 +1061,32 @@ for signal_case in HUP:129 INT:130 TERM:143; do
     cat "$tmpdir/signal-${signal_name}.log"
     exit 1
   fi
+done
+
+# Recovery invokes release in an OR-list, which disables implicit errexit.
+# Neither a failed release nor failed timer cleanup may report completion.
+for failed_release_call in 1 2; do
+  (
+    deploy_lock_acquired=true
+    rollback_unit=""
+    lock_expiry_unit="expiry-retained-on-error"
+    release_calls=0
+    assert_deploy_lock_token_owned() { return 0; }
+    target_command() {
+      release_calls=$((release_calls + 1))
+      [[ "$release_calls" != "$failed_release_call" ]]
+    }
+    if release_deploy_lock; then
+      echo "❌ Lock release ignored a failed target mutation."
+      exit 1
+    fi
+    if [[ "$deploy_lock_acquired" != true ]] \
+      || [[ "$lock_expiry_unit" != expiry-retained-on-error ]] \
+      || ((release_calls != failed_release_call)); then
+      echo "❌ Failed release discarded recovery state or continued timer cleanup."
+      exit 1
+    fi
+  )
 done
 
 echo "✅ Deploy transaction runtime tests passed."
