@@ -75,10 +75,9 @@ pub(super) fn tools(config: &Option<Config>, context: &RequestContext<RoleServer
     if let (Some(config), Ok(caller)) = (
         config.as_ref(),
         crate::gateway::AuthenticatedCaller::require(context),
-    ) {
-        if caller.username() == config.username {
-            return definitions();
-        }
+    ) && caller.username() == config.username
+    {
+        return definitions();
     }
     Vec::new()
 }

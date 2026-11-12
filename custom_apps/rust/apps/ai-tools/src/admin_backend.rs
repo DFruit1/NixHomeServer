@@ -275,10 +275,10 @@ async fn execute(config: &Config, operation: &Operation) -> Result<Value, Failur
         .map_err(|_| (StatusCode::BAD_GATEWAY, "Service state is unavailable"))?;
     let mut state = serde_json::Map::new();
     for line in text.lines() {
-        if let Some((key, value)) = line.split_once('=') {
-            if PROPERTIES.contains(&key) {
-                state.insert(key.to_owned(), json!(value));
-            }
+        if let Some((key, value)) = line.split_once('=')
+            && PROPERTIES.contains(&key)
+        {
+            state.insert(key.to_owned(), json!(value));
         }
     }
     Ok(

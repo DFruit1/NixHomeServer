@@ -226,9 +226,7 @@ pub(crate) async fn call(
         Ok(a) => a,
         Err(e) => return Some(Err(e)),
     };
-    if server.config.office_socket.is_none() {
-        return None;
-    }
+    server.config.office_socket.as_ref()?;
     let params = serde_json::from_value::<Params>(json!(request
         .arguments
         .as_ref()

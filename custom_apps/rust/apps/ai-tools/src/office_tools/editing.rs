@@ -401,10 +401,10 @@ async fn execute(
             let object = row
                 .as_object_mut()
                 .ok_or("Each operation must be an object")?;
-            if !object.contains_key("target") {
-                if let Some(destination) = &params.destination {
-                    object.insert("target".into(), destination.clone());
-                }
+            if !object.contains_key("target")
+                && let Some(destination) = &params.destination
+            {
+                object.insert("target".into(), destination.clone());
             }
             let target = object
                 .get("target")
