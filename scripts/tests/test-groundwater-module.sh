@@ -133,18 +133,30 @@ jq -e '
   and (all(.disabled, .removed; .services == [] and .groups == [] and .users == [] and .gateway == [] and .backups == {} and .firewall == {} and .database == []))
 ' <<<"$settings" >/dev/null
 
-# Firmware must publish ACKs without permission to write desired config or
-# other command topics. Check every listener, including LAN and NetBird.
+# Retain both documented firmware protocols. Devices may publish telemetry and
+# ACKs, but never write desired configuration or command topics. Check every
+# listener, including LAN and NetBird.
 jq -e '
   all(.services.mosquitto.listeners[];
     .users["groundwater-logger"].acl as $acl
     | ($acl | index("read cfg/#") != null)
-    and ([$acl[] | select(startswith("write ") or startswith("readwrite "))] | sort == [
+    and ($acl | index("read requesttesta") != null)
+    and ($acl | index("read cmd/#") != null)
+    and ($acl | index("read gwl/v1/+/config/set") != null)
+    and ($acl | index("read gwl/v1/+/config/desired") != null)
+    and ($acl | index("read gwl/v1/+/cmd/test") != null)
+    and ($acl | index("read gwl/v1/+/cmd/danger") != null)
+    and ([$acl[] | select(startswith("write ") or startswith("readwrite "))] | sort == ([
       "readwrite azman1/feeds/#", "readwrite testtopic/9",
-      "write cfg/danger_ack", "write cfg/desired/applied"
-    ]))
+      "write cfg/danger_ack", "write cfg/desired/applied",
+      "write gwl/v1/+/reading", "write gwl/v1/+/status",
+      "write gwl/v1/+/gps", "write gwl/v1/+/storage",
+      "write gwl/v1/+/motion", "write gwl/v1/+/alerts",
+      "write gwl/v1/+/test/result", "write gwl/v1/+/config/applied",
+      "write gwl/v1/+/cmd/ack", "write gwl/v1/+/info"
+    ] | sort)))
 ' <<<"$settings" >/dev/null || {
-  echo '❌ Device MQTT ACLs must allow only telemetry/test writes and the two firmware ACK topics.' >&2
+  echo '❌ Device MQTT ACLs must retain command reads and only approved telemetry/test/ACK writes for both firmware protocols.' >&2
   exit 1
 }
 

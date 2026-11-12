@@ -1,6 +1,9 @@
-{ config, lib, pkgs, vars, ... }:
+{ config, lib, options, pkgs, vars, ... }:
 let
   cfg = config.repo.paperlessGpt;
+  dependenciesPresent = lib.all
+    (name: lib.hasAttrByPath [ "repo" name ] options)
+    [ "paperlessGpt" "paperless" "bonsai" ];
   owner = vars.localAdminUser;
   provision = pkgs.writeText "paperless-gpt-provision.py" ''
     import os
@@ -51,8 +54,9 @@ let
     with open(os.environ["PAPERLESS_GPT_ENV_OUT"], "w") as f:
         f.write("PAPERLESS_API_TOKEN=" + token.key + "\n")
   '';
-in {
-  config = lib.mkIf cfg.enable {
+in
+{
+  config = lib.optionalAttrs dependenciesPresent (lib.mkIf cfg.enable {
     assertions = [{
       assertion = config.repo.bonsai.enable && config.repo.bonsai.gate.enable;
       message = "Paperless-GPT requires enabled Bonsai and its inference concurrency gate.";
@@ -107,5 +111,5 @@ in {
         install -m 0600 -o root -g root "$temp" /run/paperless-gpt-credentials/environment
       '';
     };
-  };
+  });
 }

@@ -11,7 +11,7 @@ in
     services.kanidm.provision.systems.oauth2.auth-gateway-web.scopeMaps.ai-users =
       [ "openid" "profile" "email" "groups_name" ];
     nixhomeserver.kanidmGroupDescriptions.ai-users =
-      "Grants access to the private Qwen3.8-27B chat UI and API.";
+      "Grants access to private AI tools and shared local models.";
 
     users.users.qwen-27b = {
       isSystemUser = true;

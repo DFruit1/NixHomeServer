@@ -37,7 +37,7 @@ searxng_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
     };
   }];
   routePublish = [{
-    repo.authGateway.protectedApps.aiTools.authenticatedRoutes = [{
+    repo.authGateway.protectedApps.searx.authenticatedRoutes = [{
       pathPrefix = "/search";
       upstream = "http://127.0.0.1:${toString vars.networking.ports.searxng}";
     }];
@@ -73,8 +73,8 @@ in {
   execStart = service.serviceConfig.ExecStart;
   searxngUser = cfg.users.users.searxng.isSystemUser;
 
-  # A legitimate ai-tools upstream on its own port must not trip the invariant.
-  aiToolsUpstream = cfg.repo.authGateway.protectedApps.aiTools.upstream;
+  # The actual AI Tools Unix-socket handler must not trip the invariant.
+  aiToolsSafe = messages cfg;
 
   caddyVariants = {
     plain = firesOn (caddyPublish "reverse_proxy http://127.0.0.1:8098");
@@ -84,7 +84,9 @@ in {
     ipv6Loopback = firesOn (caddyPublish "reverse_proxy http://[::1]:8098");
   };
   gatewayUpstream = firesOn (gatewayPublish "http://127.0.0.1:8098");
-  authenticatedRoute = firesOn routePublish;
+  # Exercise authenticated sub-routes on a synthetic HTTP-upstream app, keeping
+  # the actual AI Tools direct-handler shape intact.
+  authenticatedRoute = firesOn (gatewayPublish "http://127.0.0.1:8097" ++ routePublish);
   portDrift = firesOn driftedPort;
 
   # A neighbouring port on the same host is not SearXNG and must stay allowed.
@@ -111,7 +113,7 @@ jq -e '
   and (.ioWeight == 20)
   and (.after | index("systemd-sysusers.service") != null)
   and (.wants | index("network-online.target") != null)
-  and (.aiToolsUpstream == "http://127.0.0.1:8097")
+  and (.aiToolsSafe | length == 0)
 ' <<<"$searxng_json" >/dev/null || {
   echo "❌ SearXNG must own its own port registration, keep the loopback bind, and run the shipped searxng-run binary."
   jq . <<<"$searxng_json"
