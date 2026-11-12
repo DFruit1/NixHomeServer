@@ -672,6 +672,14 @@ the local poweroff with Ctrl-C in that window or `loginctl -c`.
 scripts/admin/desktop-server-shutdown.sh --timeout 60 --grace 60 --local-grace 5
 ```
 
+The runner blocks desktop idle/sleep with `systemd-inhibit` or
+`elogind-inhibit` until it exits. Before starting the server countdown, it also
+sets the existing power scheduler's `resume-hold.json` to at least two hours
+from now, preserving a longer hold, and renews it hourly while waiting. This
+postpones nightly suspend without changing the configured schedule. The server
+hold expires automatically, including after cancellation; desktop protection
+ends with the runner. Failure to acquire either protection stops the sequence.
+
 Use `--dry-run` to print the plan without touching the server or the PC, and
 `--no-local-shutdown` to manage only the server.
 

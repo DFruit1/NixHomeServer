@@ -107,6 +107,13 @@ printf '%s\n' "$*" >>"${MOCK_FLAGS}/systemd-run.log"
 [[ ! -e "${MOCK_FLAGS}/systemd_run_fail" ]]
 EOF
 
+# Keep the desktop fixture independent of the host's login manager.
+cat >"$mock_bin/systemd-inhibit" <<'EOF'
+#!/usr/bin/env bash
+while [[ "${1:-}" == --* ]]; do shift; done
+exec "$@"
+EOF
+
 cat >"$mock_bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${MOCK_FLAGS}/ssh.log"
@@ -127,6 +134,7 @@ make_test_executable \
   "$mock_bin/shutdown" \
   "$mock_bin/systemd-run" \
   "$mock_bin/ssh" \
+  "$mock_bin/systemd-inhibit" \
   "$mock_bin/nixhomeserver-shutdown-guard"
 
 export MOCK_FLAGS="$flags"

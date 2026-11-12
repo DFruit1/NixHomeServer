@@ -39,7 +39,15 @@ do not ask again. A request to implement the skill alone does not.
    pending server shutdown on interruption. Do not detach only the server start
    command; the desktop runner must stay alive to relay activity and schedule
    local shutdown after the server goes down.
-4. Verify the runner remains alive and read the server guard status again.
+4. Verify sleep protection before leaving the runner: use `elogind-inhibit
+   --list` (or `systemd-inhibit --list`) to confirm `guarded-shutdown` blocks
+   desktop `idle:sleep`, and read the server's
+   `/var/lib/power-schedule/resume-hold.json` to confirm `holdUntil` is at least
+   two hours after launch (or retains a longer existing hold). The script renews
+   this hold hourly while waiting; it expires automatically without changing the
+   normal schedule. The desktop inhibitor is released when the runner exits.
+   If protection cannot be acquired, resolve the failure before retrying.
+5. Verify the runner remains alive and read the server guard status again.
    Report the actual state and scheduled deadline, plus the desktop countdown
    timing. Starting the runner is not proof either machine has powered off.
    If launch fails, inspect the failure and server status before retrying;

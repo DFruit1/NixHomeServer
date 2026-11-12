@@ -12,6 +12,9 @@
 
 set -euo pipefail
 
+ORIGINAL_ARGS=("$@")
+SLEEP_HOLD_REFRESH=0
+
 HOST="${DESKTOP_SERVER_SHUTDOWN_HOST:-dsaw@192.168.8.12}"
 GUARD="nixhomeserver-shutdown-guard"
 STATUS_FILE="/run/nixhomeserver-shutdown-guard/status"
@@ -69,7 +72,6 @@ cleanup_on_exit() {
   fi
   return "$rc"
 }
-trap cleanup_on_exit INT TERM HUP EXIT
 
 while (($# > 0)); do
   case "$1" in
@@ -130,6 +132,34 @@ require_minutes "$POLL_TIMEOUT_MIN" "--poll-timeout"
 
 remote() {
   ssh "${SSH_OPTS[@]}" "$HOST" "$@"
+}
+
+# Reuse the power scheduler's expiring hold, retaining any longer early-wake
+# hold. Refresh hourly so active work can extend the shutdown beyond two hours.
+protect_server_sleep() {
+  local now
+  now="$(date +%s)"
+  (( now >= SLEEP_HOLD_REFRESH )) || return 0
+  remote sudo bash -s <<'REMOTE'
+set -euo pipefail
+state=/var/lib/power-schedule
+install -d -m 0755 "$state"
+exec 9>"$state/guarded-shutdown-hold.lock"
+flock 9
+until_epoch=$(( $(date +%s) + 7200 ))
+if [[ -e "$state/resume-hold.json" ]]; then
+  existing="$(jq -er '.holdUntil | numbers' "$state/resume-hold.json")"
+  [[ "$existing" =~ ^[0-9]+$ ]] || exit 1
+  (( existing >= until_epoch )) && exit 0
+fi
+# Same-directory rename preserves atomic reads by the scheduler.
+tmp="$(mktemp "$state/.guarded-shutdown-hold.XXXXXX")"
+trap 'rm -f -- "$tmp"' EXIT
+printf '{"holdUntil":%s}\n' "$until_epoch" >"$tmp"
+chmod 0644 "$tmp"
+mv -f -- "$tmp" "$state/resume-hold.json"
+REMOTE
+  SLEEP_HOLD_REFRESH=$(( now + 3600 ))
 }
 
 server_reachable() {
@@ -193,6 +223,7 @@ desktop_work_active() {
 wait_for_server_deadline() {
   local remaining=$(( TIMEOUT_MIN * 60 )) step
   while (( remaining > 0 )); do
+    protect_server_sleep
     if desktop_work_active; then
       if ! remote sudo "$GUARD" mark-activity >/dev/null; then
         printf 'Could not report desktop work to the server; retrying at the next check.\n' >&2
@@ -275,12 +306,34 @@ EOF
 if [[ "$DRY_RUN" == true ]]; then
   printf 'dry-run: host=%s timeout=%sm grace=%sm poll=%ss poll_timeout=%sm local_grace=%sm local_shutdown=%s\n' \
     "$HOST" "$TIMEOUT_MIN" "$GRACE_MIN" "$POLL_SEC" "$POLL_TIMEOUT_MIN" "$LOCAL_GRACE_MIN" "$LOCAL_SHUTDOWN"
+  printf 'dry-run: would inhibit desktop idle/sleep while running and renew a two-hour server sleep hold hourly.\n'
   printf 'dry-run: would run: ssh %s sudo %s start --timeout %s --grace %s\n' \
     "$HOST" "$GUARD" "$TIMEOUT_MIN" "$GRACE_MIN"
   exit 0
 fi
 
 command -v ssh >/dev/null 2>&1 || die "ssh is required"
+
+# The inhibitor owns the child lifetime and releases its lock on exit, including
+# cancellation. Do not inhibit shutdown: the final poweroff must remain usable.
+if [[ "${DESKTOP_SHUTDOWN_SLEEP_INHIBITED:-}" != 1 ]]; then
+  inhibitor=""
+  for candidate in systemd-inhibit elogind-inhibit; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      inhibitor="$candidate"
+      break
+    fi
+  done
+  [[ -n "$inhibitor" ]] || die "systemd-inhibit or elogind-inhibit is required for desktop sleep protection"
+  exec env DESKTOP_SHUTDOWN_SLEEP_INHIBITED=1 "$inhibitor" \
+    --what=idle:sleep --mode=block --who=guarded-shutdown \
+    --why="Waiting for guarded server and desktop shutdown" \
+    bash "$0" "${ORIGINAL_ARGS[@]}"
+fi
+
+protect_server_sleep
+printf 'Sleep protection active: desktop inhibitor and renewable two-hour server hold.\n'
+trap cleanup_on_exit INT TERM HUP EXIT
 
 printf 'Requesting guarded shutdown on %s in %s minutes (grace %s minutes)...\n' \
   "$HOST" "$TIMEOUT_MIN" "$GRACE_MIN"
@@ -293,6 +346,7 @@ printf 'Polling %s until it powers off...\n' "$HOST"
 poll_deadline=$(( $(date +%s) + POLL_TIMEOUT_MIN * 60 ))
 consecutive_failures=0
 while server_reachable; do
+  protect_server_sleep
   status="$(remote sudo cat "$STATUS_FILE" 2>/dev/null || true)"
   state="$(printf '%s\n' "$status" | sed -n 's/^state=//p')"
   message="$(printf '%s\n' "$status" | sed -n 's/^message=//p')"
