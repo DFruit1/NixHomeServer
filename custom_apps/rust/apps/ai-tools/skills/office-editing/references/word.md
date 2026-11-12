@@ -28,6 +28,8 @@ For new records the editor copies supported row/cell/paragraph/run formatting,
 not old text, identifiers, bookmarks, comments, drawings or header-repeat flags.
 Sorting moves whole existing formatted rows. Paragraph operations preserve
 unrelated paragraphs, tables, headers/footers, sections and package parts.
+Replacing table-cell text retains existing paragraph styles and page breaks;
+new records inherit formatting without duplicating page breaks.
 Use an existing heading style such as `Heading 1` for a requested heading, and
 `Normal` for an ordinary new body paragraph after a heading.
 

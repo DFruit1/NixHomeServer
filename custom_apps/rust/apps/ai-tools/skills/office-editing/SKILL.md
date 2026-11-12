@@ -17,6 +17,10 @@ references are the packaged sources of those runtime topics.
    Use returned names, indexes, headers, dimensions and revisions. Targeted
    table pages read actual rows, including tables below row 2000. An inspection
    page is a view, never a complete replacement document.
+   Long text values are previews: `truncated_columns` identifies their 1-based
+   columns. Increase `text_limit` when the complete cell is needed; reduce it
+   or `limit` if the view exceeds its byte budget. Never transcribe a truncated
+   preview as a complete value. Imports read full source bytes independently.
 3. Translate the request into `word_edit` or `spreadsheet_edit` operations.
    For one-table import and optional sort, prefer `office_import_table`: it
    performs the same atomic workflow with simple source/destination fields.

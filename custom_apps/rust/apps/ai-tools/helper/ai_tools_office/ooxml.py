@@ -198,6 +198,10 @@ def edit_word(archive: zipfile.ZipFile, spec: dict[str, Any]) -> bytes:
     edits = spec.get("replacements")
     if not isinstance(edits, list) or not 1 <= len(edits) <= 64:
         raise ValueError("edits need 1–64 exact text replacements: find and replace")
+    if "word/settings.xml" in archive.namelist():
+        settings = xml(archive.read("word/settings.xml"))
+        if settings.find(f"{{{W}}}documentProtection") is not None:
+            raise ValueError("remove document protection before editing")
     root = xml(archive.read("word/document.xml"))
     if any(root.find(f".//{{{W}}}{tag}") is not None for tag in ("ins", "del", "moveFrom", "moveTo")):
         raise ValueError("resolve tracked changes before editing this document")

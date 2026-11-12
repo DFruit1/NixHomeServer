@@ -35,21 +35,24 @@ def bounded(result):
     selected = []
     for item in items:
         candidate = {**result, "items": selected + [item]}
-        if len(json.dumps(candidate, ensure_ascii=True).encode()) > 24000:
+        if len(json.dumps(candidate, ensure_ascii=True).encode()) > 24000 - 64:
             break
         selected.append(item)
     if not selected and items:
-        raise ValueError("one inspected entry exceeds the view budget; inspect fewer columns or a smaller text block")
+        raise ValueError("one inspected entry exceeds the view budget; reduce text_limit/limit or select a narrower Excel range")
     if len(selected) < len(items):
         result["next_offset"] = result.get("offset", 0) + len(selected)
     result["items"] = selected
+    if len(json.dumps(result, ensure_ascii=True).encode()) > 24000:
+        raise ValueError("inspection metadata exceeds the view budget; select a narrower Excel range or use the document read tool")
     return result
 
 
 def inspect(document, format, options):
-    fields(options, (), ("view", "selector", "offset", "limit"))
+    fields(options, (), ("view", "selector", "offset", "limit", "text_limit"))
     offset = integer(options.get("offset", 0), 0, 1048576, "offset")
     limit = integer(options.get("limit", 20), 1, 100, "limit")
+    text_limit = integer(options.get("text_limit", 1000), 16, 8192, "text_limit")
     view = options.get("view", "structure")
     with ooxml.package(document) as archive:
         doc = model(archive, format)
@@ -58,7 +61,12 @@ def inspect(document, format, options):
         elif view == "table":
             table = doc.table(clean_selector(options.get("selector"), format))
             records = table.records[offset:offset + limit]
-            result = {**table.info(), "items": [{"row": offset + i + 1, "values": table.values(r, True) if format == "xlsx" else table.values(r)} for i, r in enumerate(records)],
+            items = []
+            for i, record in enumerate(records):
+                values = table.values(record, True) if format == "xlsx" else table.values(record)
+                truncated = [j + 1 for j, value in enumerate(values) if isinstance(value, str) and len(value) > text_limit]
+                items.append({"row": offset + i + 1, "values": [v[:text_limit] if isinstance(v, str) else v for v in values], "truncated_columns": truncated})
+            result = {**table.info(), "items": items, "text_limit": text_limit,
                       "next_offset": offset + len(records) if offset + len(records) < len(table.records) else None}
             result["edit_target"] = options["selector"]
         else:

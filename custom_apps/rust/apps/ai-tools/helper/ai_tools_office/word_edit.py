@@ -25,7 +25,7 @@ def cell_text(cell):
     return "\n".join("".join(t.text or "" for t in p.iter(Q("t"))) for p in cell.findall(Q("p")))
 
 
-def new_cell(template, value):
+def new_cell(template, value, *, replacement=False):
     value = text(scalar(value))
     if "\t" in value:
         raise ValueError("Word cell tabs need explicit rich-text handling; use separate cells instead")
@@ -35,21 +35,26 @@ def new_cell(template, value):
     prop = template.find(Q("tcPr"))
     if prop is not None:
         prop = deepcopy(prop)
-        for old in prop.findall(Q("cnfStyle")):
-            prop.remove(old)
+        if not replacement:
+            for old in prop.findall(Q("cnfStyle")):
+                prop.remove(old)
         result.append(prop)
     old_p = template.find(Q("p"))
-    for line in value.split("\n"):
+    old_paragraphs = template.findall(Q("p"))
+    for index, line in enumerate(value.split("\n")):
         p = etree.SubElement(result, Q("p"))
-        pprop = old_p.find(Q("pPr")) if old_p is not None else None
+        source_p = old_paragraphs[min(index, len(old_paragraphs) - 1)] if replacement and old_paragraphs else old_p
+        pprop = source_p.find(Q("pPr")) if source_p is not None else None
         if pprop is not None:
             pprop = deepcopy(pprop)
             for old in list(pprop):
-                if old.tag in {Q("sectPr"), Q("cnfStyle"), Q("pageBreakBefore")}:
+                insertion_only = not replacement and old.tag in {Q("cnfStyle"), Q("pageBreakBefore")}
+                extra_page_break = replacement and index >= len(old_paragraphs) and old.tag == Q("pageBreakBefore")
+                if old.tag == Q("sectPr") or insertion_only or extra_page_break:
                     pprop.remove(old)
             p.append(pprop)
         run = etree.SubElement(p, Q("r"))
-        rprop = old_p.find(f"{Q('r')}/{Q('rPr')}") if old_p is not None else None
+        rprop = source_p.find(f"{Q('r')}/{Q('rPr')}") if source_p is not None else None
         if rprop is not None:
             run.append(deepcopy(rprop))
         content = etree.SubElement(run, Q("t"))
@@ -120,7 +125,7 @@ class WordTable:
 
     def set_cell(self, record, index, value):
         old = record.findall(Q("tc"))[index]
-        record.replace(old, new_cell(old, value))
+        record.replace(old, new_cell(old, value, replacement=True))
 
     def commit(self):
         if len(self.records) > MAX_ROWS:

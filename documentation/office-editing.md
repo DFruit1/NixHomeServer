@@ -90,6 +90,11 @@ Inspection returns real table bounds, header/totals counts, data-row counts,
 capabilities/refusal reasons, revisions and continuation offsets. Its 24 KiB
 response budget is separate from change limits; it never reconstructs a source
 from a page. A table below worksheet row 2000 remains inspectable/editable.
+Text cell previews default to 1000 characters; `truncated_columns` marks the
+affected 1-based columns. `text_limit` (16–8192) controls the preview, within
+the same byte budget. Mapped imports always copy complete source values rather
+than these previews. Word cell replacements retain existing paragraph layout;
+both structural and legacy phrase edits refuse document protection.
 
 Each batch permits 32 operations, four import documents, 500 rows per insert or
 import page, 5000 data rows per table, 64 columns, 100000 affected cells, 256 KiB

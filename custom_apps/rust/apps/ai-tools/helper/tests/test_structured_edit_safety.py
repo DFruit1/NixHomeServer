@@ -126,6 +126,18 @@ class StructuralSafety(unittest.TestCase):
         self.assertEqual([p.text for p in result.paragraphs], ["renamed", "first", "second", "end"])
         self.assertTrue(result.paragraphs[0].paragraph_format.page_break_before)
         self.assertIsNone(result.paragraphs[1].paragraph_format.page_break_before)
+        # A second reproduction of WORD-003: table-cell replacements used the
+        # same insertion sanitizer and silently removed existing pagination.
+        doc = docx.Document(io.BytesIO(word([["Notes"], ["before"]])))
+        doc.tables[0].cell(1, 0).paragraphs[0].paragraph_format.page_break_before = True
+        out = io.BytesIO(); doc.save(out)
+        output, _ = run(out.getvalue(), "docx", [
+            {"op": "set_cells", "target": {"table_index": 0}, "cells": [{"row": 1, "column": 1, "value": "after"}]},
+            {"op": "append_rows", "target": {"table_index": 0}, "rows": [["new"]]},
+        ])
+        result = docx.Document(io.BytesIO(output))
+        self.assertTrue(result.tables[0].cell(1, 0).paragraphs[0].paragraph_format.page_break_before)
+        self.assertIsNone(result.tables[0].cell(2, 0).paragraphs[0].paragraph_format.page_break_before)
 
     def test_legacy_merges_omitted_grid_cells_and_xml_whitespace_are_handled(self):
         for tag in ("hMerge", "gridBefore", "gridAfter"):
