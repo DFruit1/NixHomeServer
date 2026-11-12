@@ -168,9 +168,12 @@ server_reachable() {
 
 desktop_work_active() {
   local process pattern
-  for process in aapt2 apksigner cargo cargo-nextest cc1 cc1plus clang cmake dotnet esbuild gcc \
-    go java javac make meson ninja nix nix-build nix-instantiate nix-store nixos-rebuild \
-    node opencode perl python python3 playwright pnpm pytest ruby rustc tsc vitest wasm-pack \
+  # Interpreter names also belong to permanent desktop services; match their
+  # task commands below and retain load/runnable/terminal activity detection.
+  # Generic shell-script matches also catch this runner and idle desktop helpers.
+  for process in aapt2 apksigner cargo cargo-nextest cc1 cc1plus clang cmake esbuild gcc \
+    go javac make meson ninja nix nix-build nix-instantiate nix-store nixos-rebuild \
+    opencode playwright pnpm pytest rustc tsc vitest wasm-pack \
     zipalign zpool; do
     if pgrep -x "$process" >/dev/null 2>&1; then
       return 0
@@ -189,8 +192,7 @@ desktop_work_active() {
     '(^|[[:space:]/])(vite|esbuild|tsc|rollup)[[:space:]]+(build|--build)([[:space:]]|$)' \
     '(^|[[:space:]/])git[[:space:]]+(gc|repack|fetch|clone|fsck)([[:space:]]|$)' \
     '(^|[[:space:]/])(vitest|playwright|jest|pytest|ctest|bats)([[:space:]]|$)' \
-    '(^|[[:space:]/])(python|python3|node|go|java|dotnet|cmake|meson)([[:space:]]|$)' \
-    '(^|[[:space:]/])(bash|sh|zsh)[[:space:]]+[^[:space:]]+\.(sh|py)([[:space:]]|$)'; do
+    '(^|[[:space:]/])dotnet[[:space:]]+(build|test|publish|restore|pack|msbuild)([[:space:]]|$)'; do
     if pgrep -f -- "$pattern" >/dev/null 2>&1; then
       return 0
     fi
