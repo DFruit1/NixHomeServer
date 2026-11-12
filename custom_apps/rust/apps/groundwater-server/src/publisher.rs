@@ -83,13 +83,13 @@ impl Publisher {
         packet_id: u16,
         bus: &EventBus,
     ) -> Result<(), String> {
-        if let Some(pending) = &mut self.pending {
-            if pending.packet_id == Some(packet_id) {
-                pending.broker_acked_at.get_or_insert_with(Utc::now);
-                // Keep the confirmation in memory until its SQL transaction
-                // succeeds. A transient DB failure must not discard PUBACK.
-                return self.reconcile(db, bus).await;
-            }
+        if let Some(pending) = &mut self.pending
+            && pending.packet_id == Some(packet_id)
+        {
+            pending.broker_acked_at.get_or_insert_with(Utc::now);
+            // Keep the confirmation in memory until its SQL transaction
+            // succeeds. A transient DB failure must not discard PUBACK.
+            return self.reconcile(db, bus).await;
         }
         Ok(())
     }
@@ -102,11 +102,11 @@ impl Publisher {
         let Some(pending) = &mut self.pending else {
             return Ok(());
         };
-        if !pending.outgoing_saved {
-            if let (Some(packet), Some(at)) = (pending.packet_id, pending.dispatched_at) {
-                record_outgoing(db, pending.attempt_id, packet, at).await?;
-                pending.outgoing_saved = true;
-            }
+        if !pending.outgoing_saved
+            && let (Some(packet), Some(at)) = (pending.packet_id, pending.dispatched_at)
+        {
+            record_outgoing(db, pending.attempt_id, packet, at).await?;
+            pending.outgoing_saved = true;
         }
         if let Some(acked_at) = pending.broker_acked_at {
             let device = accept(db, pending.attempt_id, acked_at).await?;

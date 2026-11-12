@@ -707,8 +707,15 @@ mod tests {
         let snippet = snippet_from_text(&text, "needle").expect("snippet");
         let visible = visible_text(&snippet);
         assert!(snippet.contains("<em>needle</em>"), "got: {snippet}");
-        assert!(!visible.contains('\u{fffd}'), "invalid UTF-8 leaked: {visible}");
-        assert_eq!(visible.chars().count(), 260, "window should use the full budget: {visible}");
+        assert!(
+            !visible.contains('\u{fffd}'),
+            "invalid UTF-8 leaked: {visible}"
+        );
+        assert_eq!(
+            visible.chars().count(),
+            260,
+            "window should use the full budget: {visible}"
+        );
         let lead = visible.chars().take_while(|ch| *ch == 'é').count();
         assert!(lead <= 60, "lead context {lead} exceeded 60: {visible}");
 
@@ -718,14 +725,21 @@ mod tests {
         let text = format!("prefix {term} suffix");
         let snippet = snippet_from_text(&text, &term).expect("snippet");
         let visible = visible_text(&snippet);
-        assert_eq!(visible.chars().count(), 260, "window must not grow for an overlong term: {visible}");
+        assert_eq!(
+            visible.chars().count(),
+            260,
+            "window must not grow for an overlong term: {visible}"
+        );
         assert!(visible.starts_with("prefix nnn"), "got: {visible}");
         assert_eq!(
             snippet.matches("<em>").count(),
             snippet.matches("</em>").count(),
             "unbalanced emphasis: {snippet}"
         );
-        assert!(!snippet.contains("<em>"), "partial-match emphasis: {snippet}");
+        assert!(
+            !snippet.contains("<em>"),
+            "partial-match emphasis: {snippet}"
+        );
     }
 
     #[test]

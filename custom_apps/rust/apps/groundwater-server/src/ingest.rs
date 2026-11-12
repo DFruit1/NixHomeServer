@@ -203,8 +203,10 @@ pub async fn run(
                 continue;
             }
             _ = refresh.tick() => {
-                if client.is_closed() {
-                    if let Ok(db) = db::connect(&settings.database_url).await { client = db; }
+                if client.is_closed()
+                    && let Ok(db) = db::connect(&settings.database_url).await
+                {
+                    client = db;
                 }
                 match db::load_registry(&client).await {
                     Ok(loaded) => {

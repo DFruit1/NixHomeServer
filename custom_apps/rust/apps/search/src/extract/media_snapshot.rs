@@ -419,16 +419,25 @@ mod tests {
     #[test]
     fn rejects_missing_malformed_or_unconfigured_snapshots() {
         let missing = source(r#"{"snapshotPath":"/nonexistent/media/metadata.json"}"#);
-        assert!(run_with(&missing).is_err(), "missing snapshot must not prune documents");
+        assert!(
+            run_with(&missing).is_err(),
+            "missing snapshot must not prune documents"
+        );
 
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("metadata.json");
         std::fs::write(&path, r#"{"schemaVersion":1}"#).expect("write");
         let malformed = source(&format!(r#"{{"snapshotPath":"{}"}}"#, path.display()));
-        assert!(run_with(&malformed).is_err(), "snapshot without entries must be rejected");
+        assert!(
+            run_with(&malformed).is_err(),
+            "snapshot without entries must be rejected"
+        );
 
         let unconfigured = source("{}");
-        assert!(run_with(&unconfigured).is_err(), "snapshotPath setting is required");
+        assert!(
+            run_with(&unconfigured).is_err(),
+            "snapshotPath setting is required"
+        );
     }
 
     #[test]

@@ -435,9 +435,15 @@ mod tests {
         legacy.metadata = metadata.clone();
         let presentation = legacy.to_json();
         assert_eq!(presentation["metadata"]["tags"], json!("invoice"));
-        assert_eq!(presentation["metadata"]["cc"], json!(["bob@example.org", "carol@example.org"]));
+        assert_eq!(
+            presentation["metadata"]["cc"],
+            json!(["bob@example.org", "carol@example.org"])
+        );
         assert_eq!(presentation["metadata"]["page_count"], json!(4));
-        assert_eq!(presentation["metadata"]["nested"]["tags"], json!(["a", "b"]));
+        assert_eq!(
+            presentation["metadata"]["nested"]["tags"],
+            json!(["a", "b"])
+        );
         assert_eq!(legacy.metadata, metadata);
 
         // Malformed tag arrays, non-object metadata, and empty arrays keep their

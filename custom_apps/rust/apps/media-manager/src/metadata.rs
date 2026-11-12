@@ -1440,23 +1440,23 @@ pub fn merge_managed_sidecar(existing: &str, generated: &str) -> Result<String, 
         if is_opf && node.tag_name().name() == "identifier" {
             // Reusing a generated provider identifier must not duplicate its ID
             // on every ordinary edit. Keep the package's identity immutable.
-            if let Some(id) = node.attribute("id") {
-                if let Some(index) = generated_nodes.iter().position(|candidate| {
+            if let Some(id) = node.attribute("id")
+                && let Some(index) = generated_nodes.iter().position(|candidate| {
                     candidate.tag_name() == node.tag_name() && candidate.attribute("id") == Some(id)
-                }) {
-                    let value = generated_nodes.remove(index);
-                    if node.text() != value.text() {
-                        if existing_root.attribute("unique-identifier") == Some(id) {
-                            return Err(
-                                "the publication identifier cannot be changed by a metadata edit"
-                                    .to_string(),
-                            );
-                        }
-                        replacements.push((
-                            node.range(),
-                            replace_opf_element_text(existing, node, value.text().unwrap_or(""))?,
-                        ));
+                })
+            {
+                let value = generated_nodes.remove(index);
+                if node.text() != value.text() {
+                    if existing_root.attribute("unique-identifier") == Some(id) {
+                        return Err(
+                            "the publication identifier cannot be changed by a metadata edit"
+                                .to_string(),
+                        );
                     }
+                    replacements.push((
+                        node.range(),
+                        replace_opf_element_text(existing, node, value.text().unwrap_or(""))?,
+                    ));
                 }
             }
             continue;
@@ -1532,10 +1532,10 @@ pub fn merge_managed_sidecar(existing: &str, generated: &str) -> Result<String, 
     if is_opf {
         let mut ids = std::collections::BTreeSet::new();
         for node in document.descendants().filter(|node| node.is_element()) {
-            if let Some(id) = node.attribute("id") {
-                if !ids.insert(id) {
-                    return Err("OPF has duplicate metadata IDs".to_string());
-                }
+            if let Some(id) = node.attribute("id")
+                && !ids.insert(id)
+            {
+                return Err("OPF has duplicate metadata IDs".to_string());
             }
         }
         for node in document.descendants().filter(|node| node.is_element()) {
