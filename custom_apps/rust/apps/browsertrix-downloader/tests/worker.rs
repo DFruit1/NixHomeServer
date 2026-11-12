@@ -1,5 +1,5 @@
 mod common;
-use browsertrix_downloader::{database::Database, model::JobStatus, worker::process_job};
+use browsertrix_downloader::{database::Database, model::JobStatus, worker::process_job_with_resolver};
 #[tokio::test]
 async fn worker_turns_a_claimed_job_into_a_shared_wacz_archive() {
     let temp = tempfile::tempdir().unwrap();
@@ -12,7 +12,7 @@ async fn worker_turns_a_claimed_job_into_a_shared_wacz_archive() {
         .create_job("job-1", "alice", &common::request())
         .unwrap();
     let job = database.claim_next_queued_job().unwrap().unwrap();
-    process_job(&config, &database, &job).await.unwrap();
+    process_job_with_resolver(&config, &database, &job, common::test_resolver()).await.unwrap();
     let completed = database.job("job-1").unwrap().unwrap();
     assert_eq!(completed.status, JobStatus::Completed);
     assert_eq!(completed.progress.unwrap().pages_done, 1);
@@ -46,7 +46,7 @@ async fn exhausted_partial_retains_checkpoint_and_immutable_snapshot_for_extende
     request.page_limit = 1;
     db.create_job("partial-1", "alice", &request).unwrap();
     let job = db.claim_next_queued_job().unwrap().unwrap();
-    process_job(&config, &db, &job).await.unwrap();
+    process_job_with_resolver(&config, &db, &job, common::test_resolver()).await.unwrap();
     let partial = db.job("partial-1").unwrap().unwrap();
     assert_eq!(partial.status, JobStatus::Partial);
     assert!(partial.runtime.can_resume);
@@ -74,7 +74,7 @@ async fn exhausted_partial_retains_checkpoint_and_immutable_snapshot_for_extende
     assert!(db.resume(&job.id, "alice", &Default::default()).is_err());
     let resumed = db.claim_next_queued_job().unwrap().unwrap();
     assert_eq!(resumed.request.time_limit_minutes, 3);
-    process_job(&config, &db, &resumed).await.unwrap();
+    process_job_with_resolver(&config, &db, &resumed, common::test_resolver()).await.unwrap();
     let next = db.job(&job.id).unwrap().unwrap();
     assert_eq!(
         std::fs::read_to_string(config.checkpoints_root.join("partial-1/time-limit.txt")).unwrap(),
@@ -129,7 +129,7 @@ async fn restart_finishes_discard_only_after_stopping_prior_capture() {
     request.page_limit = 1;
     db.create_job("discard-restart", "alice", &request).unwrap();
     let job = db.claim_next_queued_job().unwrap().unwrap();
-    process_job(&config, &db, &job).await.unwrap();
+    process_job_with_resolver(&config, &db, &job, common::test_resolver()).await.unwrap();
     let partial = db.job(&job.id).unwrap().unwrap();
     let archive = db
         .archive_for_user(partial.runtime.archive_id.as_ref().unwrap(), "alice")
