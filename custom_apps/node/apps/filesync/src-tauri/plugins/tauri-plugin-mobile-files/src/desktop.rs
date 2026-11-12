@@ -309,6 +309,61 @@ impl<R: Runtime> MobileFiles<R> {
         Ok(())
     }
 
+    pub fn save_to_folder(
+        &self,
+        folder_uri: String,
+        relative_path: String,
+        staged_path: String,
+    ) -> crate::Result<SharedFile> {
+        let root = PathBuf::from(folder_uri).canonicalize()?;
+        let relative = safe_relative(&relative_path)?;
+        let mut directory = root.clone();
+        for part in relative.parent().into_iter().flat_map(Path::components) {
+            directory.push(part);
+            match fs::symlink_metadata(&directory) {
+                Ok(info) if info.file_type().is_symlink() || !info.is_dir() => {
+                    return Err(crate::Error::Operation(
+                        "The destination is not a regular folder".into(),
+                    ))
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    fs::create_dir(&directory)?
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let name = relative
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| crate::Error::Operation("Invalid file name".into()))?;
+        let target = unique_path(&directory, name)?;
+        // create_new preserves existing files, including symlinks and racing writers.
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)?;
+        let result = (|| -> io::Result<()> {
+            io::copy(&mut fs::File::open(staged_path)?, &mut output)?;
+            output.sync_all()
+        })();
+        if let Err(error) = result {
+            drop(output);
+            let _ = fs::remove_file(&target);
+            return Err(error.into());
+        }
+        Ok(SharedFile {
+            uri: format!("file://{}", target.display()),
+            name: target.file_name().unwrap().to_string_lossy().into_owned(),
+        })
+    }
+
+    pub fn share_files(&self, _files: Vec<ShareSource>) -> crate::Result<SharedFile> {
+        Err(crate::Error::Operation(
+            "Sharing is only available in the Android app.".into(),
+        ))
+    }
+
     pub fn save_to_downloads(
         &self,
         staged_path: String,

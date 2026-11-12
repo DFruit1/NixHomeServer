@@ -208,6 +208,30 @@ impl<R: Runtime> MobileFiles<R> {
         self.0.run_mobile_plugin("installLocalFile", serde_json::json!({ "folderUri": folder_uri, "relativePath": relative_path, "stagedPath": staged_path })).map_err(Into::into)
     }
 
+    pub fn save_to_folder(
+        &self,
+        folder_uri: String,
+        relative_path: String,
+        staged_path: String,
+    ) -> crate::Result<SharedFile> {
+        let response: SharedFileResponse = self.0.run_mobile_plugin("saveToFolder", serde_json::json!({
+            "folderUri": folder_uri, "relativePath": relative_path, "stagedPath": staged_path,
+        })).map_err(crate::Error::from)?;
+        response
+            .value
+            .ok_or_else(|| crate::Error::Operation("Android saved no file".into()))
+    }
+
+    pub fn share_files(&self, files: Vec<ShareSource>) -> crate::Result<SharedFile> {
+        let response: SharedFileResponse = self
+            .0
+            .run_mobile_plugin("shareFiles", serde_json::json!({ "files": files }))
+            .map_err(crate::Error::from)?;
+        response
+            .value
+            .ok_or_else(|| crate::Error::Operation("Android shared no archive".into()))
+    }
+
     pub fn save_to_downloads(
         &self,
         staged_path: String,

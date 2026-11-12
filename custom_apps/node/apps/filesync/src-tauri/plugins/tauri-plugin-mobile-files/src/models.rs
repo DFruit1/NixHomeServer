@@ -51,6 +51,13 @@ pub struct SharedFile {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareSource {
+    pub staged_path: String,
+    pub relative_path: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SharedFileResponse {
     pub value: Option<SharedFile>,

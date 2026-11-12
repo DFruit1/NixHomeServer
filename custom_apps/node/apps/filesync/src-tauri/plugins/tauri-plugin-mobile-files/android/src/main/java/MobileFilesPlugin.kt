@@ -30,6 +30,8 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.Executors
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 @TauriPlugin(permissions = [Permission(strings = [Manifest.permission.WRITE_EXTERNAL_STORAGE], alias = "writeExternalStorage")])
 class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
@@ -306,6 +308,78 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   @Command
+  fun saveToFolder(invoke: Invoke) {
+    val folder = invoke.getArgs().getString("folderUri")
+    val relative = invoke.getArgs().getString("relativePath")
+    val staged = invoke.getArgs().getString("stagedPath")
+    transferExecutor.execute {
+      var created: Uri? = null
+      try {
+        val root = Uri.parse(folder)
+        val parts = safeRelative(relative)
+        val source = stagedFile(staged)
+        // Downloads use a fresh document and never replace a file already there.
+        val temporary = createTemporaryDocument(root, relative)
+        created = temporary
+        activity.contentResolver.openOutputStream(temporary, "wt").use { output ->
+          requireNotNull(output) { "The destination could not be opened" }
+          FileInputStream(source).use { it.copyTo(output) }
+        }
+        val parentId = resolveParentId(root, parts.dropLast(1))
+        val name = parts.last()
+        val dot = name.lastIndexOf('.').takeIf { it > 0 } ?: name.length
+        var candidate = name
+        var index = 1
+        while (findChild(root, parentId, candidate) != null) {
+          require(index <= 9999) { "Too many files with the same name" }
+          candidate = "${name.substring(0, dot)} (${index++})${name.substring(dot)}"
+        }
+        val saved = DocumentsContract.renameDocument(activity.contentResolver, temporary, candidate)
+          ?: throw IllegalStateException("The selected provider cannot finish saving the file")
+        created = null
+        invoke.resolveObject(mapOf("value" to mapOf("uri" to saved.toString(), "name" to (displayNameOf(saved) ?: candidate))))
+      } catch (error: Exception) {
+        created?.let { runCatching { DocumentsContract.deleteDocument(activity.contentResolver, it) } }
+        invoke.reject("Could not save the file in the selected folder", error, null)
+      }
+    }
+  }
+
+  @Command
+  fun shareFiles(invoke: Invoke) {
+    val files = invoke.getArgs().getJSONArray("files")
+    transferExecutor.execute {
+      var archive: File? = null
+      try {
+        require(files.length() in 1..10000) { "Select fewer files to share" }
+        val sources = (0 until files.length()).map { index ->
+          val item = files.getJSONObject(index)
+          val path = item.getString("relativePath")
+          safeRelative(path)
+          path to stagedFile(item.getString("stagedPath"))
+        }
+        val bytes = sources.sumOf { it.second.length() }
+        require(bytes + 16L * 1024 * 1024 <= SyncEngine.storageStats(activity).freeBytes) { "Not enough space to prepare a ZIP" }
+        archive = File.createTempFile("filesync-", ".zip", activity.cacheDir)
+        val output = archive
+        // Android's built-in ZIP writer uses standard DEFLATE; no extra archive
+        // dependency or format-specific receiving app is needed.
+        ZipOutputStream(FileOutputStream(output).buffered()).use { zip ->
+          for ((path, source) in sources) {
+            zip.putNextEntry(ZipEntry(path))
+            FileInputStream(source).use { it.copyTo(zip) }
+            zip.closeEntry()
+          }
+        }
+        shareStagedFile(output, "File Sync.zip", invoke)
+      } catch (error: Exception) {
+        archive?.delete()
+        invoke.reject(error.message ?: "Could not prepare files for sharing", error, null)
+      }
+    }
+  }
+
+  @Command
   fun saveToDownloads(invoke: Invoke) {
     val stagedPath = invoke.getArgs().getString("stagedPath")
     val fileName = invoke.getArgs().getString("fileName")
@@ -380,25 +454,44 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
     try {
       val source = stagedFile(invoke.getArgs().getString("stagedPath"))
       val name = safeFileName(invoke.getArgs().getString("fileName"))
-      SyncEngine.cleanupStagedFiles(activity)
-      val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", source)
+      shareStagedFile(source, name, invoke)
+    } catch (error: Exception) {
+      invoke.reject("Could not open the Android share sheet", error, null)
+    }
+  }
+
+  private fun shareStagedFile(source: File, name: String, invoke: Invoke) {
+    SyncEngine.cleanupStagedFiles(activity)
+    // FileProvider derives the receiving app's filename from the cache path.
+    val directory = File(activity.cacheDir, "filesync-share-${java.util.UUID.randomUUID()}")
+    require(directory.mkdir()) { "Could not prepare share storage" }
+    val named = File(directory, name)
+    if (!source.renameTo(named)) { directory.delete(); throw IllegalStateException("Could not prepare the shared file") }
+    try {
+      val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", named)
       val send = Intent(Intent.ACTION_SEND).apply {
         type = mimeTypeFor(name)
         putExtra(Intent.EXTRA_STREAM, uri)
         putExtra(Intent.EXTRA_TITLE, name)
+        clipData = android.content.ClipData.newRawUri(name, uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
       }
-      val chooser = Intent.createChooser(send, null).apply {
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      val chooser = Intent.createChooser(send, null).apply { addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+      activity.runOnUiThread {
+        try {
+          activity.startActivity(chooser)
+          Handler(Looper.getMainLooper()).postDelayed({ named.delete(); directory.delete() }, SHARE_FILE_LIFETIME_MS)
+          invoke.resolveObject(mapOf("value" to mapOf("uri" to uri.toString(), "name" to name)))
+        } catch (error: Exception) {
+          named.delete()
+          directory.delete()
+          invoke.reject("Could not open the Android share sheet", error, null)
+        }
       }
-      activity.runOnUiThread { activity.startActivity(chooser) }
-      // The app the user picks opens the shared content after the chooser
-      // closes, so the cache copy has to outlive this call. The delay covers a
-      // slow share target; SyncEngine's sweep clears anything left behind.
-      Handler(Looper.getMainLooper()).postDelayed({ source.delete() }, SHARE_FILE_LIFETIME_MS)
-      invoke.resolveObject(mapOf("value" to mapOf("uri" to uri.toString(), "name" to name)))
     } catch (error: Exception) {
-      invoke.reject("Could not open the Android share sheet", error, null)
+      named.delete()
+      directory.delete()
+      throw error
     }
   }
 

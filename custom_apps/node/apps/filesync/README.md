@@ -16,15 +16,20 @@ preset copies `_Music` into `_My Music` within the chosen local folder. Manual
 pairs can browse the same server libraries and choose a different folder or
 direction.
 **Browse server files** opens a read-only browser over the same libraries.
-Folders navigate in place; a file row offers **Share**, which hands a private
-cache copy to the Android share sheet through a `FileProvider` URI, and
-**Download**, which copies the file into the device Downloads folder through
-`MediaStore` (a unique name is added if one is already there). Both stream the
-file through private app cache first, and the browser never writes to the
-server. On Linux the same browser can copy a file into `~/Downloads`; sharing
-is Android-only. Sharing a file larger than the phone's free space is refused
-before the transfer starts, and abandoned cache copies are swept by the same
-routine that clears sync staging files.
+Folders navigate in place. Hold a file or folder to start selecting, then tap
+other rows to add them; checkboxes also support mouse and keyboard selection.
+The selection bar offers **Share**, **Download**, and **Clear**. Single files
+also keep their row actions. Navigation clears the selection.
+**Download** asks for a destination folder once, then saves individual files,
+preserving subfolders and using numbered copies for existing names. It never
+replaces existing files. **Share** opens the Android share sheet with one file,
+or a standard DEFLATE ZIP for multiple files or folders. Android's built-in ZIP
+writer handles compression alongside the native share sheet, avoiding another
+archive dependency. Files stream through private app cache; transfers are bounded
+by available cache space. Failed downloads report how many files were saved.
+The browser never writes to the server. Linux supports downloads into a chosen
+folder; native sharing is Android-only. Shared payloads expire from private cache
+after one hour, with abandoned copies swept after one day.
 Offline Media also offers its configured personal video folders when present.
 Choose the direction when creating a pair, then use **Sync now**. It copies
 files in that direction, creates missing parent folders, replaces same-name

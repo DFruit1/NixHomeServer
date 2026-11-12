@@ -765,7 +765,12 @@ internal object SyncEngine {
     val cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1)
     context.cacheDir.listFiles()?.filter { file ->
       file.name.startsWith("filesync-") && file.lastModified() < cutoff
-    }?.forEach { file -> file.delete() }
+    }?.forEach { file ->
+      if (file.isDirectory && file.name.startsWith("filesync-share-")) {
+        file.listFiles()?.filter { it.isFile }?.forEach { it.delete() }
+      }
+      file.delete()
+    }
   }
 
   private fun fileUrl(apiBase: String, path: String, root: String): URL =

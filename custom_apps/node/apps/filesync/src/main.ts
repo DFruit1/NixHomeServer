@@ -12,7 +12,7 @@ type ServerEntry = BrowseEntry;
 type SyncProgress = { active: boolean; pair: string; pairs: string[]; direction: string; currentFile: string; transferred: number; skipped: number };
 type SyncEstimate = { pendingBytes: number; pendingCount: number; skipped: number; direction: string; freeBytes: number; totalBytes: number; remoteTotalBytes: number };
 type DeviceStorage = { freeBytes: number; totalBytes: number };
-type FileTransfer = { path: string; action: FileAction };
+type FileTransfer = { path?: string; action: FileAction };
 
 const invoke = (window as TauriWindow).__TAURI__?.core?.invoke;
 const STORAGE_KEY = 'nixhomeserver.filesync.pairs.v1';
@@ -88,6 +88,7 @@ const ICONS = {
   check: '<path d="m5 12 4 4L19 6"/>',
   cloud: '<path d="M17.5 19H6a4 4 0 0 1-.5-8 6.5 6.5 0 0 1 12.4-1.6A4.8 4.8 0 0 1 17.5 19Z"/>',
   device: '<rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 18h2"/>',
+  music: '<path d="M9 18V5l12-3v13M9 8l12-3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="15" r="3"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
   arrowRight: '<path d="M5 12h14m-5-5 5 5-5 5"/>',
@@ -334,6 +335,24 @@ const SERVICE_LOGOS: Record<string, string> = {
   kavita: '/logos/kavita.svg',
 };
 
+function syncIsActive(): boolean {
+  return Boolean(state.syncingPairId || state.progress?.active);
+}
+
+function pairMark(pair: SyncPair): string {
+  const rootPreset = state.presets.find((item) => item.id === (pair.serverRoot ?? 'files'));
+  const folder = pair.serverRoot === HOME_ROOT ? pair.serverPath.split('/')[0] : pair.serverFolder ?? rootPreset?.folder;
+  if (folder === '_Music') return icon('music');
+  // Prefer the media app when multiple presets expose the same home library.
+  const preset = pair.serverRoot === HOME_ROOT
+    ? state.presets.find((item) => item.folder === folder && item.service !== 'offline-media')
+      ?? state.presets.find((item) => item.folder === folder)
+    : rootPreset;
+  if (preset) return serviceMark(preset.service, preset.serviceTitle);
+  const service = ({ _Files: 'files', _Videos: 'jellyfin', _Audiobooks: 'audiobookshelf', _Books: 'kavita' } as Record<string, string>)[folder ?? ''];
+  return service ? serviceMark(service, folder ?? service) : icon('folder');
+}
+
 function serverLocation(pair: SyncPair): string {
   // A pair picked through the personal-root browser stores the whole server
   // path, so there is no library prefix to add.
@@ -436,13 +455,13 @@ function render(): void {
     const route = routeFor(pair.direction, localLocation(pair), serverLocation(pair));
     const estimate = state.estimates[pair.id];
     const blocked = spaceStatus(pair, estimate) === 'blocked';
-    const busy = Boolean(state.syncingPairId || state.removingPairId);
+    const busy = Boolean(syncIsActive() || state.removingPairId);
     const unavailable = pair.direction === 'two-way' || (pair.server && pair.server !== state.server) || !state.user || pair.account !== state.user;
-    const syncLabel = state.syncingPairId === pair.id ? 'Syncing…' : blocked ? 'Not enough space' : pair.direction === 'two-way' ? 'Recreate pair' : pair.server && pair.server !== state.server ? 'Different server' : !state.user ? 'Sign in to sync' : pair.account !== state.user ? 'Different account' : 'Sync now';
+    const syncLabel = pairIsSyncing(pair) ? 'Syncing…' : blocked ? 'Not enough space' : pair.direction === 'two-way' ? 'Recreate pair' : pair.server && pair.server !== state.server ? 'Different server' : !state.user ? 'Sign in to sync' : pair.account !== state.user ? 'Different account' : 'Sync now';
     return `
     <li class="pair-row" data-pair-id="${escapeHtml(pair.id)}">
       <div class="pair-heading">
-        <span class="pair-folder-icon" aria-hidden="true">${icon('folder')}</span>
+        <span class="pair-folder-icon" aria-hidden="true">${pairMark(pair)}</span>
         <h3 class="pair-name">${escapeHtml(pair.name)}</h3>
         <div class="pair-status" data-pair-status="${escapeHtml(pair.id)}">${pairStatusBadge(pair)}</div>
       </div>
@@ -521,6 +540,12 @@ function render(): void {
     <dialog id="files-dialog" class="pair-dialog files-dialog" aria-labelledby="files-heading">
       <div class="dialog-heading"><div><h2 id="files-heading">Server files</h2><p>Browse, download, or share without creating a sync pair.</p></div><button class="close-button" type="button" id="close-files" aria-label="Close files">${icon('close')}</button></div>
       <p class="browser-location" id="files-location">/</p>
+      <div class="files-selection" id="files-selection" hidden>
+        <span id="files-selected-count" role="status"></span>
+        <button class="text-button" type="button" id="files-clear">Clear</button>
+        <button class="secondary-button" type="button" id="files-share">${icon('share')}<span>Share</span></button>
+        <button class="secondary-button" type="button" id="files-download">${icon('download')}<span>Download</span></button>
+      </div>
       <div class="browser-list" id="files-list"></div>
       <p class="form-error" id="files-error" role="alert"></p>
       <p class="files-status" id="files-status" role="status" aria-live="polite"></p>
@@ -586,6 +611,9 @@ let selectedServerRoot = HOME_ROOT;
 let hasSelectedServerFolder = false;
 let serverBrowserPath = '';
 let filesBrowserPath = '';
+let filesEntries: ServerEntry[] = [];
+const selectedFiles = new Set<string>();
+let filesLoad = 0;
 let pendingRemoveId: string | undefined;
 let progressTimer: number | undefined;
 
@@ -773,36 +801,71 @@ function bindEvents(): void {
       render();
       return;
     }
+    if (state.transfer) return;
     filesBrowserPath = '';
-    state.transfer = undefined;
     setFilesFeedback('', '');
     await renderFilesBrowser();
     filesDialog.showModal();
   });
-  document.querySelector('#close-files')?.addEventListener('click', () => filesDialog.close());
+  document.querySelector('#close-files')?.addEventListener('click', () => { if (!state.transfer) filesDialog.close(); });
   document.querySelector('#files-up')?.addEventListener('click', async () => {
+    if (state.transfer) return;
     filesBrowserPath = parentPath(filesBrowserPath);
-    state.transfer = undefined;
     setFilesFeedback('', '');
     await renderFilesBrowser();
   });
-  filesDialog.addEventListener('close', () => { state.transfer = undefined; });
-  // The list is re-rendered on every navigation, so one delegated listener on
-  // the container covers folders and both file actions.
-  document.querySelector<HTMLElement>('#files-list')?.addEventListener('click', async (event) => {
-    const target = (event.target as HTMLElement).closest<HTMLElement>('[data-open],[data-share],[data-download]');
-    if (!target) return;
-    const name = target.dataset.open ?? target.dataset.share ?? target.dataset.download;
-    if (!name) return;
-    if (target.dataset.open) {
-      filesBrowserPath = joinPath(filesBrowserPath, name);
-      state.transfer = undefined;
-      setFilesFeedback('', '');
-      await renderFilesBrowser();
-      return;
-    }
-    const action = target.dataset.share ? 'share' : 'download';
-    await runFileAction(name, action as FileAction, Number(target.dataset.size ?? 0));
+  filesDialog.addEventListener('cancel', (event) => { if (state.transfer) event.preventDefault(); });
+  document.querySelector('#files-clear')?.addEventListener('click', () => {
+    selectedFiles.clear();
+    updateFileActions();
+  });
+  for (const action of ['share', 'download'] as const) {
+    document.querySelector(`#files-${action}`)?.addEventListener('click', () => void runFileAction([...selectedFiles], action));
+  }
+  const fileList = document.querySelector<HTMLElement>('#files-list')!;
+  let holdTimer: number | undefined;
+  let heldRow: string | undefined;
+  let startX = 0;
+  let startY = 0;
+  const cancelHold = () => { window.clearTimeout(holdTimer); holdTimer = undefined; };
+  fileList.addEventListener('pointerdown', (event) => {
+    cancelHold();
+    heldRow = undefined;
+    if (state.transfer || !event.isPrimary || event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (target.closest('input,[data-share],[data-download]')) return;
+    const row = target.closest<HTMLElement>('[data-file-row]');
+    if (!row) return;
+    startX = event.clientX;
+    startY = event.clientY;
+    holdTimer = window.setTimeout(() => {
+      heldRow = row.dataset.fileRow!;
+      toggleFile(heldRow);
+    }, 500);
+  });
+  fileList.addEventListener('pointermove', (event) => {
+    if (Math.hypot(event.clientX - startX, event.clientY - startY) > 10) cancelHold();
+  });
+  for (const event of ['pointerup', 'pointercancel', 'pointerleave', 'scroll']) fileList.addEventListener(event, cancelHold);
+  fileList.addEventListener('contextmenu', (event) => { if ((event.target as HTMLElement).closest('[data-file-row]')) event.preventDefault(); });
+  fileList.addEventListener('change', (event) => {
+    const checkbox = (event.target as HTMLElement).closest<HTMLInputElement>('[data-select]');
+    if (checkbox && !state.transfer) toggleFile(checkbox.dataset.select!);
+  });
+  fileList.addEventListener('click', async (event) => {
+    if (state.transfer) return;
+    const target = event.target as HTMLElement;
+    if (target.closest('[data-select]')) return;
+    const row = target.closest<HTMLElement>('[data-file-row]');
+    if (!row) return;
+    const name = row.dataset.fileRow!;
+    if (heldRow === name) { heldRow = undefined; event.preventDefault(); return; }
+    const action = target.closest<HTMLElement>('[data-share],[data-download]');
+    if (action) { await runFileAction([name], action.dataset.share ? 'share' : 'download'); return; }
+    if (selectedFiles.size || !target.closest('[data-open]')) { toggleFile(name); return; }
+    filesBrowserPath = joinPath(filesBrowserPath, name);
+    setFilesFeedback('', '');
+    await renderFilesBrowser();
   });
 
   document.querySelector('#save-pair')?.addEventListener('click', async () => {
@@ -904,7 +967,7 @@ function bindEvents(): void {
     button.addEventListener('click', async () => {
       if (!invoke || !state.user) { state.error = 'Sign in before syncing.'; render(); return; }
       const pair = state.pairs.find((item) => item.id === button.dataset.sync);
-      if (!pair) return;
+      if (!pair || syncIsActive() || state.removingPairId) return;
       state.syncingPairId = pair.id;
       state.progress = undefined;
       state.error = '';
@@ -1081,6 +1144,14 @@ async function refreshEstimates(force = false): Promise<void> {
 function updatePairStatusUi(pair: SyncPair): void {
   const status = document.querySelector(`[data-pair-status="${CSS.escape(pair.id)}"]`);
   if (status) status.innerHTML = pairStatusBadge(pair);
+  const button = document.querySelector<HTMLButtonElement>(`[data-sync="${CSS.escape(pair.id)}"]`);
+  if (button) {
+    const blocked = spaceStatus(pair, state.estimates[pair.id]) === 'blocked';
+    const unavailable = pair.direction === 'two-way' || (pair.server && pair.server !== state.server) || !state.user || pair.account !== state.user;
+    button.disabled = syncIsActive() || Boolean(state.removingPairId) || blocked || Boolean(unavailable);
+    const label = button.querySelector('span');
+    if (label) label.textContent = pairIsSyncing(pair) ? 'Syncing…' : blocked ? 'Not enough space' : pair.direction === 'two-way' ? 'Recreate pair' : pair.server && pair.server !== state.server ? 'Different server' : !state.user ? 'Sign in to sync' : pair.account !== state.user ? 'Different account' : 'Sync now';
+  }
 }
 
 function updateSpaceUi(pairId: string): void {
@@ -1094,16 +1165,6 @@ function updateSpaceUi(pairId: string): void {
   } else if (html) {
     const actions = document.querySelector(`[data-pair-id="${CSS.escape(pairId)}"] .pair-actions`);
     actions?.insertAdjacentHTML('beforebegin', html);
-  }
-  const button = document.querySelector<HTMLButtonElement>(`[data-sync="${CSS.escape(pairId)}"]`);
-  if (button && !state.syncingPairId && !state.removingPairId) {
-    const blocked = spaceStatus(pair, state.estimates[pairId]) === 'blocked';
-    const unavailable = pair.direction === 'two-way' || (pair.server && pair.server !== state.server) || !state.user || pair.account !== state.user;
-    button.disabled = blocked || unavailable;
-    if (!unavailable && state.syncingPairId !== pairId) {
-      const label = button.querySelector('span');
-      if (label) label.textContent = blocked ? 'Not enough space' : 'Sync now';
-    }
   }
   const summary = document.querySelector('#storage-summary');
   if (summary) summary.innerHTML = state.deviceStorage ? `${icon('device')}${escapeHtml(storageSummary())}` : '';
@@ -1264,6 +1325,7 @@ async function start(): Promise<void> {
     window.setInterval(() => { void refreshProgress(); }, 3000);
   }
   render();
+  void refreshProgress();
   startupPending = false;
   for (const url of startupCallbacks) void finishCallback(url);
   startupCallbacks.clear();
@@ -1297,38 +1359,44 @@ function filesLocation(): string {
 }
 
 async function renderFilesBrowser(): Promise<void> {
+  const load = ++filesLoad;
+  selectedFiles.clear();
+  filesEntries = [];
   const location = document.querySelector<HTMLElement>('#files-location');
   const list = document.querySelector<HTMLElement>('#files-list');
   if (location) location.textContent = filesLocation();
-  const up = document.querySelector<HTMLButtonElement>('#files-up');
-  if (up) up.disabled = !filesBrowserPath || Boolean(state.transfer);
+  updateFileActions();
   if (!list || !invoke) return;
   list.textContent = 'Loading files…';
-  let entries: ServerEntry[];
   try {
-    entries = await invoke<ServerEntry[]>('server_tree', { path: filesBrowserPath, root: HOME_ROOT });
+    const entries = await invoke<ServerEntry[]>('server_tree', { path: filesBrowserPath, root: HOME_ROOT });
+    if (load !== filesLoad) return;
+    filesEntries = browseOrder(entries);
+    list.innerHTML = filesEntries.length
+      ? `<ul class="file-list">${filesEntries.map(filesRow).join('')}</ul>`
+      : '<p class="browser-empty">This folder is empty.</p>';
   } catch (error) {
+    if (load !== filesLoad) return;
     list.innerHTML = `<p class="browser-empty">${escapeHtml(error instanceof Error ? error.message : String(error))}</p>`;
-    return;
   }
-  const ordered = browseOrder(entries);
-  if (!ordered.length) {
-    list.innerHTML = '<p class="browser-empty">This folder is empty.</p>';
-    return;
-  }
-  list.innerHTML = `<ul class="file-list">${ordered.map((entry) => filesRow(entry)).join('')}</ul>`;
 }
 
 function filesRow(entry: ServerEntry): string {
   const name = escapeHtml(entry.name);
-  const busy = state.transfer?.path === entry.name;
-  if (entry.kind === 'directory') {
-    return `<li class="file-row"><button class="file-entry" type="button" data-open="${name}" ${state.transfer ? 'disabled' : ''}><span class="file-icon" aria-hidden="true">${icon('folder')}</span><span class="file-name">${name}</span>${icon('arrowRight')}</button></li>`;
-  }
+  const directory = entry.kind === 'directory';
   const meta = escapeHtml(entryMeta(entry));
-  const size = Number.isFinite(entry.size) && entry.size > 0 ? entry.size : 0;
-  const action = (kind: FileAction) => `<button class="text-button" type="button" data-${kind}="${name}" data-size="${size}" ${state.transfer ? 'disabled' : ''}>${icon(kind === 'share' ? 'share' : 'download')}<span>${fileActionLabel(kind, busy && state.transfer?.action === kind)}</span></button>`;
-  return `<li class="file-row"><div class="file-copy"><span class="file-icon" aria-hidden="true">${icon('file')}</span><div><span class="file-name">${name}</span>${meta ? `<span class="file-meta">${meta}</span>` : ''}</div></div><div class="file-actions">${action('share')}${action('download')}</div></li>`;
+  const action = (kind: FileAction) => `<button class="text-button" type="button" data-${kind}="${name}" aria-label="${kind === 'share' ? 'Share' : 'Download'} ${name}">${icon(kind)}<span>${fileActionLabel(kind, false)}</span></button>`;
+  return `<li class="file-row" data-file-row="${name}">
+    <input class="file-select" type="checkbox" data-select="${name}" aria-label="Select ${name}" />
+    <button class="file-entry" type="button" ${directory ? `data-open="${name}"` : ''} aria-label="${directory ? 'Open' : 'Select'} ${name}"><span class="file-icon" aria-hidden="true">${icon(directory ? 'folder' : 'file')}</span><span class="file-details"><span class="file-name">${name}</span>${meta ? `<span class="file-meta">${meta}</span>` : ''}</span>${directory ? icon('arrowRight') : ''}</button>
+    ${directory ? '' : `<div class="file-actions">${action('share')}${action('download')}</div>`}
+  </li>`;
+}
+
+function toggleFile(name: string): void {
+  if (selectedFiles.has(name)) selectedFiles.delete(name);
+  else selectedFiles.add(name);
+  updateFileActions();
 }
 
 function setFilesFeedback(status: string, error: string): void {
@@ -1338,43 +1406,56 @@ function setFilesFeedback(status: string, error: string): void {
   if (errorLine) errorLine.textContent = error;
 }
 
-// A transfer only changes button state, so the rows are patched in place. Going
-// back through renderFilesBrowser would blank the list back to "Loading files…"
-// at the exact moment the user is watching a row they just tapped.
-function updateFileActions(name: string): void {
+// Patch rows in place to preserve scroll, focus and the active long press.
+function updateFileActions(): void {
   const busy = Boolean(state.transfer);
-  document.querySelectorAll<HTMLButtonElement>('#files-list [data-share],#files-list [data-download]').forEach((button) => {
-    const kind: FileAction = button.dataset.share ? 'share' : 'download';
-    const isTarget = (button.dataset.share ?? button.dataset.download) === name;
-    button.disabled = busy;
-    const label = button.querySelector('span');
-    if (label) label.textContent = fileActionLabel(kind, isTarget && state.transfer?.action === kind);
+  const selection = document.querySelector<HTMLElement>('#files-selection');
+  if (selection) selection.hidden = selectedFiles.size === 0;
+  const count = document.querySelector('#files-selected-count');
+  if (count) count.textContent = `${selectedFiles.size} selected`;
+  const list = document.querySelector('#files-list');
+  list?.classList.toggle('has-selection', selectedFiles.size > 0);
+  document.querySelectorAll<HTMLInputElement>('#files-list [data-select]').forEach((checkbox) => {
+    checkbox.checked = selectedFiles.has(checkbox.dataset.select!);
+    checkbox.disabled = busy;
+    checkbox.closest('.file-row')?.classList.toggle('is-selected', checkbox.checked);
   });
-  document.querySelectorAll<HTMLButtonElement>('#files-list [data-open]').forEach((button) => { button.disabled = busy; });
+  document.querySelectorAll<HTMLButtonElement>('#files-list button,#files-selection button,#close-files').forEach((button) => { button.disabled = busy; });
+  document.querySelectorAll<HTMLButtonElement>('#files-list [data-share],#files-list [data-download],#files-share,#files-download').forEach((button) => {
+    const kind: FileAction = button.dataset.share || button.id === 'files-share' ? 'share' : 'download';
+    const isTarget = state.transfer?.path ? (button.dataset.share ?? button.dataset.download) === state.transfer.path : button.id === `files-${kind}`;
+    const label = button.querySelector('span');
+    if (label) label.textContent = fileActionLabel(kind, busy && isTarget && state.transfer?.action === kind);
+  });
   const up = document.querySelector<HTMLButtonElement>('#files-up');
   if (up) up.disabled = !filesBrowserPath || busy;
 }
 
-async function runFileAction(name: string, action: FileAction, size: number): Promise<void> {
-  if (!invoke || !state.user || state.transfer) return;
-  const relativePath = joinPath(filesBrowserPath, name);
-  state.transfer = { path: name, action };
-  setFilesFeedback(action === 'share' ? 'Sharing…' : 'Downloading…', '');
-  updateFileActions(name);
+async function runFileAction(names: string[], action: FileAction): Promise<void> {
+  if (!invoke || !state.user || state.transfer || !names.length) return;
+  const entries = filesEntries.filter((entry) => names.includes(entry.name));
+  if (!entries.length) return;
+  state.transfer = { path: selectedFiles.size ? undefined : entries[0]?.name, action };
+  setFilesFeedback(action === 'share' ? 'Preparing to share…' : 'Choose a folder to save these files.', '');
+  updateFileActions();
   try {
-    const result = await invoke<{ name: string; stored: boolean }>('server_file_action', {
-      path: relativePath,
+    const destination = action === 'download' ? await invoke<Folder | null>('plugin:mobile-files|pick_local_folder') : undefined;
+    if (action === 'download' && !destination) { setFilesFeedback('Download cancelled.', ''); return; }
+    setFilesFeedback(action === 'share' ? 'Preparing to share…' : 'Downloading…', '');
+    const result = await invoke<{ name: string; stored: boolean; count: number }>('server_files_action', {
+      path: filesBrowserPath,
       root: HOME_ROOT,
-      name,
+      names: entries.map((entry) => entry.name),
       action,
-      size: Number.isFinite(size) && size > 0 ? size : undefined,
+      destination: destination?.uri,
     });
-    setFilesFeedback(result.stored ? `Saved to Downloads as ${result.name}.` : `Sharing ${result.name}…`, '');
+    setFilesFeedback(result.stored ? `Saved ${result.count} ${result.count === 1 ? 'file' : 'files'} to ${destination!.displayName}.` : `Sharing ${result.name}…`, '');
   } catch (error) {
     setFilesFeedback('', error instanceof Error ? error.message : String(error));
+  } finally {
+    state.transfer = undefined;
+    updateFileActions();
   }
-  state.transfer = undefined;
-  updateFileActions(name);
 }
 
 let lastAuthCallback: string | undefined;

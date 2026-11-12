@@ -616,6 +616,7 @@ async fn server_library_sizes<R: Runtime>(
 struct FileActionResult {
     name: String,
     stored: bool,
+    count: usize,
 }
 
 /// Read-only retrieval of one server file: hand it to the Android share sheet or
@@ -679,10 +680,177 @@ async fn server_file_action<R: Runtime>(
     Ok(FileActionResult {
         name: stored.name,
         stored: action == "download",
+        count: 1,
+    })
+}
+
+/// Expand the selected siblings from an authoritative listing, keeping all paths
+/// relative to the browser directory. Browsing remains strictly read-only.
+#[tauri::command]
+async fn server_files_action<R: Runtime>(
+    app: AppHandle<R>,
+    path: String,
+    root: String,
+    names: Vec<String>,
+    action: String,
+    destination: Option<String>,
+) -> Result<FileActionResult, String> {
+    let base = safe_sync_path(&path)?;
+    let root = safe_root_id(&root)?;
+    if names.is_empty() || names.len() > 10000 || !matches!(action.as_str(), "share" | "download") {
+        return Err("Select files and choose Share or Download.".into());
+    }
+    let mut selected = std::collections::HashSet::new();
+    for name in &names {
+        selected.insert(safe_file_name(name)?);
+    }
+    let session = authenticated_session(&app).await?;
+    let client = http_client()?;
+    let listing = fetch_tree(&client, &session, &base, &root, false).await?;
+    let single_file = selected.len() == 1
+        && listing
+            .iter()
+            .any(|entry| selected.contains(&entry.name) && entry.kind == "file");
+    let mut pending = Vec::new();
+    let mut files = Vec::new();
+    for entry in listing {
+        if !selected.remove(&entry.name) {
+            continue;
+        }
+        safe_file_name(&entry.name)?;
+        match entry.kind.as_str() {
+            "file" => files.push((entry.name, entry.size)),
+            "directory" => pending.push((entry.name, 1_usize)),
+            _ => return Err("The selection contains an unsupported entry.".into()),
+        }
+    }
+    if !selected.is_empty() {
+        return Err("A selected item no longer exists. Reopen the folder and try again.".into());
+    }
+    let started = std::time::Instant::now();
+    let mut visited = files.len() + pending.len();
+    while let Some((directory, depth)) = pending.pop() {
+        if depth > 64 || started.elapsed().as_secs() > 120 {
+            return Err("This selection is too large. Select a smaller folder.".into());
+        }
+        for entry in fetch_tree(
+            &client,
+            &session,
+            &join_sync_path(&base, &directory),
+            &root,
+            false,
+        )
+        .await?
+        {
+            visited += 1;
+            if visited > 10000 {
+                return Err("Select fewer than 10,000 entries at a time.".into());
+            }
+            let relative = join_sync_path(&directory, &safe_file_name(&entry.name)?);
+            match entry.kind.as_str() {
+                "file" => files.push((relative, entry.size)),
+                "directory" => pending.push((relative, depth + 1)),
+                _ => {}
+            }
+        }
+    }
+    if files.is_empty() {
+        return Err("The selected folders contain no files.".into());
+    }
+    if action == "download" && destination.as_deref().is_none_or(str::is_empty) {
+        return Err("Choose a destination folder.".into());
+    }
+    let count = files.len();
+    let mut staged = Vec::new();
+    let mut saved = 0_usize;
+    let outcome = async {
+        for (relative, _) in files {
+            let response = client
+                .get(file_url(
+                    &session.api_base,
+                    &join_sync_path(&base, &relative),
+                    &root,
+                )?)
+                .bearer_auth(&session.access_token)
+                .send()
+                .await
+                .map_err(network_error)?
+                .error_for_status()
+                .map_err(network_error)?;
+            let temporary = app
+                .mobile_files()
+                .create_temp_file()
+                .map_err(|error| error.to_string())?;
+            staged.push(tauri_plugin_mobile_files::ShareSource {
+                staged_path: temporary.clone(),
+                relative_path: relative.clone(),
+            });
+            // Recheck free cache space per file; enforce the same bound while
+            // streaming so a stale listing or missing Content-Length is safe.
+            let space = app
+                .mobile_files()
+                .storage_info(String::new())
+                .map_err(|error| error.to_string())?;
+            let budget = space.free_bytes.saturating_sub(16 * 1024 * 1024);
+            if response
+                .content_length()
+                .is_some_and(|bytes| bytes > budget)
+            {
+                return Err("Not enough free space for the selected files.".into());
+            }
+            stage_transfer_bounded(response, &temporary, budget).await?;
+            if action == "download" {
+                app.mobile_files()
+                    .save_to_folder(destination.clone().unwrap(), relative, temporary.clone())
+                    .map_err(|error| error.to_string())?;
+                saved += 1;
+                let _ = tokio::fs::remove_file(&temporary).await;
+            }
+        }
+        let name = if action == "download" {
+            String::new()
+        } else if single_file {
+            let file = &staged[0];
+            app.mobile_files()
+                .share_file(file.staged_path.clone(), file.relative_path.clone())
+                .map_err(|error| error.to_string())?
+                .name
+        } else {
+            app.mobile_files()
+                .share_files(staged.clone())
+                .map_err(|error| error.to_string())?
+                .name
+        };
+        Ok(FileActionResult {
+            name,
+            stored: action == "download",
+            count,
+        })
+    }
+    .await;
+    // Native sharing has moved the final payload into its own expiring cache
+    // location. Every source file is disposable on success and on failure.
+    for file in staged {
+        let _ = tokio::fs::remove_file(file.staged_path).await;
+    }
+    outcome.map_err(|error: String| {
+        if saved > 0 {
+            format!("{saved} of {count} files saved. {error}")
+        } else {
+            error
+        }
     })
 }
 
 async fn stage_transfer(response: reqwest::Response, staged: &str) -> Result<u64, String> {
+    stage_transfer_bounded(response, staged, u64::MAX).await
+}
+
+async fn stage_transfer_bounded(
+    response: reqwest::Response,
+    staged: &str,
+    budget: u64,
+) -> Result<u64, String> {
     let mut options = tokio::fs::OpenOptions::new();
     options.write(true);
     #[cfg(target_os = "android")]
@@ -697,6 +865,9 @@ async fn stage_transfer(response: reqwest::Response, staged: &str) -> Result<u64
     let mut written = 0_u64;
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.map_err(network_error)?;
+        if bytes.len() as u64 > budget.saturating_sub(written) {
+            return Err("Not enough free space for the selected files.".into());
+        }
         if output.write_all(&bytes).await.is_err() {
             drop(output);
             let _ = tokio::fs::remove_file(staged).await;
@@ -1796,6 +1967,7 @@ pub fn run() {
             server_presets,
             server_library_sizes,
             server_file_action,
+            server_files_action,
             sync_pair,
             estimate_sync_pair,
             storage_info,
