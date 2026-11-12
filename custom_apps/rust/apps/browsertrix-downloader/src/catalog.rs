@@ -203,6 +203,19 @@ impl Database {
             )
             .optional()
     }
+    /// Search indexes shared WACZ files, never private payloads. Resolve a file
+    /// only through this viewer's catalog ownership; filenames grant no access.
+    pub fn shared_archive_by_file(
+        &self,
+        owner: &str,
+        file: &str,
+    ) -> rusqlite::Result<Option<Archive>> {
+        self.connect()?.query_row(
+            "SELECT document FROM archives WHERE owner=?1 AND json_extract(document,'$.archiveFile')=?2 AND coalesce(json_extract(document,'$.visibility'),'shared')='shared' AND coalesce(json_extract(document,'$.trashed'),0)=0 LIMIT 1",
+            params![owner, file],
+            |r| from_json(&r.get::<_, String>(0)?),
+        ).optional()
+    }
     pub fn archive_by_hash(&self, owner: &str, hash: &str) -> rusqlite::Result<Option<Archive>> {
         self.connect()?
             .query_row(

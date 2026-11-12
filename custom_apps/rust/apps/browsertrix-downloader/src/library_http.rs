@@ -14,7 +14,7 @@ use axum::{
     body::{Body, Bytes, HttpBody},
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{header, HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -30,6 +30,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/batch", post(batch))
         .route("/api/archives", get(list_archives))
         .route("/api/archives/search", get(search))
+        .route("/api/archives/open", get(open_capture))
         .route("/api/archives/reconcile", post(reconcile))
         .route(
             "/api/archives/import",
@@ -130,6 +131,91 @@ async fn search(
     }
     value(s.database.search_pages(&u.username, &q)?)
 }
+#[derive(Deserialize)]
+struct OpenCapture {
+    file: String,
+    url: Option<String>,
+    ts: Option<String>,
+}
+
+/// Resolve Search's immutable WACZ filename without granting it catalog access.
+/// Redirect into original offline replay, not the library or the live website.
+async fn open_capture(
+    State(s): State<AppState>,
+    Query(q): Query<OpenCapture>,
+    h: HeaderMap,
+) -> Result<Response, ApiError> {
+    use sha2::{Digest, Sha256};
+    let user = authenticated_user(&h)?;
+    if q.file.len() > 1024
+        || !q.file.ends_with(".wacz")
+        || std::path::Path::new(&q.file)
+            .file_name()
+            .and_then(|s| s.to_str())
+            != Some(q.file.as_str())
+    {
+        return Err(ApiError::bad_request("invalid archive filename"));
+    }
+    let a = s
+        .database
+        .shared_archive_by_file(&user.username, &q.file)?
+        .ok_or_else(|| ApiError::not_found("archive not found"))?;
+    archive_path(&s, &a)?;
+    let target = q
+        .url
+        .as_deref()
+        .filter(|url| !url.is_empty())
+        .unwrap_or(&a.url);
+    if target.len() > 8192
+        || !url::Url::parse(target).is_ok_and(|url| {
+            matches!(url.scheme(), "http" | "https")
+                && url.username().is_empty()
+                && url.password().is_none()
+        })
+    {
+        return Err(ApiError::bad_request("invalid captured page URL"));
+    }
+    // Same isolation inputs as shared/replay.ts: a viewer/owner, archive
+    // revision and display mode must never reuse another replay collection.
+    let identity = serde_json::to_vec(&json!([
+        user.username,
+        a.id,
+        a.sha256,
+        false,
+        a.clean_rules
+    ]))
+    .map_err(ApiError::internal)?;
+    let collection = format!("wa-{:x}", Sha256::digest(identity));
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair("source", &format!("/api/archives/{}/replay.json", a.id))
+        .append_pair("customColl", &collection)
+        .append_pair(
+            "config",
+            r#"{"injectScripts":[],"liveRedirectOnNotFound":false}"#,
+        )
+        .append_pair("noCache", "1")
+        .append_pair("embed", "full")
+        .append_pair("swName", "sw-clean.js");
+    let mut fragment = url::form_urlencoded::Serializer::new(String::new());
+    fragment
+        .append_pair("view", "replay")
+        .append_pair("url", target);
+    if let Some(ts) = q.ts {
+        // ReplayWeb.page expects a 14-digit timestamp, as in replayLink().
+        let ts: String = ts.chars().filter(char::is_ascii_digit).take(14).collect();
+        if !ts.is_empty() {
+            fragment.append_pair("ts", &ts);
+        }
+    }
+    let destination = format!("/replay/boot.html?{}#{}", query.finish(), fragment.finish());
+    Ok((
+        [(header::CACHE_CONTROL, "private, no-store")],
+        Redirect::to(&destination),
+    )
+        .into_response())
+}
+
 async fn patch_archive(
     State(s): State<AppState>,
     Path(id): Path<String>,

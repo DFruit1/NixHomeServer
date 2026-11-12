@@ -493,6 +493,22 @@ fn parse_wacz(path: &PathBuf, pdftotext: Option<&Path>) -> Result<CrawlPackage, 
     Ok(package)
 }
 
+/// Keep the original URL as an encoded replay target, never a live destination.
+fn replay_link(base: &str, file: &str, page: Option<&PageRecord>) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("file", file);
+    if let Some(page) = page {
+        query.append_pair("url", &page.url);
+        if let Some(timestamp) = page
+            .timestamp
+            .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+        {
+            query.append_pair("ts", &timestamp.format("%Y%m%d%H%M%S").to_string());
+        }
+    }
+    format!("{base}/api/archives/open?{}", query.finish())
+}
+
 impl super::Extractor for BrowsertrixExtractor {
     fn extract(
         &self,
@@ -525,7 +541,7 @@ impl super::Extractor for BrowsertrixExtractor {
                 body_text: package.description.clone(),
                 content_type: "application/wacz".to_string(),
                 origin_url: String::new(),
-                app_url: app_base.clone(),
+                app_url: replay_link(&app_base, &file_name, None),
                 file_path: wacz.display().to_string(),
                 size_bytes: std::fs::metadata(&wacz)
                     .map(|meta| meta.len() as i64)
@@ -553,7 +569,7 @@ impl super::Extractor for BrowsertrixExtractor {
                     body_text: page.text.clone().unwrap_or_default(),
                     content_type: page.content_type.clone(),
                     origin_url: page.url.clone(),
-                    app_url: app_base.clone(),
+                    app_url: replay_link(&app_base, &file_name, Some(page)),
                     file_path: wacz.display().to_string(),
                     size_bytes: 0,
                     content_created_at: page.timestamp,
@@ -610,6 +626,32 @@ mod tests {
 {"url":"","title":"broken"}
 not json
 "#;
+
+    // Captured URLs are untrusted: query delimiters must not replace the
+    // selected WACZ file or turn an archived result into a live-site link.
+    #[test]
+    fn replay_links_preserve_encoded_page_targets_and_capture_times() {
+        let page = PageRecord {
+            url: "https://example.org/a?file=other.wacz&url=https://other.test/#section".into(),
+            title: None,
+            timestamp: Some(1_709_251_200),
+            text: None,
+            content_type: "text/html".into(),
+        };
+        let file = "saved capture & #1.wacz";
+        let link = replay_link("https://archives.test", file, Some(&page));
+        let link = url::Url::parse(&link).unwrap();
+        assert_eq!(link.host_str(), Some("archives.test"));
+        assert_eq!(link.path(), "/api/archives/open");
+        assert!(link.fragment().is_none());
+        let params: HashMap<_, _> = link.query_pairs().collect();
+        assert_eq!(params.len(), 3);
+        assert_eq!(params["file"], file);
+        assert_eq!(params["url"], page.url);
+        assert_eq!(params["ts"], "20240301000000");
+        let summary = url::Url::parse(&replay_link("https://archives.test", file, None)).unwrap();
+        assert_eq!(summary.query_pairs().count(), 1);
+    }
 
     #[test]
     fn parses_pages_jsonl() {

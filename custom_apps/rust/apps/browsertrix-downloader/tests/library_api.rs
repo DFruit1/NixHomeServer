@@ -683,3 +683,170 @@ async fn raw_imports_stream_before_eof_preserve_caps_and_clean_failed_staging() 
         );
     }
 }
+
+// Risk basis: resolving a filename supplied by Search must not reveal another
+// owner's archive, private payloads or trashed captures, nor redirect live.
+#[tokio::test]
+async fn search_replay_links_open_the_captured_page_and_preserve_owner_isolation() {
+    use browsertrix_downloader::{archive_engine, catalog::Archive};
+    let temp = tempfile::tempdir().unwrap();
+    let config = common::config(temp.path());
+    let db = Database::open(&config.database_path).unwrap();
+    std::fs::create_dir_all(&config.archive_root).unwrap();
+    let file = "saved capture & example.wacz";
+    let path = config.archive_root.join(file);
+    common::fixture(&path, "Replay target");
+    let report = archive_engine::inspect_archive(&path).unwrap();
+    let mut archive = Archive::new(
+        "capture-one".into(),
+        "alice".into(),
+        Some(common::request()),
+        &report,
+    );
+    archive.archive_file = file.into();
+    db.save_archive_metadata(&archive).unwrap();
+    let app = router(AppState {
+        config,
+        database: db.clone(),
+        queue: JobQueue::new(
+            db.clone(),
+            Resolver::new(|_| async { Ok(vec!["93.184.216.34".parse().unwrap()]) }),
+        ),
+    });
+    let target = "https://example.com/";
+    assert!(report.pages.iter().any(|page| page.url == target));
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair("file", file)
+        .append_pair("url", target)
+        .append_pair("ts", "2026-01-02T03:04:05Z");
+    let request_path = format!("/api/archives/open?{}", query.finish());
+    assert_eq!(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&request_path)
+                    .body(Body::empty())
+                    .unwrap()
+            )
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(&app, "GET", &request_path, "bob", Value::Null).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let response = app
+        .clone()
+        .oneshot(req("GET", &request_path, "alice", Value::Null))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+    let destination = url::Url::parse(&format!(
+        "https://archives.example.test{}",
+        response.headers()["location"].to_str().unwrap()
+    ))
+    .unwrap();
+    assert_eq!(destination.path(), "/replay/boot.html");
+    let query: std::collections::HashMap<_, _> = destination.query_pairs().collect();
+    assert_eq!(query["source"], "/api/archives/capture-one/replay.json");
+    assert_eq!(query["swName"], "sw-clean.js");
+    assert_eq!(query["noCache"], "1");
+    let replay_config: Value = serde_json::from_str(&query["config"]).unwrap();
+    assert_eq!(replay_config["liveRedirectOnNotFound"], false);
+    assert_eq!(replay_config["injectScripts"], json!([]));
+    let fragment: std::collections::HashMap<_, _> =
+        url::form_urlencoded::parse(destination.fragment().unwrap().as_bytes()).collect();
+    assert_eq!(fragment["view"], "replay");
+    assert_eq!(fragment["url"], target);
+    assert_eq!(fragment["ts"], "20260102030405");
+    // Follow the viewer's source manifest to actual authenticated WACZ bytes.
+    let (status, manifest) = call(&app, "GET", &query["source"], "alice", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    let resource = manifest["resources"][0]["path"].as_str().unwrap();
+    let response = app
+        .clone()
+        .oneshot(req("GET", resource, "alice", Value::Null))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(response.into_body(), 2 * 1024 * 1024)
+            .await
+            .unwrap()
+            .as_ref(),
+        std::fs::read(&path).unwrap()
+    );
+    assert_eq!(
+        call(&app, "GET", resource, "bob", Value::Null).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let mut summary = url::form_urlencoded::Serializer::new(String::new());
+    summary.append_pair("file", file);
+    let response = app
+        .clone()
+        .oneshot(req(
+            "GET",
+            &format!("/api/archives/open?{}", summary.finish()),
+            "alice",
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let summary = url::Url::parse(&format!(
+        "https://archives.example.test{}",
+        response.headers()["location"].to_str().unwrap()
+    ))
+    .unwrap();
+    let summary: std::collections::HashMap<_, _> =
+        url::form_urlencoded::parse(summary.fragment().unwrap().as_bytes()).collect();
+    assert_eq!(summary["url"], archive.url);
+    assert!(!summary.contains_key("ts"));
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            "/api/archives/open?file=..%2Fsecret.wacz",
+            "alice",
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    for invalid in [
+        "javascript:alert(1)",
+        "https://user:password@example.org/",
+        "file:///etc/passwd",
+    ] {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        query.append_pair("file", file).append_pair("url", invalid);
+        assert_eq!(
+            call(
+                &app,
+                "GET",
+                &format!("/api/archives/open?{}", query.finish()),
+                "alice",
+                Value::Null
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    for (visibility, trashed) in [("private", false), ("shared", true)] {
+        archive.visibility = visibility.into();
+        archive.trashed = trashed;
+        db.save_archive_metadata(&archive).unwrap();
+        assert_eq!(
+            call(&app, "GET", &request_path, "alice", Value::Null)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+}

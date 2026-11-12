@@ -2247,6 +2247,11 @@ Notes:
   PDFs use the existing local `pdftotext` binary; no document URLs are fetched.
   Listed titles/text take precedence, duplicate captures keep their first
   readable result, and documents retain their captured content types and dates.
+  Search result titles open the captured page directly in original offline
+  replay, including its capture timestamp when known. The archive app resolves
+  the WACZ filename through the signed-in user's shared catalog; private,
+  trashed and other owners' archives remain inaccessible. Whole-crawl results
+  replay the archive's starting URL. Replay does not redirect to the live site.
   HTTP chunking and gzip content encoding are decoded before extraction;
   unsupported encodings, unsuccessful HTTP responses, scripts, styles, images
   and API responses are skipped. WARC response payloads and decoded HTTP bodies
