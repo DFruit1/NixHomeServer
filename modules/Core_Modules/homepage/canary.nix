@@ -160,8 +160,10 @@ in
     systemd.services.kanidm-canary-bootstrap = {
       description = "Provision and verify the synthetic Kanidm canary credentials";
       wantedBy = [ "multi-user.target" ];
-      after = [ "kanidm.service" ];
-      wants = [ "kanidm.service" ];
+      # Authentication uses the HTTPS vhost, so a Caddy-only restart must finish
+      # before this bootstrap runs even when Kanidm itself remains active.
+      after = [ "kanidm.service" "caddy.service" ];
+      wants = [ "kanidm.service" "caddy.service" ];
       before = [ "homepage-canary.service" ];
       restartTriggers = [ config.age.secrets.canaryUserPassword.file ];
       environment = {
