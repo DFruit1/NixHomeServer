@@ -183,6 +183,16 @@ fn app_url(host: &str, path: &str) -> Result<Url, ErrorData> {
         .map_err(|_| unavailable("App connection is not configured"))
 }
 
+async fn current_downloader_owner(
+    client: &Client,
+    session: &AppSession,
+    url: Url,
+    gateway_username: &str,
+) -> Result<video_views::Owner, ErrorData> {
+    let payload = request_json(client, session, Method::GET, url, None).await?;
+    video_views::Owner::from_session(&payload, gateway_username)
+}
+
 fn tool(
     name: &'static str,
     description: &'static str,
@@ -479,6 +489,13 @@ async fn execute(
         "youtube_jobs" => {
             let params: video_views::JobsParams = arguments(request)?;
             params.validate()?;
+            let owner = current_downloader_owner(
+                &client,
+                &session,
+                app_url(host, "/api/me")?,
+                actor.username(),
+            )
+            .await?;
             let payload = request_json(
                 &client,
                 &session,
@@ -487,7 +504,7 @@ async fn execute(
                 None,
             )
             .await?;
-            video_views::jobs(&payload, &params, actor.username(), host)
+            video_views::jobs(&payload, &params, &owner, host)
         }
         "youtube_info" => {
             let params: VideoUrl = arguments(request)?;
@@ -525,6 +542,15 @@ async fn execute(
                     "Choose a personal/shared destination and video/audio media type",
                 ));
             }
+            // Verify account/session agreement before any queue mutation. The
+            // app independently rechecks group and shared-write permissions.
+            current_downloader_owner(
+                &client,
+                &session,
+                app_url(host, "/api/me")?,
+                actor.username(),
+            )
+            .await?;
             let payload = request_json(&client, &session, Method::POST, app_url(host,"/api/jobs")?, Some(json!({"url":url,"destination":destination,"mediaType":media_type,"videoContainer":"mp4","videoQuality":"1080p","audioFormat":"m4a","audioQuality":"best","splitChapters":false,"includeChannel":true,"includeDate":true,"downloadTranscript":params.download_transcript}))).await?;
             if !payload
                 .get("jobIds")
@@ -551,6 +577,13 @@ async fn execute(
             if !valid_job_id(&params.job_id) {
                 return Err(invalid("Invalid download job ID"));
             }
+            let owner = current_downloader_owner(
+                &client,
+                &session,
+                app_url(host, "/api/me")?,
+                actor.username(),
+            )
+            .await?;
             let payload = request_json(
                 &client,
                 &session,
@@ -564,7 +597,7 @@ async fn execute(
                     "Downloader returned an unexpected job response",
                 ));
             }
-            video_views::job(&payload, actor.username(), host, offset, limit)
+            video_views::job(&payload, &owner, host, offset, limit)
         }
         _ => Err(invalid("Unknown app tool")),
     }
@@ -690,6 +723,67 @@ mod tests {
                 .unwrap_err();
             assert_eq!(error.message, session_required().message);
         }
+        task.abort();
+    }
+
+    // Cross-account actions/disclosure risk: a gateway name is not proof of
+    // which account the forwarded session authenticates at the target app.
+    #[tokio::test]
+    async fn downloader_account_proof_is_fresh_and_bound_to_both_session_and_caller() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let app = Router::new().route(
+            "/api/me",
+            get(move |headers: HeaderMap| {
+                let counter = Arc::clone(&counter);
+                async move {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let username = if headers[header::COOKIE] == "__Secure-nixhomeserver_sso=alice"
+                    {
+                        "alice"
+                    } else {
+                        "bob"
+                    };
+                    Json(json!({"username":username,"groups":["downloads-users"]}))
+                }
+            }),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = app_client("example.test").unwrap();
+        let url = Url::parse(&format!("http://{address}/api/me")).unwrap();
+        for user in ["alice", "bob"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::COOKIE,
+                format!("__Secure-nixhomeserver_sso={user}")
+                    .parse()
+                    .unwrap(),
+            );
+            let session = AppSession::from_headers(&headers).unwrap();
+            let owner = current_downloader_owner(
+                &client,
+                &session,
+                url.clone(),
+                &format!("{user}@example.test"),
+            )
+            .await
+            .unwrap();
+            let params = serde_json::from_value(json!({})).unwrap();
+            let jobs = json!([{"id":"own-job","status":"completed","createdBy":user,"files":[]}]);
+            assert!(video_views::jobs(&jobs, &params, &owner, "example.test").is_ok());
+            assert!(
+                current_downloader_owner(&client, &session, url.clone(), "unrelated")
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            4,
+            "each proof must reauthenticate the current session"
+        );
         task.abort();
     }
 }

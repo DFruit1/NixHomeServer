@@ -18,6 +18,32 @@ const STATUSES: &[&str] = &[
 const MAX_BYTES: usize = 24 * 1024;
 const MAX_ITEMS: usize = 10000;
 
+/// Constructed from /api/me fetched with this operation's SSO session. Keep
+/// the proof local to one call: neither tool arguments nor cached claims can
+/// establish the downloader account that owns a job.
+pub(super) struct Owner(String);
+
+impl Owner {
+    pub(super) fn from_session(payload: &Value, gateway_username: &str) -> Result<Self, ErrorData> {
+        let username = payload["username"]
+            .as_str()
+            .filter(|name| {
+                !name.is_empty()
+                    && name.len() <= 64
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            })
+            .ok_or_else(|| unavailable("Downloader returned an invalid current account"))?;
+        // Compare using this app's existing SPN-local, case-preserved mapping;
+        // the account itself must also be proven by the current app session.
+        if gateway_username.split('@').next() != Some(username) {
+            return Err(super::session_required());
+        }
+        Ok(Self(username.to_owned()))
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct JobsParams {
@@ -85,17 +111,8 @@ fn clip(value: &mut Value, fields: &[&str]) {
     }
 }
 
-fn owner(job: &Value, username: &str) -> Result<(), ErrorData> {
-    // Match only this app's documented normaliseUsername contract
-    // (youtube-downloader/src/server/identity.ts): an SPN's local part,
-    // case preserved. Never use this mapping for Unix/admin authorization.
-    let username = username.split('@').next().unwrap_or("");
-    if username.is_empty()
-        || username.len() > 64
-        || !username
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-        || job["createdBy"].as_str() != Some(username)
+fn owner(job: &Value, account: &Owner) -> Result<(), ErrorData> {
+    if job["createdBy"].as_str() != Some(account.0.as_str())
         || !job["id"].as_str().is_some_and(valid_job_id)
         || !job["status"]
             .as_str()
@@ -178,7 +195,7 @@ fn page(
 pub(super) fn jobs(
     payload: &Value,
     params: &JobsParams,
-    username: &str,
+    account: &Owner,
     host: &str,
 ) -> Result<Value, ErrorData> {
     params.validate()?;
@@ -188,7 +205,7 @@ pub(super) fn jobs(
     // Validate before filtering, including rows that would not match a query.
     // Never let a bad ownership contract become a partial cross-user view.
     for row in rows {
-        owner(row, username)?;
+        owner(row, account)?;
     }
     let url = params.url.as_deref().map(video_url).transpose()?;
     let query = params.query.as_deref().map(|q| q.trim().to_lowercase());
@@ -276,12 +293,12 @@ pub(super) fn info(payload: &Value, offset: usize, limit: usize) -> Result<Value
 
 pub(super) fn job(
     payload: &Value,
-    username: &str,
+    account: &Owner,
     host: &str,
     offset: usize,
     limit: usize,
 ) -> Result<Value, ErrorData> {
-    owner(payload, username)?;
+    owner(payload, account)?;
     let mut base = summary(payload);
     if payload["source"].is_object() {
         // Leave room for complete file paths; chapter details have their own
@@ -315,19 +332,25 @@ mod tests {
     #[test]
     fn history_and_details_refuse_other_owners_before_projection() {
         let params = serde_json::from_value(json!({"query":"own"})).unwrap();
+        let account =
+            Owner::from_session(&json!({"username":"alice"}), "alice@example.test").unwrap();
         let alice = json!({"id":"job-alice","status":"completed","createdBy":"alice","source":{"title":"own","chapters":[]},"files":[]});
         let bob = json!({"id":"job-bob","status":"completed","createdBy":"bob","source":{"title":"hidden","chapters":[]},"files":[]});
         assert!(jobs(
             &json!([alice.clone(), bob.clone()]),
             &params,
-            "alice",
+            &account,
             "example.test"
         )
         .is_err());
-        assert!(job(&bob, "alice", "example.test", 0, 20).is_err());
-        assert!(job(&alice, "alice@example.test", "example.test", 0, 20).is_ok());
-        assert!(job(&alice, "ALICE", "example.test", 0, 20).is_err());
-        assert!(jobs(&json!([alice]), &params, "alice", "example.test").is_ok());
+        assert!(job(&bob, &account, "example.test", 0, 20).is_err());
+        assert!(job(&alice, &account, "example.test", 0, 20).is_ok());
+        assert!(Owner::from_session(&json!({"username":"alice"}), "ALICE").is_err());
+        assert!(Owner::from_session(&json!({"username":"bob"}), "alice").is_err());
+        assert!(Owner::from_session(&json!({"username":"alice"}), "bob").is_err());
+        assert!(Owner::from_session(&json!({"username":"alice@example.test"}), "alice").is_err());
+        assert!(Owner::from_session(&json!({}), "alice").is_err());
+        assert!(jobs(&json!([alice]), &params, &account, "example.test").is_ok());
         assert!(serde_json::from_value::<JobsParams>(json!({"username":"bob"})).is_err());
     }
 }

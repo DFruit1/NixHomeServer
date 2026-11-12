@@ -5,7 +5,7 @@
 use reqwest::{Client, Url};
 use serde::Deserialize;
 use serde_json::json;
-use std::{collections::BTreeSet, ffi::CStr, net::SocketAddr, time::Duration};
+use std::{collections::BTreeMap, ffi::CStr, net::SocketAddr, time::Duration};
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -126,6 +126,34 @@ async fn bounded_json(mut response: reqwest::Response) -> Result<serde_json::Val
     serde_json::from_slice(&bytes).map_err(|_| "Directory returned an invalid identity".into())
 }
 
+fn canonical_pair(name: &str, spn: &str) -> bool {
+    if name.is_empty()
+        || name
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "@,:/\\".contains(c))
+    {
+        return false;
+    }
+    let Some((local, domain)) = spn.split_once('@') else {
+        return false;
+    };
+    // Validate without trimming/case folding the identity. Canonical DNS
+    // realms use ASCII (including IDNA A-labels); a final DNS root dot is OK.
+    let domain = domain.strip_suffix('.').unwrap_or(domain);
+    local == name
+        && !domain.is_empty()
+        && domain.len() <= 253
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && label.as_bytes()[0].is_ascii_alphanumeric()
+                && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+        })
+}
+
 fn principal(
     token: &UnixToken,
     subject: &Uuid,
@@ -136,6 +164,7 @@ fn principal(
 ) -> Result<Principal, String> {
     let denied = || "Caller is not an active approved file user".to_string();
     if !token.valid
+        || !canonical_pair(&token.name, &token.spn)
         || token.gidnumber < 1000
         || Uuid::parse_str(&token.uuid).ok().as_ref() != Some(subject)
         || !(username == token.name || username == token.spn)
@@ -148,21 +177,35 @@ fn principal(
     if name != token.name && name != token.spn {
         return Err(denied());
     }
-    let mut groups = BTreeSet::from([token.gidnumber]);
+    // The token may omit the private primary group from its group list. It is
+    // still a kernel grant, so corroborate it separately rather than silently
+    // trusting the same number as the UID.
+    let primary = group(token.gidnumber).ok_or_else(denied)?;
+    if primary != token.name && primary != token.spn {
+        return Err(denied());
+    }
+    let mut groups = BTreeMap::from([(token.gidnumber, (&token.name, &token.spn))]);
     for entry in &token.groups {
-        if entry.gidnumber < 1000 {
+        if entry.gidnumber < 1000 || !canonical_pair(&entry.name, &entry.spn) {
+            return Err(denied());
+        }
+        let identity = (&entry.name, &entry.spn);
+        if groups
+            .get(&entry.gidnumber)
+            .is_some_and(|existing| *existing != identity)
+        {
             return Err(denied());
         }
         let name = group(entry.gidnumber).ok_or_else(denied)?;
         if name != entry.name && name != entry.spn {
             return Err(denied());
         }
-        groups.insert(entry.gidnumber);
+        groups.insert(entry.gidnumber, identity);
     }
     Ok(Principal {
         uid: token.gidnumber,
         gid: token.gidnumber,
-        groups: groups.into_iter().collect(),
+        groups: groups.into_keys().collect(),
     })
 }
 
@@ -223,6 +266,107 @@ fn group_name(gid: u32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // A missing/colliding primary group must not become an implicit grant to
+    // an unrelated local group's files, even if the Unix token omits it.
+    #[test]
+    fn primary_group_must_be_corroborated_even_without_supplementary_groups() {
+        let subject = Uuid::new_v4();
+        let token = UnixToken {
+            name: "alice".into(),
+            spn: "alice@example.test".into(),
+            uuid: subject.to_string(),
+            gidnumber: 20000,
+            groups: vec![],
+            valid: true,
+        };
+        let humans = vec!["alice".into()];
+        for result in [None, Some("unrelated-local-group".into())] {
+            assert!(principal(
+                &token,
+                &subject,
+                "alice",
+                &humans,
+                |_| Some("alice".into()),
+                |_| result.clone()
+            )
+            .is_err());
+        }
+        for name in ["alice", "alice@example.test"] {
+            assert_eq!(
+                principal(
+                    &token,
+                    &subject,
+                    "alice@example.test",
+                    &humans,
+                    |_| Some("alice".into()),
+                    |_| Some(name.into())
+                )
+                .unwrap()
+                .groups,
+                vec![20000]
+            );
+        }
+    }
+
+    #[test]
+    fn directory_alias_conflicts_and_reused_group_ids_fail_closed() {
+        let subject = Uuid::new_v4();
+        let mut token = UnixToken {
+            name: "alice".into(),
+            spn: "bob@example.test".into(),
+            uuid: subject.to_string(),
+            gidnumber: 20000,
+            groups: vec![],
+            valid: true,
+        };
+        let humans = vec!["alice".into()];
+        assert!(principal(
+            &token,
+            &subject,
+            "alice",
+            &humans,
+            |_| Some("alice".into()),
+            |_| Some("alice".into())
+        )
+        .is_err());
+        token.spn = "alice@example.test".into();
+        token.groups = vec![Group {
+            name: "shared".into(),
+            spn: "other@example.test".into(),
+            gidnumber: 2001,
+        }];
+        assert!(principal(
+            &token,
+            &subject,
+            "alice",
+            &humans,
+            |_| Some("alice".into()),
+            |id| Some(if id == 20000 { "alice" } else { "shared" }.into())
+        )
+        .is_err());
+        token.groups[0].spn = "shared@example.test".into();
+        token.groups.push(Group {
+            name: "other".into(),
+            spn: "other@example.test".into(),
+            gidnumber: 2001,
+        });
+        let calls = std::cell::Cell::new(0);
+        assert!(principal(
+            &token,
+            &subject,
+            "alice",
+            &humans,
+            |_| Some("alice".into()),
+            |id| {
+                if id == 20000 {
+                    return Some("alice".into());
+                }
+                calls.set(calls.get() + 1);
+                Some(if calls.get() == 1 { "shared" } else { "other" }.into())
+            }
+        )
+        .is_err());
+    }
     #[test]
     fn office_principal_requires_subject_valid_human_and_exact_nss_mapping() {
         let subject = Uuid::new_v4();
@@ -246,10 +390,37 @@ mod tests {
                 "alice",
                 &humans,
                 |_| Some("alice".into()),
-                |_| Some("shared".into()),
+                |gid| Some(if gid == 20000 { "alice" } else { "shared" }.into()),
             )
         };
         assert_eq!(resolve(&token).unwrap().groups, vec![2001, 20000]);
+        token.groups.push(Group {
+            name: "alice".into(),
+            spn: "alice@example.test".into(),
+            gidnumber: 20000,
+        });
+        assert_eq!(resolve(&token).unwrap().groups, vec![2001, 20000]);
+        token.groups.pop();
+        for domain in [
+            " ",
+            "example.test\n",
+            "\0",
+            ".example",
+            "example..test",
+            "-example.test",
+            "example-.test",
+            "example/path",
+            "example:443",
+            "realm@other",
+            "",
+        ] {
+            token.spn = format!("alice@{domain}");
+            assert!(resolve(&token).is_err(), "malformed user realm {domain:?}");
+            token.spn = "alice@example.test".into();
+            token.groups[0].spn = format!("shared@{domain}");
+            assert!(resolve(&token).is_err(), "malformed group realm {domain:?}");
+            token.groups[0].spn = "shared@example.test".into();
+        }
         token.valid = false;
         assert!(resolve(&token).is_err());
         token.valid = true;

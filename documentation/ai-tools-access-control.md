@@ -53,6 +53,15 @@ Gateway admission continues to follow existing SSO session semantics; this is
 not a claim of immediate non-POSIX `ai-users` revocation. Fresh Unix groups
 prevent using stale file-group membership on subsequent file operations.
 
+The primary GID is corroborated against NSS even when the token omits its
+private group from the supplementary list. Its name must match the same
+account, as required by [Kanidm's user-private-group model](https://kanidm.github.io/kanidm/stable/accounts/posix_accounts_and_groups.html).
+Names/SPNs must form consistent canonical pairs with valid DNS realms; no
+whitespace/control suffixes or short-name fallback for malformed SPNs is
+accepted. Conflicting identities with one numeric GID are rejected rather
+than deduplicated into a grant. Valid short-name and full-SPN mappings remain
+supported, and repeated identical groups remain harmless.
+
 The broker serializes requests and spawns the fixed executable as a disposable
 worker. A syscall-only `pre_exec` sets supplementary groups and real/effective/
 saved UID/GID, explicitly clears permitted/effective/inheritable and ambient
@@ -67,6 +76,8 @@ are bounded; saves are never automatically retried.
 
 Reads initially cover only the existing shared root, subject to the caller's
 actual kernel permissions, including ancestor traversal and ACL masks.
+Reading a legitimately shared file does not require the caller to own its UID.
+These checks do not alter shared-folder ACLs, ownership or deletion policy.
 `openat2` pins the root, requires beneath resolution and refuses symlinks/magic
 links. Hidden components, absolute paths, backslashes and parent traversal are
 refused. Only regular, single-link files up to 32 MiB are eligible; reads use

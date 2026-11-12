@@ -183,6 +183,17 @@ older downloads do not exist: do not resubmit automatically. No retry, cancel
 or delete tool is introduced. Job-owner checks use the downloader's existing case-preserved
 SPN-local username contract, never a model-supplied owner.
 
+Before listing/reading jobs or submitting a download, AI Tools now fetches
+`/api/me` through that same request's session. The returned account must agree
+with the authenticated gateway caller under the downloader's case-preserved
+SPN-local mapping. Job responses must then match this proven app account,
+including rows that a filter would otherwise hide. A missing, malformed or
+mismatched identity stops the operation before job access or queue submission;
+there is no fallback to an inferred username and no cached owner proof across
+calls. The app still independently checks permissions on every subsequent API
+request. This retains its existing username-keyed ownership and SSO expiry
+semantics; it does not merge accounts or change stored owners.
+
 Video chapters and job files are also paginated. `youtube_info` accepts
 `chapter_offset`/`chapter_limit` and returns `next_chapter_offset`;
 `youtube_job` accepts `file_offset`/`file_limit` and returns `next_file_offset`.
