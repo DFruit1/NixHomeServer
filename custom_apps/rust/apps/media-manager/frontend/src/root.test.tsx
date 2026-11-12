@@ -920,11 +920,10 @@ describe("Media Manager library browser", () => {
               ]
             : path.includes("/items?rootId=")
               ? {
-                  items: items.filter(
-                    (item) =>
-                      (item as { rootId?: string }).rootId ===
-                      decodeURIComponent(path.split("rootId=")[1] ?? ""),
-                  ),
+                  items: items.filter((item) => {
+                    const wanted = new URL(path, "http://x").searchParams.get("rootId");
+                    return (item as { rootId?: string }).rootId === wanted;
+                  }),
                 }
               : { available: false, progress: {} };
       return new Response(wireJson(payload));
@@ -3171,6 +3170,9 @@ describe("Media Manager library browser", () => {
             sources: ["filename"],
           }),
         );
+      }
+      if (path.endsWith("/items/track-1")) {
+        return new Response(wireJson(items[0]));
       }
       return libraryFetchMock(items, true)(input);
     });
