@@ -227,33 +227,6 @@ impl Converter {
         })
     }
 
-    pub async fn convert(&self, path: &Path) -> Result<Value, String> {
-        let format = format_for(path).ok_or_else(|| {
-            "unsupported document type; supported: docx, odt, rtf, doc, xlsx, ods, pptx, odp"
-                .to_string()
-        })?;
-        self.convert_to(path, format.target).await
-    }
-
-    /// Convert a document to an arbitrary Collabora target.
-    ///
-    /// `convert_to` is also the ODF half of every office write: no native ODF
-    /// writer exists in Rust or Python, so an `ods` or `odt` is produced by
-    /// handing Collabora the native document and asking it to convert. Binary
-    /// targets come back base64-encoded in `content`, because an xlsx or docx is
-    /// a zip archive and cannot survive a trip through a UTF-8 string.
-    pub async fn convert_to(&self, path: &Path, target: &str) -> Result<Value, String> {
-        if !target
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric())
-            || target.is_empty()
-        {
-            return Err(format!("unsupported conversion target: {target:?}"));
-        }
-        let bytes = read_document(path, MAX_INPUT_BYTES).await?;
-        self.convert_bytes(path, bytes, target).await
-    }
-
     /// Only broker-authorized bytes reach the converter on the restored path.
     pub async fn convert_bytes(
         &self,

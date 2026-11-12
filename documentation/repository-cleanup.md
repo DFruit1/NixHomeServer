@@ -93,3 +93,54 @@ untracked or unpublished content was deleted.
 Full builds, full suites, independent review, production usage, and externally
 invoked scripts remain unverified. These checks establish the focused cleanup's
 source consistency, not the absence of all possible dead code in the repository.
+
+## Follow-up cleanup: 2026-11-12
+
+Reviewed against `77ff92e08100b5d388a613c85290f53ad97f73b8`. Every changed
+source file matched its committed copy before editing; concurrent Media Manager
+and other unrelated work was excluded.
+
+### Further removals
+
+- Homepage: removed 113 unused selector entries (84 complete rules, 574 lines)
+  for retired admin accordions, command categories, intent controls, group pickers,
+  folder layouts, old setup checklists, and guide navigation. Checked their class
+  names against tracked implementation files and inspected the actual class-name
+  generators. Dynamic `is-*` states and `app-symbol--*` variants were retained.
+  Mixed selector lists retain all their live selectors and declarations.
+- AI Office: removed the unreachable `Converter::convert` and `convert_to`
+  path-based wrappers. No call sites or tests invoked them; active Office tools
+  call `convert_bytes` after broker authorization. Removed the unused
+  `office_write::{MAX_INPUT_BYTES, MAX_WRITE_BYTES, HELPER_TIMEOUT}` constants
+  and their unused `Duration` import. Runtime limits remain enforced by
+  `office_io`, `office_process`, and the byte-based converter.
+- Existing path-resolution and file-reading tests remain intact. Their tested
+  helpers and the Office denial handlers were preserved. The remaining legacy
+  adapters were not deleted merely because their current consumers are tests.
+
+This resolves the older-CSS candidate above and removes only the confirmed
+unreachable part of the Office candidate. The Ventoy helper and retained assets
+remain unchanged.
+
+### Focused verification
+
+- PostCSS parsed the changed stylesheet. Comparing the original and resulting
+  syntax trees confirmed all 615 retained selector entries keep exactly the
+  same declarations, relative order, and enclosing media conditions.
+- Homepage `pnpm run typecheck` passed; focused `adminDashboard.test.ts`,
+  `homepageData.test.ts`, and `homepageLogos.test.ts` passed (42 tests).
+- `cargo test --manifest-path custom_apps/Cargo.toml --locked --offline
+  -p ai-tools office`: 32 passed, 1 existing ignored test requiring a user
+  namespace/capability setup. The parser sandbox test also passed in its child
+  process. No existing test was removed or weakened.
+- The same Cargo command with filter `denial`: 5 passed.
+- `cargo check --manifest-path custom_apps/Cargo.toml --locked --offline
+  -p ai-tools` passed for the production configuration.
+- `rustfmt --edition 2024 --check` passed for the two changed Rust files.
+- Direct comparisons confirmed the active converter, helper implementation,
+  and both existing Rust test modules are byte-for-byte unchanged.
+- Scoped diff review and `git diff --check` passed. Changes have no intended
+  rendered effect, so verification used source and CSS syntax-tree checks.
+
+No full suites, remote validation, browser runs, independent review, live
+activation, or Android release were performed.

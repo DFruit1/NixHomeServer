@@ -4,29 +4,12 @@
 
 use base64::Engine as _;
 use serde_json::{json, Value};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 
 /// Longest helper result returned to the model, in bytes. Same reasoning as
 /// `office::MAX_OUTPUT_BYTES`: a workbook with a million rows is cheap to
 /// produce and useless to the model.
 pub const MAX_OUTPUT_BYTES: usize = 512 * 1024;
-
-/// Largest document handed to the helper, in bytes. Bounds the child's peak
-/// memory, which is why the input check happens before the process is spawned
-/// rather than after it has already parsed the file.
-pub const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
-
-/// Longest single write the helper will accept, in bytes. A document this tool
-/// writes is generated content, not an upload; anything larger is a mistake.
-pub const MAX_WRITE_BYTES: usize = 64 * 1024 * 1024;
-
-/// Wall-clock ceiling on one helper invocation. The helper is parsing one
-/// document, so a slow run means a pathological document rather than useful
-/// work, and the unit has `MemoryMax` to protect.
-pub const HELPER_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A write target, with the extension that decides the dialect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
