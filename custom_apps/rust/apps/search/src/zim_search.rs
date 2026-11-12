@@ -145,15 +145,10 @@ pub async fn search(
         return ZimSearchResult::default();
     }
 
-    // Xapian supports explicit OR; title completion still uses the original
-    // text because it expects a title prefix rather than a boolean expression.
+    // Xapian supports grouped concepts. Title completion still takes a prefix.
     let broad = (matching == crate::solr::MatchMode::Broad)
-        .then(|| crate::text::discovery_words(query))
-        .flatten()
-        .map(|mut words| {
-            words.extend(crate::text::related_words(&words));
-            words.join(" OR ")
-        });
+        .then(|| crate::text::connected_query(query, false))
+        .flatten();
 
     // Refill each slot as it finishes. Waiting for an entire batch left slots
     // idle behind one slow archive and delayed archives later in the library.
@@ -245,8 +240,12 @@ fn title_match_rank(title: &str, query: &str) -> u8 {
         0
     } else if title.starts_with(&format!("{query} ")) || title.starts_with(&format!("{query}/")) {
         1
-    } else {
+    } else if crate::text::discovery_concepts(&query)
+        .is_some_and(|concepts| crate::text::title_covers_concepts(&title, &concepts))
+    {
         2
+    } else {
+        3
     }
 }
 
@@ -329,7 +328,9 @@ async fn search_zim(
         // a few main/related words too, keeping the original completions first.
         // Optional lookups may add hits but never discard a successful sample.
         let related = crate::text::related_words(&words);
-        let candidates = words
+        let mut main_words = words;
+        main_words.sort_by_key(|word| std::cmp::Reverse(word.chars().count()));
+        let candidates = main_words
             .into_iter()
             .chain(related)
             .filter(|word| !word.eq_ignore_ascii_case(query.trim()))
@@ -352,6 +353,15 @@ async fn search_zim(
                 }
             }
         }
+    }
+    if title_only
+        && broad.is_some()
+        && let Some(concepts) = crate::text::discovery_concepts(query)
+    {
+        // Optional single-prefix completions must not reintroduce OR matching.
+        paths.retain(|path| {
+            crate::text::title_covers_concepts(&clean_title_from_path(path), &concepts)
+        });
     }
     paths.sort_by_key(|path| title_match_rank(&clean_title_from_path(path), query));
     let paths: Vec<String> = paths

@@ -151,26 +151,9 @@ pub async fn search(
         return Ok(Vec::new());
     }
     let broad = (matching == crate::solr::MatchMode::Broad)
-        .then(|| crate::text::discovery_words(query))
-        .flatten()
-        .map(|words| {
-            let related = crate::text::related_words(&words);
-            words
-                .into_iter()
-                .map(|word| {
-                    if (4..=32).contains(&word.chars().count())
-                        && word.chars().all(char::is_alphabetic)
-                    {
-                        format!("({word} OR {word}*)")
-                    } else {
-                        word.to_string()
-                    }
-                })
-                .chain(related)
-                .collect::<Vec<_>>()
-                .join(" OR ")
-        });
-    // Explicit queries pass through unchanged; broad terms use explicit OR.
+        .then(|| crate::text::connected_query(query, true))
+        .flatten();
+    // Explicit queries pass through unchanged; prose keeps every main idea.
     let lookup = broad.as_deref().unwrap_or(query);
     let url = format!("{}/api/documents/", config.base_url);
     let page_size = config.max_results.max(1).to_string();

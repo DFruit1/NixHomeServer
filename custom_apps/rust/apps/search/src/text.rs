@@ -221,7 +221,7 @@ pub fn discovery_words(query: &str) -> Option<Vec<String>> {
         "a", "an", "the", "and", "or", "for", "of", "in", "on", "to", "with", "about", "find",
         "show", "me", "how", "do", "does", "i", "can", "is", "are", "please", "tell", "you",
         "could", "would", "what", "what's", "what’s", "where", "when", "why", "which", "some",
-        "any",
+        "any", "my", "our", "your",
     ];
     let meaningful: Vec<_> = words
         .iter()
@@ -251,6 +251,17 @@ pub fn related_words(words: &[String]) -> Vec<String> {
         &["computer", "computing", "pc"],
         &["invoice", "bill", "billing"],
         &["manual", "handbook", "guide"],
+        &[
+            "fix",
+            "repair",
+            "fixing",
+            "repairs",
+            "repairing",
+            "fixed",
+            "fixes",
+            "repaired",
+        ],
+        &["tablet", "ipad"],
         &["resume", "cv"],
         &["math", "maths", "mathematics"],
         &["doctor", "physician"],
@@ -284,6 +295,73 @@ pub fn related_words(words: &[String]) -> Vec<String> {
         }
     }
     related
+}
+
+/// Keep alternatives attached to the word they explain. Each concept remains
+/// required; a synonym for one word must never replace the rest of the query.
+pub fn discovery_concepts(query: &str) -> Option<Vec<Vec<String>>> {
+    let words = discovery_words(query)?;
+    let related = related_words(&words);
+    Some(
+        words
+            .iter()
+            .map(|word| {
+                std::iter::once(word.clone())
+                    .chain(
+                        related_words(std::slice::from_ref(word))
+                            .into_iter()
+                            .filter(|term| related.contains(term)),
+                    )
+                    .collect()
+            })
+            .collect(),
+    )
+}
+
+/// Native source parsers understand grouped boolean expressions, but do not
+/// share Solr's fuzzy/boost syntax. Expand within concepts, then require all.
+pub fn connected_query(query: &str, prefixes: bool) -> Option<String> {
+    Some(
+        discovery_concepts(query)?
+            .into_iter()
+            .map(|concept| {
+                let terms = concept
+                    .into_iter()
+                    .map(|word| {
+                        if prefixes
+                            && (4..=32).contains(&word.chars().count())
+                            && word.chars().all(char::is_alphabetic)
+                        {
+                            format!("{word} OR {word}*")
+                        } else {
+                            word
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                format!("({})", terms.join(" OR "))
+            })
+            .collect::<Vec<_>>()
+            .join(" AND "),
+    )
+}
+
+/// Whole-concept title coverage for archive completion, where the source only
+/// accepts a prefix. Match words, never arbitrary substrings (fix != prefix).
+pub fn title_covers_concepts(title: &str, concepts: &[Vec<String>]) -> bool {
+    let words: Vec<_> = title
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    concepts.iter().all(|concept| {
+        concept.iter().any(|term| {
+            words.iter().any(|word| {
+                word == term
+                    || ((4..=32).contains(&term.chars().count()) && word.starts_with(term))
+                    || word.strip_suffix('s') == Some(term.as_str())
+            })
+        })
+    })
 }
 
 /// Returns at most `limit` bytes of `text`, rounded down to a character

@@ -625,25 +625,17 @@ impl SolrClient {
             params.push(("fq", r#"{!lucene}(*:* AND -kind_s:"zim-article") OR _query_:"{!edismax qf=title pf=title v=$wikiTitleQuery}""#.to_string()));
         }
         // Explicit syntax (quotes, fields, boolean operators) keeps Solr's
-        // normal semantics. Only generated broad clauses use OR by default.
+        // normal semantics. Broad queries require each concept, with OR only
+        // between alternatives for that concept.
         if broad.is_some() {
             params.push(("q.op", "OR".to_string()));
-            params.push(("mm", "1".to_string()));
+            params.push(("mm", "0".to_string()));
             // Reward coverage of the whole topic even when its words are far
             // apart. This boost never admits a document by itself.
-            if let Some(words) = crate::text::discovery_words(query) {
-                let related = crate::text::related_words(&words);
-                let concepts = words
+            if let Some(concepts) = crate::text::discovery_concepts(query) {
+                let concepts = concepts
                     .iter()
-                    .map(|word| {
-                        let alternatives = crate::text::related_words(std::slice::from_ref(word));
-                        let terms = std::iter::once(word.clone())
-                            .chain(
-                                alternatives
-                                    .into_iter()
-                                    .filter(|term| related.contains(term)),
-                            )
-                            .collect::<Vec<_>>();
+                    .map(|terms| {
                         let fields = terms
                             .iter()
                             .flat_map(|term| {
@@ -661,14 +653,55 @@ impl SolrClient {
                 params.push(("primaryQuery", concepts));
                 params.push(("bq", "{!lucene v=$primaryQuery}".to_string()));
             }
-            params.push((
-                "bq",
-                format!(
-                    "title:{}~2^12 body:{}~2^3",
-                    solr_string_term(query),
-                    solr_string_term(query)
-                ),
-            ));
+            if let Some(words) = crate::text::discovery_words(query) {
+                let phrase = words.join(" ");
+                params.push((
+                    "bq",
+                    format!(
+                        "title:{}~2^12 body:{}~2^3",
+                        solr_string_term(&phrase),
+                        solr_string_term(&phrase)
+                    ),
+                ));
+                // Nearby pairs still matter in longer conversational queries.
+                for pair in words.windows(2) {
+                    let phrase = pair.join(" ");
+                    params.push((
+                        "bq",
+                        format!(
+                            "title:{}~2^4 body:{}~2",
+                            solr_string_term(&phrase),
+                            solr_string_term(&phrase)
+                        ),
+                    ));
+                }
+            }
+            if let Some(concepts) = crate::text::discovery_concepts(query) {
+                let phrases = concepts.windows(2).flat_map(|pair| {
+                    pair[0]
+                        .iter()
+                        .take(2)
+                        .enumerate()
+                        .flat_map(move |(left_index, left)| {
+                            pair[1].iter().take(2).enumerate().filter_map(
+                                move |(right_index, right)| {
+                                    (left_index != 0 || right_index != 0)
+                                        .then(|| format!("{left} {right}"))
+                                },
+                            )
+                        })
+                });
+                for phrase in phrases.take(24) {
+                    params.push((
+                        "bq",
+                        format!(
+                            "title:{}~2^4 body:{}~2",
+                            solr_string_term(&phrase),
+                            solr_string_term(&phrase)
+                        ),
+                    ));
+                }
+            }
         } else if filters.matching == MatchMode::All {
             params.push(("q.op", "AND".to_string()));
         }
@@ -708,35 +741,30 @@ pub enum MatchMode {
 }
 
 fn broad_query(query: &str) -> Option<String> {
-    let words = crate::text::discovery_words(query)?;
+    let concepts = crate::text::discovery_concepts(query)?;
     let mut clauses = Vec::new();
-    for word in &words {
+    for (index, concept) in concepts.iter().enumerate() {
+        let word = &concept[0];
         let length = word.chars().count();
-        // Numeric identifiers stay literal. Use at most four fuzzy expansions
-        // (one per word); longer words tolerate two edits at a lower weight.
+        let mut alternatives = vec![format!("{word}^4")];
+        // Keep close spellings and beginnings within this required concept.
+        // Numeric identifiers stay literal; fuzzy expansion is bounded.
         if (4..=32).contains(&length) && word.chars().all(char::is_alphabetic) {
-            let fuzzy = if clauses.len() < 4 {
-                if length >= 8 {
-                    format!(" OR {word}~2^0.2")
+            if index < 4 {
+                alternatives.push(if length >= 8 {
+                    format!("{word}~2^0.2")
                 } else if length >= 5 {
-                    format!(" OR {word}~1^0.4")
+                    format!("{word}~1^0.4")
                 } else {
-                    format!(" OR {word}~1^0.1")
-                }
-            } else {
-                String::new()
-            };
-            clauses.push(format!("({word}^4{fuzzy} OR {word}*^0.2)"));
-        } else {
-            clauses.push(word.clone());
+                    format!("{word}~1^0.1")
+                });
+            }
+            alternatives.push(format!("{word}*^0.2"));
         }
+        alternatives.extend(concept.iter().skip(1).map(|word| format!("{word}^0.6")));
+        clauses.push(format!("({})", alternatives.join(" OR ")));
     }
-    clauses.extend(
-        crate::text::related_words(&words)
-            .into_iter()
-            .map(|word| format!("{word}^0.15")),
-    );
-    Some(clauses.join(" OR "))
+    Some(clauses.join(" AND "))
 }
 
 /// A plain formatted reference must not become an OR between its numeric
