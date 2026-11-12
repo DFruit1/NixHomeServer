@@ -264,8 +264,8 @@ pub(super) async fn lookup(
             c.field("series", text(&series_body["data"], "name"));
             c.identifier("tvdb", series);
         }
-        c.field("season", pieces.get(2).copied().unwrap_or_else(|| ""));
-        c.field("episode", pieces.get(3).copied().unwrap_or_else(|| ""));
+        c.field("season", pieces.get(2).copied().unwrap_or(""));
+        c.field("episode", pieces.get(3).copied().unwrap_or(""));
         if !c.fields.contains_key("season") {
             c.field("season", number(data, "seasonNumber"));
         }

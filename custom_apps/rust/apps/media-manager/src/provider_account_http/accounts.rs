@@ -441,39 +441,39 @@ async fn google_books_test_outcome(response: reqwest::Response) -> ProviderTestO
         return ProviderTestOutcome::UNAVAILABLE;
     }
     let body = bounded_provider_json::<serde_json::Value>(response).await;
-    if matches!(status, StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN) {
-        if let Ok(body) = &body {
-            // Google uses both legacy errors[].reason and details[].reason,
-            // and may return quota failures as HTTP 403 instead of HTTP 429.
-            if body
-                .pointer("/error/status")
-                .and_then(|value| value.as_str())
-                == Some("RESOURCE_EXHAUSTED")
-                || google_books_error_reason(
-                    body,
-                    &[
-                        "dailyLimitExceeded",
-                        "rateLimitExceeded",
-                        "userRateLimitExceeded",
-                        "quotaExceeded",
-                        "RATE_LIMIT_EXCEEDED",
-                        "QUOTA_EXCEEDED",
-                    ],
-                )
-            {
-                return ProviderTestOutcome::RATE_LIMITED;
-            }
-            if google_books_error_reason(
+    if matches!(status, StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN)
+        && let Ok(body) = &body
+    {
+        // Google uses both legacy errors[].reason and details[].reason,
+        // and may return quota failures as HTTP 403 instead of HTTP 429.
+        if body
+            .pointer("/error/status")
+            .and_then(|value| value.as_str())
+            == Some("RESOURCE_EXHAUSTED")
+            || google_books_error_reason(
                 body,
                 &[
-                    "keyInvalid",
-                    "keyExpired",
-                    "API_KEY_INVALID",
-                    "API_KEY_EXPIRED",
+                    "dailyLimitExceeded",
+                    "rateLimitExceeded",
+                    "userRateLimitExceeded",
+                    "quotaExceeded",
+                    "RATE_LIMIT_EXCEEDED",
+                    "QUOTA_EXCEEDED",
                 ],
-            ) {
-                return ProviderTestOutcome::REJECTED;
-            }
+            )
+        {
+            return ProviderTestOutcome::RATE_LIMITED;
+        }
+        if google_books_error_reason(
+            body,
+            &[
+                "keyInvalid",
+                "keyExpired",
+                "API_KEY_INVALID",
+                "API_KEY_EXPIRED",
+            ],
+        ) {
+            return ProviderTestOutcome::REJECTED;
         }
     }
     if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {

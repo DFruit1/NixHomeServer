@@ -244,7 +244,7 @@ mod tests {
         }
         for topic in [
             format!("gwl/v2/{a}/alerts"),
-            format!("gwl/v1/short/status"),
+            "gwl/v1/short/status".to_string(),
             format!("{DEVICE_PREFIX}{a}/extra/alerts"),
         ] {
             assert_eq!(classify(&topic, &map), MessageKind::Other);

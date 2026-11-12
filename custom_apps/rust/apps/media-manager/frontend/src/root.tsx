@@ -2171,7 +2171,7 @@ const LibraryView = component$<{
     ).matches
       ? "auto"
       : "smooth";
-    tabs.scrollTo({
+    tabs.scrollTo?.({
       left: Math.max(
         0,
         active.offsetLeft - (tabs.clientWidth - active.offsetWidth) / 2,

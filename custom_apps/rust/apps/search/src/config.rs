@@ -195,7 +195,10 @@ mod tests {
         assert!(sources[0].setting_str("missing").is_none());
         assert!(sources[0].setting_str_list("missing").is_empty());
         assert_eq!(sources[1].display_name, "Wiki");
-        assert_eq!(sources[1].setting_str_list("fulltextZims"), ["wikipedia_en"]);
+        assert_eq!(
+            sources[1].setting_str_list("fulltextZims"),
+            ["wikipedia_en"]
+        );
     }
 
     #[test]

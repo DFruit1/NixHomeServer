@@ -44,10 +44,8 @@ pub fn opensubtitles_movie_hash(reader: &mut (impl Read + Seek)) -> io::Result<M
 }
 
 fn add_movie_hash_chunk(mut checksum: u64, chunk: &[u8; MOVIE_HASH_CHUNK_BYTES]) -> u64 {
-    for bytes in chunk.chunks_exact(8) {
-        checksum = checksum.wrapping_add(u64::from_le_bytes(
-            bytes.try_into().expect("eight-byte hash word"),
-        ));
+    for bytes in chunk.as_chunks::<8>().0 {
+        checksum = checksum.wrapping_add(u64::from_le_bytes(*bytes));
     }
     checksum
 }

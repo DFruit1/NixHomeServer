@@ -405,6 +405,15 @@ fn summary_of(observation: &crate::adapter::Observation) -> crate::db::Observati
     }
 }
 
+/// Unit-test dependency for the historical wire/acknowledgment engine. Those
+/// tests model implemented handlers, independently of today's firmware limits.
+/// The production capability predicate is exercised by the safety regression;
+/// migrate() restores it before each disposable-DB test.
+pub async fn implemented_handlers_for_protocol_fixture(db: &tokio_postgres::Client) {
+    db.batch_execute("CREATE OR REPLACE FUNCTION groundwater_command_supported(profile TEXT,kind TEXT,payload JSONB,policy TEXT,offset_min INTEGER,unverified BOOLEAN) RETURNS BOOLEAN LANGUAGE sql IMMUTABLE AS 'SELECT true'")
+        .await.unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,13 +470,4 @@ mod tests {
             assert!(!lower.contains("mqtt://"));
         }
     }
-}
-
-/// Unit-test dependency for the historical wire/acknowledgment engine. Those
-/// tests model implemented handlers, independently of today's firmware limits.
-/// The production capability predicate is exercised by the safety regression;
-/// migrate() restores it before each disposable-DB test.
-pub async fn implemented_handlers_for_protocol_fixture(db: &tokio_postgres::Client) {
-    db.batch_execute("CREATE OR REPLACE FUNCTION groundwater_command_supported(profile TEXT,kind TEXT,payload JSONB,policy TEXT,offset_min INTEGER,unverified BOOLEAN) RETURNS BOOLEAN LANGUAGE sql IMMUTABLE AS 'SELECT true'")
-        .await.unwrap();
 }
