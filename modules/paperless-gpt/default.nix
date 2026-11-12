@@ -3,7 +3,9 @@
   imports = [ ./identity.nix ./networking.nix ./bootstrap.nix ./services.nix ./backups.nix ];
   options.repo.paperlessGpt.enable = lib.mkOption {
     type = lib.types.bool;
-    default = true;
+    # The integration enables this only while its required apps are enabled.
+    # Explicit enable requests still retain the dependency assertions below.
+    default = false;
     description = "Enable private Paperless-GPT metadata suggestions.";
   };
   config.nixhomeserver.modules.paperless-gpt = true;

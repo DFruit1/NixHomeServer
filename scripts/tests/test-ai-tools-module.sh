@@ -141,28 +141,31 @@ jq -e '
     exit 1
   }
 
-# The inference unit must gain nothing from the workspace: the grant belongs to
-# ai-tools alone, so the account llama-server runs as cannot write it either.
+# Every configured inference unit must remain outside the AI workspace grant.
+# Qwen is optional; Bonsai may be the only enabled model serving this host.
 inference="$(flake_eval_json "
   cfg = (builtins.getAttr \"$host\" f.nixosConfigurations).config;
   app = cfg.repo.aiTools;
-  qwen = cfg.systemd.services.qwen-27b-llama;
+  inferenceUnits = lib.optional (cfg.repo.bonsai.enable or false) \"bonsai-llama\"
+    ++ lib.optional (cfg.repo.qwen27b.enable or false) \"qwen-27b-llama\";
 in {
   workspace = app.workspaceRoot;
-  qwenUser = qwen.serviceConfig.User or \"__absent__\";
-  qwenReadOnlyPaths = qwen.serviceConfig.ReadOnlyPaths or [ \"__absent__\" ];
-  qwenReadWritePaths = qwen.serviceConfig.ReadWritePaths or [ \"__absent__\" ];
-  qwenSupplementaryGroups =
-    qwen.serviceConfig.SupplementaryGroups or [ \"__absent__\" ];
+  units = map (name: let svc = cfg.systemd.services.\${name}.serviceConfig; in {
+    inherit name;
+    user = svc.User or \"__absent__\";
+    readOnlyPaths = svc.ReadOnlyPaths or [];
+    readWritePaths = svc.ReadWritePaths or [];
+    supplementaryGroups = svc.SupplementaryGroups or [];
+  }) inferenceUnits;
 }")"
 
 jq -e '
-  . as $inference
-  | (
-  ($inference.qwenUser != "ai-tools")
-  and ($inference.qwenReadWritePaths | index($inference.workspace) == null)
-  and ($inference.qwenReadOnlyPaths | index($inference.workspace) == null)
-  and ($inference.qwenSupplementaryGroups | index("ai-tools") == null)
+  .workspace as $workspace
+  | all(.units[];
+    .user != "ai-tools"
+    and (.readWritePaths | index($workspace) == null)
+    and (.readOnlyPaths | index($workspace) == null)
+    and (.supplementaryGroups | index("ai-tools") == null)
   )
 ' <<<"$inference" >/dev/null ||
   {

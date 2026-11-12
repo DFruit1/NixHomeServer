@@ -56,60 +56,67 @@ let
   '';
 in
 {
-  config = lib.optionalAttrs dependenciesPresent (lib.mkIf cfg.enable {
-    assertions = [{
-      assertion = config.repo.bonsai.enable && config.repo.bonsai.gate.enable;
-      message = "Paperless-GPT requires enabled Bonsai and its inference concurrency gate.";
-    }];
-    repo.paperless.additionalAllowedHosts = [ vars.networking.loopbackIPv4 ];
-    virtualisation.oci-containers.containers.paperless-gpt.environment = {
-      PAPERLESS_BASE_URL = "http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.paperless}";
-      PAPERLESS_PUBLIC_URL = "https://paperless.${vars.domain}";
-      OPENAI_BASE_URL = config.repo.bonsai.gate.gateBaseUrl;
-      OPENAI_API_KEY = "local-loopback";
-      LLM_MODEL = config.repo.bonsai.modelName;
-    };
-    systemd.services.paperless-gpt = {
-      wants = [ "bonsai-gate.service" ];
-      after = [ "bonsai-gate.service" ];
-    };
-    # Refresh object access for newly imported owner documents; revoke grants
-    # when the owner loses access. No document content or metadata is changed.
-    systemd.timers.paperless-gpt-provision = {
-      wantedBy = [ "timers.target" ];
-      timerConfig = { OnBootSec = "3min"; OnUnitInactiveSec = "5min"; };
-    };
-    systemd.services.paperless-gpt-provision = {
-      description = "Provision the approved Paperless-GPT service identity and runtime credential";
-      wantedBy = [ "multi-user.target" ];
-      requires = [ "paperless-web.service" ];
-      after = [ "paperless-web.service" "paperless-permissions-bootstrap.service" ];
-      path = [ pkgs.coreutils pkgs.util-linux pkgs.getent config.services.paperless.manage ];
-      serviceConfig = {
-        Type = "oneshot";
-        Group = "paperless";
-        RuntimeDirectoryPreserve = "yes";
-        RuntimeDirectory = "paperless-gpt-credentials";
-        RuntimeDirectoryMode = "0750";
-        UMask = "0077";
-        Nice = 15;
-        CPUWeight = 10;
-        IOWeight = 10;
-        MemoryHigh = "512M";
-        MemoryMax = "1G";
+  config = lib.optionalAttrs dependenciesPresent (lib.mkMerge [
+    {
+      repo.paperlessGpt.enable = lib.mkDefault (
+        config.services.paperless.enable && config.repo.bonsai.enable && config.repo.bonsai.gate.enable
+      );
+    }
+    (lib.mkIf cfg.enable {
+      assertions = [{
+        assertion = config.services.paperless.enable && config.repo.bonsai.enable && config.repo.bonsai.gate.enable;
+        message = "Paperless-GPT requires enabled Paperless, Bonsai and its inference concurrency gate.";
+      }];
+      repo.paperless.additionalAllowedHosts = [ vars.networking.loopbackIPv4 ];
+      virtualisation.oci-containers.containers.paperless-gpt.environment = {
+        PAPERLESS_BASE_URL = "http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.paperless}";
+        PAPERLESS_PUBLIC_URL = "https://paperless.${vars.domain}";
+        OPENAI_BASE_URL = config.repo.bonsai.gate.gateBaseUrl;
+        OPENAI_API_KEY = "local-loopback";
+        LLM_MODEL = config.repo.bonsai.modelName;
       };
-      script = ''
-        set -euo pipefail
-        temp=$(mktemp /run/paperless-gpt-credentials/environment.XXXXXX)
-        trap 'rm -f -- "$temp"' EXIT
-        chown paperless:paperless "$temp"
-        runuser -u paperless -- env PAPERLESS_GPT_ENV_OUT="$temp" \
-          paperless-manage shell -c ${lib.escapeShellArg "exec(open('${provision}').read())"}
-        uid=$(id -u paperless-gpt)
-        gid=$(id -g paperless-gpt)
-        printf 'PUID=%s\nPGID=%s\n' "$uid" "$gid" >> "$temp"
-        install -m 0600 -o root -g root "$temp" /run/paperless-gpt-credentials/environment
-      '';
-    };
-  });
+      systemd.services.paperless-gpt = {
+        wants = [ "bonsai-gate.service" ];
+        after = [ "bonsai-gate.service" ];
+      };
+      # Refresh object access for newly imported owner documents; revoke grants
+      # when the owner loses access. No document content or metadata is changed.
+      systemd.timers.paperless-gpt-provision = {
+        wantedBy = [ "timers.target" ];
+        timerConfig = { OnBootSec = "3min"; OnUnitInactiveSec = "5min"; };
+      };
+      systemd.services.paperless-gpt-provision = {
+        description = "Provision the approved Paperless-GPT service identity and runtime credential";
+        wantedBy = [ "multi-user.target" ];
+        requires = [ "paperless-web.service" ];
+        after = [ "paperless-web.service" "paperless-permissions-bootstrap.service" ];
+        path = [ pkgs.coreutils pkgs.util-linux pkgs.getent config.services.paperless.manage ];
+        serviceConfig = {
+          Type = "oneshot";
+          Group = "paperless";
+          RuntimeDirectoryPreserve = "yes";
+          RuntimeDirectory = "paperless-gpt-credentials";
+          RuntimeDirectoryMode = "0750";
+          UMask = "0077";
+          Nice = 15;
+          CPUWeight = 10;
+          IOWeight = 10;
+          MemoryHigh = "512M";
+          MemoryMax = "1G";
+        };
+        script = ''
+          set -euo pipefail
+          temp=$(mktemp /run/paperless-gpt-credentials/environment.XXXXXX)
+          trap 'rm -f -- "$temp"' EXIT
+          chown paperless:paperless "$temp"
+          runuser -u paperless -- env PAPERLESS_GPT_ENV_OUT="$temp" \
+            paperless-manage shell -c ${lib.escapeShellArg "exec(open('${provision}').read())"}
+          uid=$(id -u paperless-gpt)
+          gid=$(id -g paperless-gpt)
+          printf 'PUID=%s\nPGID=%s\n' "$uid" "$gid" >> "$temp"
+          install -m 0600 -o root -g root "$temp" /run/paperless-gpt-credentials/environment
+        '';
+      };
+    })
+  ]);
 }
