@@ -49,7 +49,7 @@ in {
   ipAllow = svc.serviceConfig.IPAddressAllow;
   onFailure = svc.unitConfig.OnFailure;
   alertTarget = cfg.repo.monitoring.failureAlerts.targetUnit;
-  requiresMounts = svc.serviceConfig.RequiresMountsFor;
+  requiresMounts = svc.unitConfig.RequiresMountsFor;
   readOnlyPaths = broker.serviceConfig.ReadOnlyPaths;
   readWritePaths = broker.serviceConfig.ReadWritePaths;
   memoryHigh = svc.serviceConfig.MemoryHigh;

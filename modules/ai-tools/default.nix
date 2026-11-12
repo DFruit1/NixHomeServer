@@ -6,6 +6,7 @@
     ./identity.nix
     ./networking.nix
     ./filepaths.nix
+    ./bootstrap.nix
     ./services.nix
     ./admin.nix
     ./backups.nix

@@ -21,26 +21,26 @@ if [[ ! -d "$helper" ]]; then
   exit 1
 fi
 
-# Evaluated, not built: the helper tests need the libraries on an interpreter's
-# path, and the built package is a closure with its own wrapper rather than a
-# runnable interpreter. remote eval runs this against the host, where the build
-# inputs are already present.
-interpreter="$(
+# Keep the derivation path so an empty CI store can build this interpreter.
+# Evaluating only its output path loses the build recipe when no cache has it.
+interpreter_drv="$(
   flake_eval "
     interpreter =
       f.inputs.nixpkgs.legacyPackages.\"\${builtins.currentSystem}\".python3
         .withPackages (ps: [ ps.openpyxl ps.python-docx ]);
-  in interpreter
+  in interpreter.drvPath
   "
 )"
 
-if [[ -z "$interpreter" || "$interpreter" != /* ]]; then
+if [[ "$interpreter_drv" != /*.drv ]]; then
   echo "could not resolve the pinned office-helper interpreter" >&2
   exit 1
 fi
 
-# The interpreter is a store path that evaluation names but nothing on this
-# host has realised yet; nix build does, and is cheap once cached.
-nix build --no-link "$interpreter" >/dev/null
+interpreter="$(nix build --no-link --print-out-paths "$interpreter_drv^out")"
+if [[ "$interpreter" != /* || "$interpreter" == *$'\n'* || ! -x "$interpreter/bin/python3" ]]; then
+  echo "could not build the pinned office-helper interpreter" >&2
+  exit 1
+fi
 
 bash "$helper/run-helper-tests.sh" "$interpreter/bin/python3"
