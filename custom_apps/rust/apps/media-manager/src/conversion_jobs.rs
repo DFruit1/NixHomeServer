@@ -233,29 +233,37 @@ pub fn reconcile(config: &AppConfig) -> Result<(), String> {
         return Ok(());
     }
     let root = Dir::open(&config.state_dir)?.create_shared("conversion-jobs")?;
-    let mut submitted = false;
+    let mut pending = Vec::new();
     for owner in root.names()? {
-        if Identity::try_new(&owner, std::iter::empty::<&str>()).is_err()
-            || root.child(&owner).is_err()
+        if Identity::try_new(&owner, std::iter::empty::<&str>()).is_ok()
+            && root.child(&owner).is_ok()
         {
-            continue;
+            pending.extend(
+                jobs(config, &owner)?
+                    .into_iter()
+                    .filter(|job| !matches!(job.state.as_str(), "completed" | "failed")),
+            );
         }
-        for mut job in jobs(config, &owner)? {
-            // One large intake per broker tick leaves capacity for library edits.
-            if job.state == "queued" {
-                if submitted {
-                    continue;
-                }
-                submitted = true;
-            }
-            if matches!(job.state.as_str(), "completed" | "failed") {
+    }
+    // Display history newest first, but dispatch the oldest job across all
+    // owners first so a stream of newer uploads cannot starve earlier files.
+    pending.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let mut submitted = false;
+    for mut job in pending {
+        if job.state == "queued" {
+            if submitted {
                 continue;
             }
-            if let Err(error) = advance(config, &mut job) {
-                job.state = "failed".into();
-                job.error = Some(error);
-                job.save(config)?;
-            }
+            submitted = true;
+        }
+        if let Err(error) = advance(config, &mut job) {
+            job.state = "failed".into();
+            job.error = Some(error);
+            job.save(config)?;
         }
     }
     Ok(())
@@ -360,7 +368,15 @@ fn advance(config: &AppConfig, job: &mut Job) -> Result<(), String> {
         if record["state"] != "completed" {
             return Ok(());
         }
-        dir.file(&job.inbox_name)?
+        let source = dir.file(&job.inbox_name)?;
+        if job.options.storage_root_id.is_some() {
+            let fingerprint =
+                crate::broker::opened_file_fingerprint(&source).map_err(|e| e.to_string())?;
+            if record["sourceFingerprint"].as_str() != Some(fingerprint.as_str()) {
+                return Err("Transcription finished, but the source changed afterward. The library copy was not saved; your transcript and source remain in the job folders.".into());
+            }
+        }
+        source
     };
     if let Some(root_id) = &job.options.storage_root_id {
         let root = config

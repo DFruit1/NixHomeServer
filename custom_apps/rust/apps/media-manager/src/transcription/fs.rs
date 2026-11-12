@@ -73,6 +73,7 @@ impl Dir {
         let dir = self.child(value)?;
         if created {
             self.own(&dir.0)?;
+            self.0.sync_all().map_err(|e| e.to_string())?;
         }
         Ok(dir)
     }

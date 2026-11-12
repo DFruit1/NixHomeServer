@@ -187,42 +187,38 @@ export const ConversionsView = component$<{
     const transcribe = track(() => props.transcriptionAvailable);
     let stopped = false;
     const load = async () => {
-      try {
-        const inputs = await api<ConversionInputs>("/conversions/jobs");
-        if (!stopped) {
-          conv.inputs = inputs;
-          conv.inputError = "";
-        }
-      } catch (error) {
-        if (!stopped) conv.inputError = readableError(error);
-      }
-      try {
-        const [conversions, inbox] = await Promise.all([
+      const [inputs, conversions, inbox, transcription] =
+        await Promise.allSettled([
+          api<ConversionInputs>("/conversions/jobs"),
           api<ConversionEnvelope>("/conversions"),
           api<ConversionInbox>("/conversions/inbox"),
+          transcribe
+            ? api<TranscriptionEnvelope>("/transcriptions")
+            : Promise.resolve(undefined),
         ]);
-        if (stopped) return;
-        conv.conversions = conversions;
-        conv.inbox = inbox;
-        conv.error = "";
-        if (transcribe) {
-          try {
-            const result = await api<TranscriptionEnvelope>("/transcriptions");
-            if (!stopped) {
-              conv.transcriptions = result;
-              conv.transcriptionError = "";
-            }
-          } catch (error) {
-            if (!stopped) {
-              if (error instanceof ApiError && error.status === 503)
-                conv.transcriptions = undefined;
-              else conv.transcriptionError = readableError(error);
-            }
-          }
-        }
-      } catch (error) {
-        if (!stopped) conv.error = readableError(error);
-      }
+      if (stopped) return;
+      if (inputs.status === "fulfilled") {
+        conv.inputs = inputs.value;
+        conv.inputError = "";
+      } else conv.inputError = readableError(inputs.reason);
+      if (conversions.status === "fulfilled")
+        conv.conversions = conversions.value;
+      if (inbox.status === "fulfilled") conv.inbox = inbox.value;
+      conv.error = [conversions, inbox]
+        .flatMap((result) =>
+          result.status === "rejected" ? [readableError(result.reason)] : [],
+        )
+        .join(" ");
+      if (transcription.status === "fulfilled") {
+        conv.transcriptions = transcription.value;
+        conv.transcriptionError = "";
+      } else if (
+        transcription.reason instanceof ApiError &&
+        transcription.reason.status === 503
+      ) {
+        conv.transcriptions = undefined;
+        conv.transcriptionError = "Transcription is currently unavailable.";
+      } else conv.transcriptionError = readableError(transcription.reason);
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
@@ -308,16 +304,15 @@ export const ConversionsView = component$<{
           onClose$={() => (logDialog.value = "")}
         />
       )}
-      {(conv.error || conv.inputError) && (
+      {conv.error && (
         <div class="message error conv-error" role="alert">
           <Icon name="alert" size={18} />
-          <span>{conv.error || conv.inputError}</span>
+          <span>{conv.error}</span>
           <button
             type="button"
             aria-label="Dismiss conversion error"
             onClick$={() => {
               conv.error = "";
-              conv.inputError = "";
             }}
           >
             ×
@@ -332,6 +327,7 @@ export const ConversionsView = component$<{
       >
         <ConversionInput
           inputs={conv.inputs}
+          error={conv.inputError}
           transcriptionAvailable={props.transcriptionAvailable}
           onQueued$={(job) => {
             if (conv.inputs) conv.inputs.jobs = [job, ...conv.inputs.jobs];
@@ -344,10 +340,22 @@ export const ConversionsView = component$<{
               {working ? "Converting" : "Idle"}
             </span>
           </header>
-          <ConversionList
-            conversion={activeConversions[0] ?? ({} as Conversion)}
-            queuedEntry={queuedEntries}
-          />
+          {activeConversions.length ? (
+            activeConversions.map((conversion, index) => (
+              <ConversionList
+                key={conversion.sourceIso ?? index}
+                conversion={conversion}
+                queuedEntry={
+                  index === activeConversions.length - 1 ? queuedEntries : []
+                }
+              />
+            ))
+          ) : (
+            <ConversionList
+              conversion={{} as Conversion}
+              queuedEntry={queuedEntries}
+            />
+          )}
           <details class="conversion-help">
             <summary>How to add DVDs</summary>
             <div class="setup-body">
@@ -433,7 +441,17 @@ export const ConversionsView = component$<{
           </section>
         )}
       </div>
-      <aside class="conv-sidebar">
+      <aside
+        class={{
+          "conv-sidebar": true,
+          "conv-sidebar--no-completed":
+            !inboxProcessed.length &&
+            !transcripts.some((job) => job.state === "completed"),
+          "conv-sidebar--no-failed":
+            !inboxFailed.length &&
+            !transcripts.some((job) => job.state === "failed"),
+        }}
+      >
         <ProcessedCard
           isos={inboxProcessed}
           filesBaseUrl={filesBaseUrl}
@@ -457,7 +475,7 @@ const ProcessedCard = component$<{
   <section class="panel side-panel">
     <div class="panel-heading">
       <div>
-        <h2 id="processed-heading">Processed</h2>
+        <h2 id="processed-heading">Completed</h2>
       </div>
     </div>
     <div
@@ -467,7 +485,7 @@ const ProcessedCard = component$<{
       tabIndex={0}
     >
       {props.isos.length === 0 && props.transcripts.length === 0 ? (
-        <p class="quiet-copy">Nothing has been processed yet.</p>
+        <p class="quiet-copy">No completed jobs yet.</p>
       ) : (
         <ul class="side-list">
           {props.transcripts.map((job) => (
@@ -504,7 +522,9 @@ const ProcessedCard = component$<{
             <li key={iso.name}>
               <span class="side-item-name">
                 <strong>{iso.volumeId || iso.name}</strong>
-                <small>{iso.name}</small>
+                {iso.volumeId && iso.volumeId !== iso.name && (
+                  <small>{iso.name}</small>
+                )}
               </span>
               {iso.outputDir && props.filesBaseUrl ? (
                 <a
@@ -549,7 +569,7 @@ const FailedCard = component$<{
       tabIndex={0}
     >
       {props.isos.length === 0 && props.transcripts.length === 0 ? (
-        <p class="quiet-copy">No failed conversions.</p>
+        <p class="quiet-copy">No failed jobs.</p>
       ) : (
         <ul class="side-list">
           {props.transcripts.map((job) => (
@@ -567,7 +587,9 @@ const FailedCard = component$<{
             <li key={iso.name}>
               <span class="side-item-name">
                 <strong>{iso.volumeId || iso.name}</strong>
-                <small>{iso.name}</small>
+                {iso.volumeId && iso.volumeId !== iso.name && (
+                  <small>{iso.name}</small>
+                )}
               </span>
               {iso.hasErrorLog && (
                 <button

@@ -3,6 +3,7 @@ import {
   useSignal,
   useStore,
   useTask$,
+  $,
   type QRL,
 } from "@builder.io/qwik";
 import { api, readableError } from "./api";
@@ -14,15 +15,24 @@ import type {
   ConversionInputOptions,
 } from "./api-contract.generated";
 
+const jobStateLabels: Record<ConversionInputJob["state"], string> = {
+  queued: "Waiting to start",
+  submitting: "Copying file",
+  processing: "Processing",
+  saving: "Saving library copy",
+  completed: "Completed",
+  failed: "Needs attention",
+};
+
 export const ConversionInput = component$<{
   inputs?: ConversionInputs;
   transcriptionAvailable?: boolean;
+  error?: string;
   onQueued$: QRL<(job: ConversionInputJob) => void>;
 }>((props) => {
   const form = useStore({
     source: "server",
     path: "",
-    kind: "transcription",
     backend: "parakeet",
     diarize: false,
     language: "",
@@ -39,12 +49,13 @@ export const ConversionInput = component$<{
     error: "",
   });
   const fileInput = useSignal<HTMLInputElement>();
+  const serverPathInput = useSignal<HTMLInputElement>();
   const fileName = useSignal("");
   const listing = useSignal<ConversionFiles>();
-  useTask$(({ track }) => {
-    const available = track(() => props.transcriptionAvailable);
-    if (!available) form.kind = "iso";
-    else if (!form.path && !fileName.value) form.kind = "transcription";
+  const resetFeedback = $(() => {
+    form.message = "";
+    form.lastJobId = "";
+    form.error = "";
   });
   useTask$(({ track, cleanup }) => {
     const browsing = track(() => form.browsing);
@@ -77,7 +88,10 @@ export const ConversionInput = component$<{
   const selectedName =
     form.source === "upload"
       ? fileName.value
-      : (form.path.split("/").at(-1) ?? "");
+      : (form.path.trim().split("/").at(-1) ?? "");
+  const kind = /\.iso$/i.test(selectedName) ? "iso" : "transcription";
+  const transcriptionUnavailable =
+    kind === "transcription" && !props.transcriptionAvailable;
   const video = /\.(mp4|mkv|webm|mov|avi|m4v|mpeg|mpg|ts)$/i.test(selectedName);
   const storageRoots = (props.inputs?.roots ?? []).filter((root) =>
     video
@@ -90,15 +104,20 @@ export const ConversionInput = component$<{
       aria-labelledby="conversion-input-heading"
     >
       <header class="panel-heading">
-        <h2 id="conversion-input-heading">Start a job</h2>
+        <h2 id="conversion-input-heading">Transcribe or convert</h2>
       </header>
-      {!props.inputs ? (
+      {props.error && (
+        <p class="message error conversion-input__notice" role="alert">
+          {props.error}
+        </p>
+      )}
+      {!props.inputs && !props.error ? (
         <p class="conversion-input__notice">Loading available folders…</p>
-      ) : !props.inputs.canSubmit ? (
+      ) : props.inputs && !props.inputs.canSubmit ? (
         <p class="conversion-input__notice">
           Adding files requires editor access and enabled changes.
         </p>
-      ) : (
+      ) : props.inputs ? (
         <form
           class="conversion-input__form"
           preventdefault:submit
@@ -106,14 +125,20 @@ export const ConversionInput = component$<{
             if (form.busy) return;
             form.error = "";
             form.message = "";
+            form.lastJobId = "";
+            if (transcriptionUnavailable) {
+              form.error =
+                "Transcription is unavailable. Choose a DVD ISO to convert instead.";
+              return;
+            }
             const file = fileInput.value?.files?.[0];
             const name =
               form.source === "upload"
                 ? file?.name
-                : form.path.split("/").at(-1);
+                : form.path.trim().split("/").at(-1);
             if (
               !name ||
-              (form.source === "server" && !form.path.startsWith("/"))
+              (form.source === "server" && !form.path.trim().startsWith("/"))
             ) {
               form.error = "Select a file or enter its full server path.";
               return;
@@ -128,24 +153,24 @@ export const ConversionInput = component$<{
             }
             const options: ConversionInputOptions = {
               name,
-              kind: form.kind as "iso" | "transcription",
+              kind,
               backend: form.backend as "parakeet" | "whisper",
-              diarize: form.kind === "transcription" && form.diarize,
+              diarize: kind === "transcription" && form.diarize,
               language:
-                form.kind === "transcription" &&
+                kind === "transcription" &&
                 form.backend === "whisper" &&
                 form.language.trim()
                   ? form.language.trim()
                   : null,
               storageRootId:
                 form.source === "upload" &&
-                form.kind === "transcription" &&
+                kind === "transcription" &&
                 form.storageRootId
                   ? form.storageRootId
                   : null,
               storageFolder:
                 form.source === "upload" &&
-                form.kind === "transcription" &&
+                kind === "transcription" &&
                 form.storageRootId
                   ? form.storageFolder.trim()
                   : "",
@@ -179,6 +204,8 @@ export const ConversionInput = component$<{
               form.message = `${name} is queued. Processing starts automatically after the inbox check.`;
               if (fileInput.value) fileInput.value.value = "";
               fileName.value = "";
+              form.storageRootId = "";
+              form.storageFolder = "";
             } catch (error) {
               form.error = readableError(error);
             } finally {
@@ -196,11 +223,12 @@ export const ConversionInput = component$<{
               <button
                 type="button"
                 aria-pressed={form.source === "server"}
-                onClick$={() => {
+                onClick$={async () => {
                   form.source = "server";
-                  form.message = "";
-                  form.lastJobId = "";
-                  form.error = "";
+                  form.storageRootId = "";
+                  form.storageFolder = "";
+                  fileName.value = "";
+                  await resetFeedback();
                 }}
               >
                 Server file
@@ -208,11 +236,11 @@ export const ConversionInput = component$<{
               <button
                 type="button"
                 aria-pressed={form.source === "upload"}
-                onClick$={() => {
+                onClick$={async () => {
                   form.source = "upload";
-                  form.message = "";
-                  form.lastJobId = "";
-                  form.error = "";
+                  form.storageRootId = "";
+                  form.storageFolder = "";
+                  await resetFeedback();
                 }}
               >
                 Upload file
@@ -223,21 +251,22 @@ export const ConversionInput = component$<{
                 <label for="conversion-server-path">Server file path</label>
                 <div class="conversion-path-control">
                   <input
+                    ref={serverPathInput}
                     id="conversion-server-path"
+                    aria-describedby="conversion-server-note"
                     type="text"
                     required
                     value={form.path}
                     placeholder="Full path to an audio, video or ISO file"
-                    onInput$={(_, el) => {
+                    onInput$={async (_, el) => {
                       form.path = el.value;
-                      if (/\.iso$/i.test(el.value)) form.kind = "iso";
-                      else if (props.transcriptionAvailable)
-                        form.kind = "transcription";
+                      await resetFeedback();
                     }}
                   />
                   <button
                     type="button"
                     aria-expanded={form.browsing}
+                    aria-controls="conversion-browser"
                     onClick$={() => {
                       form.browsing = !form.browsing;
                       if (!form.rootId)
@@ -247,12 +276,11 @@ export const ConversionInput = component$<{
                     Browse
                   </button>
                 </div>
-                <small>
-                  Your own folders and shared media folders. The original stays
-                  in place.
+                <small id="conversion-server-note">
+                  Your original stays in place.
                 </small>
                 {form.browsing && (
-                  <div class="conversion-browser">
+                  <div id="conversion-browser" class="conversion-browser">
                     <label for="conversion-source-root">Folder</label>
                     <select
                       id="conversion-source-root"
@@ -296,7 +324,7 @@ export const ConversionInput = component$<{
                           <li key={entry.name}>
                             <button
                               type="button"
-                              onClick$={() => {
+                              onClick$={async () => {
                                 if (entry.directory) {
                                   form.folder = [form.folder, entry.name]
                                     .filter(Boolean)
@@ -313,12 +341,9 @@ export const ConversionInput = component$<{
                                 ]
                                   .filter(Boolean)
                                   .join("/");
-                                form.kind =
-                                  /\.iso$/i.test(entry.name) ||
-                                  !props.transcriptionAvailable
-                                    ? "iso"
-                                    : "transcription";
+                                await resetFeedback();
                                 form.browsing = false;
+                                serverPathInput.value?.focus();
                               }}
                             >
                               <span aria-hidden="true">
@@ -354,15 +379,11 @@ export const ConversionInput = component$<{
                   type="file"
                   required
                   accept="audio/*,video/*,.iso,.mkv,.m4b,.flac,.opus,.wma,.aiff,.ts"
-                  onChange$={(_, el) => {
+                  onChange$={async (_, el) => {
                     fileName.value = el.files?.[0]?.name ?? "";
-                    form.kind =
-                      /\.iso$/i.test(fileName.value) ||
-                      !props.transcriptionAvailable
-                        ? "iso"
-                        : "transcription";
                     form.storageRootId = "";
                     form.storageFolder = "";
+                    await resetFeedback();
                   }}
                 />
                 <small>
@@ -370,39 +391,22 @@ export const ConversionInput = component$<{
                 </small>
               </div>
             )}
-            <div class="conversion-options-row">
+            {kind === "transcription" && (
               <div class="conversion-field">
-                <label for="conversion-kind">Action</label>
+                <label for="conversion-engine">Transcription engine</label>
                 <select
-                  id="conversion-kind"
-                  value={form.kind}
+                  id="conversion-engine"
+                  value={form.backend}
                   onChange$={(_, el) => {
-                    form.kind = el.value;
+                    form.backend = el.value;
                   }}
                 >
-                  {props.transcriptionAvailable && (
-                    <option value="transcription">Generate transcript</option>
-                  )}
-                  <option value="iso">Convert DVD ISO to MKV</option>
+                  <option value="parakeet">Parakeet</option>
+                  <option value="whisper">Whisper</option>
                 </select>
               </div>
-              {form.kind === "transcription" && (
-                <div class="conversion-field">
-                  <label for="conversion-engine">Transcription engine</label>
-                  <select
-                    id="conversion-engine"
-                    value={form.backend}
-                    onChange$={(_, el) => {
-                      form.backend = el.value;
-                    }}
-                  >
-                    <option value="parakeet">Parakeet</option>
-                    <option value="whisper">Whisper</option>
-                  </select>
-                </div>
-              )}
-            </div>
-            {form.kind === "transcription" ? (
+            )}
+            {kind === "transcription" ? (
               <details class="conversion-advanced">
                 <summary>Transcript options</summary>
                 <div class="conversion-field">
@@ -441,7 +445,7 @@ export const ConversionInput = component$<{
                 ISO is retained in the shared DVD archive.
               </p>
             )}
-            {form.source === "upload" && form.kind === "transcription" && (
+            {form.source === "upload" && kind === "transcription" && (
               <div class="conversion-field">
                 <label for="conversion-storage">After transcription</label>
                 <select
@@ -479,17 +483,30 @@ export const ConversionInput = component$<{
                 )}
               </div>
             )}
-            <button type="submit" class="primary-button conversion-submit">
+            {transcriptionUnavailable && (
+              <p class="quiet-copy">
+                Transcription is unavailable. You can still convert a DVD ISO.
+              </p>
+            )}
+            <button
+              type="submit"
+              class="primary-button conversion-submit"
+              disabled={transcriptionUnavailable}
+            >
               {form.busy
                 ? form.source === "upload"
                   ? "Uploading…"
                   : "Copying server file…"
-                : form.kind === "iso"
+                : kind === "iso"
                   ? "Start conversion"
                   : "Generate transcript"}
             </button>
           </fieldset>
-          <div aria-live="polite" aria-atomic="true">
+          <div
+            class="conversion-input__feedback"
+            aria-live="polite"
+            aria-atomic="true"
+          >
             {form.busy && (
               <p class="quiet-copy">
                 {selectedName} —{" "}
@@ -500,7 +517,7 @@ export const ConversionInput = component$<{
               </p>
             )}
             {form.message && submittedJob?.state !== "failed" && (
-              <p class="message success">
+              <p class="message success" role="status">
                 {submittedJob?.state === "completed"
                   ? `${submittedJob.name} finished.${submittedJob.savedPath ? ` Library copy: ${submittedJob.savedPath}` : ""}`
                   : form.message}
@@ -518,17 +535,17 @@ export const ConversionInput = component$<{
             </p>
           )}
         </form>
-      )}
+      ) : null}
       {!!props.inputs?.jobs.length && (
         <details class="conversion-submissions">
-          <summary>Submitted files</summary>
+          <summary>Recent submissions</summary>
           <ul>
             {props.inputs.jobs.map((job) => (
               <li key={job.id}>
-                <strong>{job.name}</strong>
-                <span>
-                  {job.state === "processing" ? "Sent to converter" : job.state}
-                </span>
+                <div class="conversion-submission-heading">
+                  <strong>{job.name}</strong>
+                  <span>{jobStateLabels[job.state]}</span>
+                </div>
                 {job.error && <p class="message error">{job.error}</p>}
                 {job.savedPath && <small>Library copy: {job.savedPath}</small>}
               </li>

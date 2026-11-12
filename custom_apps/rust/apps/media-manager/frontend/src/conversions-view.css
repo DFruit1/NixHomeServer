@@ -101,7 +101,7 @@
   font-size: 14px;
 }
 .conversion-focus .empty-state {
-  min-height: 240px;
+  min-height: 140px;
 }
 .conversion-focus .empty-glyph {
   display: none;
@@ -227,7 +227,6 @@
   margin: 0;
 }
 
-.conversion-input__form,
 .conversion-input__fields {
   display: grid;
   gap: 18px;
@@ -296,11 +295,6 @@
 .conversion-path-control {
   display: flex;
   gap: 8px;
-}
-.conversion-options-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
 }
 .conversion-advanced > summary,
 .conversion-submissions > summary {
@@ -381,19 +375,7 @@
   overflow-wrap: anywhere;
   font-size: 14px;
 }
-.conversion-submissions li > span {
-  color: var(--ink-soft);
-}
-.conversion-input .message {
-  overflow-wrap: anywhere;
-}
-.conversion-focus .empty-state {
-  min-height: 140px;
-}
 @media (max-width: 640px) {
-  .conversion-options-row {
-    grid-template-columns: minmax(0, 1fr);
-  }
   .conversion-input__form {
     padding: 16px;
   }
@@ -407,6 +389,7 @@
   overflow: visible;
 }
 .conversion-input .message {
+  overflow-wrap: anywhere;
   font-size: 14px;
   line-height: 1.5;
 }
@@ -418,4 +401,58 @@
 .conversion-input .quiet-copy {
   margin: 0;
   padding: 0;
+}
+
+.conversion-input__form {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+}
+.conversion-input__feedback:not(:empty),
+.conversion-input__form > .message {
+  margin-top: 16px;
+}
+.conversion-submission-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.conversion-submission-heading strong {
+  min-width: 0;
+}
+.conversion-submission-heading span {
+  flex-shrink: 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+.conversions-layout .conv-sidebar--no-completed {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.conversions-layout .conv-sidebar--no-failed {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+.conversions-layout .conv-sidebar--no-completed.conv-sidebar--no-failed {
+  grid-template-rows: auto auto;
+  align-content: start;
+}
+.conversions-layout .side-panel-body > .quiet-copy {
+  padding: 20px;
+}
+@media (max-width: 920px) {
+  .conversions-layout .conv-sidebar {
+    grid-template-rows: none;
+  }
+}
+@media (max-width: 640px) {
+  .conversion-submission-heading {
+    align-items: start;
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+@media (max-width: 640px) {
+  .conversion-input :is(input, select, button, summary) {
+    scroll-margin-block: 110px;
+  }
 }

@@ -192,6 +192,12 @@ fn publish(
     staged
         .persist_noclobber(&destination)
         .map_err(|e| e.to_string())?;
+    // File contents alone do not make the rename durable. Persist the spool
+    // entry before publishing a job that may outlive a power interruption.
+    intake::staging_dir(config, &job.owner)?
+        .0
+        .sync_all()
+        .map_err(|e| e.to_string())?;
     if let Err(error) = job.save(config) {
         let _ = std::fs::remove_file(destination);
         return Err(error);
