@@ -229,6 +229,9 @@ pub(crate) struct SearchParams {
     kind: Option<String>,
     owner: Option<String>,
     author: Option<String>,
+    creator: Option<String>,
+    #[serde(default, rename = "ignoreIntent")]
+    ignore_intent: Option<String>,
     tag: Option<String>,
     series: Option<String>,
     year: Option<String>,
@@ -284,6 +287,13 @@ impl SearchParams {
         if nonempty(self.year.as_deref()).is_some_and(|value| value.parse::<i64>().is_err()) {
             return Err("Year must be a number.");
         }
+        if self
+            .creator
+            .as_deref()
+            .is_some_and(|s| s.chars().count() > 160)
+        {
+            return Err("Author/sender text must be at most 160 characters.");
+        }
         if self.page.unwrap_or(0).saturating_mul(self.page_size()) > 10_000 {
             return Err("Narrow your search to load more than 10,000 results.");
         }
@@ -304,6 +314,53 @@ impl SearchParams {
             _ => crate::solr::SortOrder::Relevance,
         }
     }
+    fn interpret(&mut self) -> std::collections::BTreeMap<String, String> {
+        use chrono::Datelike;
+        let original = self.q.clone();
+        let mut inferred = std::collections::BTreeMap::new();
+        if self.matching == crate::solr::MatchMode::Broad
+            && self.kind.as_deref() != Some(online_papers::KIND)
+        {
+            let plan = crate::intent::parse(&original, chrono::Local::now().year());
+            let filter_browse = !plan.filters.is_empty() && plan.query.is_empty();
+            for (key, value) in plan.filters {
+                if self
+                    .ignore_intent
+                    .as_deref()
+                    .unwrap_or_default()
+                    .split(',')
+                    .any(|ignored| ignored == key)
+                {
+                    continue;
+                }
+                let slot = match key.as_str() {
+                    "kind" => &mut self.kind,
+                    "creator" if nonempty(self.author.as_deref()).is_none() => &mut self.creator,
+                    "after" if nonempty(self.year.as_deref()).is_none() => &mut self.after,
+                    "before" if nonempty(self.year.as_deref()).is_none() => &mut self.before,
+                    _ => continue,
+                };
+                if nonempty(slot.as_deref()).is_none() {
+                    *slot = Some(value.clone());
+                    inferred.insert(key, value);
+                }
+            }
+            if !plan.query.is_empty() {
+                self.q = plan.query;
+            } else if self.kind.is_some()
+                || self.creator.is_some()
+                || self.author.is_some()
+                || self.year.is_some()
+                || self.after.is_some()
+                || self.before.is_some()
+                || (filter_browse && self.ignore_intent.is_some())
+            {
+                self.q = "*:*".into();
+            }
+        }
+        inferred
+    }
+
     fn filters(&self) -> crate::solr::SearchFilters {
         crate::solr::SearchFilters {
             matching: self.matching,
@@ -313,6 +370,7 @@ impl SearchParams {
             content_type: nonempty(self.content_type.as_deref()),
             owner: nonempty(self.owner.as_deref()),
             author: nonempty(self.author.as_deref()),
+            creator: nonempty(self.creator.as_deref()),
             tag: nonempty(self.tag.as_deref()),
             series: nonempty(self.series.as_deref()),
             year: self
@@ -375,6 +433,7 @@ pub(crate) async fn query_local(mut params: SearchParams) -> Result<serde_json::
         params.content_type = None;
         params.owner = None;
         params.author = None;
+        params.creator = None;
         params.tag = None;
         params.series = None;
         params.year = None;
@@ -455,6 +514,9 @@ pub(crate) async fn query_local(mut params: SearchParams) -> Result<serde_json::
         &params.q,
         params.sort_order() == crate::solr::SortOrder::Newest,
     );
+    if body.get("interpretation").is_none() {
+        body["interpretation"] = live["interpretation"].clone();
+    }
     body["indexedFailed"] = json!(indexed_failed);
     body["liveFailed"] = json!(live_failed);
     if !online
@@ -501,6 +563,23 @@ pub(crate) async fn sources_local() -> Result<serde_json::Value, String> {
 }
 
 async fn execute_search(
+    state: &AppState,
+    mut params: SearchParams,
+) -> Result<serde_json::Value, SearchError> {
+    params
+        .validate()
+        .map_err(|message| search_error(StatusCode::BAD_REQUEST, message))?;
+    let inferred = params.interpret();
+    let effective = params.q.clone();
+    let mut body = execute_search_plan(state, params).await?;
+    for hit in body["hits"].as_array_mut().into_iter().flatten() {
+        crate::relevance::annotate(hit, &effective);
+    }
+    body["interpretation"] = json!({"query": effective, "filters": inferred});
+    Ok(body)
+}
+
+async fn execute_search_plan(
     state: &AppState,
     params: SearchParams,
 ) -> Result<serde_json::Value, SearchError> {
@@ -605,6 +684,8 @@ async fn execute_search(
             for hit in response.hits.iter() {
                 let enriched = enrichment.get(&hit.id);
                 let snippet = enriched.and_then(|doc| text::result_snippet(&doc.body_text, &query));
+                let empty_metadata = serde_json::Value::Null;
+                let raw_metadata = enriched.map(|doc| &doc.metadata).unwrap_or(&empty_metadata);
                 let metadata = enriched
                     .map(|doc| present_metadata(&doc.metadata))
                     .unwrap_or_else(|| json!({}));
@@ -618,6 +699,7 @@ async fn execute_search(
                     "appUrl": hit.app_url,
                     "contentType": hit.content_type,
                     "owner": hit.owner,
+                    "matchQuality": crate::relevance::quality(&hit.title, raw_metadata, enriched.map(|doc| doc.body_text.as_str()).unwrap_or_default(), &query),
                     "score": hit.score,
                     "created": hit.created,
                     "metadata": metadata,
@@ -756,6 +838,15 @@ async fn federate_runtime_sources(
     let mut results = stream::iter(sources)
         .map(|source| async move {
             let operation = async {
+                if query == "*:*"
+                    && !filters.matches_kind(if source.source_type == "kiwix" {
+                        "zim-article"
+                    } else {
+                        "document"
+                    })
+                {
+                    return Ok(LiveResults::default());
+                }
                 match source.source_type.as_str() {
                     "kiwix" => {
                         federate_kiwix(
@@ -767,7 +858,7 @@ async fn federate_runtime_sources(
                         )
                         .await
                     }
-                    _ => federate_paperless(state, &source, query, filters.matching).await,
+                    _ => federate_paperless(state, &source, query, filters).await,
                 }
             };
             let result = tokio::time::timeout(std::time::Duration::from_secs(30), operation)
@@ -852,7 +943,7 @@ async fn federate_paperless(
     state: &AppState,
     source: &crate::config::SourceConfig,
     query: &str,
-    matching: crate::solr::MatchMode,
+    filters: &crate::solr::SearchFilters,
 ) -> Result<LiveResults, String> {
     let Some(base_url) = source.setting_str("baseUrl") else {
         return Err("The document server is not configured.".to_string());
@@ -868,16 +959,17 @@ async fn federate_paperless(
         max_results: paperless_search::DEFAULT_MAX_RESULTS,
     };
     let taxonomy = paperless_taxonomy(state, &config).await;
-    let hits = paperless_search::search(
-        &config,
-        &taxonomy.value.unwrap_or_default(),
-        query,
-        matching,
-    )
-    .await?;
-    let warnings = taxonomy.warning.into_iter().map(|message| json!({"source": source.id, "message": format!("{message} Metadata filters and labels may be incomplete.")})).collect();
+    let hits =
+        paperless_search::search(&config, &taxonomy.value.unwrap_or_default(), query, filters)
+            .await?;
+    let mut warnings: Vec<_> = taxonomy.warning.into_iter().map(|message| json!({"source": source.id, "message": format!("{message} Metadata filters and labels may be incomplete.")})).collect();
+    warnings.extend(
+        hits.warnings
+            .into_iter()
+            .map(|message| json!({"source":source.id,"message":message})),
+    );
     Ok(LiveResults {
-        hits,
+        hits: hits.hits,
         warnings,
         ..Default::default()
     })

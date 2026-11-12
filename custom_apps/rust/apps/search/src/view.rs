@@ -54,7 +54,10 @@ pub(crate) fn combine(indexed: &Value, live: &Value, query: &str, newest: bool) 
             }
             let exact = !query.is_empty()
                 && trim(hit["title"].as_str().unwrap_or_default()).to_lowercase() == query;
-            ranked.push((hit, group, rank, exact));
+            let quality = hit["matchQuality"]
+                .as_u64()
+                .unwrap_or(if exact { 1 } else { 5 });
+            ranked.push((hit, group, rank, quality));
         }
     }
     ranked.sort_by(|a, b| {
@@ -62,7 +65,7 @@ pub(crate) fn combine(indexed: &Value, live: &Value, query: &str, newest: bool) 
         let primary = if newest {
             time(b.0).total_cmp(&time(a.0))
         } else {
-            b.3.cmp(&a.3)
+            a.3.cmp(&b.3)
         };
         primary.then(a.2.cmp(&b.2)).then(a.1.cmp(&b.1))
     });

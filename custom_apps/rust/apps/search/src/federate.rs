@@ -107,6 +107,14 @@ impl FederatedHit {
         {
             return false;
         }
+        if let Some(creator) = &filters.creator
+            && !derived
+                .authors
+                .iter()
+                .any(|value| value.to_lowercase().contains(&creator.to_lowercase()))
+        {
+            return false;
+        }
         if let Some(tag) = &filters.tag
             && !derived.tags.iter().any(|value| value == tag)
         {

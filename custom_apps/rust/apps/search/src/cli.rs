@@ -36,6 +36,12 @@ struct Args {
     owner: Option<String>,
     #[arg(long)]
     author: Option<String>,
+    /// Partial author, sender or correspondent name.
+    #[arg(long)]
+    creator: Option<String>,
+    /// Inferred filter keys to ignore: kind,creator,after,before.
+    #[arg(long)]
+    ignore_intent: Option<String>,
     #[arg(long)]
     tag: Option<String>,
     #[arg(long)]
@@ -68,7 +74,8 @@ pub async fn run() -> Result<(), String> {
         let params: SearchParams = serde_json::from_value(json!({
             "q": args.query.join(" "), "matching": args.matching, "scope": args.scope,
             "source": args.source, "kind": args.kind, "type": args.content_type,
-            "owner": args.owner, "author": args.author, "tag": args.tag,
+            "owner": args.owner, "author": args.author, "creator": args.creator,
+            "ignoreIntent": args.ignore_intent, "tag": args.tag,
             "series": args.series, "year": args.year, "after": args.after,
             "before": args.before, "page": args.page, "pageSize": args.page_size,
             "sort": args.sort,
@@ -109,6 +116,15 @@ fn print_text(output: &mut impl Write, body: &Value) -> io::Result<()> {
             }
         }
         return Ok(());
+    }
+    if let Some(filters) = body["interpretation"]["filters"].as_object() {
+        for (name, value) in filters {
+            writeln!(
+                output,
+                "Inferred {name}: {}",
+                clean(value.as_str().unwrap_or_default())
+            )?;
+        }
     }
     write!(output, "{} matches shown", body["shown"])?;
     if body["liveTotal"].as_u64().unwrap_or(0) > 0 {

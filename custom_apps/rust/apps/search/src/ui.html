@@ -246,6 +246,7 @@
         <label class="field"><span>Format</span><select id="type"><option value="">All formats</option></select></label>
         <label class="field"><span>Owner</span><select id="owner"><option value="">All owners</option></select></label>
         <label class="field"><span>Author</span><select id="author"><option value="">All authors</option></select></label>
+        <label class="field"><span>Author / sender contains</span><input id="creator" type="text" maxlength="160" form="searchForm"></label>
         <label class="field"><span>Tag</span><select id="tag"><option value="">All tags</option></select></label>
         <label class="field"><span>Series</span><select id="series"><option value="">All series</option></select></label>
         <label class="field"><span>Year</span><select id="year"><option value="">All years</option></select></label>
@@ -294,15 +295,15 @@ const pageSizeEl = el('pageSize');
 const matchingEl = el('matching');
 const resultsEl = el('results');
 const statusEl = el('status');
-const controls = { source: sourceEl, kind: el('kind'), type: typeEl, owner: ownerEl, author: el('author'), tag: el('tag'), series: el('series'), year: el('year'), after: afterEl, before: beforeEl };
-const filterLabels = { source: 'Source', kind: 'Content', type: 'Format', owner: 'Owner', author: 'Author', tag: 'Tag', series: 'Series', year: 'Year', after: 'From', before: 'To' };
-const kindLabels = { email: 'Email', document: 'Document', book: 'Book', 'web-page': 'Web page', 'zim-article': 'Kiwix pages', 'zim-archive': 'Kiwix collection titles', video: 'Video', audiobook: 'Audiobook' };
+const controls = { source: sourceEl, kind: el('kind'), type: typeEl, owner: ownerEl, author: el('author'), creator: el('creator'), tag: el('tag'), series: el('series'), year: el('year'), after: afterEl, before: beforeEl };
+const filterLabels = { source: 'Source', kind: 'Content', type: 'Format', owner: 'Owner', author: 'Author', creator: 'Author/sender', tag: 'Tag', series: 'Series', year: 'Year', after: 'From', before: 'To' };
+const kindLabels = { email: 'Email', document: 'Document', book: 'Book', 'web-page': 'Web page', 'zim-article': 'Kiwix pages', 'zim-archive': 'Kiwix collection titles', video: 'Video', movie: 'Movies', audiobook: 'Audiobook' };
 if (window.SEARCH_ONLINE_PAPERS) kindLabels['online-paper'] = 'Online papers';
 const formatLabels = { 'message/rfc822': 'Email', 'application/pdf': 'PDF', 'text/html': 'Web page', 'application/epub+zip': 'EPUB', 'text/plain': 'Text', 'video/mp4': 'MP4 video', 'video/x-matroska': 'MKV video', 'audio/mpeg': 'MP3 audio', 'audio/mp4': 'MP4 audio' };
 const sourceNames = new Map();
 sourceNames.set('online-papers', 'Online papers');
 const state = { hits: [], liveHits: [], page: 0, total: 0, hasMore: false, generation: 0, controller: null, submitted: null, loading: false, liveLoading: false,
-  relatedTerms: [], indexedDone: false, liveDone: false, indexedFailed: false, liveFailed: false, indexedFacets: {}, liveFacets: {}, resultNodes: new Map() };
+  inferred: {}, intentSkip: [], relatedTerms: [], indexedDone: false, liveDone: false, indexedFailed: false, liveFailed: false, indexedFacets: {}, liveFacets: {}, resultNodes: new Map() };
 
 // These are example queries, never fabricated matches or promises of coverage.
 const searchModes = {
@@ -432,13 +433,30 @@ function updateSearchMode() {
 function params() {
   const p = new URLSearchParams();
   if (queryEl.value.trim()) p.set('q', queryEl.value.trim());
-  for (const [key, control] of Object.entries(controls)) if (!control.disabled && control.value && !(key === 'source' && controls.kind.value === 'online-paper')) p.set(key, control.value);
+  for (const [key, control] of Object.entries(controls)) if (!control.disabled && control.value && state.inferred[key] !== control.value && !(key === 'source' && controls.kind.value === 'online-paper')) p.set(key, control.value);
   if (controls.kind.value !== 'online-paper' && matchingEl.value === 'all') p.set('matching', 'all');
   if (sortEl.value === 'newest') p.set('sort', 'newest');
   if (controls.kind.value !== 'online-paper' && pageSizeEl.value && pageSizeEl.value !== '25') p.set('pageSize', pageSizeEl.value);
+  if (state.intentSkip.length) p.set('ignoreIntent', state.intentSkip.join(','));
   // The API default remains 50 for existing callers; this UI starts with 25.
   return p;
 }
+function applyInterpretation(data) {
+  if (!data.interpretation) return;
+  const previous = state.inferred;
+  const next = {};
+  for (const [key, value] of Object.entries(data.interpretation.filters || {})) {
+    const control = controls[key];
+    if (!control || (control.value && previous[key] !== control.value)) continue;
+    if (['creator', 'after', 'before'].includes(key)) control.value = value;
+    else setSelectValue(control, value);
+    next[key] = value;
+  }
+  for (const [key, value] of Object.entries(previous)) if (!next[key] && controls[key]?.value === value) controls[key].value = '';
+  state.inferred = next;
+  updateActiveFilters();
+}
+
 function updateActiveFilters() {
   const container = el('activeFilters');
   container.replaceChildren();
@@ -451,6 +469,7 @@ function updateActiveFilters() {
     button.setAttribute('aria-label', `Remove ${filterLabels[key].toLowerCase()} filter: ${value}`);
     const remove = document.createElement('span'); setIcon(remove, 'clear'); button.appendChild(remove);
     button.addEventListener('click', () => {
+      if (state.inferred[key]) { state.intentSkip = [...new Set([...state.intentSkip, key])]; delete state.inferred[key]; }
       control.value = ''; runSearch();
       (el('activeFilters').children[0] || el('filterToggle')).focus();
     });
@@ -508,12 +527,14 @@ function combinedHits() {
     const key = `${hit.source || ''}:${hit.id}`;
     if (seen.has(key)) return;
     seen.add(key);
-    ranked.push({ ...hit, _key: key, _live: group > 0, _rank: rank, _group: group, _exact: Boolean(query) && (hit.title || '').trim().toLocaleLowerCase() === query });
+    const exact = Boolean(query) && (hit.title || '').trim().toLocaleLowerCase() === query;
+    const quality = Number.isInteger(hit.matchQuality) ? hit.matchQuality : exact ? 1 : 5;
+    ranked.push({ ...hit, _key: key, _live: group > 0, _rank: rank, _group: group, _quality: quality });
   }));
   const time = hit => Number.isFinite(hit.created) ? hit.created : -Infinity;
   return ranked.sort((a, b) => {
     if (newest && time(a) !== time(b)) return time(a) > time(b) ? -1 : 1;
-    if (!newest && a._exact !== b._exact) return a._exact ? -1 : 1;
+    if (!newest && a._quality !== b._quality) return a._quality - b._quality;
     return a._rank - b._rank || a._group - b._group || a._key.localeCompare(b._key);
   });
 }
@@ -720,9 +741,10 @@ function syncUrl(replace = false) {
 }
 function readUrlState() {
   const p = new URLSearchParams(location.search);
+  state.inferred = {}; state.intentSkip = (p.get('ignoreIntent') || '').split(',').filter(Boolean);
   queryEl.value = p.get('q') || '';
   for (const [key, control] of Object.entries(controls)) {
-    if (key === 'after' || key === 'before') control.value = p.get(key) || '';
+    if (['after', 'before', 'creator'].includes(key)) control.value = p.get(key) || '';
     else setSelectValue(control, p.get(key));
   }
   matchingEl.value = p.get('matching') === 'all' ? 'all' : 'broad';
@@ -730,6 +752,8 @@ function readUrlState() {
   pageSizeEl.value = ['25', '50', '100'].includes(p.get('pageSize')) ? p.get('pageSize') : '25';
   updateSearchMode();
   updateActiveFilters();
+  // A restored link already describes this query, including suppressed hints.
+  state.submitted = params().toString();
   return Boolean(queryEl.value.trim());
 }
 async function fetchPage(page, scope, submitted, signal) {
@@ -794,6 +818,7 @@ async function runLive(generation, submitted, signal) {
   try {
     const data = await fetchPage(0, 'live', submitted, signal);
     if (generation !== state.generation || !data) return;
+    applyInterpretation(data);
     state.liveHits = data.hits || [];
     renderFacets(data, 'live');
     renderCombined();
@@ -823,6 +848,12 @@ async function runSearch(event, {append = false, pushHistory = true} = {}) {
   if (event) event.preventDefault();
   if (append && (state.loading || !state.hasMore || !state.submitted)) return;
   if (!append) {
+    const previousQuery = new URLSearchParams(state.submitted || '').get('q') || '';
+    if (queryEl.value.trim() !== previousQuery) {
+      for (const [key, value] of Object.entries(state.inferred)) if (controls[key]?.value === value) controls[key].value = '';
+      state.inferred = {}; state.intentSkip = [];
+      updateActiveFilters();
+    }
     el('inputError').hidden = true;
     beforeEl.removeAttribute('aria-invalid');
     if (controls.kind.value !== 'online-paper' && afterEl.value && beforeEl.value && afterEl.value > beforeEl.value) {
@@ -843,7 +874,6 @@ async function runSearch(event, {append = false, pushHistory = true} = {}) {
     el('copyStatus').textContent = '';
     updateSearchMode();
     el('searchShell').dataset.searched = String(Boolean(queryEl.value.trim()));
-    const previousQuery = new URLSearchParams(state.submitted || '').get('q') || '';
     state.controller?.abort(); state.controller = new AbortController(); state.generation++;
     state.submitted = params().toString(); state.loading = false; state.liveLoading = false;
     resetResults();
@@ -887,6 +917,7 @@ async function runIndexed(append = false) {
   try {
     const data = await fetchPage(page, 'indexed', submitted, signal);
     if (generation !== state.generation || !data) return;
+    applyInterpretation(data);
     state.relatedTerms = Array.isArray(data.relatedTerms) ? data.relatedTerms.filter(term => typeof term === 'string').slice(0, 12) : [];
     state.page = page; state.total = data.total || 0; state.hasMore = Boolean(data.hasMore);
     const seen = new Set(state.hits.map(hit => hit.id));
@@ -912,6 +943,7 @@ async function runIndexed(append = false) {
   }
 }
 function clearFilters(resetKind = true) {
+  state.inferred = {}; state.intentSkip = ['kind', 'creator', 'after', 'before'];
   for (const [key, control] of Object.entries(controls)) if (key !== 'kind' || resetKind) control.value = '';
   runSearch(); el('filterToggle').focus();
 }
@@ -962,6 +994,8 @@ el('copySearch').addEventListener('click', async () => {
 });
 el('searchForm').addEventListener('submit', runSearch);
 for (const control of [...Object.values(controls), sortEl, pageSizeEl, matchingEl]) control.addEventListener('change', event => {
+  const key = controlKey(control);
+  if (state.inferred[key]) { if (!control.value) state.intentSkip = [...new Set([...state.intentSkip, key])]; delete state.inferred[key]; }
   if (control === sourceEl) {
     if (sourceEl.value === 'online-papers') chooseKind('online-paper', true);
     else chooseSource(sourceEl.value);

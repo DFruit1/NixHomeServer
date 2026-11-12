@@ -178,6 +178,7 @@ pub struct SearchFilters {
     pub content_type: Option<String>,
     pub owner: Option<String>,
     pub author: Option<String>,
+    pub creator: Option<String>,
     pub tag: Option<String>,
     pub series: Option<String>,
     pub year: Option<i64>,
@@ -241,6 +242,37 @@ impl SearchFilters {
                 "{{!tag=auth}}author_ss:{}",
                 solr_string_term(author)
             ));
+        }
+        if let Some(creator) = &self.creator {
+            // Facets are already indexed, so partial creator/sender matching
+            // needs no new schema or corpus rebuild. Escape every regex literal.
+            let mut expression = String::new();
+            for ch in creator.chars() {
+                let variants: std::collections::BTreeSet<_> =
+                    [ch.to_lowercase().to_string(), ch.to_uppercase().to_string()]
+                        .into_iter()
+                        .filter(|variant| {
+                            variant.chars().count() == 1
+                                || variant == &ch.to_lowercase().to_string()
+                        })
+                        .collect();
+                let variants: Vec<_> = variants
+                    .into_iter()
+                    .map(|word| {
+                        word.chars()
+                            .map(|c| {
+                                if c.is_alphanumeric() || c == ' ' {
+                                    c.to_string()
+                                } else {
+                                    format!("\\{c}")
+                                }
+                            })
+                            .collect::<String>()
+                    })
+                    .collect();
+                expression.push_str(&format!("({})", variants.join("|")));
+            }
+            clauses.push(format!("author_ss:/.*{expression}.*/"));
         }
         if let Some(tag) = &self.tag {
             clauses.push(format!("{{!tag=tag}}tag_ss:{}", solr_string_term(tag)));
@@ -1040,6 +1072,7 @@ mod tests {
             content_type: Some("message/rfc822".to_string()),
             owner: Some("dsaw".to_string()),
             author: Some("Alice".to_string()),
+            creator: None,
             tag: Some("invoice".to_string()),
             series: Some("Fees".to_string()),
             year: Some(2024),

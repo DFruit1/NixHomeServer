@@ -1985,6 +1985,52 @@ which have no per-user ownership). Facet
 counts update with the selected filters, so an admin can see the composition of
 a result set and drill in without leaving the page.
 
+### Query instructions and relevance
+
+Broad matching recognizes bounded instructions such as `books by Ken Ham`,
+`movies about dragons`, `emails from council last year`, and
+`find invoices from last year`. Leading find/show phrases are removed from the
+content query. Recognized plural content names become Content filters;
+`by`/`from` names become case-insensitive **Author / sender contains** filters
+across the existing author, sender and correspondent metadata. `about` leaves
+the following words as the content query. A trailing `last year` or `this year`
+in an instruction becomes inclusive calendar-year Content date bounds, resolved
+in the server's local timezone. The resulting dates are visible.
+
+Quoted titles, explicit operators and All words mode retain literal behavior.
+Bare titles without a recognized instruction are unchanged. Explicit filters
+win over inferred hints, including Year overriding inferred year dates.
+Inferred values appear in the existing filter chips and controls, while the
+original query remains visible and shareable. Removing
+a chip suppresses that hint for the current query; changing the query discards
+inferred controls and suppression. Clearing all filters explicitly permits an
+unfiltered browse for a filter-only instruction. No matching-zero fallback
+silently drops constraints. `--creator` and
+`--ignore-intent kind,creator,after,before` expose the same choices in the CLI;
+JSON responses include `interpretation.query` and `interpretation.filters`.
+
+All backends emit a common `matchQuality` evidence tier for relevance sorting:
+0 exact stored identifier; 1 normalized exact title; 2 title containing all main
+literal words; 3 author/sender/series containing those words; 4 bounded body
+containing them; 5 other confirmed backend matches. Indexed evidence uses the
+stored metadata and a bounded body prefix; live evidence uses the returned
+metadata and excerpt. This ranks evidence among retrieved candidates, not
+unseen documents outside a backend's sample. The UI and CLI interleave source
+ranks within each tier, preserve deduplication and never compare raw engine
+score magnitudes across backends. Newest remains a global content-date sort.
+
+Paperless receives supported MIME, correspondent/creator, exact author, tag,
+year and date constraints before retrieving documents. Search's Owner filter
+means correspondent here, not Paperless account ownership. Unresolved non-null
+correspondent IDs are unknown, never silently reassigned to the shared owner.
+Native filters survive an advanced-query-to-text fallback; unsupported constraints
+retain a local predicate. Search follows safe same-endpoint pagination for up
+to five pages to fill its 100 matching-document sample, including matches beyond
+the first unfiltered page. A spent page budget produces an incomplete-coverage
+warning. Live facet counts describe the filtered returned sample, not global
+counts with each upstream filter independently removed. None of these changes
+requires re-extracting or rebuilding the index.
+
 ### Search CLI
 
 On the server, `sudo search-cli` searches every registered source, including
@@ -2012,8 +2058,9 @@ registered corpus as the web app; it does not crawl arbitrary unindexed files.
 
 The CLI defaults to broad matching, all registered sources, both indexed and
 live scopes, relevance sorting and 25 indexed results. It submits the same
-independent indexed/live searches as the UI, promotes exact titles, interleaves
-library and per-source rank positions, and removes duplicate source/ID pairs.
+independent indexed/live searches as the UI, ranks shared match-quality evidence,
+interleaves library and per-source rank positions within each tier,
+and removes duplicate source/ID pairs.
 `--sort newest` sorts every loaded match together, with undated hits last.
 Raw backend scores never determine cross-source order.
 

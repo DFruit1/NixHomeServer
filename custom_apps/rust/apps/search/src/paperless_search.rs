@@ -137,53 +137,182 @@ fn taxonomy_page_url(first: &url::Url, next: &str) -> Result<url::Url, String> {
     Ok(url)
 }
 
-/// Runs a query against Paperless's own full-text index and maps the hits into
-/// the unified federated shape. Never copies document content; only the query
-/// result page is fetched.
+/// A bounded native-result sample and any incomplete-pagination warnings.
+#[derive(Default)]
+pub struct SearchResult {
+    pub hits: Vec<FederatedHit>,
+    pub warnings: Vec<String>,
+}
+
+/// Push supported constraints into the native search before its result cap.
+/// Keep the local predicate too, and bound paging for filters the server cannot
+/// express (notably the shared-owner sentinel). Never drop filters on fallback.
 pub async fn search(
     config: &PaperlessSearchConfig,
     taxonomy: &Taxonomy,
     query: &str,
-    matching: crate::solr::MatchMode,
-) -> Result<Vec<FederatedHit>, String> {
+    filters: &crate::solr::SearchFilters,
+) -> Result<SearchResult, String> {
     let query = query.trim();
-    if query.is_empty() {
-        return Ok(Vec::new());
+    if query.is_empty()
+        || !filters.matches_kind("document")
+        || filters.series.is_some()
+        || filters
+            .source
+            .as_ref()
+            .is_some_and(|s| s != &config.source_id)
+    {
+        return Ok(SearchResult::default());
     }
-    let broad = (matching == crate::solr::MatchMode::Broad)
+    let mut params = vec![
+        (
+            "page_size".to_string(),
+            config.max_results.clamp(1, 100).to_string(),
+        ),
+        ("truncate_content".to_string(), "true".to_string()),
+    ];
+    let broad = (filters.matching == crate::solr::MatchMode::Broad)
         .then(|| crate::text::connected_query(query, true))
         .flatten();
-    // Explicit queries pass through unchanged; prose keeps every main idea.
-    let lookup = broad.as_deref().unwrap_or(query);
-    let url = format!("{}/api/documents/", config.base_url);
-    let page_size = config.max_results.max(1).to_string();
-    let advanced = [
-        ("query", lookup),
-        ("page_size", page_size.as_str()),
-        ("truncate_content", "true"),
-    ];
-    // Prefer Paperless's advanced query parser (boolean operators, field
-    // filters, natural dates). Fall back to the simple text search when
-    // Paperless rejects the user's input as an invalid advanced query.
-    let mut response = request_json(config, &url, &advanced).await;
-    if matches!(response, Err(400)) {
-        let simple = [
-            ("text", query),
-            ("page_size", page_size.as_str()),
-            ("truncate_content", "true"),
-        ];
-        response = request_json(config, &url, &simple).await;
+    if query != "*:*" {
+        params.push(("query".into(), broad.as_deref().unwrap_or(query).into()));
     }
-    let value =
-        response.map_err(|_| "The document server could not complete this search.".to_string())?;
-    let results = value
-        .get("results")
-        .and_then(Value::as_array)
-        .ok_or("The document server returned an invalid search response.")?;
-    Ok(results
-        .iter()
-        .map(|document| map_document(config, taxonomy, document, query))
-        .collect())
+    if let Some(mime) = &filters.content_type {
+        params.push(("mime_type".into(), mime.clone()));
+    }
+    let mut after = filters.created_after.clone();
+    let mut before = filters.created_before.clone();
+    if let Some(year) = filters.year {
+        if !(1..=9999).contains(&year) {
+            return Ok(SearchResult::default());
+        }
+        let lo = format!("{year:04}-01-01");
+        let hi = format!("{year:04}-12-31");
+        after = Some(after.map_or(lo.clone(), |v| v.max(lo)));
+        before = Some(before.map_or(hi.clone(), |v| v.min(hi)));
+    }
+    if after
+        .as_ref()
+        .zip(before.as_ref())
+        .is_some_and(|(a, b)| a > b)
+    {
+        return Ok(SearchResult::default());
+    }
+    // UTC day bounds match Search's date predicate, regardless of Paperless's
+    // configured local timezone.
+    if let Some(date) = after {
+        params.push(("created__gte".into(), format!("{date}T00:00:00Z")));
+    }
+    if let Some(date) = before {
+        params.push(("created__lte".into(), format!("{date}T23:59:59.999999Z")));
+    }
+    if filters.author.is_some()
+        || filters.creator.is_some()
+        || filters
+            .owner
+            .as_deref()
+            .is_some_and(|owner| owner != crate::indexer::SHARED_OWNER && owner != "unknown")
+    {
+        let mut ids: Vec<_> = taxonomy
+            .correspondents
+            .iter()
+            .filter(|(_, name)| {
+                filters.author.as_ref().is_none_or(|author| *name == author)
+                    && filters
+                        .creator
+                        .as_ref()
+                        .is_none_or(|creator| name.to_lowercase().contains(&creator.to_lowercase()))
+                    && filters.owner.as_ref().is_none_or(|owner| *name == owner)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        if ids.is_empty() {
+            return Ok(SearchResult::default());
+        }
+        ids.sort_unstable();
+        params.push((
+            "correspondent__id__in".into(),
+            ids.iter().map(i64::to_string).collect::<Vec<_>>().join(","),
+        ));
+    }
+    if let Some(tag) = &filters.tag {
+        let mut ids: Vec<_> = taxonomy
+            .tags
+            .iter()
+            .filter(|(_, name)| *name == tag)
+            .map(|(id, _)| *id)
+            .collect();
+        if ids.is_empty() {
+            return Ok(SearchResult::default());
+        }
+        ids.sort_unstable();
+        params.push((
+            "tags__id__in".into(),
+            ids.iter().map(i64::to_string).collect::<Vec<_>>().join(","),
+        ));
+    }
+    let first = url::Url::parse(&format!("{}/api/documents/", config.base_url))
+        .map_err(|_| "The document server is not configured.")?;
+    let mut next = Some(first.clone());
+    let mut visited = std::collections::HashSet::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut output = SearchResult::default();
+    while let Some(page) = next.take() {
+        if visited.len() == 5 || !visited.insert(page.to_string()) {
+            output.warnings.push(
+                "Document pagination reached its safety limit; these results are incomplete."
+                    .into(),
+            );
+            break;
+        }
+        let first_page = visited.len() == 1;
+        let mut response = if first_page {
+            request_json(config, page.as_str(), &params).await
+        } else {
+            fetch_json(&config.client, &config.token, page.as_str()).await
+        };
+        if first_page && query != "*:*" && matches!(response, Err(400)) {
+            let mut simple = params.clone();
+            simple.retain(|(key, _)| key != "query");
+            simple.push(("text".into(), query.into()));
+            response = request_json(config, page.as_str(), &simple).await;
+        }
+        let value = match response {
+            Ok(value) => value,
+            Err(_) if first_page => {
+                return Err("The document server could not complete this search.".into())
+            }
+            Err(_) => {
+                output.warnings.push(
+                    "A document result page could not be loaded; these results are incomplete."
+                        .into(),
+                );
+                break;
+            }
+        };
+        let results = value
+            .get("results")
+            .and_then(Value::as_array)
+            .ok_or("The document server returned an invalid search response.")?;
+        for document in results {
+            let hit = map_document(config, taxonomy, document, query);
+            if hit.matches_filters(filters) && seen.insert(hit.id()) {
+                output.hits.push(hit);
+            }
+            if output.hits.len() == config.max_results.clamp(1, 100) {
+                break;
+            }
+        }
+        if output.hits.len() == config.max_results.clamp(1, 100) {
+            break;
+        }
+        next = value
+            .get("next")
+            .and_then(Value::as_str)
+            .map(|next| taxonomy_page_url(&first, next))
+            .transpose()?;
+    }
+    Ok(output)
 }
 
 fn map_document(
@@ -220,9 +349,16 @@ fn map_document(
     let snippet = snippet_for(document, query);
 
     let correspondent = taxonomy.correspondent(document.get("correspondent"));
-    let owner = correspondent
-        .clone()
-        .unwrap_or_else(|| crate::indexer::SHARED_OWNER.to_string());
+    let owner = correspondent.clone().unwrap_or_else(|| {
+        if document
+            .get("correspondent")
+            .is_some_and(|id| !id.is_null())
+        {
+            "unknown".into()
+        } else {
+            crate::indexer::SHARED_OWNER.to_string()
+        }
+    });
 
     let mut metadata = serde_json::Map::new();
     if let Some(correspondent) = &correspondent {
@@ -301,7 +437,7 @@ fn snippet_for(document: &Value, query: &str) -> Option<String> {
 async fn request_json(
     config: &PaperlessSearchConfig,
     url: &str,
-    params: &[(&str, &str)],
+    params: &[(String, String)],
 ) -> Result<Value, u16> {
     let response = config
         .client
@@ -417,25 +553,20 @@ mod tests {
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let mut config = config();
         config.base_url = format!("http://{address}/ok");
-        assert!(search(
-            &config,
-            &Taxonomy::default(),
-            "test",
-            crate::solr::MatchMode::Broad
-        )
-        .await
-        .unwrap()
-        .is_empty());
+        assert!(
+            search(&config, &Taxonomy::default(), "test", &Default::default())
+                .await
+                .unwrap()
+                .hits
+                .is_empty()
+        );
         for path in ["bad", "invalid"] {
             config.base_url = format!("http://{address}/{path}");
-            assert!(search(
-                &config,
-                &Taxonomy::default(),
-                "test",
-                crate::solr::MatchMode::Broad
-            )
-            .await
-            .is_err());
+            assert!(
+                search(&config, &Taxonomy::default(), "test", &Default::default())
+                    .await
+                    .is_err()
+            );
         }
         task.abort();
     }
@@ -635,9 +766,9 @@ mod tests {
 
     #[tokio::test]
     async fn empty_query_returns_no_hits() {
-        let hits = search(&config(), &taxonomy(), "   ", crate::solr::MatchMode::Broad)
+        let hits = search(&config(), &taxonomy(), "   ", &Default::default())
             .await
             .expect("empty query");
-        assert!(hits.is_empty());
+        assert!(hits.hits.is_empty());
     }
 }
