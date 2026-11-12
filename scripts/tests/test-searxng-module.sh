@@ -73,8 +73,17 @@ in {
   execStart = service.serviceConfig.ExecStart;
   searxngUser = cfg.users.users.searxng.isSystemUser;
 
-  # A legitimate ai-tools upstream on its own port must not trip the invariant.
-  aiToolsUpstream = cfg.repo.authGateway.protectedApps.aiTools.upstream;
+  # A legitimate ai-tools configuration on its own port must not trip the
+  # invariant. Newer AI Tools deployments use authenticated Unix-socket
+  # handlers rather than an HTTP upstream, so the invariant is satisfied as
+  # long as AI Tools does not publish loopback:8098.
+  aiToolsSafe = messages (base.extendModules {
+    modules = [{
+      repo.authGateway.protectedApps.aiTools.upstream = lib.mkForce "http://127.0.0.1:8097";
+      repo.authGateway.protectedApps.aiTools.authenticatedCaddyConfig = lib.mkForce null;
+      repo.authGateway.protectedApps.aiTools.authenticatedRoutes = lib.mkForce [ ];
+    }];
+  }).config;
 
   caddyVariants = {
     plain = firesOn (caddyPublish "reverse_proxy http://127.0.0.1:8098");
@@ -84,7 +93,11 @@ in {
     ipv6Loopback = firesOn (caddyPublish "reverse_proxy http://[::1]:8098");
   };
   gatewayUpstream = firesOn (gatewayPublish "http://127.0.0.1:8098");
-  authenticatedRoute = firesOn routePublish;
+  # Authenticated sub-routes must not be able to publish SearXNG either, but
+  # the dedicated AI Tools app may already own a direct authenticated handler.
+  # Evaluate the route on a plain HTTP-upstream app shape so the invariant is
+  # exercised without tripping unrelated app-shape assertions.
+  authenticatedRoute = firesOn (gatewayPublish "http://127.0.0.1:8097" ++ routePublish);
   portDrift = firesOn driftedPort;
 
   # A neighbouring port on the same host is not SearXNG and must stay allowed.
@@ -111,7 +124,7 @@ jq -e '
   and (.ioWeight == 20)
   and (.after | index("systemd-sysusers.service") != null)
   and (.wants | index("network-online.target") != null)
-  and (.aiToolsUpstream == "http://127.0.0.1:8097")
+  and (.aiToolsSafe | length == 0)
 ' <<<"$searxng_json" >/dev/null || {
   echo "❌ SearXNG must own its own port registration, keep the loopback bind, and run the shipped searxng-run binary."
   jq . <<<"$searxng_json"
