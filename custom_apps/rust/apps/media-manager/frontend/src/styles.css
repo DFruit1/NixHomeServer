@@ -4,6 +4,8 @@
   --paper-deep: #efeadd;
   --paper-recess: #f1ecdf;
   --navigation: #263d34;
+  --media-surface: #18231e;
+  --media-line: rgba(246, 243, 236, 0.2);
   --navigation-ink: #f6f3ec;
   --navigation-muted: #c4cfc5;
   --radius-control: 8px;
@@ -8143,7 +8145,7 @@ a:focus-visible {
   padding: 12px;
   border-radius: 16px;
   color: var(--accent-ink);
-  background: #18231e;
+  background: var(--media-surface);
   box-shadow: 0 14px 30px rgba(24, 35, 30, 0.18);
 }
 .video-screen {

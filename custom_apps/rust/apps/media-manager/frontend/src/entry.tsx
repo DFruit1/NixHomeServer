@@ -5,6 +5,8 @@ import { render } from "@builder.io/qwik";
 import "@builder.io/qwik/qwikloader.js";
 import Root, { initialRouteFromSearch } from "./root";
 import "./styles.css";
+import "./images-view.css";
+import "./conversions-view.css";
 
 const mount = document.getElementById("media-manager-app");
 if (mount) {

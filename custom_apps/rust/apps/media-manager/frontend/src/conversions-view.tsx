@@ -22,7 +22,6 @@ import { EmptyState } from "./view-states";
 const ConversionList = component$<{
   conversion: Conversion;
   queuedEntry: QueuedConversion[];
-  expanded?: boolean;
 }>((props) => {
   const hasQueued = props.queuedEntry.length > 0;
   const hasActive = !!(props.conversion?.title || props.conversion?.sourceIso);
@@ -37,22 +36,28 @@ const ConversionList = component$<{
   const percent = Math.max(0, Math.min(100, props.conversion.percent ?? 0));
   const isoName = props.conversion.sourceIso ?? "";
   return (
-    <div class={{ "conversion-list": true, expanded: props.expanded }}>
+    <div class="conversion-list">
       {props.conversion.title && (
         <article class="conversion-card">
-          <div class="disc-visual">
-            <span />
-            <span />
-          </div>
+          <span class="conversion-symbol" aria-hidden="true">
+            <Icon name="disc" size={28} />
+          </span>
           <div class="conversion-copy">
-            <h4>{props.conversion.title}</h4>
+            <h3>{props.conversion.title}</h3>
             <p>
               Converting {isoName}{" "}
               {props.conversion.detail
                 ? `— ${props.conversion.detail}`
                 : "— Encoding a Jellyfin-compatible MKV"}
             </p>
-            <div class="progress-track" aria-label={`${percent}% complete`}>
+            <div
+              class="progress-track"
+              role="progressbar"
+              aria-label="DVD conversion"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={percent}
+            >
               <span style={{ transform: `scaleX(${percent / 100})` }} />
             </div>
             <div class="progress-meta">
@@ -222,7 +227,6 @@ export const ConversionsView = component$<{
   const progressQueued = conv.conversions?.progress.queued ?? [];
   const working = activeConversions.length > 0;
   const inboxReady = conv.inbox?.available ?? false;
-  const statusLabel = working ? "Working" : "Idle";
 
   const inboxPending = conv.inbox?.pending ?? [];
   const inboxProcessed = conv.inbox?.processed ?? [];
@@ -289,46 +293,77 @@ export const ConversionsView = component$<{
         <div class="message error conv-error" role="alert">
           <Icon name="alert" size={18} />
           <span>{conv.error}</span>
-          <button type="button" onClick$={() => (conv.error = "")}>
+          <button
+            type="button"
+            aria-label="Dismiss conversion error"
+            onClick$={() => (conv.error = "")}
+          >
             ×
           </button>
         </div>
       )}
-      <div class="conv-main">
-        {props.transcriptionAvailable && (
-          <section class="panel transcription-panel">
-            <div class="panel-heading">
-              <h3>Audio transcription</h3>
-            </div>
+      <div
+        class="conv-main"
+        role="region"
+        aria-label="Current conversion work"
+        tabIndex={0}
+      >
+        <section class="conversion-focus" aria-labelledby="dvd-heading">
+          <header class="panel-heading">
+            <h2 id="dvd-heading">DVD conversions</h2>
+            <span class="conversion-state">
+              {working ? "Converting" : "Idle"}
+            </span>
+          </header>
+          <ConversionList
+            conversion={activeConversions[0] ?? ({} as Conversion)}
+            queuedEntry={queuedEntries}
+          />
+          <details class="conversion-help">
+            <summary>How to add DVDs</summary>
             <div class="setup-body">
               <p class="setup-ready">
-                Drop audio or video into your <code>_Transcribe/parakeet/</code>{" "}
-                or <code>_Transcribe/whisper/</code> folder. Files must stay
-                unchanged for one minute. Results appear in{" "}
-                <code>_Transcripts/</code>; your source is retained.
+                {inboxReady
+                  ? "The converter is watching "
+                  : "Copy a DVD ISO into "}
+                {dvdLink ? (
+                  <a href={dvdLink} target="_blank" rel="noopener noreferrer">
+                    the shared inbox
+                  </a>
+                ) : (
+                  "the shared inbox"
+                )}
+                .
               </p>
-              <details class="transcript-options">
-                <summary>Subtitle and speaker options</summary>
-                <p>
-                  For <code>lecture.wav</code>, save{" "}
-                  <code>lecture.transcribe.request.json</code> first, then copy
-                  the media file:
-                </p>
-                <pre>
-                  {JSON.stringify(
-                    {
-                      version: 1,
-                      output: { formats: ["txt", "srt", "vtt"], diarize: true },
-                    },
-                    null,
-                    2,
-                  )}
-                </pre>
-                <p>
-                  Whisper also accepts language and vocabulary hints.
-                  Unsupported options appear with the result.
-                </p>
-              </details>
+              <ol class="setup-steps">
+                <li>
+                  Copy a DVD ISO into the shared inbox at _Shared/_ISO/_DVDs.
+                </li>
+                <li>
+                  Leave the ISO untouched for about one minute so the server
+                  picks it up.
+                </li>
+                <li>
+                  Finished films appear in the shared video library. Source ISOs
+                  move to _Processed, or to _Failed after repeated failures.
+                </li>
+                <li>
+                  ISO files in the queue can be safely renamed or moved, but do
+                  not modify any file that is actively being converted.
+                </li>
+              </ol>
+            </div>
+          </details>
+        </section>
+        {props.transcriptionAvailable && (
+          <section
+            class="panel transcription-panel"
+            aria-labelledby="transcription-heading"
+          >
+            <header class="panel-heading">
+              <h2 id="transcription-heading">Audio transcription</h2>
+            </header>
+            <div class="transcription-body">
               {conv.transcriptionError && (
                 <p class="message error" role="alert">
                   {conv.transcriptionError}
@@ -354,79 +389,45 @@ export const ConversionsView = component$<{
                 </ul>
               )}
             </div>
+            <details class="conversion-help">
+              <summary>How to add audio or video</summary>
+              <div class="setup-body">
+                <p class="setup-ready">
+                  Drop audio or video into your{" "}
+                  <code>_Transcribe/parakeet/</code> or{" "}
+                  <code>_Transcribe/whisper/</code> folder. Files must stay
+                  unchanged for one minute. Results appear in{" "}
+                  <code>_Transcripts/</code>; your source is retained.
+                </p>
+                <details class="transcript-options">
+                  <summary>Subtitle and speaker options</summary>
+                  <p>
+                    For <code>lecture.wav</code>, save{" "}
+                    <code>lecture.transcribe.request.json</code> first, then
+                    copy the media file:
+                  </p>
+                  <pre>
+                    {JSON.stringify(
+                      {
+                        version: 1,
+                        output: {
+                          formats: ["txt", "srt", "vtt"],
+                          diarize: true,
+                        },
+                      },
+                      null,
+                      2,
+                    )}
+                  </pre>
+                  <p>
+                    Whisper also accepts language and vocabulary hints.
+                    Unsupported options appear with the result.
+                  </p>
+                </details>
+              </div>
+            </details>
           </section>
         )}
-        <section class="panel">
-          <div class="panel-heading">
-            <div>
-              <h3>DVD ISO converter</h3>
-            </div>
-            <span
-              class={{
-                "status-badge": true,
-                live: working,
-              }}
-            >
-              {statusLabel}
-            </span>
-          </div>
-          <div class="setup-body">
-            {inboxReady ? (
-              <p class="setup-ready">
-                The converter is watching{" "}
-                {dvdLink ? (
-                  <a href={dvdLink} target="_blank" rel="noopener noreferrer">
-                    the shared inbox
-                  </a>
-                ) : (
-                  "the shared inbox"
-                )}
-                .
-                {working
-                  ? " An ISO is being converted right now."
-                  : " Drop an ISO in the inbox to start a conversion."}
-              </p>
-            ) : (
-              <p class="setup-missing">
-                No ISO files are queued for conversion at the moment. Copy a DVD
-                ISO into the shared inbox at _Shared/_ISO/_DVDs to start a
-                conversion.
-              </p>
-            )}
-            <ol class="setup-steps">
-              <li>
-                Copy a DVD ISO into the shared inbox at _Shared/_ISO/_DVDs.
-              </li>
-              <li>
-                Leave the ISO untouched for about one minute so the server picks
-                it up.
-              </li>
-              <li>
-                Finished films appear in the shared video library. Source ISOs
-                move to _Processed, or to _Failed after repeated failures.
-              </li>
-              <li>
-                ISO files in the queue can be safely renamed or moved, but do
-                not modify any file that is actively being converted.
-              </li>
-            </ol>
-          </div>
-        </section>
-        <section class="panel">
-          <div class="panel-heading">
-            <div>
-              <h3>Active conversions</h3>
-            </div>
-            <span class={{ "status-badge": true, live: working }}>
-              {working ? "Working" : "Idle"}
-            </span>
-          </div>
-          <ConversionList
-            conversion={activeConversions[0] ?? ({} as Conversion)}
-            queuedEntry={queuedEntries}
-            expanded
-          />
-        </section>
       </div>
       <aside class="conv-sidebar">
         <ProcessedCard
@@ -452,8 +453,7 @@ const ProcessedCard = component$<{
   <section class="panel side-panel">
     <div class="panel-heading">
       <div>
-        <h3 id="processed-heading">Processed</h3>
-        <small>Completed conversions and transcripts</small>
+        <h2 id="processed-heading">Processed</h2>
       </div>
     </div>
     <div
@@ -535,8 +535,7 @@ const FailedCard = component$<{
   <section class="panel side-panel">
     <div class="panel-heading">
       <div>
-        <h3 id="failed-heading">Failed</h3>
-        <small>Conversions and transcripts needing attention</small>
+        <h2 id="failed-heading">Failed</h2>
       </div>
     </div>
     <div

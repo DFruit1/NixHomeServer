@@ -650,16 +650,13 @@ export default component$((props: RootProps) => {
           "main-content--library": view.value === "library",
           "main-content--conversions": view.value === "conversions",
           "main-content--videos": view.value === "videos",
+          "main-content--images": view.value === "images",
         }}
       >
-        {view.value !== "library" && (
-          <header class="topbar">
-            <h1>
-              {NAV_ITEMS.find((item) => item.id === view.value)?.label ??
-                "Activity"}
-            </h1>
-          </header>
-        )}
+        <h1 class="sr-only">
+          {NAV_ITEMS.find((item) => item.id === view.value)?.label ??
+            "Activity"}
+        </h1>
 
         {state.error && (
           <div class="message error" role="alert">
