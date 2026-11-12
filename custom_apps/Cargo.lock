@@ -3331,6 +3331,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chacha20poly1305",
+ "futures-util",
  "homelab-common",
  "html2text",
  "image",

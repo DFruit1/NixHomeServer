@@ -272,6 +272,14 @@ pub fn media_stem(name: &str) -> Option<&str> {
                 | "webm"
                 | "mov"
                 | "m4b"
+                | "m4v"
+                | "avi"
+                | "mpeg"
+                | "mpg"
+                | "ts"
+                | "wma"
+                | "aiff"
+                | "aif"
         ))
     .then_some(stem)
 }

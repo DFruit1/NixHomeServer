@@ -675,6 +675,82 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ConversionEnvelope" }
+  /conversions/jobs:
+    get:
+      operationId: listConversionInputs
+      description: Current user's submitted files, accessible input roots and upload limits.
+      responses:
+        "200":
+          description: Intake jobs and available folders.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConversionInputs" }
+    post:
+      operationId: submitServerConversion
+      description: Copies a regular server file from a visible media root into the existing worker inbox. Requires editor access and enabled mutations; leaves the original untouched.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [serverPath, options]
+              properties:
+                serverPath: { type: string }
+                options: { $ref: "#/components/schemas/ConversionInputOptions" }
+      responses:
+        "202":
+          description: File durably queued for the filesystem broker, then the existing converter.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConversionInputAccepted" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /conversions/uploads:
+    post:
+      operationId: uploadConversionInput
+      description: Streams one file (at most 64 GiB) to staging. Partial uploads are removed. Editor access and enabled mutations required. Uploads remain in the job inbox or DVD archive; an optional library copy is saved only after successful transcription, without replacing existing files.
+      parameters:
+        - in: query
+          name: options
+          required: true
+          description: JSON-encoded ConversionInputOptions.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "202":
+          description: Upload durably queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConversionInputAccepted" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+  /conversions/files:
+    get:
+      operationId: browseConversionFiles
+      description: Browse one contained input folder; ignores symlinks and non-media files. Lists at most 200 entries.
+      parameters:
+        - in: query
+          name: rootId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: path
+          schema: { type: string, default: "" }
+      responses:
+        "200":
+          description: Accessible subfolders and media files.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConversionFiles" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
   /conversions/inbox:
     get:
       operationId: listConversionInbox
@@ -1801,6 +1877,65 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    ConversionInputOptions:
+      type: object
+      additionalProperties: false
+      required: [name, kind]
+      properties:
+        name: { type: string, maxLength: 180 }
+        kind: { enum: [transcription, iso] }
+        backend: { enum: [parakeet, whisper], default: parakeet }
+        diarize: { type: boolean, default: false }
+        language: { type: string, nullable: true }
+        storageRootId: { type: string, nullable: true }
+        storageFolder: { type: string, default: "" }
+    ConversionInputJob:
+      type: object
+      required: [id, name, kind, state, createdAt, error, savedPath, transcriptId]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        kind: { enum: [transcription, iso] }
+        state: { enum: [queued, submitting, processing, saving, completed, failed] }
+        createdAt: { type: integer }
+        error: { type: string, nullable: true }
+        savedPath: { type: string, nullable: true }
+        transcriptId: { type: string, nullable: true }
+    ConversionInputAccepted:
+      type: object
+      required: [job]
+      properties:
+        job: { $ref: "#/components/schemas/ConversionInputJob" }
+    ConversionInputs:
+      type: object
+      required: [jobs, roots, canSubmit, maxUploadBytes]
+      properties:
+        jobs: { type: array, items: { $ref: "#/components/schemas/ConversionInputJob" } }
+        canSubmit: { type: boolean }
+        maxUploadBytes: { type: integer }
+        roots:
+          type: array
+          items:
+            type: object
+            required: [id, label, path, category]
+            properties:
+              id: { type: string }
+              label: { type: string }
+              path: { type: string }
+              category: { enum: [videos, music, audiobooks, podcasts, iso, transcription] }
+    ConversionFiles:
+      type: object
+      required: [entries, truncated]
+      properties:
+        truncated: { type: boolean }
+        entries:
+          type: array
+          items:
+            type: object
+            required: [name, directory]
+            properties:
+              name: { type: string }
+              directory: { type: boolean }
     ImmichTag:
       type: object
       required: [id, value]

@@ -83,6 +83,8 @@ in
   };
 
   systemd.tmpfiles.rules = [
+    "d ${vars.dataRoot}/media-manager 0750 media-manager media-manager -"
+    "d ${vars.dataRoot}/media-manager/intake 0770 media-manager media-manager -"
     "d ${cfg.stateDir} 0770 media-manager media-manager -"
     "d ${cfg.stateDir}/refresh-requests 0750 media-manager media-manager -"
     "d ${cfg.stateDir}/refresh-results 0750 media-manager media-manager -"

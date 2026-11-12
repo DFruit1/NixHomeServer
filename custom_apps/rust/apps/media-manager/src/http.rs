@@ -34,6 +34,7 @@ use crate::{
 };
 mod artwork_http;
 pub use artwork_http::{ArtworkCandidateCache, JellyfinImageCache};
+mod conversion_inputs;
 mod conversions;
 mod metadata_handlers;
 mod transcriptions;
@@ -328,6 +329,15 @@ pub fn router(state: AppState) -> Router {
             get(metadata_handlers::folder_metadata),
         )
         .route("/api/v1/conversions", get(conversions::conversions))
+        .route(
+            "/api/v1/conversions/jobs",
+            get(conversion_inputs::jobs).post(conversion_inputs::server_file),
+        )
+        .route("/api/v1/conversions/files", get(conversion_inputs::files))
+        .route(
+            "/api/v1/conversions/uploads",
+            post(conversion_inputs::upload),
+        )
         .route("/api/v1/transcriptions", get(transcriptions::jobs))
         .route(
             "/api/v1/transcriptions/{job}/artifacts/{name}",

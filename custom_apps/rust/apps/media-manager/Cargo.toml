@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 axum.workspace = true
 homelab-common.workspace = true
+futures-util.workspace = true
 chacha20poly1305.workspace = true
 image.workspace = true
 html2text.workspace = true

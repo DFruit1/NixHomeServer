@@ -58,8 +58,15 @@ impl Dir {
         Ok(Self(unsafe { File::from_raw_fd(fd) }))
     }
     pub fn create(&self, value: &str) -> Result<Self, String> {
+        self.create_mode(value, 0o750)
+    }
+    /// Web and filesystem broker share only the intake spool, not user roots.
+    pub fn create_shared(&self, value: &str) -> Result<Self, String> {
+        self.create_mode(value, 0o2770)
+    }
+    fn create_mode(&self, value: &str, mode: libc::mode_t) -> Result<Self, String> {
         let component = name(value)?;
-        let created = unsafe { libc::mkdirat(self.0.as_raw_fd(), component.as_ptr(), 0o750) } == 0;
+        let created = unsafe { libc::mkdirat(self.0.as_raw_fd(), component.as_ptr(), mode) } == 0;
         if !created && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
             return Err(std::io::Error::last_os_error().to_string());
         }
@@ -147,6 +154,66 @@ impl Dir {
             }
         }
         result
+    }
+    /// Stream a large media file, then publish without replacing any entry.
+    pub fn copy_new(&self, value: &str, mut source: File) -> Result<(), String> {
+        let before = source.metadata().map_err(|e| e.to_string())?;
+        let target = name(value)?;
+        let temporary = name(&format!(".media-copy-{}", homelab_common::random_hex(16)))?;
+        let fd = unsafe {
+            libc::openat(
+                self.0.as_raw_fd(),
+                temporary.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o660,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        let mut file = unsafe { File::from_raw_fd(fd) };
+        let result = (|| {
+            self.own(&file)?;
+            let copied = std::io::copy(&mut (&mut source).take(before.len() + 1), &mut file)
+                .map_err(|e| e.to_string())?;
+            let after = source.metadata().map_err(|e| e.to_string())?;
+            if copied != before.len()
+                || before.len() != after.len()
+                || before.mtime() != after.mtime()
+                || before.mtime_nsec() != after.mtime_nsec()
+            {
+                return Err("The source changed while it was being copied.".into());
+            }
+            file.sync_all().map_err(|e| e.to_string())?;
+            if unsafe {
+                libc::linkat(
+                    self.0.as_raw_fd(),
+                    temporary.as_ptr(),
+                    self.0.as_raw_fd(),
+                    target.as_ptr(),
+                    0,
+                )
+            } != 0
+            {
+                return Err(format!(
+                    "Cannot save {}: {} (existing files are never replaced)",
+                    value,
+                    std::io::Error::last_os_error()
+                ));
+            }
+            self.0.sync_all().map_err(|e| e.to_string())
+        })();
+        unsafe {
+            libc::unlinkat(self.0.as_raw_fd(), temporary.as_ptr(), 0);
+        }
+        result
+    }
+    pub fn remove(&self, value: &str) -> Result<(), String> {
+        let value = name(value)?;
+        if unsafe { libc::unlinkat(self.0.as_raw_fd(), value.as_ptr(), 0) } != 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(())
     }
     pub fn names(&self) -> Result<Vec<String>, String> {
         let mut entries = Vec::new();

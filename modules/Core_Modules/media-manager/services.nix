@@ -12,6 +12,7 @@ let
     MEDIA_MANAGER_ADDRESS = cfg.address;
     MEDIA_MANAGER_PORT = toString cfg.port;
     MEDIA_MANAGER_STATE_DIR = cfg.stateDir;
+    MEDIA_MANAGER_CONVERSION_STAGING_DIR = "${vars.dataRoot}/media-manager/intake";
     MEDIA_MANAGER_SHARED_ROOT = vars.sharedRoot;
     MEDIA_MANAGER_USERS_ROOT = vars.usersRoot;
     MEDIA_MANAGER_EDITOR_GROUP = cfg.editorGroup;
@@ -188,7 +189,7 @@ in
       AmbientCapabilities = [ ];
       ReadOnlyPaths = [ "-${vars.sharedRoot}" "-${vars.usersRoot}" "-/run/mkvmaker" ]
         ++ lib.concatMap (integration: integration.readOnlyPaths) (lib.attrValues activeIntegrations);
-      ReadWritePaths = [ cfg.stateDir ];
+      ReadWritePaths = [ cfg.stateDir "${vars.dataRoot}/media-manager/intake" ];
       SystemCallArchitectures = "native";
       SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
     };
@@ -310,13 +311,22 @@ in
     description = "Apply one queued Media Manager mutation plan";
     requires = [ "data-pool-layout.service" "media-manager-storage-access.service" ];
     after = [ "data-pool-layout.service" "media-manager-storage-access.service" ];
-    environment = commonEnvironment;
+    environment = commonEnvironment // lib.optionalAttrs
+      (activeIntegrations ? transcribe)
+      { inherit (activeIntegrations.transcribe.environment) MEDIA_MANAGER_TRANSCRIBE_STATE; };
     serviceConfig = {
       Type = "oneshot";
       User = "media-manager-broker";
       Group = "media-manager";
       SupplementaryGroups = [ "media-manager-broker" ];
       ExecStart = lib.getExe' cfg.package "media-manager-broker";
+      # Stream large conversion inputs without the default oneshot timeout.
+      TimeoutStartSec = "infinity";
+      Nice = 10;
+      CPUWeight = 40;
+      IOWeight = 40;
+      MemoryHigh = "1G";
+      MemoryMax = "2G";
       UMask = "0007";
       NoNewPrivileges = true;
       PrivateTmp = true;
@@ -340,7 +350,7 @@ in
       MemoryDenyWriteExecute = true;
       CapabilityBoundingSet = [ ];
       AmbientCapabilities = [ ];
-      ReadWritePaths = [ cfg.stateDir vars.sharedRoot vars.usersRoot ];
+      ReadWritePaths = [ cfg.stateDir "${vars.dataRoot}/media-manager/intake" vars.sharedRoot vars.usersRoot ];
       SystemCallArchitectures = "native";
       SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
     };

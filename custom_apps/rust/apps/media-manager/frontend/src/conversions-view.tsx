@@ -10,6 +10,8 @@ import type {
   TranscriptionEnvelope,
   TranscriptionJob,
 } from "./api-contract.generated";
+import { ConversionInput } from "./conversion-input";
+import type { ConversionInputs } from "./api-contract.generated";
 import { Icon } from "./icon";
 import type {
   Conversion,
@@ -29,7 +31,7 @@ const ConversionList = component$<{
     return (
       <EmptyState
         title="No ISO files being converted"
-        detail="Drop an ISO into the shared inbox to start a conversion."
+        detail="Choose a server file or upload one above."
       />
     );
   }
@@ -170,11 +172,14 @@ export const ConversionsView = component$<{
     error: string;
     transcriptions?: TranscriptionEnvelope;
     transcriptionError: string;
+    inputs?: ConversionInputs;
+    inputError: string;
   }>({
     conversions: props.initial,
     inbox: undefined,
     error: "",
     transcriptionError: "",
+    inputError: "",
   });
   const logDialog = useSignal<string>("");
 
@@ -182,6 +187,15 @@ export const ConversionsView = component$<{
     const transcribe = track(() => props.transcriptionAvailable);
     let stopped = false;
     const load = async () => {
+      try {
+        const inputs = await api<ConversionInputs>("/conversions/jobs");
+        if (!stopped) {
+          conv.inputs = inputs;
+          conv.inputError = "";
+        }
+      } catch (error) {
+        if (!stopped) conv.inputError = readableError(error);
+      }
       try {
         const [conversions, inbox] = await Promise.all([
           api<ConversionEnvelope>("/conversions"),
@@ -232,7 +246,12 @@ export const ConversionsView = component$<{
   const inboxProcessed = conv.inbox?.processed ?? [];
   const inboxFailed = conv.inbox?.failed ?? [];
   const filesBaseUrl = conv.inbox?.filesBaseUrl ?? "";
-  const transcripts = conv.transcriptions?.jobs ?? [];
+  const transcripts = (conv.transcriptions?.jobs ?? []).map((job) => ({
+    ...job,
+    name:
+      conv.inputs?.jobs.find((input) => input.transcriptId === job.id)?.name ??
+      job.name,
+  }));
   const activeTranscripts = transcripts.filter(
     (j) => j.state !== "completed" && j.state !== "failed",
   );
@@ -289,14 +308,17 @@ export const ConversionsView = component$<{
           onClose$={() => (logDialog.value = "")}
         />
       )}
-      {conv.error && (
+      {(conv.error || conv.inputError) && (
         <div class="message error conv-error" role="alert">
           <Icon name="alert" size={18} />
-          <span>{conv.error}</span>
+          <span>{conv.error || conv.inputError}</span>
           <button
             type="button"
             aria-label="Dismiss conversion error"
-            onClick$={() => (conv.error = "")}
+            onClick$={() => {
+              conv.error = "";
+              conv.inputError = "";
+            }}
           >
             ×
           </button>
@@ -308,6 +330,13 @@ export const ConversionsView = component$<{
         aria-label="Current conversion work"
         tabIndex={0}
       >
+        <ConversionInput
+          inputs={conv.inputs}
+          transcriptionAvailable={props.transcriptionAvailable}
+          onQueued$={(job) => {
+            if (conv.inputs) conv.inputs.jobs = [job, ...conv.inputs.jobs];
+          }}
+        />
         <section class="conversion-focus" aria-labelledby="dvd-heading">
           <header class="panel-heading">
             <h2 id="dvd-heading">DVD conversions</h2>
@@ -390,40 +419,15 @@ export const ConversionsView = component$<{
               )}
             </div>
             <details class="conversion-help">
-              <summary>How to add audio or video</summary>
+              <summary>Use a watched folder instead</summary>
               <div class="setup-body">
-                <p class="setup-ready">
-                  Drop audio or video into your{" "}
+                <p>
+                  Audio and video placed in your{" "}
                   <code>_Transcribe/parakeet/</code> or{" "}
-                  <code>_Transcribe/whisper/</code> folder. Files must stay
-                  unchanged for one minute. Results appear in{" "}
-                  <code>_Transcripts/</code>; your source is retained.
+                  <code>_Transcribe/whisper/</code> folder are picked up
+                  automatically after a minute. Results are saved in{" "}
+                  <code>_Transcripts/</code>; sources are retained.
                 </p>
-                <details class="transcript-options">
-                  <summary>Subtitle and speaker options</summary>
-                  <p>
-                    For <code>lecture.wav</code>, save{" "}
-                    <code>lecture.transcribe.request.json</code> first, then
-                    copy the media file:
-                  </p>
-                  <pre>
-                    {JSON.stringify(
-                      {
-                        version: 1,
-                        output: {
-                          formats: ["txt", "srt", "vtt"],
-                          diarize: true,
-                        },
-                      },
-                      null,
-                      2,
-                    )}
-                  </pre>
-                  <p>
-                    Whisper also accepts language and vocabulary hints.
-                    Unsupported options appear with the result.
-                  </p>
-                </details>
               </div>
             </details>
           </section>
@@ -581,11 +585,3 @@ const FailedCard = component$<{
     </div>
   </section>
 ));
-
-function formatModified(modifiedNs: number): string {
-  if (!Number.isFinite(modifiedNs) || modifiedNs <= 0) return "—";
-  return new Date(modifiedNs / 1e6).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}

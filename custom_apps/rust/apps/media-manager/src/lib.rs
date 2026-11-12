@@ -7,6 +7,7 @@ pub mod broker;
 pub mod capabilities;
 pub mod catalog;
 pub mod config;
+pub mod conversion_jobs;
 pub mod core;
 pub mod http;
 mod image_index;
