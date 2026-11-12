@@ -162,7 +162,7 @@ async fn office_discovery_and_file_requests_use_only_the_current_gateway_actor()
         .await
         .unwrap();
     let body: Value = serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
-    assert_eq!(body["result"]["tools"].as_array().unwrap().len(), 16);
+    assert_eq!(body["result"]["tools"].as_array().unwrap().len(), 17);
     let broker = tokio::spawn(async move {
         for user in ["alice", "bob"] {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -242,7 +242,7 @@ async fn private_tools_require_gateway_and_current_cookie_even_when_configured()
     let response = app.clone().oneshot(list).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value = serde_json::from_str(&crate::tests::body_string(response).await).unwrap();
-    assert_eq!(body["result"]["tools"].as_array().unwrap().len(), 7);
+    assert_eq!(body["result"]["tools"].as_array().unwrap().len(), 8);
     let mut wrong_port = request(Method::POST, LIST, Some("alice"));
     wrong_port
         .headers_mut()
@@ -273,6 +273,7 @@ async fn private_tools_require_gateway_and_current_cookie_even_when_configured()
         "youtube_info",
         "youtube_download",
         "youtube_job",
+        "youtube_jobs",
     ] {
         let body = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":name,"arguments":{"query":"test","username":"forged","cookie":"forged"}}}).to_string();
         let response = app

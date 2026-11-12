@@ -134,6 +134,7 @@ offers these tools. The loopback endpoint and stdio bridge stay web-search-only.
 | `youtube_search` | Find candidate YouTube video titles, links and snippets. |
 | `youtube_info` | Inspect one video's title, channel, duration and chapters. |
 | `youtube_download` | Submit one video/audio download; personal storage by default. |
+| `youtube_jobs` | Find the current account's recent jobs by video URL, title/URL words or status. |
 | `youtube_job` | Check a submitted job belonging to the current user. |
 
 Document and email searches use the existing Search app and require its
@@ -169,6 +170,32 @@ the media. Submitting a job is not success: inspect `youtube_job` and report a
 completed download only after `status` becomes `completed`. Resolve duplicate,
 chapter or destination-collision alerts in the downloader UI. Do not blindly
 retry a submission after a connection failure; inspect the downloader first.
+
+Use `youtube_jobs` when the user asks about downloads without supplying IDs,
+or to investigate an uncertain submission. It reads the existing owner-scoped
+`GET /api/jobs` API through the current session. Optional `url` matches the
+canonical video URL; `query` matches title/URL text and `status` selects a job
+state. `offset` and `limit` (1–20, default 8) paginate matching jobs within the
+newest 100 records. `matched_recent` is a sample count, not all history;
+`history_limited` signals that older records may exist. New jobs can shift
+offsets. An empty recent view does not prove that a submission failed or that
+older downloads do not exist: do not resubmit automatically. No retry, cancel
+or delete tool is introduced. Job-owner checks use the downloader's existing case-preserved
+SPN-local username contract, never a model-supplied owner.
+
+Video chapters and job files are also paginated. `youtube_info` accepts
+`chapter_offset`/`chapter_limit` and returns `next_chapter_offset`;
+`youtube_job` accepts `file_offset`/`file_limit` and returns `next_file_offset`.
+These limits are 1–50, default 20, with a 24 KiB model-response budget. Follow
+the returned offset, which can advance by less than the requested limit.
+Text previews have `truncated_fields`; job source metadata includes only five
+chapter previews (use `youtube_info` for more). `chapter_count`/`file_count`
+describe source counts, while each view contains at most 10000 entries and
+marks a larger source with `chapters_limited`/`files_limited`. IDs and file
+paths stay complete. These are read-only metadata checks, not proof that an
+old completed job's files still exist on disk.
+Pagination applies after reading the downloader response; the existing 2 MiB
+upstream cap still applies. Use the app if a history cannot fit that limit.
 
 ### Bonsai chat connection
 
