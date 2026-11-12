@@ -74,17 +74,17 @@ export const HealthAutoProposal = component$<{
           context,
         );
         if (stopped) return;
-        state.candidate = automaticHealthMatch(
+        const assessment = automaticHealthMatch(
           rankHealthCandidates(result.candidates, result.context, field),
           field,
+          result,
         );
+        state.candidate = assessment.candidate;
+        state.message = assessment.message;
         if (state.candidate && result.failures.length)
           state.candidate.confidence.reasons.push(
             `Some sources could not be checked: ${result.failures.join("; ")}`,
           );
-        state.message = state.candidate
-          ? ""
-          : "No clear, well-supported match. Try the provider search.";
       } catch (error) {
         if (!stopped)
           state.message = `Automatic lookup unavailable: ${readableError(error)}`;

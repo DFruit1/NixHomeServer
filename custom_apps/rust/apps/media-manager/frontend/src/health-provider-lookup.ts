@@ -33,6 +33,45 @@ export function healthLookupAvailability(
     return "Artwork source · use metadata editor";
   return "";
 }
+/** Identifiers lead an unchanged item query; a user's edited query stays literal.
+ * Empty identifier searches get one title/creator fallback, never an error retry.
+ * https://developers.google.com/books/docs/v1/using#PerformingSearch
+ */
+export function healthLookupQueries(
+  provider: string,
+  query: string,
+  context: Record<string, unknown>,
+): string[] {
+  if (
+    !["open-library", "google-books", "isbndb"].includes(provider) ||
+    normalized(query) !== normalized(context.title)
+  )
+    return [query];
+  const identifier = isbnFromContext(context);
+  const author = Array.isArray(context.authors)
+    ? context.authors[0]
+    : context.authors;
+  const quote = (value: unknown) =>
+    String(value ?? "")
+      .replace(/[\\"]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const focused = hasHealthValue(author)
+    ? provider === "google-books"
+      ? `intitle:"${quote(query)}" inauthor:"${quote(author)}"`
+      : provider === "open-library"
+        ? `title:"${quote(query)}" author:"${quote(author)}"`
+        : `${query} ${quote(author)}`
+    : query;
+  const fallback = focused.length <= 500 ? focused : query;
+  return [
+    ...new Set(
+      identifier
+        ? [provider === "isbndb" ? identifier : `isbn:${identifier}`, fallback]
+        : [fallback, query],
+    ),
+  ];
+}
 export async function lookupHealthProvider(
   provider: string,
   query: string,
@@ -40,42 +79,39 @@ export async function lookupHealthProvider(
   context: Record<string, unknown>,
 ): Promise<Record<string, unknown>[]> {
   const music = provider === "musicbrainz" || provider === "acoustid";
-  const exactIsbn = isbn(context.isbn);
-  const bookQuery =
-    exactIsbn && ["open-library", "google-books", "isbndb"].includes(provider)
-      ? provider === "isbndb"
-        ? exactIsbn
-        : `isbn:${exactIsbn}`
-      : query;
-  const body = music
-    ? {
-        mode: provider === "acoustid" ? "fingerprint" : "search",
-        title: query,
-        ...(context.authors
-          ? {
-              artist: Array.isArray(context.authors)
-                ? context.authors.join(", ")
-                : String(context.authors),
-            }
-          : {}),
-      }
-    : provider === "tmdb"
-      ? { query, mediaType: "auto" }
-      : provider === "opensubtitles"
-        ? { query, languages: String(context.language || "en") }
-        : provider === "audnexus"
-          ? { id: (context.providerIds as Record<string, unknown>).asin }
-          : { query: bookQuery };
-  const response = await api<{
-    results?: Record<string, unknown>[];
-    candidates?: Record<string, unknown>[];
-  }>(
-    music
-      ? `/items/${encodeURIComponent(itemId)}/metadata/lookup`
-      : `/provider-lookups/${provider}/search`,
-    { method: "POST", body: JSON.stringify(body) },
-  );
-  return response.results ?? response.candidates ?? [];
+  for (const lookupQuery of healthLookupQueries(provider, query, context)) {
+    const body = music
+      ? {
+          mode: provider === "acoustid" ? "fingerprint" : "search",
+          title: lookupQuery,
+          ...(hasHealthValue(context.authors)
+            ? {
+                artist: Array.isArray(context.authors)
+                  ? context.authors.join(", ")
+                  : String(context.authors),
+              }
+            : {}),
+        }
+      : provider === "tmdb"
+        ? { query: lookupQuery, mediaType: "auto" }
+        : provider === "opensubtitles"
+          ? { query: lookupQuery, languages: String(context.language || "en") }
+          : provider === "audnexus"
+            ? { id: (context.providerIds as Record<string, unknown>).asin }
+            : { query: lookupQuery };
+    const response = await api<{
+      results?: Record<string, unknown>[];
+      candidates?: Record<string, unknown>[];
+    }>(
+      music
+        ? `/items/${encodeURIComponent(itemId)}/metadata/lookup`
+        : `/provider-lookups/${provider}/search`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    const results = response.results ?? response.candidates ?? [];
+    if (results.length) return results;
+  }
+  return [];
 }
 
 export const MIN_HEALTH_MATCH = 30;
@@ -89,8 +125,11 @@ export interface HealthMatch {
   scope?: "work" | "edition";
   matchMethod?: string;
   detailError?: string;
+  detailsPending?: boolean;
+  editionsTruncated?: boolean;
 }
 export interface MatchEvidence {
+  identified: boolean;
   score: number;
   reasons: string[];
 }
@@ -125,6 +164,88 @@ function similarity(left: unknown, right: unknown): number {
     [...x].filter((word) => y.has(word)).length / new Set([...x, ...y]).size
   );
 }
+function titleIdentity(value: unknown): string {
+  return normalized(value).replace(
+    /\b(book|vol(?:ume)?|part|disc|season|episode)\s+(\d+|[ivxlcdm]+)\b/g,
+    (match) => numberedTitle(match)[0]?.replace(":", " ") ?? match,
+  );
+}
+function titleSimilarity(a: unknown, b: unknown): number {
+  const full = similarity(titleIdentity(a), titleIdentity(b));
+  const primary = (v: unknown) =>
+    titleIdentity(String(v ?? "").split(/[:—–]|\s-\s/)[0]);
+  const x = primary(a),
+    y = primary(b);
+  return x === y && x.length >= 8 && x.split(" ").length >= 2
+    ? Math.max(full, 0.92)
+    : full;
+}
+function numberedTitle(value: unknown): string[] {
+  const text = normalized(value);
+  const markers = [
+    ...text.matchAll(
+      /\b(book|vol(?:ume)?|part|disc|season|episode)\s+(\d+|[ivxlcdm]+)\b/g,
+    ),
+  ];
+  return markers.flatMap((match) => {
+    const roman = match[2];
+    const valid =
+      /^(?=.)m{0,3}(cm|cd|d?c{0,3})(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})$/.test(
+        roman,
+      );
+    if (!/^\d+$/.test(roman) && !valid) return [];
+    const digits: Record<string, number> = {
+      i: 1,
+      v: 5,
+      x: 10,
+      l: 50,
+      c: 100,
+      d: 500,
+      m: 1000,
+    };
+    const number = /^\d+$/.test(roman)
+      ? Number(roman)
+      : [...roman].reduce(
+          (sum, c, index) =>
+            sum +
+            (digits[c] < (digits[roman[index + 1]] ?? 0)
+              ? -digits[c]
+              : digits[c]),
+          0,
+        );
+    return [
+      `${["book", "vol", "volume"].includes(match[1]) ? "volume" : match[1]}:${number}`,
+    ];
+  });
+}
+const EDITION_FIELDS = new Set([
+  "title",
+  "year",
+  "language",
+  "publisher",
+  "isbn",
+  "narrators",
+  "volumeNumber",
+]);
+const PRECISE_IDS = new Set([
+  "asin",
+  "imdb",
+  "tmdb",
+  "google-books",
+  "open-library-edition",
+  "musicbrainz-release",
+  "barcode",
+]);
+function identifier(key: string, value: unknown): string {
+  if (typeof value !== "string" && typeof value !== "number") return "";
+  const text = String(value).trim().normalize("NFC");
+  // Volume IDs and other opaque IDs retain case and punctuation.
+  if (key === "asin" || key.startsWith("open-library-"))
+    return text.toUpperCase();
+  if (key === "imdb" || key.startsWith("musicbrainz-"))
+    return text.toLowerCase();
+  return text;
+}
 const LANGUAGES: Record<string, string> = {
   eng: "en",
   english: "en",
@@ -152,16 +273,23 @@ const LANGUAGES: Record<string, string> = {
   ara: "ar",
   kor: "ko",
 };
-function language(value: unknown): string {
-  const text = String(value ?? "")
+function languageCode(value: unknown): string {
+  const [base, ...region] = String(value ?? "")
+    .trim()
     .toLowerCase()
-    .split(/[-_]/)[0];
-  return LANGUAGES[text] ?? text;
+    .replaceAll("_", "-")
+    .split("-");
+  const code = [LANGUAGES[base] ?? base, ...region].join("-");
+  return /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(code) ? code : "";
+}
+function language(value: unknown): string {
+  return languageCode(value).split("-")[0];
 }
 /** ISBN-10 and ISBN-13 identify editions, not the umbrella work. Validate checksums. */
 function isbn(value: unknown): string {
   let text = String(value ?? "")
-    .replace(/[^\dX]/gi, "")
+    .replace(/^isbn(?:[-\s]?1[03])?\s*:?\s*/i, "")
+    .replace(/[\s-]/g, "")
     .toUpperCase();
   if (/^\d{9}[\dX]$/.test(text)) {
     const sum = [...text].reduce(
@@ -176,10 +304,14 @@ function isbn(value: unknown): string {
     );
     return text + ((10 - (sum13 % 10)) % 10);
   }
-  if (!/^\d{13}$/.test(text)) return "";
+  if (!/^97[89]\d{10}$/.test(text)) return "";
   return [...text].reduce((s, c, i) => s + Number(c) * (i % 2 ? 3 : 1), 0) % 10
     ? ""
     : text;
+}
+function isbnFromContext(context: Record<string, unknown>): string {
+  const ids = context.providerIds as Record<string, unknown> | undefined;
+  return isbn(context.isbn) || isbn(ids?.isbn13) || isbn(ids?.isbn10);
 }
 const ID_KEYS = new Set([
   "asin",
@@ -200,7 +332,7 @@ function sourceFamily(id: string) {
   return id === "acoustid" ? "musicbrainz" : id;
 }
 function sameField(field: string, a: unknown, b: unknown): boolean {
-  if (field === "language") return language(a) === language(b);
+  if (field === "language") return !!language(a) && language(a) === language(b);
   if (field === "isbn") return !!isbn(a) && isbn(a) === isbn(b);
   if (Array.isArray(a) || Array.isArray(b)) {
     const parts = (v: unknown) =>
@@ -223,35 +355,52 @@ export function matchConfidence(
   context: Record<string, unknown>,
   field: string,
   candidates: HealthMatch[],
+  basis?: ReadonlyMap<HealthMatch, MatchEvidence>,
 ): MatchEvidence {
   let earned = 0,
     possible = 0,
     supporting = 0,
     identityMatches = 0,
-    identityConflicts = 0;
+    identityConflicts = 0,
+    editionMatches = 0,
+    providerMatches = 0;
   const reasons: string[] = [];
   let cap = 95;
+  const referenceISBN = isbnFromContext(context);
   const compare = (key: string, weight: number) => {
+    const reference = key === "isbn" ? referenceISBN : context[key];
+    if (
+      key === "year" &&
+      candidate.scope === "work" &&
+      ["authors", "series"].includes(field)
+    ) {
+      reasons.push("Work publication year does not identify this edition");
+      return;
+    }
     // Do not use the value we are trying to discover as evidence for itself.
-    if ((key === field && field !== "title") || !hasHealthValue(context[key]))
+    if ((key === field && field !== "title") || !hasHealthValue(reference))
       return;
     possible += weight;
     const present = hasHealthValue(candidate.values[key]);
     const match = !present
       ? 0
       : key === "language"
-        ? Number(language(candidate.values[key]) === language(context[key]))
+        ? Number(
+            !!language(candidate.values[key]) &&
+              language(candidate.values[key]) === language(reference),
+          )
         : key === "isbn"
           ? Number(
-              !!isbn(context[key]) &&
-                isbn(candidate.values[key]) === isbn(context[key]),
+              !!referenceISBN && isbn(candidate.values[key]) === referenceISBN,
             )
           : key === "mediaType"
             ? Number(
                 String(candidate.values[key]).replace(/^series$/, "tv") ===
                   String(context[key]).replace(/^series$/, "tv"),
               )
-            : similarity(candidate.values[key], context[key]);
+            : key === "title"
+              ? titleSimilarity(candidate.values[key], reference)
+              : similarity(candidate.values[key], reference);
     earned += weight * match;
     if (
       match >= 0.85 &&
@@ -271,17 +420,19 @@ export function matchConfidence(
     if (
       key === "isbn" &&
       present &&
-      isbn(context[key]) &&
+      referenceISBN &&
       isbn(candidate.values[key])
     ) {
-      if (match === 1) identityMatches++;
-      else identityConflicts++;
+      if (match === 1) {
+        identityMatches++;
+        editionMatches++;
+      } else identityConflicts++;
     }
     if (present && !match) {
       if (["mediaType", "volumeNumber", "season", "episode"].includes(key))
         cap = Math.min(cap, 29);
       else if (key === "authors") cap = Math.min(cap, 45);
-      else if (key === "year") cap = Math.min(cap, 65);
+      else if (["year", "language"].includes(key)) cap = Math.min(cap, 65);
     }
   };
   compare("title", 50);
@@ -294,7 +445,7 @@ export function matchConfidence(
   compare("volumeNumber", 20);
   compare("season", 20);
   compare("episode", 20);
-  if (isbn(context.isbn)) compare("isbn", 50);
+  if (referenceISBN) compare("isbn", 50);
   const ids = context.providerIds as Record<string, unknown> | undefined;
   for (const [key, value] of Object.entries(candidate.providerIds)) {
     if (
@@ -303,16 +454,20 @@ export function matchConfidence(
       !hasHealthValue(value)
     )
       continue;
-    const same = normalized(ids![key]) === normalized(value);
-    if (same) identityMatches++;
-    else identityConflicts++;
+    const same = identifier(key, ids![key]) === identifier(key, value);
+    if (same) {
+      identityMatches++;
+      providerMatches++;
+      if (PRECISE_IDS.has(key)) editionMatches++;
+    } else identityConflicts++;
     reasons.push(`${key} identifier ${same ? "matches" : "differs"}`);
   }
-  const titleMatch = similarity(candidate.values.title, context.title);
-  if (identityMatches) {
+  const titleMatch = titleSimilarity(candidate.values.title, context.title);
+  if (providerMatches) {
     possible += 60;
     earned += 60;
-  } else if (titleMatch < 0.35) cap = Math.min(cap, 29);
+  }
+  if (!identityMatches && titleMatch < 0.35) cap = Math.min(cap, 29);
   if (identityConflicts) {
     cap = Math.min(cap, 19);
     reasons.push("Conflicting edition or item identifier; do not auto-propose");
@@ -320,6 +475,43 @@ export function matchConfidence(
   if (!identityMatches && !supporting) {
     cap = Math.min(cap, 60);
     reasons.push("Title alone cannot identify the edition or release");
+  }
+  const referenceParts = numberedTitle(context.title),
+    candidateParts = numberedTitle(candidate.values.title);
+  if (
+    referenceParts.some((part) =>
+      candidateParts.some(
+        (other) => part.split(":")[0] === other.split(":")[0] && part !== other,
+      ),
+    )
+  ) {
+    cap = Math.min(cap, 29);
+    reasons.push("Numbered part in the title differs");
+  }
+  const abridgement = (v: unknown) =>
+    normalized(v).match(/\b(unabridged|abridged)\b/)?.[0];
+  if (
+    EDITION_FIELDS.has(field) &&
+    abridgement(context.title) &&
+    abridgement(candidate.values.title) &&
+    abridgement(context.title) !== abridgement(candidate.values.title)
+  ) {
+    cap = Math.min(cap, 29);
+    reasons.push("Abridged and unabridged editions differ");
+  }
+  const identified =
+    (EDITION_FIELDS.has(field) ? editionMatches : identityMatches) > 0 &&
+    identityConflicts === 0;
+  if (
+    candidate.detailsPending ||
+    (candidate.editionsTruncated && EDITION_FIELDS.has(field) && !identified)
+  ) {
+    cap = Math.min(cap, 74);
+    reasons.push(
+      candidate.detailsPending
+        ? "Further item details have not been checked"
+        : "Only some editions were checked; no exact edition identifier matches",
+    );
   }
   // A fingerprint locates a recording/release group, not a particular edition.
   if (candidate.matchMethod === "fingerprint")
@@ -352,13 +544,15 @@ export function matchConfidence(
         (other) =>
           sourceFamily(other.provider.id) !==
             sourceFamily(candidate.provider.id) &&
-          similarity(other.values.title, candidate.values.title) >= 0.8 &&
+          titleSimilarity(other.values.title, candidate.values.title) >= 0.8 &&
           (!hasHealthValue(candidate.values.authors) ||
             !hasHealthValue(other.values.authors) ||
             similarity(other.values.authors, candidate.values.authors) >=
               0.8) &&
           hasHealthValue(candidate.values[field]) &&
-          sameField(field, other.values[field], candidate.values[field]),
+          sameField(field, other.values[field], candidate.values[field]) &&
+          (basis?.get(other) ?? matchConfidence(other, context, field, []))
+            .score >= AUTO_HEALTH_MATCH,
       )
       .map((other) => sourceFamily(other.provider.id)),
   ).size;
@@ -377,7 +571,7 @@ export function matchConfidence(
   } else if (field)
     reasons.push("Requested field supplied; availability adds no confidence");
   reasons.push("Evidence estimate, not a calibrated probability");
-  return { score, reasons };
+  return { score, reasons, identified };
 }
 
 /** Search responses use several provider shapes. Never turn ratings into identity evidence. */
@@ -405,10 +599,12 @@ export function healthCandidate(
   // Several languages in a work search are editions, not one language to select.
   put(
     "language",
-    c.language ??
-      (Array.isArray(languages) && languages.length === 1
-        ? language(languages[0])
-        : undefined),
+    languageCode(
+      c.language ??
+        (Array.isArray(languages) && languages.length === 1
+          ? languages[0]
+          : undefined),
+    ),
   );
   put("premiereDate", first("releaseDate", "publishDate", "publishedDate"));
   const isbnValue = first("isbn", "isbn13", "isbn10");
@@ -457,10 +653,18 @@ export function rankHealthCandidates(
   context: Record<string, unknown>,
   field: string,
 ): RankedHealthMatch[] {
+  // Cross-source support reuses each candidate's independent evidence instead
+  // of rescoring every pair as providers stream into the dialog.
+  const basis = new Map(
+    candidates.map((candidate) => [
+      candidate,
+      matchConfidence(candidate, context, field, []),
+    ]),
+  );
   return candidates
     .map((candidate) => ({
       ...candidate,
-      confidence: matchConfidence(candidate, context, field, candidates),
+      confidence: matchConfidence(candidate, context, field, candidates, basis),
     }))
     .filter((candidate) => candidate.confidence.score >= MIN_HEALTH_MATCH)
     .sort(
@@ -473,13 +677,53 @@ export function rankHealthCandidates(
 export function automaticHealthMatch(
   matches: RankedHealthMatch[],
   field: string,
-): RankedHealthMatch | undefined {
+  coverage: { failures?: string[]; candidates?: HealthMatch[] } = {},
+): { candidate?: RankedHealthMatch; message: string } {
   const best = matches[0];
-  if (!best || best.confidence.score < AUTO_HEALTH_MATCH) return undefined;
+  if (!best) return { message: "No matching source supplied this value." };
+  if (best.confidence.score < AUTO_HEALTH_MATCH)
+    return {
+      message:
+        "The available evidence is too weak to suggest a value automatically.",
+    };
+  const identified = matches.filter(
+    (candidate) =>
+      candidate.confidence.identified &&
+      candidate.confidence.score >= AUTO_HEALTH_MATCH,
+  );
+  if (
+    identified.some(
+      (candidate) =>
+        !sameField(field, best.values[field], candidate.values[field]),
+    )
+  )
+    return {
+      message:
+        "The identifier-matched edition supplies a different value; compare the editions.",
+    };
+  const trusted = identified.find((candidate) =>
+    sameField(field, best.values[field], candidate.values[field]),
+  );
   const rival = matches.find(
     (other) => !sameField(field, best.values[field], other.values[field]),
   );
-  return rival && best.confidence.score - rival.confidence.score < 10
-    ? undefined
-    : best;
+  const selected = trusted ?? best;
+  if (rival && selected.confidence.score - rival.confidence.score < 10)
+    return {
+      message: "Sources disagree on this value; compare the alternatives.",
+    };
+  if (!trusted && coverage.failures?.length)
+    return {
+      message:
+        "Some sources could not be checked. Retry the provider search before choosing a suggestion.",
+    };
+  if (
+    !trusted &&
+    coverage.candidates?.some((candidate) => candidate.detailsPending)
+  )
+    return {
+      message:
+        "Other plausible matches still need details. Narrow the provider search or review their editions.",
+    };
+  return { candidate: selected, message: "" };
 }
