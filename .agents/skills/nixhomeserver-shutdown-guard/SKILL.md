@@ -8,8 +8,9 @@ description: Run the existing NixHomeServer guarded shutdown script for the desk
 Use `/home/dsaw/Projects/NixOS` as the repository unless the user assigns another
 checkout. Read its `AGENTS.md`, `nixhomeserver-safe-change` skill and shutdown
 reference, and the `Guarded Server Shutdown` section of
-`documentation/operations.md`. Use the maintained scripts, not raw poweroff,
-shutdown, or a replacement watcher.
+`documentation/operations.md`. For guarded requests, use the maintained scripts,
+not raw poweroff, shutdown, or a replacement watcher. An explicit manual-shutdown request uses
+the separate procedure below.
 
 ## Shut down both machines
 
@@ -48,8 +49,20 @@ do not ask again. A request to implement the skill alone does not.
    normal schedule. The desktop inhibitor is released when the runner exits.
    If protection cannot be acquired, resolve the failure before retrying.
 5. Verify the runner remains alive and read the server guard status again.
-   Report the actual state and scheduled deadline, plus the desktop countdown
-   timing. Starting the runner is not proof either machine has powered off.
+   Also run `sudo nixhomeserver-shutdown-guard check`. A persistent
+   `busy desktop:active-work` needs diagnosis; it is not proof of real work.
+   Inspect the desktop detector's matching process or terminal. The runner's
+   own terminal output, idle interpreter daemons, and idle shell helpers have
+   caused repeated false activity. Do not disable activity checks as a workaround.
+   After a detector fix, verify an otherwise idle desktop (including a runner
+   terminal writing status) reports idle and real build/test work remains busy.
+   Restart a running Bash runner to load the fix, only within existing shutdown
+   authorization; editing its file does not update its loaded functions.
+   Report the actual state and earliest attempt time, plus the desktop countdown
+   timing. The timeout is not a guaranteed poweroff deadline: desktop activity
+   markers expire after five minutes, then the server requires five quiet minutes.
+   A grace deadline never forces shutdown through active work. Starting the runner
+   is not proof either machine has powered off.
    If launch fails, inspect the failure and server status before retrying;
    never bypass guard checks or shorten timing to obtain a successful result.
 
@@ -65,3 +78,26 @@ For status, check, or a necessary extension, follow the checkout's
 an existing pending shutdown, generally in ten-minute blocks while real work
 needs it. Do not create or cancel a shutdown from a request only to inspect or
 protect work. Use `--no-local-shutdown` only for an explicit server-only request.
+
+## Explicit manual shutdown
+
+Use only when the user explicitly requests manual shutdown or overrides the
+pending guarded wait. This authorization permits normal OS poweroff without
+waiting for the guard's idle decision; do not restart another guarded countdown.
+
+1. Finish requested file edits, focused validation, commits and pushes before
+   powering off either machine. Inspect the current guard status to explain the
+   failed wait, without making manual shutdown depend on an idle result.
+2. Identify the existing desktop runner's process group and terminate that
+   exact group with SIGTERM. Verify it has exited; its exit cleanup cancels
+   the server guard. Explicitly run `sudo nixhomeserver-shutdown-guard cancel`
+   over SSH and verify cancellation. Do not kill unrelated terminals or tasks.
+3. Request normal server shutdown over SSH with `sudo systemctl poweroff`.
+   Do not force poweroff. Verify the accepted request and subsequent loss of
+   SSH reachability; distinguish that observation from physical power-state proof.
+4. Schedule desktop poweroff with `loginctl poweroff +1` so the command can
+   acknowledge scheduling before the session ends. Report that actual one-minute
+   delay, and `loginctl -c` to cancel it. Do not use ignore-inhibitors or force
+   flags. If a normal poweroff fails, report and diagnose the specific failure.
+
+Do not claim either machine is off merely because its command was accepted.

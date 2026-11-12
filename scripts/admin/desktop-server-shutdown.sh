@@ -167,7 +167,7 @@ server_reachable() {
 }
 
 desktop_work_active() {
-  local process pattern
+  local process pattern runner_tty
   # Interpreter names also belong to permanent desktop services; match their
   # task commands below and retain load/runnable/terminal activity detection.
   # Generic shell-script matches also catch this runner and idle desktop helpers.
@@ -212,10 +212,13 @@ desktop_work_active() {
     [[ "$state" == "R" ]] && runnable=$((runnable + 1))
   done
   (( runnable > DESKTOP_RUNNABLE_THRESHOLD )) && return 0
-  # Terminal-activity signal.
+  # Polling writes to our own terminal every 30 seconds. Counting those writes
+  # as activity would keep the server awake forever after the first deadline.
+  runner_tty="$(tty 2>/dev/null || true)"
+  # Terminal-activity signal from other terminals.
   now="$(date +%s)"
   for tty in /dev/pts/[0-9]*; do
-    [[ -e "$tty" ]] || continue
+    [[ -e "$tty" && "$tty" != "$runner_tty" ]] || continue
     mtime="$(stat -c %Y "$tty" 2>/dev/null || echo 0)"
     (( now - mtime <= DESKTOP_TTY_ACTIVITY_SEC )) && return 0
   done
