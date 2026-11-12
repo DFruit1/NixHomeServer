@@ -12,7 +12,7 @@ in
       mailArchivePresent
       && paperlessPresent
     )
-    (lib.mkIf config.services.mail-archive-ui.enable {
+    (lib.mkIf (config.services.mail-archive-ui.enable && config.repo.paperless.enable) {
       # Never point Mail Archive at Paperless's live SQLite file. Paperless may
       # have committed state in WAL files, and opening the main file as an
       # immutable database can therefore return a stale view. A periodic SQLite

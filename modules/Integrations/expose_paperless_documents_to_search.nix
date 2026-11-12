@@ -11,7 +11,7 @@ in
       lib.hasAttrByPath [ "repo" "search" ] options
       && lib.hasAttrByPath [ "repo" "paperless" ] options
     )
-    (lib.mkIf (config.repo.search.enable && config.services.paperless.enable) {
+    (lib.mkIf (config.repo.search.enable && config.repo.paperless.enable && config.services.paperless.enable) {
       # Paperless is runtime-federated: Search queries Paperless's own Tantivy
       # index at request time and never copies document bodies into the index.
       repo.search.sources.paperless = {

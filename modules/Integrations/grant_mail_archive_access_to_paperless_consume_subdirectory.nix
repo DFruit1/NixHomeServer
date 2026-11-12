@@ -12,7 +12,7 @@ in
       mailArchivePresent
       && paperlessPresent
     )
-    (lib.mkIf config.services.mail-archive-ui.enable {
+    (lib.mkIf (config.services.mail-archive-ui.enable && config.repo.paperless.enable) {
       systemd.services.paperless-storage-layout-v1.script = lib.mkAfter ''
         inbox='${config.repo.paperless.paths.inbox}'
         staging='${config.repo.paperless.paths.handoffStaging}'
