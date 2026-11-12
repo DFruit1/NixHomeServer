@@ -4,7 +4,6 @@ import { VaultFreshrssCard } from '../../components/VaultFreshrssCard.js';
 import { VaultGate } from '../../components/VaultGate.js';
 import { VaultKavitaCard } from '../../components/VaultKavitaCard.js';
 import { VaultSshKeysCard } from '../../components/VaultSshKeysCard.js';
-import { VaultSyncthingCard } from '../../components/VaultSyncthingCard.js';
 import { HomepageContext } from '../../shared/homepage-context.js';
 import { brandedPageTitle } from '../../shared/branding.js';
 import type { VaultFeature, VaultStatus } from '../../shared/types.js';
@@ -49,7 +48,6 @@ export default component$(() => {
   const appPasswords = [
     featureById('freshrssApiPassword'),
     featureById('kavitaApiKeys'),
-    featureById('syncthingApiKey'),
   ].filter((feature): feature is VaultFeature => Boolean(feature));
   const sshKeys = featureById('sshKeys');
 
@@ -95,7 +93,6 @@ export default component$(() => {
                     {featureById('kavitaApiKeys') && (
                       <VaultKavitaCard feature={featureById('kavitaApiKeys')!} username={user.username} />
                     )}
-                    {featureById('syncthingApiKey') && <VaultSyncthingCard feature={featureById('syncthingApiKey')!} />}
                   </div>
                 </section>
               )}

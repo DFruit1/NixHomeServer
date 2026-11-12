@@ -57,7 +57,7 @@ result_json="$(flake_eval_json '
   invalidInternalHost = baseSystem.nixosConfigurations.${base.hostname}.extendModules {
     modules = [{
       repo.storage.userRoots.recursiveReadonlyGrants = [{
-        group = "syncthing";
+        group = "media-manager";
         relativePaths = [ "../../etc" ];
       }];
     }];

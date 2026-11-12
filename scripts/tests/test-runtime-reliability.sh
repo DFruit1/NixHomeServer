@@ -85,12 +85,9 @@ in {
     serverExecStartPre = toString cfg.systemd.services.immich-server.serviceConfig.ExecStartPre;
   };
   offlineMedia = {
-    reconcileRequires = cfg.systemd.services.offline-media-reconcile.requires;
-    reconcileAfter = cfg.systemd.services.offline-media-reconcile.after;
-    reconcileExecStart = toString cfg.systemd.services.offline-media-reconcile.serviceConfig.ExecStart;
-    timerWantedBy = cfg.systemd.timers.offline-media-reconcile.wantedBy;
-    timerInterval = cfg.systemd.timers.offline-media-reconcile.timerConfig.OnUnitActiveSec;
-    natEnabled = cfg.services.syncthing.settings.options.natEnabled;
+    retiredSyncEnabled = cfg.services.syncthing.enable;
+    reconcilePresent = builtins.hasAttr "offline-media-reconcile" cfg.systemd.services;
+    reconcileTimerPresent = builtins.hasAttr "offline-media-reconcile" cfg.systemd.timers;
     youtubeStartLimitInterval = cfg.systemd.services.youtube-downloader.unitConfig.StartLimitIntervalSec;
   };
 }')"
@@ -159,12 +156,9 @@ jq -e '
   and (.immich.memoryHigh == "16G")
   and (.immich.memoryMax == "20G")
   and (.immich.serverExecStartPre | contains("immich-pre-v3-rollback-guard"))
-  and (.offlineMedia.reconcileRequires | index("syncthing.service") != null)
-  and (.offlineMedia.reconcileAfter | index("data-pool-layout.service") != null)
-  and (.offlineMedia.reconcileExecStart | contains("offline-media-reconcile"))
-  and (.offlineMedia.timerWantedBy | index("timers.target") != null)
-  and (.offlineMedia.timerInterval == "15min")
-  and (.offlineMedia.natEnabled == false)
+  and (.offlineMedia.retiredSyncEnabled == false)
+  and (.offlineMedia.reconcilePresent == false)
+  and (.offlineMedia.reconcileTimerPresent == false)
   and (.offlineMedia.youtubeStartLimitInterval == "5min")
 ' <<<"$runtime_json" >/dev/null || {
   echo "❌ Runtime reliability configuration regressed."
@@ -200,17 +194,7 @@ require_fixed modules/Core_Modules/storage/fileshare-user-roots.nix '${sftpChroo
   "SFTP chroots must also mount the canonical Kanidm user@domain name used by OpenSSH."
 require_fixed modules/Core_Modules/storage/fileshare-user-roots.nix 'getfacl -cp "$path"' \
   "New user roots must detect and apply missing application ACL grants."
-require_fixed modules/offline-music/services.nix 'exec ${../../scripts/helpers/offline-media-reconcile.sh}' \
-  "Offline media must execute the reviewed reconciliation helper from its systemd service."
-require_fixed modules/offline-music/services.nix 'runtimeInputs = with pkgs; [' \
-  "Offline media reconciliation must declare its runtime command dependencies."
-require_fixed modules/offline-music/services.nix '      bash' \
-  "Offline media reconciliation must put Bash on PATH for the reviewed env-based helper."
-require_fixed scripts/helpers/offline-media-reconcile.sh '/rest/db/scan?folder=$folder_id' \
-  "Offline media must force periodic Syncthing scans so missed filesystem events self-heal."
-require_fixed scripts/helpers/offline-media-reconcile.sh '! -readable -print -quit' \
-  "Offline media health checks must detect files Syncthing cannot read."
-require_fixed custom_apps/shell/homepage/homepage-offline-media-status.sh.in '/rest/db/completion?device=$enrolled_device_id&folder=$folder_id' \
-  "The homepage must expose per-device sync backlog instead of treating enrollment as health."
+require_fixed custom_apps/node/apps/filesync/src-tauri/plugins/tauri-plugin-mobile-files/android/src/main/java/BackgroundSync.kt 'NetworkType.UNMETERED' \
+  "Offline media background sync must remain limited to unmetered connections."
 
 echo "✅ Runtime reliability regression tests passed."

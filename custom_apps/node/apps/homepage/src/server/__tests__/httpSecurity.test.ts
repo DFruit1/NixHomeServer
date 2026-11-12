@@ -29,28 +29,15 @@ const config: AppConfig = {
     offlineMedia: {
       enabled: true,
       requiredAnyGroups: ['offline-media-users'],
-      connectionAddresses: [],
-      folders: [],
-      devices: [],
     },
   },
 };
-const validDeviceId = 'AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH';
-const offlineMutationConfig: AppConfig = {
-  ...config,
-  offlineMediaEnrollCommand: '/bin/false',
-  offlineMediaRemoveCommand: '/bin/false',
-};
-
 describe('homepage mutation request security', () => {
   it.each([
     ['POST', '/api/canary/run'],
     ['POST', '/api/sftp-key'],
-    ['POST', '/api/offline-media/devices'],
-    ['POST', '/api/offline-music/device'],
     ['POST', '/api/power-schedule'],
     ['POST', '/api/build-mode'],
-    ['DELETE', '/api/offline-media/devices/AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH'],
   ])('rejects a sibling-origin %s request to %s', async (method, url) => {
     const response = await request(method, url, '{}', {
       origin: 'https://groundwater.example.test',
@@ -157,8 +144,6 @@ describe('homepage mutation request security', () => {
 
   it.each([
     ['GET', '/api/offline-media'],
-    ['POST', '/api/offline-media/devices'],
-    ['DELETE', '/api/offline-media/devices/AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH'],
   ])('rejects %s %s outside the offline-media access group', async (method, url) => {
     const response = await request(method, url, '{}', {
       origin: 'https://homepage.example.test',
@@ -171,44 +156,17 @@ describe('homepage mutation request security', () => {
   });
 
   it.each([
-    ['an invalid device ID', { deviceId: 'not-a-syncthing-id', deviceName: 'alice-phone' }, /deviceId/],
-    ['a non-string device ID', { deviceId: 42, deviceName: 'alice-phone' }, /deviceId/],
-    ['an invalid device name', { deviceId: validDeviceId, deviceName: 'bad\nname' }, /deviceName/],
-    ['a non-string device name', { deviceId: validDeviceId, deviceName: { unsafe: true } }, /deviceName/],
-  ])('reports %s as HTTP 400', async (_description, payload, expectedError) => {
-    const response = await request('POST', '/api/offline-media/devices', JSON.stringify(payload), {
-      origin: 'https://homepage.example.test',
-      host: 'homepage.example.test',
-      'content-type': 'application/json',
-      'x-forwarded-preferred-username': 'alice',
-      'x-forwarded-groups': 'offline-media-users',
-    }, offlineMutationConfig);
-    expect(response.statusCode).toBe(400);
-    expect(JSON.parse(response.body)).toMatchObject({ error: expect.stringMatching(expectedError) });
-  });
-
-  it('reports an invalid removal device ID as HTTP 400', async () => {
-    const response = await request('DELETE', '/api/offline-media/devices/not-a-syncthing-id', '{}', {
-      origin: 'https://homepage.example.test',
-      host: 'homepage.example.test',
-      'content-type': 'application/json',
-      'x-forwarded-preferred-username': 'alice',
-      'x-forwarded-groups': 'offline-media-users',
-    }, offlineMutationConfig);
-    expect(response.statusCode).toBe(400);
-    expect(JSON.parse(response.body)).toMatchObject({ error: expect.stringMatching(/deviceId/) });
-  });
-
-  it('reports malformed device-path URI encoding as HTTP 400', async () => {
-    const response = await request('DELETE', '/api/offline-media/devices/%E0%A4%A', '{}', {
-      origin: 'https://homepage.example.test',
-      host: 'homepage.example.test',
-      'content-type': 'application/json',
-      'x-forwarded-preferred-username': 'alice',
-      'x-forwarded-groups': 'offline-media-users',
-    }, offlineMutationConfig);
-    expect(response.statusCode).toBe(400);
-    expect(JSON.parse(response.body)).toMatchObject({ error: expect.stringMatching(/URI|malformed/i) });
+    ['POST', '/api/offline-media/devices'],
+    ['POST', '/api/offline-music/device'],
+    ['DELETE', '/api/offline-media/devices/old-device'],
+    ['GET', '/api/vault/syncthing'],
+    ['POST', '/api/vault/syncthing'],
+  ])('returns 404 for retired %s %s', async (method, url) => {
+    const response = await request(method, url, '{}', {
+      origin: 'https://homepage.example.test', host: 'homepage.example.test',
+      'content-type': 'application/json', 'x-forwarded-preferred-username': 'admin',
+    });
+    expect(response.statusCode).toBe(404);
   });
 
   it('reports malformed static-path URI encoding as HTTP 400', async () => {
@@ -227,9 +185,6 @@ describe('homepage mutation request security', () => {
   it.each([
     ['GET', '/api/offline-media'],
     ['GET', '/api/offline-music'],
-    ['POST', '/api/offline-media/devices'],
-    ['POST', '/api/offline-music/device'],
-    ['DELETE', '/api/offline-media/devices/AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH'],
   ])('returns not found for %s %s when offline media is disabled', async (method, url) => {
     const disabledConfig: AppConfig = {
       ...config,

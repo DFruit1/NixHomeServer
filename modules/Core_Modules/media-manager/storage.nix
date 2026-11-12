@@ -67,7 +67,7 @@ in
       for path in ${pathArgs}; do
         [[ -d "$path" ]] || continue
         # Re-apply access ACLs on every activation: files moved in by other
-        # applications (torrent clients, Syncthing, ...) do not inherit the
+        # applications (torrent clients, file-transfer tools, ...) do not inherit the
         # default ACL applied to freshly created entries, and a one-time
         # bootstrap misses them.
         setfacl -P -R \

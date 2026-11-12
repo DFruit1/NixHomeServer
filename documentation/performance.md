@@ -98,7 +98,7 @@ detection tolerates a stale snapshot and the job copies the whole database.
 
 Long-running network-facing services that were previously uncapped are bounded
 in the same central block: `ipfs` (512M/1G), `opencloud` (2G/4G), `search-solr`
-(4G/6G), `cloudflared-tunnel-*` (1G/2G), `syncthing` (512M/1G), `caddy`
+(4G/6G), `cloudflared-tunnel-*` (1G/2G), `caddy`
 (512M/1G), `homepage` (256M/512M) and `kanidm` (512M/1G). Each value comes from
 read-only observation on this host (`systemctl show <unit> -p MemoryCurrent -p
 MemoryPeak`) plus the sizing options already in the configuration; `MemoryMax`

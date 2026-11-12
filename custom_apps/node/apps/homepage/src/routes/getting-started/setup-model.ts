@@ -104,8 +104,8 @@ export const buildSetupModel = ({
       manualItem('audiobooks-connected', 'Connect the audiobook app and play a test chapter', manualChecks),
     ]),
     ...conditionalItems(statuses.offlineMedia === 'available', [
-      manualItem('syncthing-installed', 'Install Syncthing-Fork on your Android device', manualChecks),
-      manualItem('offline-ready', 'Enrol the device and confirm an Offline Media folder syncs', manualChecks),
+      manualItem('filesync-installed', 'Install File Sync on your Android device', manualChecks),
+      manualItem('offline-ready', 'Sign in to File Sync and confirm a suggested folder syncs', manualChecks),
     ]),
   ];
   const optionalSetupIds = optionalSetupItems.map((item) => item.id);

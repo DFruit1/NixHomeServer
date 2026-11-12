@@ -22,7 +22,6 @@
     ./rclone
     ./storage
     ./storage-monitoring
-    ./syncthing
     ./temp-cleanup
     ./unbound
     ./validation

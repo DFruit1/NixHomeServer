@@ -22,14 +22,12 @@ export { VaultHttpError };
 
 const FEATURE_NAMES: Record<VaultFeatureId, string> = {
   sshKeys: 'SFTP device keys',
-  syncthingApiKey: 'Syncthing',
   freshrssApiPassword: 'FreshRSS',
   kavitaApiKeys: 'Kavita',
 };
 
 const FEATURE_DESCRIPTIONS: Record<VaultFeatureId, string> = {
   sshKeys: 'Add a key for each computer, phone, or tablet that connects to your files over SFTP or SSHFS.',
-  syncthingApiKey: 'A key for scripts and tools that control the server\u2019s Syncthing.',
   freshrssApiPassword: 'A password that feed reader apps use to sign in as you.',
   kavitaApiKeys: 'Keys that reading apps use to sign in as you.',
 };
@@ -48,9 +46,6 @@ export const vaultFeatureAllowed = (config: AppConfig, user: CurrentUser, featur
   if (!gate?.enabled) {
     return false;
   }
-  if (feature === 'syncthingApiKey' && gate.adminOnly !== false) {
-    return isHomepageAdmin(config, user);
-  }
   if (feature === 'sshKeys' && isHomepageAdmin(config, user)) {
     return true;
   }
@@ -62,7 +57,7 @@ export const listVaultFeatures = (config: AppConfig, user: CurrentUser): VaultFe
   if (!vault) {
     return [];
   }
-  const order: VaultFeatureId[] = ['sshKeys', 'syncthingApiKey', 'freshrssApiPassword', 'kavitaApiKeys'];
+  const order: VaultFeatureId[] = ['sshKeys', 'freshrssApiPassword', 'kavitaApiKeys'];
   const webUrls: Partial<Record<VaultFeatureId, string | undefined>> = {
     freshrssApiPassword: vault.freshrssWebUrl,
     kavitaApiKeys: vault.kavitaWebUrl,
@@ -77,7 +72,6 @@ export const listVaultFeatures = (config: AppConfig, user: CurrentUser): VaultFe
       name: FEATURE_NAMES[id],
       description: FEATURE_DESCRIPTIONS[id],
       allowed: vaultFeatureAllowed(config, user, id),
-      adminOnly: id === 'syncthingApiKey' ? gate.adminOnly !== false : undefined,
       webUrl: webUrls[id],
     }];
   });
@@ -251,28 +245,6 @@ export const vaultSshKeyAdd = async (
   }
   const result = await installSftpPublicKey(config, user, publicKey);
   return { status: 200, body: result };
-};
-
-export const vaultSyncthingKeyGet = async (config: AppConfig, headers: IncomingHttpHeaders): Promise<VaultHttpResponse> => {
-  const user = requireUser(config, headers);
-  requireUnlockedFeature(config, headers, user, 'syncthingApiKey');
-  const command = requireCommand(config.vaultSyncthingKeyCommand, 'Syncthing API key management');
-  const apiKey = (await runHelperCommand(config, command, ['show'])).trim();
-  if (!apiKey) {
-    throw new Error('Syncthing API key command returned an empty key');
-  }
-  return { status: 200, body: { ok: true, apiKey } };
-};
-
-export const vaultSyncthingKeyRotate = async (config: AppConfig, headers: IncomingHttpHeaders): Promise<VaultHttpResponse> => {
-  const user = requireUser(config, headers);
-  requireUnlockedFeature(config, headers, user, 'syncthingApiKey');
-  const command = requireCommand(config.vaultSyncthingKeyCommand, 'Syncthing API key management');
-  const apiKey = (await runHelperCommand(config, command, ['regenerate'])).trim();
-  if (!apiKey) {
-    throw new Error('Syncthing API key command returned an empty key');
-  }
-  return { status: 200, body: { ok: true, apiKey } };
 };
 
 export const vaultFreshrssPassword = async (config: AppConfig, headers: IncomingHttpHeaders): Promise<VaultHttpResponse> => {

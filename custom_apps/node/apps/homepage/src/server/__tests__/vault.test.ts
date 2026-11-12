@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { execPath } from 'node:process';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig, HomepageConfig } from '../config.js';
-import { VaultHttpError, buildVaultStatus, listVaultFeatures, vaultFreshrssPassword, vaultKavitaKeysGet, vaultKavitaKeysMutate, vaultLock, vaultSshKeyAdd, vaultSshKeys, vaultSyncthingKeyGet, vaultSyncthingKeyRotate, vaultUnlock } from '../vault.js';
+import { VaultHttpError, buildVaultStatus, listVaultFeatures, vaultFreshrssPassword, vaultKavitaKeysGet, vaultKavitaKeysMutate, vaultLock, vaultSshKeyAdd, vaultSshKeys, vaultUnlock } from '../vault.js';
 import { VAULT_COOKIE_NAME, attemptVaultUnlock } from '../vaultSession.js';
 
 const validPublicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECtGBZcPahwDCtWiMgn24qGdqMOJhPpHoPpKsHAF laptop';
@@ -29,8 +29,6 @@ const command = args.shift();
 const commandArgs = args;
 if (command.endsWith('homepage-sftp-key-list')) {
   stdout.write('256 SHA256:AbCdEf123456 laptop (ED25519)\\n256 SHA256:AbCdEf123456 phone (ED25519)\\n');
-} else if (command.endsWith('homepage-syncthing-api-key')) {
-  stdout.write(commandArgs[0] === 'regenerate' ? 'new-syncthing-key' : 'current-syncthing-key');
 } else if (command.endsWith('homepage-freshrss-api-password')) {
   let input = '';
   process.stdin.on('data', (chunk) => { input += chunk; });
@@ -88,7 +86,6 @@ if (command.endsWith('homepage-sftp-key-list')) {
         kavitaWebUrl: 'https://books.example.test',
         features: {
           sshKeys: { enabled: true, requiredAnyGroups: ['files-sftp-users'] },
-          syncthingApiKey: { enabled: true, adminOnly: true },
           freshrssApiPassword: { enabled: true, requiredAnyGroups: ['freshrss-users'] },
           kavitaApiKeys: { enabled: true, requiredAnyGroups: ['kavita-users'] },
         },
@@ -103,7 +100,6 @@ if (command.endsWith('homepage-sftp-key-list')) {
     sudoPath: sudo,
     sftpKeyInstallCommand: `${dir}/fake-homepage-install-sftp-key`,
     sftpKeyListCommand: `${dir}/fake-homepage-sftp-key-list`,
-    vaultSyncthingKeyCommand: `${dir}/fake-homepage-syncthing-api-key`,
     vaultFreshrssPasswordCommand: `${dir}/fake-homepage-freshrss-api-password`,
     vaultKavitaKeysCommand: `${dir}/fake-homepage-kavita-keys`,
     vaultKanidmUrl: 'https://id.example.test:8443',
@@ -169,36 +165,32 @@ describe('vault feature catalog', () => {
     const { config, dir } = await buildConfig({ adminUsers: ['boss'] });
     const member = user(['freshrss-users', 'kavita-users']);
     const features = listVaultFeatures(config, member);
-    expect(features.map((feature) => feature.id)).toEqual(['sshKeys', 'syncthingApiKey', 'freshrssApiPassword', 'kavitaApiKeys']);
+    expect(features.map((feature) => feature.id)).toEqual(['sshKeys', 'freshrssApiPassword', 'kavitaApiKeys']);
     const byId = Object.fromEntries(features.map((feature) => [feature.id, feature]));
     expect(byId.sshKeys.allowed).toBe(false);
-    expect(byId.syncthingApiKey.allowed).toBe(false);
     expect(byId.freshrssApiPassword.allowed).toBe(true);
     expect(byId.kavitaApiKeys.allowed).toBe(true);
     expect(byId.freshrssApiPassword.webUrl).toBe('https://rss.example.test');
 
     const adminFeatures = Object.fromEntries(listVaultFeatures(config, user([], 'boss')).map((feature) => [feature.id, feature]));
-    expect(adminFeatures.syncthingApiKey.allowed).toBe(true);
-    expect(adminFeatures.syncthingApiKey.adminOnly).toBe(true);
     expect(adminFeatures.sshKeys.allowed).toBe(true);
     expect(adminFeatures.freshrssApiPassword.allowed).toBe(false);
   });
 
-  it('hides disabled features and honours adminOnly=false', async () => {
+  it('hides disabled features', async () => {
     const { config, dir } = await buildConfig({
       adminUsers: ['dsaw'],
       vault: {
         features: {
           sshKeys: { enabled: false },
-          syncthingApiKey: { enabled: true, adminOnly: false },
           freshrssApiPassword: { enabled: true },
           kavitaApiKeys: { enabled: false },
         },
       },
     });
     const features = listVaultFeatures(config, user(['files-sftp-users']));
-    expect(features.map((feature) => feature.id)).toEqual(['syncthingApiKey', 'freshrssApiPassword']);
-    expect(features[0].adminOnly).toBe(false);
+    expect(features.map((feature) => feature.id)).toEqual(['freshrssApiPassword']);
+    expect(features[0].adminOnly).toBeUndefined();
     expect(features[0].allowed).toBe(true);
     await rm(dir, { recursive: true, force: true });
   });
@@ -215,7 +207,7 @@ describe('vault endpoints', () => {
   });
 
   it('guards feature endpoints behind the unlock session and group gates', async () => {
-    await expect(vaultSyncthingKeyGet(config, headersFor(undefined, allAccessGroups))).rejects.toMatchObject({ status: 401 });
+    await expect(vaultKavitaKeysGet(config, headersFor(undefined, allAccessGroups))).rejects.toMatchObject({ status: 401 });
     const error = await vaultSshKeys(config, { 'x-forwarded-preferred-username': 'mallory' }).catch((caught) => caught);
     expect(error).toBeInstanceOf(VaultHttpError);
     expect(error.status).toBe(403);
@@ -229,7 +221,6 @@ describe('vault endpoints', () => {
     const status = buildVaultStatus(config, headersFor(`${VAULT_COOKIE_NAME}=${token}`, allAccessGroups));
     expect(status.unlocked).toBe(true);
     const byId = Object.fromEntries(status.features.map((feature) => [feature.id, feature]));
-    expect(byId.syncthingApiKey.allowed).toBe(true);
     expect(byId.sshKeys.allowed).toBe(true);
     expect(status.sessionTtlSeconds).toBe(900);
     expect(status.idleTtlSeconds).toBe(300);
@@ -265,13 +256,6 @@ describe('vault endpoints', () => {
     expect(added.body).toMatchObject({ ok: true, details: expect.stringContaining('registered-keys=2') });
 
     await expect(vaultSshKeyAdd(config, headers, { publicKey: 'not a key' })).rejects.toMatchObject({ status: 400 });
-  });
-
-  it('shows and rotates the Syncthing API key', async () => {
-    const token = await unlock(config);
-    const headers = headersFor(`${VAULT_COOKIE_NAME}=${token}`, allAccessGroups);
-    expect((await vaultSyncthingKeyGet(config, headers)).body).toEqual({ ok: true, apiKey: 'current-syncthing-key' });
-    expect((await vaultSyncthingKeyRotate(config, headers)).body).toEqual({ ok: true, apiKey: 'new-syncthing-key' });
   });
 
   it('registers a FreshRSS API password for the signed-in user', async () => {
@@ -322,7 +306,6 @@ describe('vault endpoints', () => {
           ...(config.homepage.vault as NonNullable<AppConfig['homepage']['vault']>),
           features: {
             sshKeys: { enabled: true, requiredAnyGroups: ['files-sftp-users'] },
-            syncthingApiKey: { enabled: true, adminOnly: true },
             freshrssApiPassword: { enabled: true, requiredAnyGroups: ['freshrss-users'] },
             kavitaApiKeys: { enabled: true, requiredAnyGroups: ['kavita-users'] },
           },
@@ -348,7 +331,6 @@ describe('vault endpoints', () => {
       cookie: `${VAULT_COOKIE_NAME}=${memberToken}`,
     } as never;
     await expect(vaultFreshrssPassword(limitedConfig, memberSession)).resolves.toMatchObject({ status: 200 });
-    await expect(vaultSyncthingKeyGet(limitedConfig, memberSession)).rejects.toMatchObject({ status: 403 });
     await expect(vaultKavitaKeysGet(limitedConfig, memberSession)).rejects.toMatchObject({ status: 403 });
     await expect(vaultSshKeys(limitedConfig, memberSession)).rejects.toMatchObject({ status: 403 });
   });
@@ -358,13 +340,11 @@ describe('vault endpoints', () => {
     const headers = headersFor(`${VAULT_COOKIE_NAME}=${token}`, allAccessGroups);
     const disabledConfig: AppConfig = {
       ...config,
-      vaultSyncthingKeyCommand: undefined,
       vaultKavitaKeysCommand: undefined,
       sftpKeyListCommand: undefined,
       vaultFreshrssPasswordCommand: undefined,
     };
     for (const attempt of [
-      vaultSyncthingKeyGet(disabledConfig, headers),
       vaultKavitaKeysGet(disabledConfig, headers),
       vaultSshKeys(disabledConfig, headers),
       vaultFreshrssPassword(disabledConfig, headers),

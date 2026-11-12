@@ -128,3 +128,12 @@ The app saves the session after verifying Kanidm's identity token and uses its
 `preferred_username` claim to complete sign-in. Loading folders from the private
 sync API happens afterward, so an API connection failure keeps the sign-in and
 saved folders available. Syncing still requires working LAN or NetBird access.
+
+## Launcher icon
+
+`src-tauri/icons/filesync-mark.svg` is the editable sync mark. Run
+`bash scripts/generate-icons.sh` from this app directory with ImageMagick installed
+to regenerate the full-bleed SVG/512px RGBA icon, favicon, service logos and Android
+density assets. The adaptive launcher uses a separate chartreuse background and a
+transparent foreground within the 66dp safe circle; retain the adaptive XML and
+monochrome resources when regenerating. Android applies the launcher shape.

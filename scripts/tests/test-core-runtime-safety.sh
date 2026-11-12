@@ -47,7 +47,7 @@ in {
     unboundBefore = cfg.systemd.services.unbound.before;
     netbirdAfter = cfg.systemd.services.netbird-main.after;
   };
-  syncthing = cfg.repo.authGateway.protectedApps.syncthing;
+  retiredSyncGatewayPresent = builtins.hasAttr "syncthing" cfg.repo.authGateway.protectedApps;
   backups = {
     sqliteSources = map (dump: dump.source) cfg.repo.backups.sqliteDumps;
     postgresqlDatabases = map (dump: dump.database) cfg.repo.backups.postgresqlDumps;
@@ -122,11 +122,9 @@ jq -e '
     and (.after | index("data-pool-layout.service") != null)
   ))
   and (.dns.freebind == true)
+  and (.retiredSyncGatewayPresent == false)
   and (.dns.unboundBefore | index("netbird-main.service") != null)
   and (.dns.netbirdAfter | index("unbound.service") != null)
-  and (.syncthing.host | startswith("syncthing."))
-  and (.syncthing.upstream == "http://127.0.0.1:8384")
-  and (.syncthing.allowedGroups == ["app-admin"])
   and (.backups.sqliteSources | index("/var/lib/audiobookshelf/config/absdatabase.sqlite") != null)
   and (.backups.sqliteSources | index("/var/lib/jellyfin/data/jellyfin.db") != null)
   and (.backups.postgresqlDatabases | index("immich") != null)
@@ -401,10 +399,8 @@ forbid_match modules/Core_Modules/backups/default.nix 'successfulCurrentPath[}]?
   "Backup publication must not be wedged by a crash-persistent current.new path."
 forbid_match modules/Core_Modules/backups/default.nix 'sha256sum .*[$]work/dumps' \
   "Backup checksum manifests must not retain transient staging paths."
-require_fixed modules/Core_Modules/syncthing/default.nix 'repo.authGateway.protectedApps.syncthing' \
-  "The Syncthing administrative GUI must remain behind the shared SSO gateway."
-forbid_match modules/Core_Modules/syncthing/default.nix 'reverse_proxy http://127[.]0[.]0[.]1:8384' \
-  "Syncthing must not regain a direct unauthenticated Caddy proxy."
+forbid_match modules/Core_Modules/default.nix '[.]/syncthing' \
+  "The retired sync service must not return to Core_Modules."
 require_fixed modules/files/services.nix 'webAccessGroups = [ webAccessGroup ];' \
   "Supplementary USB or backup groups must not independently grant Filestash login."
 require_fixed modules/Core_Modules/kanidm/sftp-files.nix '${sftpAuthorizedKeysDir}/.filestash' \

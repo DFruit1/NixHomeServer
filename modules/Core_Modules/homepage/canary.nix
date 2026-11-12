@@ -104,7 +104,6 @@ in
         config.repo.authGateway.domain
         "id.${vars.domain}"
         "office.${vars.domain}"
-        "syncthing.${vars.domain}"
         "sharephotos.${vars.domain}"
         # Unauthenticated Filestash share-link host; not browser-loginable.
         "transfers.${vars.domain}"

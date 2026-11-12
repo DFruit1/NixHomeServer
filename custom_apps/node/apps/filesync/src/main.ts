@@ -329,7 +329,7 @@ function progressCopy(progress?: SyncProgress, syncingPairId?: string): string {
 
 const SERVICE_LOGOS: Record<string, string> = {
   files: '/logos/filestash.svg',
-  'offline-media': '/logos/syncthing.svg',
+  'offline-media': '/logos/filesync.svg',
   jellyfin: '/logos/jellyfin.svg',
   audiobookshelf: '/logos/audiobookshelf.svg',
   kavita: '/logos/kavita.svg',

@@ -1,296 +1,34 @@
-import { $, component$, useSignal, useVisibleTask$ } from '@builder.io/qwik';
-import type { OfflineMediaDevice, OfflineMediaEnrollResponse, OfflineMediaRemoveResponse, OfflineMediaSetup } from '../shared/types.js';
-import { QrValue } from './QrValue.js';
-
-const formatBytes = (bytes: number): string => {
-  if (bytes < 1024 * 1024) {
-    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  }
-  if (bytes < 1024 * 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-};
-
-const meaningfulLastSeen = (lastSeen?: string | null): string | undefined => {
-  if (!lastSeen) {
-    return undefined;
-  }
-  const date = new Date(lastSeen);
-  if (!Number.isFinite(date.getTime()) || date.getUTCFullYear() < 2000) {
-    return undefined;
-  }
-  return `${date.toISOString().replace('T', ' ').slice(0, 16)} UTC`;
-};
-
-const deviceSyncSummary = (device: OfflineMediaDevice): string => {
-  if (device.syncError) {
-    return `Sync status unavailable: ${device.syncError}`;
-  }
-  const remaining = device.needItems ?? 0;
-  const remainingSize = device.needBytes ? ` (${formatBytes(device.needBytes)})` : '';
-  if (device.connected) {
-    return remaining > 0 ? `Syncing — ${remaining} items${remainingSize} remaining` : 'Connected and up to date';
-  }
-  const lastSeen = meaningfulLastSeen(device.lastSeen);
-  if (remaining > 0) {
-    return `Not connected — ${remaining} items${remainingSize} waiting${lastSeen ? `. Last seen ${lastSeen}` : ''}`;
-  }
-  return lastSeen ? `Not connected — last seen ${lastSeen}` : 'Never connected — open Syncthing on this device';
-};
+import { component$ } from '@builder.io/qwik';
+import type { OfflineMediaSetup } from '../shared/types.js';
 
 export const OfflineMediaSetupPanel = component$(
-  ({ offlineMedia, username }: { offlineMedia?: OfflineMediaSetup; username?: string }) => {
-    const displayUsername = username ?? '{username}';
-    const deviceId = useSignal('');
-    const deviceName = useSignal(`${displayUsername}-device`);
-    const status = useSignal('');
-    const statusKind = useSignal<'success' | 'error'>('success');
-    const submitting = useSignal(false);
-    const removingDeviceId = useSignal('');
-    const devices = useSignal<OfflineMediaDevice[]>(offlineMedia?.devices ?? []);
-    const runtimeError = useSignal(offlineMedia?.runtimeError ?? '');
-    const folders = offlineMedia?.folders ?? [];
-    const lanConnection =
-      offlineMedia?.connectionAddresses.find((connection) => connection.kind === 'lan')
-      ?? offlineMedia?.connectionAddresses[0];
-
-    useVisibleTask$(({ cleanup }) => {
-      const refreshStatus = async () => {
-        const response = await fetch('/api/offline-media');
-        if (!response.ok) {
-          return;
-        }
-        const latest = (await response.json()) as OfflineMediaSetup;
-        devices.value = latest.devices ?? devices.value;
-        runtimeError.value = latest.runtimeError ?? '';
-      };
-      void refreshStatus();
-      const timer = window.setInterval(() => void refreshStatus(), 15_000);
-      cleanup(() => window.clearInterval(timer));
-    });
-
-    const saveDevice = $(async () => {
-      const submittedDeviceId = deviceId.value.trim();
-      if (!submittedDeviceId) {
-        statusKind.value = 'error';
-        status.value = 'Paste your Syncthing device ID before saving.';
-        return;
-      }
-      if (offlineMedia?.serverDeviceId && submittedDeviceId === offlineMedia.serverDeviceId) {
-        statusKind.value = 'error';
-        status.value = "Paste this device's Syncthing device ID, not the server device ID.";
-        return;
-      }
-      status.value = '';
-      submitting.value = true;
-      try {
-        const response = await fetch('/api/offline-media/devices', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            deviceId: submittedDeviceId,
-            deviceName: deviceName.value.trim(),
-          }),
-        });
-        const body = (await response.json().catch(() => ({}))) as Partial<OfflineMediaEnrollResponse> & { error?: string };
-        if (!response.ok || body.ok === false) {
-          throw new Error(body.error || 'Media device could not be enrolled');
-        }
-        devices.value = body.devices ?? devices.value;
-        deviceId.value = '';
-        statusKind.value = 'success';
-        status.value = 'Connected. Accept the shared folders on your device and choose Receive Only.';
-      } catch (caught) {
-        statusKind.value = 'error';
-        status.value = caught instanceof Error ? caught.message : String(caught);
-      } finally {
-        submitting.value = false;
-      }
-    });
-
-    const removeDevice = $(async (targetDeviceId: string) => {
-      status.value = '';
-      removingDeviceId.value = targetDeviceId;
-      try {
-        const response = await fetch(`/api/offline-media/devices/${encodeURIComponent(targetDeviceId)}`, {
-          method: 'DELETE',
-          headers: { 'content-type': 'application/json' },
-          body: '{}',
-        });
-        const body = (await response.json().catch(() => ({}))) as Partial<OfflineMediaRemoveResponse> & { error?: string };
-        if (!response.ok || body.ok === false) {
-          throw new Error(body.error || 'Media device could not be removed');
-        }
-        devices.value = body.devices ?? devices.value.filter((device) => device.deviceId !== targetDeviceId);
-        statusKind.value = 'success';
-        status.value = 'Device removed from offline media sync.';
-      } catch (caught) {
-        statusKind.value = 'error';
-        status.value = caught instanceof Error ? caught.message : String(caught);
-      } finally {
-        removingDeviceId.value = '';
-      }
-    });
-
-    if (!offlineMedia?.enabled) {
-      return (
-        <section class="detail-block">
-          <p class="hint">Automatic offline copies are not available on this server.</p>
-        </section>
-      );
-    }
-
-    return (
-      <section class="detail-block offline-media-setup">
-        <div class="offline-media-layout">
-          <div class="offline-media-setup-main">
-            <h3>Set up Syncthing-Fork (Android Only)</h3>
-            <ol class="steps">
-              <li>In Syncthing-Fork, choose <strong>Add device</strong>, then scan or paste the server ID shown on the right.</li>
-              <li>
-                {lanConnection ? (
-                  <>
-                    Add the at-home (LAN) address{' '}
-                    <code class="offline-media-lan-address">{lanConnection.address}</code> to the server device in
-                    Syncthing-Fork to keep the connection reliable when automatic discovery is unavailable.
-                  </>
-                ) : (
-                  <>
-                    Add the at-home (LAN) address shown in <strong>Connection help</strong> to keep the connection
-                    reliable when automatic discovery is unavailable.
-                  </>
-                )}{' '}
-                Syncing only runs while this device is on the same home network, so it never uses mobile data.
-              </li>
-              <li>
-                Copy your device ID from Syncthing-Fork, paste it below, give the device a name, and select{' '}
-                <strong>Connect device</strong>.
-              </li>
-              <li>Back in Syncthing-Fork, accept the shared folders and choose <strong>Receive Only</strong>.</li>
-            </ol>
-
-            <div class="key-form compact-form offline-media-enroll-form">
-              <h4>Connect your device</h4>
-              <label class="offline-media-device-id-field">
-                Your device ID (copy this from Syncthing-Fork)
-                <input
-                  id="offline-media-device-id"
-                  type="text"
-                  value={deviceId.value}
-                  placeholder="AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH"
-                  onInput$={(_, target) => {
-                    deviceId.value = target.value;
-                  }}
-                />
-              </label>
-              <label>
-                Device name
-                <input
-                  id="offline-media-device-name"
-                  type="text"
-                  value={deviceName.value}
-                  onInput$={(_, target) => {
-                    deviceName.value = target.value;
-                  }}
-                />
-              </label>
-              <button id="save-offline-media-device" type="button" disabled={submitting.value} onClick$={saveDevice}>
-                {submitting.value ? 'Connecting...' : 'Connect device'}
-              </button>
-              {status.value && <p class={{ 'key-status': true, error: statusKind.value === 'error' }}>{status.value}</p>}
-            </div>
-
-            <details class="detail-block compact">
-              <summary>Connection help</summary>
-              <p>
-                Sync is LAN-only by design: it runs while this device is on the same home network as the server and
-                never uses mobile data. If Syncthing-Fork cannot find the server automatically, add the at-home (LAN)
-                address to the server device.
-              </p>
-              <div class="qr-grid">
-                {offlineMedia.connectionAddresses.map((connection) => (
-                  <QrValue
-                    key={`${connection.address}:${connection.label}`}
-                    label={connection.label}
-                    value={connection.address}
-                  />
-                ))}
-              </div>
-              <p class="hint">
-                The away-from-home (NetBird) address is optional. Add it only if you deliberately want to sync while
-                away from home; it can use mobile data.
-              </p>
-              {folders.length > 0 && (
-                <p class="hint">Folders you will be offered: {folders.map((folder) => folder.label).join(', ')}.</p>
-              )}
-            </details>
-
-            {offlineMedia.fdroidRepoUrl && (
-              <details class="detail-block compact offline-media-fdroid">
-                <summary>Install Android apps with F-Droid</summary>
-                <p>
-                  Copy this URL, then in F-Droid open <strong>Settings</strong>, choose <strong>Repositories</strong>,
-                  tap <strong>+ (Add repository)</strong>, paste the URL, and enable the repository:
-                </p>
-                <p>
-                  <a class="offline-media-fdroid-url" href={offlineMedia.fdroidRepoUrl}>
-                    {offlineMedia.fdroidRepoUrl}
-                  </a>
-                </p>
-                <p>
-                  It is available on home Wi-Fi and away from home while connected to NetBird. F-Droid will check for
-                  app updates when it refreshes repositories; automatic installation depends on F-Droid and Android
-                  settings, and Android may ask you to confirm an update.
-                </p>
-              </details>
-            )}
-          </div>
-
-          <aside class="offline-media-status-column" aria-label="Server connection and sync status">
-            <div class="qr-grid offline-media-server-id">
-              {offlineMedia.serverDeviceId ? (
-                <QrValue label="Server ID — scan this in Syncthing-Fork" value={offlineMedia.serverDeviceId} />
-              ) : (
-                <div class="qr-card unavailable">
-                  <h4>Server ID</h4>
-                  <p>{offlineMedia.serverDeviceIdError || 'The server ID is not available yet.'}</p>
-                </div>
-              )}
-            </div>
-
-            {runtimeError.value && (
-              <aside class="guide-callout">The server cannot check sync status right now: {runtimeError.value}</aside>
-            )}
-
-            <section class="detail-block compact offline-media-connection-status">
-              <h4>Connection status</h4>
-              {devices.value.length > 0 ? (
-                <div class="device-list">
-                  {devices.value.map((device) => (
-                    <div class="device-row" key={device.deviceId}>
-                      <div>
-                        <strong>{device.deviceName}</strong>
-                        <p class="hint">{deviceSyncSummary(device)}</p>
-                        <span>{device.deviceId}</span>
-                      </div>
-                      <button
-                        type="button"
-                        disabled={removingDeviceId.value === device.deviceId}
-                        onClick$={() => removeDevice(device.deviceId)}
-                      >
-                        {removingDeviceId.value === device.deviceId ? 'Removing...' : 'Remove'}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p class="hint">No devices are connected yet.</p>
-              )}
-            </section>
-          </aside>
-        </div>
-      </section>
-    );
-  },
+  ({ offlineMedia }: { offlineMedia?: OfflineMediaSetup; username?: string }) => (
+    <section class="detail-block offline-media-setup">
+      <h3>Set up File Sync</h3>
+      <ol>
+        <li>
+          Install <strong>File Sync</strong> on Android from this server’s F-Droid repository.
+          {offlineMedia?.fdroidRepoUrl && (
+            <> <a href={offlineMedia.fdroidRepoUrl}>Add the app repository</a>, then search for File Sync.</>
+          )}
+          {!offlineMedia?.fdroidRepoUrl && ' Ask an administrator for the app installer.'}
+        </li>
+        <li>Open File Sync and sign in with Kanidm in your browser. Your account needs Files access.</li>
+        <li>Set up the suggested music or video folders, choose where to save them, and let the first sync finish.</li>
+      </ol>
+      <p>Open the downloaded files in your preferred music or video player. Manage folder pairs and sync progress in File Sync.</p>
+      <p class="hint">Use home Wi-Fi, or NetBird to reach the server when away. Android background sync waits for an unmetered connection; manual syncing can use mobile data.</p>
+      <details class="detail-block compact">
+        <summary>Keep existing downloads</summary>
+        <p>Choose <strong>Pair your own folders</strong> in File Sync, select the existing local folder and its matching server folder, then choose <strong>Server to this device</strong>.</p>
+      </details>
+      {offlineMedia?.apiUrl && (
+        <details class="detail-block compact">
+          <summary>Custom server address</summary>
+          <p>The app already knows this server. If you need to enter it again, use this address in Settings:</p>
+          <code>{offlineMedia.apiUrl}</code>
+        </details>
+      )}
+    </section>
+  ),
 );

@@ -110,14 +110,7 @@ export const buildHomepageData = async (config: AppConfig, headers: IncomingHttp
     body.offlineMedia.requiredAllGroups,
     body.offlineMedia.requiredAnyGroups,
   )) {
-    try {
-      body.offlineMedia = await getOfflineMediaSetup(config, body.user);
-    } catch (caught) {
-      body.offlineMedia = {
-        ...(body.offlineMedia as NonNullable<HomepageData['offlineMedia']>),
-        serverDeviceIdError: caught instanceof Error ? caught.message : String(caught),
-      };
-    }
+    body.offlineMedia = await getOfflineMediaSetup(config, body.user);
   } else {
     body.offlineMedia = undefined;
   }

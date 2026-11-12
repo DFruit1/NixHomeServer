@@ -75,47 +75,12 @@ export type AdminStep = {
   detail: string;
 };
 
-export type OfflineMediaFolder = {
-  key: string;
-  label: string;
-  folderId: string;
-  folderLabel: string;
-  serverFolderPath: string;
-  suggestedDevicePath: string;
-};
-
-export type OfflineMediaDevice = {
-  deviceId: string;
-  deviceName: string;
-  createdAt?: string;
-  updatedAt?: string;
-  connected?: boolean;
-  lastSeen?: string | null;
-  completion?: number;
-  needBytes?: number;
-  needItems?: number;
-  syncError?: string | null;
-};
-
-export type OfflineMediaConnectionKind = 'lan' | 'hostname' | 'netbird';
-
-export type OfflineMediaConnectionAddress = {
-  address: string;
-  label: string;
-  kind?: OfflineMediaConnectionKind;
-};
-
 export type OfflineMediaSetup = {
   enabled: boolean;
   fdroidRepoUrl?: string;
+  apiUrl?: string;
   requiredAllGroups?: string[];
   requiredAnyGroups?: string[];
-  serverDeviceId?: string;
-  serverDeviceIdError?: string;
-  connectionAddresses: OfflineMediaConnectionAddress[];
-  folders: OfflineMediaFolder[];
-  devices: OfflineMediaDevice[];
-  runtimeError?: string | null;
 };
 
 export type SftpAccess = {
@@ -239,7 +204,7 @@ export type SftpKeyResponse = {
   details?: string;
 };
 
-export type VaultFeatureId = 'sshKeys' | 'syncthingApiKey' | 'freshrssApiPassword' | 'kavitaApiKeys';
+export type VaultFeatureId = 'sshKeys' | 'freshrssApiPassword' | 'kavitaApiKeys';
 
 export type VaultFeatureGate = {
   enabled: boolean;
@@ -257,7 +222,6 @@ export type VaultConfig = {
   kavitaWebUrl?: string;
   features: {
     sshKeys?: VaultFeatureGate;
-    syncthingApiKey?: VaultFeatureGate;
     freshrssApiPassword?: VaultFeatureGate;
     kavitaApiKeys?: VaultFeatureGate;
   };
@@ -294,12 +258,6 @@ export type VaultUnlockResponse = {
 export type VaultSshKeyList = {
   ok: boolean;
   keys: string[];
-  error?: string;
-};
-
-export type VaultSyncthingKey = {
-  ok: boolean;
-  apiKey?: string;
   error?: string;
 };
 
@@ -383,22 +341,4 @@ export type CanaryRunSummary = {
 export type CanaryStatusResponse = {
   current: CanaryRunSummary;
   retainedFailures: CanaryRunSummary[];
-};
-
-export type OfflineMediaEnrollResponse = {
-  ok: boolean;
-  username: string;
-  serverDeviceId?: string;
-  enrolledDeviceId?: string;
-  enrolledDeviceName?: string;
-  folders: OfflineMediaFolder[];
-  devices: OfflineMediaDevice[];
-};
-
-export type OfflineMediaRemoveResponse = {
-  ok: boolean;
-  username: string;
-  removedDeviceId: string;
-  folders: OfflineMediaFolder[];
-  devices: OfflineMediaDevice[];
 };

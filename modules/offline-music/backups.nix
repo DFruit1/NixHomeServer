@@ -10,13 +10,13 @@ in
     repo.backups.appStateEntries = [
       {
         app = "offline-media";
-        component = "syncthing-enrollment";
+        component = "retired-device-enrollment";
         stateRoot = stateDir;
         payloadRoots = [
           vars.usersRoot
           vars.sharedRoot
         ];
-        notes = "Runtime Syncthing device enrollment state for per-user offline media folders.";
+        notes = "Retained device-enrollment archive from the retired sync service; File Sync stores folder pairs on each device.";
       }
     ];
   };

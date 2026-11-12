@@ -445,7 +445,7 @@ in
     # native and metaspace overhead outside the -m heap.
     # cloudflared (peak 845M): the single edge into the server, capped
     # generously so a reconnect burst cannot cascade into an unreachable host.
-    # caddy / kanidm / homepage / syncthing: small steady-state daemons.
+    # caddy / kanidm / homepage: small steady-state daemons.
     #
     # Caddy, cloudflared and Kanidm are Core_Modules, so their units exist on
     # every host this configuration builds. The optional apps above are gated on
@@ -469,12 +469,6 @@ in
       search-solr.serviceConfig = {
         MemoryHigh = "4G";
         MemoryMax = "6G";
-      };
-    }
-    // lib.optionalAttrs (moduleEnabled "offline-music" && (vars.offlineMedia.enable or false)) {
-      syncthing.serviceConfig = {
-        MemoryHigh = "512M";
-        MemoryMax = "1G";
       };
     }
     // lib.optionalAttrs (hasModule "homepage") {

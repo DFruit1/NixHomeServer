@@ -31,7 +31,7 @@ test('all locally mapped service icons are packaged and renderable', async ({ pa
     'radarr',
     'prowlarr',
     'qbittorrent',
-    'syncthing',
+    'filesync',
     'kiwix',
     'youtube',
     'kopia',
@@ -55,34 +55,12 @@ test('all locally mapped service icons are packaged and renderable', async ({ pa
   await expect(page.locator('.app-symbol--backups')).not.toHaveText('L');
 });
 
-test('offline media page shows the detected LAN address and network labels', async ({ page }) => {
-  await page.setExtraHTTPHeaders({
-    'x-forwarded-groups': 'users',
-  });
+test('offline media page explains File Sync setup without device enrollment', async ({ page }) => {
+  await page.setExtraHTTPHeaders({'x-forwarded-groups':'users files-personal-users'});
   await page.goto('/services/offline-media');
-
-  await expect(page.locator('.service-detail-heading .app-symbol--offline-media img')).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Set up Syncthing-Fork (Android Only)' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'DVD conversion progress' })).toHaveCount(0);
-  await expect(page.getByText(/Automatically keep copies/)).toHaveCount(0);
-  await expect(page.getByText('Syncthing-Fork is the supported app.')).toHaveCount(0);
-  await expect(page.getByText('iPhone and iPad are not supported.')).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Connection status' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Keep media on your device' })).toHaveCount(0);
-  await expect(page.getByText(/Möbius Sync/)).toHaveCount(0);
-  await expect(page.locator('.offline-media-lan-address')).toHaveText('tcp://192.168.8.12:22000');
-  const offlineMediaLayout = page.locator('.offline-media-layout');
-  await expect(offlineMediaLayout).toHaveCSS('display', 'grid');
-  await expect.poll(() => offlineMediaLayout.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(' ').length))
-    .toBe((page.viewportSize()?.width ?? 1280) <= 760 ? 1 : 2);
-  await page.locator('summary').filter({ hasText: 'Connection help' }).click();
-  const connectionHelp = page.locator('details').filter({ hasText: 'Connection help' });
-  await expect(connectionHelp.getByRole('heading', { name: 'Recommended server address' })).toBeVisible();
-  await expect(connectionHelp.getByRole('heading', { name: 'At home (LAN)' })).toBeVisible();
-  await expect(connectionHelp.getByRole('heading', { name: 'Away from home (NetBird)' })).toBeVisible();
-  await expect(connectionHelp.getByText('tcp://server.internal:22000', { exact: true })).toBeVisible();
-  await expect(connectionHelp.getByText('tcp://192.168.8.12:22000', { exact: true })).toBeVisible();
-  await expect(connectionHelp.getByText('tcp://100.72.113.237:22000', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', {name:'Set up File Sync'})).toBeVisible();
+  await expect(page.getByRole('link', {name:'Add the app repository'})).toBeVisible();
+  await expect(page.getByLabel('Your device ID')).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
 });
 

@@ -17,8 +17,7 @@ deployment; historical task manifests are not live deployment instructions.
 
 The Homepage "Keys & Secrets" page (`/keys`) is the single self-service place
 where users register or regenerate app credentials: SSH device public keys for
-SFTP/SSHFS, the Syncthing server REST API key (administrators only), the
-per-user FreshRSS API password for Google Reader feed apps, and per-user Kavita
+SFTP/SSHFS, the per-user FreshRSS API password for Google Reader feed apps, and per-user Kavita
 API keys for OPDS and third-party reader clients. The existing SSHFS setup
 flows on the Getting Started and Detailed Guide pages continue to work; the
 vault adds a central, gated view on top.
@@ -64,11 +63,6 @@ errors instead of counting as incorrect passwords.
 
 Operational notes:
 
-- Regenerating the Syncthing API key stops `syncthing.service`, rotates
-  `<apikey>` in `/var/lib/syncthing/.config/syncthing/config.xml`, restarts the
-  service, and verifies the REST endpoint accepts the new key. Offline-media
-  helpers and media-manager read the key at call time, so they keep working;
-  anything that cached the old key externally must be updated.
 - The FreshRSS API password cannot be displayed after the fact (only a hash is
   stored); the vault shows a freshly generated value once and it is the
   operator's job to copy it into the reader app. It is set with FreshRSS's own
@@ -80,10 +74,9 @@ Operational notes:
   Rotating or deleting a key invalidates the previous value immediately. The
   OPDS catalogue URL is `https://books.<domain>/api/opds/<opds key>`.
 - Vault operations run through narrowly-scoped sudo-wrapped helper scripts
-  (`homepage-syncthing-api-key`, `homepage-freshrss-api-password`,
+  (`homepage-freshrss-api-password`,
   `homepage-kavita-keys`, `homepage-sftp-key-list`) pinned in sudoers for the
-  `homepage` user, matching the existing SFTP and offline-media helper
-  pattern. Disabling the FreshRSS, Kavita, or Files modules removes the
+  `homepage` user, matching the existing SFTP helper pattern. Disabling the FreshRSS, Kavita, or Files modules removes the
   corresponding helper, environment variable, sudo rule, and vault feature
   without affecting the rest of the vault.
 
@@ -272,9 +265,10 @@ When the `files` module is disabled, the transfers host, Cloudflare ingress,
 Unbound private host records, and associated firewall rules are automatically
 removed.
 
-Offline Media uses
-`offlineMedia.enable = false` in `vars.nix`; its cleanup unit revokes generated
-Syncthing runtime configuration without deleting persisted application data.
+Offline Media uses `offlineMedia.enable = false` in `vars.nix` to hide its setup
+guide and stop provisioning additional media folders. File Sync remains a
+separate optional application; disabling either module retains existing media
+and archived device-enrollment state.
 Do not remove application paths from the central impermanence inventory merely
 because an app is disabled. After changing imports or flags, run a guarded test
 deploy before switching. Kanidm automatic deletion is intentionally disabled,
@@ -1372,7 +1366,7 @@ adapters from **App refresh**. The page follows each request from queued to
 running and then to a durable success or failure result; an in-flight request
 for the same application is coalesced. The adapters follow Jellyfin's media
 scan scheduled task, Audiobookshelf's library scan tasks and `lastScan`
-timestamps, and Syncthing's folder scan response.
+timestamps, and Kavita's library scan state.
 
 Useful refresh checks are:
 
@@ -1381,7 +1375,6 @@ systemctl status media-manager-refresh-dispatch.service
 systemctl status media-manager-refresh-jellyfin.service
 systemctl status media-manager-refresh-audiobookshelf.service
 systemctl status media-manager-refresh-kavita.service
-systemctl status media-manager-refresh-syncthing.service
 systemctl status media-manager-jellyfin-metadata.service
 systemctl status media-manager-audiobookshelf-metadata.service
 systemctl status media-manager-kavita-metadata.service
@@ -1622,7 +1615,7 @@ rebuild. Stored accounts remain separate; provider-wide project or IP limits
 can still affect several users on the same server.
 
 Manual refresh adapters are registered only for installed applications.
-Jellyfin, Audiobookshelf, Kavita, and Syncthing have explicit adapters. The
+Jellyfin, Audiobookshelf, and Kavita have explicit adapters. The
 Kavita adapter runs as the unprivileged `kavita` account and mints a five-minute
 HS512 service token from Kavita's existing application token key. It sends that
 token only to the loopback scan API and follows each registered library's
@@ -1681,58 +1674,47 @@ Immich sharing flow:
 2. Create an album or photo share link
 3. Send the generated public share URL to recipients.
 
-## Offline Media (Syncthing)
+## Offline Media (File Sync)
 
-Offline Media publishes selected personal folders (`_Music`, `_Videos/_YouTube`,
-`_Videos/_Other`) send-only from the server to enrolled Android devices running
-Syncthing-Fork. Enrol devices from **Offline Media** in Homepage; each device
-needs baseline `users` membership plus the configured access group.
+File Sync replaces the former server-managed sync daemon and device enrollment.
+Homepage's **Offline Media** service page explains installation from the private
+F-Droid repository, Kanidm sign-in, and setting up suggested folders. The native
+app owns folder pairs, transfer progress, free-space checks and Android background
+sync. Accounts need the existing Files permission; this migration does not add
+users to that role or broaden any server access.
 
-**Syncing is LAN-only by design.** `modules/Core_Modules/syncthing/default.nix`
-disables global announce, relays, and NAT, leaving only local broadcast
-discovery (`UDP 21027`) and direct connections (`TCP/QUIC 22000`). The firewall
-opens those ports on the home LAN interface and TCP 22000 on the NetBird
-interface. As a result:
+The optional `offline-music` module still provisions personal media folders
+(`_Music`, `_Videos/_YouTube`, `_Videos/_Other`) and retains its archive. The
+`filesync` module serves the authenticated API on the private
+`https://filesync-api.<domain>` host. Use home Wi-Fi or NetBird to reach it.
+Android background work requires an unmetered network; manual syncing, browsing,
+sharing and downloads may consume mobile data when using NetBird away from home.
 
-- A device syncs only while it is on the same home IPv4 broadcast network as the
-  server. Guest Wi-Fi, a different VLAN, AP or client isolation, or a stopped
-  Syncthing client prevents the connection.
-- Away from home a device is expected to show **Not connected** and no media is
-  downloaded. This is intentional: it keeps sync from consuming mobile data.
-- The Homepage **Connection help** panel lists an optional
-  `tcp://<server-netbird-ip>:22000` address. Add it on a device only if you
-  deliberately want away-from-home sync; doing so can use mobile data.
+On each device:
 
-Check enrollment and sync health on the server:
+1. Install File Sync from the server's F-Droid repository and sign in with Kanidm.
+2. Set up the suggested folders and choose where to keep their local copies.
+3. To reuse an existing offline copy, choose **Pair your own folders**, select
+   that exact local folder and its matching server folder, then select
+   **Server to this device**. Content comparison avoids recopying unchanged files.
+4. Check the first transfer in File Sync, then open the files in your media player.
+
+The retirement removes the old daemon, sync ports/discovery, administrative
+hostname, server reconciliation timer, media-manager rescan adapter, Homepage
+API-key management and device enrollment/removal helpers. No retirement cleanup
+runs against persistent configuration or media. `/var/lib/syncthing` stays in
+central impermanence, and `/persist/appdata/offline-media` remains a backed-up
+archive. Do not delete either as part of this migration. A source commit alone
+does not change the running server; use the guarded deployment workflow when
+activation is requested. Existing device copies are retained and are not
+converted or removed automatically.
+
+Check the replacement API and inspect actual sync progress on the device:
 
 ```bash
-sudo jq . /persist/appdata/offline-media/devices.json
-sudo systemctl status offline-media-reconcile.service syncthing.service --no-pager
-sudo journalctl -u offline-media-reconcile -n 50 --no-pager
+systemctl status filesync-api.service --no-pager
+journalctl -u filesync-api -n 50 --no-pager
 ```
-
-Query Syncthing directly. The API key lives in the GUI configuration:
-
-```bash
-api_key="$(sudo sed -n 's:.*<apikey>\(.*\)</apikey>.*:\1:p' \
-  /var/lib/syncthing/.config/syncthing/config.xml)"
-curl -fsS -H "X-API-Key: $api_key" http://127.0.0.1:8384/rest/system/connections | jq '.connections'
-curl -fsS -H "X-API-Key: $api_key" http://127.0.0.1:8384/rest/stats/device | jq .
-```
-
-Interpreting the result:
-
-- An empty `/rest/system/discovery` cache and no
-  `/rest/cluster/pending/devices` entries means no device is announcing on the
-  LAN. Check that the phone is on the home network, that Syncthing-Fork is
-  running, and that the operating system allows it to run in the background.
-- A `lastSeen` older than the current session with no connection attempts is the
-  normal signature of an away-from-home device, not a server fault.
-- A reinstalled Syncthing client has a new device ID and must be enrolled again;
-  it appears as a pending device once it reaches the LAN.
-
-The `offline-media-reconcile.timer` re-verifies Kanidm membership and revokes
-folders and devices for users who lose access.
 
 ### Offline media artwork and metadata
 
@@ -1748,11 +1730,10 @@ apps:
   every downloaded cover image.
 
 This applies to new downloads. Loose covers written by older downloads remain on
-the server and on enrolled devices until removed. When cleaning up, only delete
+the server and on devices until removed. When cleaning up, only delete
 image files that sit next to a matching media file (for example `Song.flac` with
 a sibling `Song.jpg`) and any `cover.jpg` in chapter-split output; do not delete
-covers that were installed deliberately through Media Manager. Request a
-Syncthing rescan from Homepage afterwards.
+covers that were installed deliberately through Media Manager. Run **Sync now** in File Sync afterwards.
 
 ### Transcript and subtitle downloads
 

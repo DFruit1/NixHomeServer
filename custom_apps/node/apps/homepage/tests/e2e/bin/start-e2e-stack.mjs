@@ -76,7 +76,6 @@ const server = spawn('sh', ['-c', serverCommand], {
     HOMEPAGE_SFTP_KEY_INSTALL_COMMAND: path.join(homepageDir, 'tests/e2e/bin/fake-install-sftp-key.mjs'),
     HOMEPAGE_SFTP_KEY_LIST_COMMAND: path.join(homepageDir, 'tests/e2e/bin/fake-sftp-key-list.mjs'),
     HOMEPAGE_VAULT_KANIDM_URL: `http://127.0.0.1:${kanidmPort}`,
-    HOMEPAGE_VAULT_SYNCTHING_KEY_COMMAND: path.join(homepageDir, 'tests/e2e/bin/fake-syncthing-api-key.mjs'),
     HOMEPAGE_VAULT_FRESHRSS_PASSWORD_COMMAND: path.join(homepageDir, 'tests/e2e/bin/fake-freshrss-api-password.mjs'),
     HOMEPAGE_VAULT_KAVITA_KEYS_COMMAND: path.join(homepageDir, 'tests/e2e/bin/fake-kavita-keys.mjs'),
     HOMEPAGE_E2E_VAULT_STATE_DIR: stateDir,

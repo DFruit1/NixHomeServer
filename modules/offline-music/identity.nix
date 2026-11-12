@@ -72,7 +72,7 @@ in
       };
 
       nixhomeserver.kanidmGroupDescriptions.${accessGroup} =
-        "Grants offline-media device enrollment in addition to required baseline users membership.";
+        "Grants access to the offline-media setup guide in addition to required baseline users membership.";
 
       # The shared gateway and Homepage sidecar use separate clients.  Both
       # tokens must carry the custom claim so Homepage can enforce the

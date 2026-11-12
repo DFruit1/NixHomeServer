@@ -1408,7 +1408,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [jellyfin, audiobookshelf, kavita, syncthing]
+            enum: [jellyfin, audiobookshelf, kavita]
       responses:
         "200":
           description: Latest refresh state, or idle when none has run yet.
@@ -1433,7 +1433,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [jellyfin, audiobookshelf, kavita, syncthing]
+            enum: [jellyfin, audiobookshelf, kavita]
       responses:
         "202":
           description: Refresh queued, or already waiting for dispatch.

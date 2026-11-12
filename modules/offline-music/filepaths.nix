@@ -19,9 +19,6 @@ let
     )
   );
   topLevelContentSubdirs = lib.unique (lib.filter (path: !(lib.hasInfix "/" path)) syncRelativePaths);
-  syncthingReadonlyPaths =
-    syncRelativePaths
-    ++ lib.optional (lib.any (path: lib.hasPrefix "_Videos/" path) syncRelativePaths) "_Videos";
   accessGroupRaw = cfg.accessGroup or "users";
   accessGroup = if builtins.isString accessGroupRaw then accessGroupRaw else "invalid-offline-media-access-group";
   stateDir = cfg.stateDir or "/persist/appdata/offline-media";
@@ -42,7 +39,7 @@ in
       }
       {
         assertion = !offlineMediaModel.duplicateFolderIdPrefixes;
-        message = "offlineMedia folderIdPrefix values must be unique so one managed Syncthing folder cannot alias another.";
+        message = "offlineMedia folderIdPrefix values must be unique so one File Sync preset cannot alias another.";
       }
       {
         assertion = !offlineMediaModel.duplicateRelativePaths;
@@ -62,13 +59,6 @@ in
       contentSubdirs = topLevelContentSubdirs;
       videoSubdirs = videoSubdirs;
       memberGroups = [ accessGroup ];
-      rootTraverseGroups = [ "syncthing" ];
-      recursiveReadonlyGrants = [
-        {
-          group = "syncthing";
-          relativePaths = lib.unique syncthingReadonlyPaths;
-        }
-      ];
     };
 
     repo.storage.sharedRoots.contentSubdirs = topLevelContentSubdirs;

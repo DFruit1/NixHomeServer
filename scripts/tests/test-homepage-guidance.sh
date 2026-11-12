@@ -227,12 +227,12 @@ require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.ts
   "New-user guidance must explain first-login provisioning for apps that keep local accounts."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Do not use a public photo-share link or the public share hostname' \
   "Mobile Photos guidance must distinguish the private app URL from public share links."
-require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'Set up Syncthing-Fork (Android Only)' \
-  "Offline Media guidance must mark the supported mobile app as Android-only."
-require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'offline-media-lan-address' \
-  "Offline Media guidance must show the detected LAN address inline instead of deferring to Connection help."
-require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'offline-media-status-column' \
-  "Offline Media must keep the server QR code and connection status in the dedicated layout column."
+require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'Set up File Sync' \
+  "Offline Media guidance must explain File Sync setup."
+require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'Your account needs Files access.' \
+  "Offline Media setup must name the existing Files access requirement."
+require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'manual syncing can use mobile data' \
+  "Offline Media must distinguish manual transfers from unmetered background sync."
 if rg -Fq 'Möbius Sync' custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx; then
   echo "Offline Media must not advertise an unsupported iOS client." >&2
   exit 1

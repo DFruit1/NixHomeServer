@@ -180,7 +180,6 @@ export type IconName =
   | "audiobookshelf"
   | "jellyfin"
   | "kavita"
-  | "syncthing"
   | "play"
   | "pause"
   | "skip-back"

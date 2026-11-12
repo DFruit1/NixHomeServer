@@ -891,13 +891,13 @@ in
             && offlineMediaStateDir != "/persist/persist"
             && !(lib.hasPrefix "/persist/persist/" offlineMediaStateDir)
         );
-      message = "nixhomeserver: offline media Syncthing enrollment state must live directly under /persist/appdata, not nested under /persist/persist: ${offlineMediaStateDir}";
+      message = "nixhomeserver: retained offline-media enrollment archive must live directly under /persist/appdata, not nested under /persist/persist: ${offlineMediaStateDir}";
     }
     {
       assertion =
         !offlineMediaEnabled
           || builtins.elem offlineMediaTmpfilesRule config.systemd.tmpfiles.rules;
-      message = "nixhomeserver: offline media Syncthing enrollment state directory must be created directly by tmpfiles: ${offlineMediaTmpfilesRule}";
+      message = "nixhomeserver: retained offline-media enrollment archive directory must be created directly by tmpfiles: ${offlineMediaTmpfilesRule}";
     }
     {
       assertion = builtins.length fileAccessGids == builtins.length uniqueFileAccessGids;

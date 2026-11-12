@@ -100,9 +100,7 @@ rec {
       "mkvmaker-import-worker"
     ];
     ntfy = app ./ntfy "ntfy" "automation" [ ] [ ];
-    offline-music = app ./offline-music "Offline Music" "media" [ ] [
-      "offline-media-reconcile"
-    ];
+    offline-music = app ./offline-music "Offline Music" "media" [ ] [ ];
     opencloud = app ./opencloud "OpenCloud" "files" [ ] [
       "opencloud-storage-layout-v1"
       "opencloud-secret-materialize"

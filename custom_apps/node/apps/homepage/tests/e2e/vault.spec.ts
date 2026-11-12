@@ -61,7 +61,7 @@ test('the vault stays locked until a correct second sign-in', async ({ page, bas
   await page.getByRole('button', { name: 'Lock now' }).click();
   await expect(page.getByRole('heading', { name: 'Unlock keys and secrets' })).toBeVisible();
 
-  const secrets = await page.request.get('/api/vault/syncthing', { headers: identityHeaders('dsaw', allAccessGroups) });
+  const secrets = await page.request.get('/api/vault/kavita', { headers: identityHeaders('dsaw', allAccessGroups) });
   expect(secrets.status()).toBe(401);
 });
 
@@ -123,24 +123,6 @@ test('the SSH card generates a device key in the browser', async ({ page, baseUR
   await expect(sshCard.locator('li').filter({ hasText: 'Phone' })).toHaveCount(1);
 });
 
-test('the Syncthing card reveals and regenerates the server API key', async ({ page, baseURL }) => {
-  await unlockThroughApi(page, baseURL, 'dsaw', allAccessGroups);
-  await page.goto('/keys');
-
-  const card = page.locator('article').filter({ has: page.getByRole('heading', { name: 'Syncthing' }) });
-  await expect(card.locator('code').filter({ hasText: '••••' })).toBeVisible();
-
-  await card.getByRole('button', { name: 'Reveal' }).click();
-  const revealed = card.locator('code').filter({ hasText: /^[0-9a-f]{32,64}$/ });
-  await expect(revealed).toBeVisible();
-  const before = await revealed.textContent();
-
-  await card.getByRole('button', { name: 'Regenerate API key' }).click();
-  await expect(card.getByText('Yes, regenerate')).toBeVisible();
-  await card.getByRole('button', { name: 'Yes, regenerate' }).click();
-  await expect(revealed).toBeVisible();
-  await expect.poll(async () => await revealed.textContent(), { timeout: 15_000 }).not.toBe(before);
-});
 
 test('the FreshRSS card registers an API password that is shown once', async ({ page, baseURL }) => {
   await unlockThroughApi(page, baseURL, 'dsaw', allAccessGroups);
@@ -192,12 +174,9 @@ test('features outside the account permissions are listed as unavailable', async
   await page.goto('/keys');
 
   await expect(page.getByRole('heading', { name: 'Not available to your account' })).toBeVisible();
-  await expect(page.getByText('Syncthing')).toBeVisible();
-  await expect(page.getByText('· administrators only')).toBeVisible();
-  await expect(page.locator('article').filter({ has: page.getByRole('heading', { name: 'Syncthing' }) })).toHaveCount(0);
 
   const syncthing = await page.request.get('/api/vault/syncthing', { headers: identityHeaders('basic', 'users') });
-  expect(syncthing.status()).toBe(403);
+  expect(syncthing.status()).toBe(404);
   const freshrss = await page.request.post('/api/vault/freshrss', { data: {}, headers: { ...identityHeaders('basic', 'users'), origin: baseURL, 'sec-fetch-site': 'same-origin' } });
   expect(freshrss.status()).toBe(403);
 });

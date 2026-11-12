@@ -137,7 +137,7 @@ let
     };
 
     offlineMedia = {
-      enable = true; # Whether to provision Syncthing-backed offline media folders and enrollment tools.
+      enable = true; # Whether to provision offline media folders and File Sync setup.
     };
 
     forgejo = {

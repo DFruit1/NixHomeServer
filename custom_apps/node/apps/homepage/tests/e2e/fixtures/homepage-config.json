@@ -16,10 +16,6 @@
         "enabled": true,
         "requiredAnyGroups": ["files-sftp-users", "files-shared-users", "usb-access", "backup-storage-users"]
       },
-      "syncthingApiKey": {
-        "enabled": true,
-        "adminOnly": true
-      },
       "freshrssApiPassword": {
         "enabled": true,
         "requiredAnyGroups": ["freshrss-users"]
@@ -147,10 +143,11 @@
       "enabled": true,
       "category": "media",
       "description": "Automatically keep copies of your server music and videos on a computer or android phone.",
-      "loginNotes": "Use Kanidm on the homepage, then enroll your Syncthing device ID.",
-      "logoUrl": "/logos/syncthing.svg",
+      "loginNotes": "Sign in to File Sync with Kanidm and Files access.",
+      "logoUrl": "/logos/filesync.svg",
       "uploadNotes": "Use _Music, _Videos/_YouTube, and _Videos/_Other in your personal files root.",
-      "requiredAnyGroups": ["users"]
+      "requiredAnyGroups": ["users"],
+      "appName": "filesync"
     }
   ],
   "folderGuides": [
@@ -255,50 +252,8 @@
   ],
   "offlineMedia": {
     "enabled": true,
-    "requiredAnyGroups": ["users"],
-    "connectionAddresses": [
-      {
-        "address": "tcp://server.internal:22000",
-        "label": "Recommended server address",
-        "kind": "hostname"
-      },
-      {
-        "address": "tcp://192.168.8.12:22000",
-        "label": "At home (LAN)",
-        "kind": "lan"
-      },
-      {
-        "address": "tcp://100.72.113.237:22000",
-        "label": "Away from home (NetBird)",
-        "kind": "netbird"
-      }
-    ],
-    "folders": [
-      {
-        "key": "music",
-        "label": "Music",
-        "folderId": "nixhomeserver-music-dsaw",
-        "folderLabel": "NixHomeServer Music - dsaw",
-        "serverFolderPath": "/mnt/data/users/dsaw/_Music",
-        "suggestedDevicePath": "Music/NixHomeServer"
-      },
-      {
-        "key": "youtube",
-        "label": "YouTube Videos",
-        "folderId": "nixhomeserver-youtube-videos-dsaw",
-        "folderLabel": "NixHomeServer YouTube Videos - dsaw",
-        "serverFolderPath": "/mnt/data/users/dsaw/_Videos/_YouTube",
-        "suggestedDevicePath": "Movies/NixHomeServer/YouTube"
-      },
-      {
-        "key": "other",
-        "label": "Other Videos",
-        "folderId": "nixhomeserver-other-videos-dsaw",
-        "folderLabel": "NixHomeServer Other Videos - dsaw",
-        "serverFolderPath": "/mnt/data/users/dsaw/_Videos/_Other",
-        "suggestedDevicePath": "Movies/NixHomeServer/Other"
-      }
-    ],
-    "devices": []
+    "apiUrl": "https://filesync-api.example.test",
+    "fdroidRepoUrl": "https://fdroid.example.test/fdroid/repo",
+    "requiredAllGroups": ["users", "files-personal-users"]
   }
 }

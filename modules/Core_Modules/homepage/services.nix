@@ -18,7 +18,7 @@ let
   emailsHost = "emails.${vars.domain}";
   backupsHost = vars.kopiaDomain;
   mediaManagerHost = "media.${vars.domain}";
-  syncthingHost = "syncthing.${vars.domain}";
+  filesyncHost = "filesync-api.${vars.domain}";
   fdroidHost = "fdroid.${vars.domain}";
   offlineMediaCfg = vars.offlineMedia;
   offlineMediaAccessGroupRaw = offlineMediaCfg.accessGroup or "users";
@@ -27,13 +27,13 @@ let
       offlineMediaAccessGroupRaw
     else
       "invalid-offline-media-access-group";
-  offlineMediaRequiredAllGroups = [ "users" ];
+  offlineMediaRequiredAllGroups = lib.unique [ "users" filesWebAccessGroup ];
   offlineMediaRequiredAnyGroups = [ offlineMediaAccessGroup ];
   offlineMediaLoginNotes =
     if offlineMediaAccessGroup == "users" then
-      "Requires baseline users membership; connect each computer or phone once while it is on the home network. Syncthing only syncs while the device is on the home LAN, so sync never uses mobile data."
+      "Requires baseline users membership; sign in to File Sync with an account that has Files access, then choose folders to keep on this device. Background sync on Android waits for an unmetered connection."
     else
-      "Requires baseline users membership plus ${offlineMediaAccessGroup}; connect each computer or phone once while it is on the home network. Syncthing only syncs while the device is on the home LAN, so sync never uses mobile data.";
+      "Requires baseline users membership plus ${offlineMediaAccessGroup}; sign in to File Sync with an account that has Files access, then choose folders to keep on this device. Background sync on Android waits for an unmetered connection.";
   filesWebAccessGroup = vars.fileAccess.webAccessGroup or "files-personal-users";
   filesSftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
   filesSharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
@@ -63,31 +63,6 @@ let
     (config.nixhomeserver.modules."offline-music" or false)
     && (offlineMediaCfg.enable or false);
   mkvmakerEnabled = config.nixhomeserver.modules.mkvmaker or false;
-  offlineMediaStateDir = offlineMediaCfg.stateDir or "/persist/appdata/offline-media";
-  offlineMediaStateFile = "${offlineMediaStateDir}/devices.json";
-  offlineMediaModel = (import ../../../lib/offline-media.nix { inherit lib; }) offlineMediaCfg;
-  offlineMediaFolderSpecs = offlineMediaModel.folderSpecs;
-  offlineMediaFolderSpecsJson = builtins.toJSON offlineMediaFolderSpecs;
-  offlineMediaStateValidationJq = ''
-    def valid_username:
-      type == "string"
-      and test("^[a-z][a-z0-9._-]{0,63}$");
-    def valid_device:
-      if type != "object" then false
-      else
-        (.deviceId | type == "string" and test("^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$"))
-        and (.deviceName | type == "string" and test("^[A-Za-z0-9._ -]{1,64}$"))
-      end;
-    def valid_user:
-      if type != "object" or ((.devices // null) | type) != "array" then false
-      else all(.devices[]; valid_device)
-      end;
-    if type != "object" or .version != 2 or ((.users // null) | type) != "object" then false
-    else all(.users | to_entries[]; (.key | valid_username) and (.value | valid_user))
-    end
-  '';
-  syncthingDataDir = "/var/lib/syncthing";
-  syncthingConfigDir = "/var/lib/syncthing/.config/syncthing";
   serverLanHost = "${vars.network.hostname}.${vars.networking.dns.lanDomain}";
   kanidmGroups = lib.sort (a: b: a < b) (
     builtins.filter
@@ -111,7 +86,7 @@ let
   audiobookshelfEnabled = hostEnabled audiobooksHost;
   filesSftpEnabled = builtins.hasAttr "files-sftp-sshd" config.systemd.services;
   jellyfinEnabled = hostEnabled videosHost;
-  offlineMediaEnabledForHomepage = offlineMediaEnabled;
+  offlineMediaEnabledForHomepage = offlineMediaEnabled && (config.nixhomeserver.modules.filesync or false);
   fdroidEnabled = builtins.hasAttr fdroidHost config.services.caddy.virtualHosts;
   kavitaEnabled = hostEnabled booksHost;
   kiwixEnabled = hostEnabled wikiHost;
@@ -162,22 +137,6 @@ let
     UTIL_LINUX = pkgs.util-linux;
     SFTPAUTHORIZEDKEYSDIR_SERVICEUSER_XXXXXX_QUOTED = lib.escapeShellArg "${sftpAuthorizedKeysDir}/.${serviceUser}.XXXXXX";
   });
-  showSyncthingDeviceId = pkgs.writeShellScript "homepage-show-syncthing-device-id" (renderShell ../../../custom_apps/shell/homepage/homepage-show-syncthing-device-id.sh.in {
-    SYNCTHING = pkgs.syncthing;
-    SYNCTHINGCONFIGDIR_QUOTED = lib.escapeShellArg syncthingConfigDir;
-    SYNCTHINGDATADIR_QUOTED = lib.escapeShellArg syncthingDataDir;
-  });
-  vaultSyncthingKeyHelper = pkgs.writeShellScript "homepage-syncthing-api-key" (renderShell ../../../custom_apps/shell/homepage/homepage-syncthing-api-key.sh.in {
-    SYNCTHINGCONFIGDIR_CONFIG_XML_QUOTED = lib.escapeShellArg "${syncthingConfigDir}/config.xml";
-    COREUTILS = pkgs.coreutils;
-    GNUGREP = pkgs.gnugrep;
-    LIBXML2 = pkgs.libxml2;
-    OPENSSL = pkgs.openssl;
-    UTIL_LINUX = pkgs.util-linux;
-    SYSTEMD = pkgs.systemd;
-    PYTHON3 = pkgs.python3;
-    CURL = pkgs.curl;
-  });
   sftpKeyListHelper = pkgs.writeShellScript "homepage-sftp-key-list" (renderShell ../../../custom_apps/shell/homepage/homepage-sftp-key-list.sh.in {
     GNUGREP = pkgs.gnugrep;
     SFTPAUTHORIZEDKEYSDIR_QUOTED = lib.escapeShellArg sftpAuthorizedKeysDir;
@@ -208,56 +167,6 @@ let
     CONFIG_AGE_SECRETS_KAVITATOKENKEY_PATH_QUOTED = lib.escapeShellArg config.age.secrets.kavitaTokenKey.path;
     HTTP_VARS_NETWORKING_LOOPBACKIPV4_TOSTRING_VARS_NETWORKING_PORTS_KAVITA_QUOTED = lib.escapeShellArg "http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.kavita}";
   });
-  offlineMediaStatus = pkgs.writeShellScript "homepage-offline-media-status" (renderShell ../../../custom_apps/shell/homepage/homepage-offline-media-status.sh.in {
-    GNUGREP = pkgs.gnugrep;
-    OFFLINEMEDIASTATEFILE_QUOTED = lib.escapeShellArg offlineMediaStateFile;
-    OFFLINEMEDIAFOLDERSPECSJSON_QUOTED = lib.escapeShellArg offlineMediaFolderSpecsJson;
-    VARS_USERSROOT_QUOTED = lib.escapeShellArg vars.usersRoot;
-    JQ = pkgs.jq;
-    OFFLINEMEDIASTATEVALIDATIONJQ = offlineMediaStateValidationJq;
-    COREUTILS = pkgs.coreutils;
-    LIBXML2 = pkgs.libxml2;
-    SYNCTHINGCONFIGDIR_QUOTED = lib.escapeShellArg syncthingConfigDir;
-    CURL = pkgs.curl;
-  });
-  offlineMediaEnroll = pkgs.writeShellScript "homepage-offline-media-enroll" (renderShell ../../../custom_apps/shell/homepage/homepage-offline-media-enroll.sh.in {
-    GNUGREP = pkgs.gnugrep;
-    COREUTILS = pkgs.coreutils;
-    JQ = pkgs.jq;
-    SHOWSYNCTHINGDEVICEID = showSyncthingDeviceId;
-    OFFLINEMEDIASTATEDIR_QUOTED = lib.escapeShellArg offlineMediaStateDir;
-    OFFLINEMEDIASTATEFILE_QUOTED = lib.escapeShellArg offlineMediaStateFile;
-    OFFLINEMEDIAFOLDERSPECSJSON_QUOTED = lib.escapeShellArg offlineMediaFolderSpecsJson;
-    VARS_USERSROOT_QUOTED = lib.escapeShellArg vars.usersRoot;
-    UTIL_LINUX = pkgs.util-linux;
-    CONFIG_AGE_SECRETS_KANIDMADMINPASS_PATH = config.age.secrets.kanidmAdminPass.path;
-    KANIDM_1_11 = pkgs.kanidm_1_11;
-    HTTPS_VARS_KANIDMDOMAIN_TOSTRING_VARS_NETWORKING_PORTS_KANIDM_QUOTED = lib.escapeShellArg "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}";
-    OFFLINEMEDIAACCESSGROUP_QUOTED = lib.escapeShellArg offlineMediaAccessGroup;
-    OFFLINEMEDIASTATEVALIDATIONJQ = offlineMediaStateValidationJq;
-    SYSTEMD = pkgs.systemd;
-    ACL = pkgs.acl;
-    FINDUTILS = pkgs.findutils;
-    LIBXML2 = pkgs.libxml2;
-    SYNCTHINGCONFIGDIR_QUOTED = lib.escapeShellArg syncthingConfigDir;
-    CURL = pkgs.curl;
-    OFFLINEMEDIASTATUS = offlineMediaStatus;
-  });
-  offlineMediaRemove = pkgs.writeShellScript "homepage-offline-media-remove" (renderShell ../../../custom_apps/shell/homepage/homepage-offline-media-remove.sh.in {
-    GNUGREP = pkgs.gnugrep;
-    OFFLINEMEDIASTATEDIR_QUOTED = lib.escapeShellArg offlineMediaStateDir;
-    OFFLINEMEDIASTATEFILE_QUOTED = lib.escapeShellArg offlineMediaStateFile;
-    OFFLINEMEDIAFOLDERSPECSJSON_QUOTED = lib.escapeShellArg offlineMediaFolderSpecsJson;
-    UTIL_LINUX = pkgs.util-linux;
-    COREUTILS = pkgs.coreutils;
-    JQ = pkgs.jq;
-    OFFLINEMEDIASTATEVALIDATIONJQ = offlineMediaStateValidationJq;
-    LIBXML2 = pkgs.libxml2;
-    SYNCTHINGCONFIGDIR_QUOTED = lib.escapeShellArg syncthingConfigDir;
-    CURL = pkgs.curl;
-    SYSTEMD = pkgs.systemd;
-    OFFLINEMEDIASTATUS = offlineMediaStatus;
-  });
 
   catalog = import ../../catalog.nix;
   registeredCards = lib.concatMap
@@ -273,12 +182,11 @@ let
       url = "/services/offline-media";
       enabled = offlineMediaEnabledForHomepage;
       category = "media";
-      description = "Automatically keep copies of your server music and videos on a computer or android phone while it is on the home network.";
+      description = "Keep music and videos on your device with File Sync for offline listening and viewing.";
       loginNotes = offlineMediaLoginNotes;
-      projectUrl = "https://syncthing.net";
-      logoUrl = "/logos/syncthing.svg";
-      appName = "syncthing";
-      uploadNotes = "Add media with the Files app first; this service then copies it to your connected devices.";
+      logoUrl = "/logos/filesync.svg";
+      appName = "filesync";
+      uploadNotes = "Add media with the Files app first; this service then copies it to the devices you set up in File Sync.";
       requiredAllGroups = offlineMediaRequiredAllGroups;
       requiredAnyGroups = offlineMediaRequiredAnyGroups;
     }
@@ -398,8 +306,8 @@ let
       instructions = [
         "Place music files in _Music."
         "Use _Videos/_YouTube for downloaded videos and _Videos/_Other for other videos you want available offline."
-        "Enroll each phone, tablet, or laptop from the Offline Media service page."
-        "The server publishes folders as send-only; device-side deletes do not remove the server copy."
+        "Install File Sync, sign in, and set up the suggested folders on each device."
+        "Suggested File Sync pairs download from the server; sync does not propagate deletions."
       ];
     }
     {
@@ -688,25 +596,7 @@ let
       enabled = offlineMediaEnabledForHomepage;
       requiredAllGroups = offlineMediaRequiredAllGroups;
       requiredAnyGroups = offlineMediaRequiredAnyGroups;
-      connectionAddresses = [
-        {
-          address = "tcp://${vars.networking.lan.ip}:22000";
-          label = "At home (LAN) — recommended";
-          kind = "lan";
-        }
-        {
-          address = "tcp://${syncthingHost}:22000";
-          label = "Private hostname (home LAN or NetBird)";
-          kind = "hostname";
-        }
-        {
-          address = "tcp://${vars.networking.netbird.ip}:22000";
-          label = "Away from home (NetBird) — optional, may use mobile data";
-          kind = "netbird";
-        }
-      ];
-      folders = [ ];
-      devices = [ ];
+      apiUrl = "https://${filesyncHost}";
     } // lib.optionalAttrs fdroidEnabled {
       fdroidRepoUrl = "https://${fdroidHost}/fdroid/repo";
     };
@@ -722,10 +612,6 @@ let
         sshKeys = {
           enabled = filesSftpEnabled;
           requiredAnyGroups = sftpAccessGroups;
-        };
-        syncthingApiKey = {
-          enabled = true;
-          adminOnly = true;
         };
         freshrssApiPassword = {
           enabled = freshrssEnabled;
@@ -775,7 +661,6 @@ in
           HOMEPAGE_SFTP_KEY_INSTALL_COMMAND = installSftpKey;
           HOMEPAGE_SUDO = "/run/wrappers/bin/sudo";
           HOMEPAGE_VAULT_KANIDM_URL = kanidmVaultUrl;
-          HOMEPAGE_VAULT_SYNCTHING_KEY_COMMAND = vaultSyncthingKeyHelper;
         } // lib.optionalAttrs filesSftpEnabled {
           HOMEPAGE_SFTP_KEY_LIST_COMMAND = sftpKeyListHelper;
           HOMEPAGE_SFTP_KEY_REVOKE_COMMAND = sftpKeyRevokeHelper;
@@ -783,11 +668,6 @@ in
           HOMEPAGE_VAULT_FRESHRSS_PASSWORD_COMMAND = freshrssApiPasswordHelper;
         } // lib.optionalAttrs kavitaEnabled {
           HOMEPAGE_VAULT_KAVITA_KEYS_COMMAND = kavitaApiKeysHelper;
-        } // lib.optionalAttrs offlineMediaEnabledForHomepage {
-          HOMEPAGE_SYNCTHING_DEVICE_ID_COMMAND = showSyncthingDeviceId;
-          HOMEPAGE_OFFLINE_MEDIA_STATUS_COMMAND = offlineMediaStatus;
-          HOMEPAGE_OFFLINE_MEDIA_ENROLL_COMMAND = offlineMediaEnroll;
-          HOMEPAGE_OFFLINE_MEDIA_REMOVE_COMMAND = offlineMediaRemove;
         } // lib.optionalAttrs mkvmakerEnabled {
           HOMEPAGE_MKVMAKER_PROGRESS_FILE = "/run/mkvmaker/progress.json";
         } // lib.optionalAttrs powerScheduleCfg.available {
@@ -823,13 +703,9 @@ in
           ];
           SystemCallArchitectures = "native";
           # NoNewPrivileges/RestrictSUIDSGID cannot be enabled here: the
-          # narrowly-scoped offline-media and SFTP helpers intentionally use
+          # narrowly-scoped settings and SFTP helpers intentionally use
           # the sudo rules declared below.
           ReadWritePaths = [ sftpAuthorizedKeysDir vaultRuntimeDir ]
-            ++ lib.optional offlineMediaEnabledForHomepage offlineMediaStateDir
-            # The sudo helpers inherit homepage.service's mount namespace, so
-            # offline-media enrollment needs this writable despite running as root.
-            ++ lib.optional offlineMediaEnabledForHomepage vars.usersRoot
             ++ lib.optional powerScheduleCfg.available powerScheduleCfg.stateDir
             ++ [ deploySettingsDir ];
           ReadOnlyPaths = [
@@ -852,10 +728,7 @@ in
               command = "${installSftpKey}";
               options = [ "NOPASSWD" ];
             }
-            {
-              command = "${vaultSyncthingKeyHelper}";
-              options = [ "NOPASSWD" ];
-            }
+
           ] ++ lib.optionals filesSftpEnabled [
             {
               command = "${sftpKeyListHelper}";
@@ -873,23 +746,6 @@ in
           ] ++ lib.optionals kavitaEnabled [
             {
               command = "${kavitaApiKeysHelper}";
-              options = [ "NOPASSWD" ];
-            }
-          ] ++ lib.optionals offlineMediaEnabledForHomepage [
-            {
-              command = "${showSyncthingDeviceId}";
-              options = [ "NOPASSWD" ];
-            }
-            {
-              command = "${offlineMediaStatus}";
-              options = [ "NOPASSWD" ];
-            }
-            {
-              command = "${offlineMediaEnroll}";
-              options = [ "NOPASSWD" ];
-            }
-            {
-              command = "${offlineMediaRemove}";
               options = [ "NOPASSWD" ];
             }
           ] ++ lib.optionals powerScheduleCfg.available [

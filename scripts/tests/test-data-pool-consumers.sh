@@ -18,7 +18,6 @@ let
     "mail-archive-ui-storage-layout-v1" "mail-archive-ui" "mail-archive-sync" "mail-archive-paperless-tasks"
     "mkvmaker-storage-layout-v1" "mkvmaker-import"
     "media-automation-storage-layout-v1" "qbittorrent" "sonarr" "radarr"
-    "offline-media-reconcile"
     "audiobookshelf-storage-layout-v1" "audiobookshelf"
     "media-folder-layout-v2" "jellyfin-storage-layout-v1" "jellyfin"
     "youtube-downloader" "filestash" "files-archives-sync" "files-archives-watch"

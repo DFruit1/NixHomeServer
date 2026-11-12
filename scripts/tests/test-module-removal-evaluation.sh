@@ -86,7 +86,7 @@ for ((offset = 0; offset < ${#variants[@]}; offset += batch_size)); do
       syncthingEnabled: false,
       gatewayRegistered: false,
       homepageEnvironmentPresent: false,
-      disabledCleanupPresent: true,
+      disabledCleanupPresent: false,
       dedicatedAccessGroupPresent: false,
       dedicatedGatewayScopePresent: false,
       dedicatedHomepageScopePresent: false

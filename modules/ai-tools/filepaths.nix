@@ -43,7 +43,7 @@ in
         # Re-apply on every activation, and over the whole tree rather than the
         # root: a default ACL only covers entries created after it was applied,
         # so documents that already existed, and directories copied in by other
-        # applications (Syncthing, torrent clients), carry no ai-tools entry and
+        # applications (file-transfer tools, torrent clients), carry no ai-tools entry and
         # convert_document would be refused with EACCES. A one-time root grant
         # left every existing document unreadable while its verification passed.
         #

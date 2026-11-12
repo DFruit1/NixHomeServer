@@ -8,8 +8,6 @@ ensure_tools jq nix rg
 
 host="$(test_default_host)"
 
-require_fixed modules/Core_Modules/homepage/services.nix 'vaultSyncthingKeyHelper = pkgs.writeShellScript "homepage-syncthing-api-key"' \
-  "The homepage must provide a guarded Syncthing API key helper."
 require_fixed modules/Core_Modules/homepage/services.nix 'freshrssApiPasswordHelper = pkgs.writeShellScript "homepage-freshrss-api-password"' \
   "The homepage must provide a guarded FreshRSS API password helper."
 require_fixed modules/Core_Modules/homepage/services.nix 'kavitaApiKeysHelper = pkgs.writeShellScript "homepage-kavita-keys"' \
@@ -43,7 +41,7 @@ require_fixed custom_apps/node/apps/homepage/src/server/vault/kanidm-auth.ts '/v
 require_fixed custom_apps/node/apps/homepage/src/server/vault.ts 'assertVaultUnlocked' \
   "Vault feature endpoints must require the short-lived unlock session."
 require_fixed custom_apps/node/apps/homepage/src/server/vault.ts 'isHomepageAdmin(config, user)' \
-  "The Syncthing API key feature must be restricted to homepage administrators."
+  "SFTP administrator access must continue to use the Homepage administrator gate."
 
 feature_gate_line="$(rg -n -F 'if (!vaultFeatureAllowed(config, user, feature))' custom_apps/node/apps/homepage/src/server/vault.ts | head -n 1 | cut -d: -f1)"
 unlock_line="$(rg -n -F 'assertVaultUnlocked(config, headers, user);' custom_apps/node/apps/homepage/src/server/vault.ts | head -n 1 | cut -d: -f1)"
@@ -73,7 +71,6 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
   }
   homepage_config="$(build_flake_expr HOMEPAGE_CONFIG_FILE)"
   vault_kanidm_url="$(eval_flake_expr HOMEPAGE_VAULT_KANIDM_URL)"
-  syncthing_key_helper="$(build_flake_expr HOMEPAGE_VAULT_SYNCTHING_KEY_COMMAND)"
   sftp_list_helper="$(build_flake_expr HOMEPAGE_SFTP_KEY_LIST_COMMAND)"
   freshrss_helper="$(build_flake_expr HOMEPAGE_VAULT_FRESHRSS_PASSWORD_COMMAND)"
   kavita_helper="$(build_flake_expr HOMEPAGE_VAULT_KAVITA_KEYS_COMMAND)"
@@ -91,45 +88,18 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
     and (.vault.idleTtlSeconds < .vault.sessionTtlSeconds)
     and (.vault.features.sshKeys.enabled == true)
     and (.vault.features.sshKeys.requiredAnyGroups | length > 0)
-    and (.vault.features.syncthingApiKey.enabled == true)
-    and (.vault.features.syncthingApiKey.adminOnly == true)
     and (.vault.features.freshrssApiPassword.enabled == true)
     and (.vault.features.freshrssApiPassword.requiredAnyGroups == ["freshrss-users"])
     and (.vault.features.kavitaApiPassword == null)
     and (.vault.features.kavitaApiKeys.enabled == true)
     and (.vault.features.kavitaApiKeys.requiredAnyGroups == ["kavita-users"])
     and ([.. | objects | to_entries[] | select(.key | test("password|secret|apiKey"; "i")) | .key]
-      | unique | sort) == ["freshrssApiPassword", "kavitaApiKeys", "syncthingApiKey"]
+      | unique | sort) == ["freshrssApiPassword", "kavitaApiKeys"]
   ' "$homepage_config" >/dev/null || {
     echo "Homepage evaluated vault contract regressed." >&2
     jq .vault "$homepage_config" >&2
     exit 1
   }
-
-  for required_fragment in \
-    'systemctl stop syncthing.service' \
-    'openssl rand -hex 32' \
-    'syncthing:syncthing' \
-    'xmllint --noout' \
-    'flock -x 8' \
-    'configuration/gui/apikey'; do
-    if ! rg -Fq -- "$required_fragment" "$syncthing_key_helper"; then
-      echo "Syncthing API key helper safety regressed: missing $required_fragment" >&2
-      exit 1
-    fi
-  done
-  stop_line="$(rg -n -F 'systemctl stop syncthing.service' "$syncthing_key_helper" | head -n 1 | cut -d: -f1)"
-  move_line="$(rg -n -F 'homepage-vault-new' "$syncthing_key_helper" | head -n 1 | cut -d: -f1)"
-  if [[ -z "$stop_line" || -z "$move_line" || "$move_line" -le "$stop_line" ]]; then
-    echo "Syncthing config edits must happen only after the service is stopped." >&2
-    exit 1
-  fi
-  show_exit_line="$(rg -n -F 'exit 0' "$syncthing_key_helper" | head -n 1 | cut -d: -f1)"
-  stop_line_check="$(rg -n -F 'systemctl stop syncthing.service' "$syncthing_key_helper" | head -n 1 | cut -d: -f1)"
-  if [[ -z "$show_exit_line" || "$show_exit_line" -ge "$stop_line_check" ]]; then
-    echo "Syncthing show action must not stop the service." >&2
-    exit 1
-  fi
 
   for required_fragment in 'root:root' '644' 'ssh-keygen -lf' 'invalid username'; do
     if ! rg -Fq -- "$required_fragment" "$sftp_list_helper"; then
@@ -191,7 +161,6 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
   }
   check_variant without-freshrss freshrssApiPassword disabled
   check_variant without-freshrss kavitaApiKeys enabled
-  check_variant without-freshrss syncthingApiKey enabled
   check_variant without-kavita kavitaApiKeys disabled
   check_variant without-kavita freshrssApiPassword enabled
   check_variant without-files sshKeys enabled
@@ -201,7 +170,7 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
     surface="$(jq -er --arg variant "$variant" '.[$variant].homepageVaultSurface' <<<"$removal_matrix")"
     jq -e '
       .kanidmUrlPresent == true
-      and .syncthingCommandPresent == true
+      and .syncthingCommandPresent == false
     ' <<<"$surface" >/dev/null || {
       echo "$variant must keep the core vault surface intact." >&2
       exit 1

@@ -48,7 +48,7 @@ in
   kavitaRefresh = cfg.systemd.services.media-manager-refresh-kavita.serviceConfig;
   kavitaMetadata = cfg.systemd.services.media-manager-kavita-metadata.serviceConfig;
   kavitaMetadataTimer = cfg.systemd.timers.media-manager-kavita-metadata.timerConfig;
-  syncthingRefresh = cfg.systemd.services.media-manager-refresh-syncthing.serviceConfig;
+  retiredSyncRefreshPresent = builtins.hasAttr "media-manager-refresh-syncthing" cfg.systemd.services;
   storageAccessScript = cfg.systemd.services.media-manager-storage-access.script;
   wantedBy = cfg.systemd.services.media-manager.wantedBy;
 }')"
@@ -174,7 +174,8 @@ jq -e '
   and (.integrations.jellyfin.capabilities == ["library-refresh"])
   and (.integrations.audiobookshelf.capabilities == ["library-refresh"])
   and (.integrations.kavita.capabilities == ["library-refresh"])
-  and (.integrations.syncthing.capabilities == ["folder-rescan"])
+  and (.integrations | has("syncthing") | not)
+  and (.retiredSyncRefreshPresent == false)
   and (.refreshPath.PathChanged == "/var/lib/media-manager/refresh-requests")
   and (.refreshPath.Unit == "media-manager-refresh-dispatch.service")
   and (.refreshDispatcher.User == "root")
@@ -218,9 +219,6 @@ jq -e '
   and (.kavitaMetadata.IPAddressAllow == ["localhost"])
   and (.kavitaMetadata.SystemCallFilter == ["@system-service", "~@privileged", "~@resources", "fchown"])
   and (.kavitaMetadataTimer.OnUnitInactiveSec == "30m")
-  and (.syncthingRefresh.IPAddressDeny == "any")
-  and (.syncthingRefresh.IPAddressAllow == ["localhost"])
-  and (.syncthingRefresh.ProtectProc == "invisible")
   and (.storageAccessScript | contains("setfacl -x \"d:g:$group\" /mnt/data/shared"))
   and (.storageAccessScript | contains("-m g:media-manager-broker:r-x"))
   and (.storageAccessScript | contains("setfacl -m g:media-manager:r-x -m g:media-manager-broker:r-x /mnt/data/shared/_ISO"))

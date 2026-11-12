@@ -57,65 +57,19 @@ describe('homepage configuration branding', () => {
     });
   });
 
-  it('accepts labelled connection records and safely upgrades stale string-only addresses', async () => {
-    const directory = await mkdtemp(path.join(tmpdir(), 'homepage-connections-'));
+  it('loads native File Sync setup without device enrollment fields', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'homepage-filesync-'));
     try {
       const configPath = path.join(directory, 'homepage.json');
+      const offlineMedia = {
+        enabled: true, apiUrl: 'https://filesync-api.example.test',
+        fdroidRepoUrl: 'https://fdroid.example.test/fdroid/repo',
+        requiredAllGroups: ['users', 'files-personal-users'],
+      };
       await writeFile(configPath, JSON.stringify({
-        brandName: 'Family Home',
-        domain: 'example.test',
-        services: [],
-        folderGuides: [],
-        adminGuide: [],
-        offlineMedia: {
-          enabled: true,
-          connectionAddresses: [
-            {
-              address: ' tcp://server.internal:22000 ',
-              label: ' Recommended server address ',
-              kind: 'lan',
-            },
-            'tcp://100.64.0.10:22000',
-            { address: 'tcp://192.168.1.10:22000', label: 42, kind: 'not-a-kind' },
-            { address: 'tcp://bad\naddress:22000', label: 'Invalid' },
-            { address: '', label: 'Invalid' },
-            42,
-          ],
-          folders: [],
-          devices: [],
-        },
+        brandName: 'Family Home', domain: 'example.test', services: [], folderGuides: [], adminGuide: [], offlineMedia,
       }));
-
-      expect(loadHomepageConfig(configPath).offlineMedia?.connectionAddresses).toEqual([
-        {
-          address: 'tcp://server.internal:22000',
-          label: 'Recommended server address',
-          kind: 'lan',
-        },
-        {
-          address: 'tcp://100.64.0.10:22000',
-          label: 'Server address',
-        },
-        {
-          address: 'tcp://192.168.1.10:22000',
-          label: 'Server address',
-        },
-      ]);
-
-      await writeFile(configPath, JSON.stringify({
-        brandName: 'Family Home',
-        domain: 'example.test',
-        services: [],
-        folderGuides: [],
-        adminGuide: [],
-        offlineMedia: {
-          enabled: true,
-          connectionAddresses: 'tcp://server.internal:22000',
-          folders: [],
-          devices: [],
-        },
-      }));
-      expect(loadHomepageConfig(configPath).offlineMedia?.connectionAddresses).toEqual([]);
+      expect(loadHomepageConfig(configPath).offlineMedia).toEqual(offlineMedia);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

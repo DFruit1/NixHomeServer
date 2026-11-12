@@ -65,12 +65,6 @@ export const Icon = component$<{ name: IconName; size?: number }>((props) => {
       "M2 12l10 5 10-5",
     ],
     kavita: ["M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"],
-    syncthing: [
-      "M21 2v6h-6",
-      "M3 12a9 9 0 0 1 15-6.7L21 8",
-      "M3 22v-6h6",
-      "M21 12a9 9 0 0 1-15 6.7L3 16",
-    ],
     play: ["M8 5v14l11-7z"],
     pause: ["M6 5h4v14H6z", "M14 5h4v14h-4z"],
     "skip-back": ["M19 20V4l-9 7-1-7H7v16h2l1-7z"],

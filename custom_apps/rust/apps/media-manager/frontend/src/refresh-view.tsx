@@ -121,7 +121,6 @@ export const RefreshView = component$<{ integrations: Integration[] }>(
       audiobookshelf: "audiobookshelf",
       jellyfin: "jellyfin",
       kavita: "kavita",
-      syncthing: "syncthing",
     };
 
     return (

@@ -77,7 +77,6 @@ let
     ++ lib.optionals (hasModule "radarr" && (config.repo.radarr.enable or false)) [ "radarr.${vars.domain}" ]
     ++ lib.optionals (hasModule "prowlarr" && (config.repo.prowlarr.enable or false)) [ "prowlarr.${vars.domain}" ]
     ++ lib.optionals (hasModule "qbittorrent" && (config.repo.qbittorrent.enable or false)) [ "torrents.${vars.domain}" ]
-    ++ lib.optionals (hasModule "offline-music" && (vars.offlineMedia.enable or false)) [ "syncthing.${vars.domain}" ]
     ++ lib.optionals (hasModule "groundwater-logger" && (config.repo.groundwaterLogger.enable or false)) [ "groundwater.${vars.domain}" ];
   shortAliasCaddyHosts = lib.listToAttrs (
     map

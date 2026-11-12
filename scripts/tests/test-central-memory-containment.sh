@@ -13,7 +13,6 @@ expected_caps_json='{
   "ipfs": { "MemoryHigh": "512M", "MemoryMax": "1G" },
   "opencloud": { "MemoryHigh": "2G", "MemoryMax": "4G" },
   "search-solr": { "MemoryHigh": "4G", "MemoryMax": "6G" },
-  "syncthing": { "MemoryHigh": "512M", "MemoryMax": "1G" },
   "caddy": { "MemoryHigh": "512M", "MemoryMax": "1G" },
   "homepage": { "MemoryHigh": "256M", "MemoryMax": "512M" },
   "kanidm": { "MemoryHigh": "512M", "MemoryMax": "1G" },

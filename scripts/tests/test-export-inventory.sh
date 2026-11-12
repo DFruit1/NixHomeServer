@@ -29,7 +29,7 @@ jq -e '
   and (.backups.appStateEntries | type == "array" and length > 0)
   and (.backups.sqliteDumps | type == "array" and length > 0)
   and (.backups.postgresqlDumps | type == "array" and length > 0)
-  and (.backups.appStateEntries[] | select(.app == "offline-media" and .component == "syncthing-enrollment").stateRoot == "/persist/appdata/offline-media")
+  and (.backups.appStateEntries[] | select(.app == "offline-media" and .component == "retired-device-enrollment").stateRoot == "/persist/appdata/offline-media")
   and (.backups | has("phoneBackup") | not)
   and (.backups.successfulCurrentPath == "/persist/appdata/backup-metadata/current")
   and (.backups.retainedSuccessfulGenerations >= 2)

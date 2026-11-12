@@ -2,8 +2,6 @@ import type {
   AdminStep,
   FolderGuide,
   KanidmGroupManagementSource,
-  OfflineMediaConnectionAddress,
-  OfflineMediaConnectionKind,
   OfflineMediaSetup,
   PowerScheduleValues,
   ServiceCard,
@@ -51,12 +49,7 @@ export type AppConfig = {
   sftpKeyInstallCommand?: string;
   sftpKeyListCommand?: string;
   sftpKeyRevokeCommand?: string;
-  syncthingDeviceIdCommand?: string;
-  offlineMediaStatusCommand?: string;
-  offlineMediaEnrollCommand?: string;
-  offlineMediaRemoveCommand?: string;
   vaultKanidmUrl?: string;
-  vaultSyncthingKeyCommand?: string;
   vaultFreshrssPasswordCommand?: string;
   vaultKavitaKeysCommand?: string;
   sudoPath: string;
@@ -114,39 +107,6 @@ const singleLineString = (value: unknown, maximumLength: number): string | undef
   return trimmed;
 };
 
-const offlineMediaConnectionKinds: readonly OfflineMediaConnectionKind[] = ['lan', 'hostname', 'netbird'];
-
-const normaliseOfflineMediaConnectionKind = (value: unknown): OfflineMediaConnectionKind | undefined =>
-  typeof value === 'string' && (offlineMediaConnectionKinds as readonly string[]).includes(value)
-    ? value as OfflineMediaConnectionKind
-    : undefined;
-
-export const normaliseOfflineMediaConnectionAddresses = (value: unknown): OfflineMediaConnectionAddress[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const connections: OfflineMediaConnectionAddress[] = [];
-  const seenAddresses = new Set<string>();
-  for (const entry of value) {
-    const legacyAddress = singleLineString(entry, 512);
-    const objectEntry = typeof entry === 'object' && entry !== null && !Array.isArray(entry)
-      ? entry as Record<string, unknown>
-      : undefined;
-    const address = legacyAddress ?? singleLineString(objectEntry?.address, 512);
-    if (!address || seenAddresses.has(address)) {
-      continue;
-    }
-    const label = legacyAddress
-      ? 'Server address'
-      : singleLineString(objectEntry?.label, 100) ?? 'Server address';
-    const kind = legacyAddress ? undefined : normaliseOfflineMediaConnectionKind(objectEntry?.kind);
-    seenAddresses.add(address);
-    connections.push(kind ? { address, label, kind } : { address, label });
-  }
-  return connections;
-};
-
 export const loadHomepageConfig = (path: string | undefined): HomepageConfig => {
   if (!path) {
     return fallbackHomepage;
@@ -162,12 +122,7 @@ export const loadHomepageConfig = (path: string | undefined): HomepageConfig => 
   }
   const offlineMediaRaw = parsed.offlineMedia;
   const offlineMedia = typeof offlineMediaRaw === 'object' && offlineMediaRaw !== null && !Array.isArray(offlineMediaRaw)
-    ? {
-        ...(offlineMediaRaw as OfflineMediaSetup),
-        connectionAddresses: normaliseOfflineMediaConnectionAddresses(
-          (offlineMediaRaw as { connectionAddresses?: unknown }).connectionAddresses,
-        ),
-      }
+    ? offlineMediaRaw as OfflineMediaSetup
     : undefined;
   return {
     ...(parsed as HomepageConfig),
@@ -246,10 +201,6 @@ export const normaliseVaultConfig = (value: unknown): VaultConfig | undefined =>
   const featuresRaw = typeof vault.features === 'object' && vault.features !== null && !Array.isArray(vault.features)
     ? (vault.features as Record<string, unknown>)
     : {};
-  const syncthingRaw = typeof featuresRaw.syncthingApiKey === 'object' && featuresRaw.syncthingApiKey !== null && !Array.isArray(featuresRaw.syncthingApiKey)
-    ? (featuresRaw.syncthingApiKey as Record<string, unknown>)
-    : undefined;
-  const syncthingGate = normaliseVaultFeatureGate(featuresRaw.syncthingApiKey);
   const freshrssGate = normaliseVaultFeatureGate(featuresRaw.freshrssApiPassword);
   const kavitaGate = normaliseVaultFeatureGate(featuresRaw.kavitaApiKeys);
   const sshGate = normaliseVaultFeatureGate(featuresRaw.sshKeys);
@@ -264,9 +215,6 @@ export const normaliseVaultConfig = (value: unknown): VaultConfig | undefined =>
     kavitaWebUrl: singleLineString(vault.kavitaWebUrl, 256),
     features: {
       sshKeys: sshGate,
-      syncthingApiKey: syncthingGate
-        ? { ...syncthingGate, adminOnly: syncthingRaw?.adminOnly !== false }
-        : undefined,
       freshrssApiPassword: freshrssGate,
       kavitaApiKeys: kavitaGate,
     },
@@ -366,12 +314,7 @@ export const loadConfig = (): AppConfig => ({
   sftpKeyInstallCommand: process.env.HOMEPAGE_SFTP_KEY_INSTALL_COMMAND,
   sftpKeyListCommand: process.env.HOMEPAGE_SFTP_KEY_LIST_COMMAND,
   sftpKeyRevokeCommand: process.env.HOMEPAGE_SFTP_KEY_REVOKE_COMMAND,
-  syncthingDeviceIdCommand: process.env.HOMEPAGE_SYNCTHING_DEVICE_ID_COMMAND,
-  offlineMediaStatusCommand: process.env.HOMEPAGE_OFFLINE_MEDIA_STATUS_COMMAND ?? process.env.HOMEPAGE_OFFLINE_MUSIC_STATUS_COMMAND,
-  offlineMediaEnrollCommand: process.env.HOMEPAGE_OFFLINE_MEDIA_ENROLL_COMMAND ?? process.env.HOMEPAGE_OFFLINE_MUSIC_ENROLL_COMMAND,
-  offlineMediaRemoveCommand: process.env.HOMEPAGE_OFFLINE_MEDIA_REMOVE_COMMAND,
   vaultKanidmUrl: normaliseKanidmUrl(process.env.HOMEPAGE_VAULT_KANIDM_URL),
-  vaultSyncthingKeyCommand: process.env.HOMEPAGE_VAULT_SYNCTHING_KEY_COMMAND,
   vaultFreshrssPasswordCommand: process.env.HOMEPAGE_VAULT_FRESHRSS_PASSWORD_COMMAND,
   vaultKavitaKeysCommand: process.env.HOMEPAGE_VAULT_KAVITA_KEYS_COMMAND,
   sudoPath: process.env.HOMEPAGE_SUDO ?? 'sudo',

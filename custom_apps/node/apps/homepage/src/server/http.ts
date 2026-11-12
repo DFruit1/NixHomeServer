@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import { currentUserFromHeaders } from './auth.js';
 import type { AppConfig } from './config.js';
-import { enrollOfflineMediaDevice, getOfflineMediaSetup, OfflineMediaInputError, removeOfflineMediaDevice } from './offlineMedia.js';
+import { getOfflineMediaSetup } from './offlineMedia.js';
 import { applyBuildMode, getBuildMode, BuildModeInputError } from './buildMode.js';
 import { getAdminDashboard } from './adminDashboard.js';
 import { AdminLogsInputError, getAdminLogs, getRecentErrorSummary, unavailableAdminLogs } from './adminLogs.js';
@@ -23,8 +23,6 @@ import {
   vaultSshKeyAdd,
   vaultSshKeyRevoke,
   vaultSshKeys,
-  vaultSyncthingKeyGet,
-  vaultSyncthingKeyRotate,
   vaultUnlock,
   type VaultHttpResponse,
 } from './vault.js';
@@ -117,29 +115,6 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
       return true;
     }
 
-    if (request.method === 'POST' && (url.pathname === '/api/offline-media/devices' || url.pathname === '/api/offline-music/device')) {
-      const body = await readMutationJson<{ deviceId?: string; deviceName?: string }>(request);
-      const user = currentUserFromHeaders(request.headers, config.devUser);
-      if (!config.homepage.offlineMedia?.enabled) {
-        throw new Error('offline media access is not enabled');
-      }
-      assertFeatureAccess(user, config.homepage.offlineMedia?.requiredAllGroups, config.homepage.offlineMedia?.requiredAnyGroups);
-      sendJson(response, 200, await enrollOfflineMediaDevice(config, user, body));
-      return true;
-    }
-
-    if (request.method === 'DELETE' && url.pathname.startsWith('/api/offline-media/devices/')) {
-      await readMutationJson<Record<string, never>>(request);
-      const user = currentUserFromHeaders(request.headers, config.devUser);
-      if (!config.homepage.offlineMedia?.enabled) {
-        throw new Error('offline media access is not enabled');
-      }
-      assertFeatureAccess(user, config.homepage.offlineMedia?.requiredAllGroups, config.homepage.offlineMedia?.requiredAnyGroups);
-      const deviceId = decodeURIComponent(url.pathname.slice('/api/offline-media/devices/'.length));
-      sendJson(response, 200, await removeOfflineMediaDevice(config, user, deviceId));
-      return true;
-    }
-
     if (request.method === 'GET' && url.pathname === '/api/power-schedule') {
       sendJson(response, 200, await getPowerSchedule(config, request.headers));
       return true;
@@ -179,7 +154,7 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
       : message.includes('not authorised') ? 403
           : message.includes('content type') ? 415
             : message.includes('too large') ? 413
-              : error instanceof SyntaxError || error instanceof URIError || error instanceof OfflineMediaInputError || error instanceof PowerScheduleInputError || error instanceof BuildModeInputError ? 400
+              : error instanceof SyntaxError || error instanceof URIError || error instanceof PowerScheduleInputError || error instanceof BuildModeInputError ? 400
               : message.startsWith('public key ') || message.startsWith('publicKey ')
                 || message === 'invalid OpenSSH public key'
                 || message === 'invalid or corrupted OpenSSH public key' ? 400
@@ -302,17 +277,6 @@ export const handleVaultApiRequest = async (
     if (request.method === 'DELETE' && pathname === '/api/vault/ssh-keys') {
       const body = await readMutationJson<{ fingerprint?: unknown; username?: unknown }>(request);
       sendVaultResponse(response, await vaultSshKeyRevoke(config, request.headers, body));
-      return true;
-    }
-
-    if (request.method === 'GET' && pathname === '/api/vault/syncthing') {
-      sendVaultResponse(response, await vaultSyncthingKeyGet(config, request.headers));
-      return true;
-    }
-
-    if (request.method === 'POST' && pathname === '/api/vault/syncthing') {
-      await readMutationJson<Record<string, never>>(request);
-      sendVaultResponse(response, await vaultSyncthingKeyRotate(config, request.headers));
       return true;
     }
 
