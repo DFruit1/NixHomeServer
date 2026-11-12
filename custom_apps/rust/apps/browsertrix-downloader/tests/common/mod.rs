@@ -117,15 +117,14 @@ pub fn tar_gz(path: &Path, name: &str, kind: u8) {
     encoder.finish().unwrap();
 }
 
-
 pub fn test_resolver() -> browsertrix_downloader::queue::Resolver {
     browsertrix_downloader::queue::Resolver::new(|hostname| async move {
         // Offline test sandbox has no DNS; return a stable public address for
         // fixture hostnames so SSRF validation can still reject private ranges.
         match hostname.as_str() {
-            "example.com" | "metadata.example" | "leak.invalid" => {
-                Ok(vec![std::net::IpAddr::V4(std::net::Ipv4Addr::new(93, 184, 216, 34))])
-            }
+            "example.com" | "metadata.example" | "leak.invalid" => Ok(vec![std::net::IpAddr::V4(
+                std::net::Ipv4Addr::new(93, 184, 216, 34),
+            )]),
             _ => tokio::net::lookup_host((hostname.as_str(), 0))
                 .await
                 .map_err(|_| format!("could not resolve hostname: {hostname}"))

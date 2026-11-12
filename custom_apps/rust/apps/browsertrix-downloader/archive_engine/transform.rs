@@ -736,6 +736,7 @@ fn encode_record(record: &Record, out: impl Write) -> Result<u64, String> {
     Ok(raw.len() as u64)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_archive(
     destination: &Path,
     records: Vec<Record>,
@@ -912,11 +913,7 @@ fn write_archive(
                 Some(PageCapture::of(original)),
             ));
             if page_text.is_some() || infer_pages || page_rows.contains_key(&key) {
-                let previous_bytes = page_rows
-                    .get(&key)
-                    .map(&row_bytes)
-                    .transpose()?
-                    .unwrap_or(0);
+                let previous_bytes = page_rows.get(&key).map(row_bytes).transpose()?.unwrap_or(0);
                 let mut page = page_rows.get(&key).cloned().unwrap_or_default();
                 page.url = record.url().into();
                 if page.ts.is_empty() {

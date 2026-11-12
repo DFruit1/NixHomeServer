@@ -159,7 +159,7 @@ pub(super) fn parse(selectors: &[String]) -> Result<Vec<Selector>, String> {
             if ch == ']' {
                 bracket -= 1;
             }
-            if bracket < 0 || bracket > 1 {
+            if !(0..=1).contains(&bracket) {
                 return Err("Invalid selector brackets".into());
             }
             if bracket == 0 && (ch.is_ascii_whitespace() || ch == '>' || ch == ',') {

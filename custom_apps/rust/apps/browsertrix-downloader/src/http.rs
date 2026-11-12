@@ -79,16 +79,16 @@ async fn serve_archive(
         .filter(|job| job.status == crate::model::JobStatus::Completed)
         .filter(|job| job.archive_file.is_some())
         .ok_or_else(|| ApiError::not_found("archive not found"))?;
-    if let Some(id) = job.runtime.archive_id.as_ref() {
-        if let Some(archive) = state.database.archive_for_user(id, &user.username)? {
-            return file_response(
-                crate::custody::root(&state.config, &archive),
-                &archive.archive_file,
-                query.as_deref(),
-                &headers,
-            )
-            .await;
-        }
+    if let Some(id) = job.runtime.archive_id.as_ref()
+        && let Some(archive) = state.database.archive_for_user(id, &user.username)?
+    {
+        return file_response(
+            crate::custody::root(&state.config, &archive),
+            &archive.archive_file,
+            query.as_deref(),
+            &headers,
+        )
+        .await;
     }
     let archive_file = job.archive_file.expect("filtered archive file");
     file_response(
