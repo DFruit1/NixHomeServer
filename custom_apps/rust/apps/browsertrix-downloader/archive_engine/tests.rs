@@ -857,6 +857,7 @@ fn multi_fixture(path: &Path, entries: &[(&str, &str, &[u8])], date: &str) {
         .collect();
     capture_fixture(path, &captures);
 }
+#[allow(clippy::type_complexity)]
 fn capture_fixture(path: &Path, entries: &[(&str, &str, &[u8], &str, u16, bool)]) {
     let mut warc = vec![];
     let mut index = String::new();

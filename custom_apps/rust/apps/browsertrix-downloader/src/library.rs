@@ -188,19 +188,18 @@ pub fn publish_capture(
     if matches!(
         job.runtime.operation,
         Operation::Capture | Operation::Sample { .. }
-    ) {
-        if let Some(parent_id) = &job.runtime.archive_id {
-            let parent = db
-                .archive_for_user(parent_id, &job.created_by)
-                .map_err(|e| e.to_string())?
-                .ok_or("previous partial version is not authorized")?;
-            checked_archive(config, db, &job.created_by, &parent.id, &parent.sha256)?;
-            if parent.visibility == "private" {
-                a.visibility = "private".into();
-            }
-            a.parent_id = Some(parent.id);
-            a.parent_sha256 = Some(parent.sha256);
+    ) && let Some(parent_id) = &job.runtime.archive_id
+    {
+        let parent = db
+            .archive_for_user(parent_id, &job.created_by)
+            .map_err(|e| e.to_string())?
+            .ok_or("previous partial version is not authorized")?;
+        checked_archive(config, db, &job.created_by, &parent.id, &parent.sha256)?;
+        if parent.visibility == "private" {
+            a.visibility = "private".into();
         }
+        a.parent_id = Some(parent.id);
+        a.parent_sha256 = Some(parent.sha256);
     }
     a.capture_status = if status == JobStatus::Completed {
         "complete"
@@ -611,6 +610,7 @@ fn check(v: &mut Verification, name: &str, status: &str, details: String) {
         });
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn browser_qa(
     config: &AppConfig,
     db: &Database,
@@ -973,69 +973,6 @@ struct ViewBody {
     content: std::io::Cursor<Vec<u8>>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
-
-#[cfg(test)]
-mod api_budget_tests {
-    use super::*;
-    use std::time::Duration;
-    async fn response() -> axum::response::Response {
-        analyze_response(|| Ok((Default::default(), "reader content".into())))
-            .await
-            .unwrap()
-            .unwrap()
-    }
-    #[tokio::test]
-    async fn api_leases_cover_retained_bodies_and_cancelled_blocking_work() {
-        // Concrete OOM regression: the handler returning a response is not the
-        // end of its retained allocation, nor does abort stop spawn_blocking.
-        let first = response().await;
-        let second = response().await;
-        let mut third = tokio::spawn(response());
-        assert!(tokio::time::timeout(Duration::from_millis(50), &mut third)
-            .await
-            .is_err());
-        drop(first);
-        let third = tokio::time::timeout(Duration::from_secs(3), third)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            axum::body::to_bytes(third.into_body(), 100).await.unwrap(),
-            "reader content"
-        );
-        let fourth = tokio::time::timeout(Duration::from_secs(3), response())
-            .await
-            .unwrap();
-        drop((second, fourth));
-
-        let mut releases = vec![];
-        for _ in 0..2 {
-            let (started, ready) = tokio::sync::oneshot::channel();
-            let (release, wait) = std::sync::mpsc::channel();
-            let task = tokio::spawn(analyze(move || {
-                started.send(()).unwrap();
-                wait.recv_timeout(Duration::from_secs(5)).unwrap();
-                Ok(())
-            }));
-            ready.await.unwrap();
-            task.abort();
-            let _ = task.await;
-            releases.push(release);
-        }
-        let mut next = tokio::spawn(response());
-        assert!(tokio::time::timeout(Duration::from_millis(50), &mut next)
-            .await
-            .is_err());
-        releases.remove(0).send(()).unwrap();
-        drop(
-            tokio::time::timeout(Duration::from_secs(3), next)
-                .await
-                .unwrap()
-                .unwrap(),
-        );
-        releases.remove(0).send(()).unwrap();
-    }
-}
 impl tokio::io::AsyncRead for ViewBody {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
@@ -1105,5 +1042,68 @@ fn verify_custody(
             }
             (PathBuf::new(), v)
         }
+    }
+}
+
+#[cfg(test)]
+mod api_budget_tests {
+    use super::*;
+    use std::time::Duration;
+    async fn response() -> axum::response::Response {
+        analyze_response(|| Ok((Default::default(), "reader content".into())))
+            .await
+            .unwrap()
+            .unwrap()
+    }
+    #[tokio::test]
+    async fn api_leases_cover_retained_bodies_and_cancelled_blocking_work() {
+        // Concrete OOM regression: the handler returning a response is not the
+        // end of its retained allocation, nor does abort stop spawn_blocking.
+        let first = response().await;
+        let second = response().await;
+        let mut third = tokio::spawn(response());
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut third)
+            .await
+            .is_err());
+        drop(first);
+        let third = tokio::time::timeout(Duration::from_secs(3), third)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            axum::body::to_bytes(third.into_body(), 100).await.unwrap(),
+            "reader content"
+        );
+        let fourth = tokio::time::timeout(Duration::from_secs(3), response())
+            .await
+            .unwrap();
+        drop((second, fourth));
+
+        let mut releases = vec![];
+        for _ in 0..2 {
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let task = tokio::spawn(analyze(move || {
+                started.send(()).unwrap();
+                wait.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(())
+            }));
+            ready.await.unwrap();
+            task.abort();
+            let _ = task.await;
+            releases.push(release);
+        }
+        let mut next = tokio::spawn(response());
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut next)
+            .await
+            .is_err());
+        releases.remove(0).send(()).unwrap();
+        drop(
+            tokio::time::timeout(Duration::from_secs(3), next)
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        releases.remove(0).send(()).unwrap();
     }
 }

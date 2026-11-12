@@ -162,11 +162,11 @@ pub(super) fn embedded_documents(record: &Record) -> Result<Option<Vec<String>>,
     };
     let mut nodes = vec![document.document.clone()];
     while let Some(node) = nodes.pop() {
-        if node.element_name().as_deref() == Some("base") {
-            if let Some(next) = attr(&node, "href").and_then(|s| base.join(&s).ok()) {
-                base = next;
-                break;
-            }
+        if node.element_name().as_deref() == Some("base")
+            && let Some(next) = attr(&node, "href").and_then(|s| base.join(&s).ok())
+        {
+            base = next;
+            break;
         }
         nodes.extend(node.children.borrow().iter().rev().cloned());
     }
@@ -237,15 +237,13 @@ pub(super) fn extract(record: &Record) -> Result<(String, String, Vec<String>), 
     let mut base = url::Url::parse(record.url()).ok();
     let mut base_nodes = vec![dom.document.clone()];
     while let Some(node) = base_nodes.pop() {
-        if node.element_name().as_deref() == Some("base") {
-            if let (Some(current), Some(href)) = (&base, attr(&node, "href")) {
-                if let Ok(next) = current.join(&href) {
-                    if matches!(next.scheme(), "http" | "https") {
-                        base = Some(next);
-                        break;
-                    }
-                }
-            }
+        if node.element_name().as_deref() == Some("base")
+            && let (Some(current), Some(href)) = (&base, attr(&node, "href"))
+            && let Ok(next) = current.join(&href)
+            && matches!(next.scheme(), "http" | "https")
+        {
+            base = Some(next);
+            break;
         }
         for child in node.children.borrow().iter().rev() {
             base_nodes.push(child.clone());
@@ -264,23 +262,21 @@ pub(super) fn extract(record: &Record) -> Result<(String, String, Vec<String>), 
                 .into();
         }
         for key in ["src", "href", "poster", "data"] {
-            if let (Some(base), Some(value)) = (&base, attr(&node, key)) {
-                if let Ok(mut url) = base.join(&value) {
-                    if matches!(url.scheme(), "http" | "https") {
-                        url.set_fragment(None);
-                        links.insert(url.to_string());
-                    }
-                }
+            if let (Some(base), Some(value)) = (&base, attr(&node, key))
+                && let Ok(mut url) = base.join(&value)
+                && matches!(url.scheme(), "http" | "https")
+            {
+                url.set_fragment(None);
+                links.insert(url.to_string());
             }
         }
         if let (Some(base), Some(value)) = (&base, attr(&node, "srcset")) {
             for entry in value.split(',') {
-                if let Some(first) = entry.split_whitespace().next() {
-                    if let Ok(url) = base.join(first) {
-                        if matches!(url.scheme(), "http" | "https") {
-                            links.insert(url.to_string());
-                        }
-                    }
+                if let Some(first) = entry.split_whitespace().next()
+                    && let Ok(url) = base.join(first)
+                    && matches!(url.scheme(), "http" | "https")
+                {
+                    links.insert(url.to_string());
                 }
             }
         }

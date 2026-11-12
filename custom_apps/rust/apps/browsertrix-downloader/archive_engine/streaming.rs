@@ -79,7 +79,7 @@ impl<R: Read> Read for Checked<R> {
 impl BodySource {
     pub fn reader(&self, payload: bool) -> Result<Box<dyn Read>, String> {
         self.read_budget
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
                 left.checked_sub(self.body_offset.saturating_add(self.body_length))
             })
             .map_err(|_| "Gzip span reread budget exceeded")?;
@@ -465,6 +465,7 @@ fn read_header(input: &mut impl BufRead, skip_empty: bool) -> Result<Option<Vec<
         }
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn scan_warc(
     file: Arc<File>,
     read_budget: Arc<AtomicU64>,
@@ -571,7 +572,7 @@ fn scan_warc(
                         )
                     };
                 drop(buffered);
-                drop(block_reader);
+                let _ = block_reader;
                 *metadata = metadata
                     .checked_add(http_headers.len())
                     .filter(|n| *n <= MAX_METADATA)
@@ -583,20 +584,18 @@ fn scan_warc(
                 if let Some(expected) = headers
                     .get("warc-block-digest")
                     .filter(|d| d.starts_with("sha256:"))
+                    && read::normalize_sha256(expected)? != digest
                 {
-                    if read::normalize_sha256(expected)? != digest {
-                        return Err("WARC block SHA-256 mismatch".into());
-                    }
+                    return Err("WARC block SHA-256 mismatch".into());
                 }
-                if kind != "revisit" && matches!(kind, "response" | "resource") {
-                    if let Some(expected) = headers
+                if kind != "revisit"
+                    && matches!(kind, "response" | "resource")
+                    && let Some(expected) = headers
                         .get("warc-payload-digest")
                         .filter(|d| d.starts_with("sha256:"))
-                    {
-                        if read::normalize_sha256(expected)? != payload_hash {
-                            return Err("WARC payload SHA-256 mismatch".into());
-                        }
-                    }
+                    && read::normalize_sha256(expected)? != payload_hash
+                {
+                    return Err("WARC payload SHA-256 mismatch".into());
                 }
                 let resolved = kind != "revisit";
                 let source = Arc::new(BodySource {

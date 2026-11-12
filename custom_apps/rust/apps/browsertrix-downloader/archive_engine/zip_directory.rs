@@ -218,16 +218,16 @@ pub(super) fn validate(file: &File, size: u64) -> Result<Directory, String> {
         if !h.starts_with(b"PK\x01\x02") {
             return Err("Invalid ZIP central directory record".into());
         }
-        let name_len = u16le(&h, 28) as usize;
-        let extra_len = u16le(&h, 30) as usize;
-        let comment_len = u16le(&h, 32) as usize;
+        let name_len = u16le(h, 28) as usize;
+        let extra_len = u16le(h, 30) as usize;
+        let comment_len = u16le(h, 32) as usize;
         let next = position + 46 + (name_len + extra_len + comment_len) as u64;
         if next > directory_end || name_len == 0 || name_len > MAX_NAME {
             return Err("ZIP member name/metadata bound exceeded".into());
         }
         let name = metadata(position + 46, name_len)?;
-        let text = std::str::from_utf8(&name).map_err(|_| "Non-UTF8 ZIP names unsupported")?;
-        let flags = u16le(&h, 8);
+        let text = std::str::from_utf8(name).map_err(|_| "Non-UTF8 ZIP names unsupported")?;
+        let flags = u16le(h, 8);
         if (flags & 0x800 == 0 && !text.is_ascii())
             || text.contains(['\\', ':'])
             || text.chars().any(char::is_control)
@@ -241,11 +241,11 @@ pub(super) fn validate(file: &File, size: u64) -> Result<Directory, String> {
             return Err("Duplicate ZIP member".into());
         }
         let extras = metadata(position + 46 + name_len as u64, extra_len)?;
-        let z = extra(&extras, &name)?.unwrap_or(&[]);
+        let z = extra(extras, name)?.unwrap_or(&[]);
         let mut p = 0;
-        let mut unpacked = u32le(&h, 24) as u64;
-        let mut packed = u32le(&h, 20) as u64;
-        let mut local = u32le(&h, 42) as u64;
+        let mut unpacked = u32le(h, 24) as u64;
+        let mut packed = u32le(h, 20) as u64;
+        let mut local = u32le(h, 42) as u64;
         if unpacked == u32::MAX as u64 {
             unpacked = take64(z, &mut p)?;
         }
@@ -255,10 +255,10 @@ pub(super) fn validate(file: &File, size: u64) -> Result<Directory, String> {
         if local == u32::MAX as u64 {
             local = take64(z, &mut p)?;
         }
-        let disk = if u16le(&h, 34) == u16::MAX {
+        let disk = if u16le(h, 34) == u16::MAX {
             u32le(z.get(p..p + 4).ok_or("Missing ZIP64 disk")?, 0)
         } else {
-            u16le(&h, 34) as u32
+            u16le(h, 34) as u32
         };
         if disk != 0 {
             return Err("Multi-disk ZIP member unsupported".into());
@@ -267,7 +267,7 @@ pub(super) fn validate(file: &File, size: u64) -> Result<Directory, String> {
             .checked_add(unpacked)
             .filter(|n| *n <= MAX_INFLATED)
             .ok_or("ZIP inflated byte limit exceeded")?;
-        let method = u16le(&h, 10);
+        let method = u16le(h, 10);
         if !matches!(method, 0 | 8) || (method == 0 && packed != unpacked) {
             return Err("Unsupported ZIP compression or STORE size mismatch".into());
         }
@@ -293,7 +293,7 @@ pub(super) fn validate(file: &File, size: u64) -> Result<Directory, String> {
         }
         extra(
             &bytes(file, local + 30 + name_len as u64, local_extra)?,
-            &name,
+            name,
         )?;
         ranges.push((local, data_end));
         position = next;

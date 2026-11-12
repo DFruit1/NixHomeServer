@@ -449,7 +449,20 @@ async fn capture(
     let status = loop {
         tokio::select! {
          result=&mut wait=>break result.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?,
-         Some(line)=rx.recv()=>{read_metrics(&line,&mut runtime,&mut policy_ready);record_omission(&crawl_dir,&line)?;if let Some(update)=parse_crawl_log_line(&line){progress=merge_progress(&progress,&update);}if last_write.elapsed()>=Duration::from_secs(2){database.set_progress(&job.id,Some(&progress)).map_err(|e|e.to_string())?;last_write=Instant::now();}if reason.is_none()&& let Some(value)=stop_reason_from_log(&line){reason=Some(value.into());}},
+         Some(line)=rx.recv()=>{
+           read_metrics(&line,&mut runtime,&mut policy_ready);
+           record_omission(&crawl_dir,&line)?;
+           if let Some(update)=parse_crawl_log_line(&line){
+             progress=merge_progress(&progress,&update);
+           }
+           if last_write.elapsed()>=Duration::from_secs(2){
+             database.set_progress(&job.id,Some(&progress)).map_err(|e|e.to_string())?;
+             last_write=Instant::now();
+           }
+           if reason.is_none()&& let Some(value)=stop_reason_from_log(&line){
+             reason=Some(value.into());
+           }
+         },
          _=poll.tick()=>{
            let current=database.job(&job.id).map_err(|e|e.to_string())?.ok_or("active job disappeared")?;
            if signalled.is_none(){let control=current.runtime.control.as_deref();let next=if current.status==JobStatus::Cancelling{Some("discard")}else if control==Some("pause"){Some("pause")}else if control==Some("stop"){Some("stop-and-save")}else if started.elapsed()>=Duration::from_secs(remaining_seconds+30){Some("time-limit")}else{None};
