@@ -383,7 +383,7 @@ it("names the recommended source for a missing field and lists the alternatives"
       .querySelector('[role="dialog"] .health-lookup-note')
       ?.textContent?.replace(/\s+/g, " "),
   ).toBe(
-    "Confidence is a subjective match estimate, not a verified probability. Select a value to compare; edit in Review metadata.",
+    "Showing matches of at least 30%, best first. Confidence is an evidence estimate, not a verified probability.",
   );
   const dialog = screen.querySelector('[role="dialog"]');
   expect(dialog?.textContent).toContain("Find from External Providers");
@@ -457,7 +457,7 @@ it("applies an album issue to the file that produced it", async () => {
             results: [
               {
                 workId: "OL1W",
-                title: "Online title",
+                title: "Lawson restored",
                 authors: [],
                 publishers: [],
                 languages: [],
@@ -543,10 +543,13 @@ it("applies an album issue to the file that produced it", async () => {
   );
   const form = screen.querySelector(".health-lookup-query");
   await userEvent(form ?? null, "submit");
-  await vi.waitFor(() => expect(screen.textContent).toContain("Online title"));
+  await vi.waitFor(async () => {
+    await userEvent(screen, "click");
+    expect(screen.textContent).toContain("Lawson restored");
+  });
   await userEvent(screen.querySelector(".health-lookup-select"), "click");
   expect(secondIssue?.textContent).toContain("Selected online value");
-  expect(secondIssue?.textContent).toContain("Online title");
+  expect(secondIssue?.textContent).toContain("Lawson restored");
   await userEvent(button ?? null, "click");
   await vi.waitFor(() =>
     expect(

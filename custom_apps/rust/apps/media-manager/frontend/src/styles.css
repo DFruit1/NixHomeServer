@@ -8349,3 +8349,21 @@ a:focus-visible {
   letter-spacing: normal;
   text-transform: none;
 }
+
+/* Automatic suggestions share the existing proposed-value action and evidence. */
+.health-auto-proposal {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.health-value .health-auto-proposal small {
+  color: var(--ink-soft);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.health-auto-proposal .health-lookup-details ul {
+  padding-left: 20px;
+  color: var(--ink-soft);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}

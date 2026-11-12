@@ -13,6 +13,8 @@ import {
   Slot,
   type QRL,
   useSignal,
+  noSerialize,
+  type NoSerialize,
   useStore,
   useResource$,
   useTask$,
@@ -32,10 +34,18 @@ import {
   type HealthIssueEntry,
 } from "./health-decisions";
 import {
-  lookupHealthProvider,
-  healthLookupAvailability,
-  matchConfidence,
+  rankHealthCandidates,
+  hasHealthValue,
+  type HealthMatch,
 } from "./health-provider-lookup";
+import {
+  createHealthLookupSession,
+  type HealthLookupSession,
+} from "./health-lookup-session";
+import {
+  HealthAutoProposal,
+  type GetHealthLookupSession,
+} from "./health-auto-proposal";
 import type { IconName } from "./root-types";
 import { candidateSources, sourceStatus } from "./health-source-recommendation";
 
@@ -241,13 +251,6 @@ function groupHeading(group: HealthGroup): {
   };
 }
 
-interface OnlineMetadataCandidate {
-  title: string;
-  values: Record<string, unknown>;
-  provider: ProviderDefinition;
-  providerIds: Record<string, unknown>;
-}
-
 function renderCandidateFields(fields: [string, unknown][]) {
   return (
     <dl>
@@ -261,57 +264,9 @@ function renderCandidateFields(fields: [string, unknown][]) {
   );
 }
 
-function candidateValues(
-  providerId: string,
-  candidate: Record<string, unknown>,
-) {
-  candidate = {
-    ...candidate,
-    ...((candidate.fields as Record<string, unknown>) ?? {}),
-  };
-  const values: Record<string, unknown> = {};
-  const put = (field: string, value: unknown) => {
-    if (
-      value !== undefined &&
-      value !== null &&
-      value !== "" &&
-      (!Array.isArray(value) || value.length > 0)
-    )
-      values[field] = value;
-  };
-  const first = (...keys: string[]) =>
-    keys
-      .map((key) => candidate[key])
-      .find((value) => value != null && value !== "");
-  put("title", first("title", "name", "editionTitle", "fileName"));
-  put("year", first("year", "publishYear", "firstPublishYear"));
-  put("description", candidate.overview ?? candidate.description);
-  put("authors", candidate.artist ?? candidate.authors);
-  put("publisher", first("label", "publisher", "publishers"));
-  if (providerId !== "tmdb")
-    put("genres", first("genres", "subjects", "categories"));
-  const languages = candidate.languages;
-  put("language", Array.isArray(languages) ? languages[0] : candidate.language);
-  put("premiereDate", first("releaseDate", "publishDate"));
-  put("isbn", first("isbn", "isbn13", "isbn10"));
-  for (const field of [
-    "narrators",
-    "series",
-    "volumeNumber",
-    "trackNumber",
-    "subtitle",
-  ])
-    put(
-      field,
-      candidate[field] ??
-        (field === "subtitle" ? candidate.fileName : undefined),
-    );
-  const title = displayValue(values.title);
-  return title === "Not set" ? undefined : { title, values };
-}
-
 const ExternalProvidersDialog = component$<{
   issue: MetadataHealthIssue;
+  getSession$: GetHealthLookupSession;
   mediaKind: MediaKind;
   providers: ProviderDefinition[];
   primary: ProviderDefinition;
@@ -324,7 +279,7 @@ const ExternalProvidersDialog = component$<{
   const state = useStore({
     loading: false,
     error: "",
-    candidates: [] as OnlineMetadataCandidate[],
+    candidates: [] as HealthMatch[],
     query: props.query,
     context: {} as Record<string, unknown>,
     statuses: {} as Record<string, string>,
@@ -335,19 +290,26 @@ const ExternalProvidersDialog = component$<{
     props.issue.field ?? "",
   );
   const searchable = recommended.length > 0;
+  const searchRevision = useSignal(0);
   const search = $(async () => {
     if (!state.query.trim() || state.loading) return;
-    const itemId = props.itemId;
-    const initialQuery = props.query;
+    const revision = ++searchRevision.value;
+    const {
+      itemId,
+      query: initialQuery,
+      providers,
+      mediaKind,
+      getSession$,
+    } = props;
+    const field = props.issue.field ?? "";
     const query = state.query.trim();
     state.loading = true;
     state.error = "";
     state.candidates = [];
     try {
       // Metadata supplies edition identifiers and evidence for matching.
-      state.context = await api<Record<string, unknown>>(
-        `/items/${encodeURIComponent(itemId)}/metadata`,
-      );
+      const session = await getSession$();
+      state.context = await session.metadata(itemId);
     } catch {
       state.context = { title: initialQuery };
     }
@@ -355,50 +317,37 @@ const ExternalProvidersDialog = component$<{
       ...state.context,
       title: state.context.title || initialQuery,
     };
-    await Promise.all(
-      recommended.map(async (provider) => {
-        const unavailable = healthLookupAvailability(provider, state.context);
-        if (unavailable) {
-          state.statuses[provider.id] = unavailable;
-          return;
-        }
-        state.statuses[provider.id] = "Searching…";
-        try {
-          const raw = await lookupHealthProvider(
-            provider.id,
-            query,
-            itemId,
-            state.context,
-          );
-          const candidates = raw.flatMap((candidate) => {
-            const normalized = candidateValues(provider.id, candidate);
-            return normalized
-              ? [
-                  {
-                    ...normalized,
-                    provider,
-                    providerIds: (candidate.providerIds ?? {}) as Record<
-                      string,
-                      unknown
-                    >,
-                  },
-                ]
-              : [];
-          });
-          state.candidates = [...state.candidates, ...candidates];
-          state.statuses[provider.id] = candidates.length ? "" : "No matches";
-        } catch (error) {
-          state.statuses[provider.id] = readableError(error);
-        }
-      }),
+    const session = await getSession$();
+    state.statuses = {};
+    if (revision !== searchRevision.value) return;
+    await session.search(
+      providers,
+      mediaKind,
+      field,
+      itemId,
+      query,
+      state.context,
+      (candidates, provider, status) => {
+        if (revision !== searchRevision.value) return;
+        state.candidates = [...state.candidates, ...candidates];
+        state.statuses[provider] = status;
+      },
     );
-    state.loading = false;
+    if (revision === searchRevision.value) state.loading = false;
   });
 
-  useVisibleTask$(() => {
+  useVisibleTask$(({ cleanup }) => {
     void search();
+    cleanup(() => {
+      searchRevision.value++;
+    });
   });
 
+  const matches = rankHealthCandidates(
+    state.candidates,
+    state.context,
+    props.issue.field ?? "",
+  );
   return (
     <div class="dialog-backdrop" onClick$={props.onClose$}>
       <div
@@ -424,8 +373,8 @@ const ExternalProvidersDialog = component$<{
           {searchable ? (
             <>
               <p class="health-lookup-note">
-                Confidence is a subjective match estimate, not a verified
-                probability. Select a value to compare; edit in Review metadata.
+                Showing matches of at least 30%, best first. Confidence is an
+                evidence estimate, not a verified probability.
               </p>
               <form
                 class="health-lookup-query"
@@ -458,120 +407,94 @@ const ExternalProvidersDialog = component$<{
                   {state.error}
                 </p>
               )}
-              {!state.loading &&
-                !state.error &&
-                state.candidates.length === 0 && (
-                  <p>No matching online metadata was found.</p>
-                )}
+              {!state.loading && !state.error && matches.length === 0 && (
+                <p>No results supply this field with at least a 30% match.</p>
+              )}
               <ul class="health-lookup-results">
-                {state.candidates
-                  .slice()
-                  .sort(
-                    (a, b) =>
-                      matchConfidence(
-                        b,
-                        state.context,
-                        props.issue.field ?? "",
-                        state.candidates,
-                      ).score -
-                      matchConfidence(
-                        a,
-                        state.context,
-                        props.issue.field ?? "",
-                        state.candidates,
-                      ).score,
-                  )
-                  .map((candidate, index) => {
-                    const confidence = matchConfidence(
-                      candidate,
-                      state.context,
-                      props.issue.field ?? "",
-                      state.candidates,
-                    );
-                    // The title already identifies the result. Keep the requested
-                    // field and edition identifiers visible; retain other detail.
-                    const fields = Object.entries(candidate.values).filter(
-                      ([field]) => field !== "title",
-                    );
-                    const primaryFields = new Set([
-                      props.issue.field,
-                      "authors",
-                      "year",
-                      "publisher",
-                      "isbn",
-                    ]);
-                    const extra = fields.filter(
-                      ([field]) => !primaryFields.has(field),
-                    );
-                    return (
-                      <li key={`${candidate.title}-${index}`}>
-                        <div class="health-provider-summary">
-                          {candidate.provider.logoUrl && (
-                            <img
-                              src={candidate.provider.logoUrl}
-                              width="24"
-                              height="24"
-                              alt=""
-                            />
-                          )}
-                          <strong>{candidate.provider.name}</strong>
-                          <span
-                            class="health-confidence"
-                            title={confidence.reasons.join("; ")}
-                            tabIndex={0}
-                            aria-label={`Estimated confidence ${confidence.score} percent. ${confidence.reasons.join("; ")}`}
-                          >
-                            {confidence.score}% estimate
-                          </span>
-                        </div>
+                {matches.map((candidate, index) => {
+                  const confidence = candidate.confidence;
+                  // The title already identifies the result. Keep the requested
+                  // field and edition identifiers visible; retain other detail.
+                  const fields = Object.entries(candidate.values).filter(
+                    ([field]) => field !== "title",
+                  );
+                  const primaryFields = new Set([
+                    props.issue.field,
+                    "authors",
+                    "year",
+                    "publisher",
+                    "isbn",
+                  ]);
+                  const extra = fields.filter(
+                    ([field]) => !primaryFields.has(field),
+                  );
+                  return (
+                    <li key={`${candidate.title}-${index}`}>
+                      <div class="health-provider-summary">
+                        {candidate.provider.logoUrl && (
+                          <img
+                            src={candidate.provider.logoUrl}
+                            width="24"
+                            height="24"
+                            alt=""
+                          />
+                        )}
+                        <strong>{candidate.provider.name}</strong>
+                        <span
+                          class="health-confidence"
+                          title={confidence.reasons.join("; ")}
+                          tabIndex={0}
+                          aria-label={`Estimated confidence ${confidence.score} percent. ${confidence.reasons.join("; ")}`}
+                        >
+                          {confidence.score}% estimate
+                        </span>
+                      </div>
+                      <details class="health-lookup-details">
+                        <summary>Confidence evidence</summary>
+                        <ul>
+                          {confidence.reasons.map((reason) => (
+                            <li key={reason}>{reason}</li>
+                          ))}
+                        </ul>
+                      </details>
+                      <strong>{candidate.title}</strong>
+                      {renderCandidateFields(
+                        fields.filter(([field]) => primaryFields.has(field)),
+                      )}
+                      {extra.length > 0 && (
                         <details class="health-lookup-details">
-                          <summary>Confidence evidence</summary>
-                          <ul>
-                            {confidence.reasons.map((reason) => (
-                              <li key={reason}>{reason}</li>
-                            ))}
-                          </ul>
+                          <summary>More metadata</summary>
+                          {renderCandidateFields(extra)}
                         </details>
-                        <strong>{candidate.title}</strong>
-                        {renderCandidateFields(
-                          fields.filter(([field]) => primaryFields.has(field)),
-                        )}
-                        {extra.length > 0 && (
-                          <details class="health-lookup-details">
-                            <summary>More metadata</summary>
-                            {renderCandidateFields(extra)}
-                          </details>
-                        )}
-                        {props.issue.field &&
-                        props.issue.field in candidate.values ? (
-                          <button
-                            type="button"
-                            class="secondary-button health-lookup-select"
-                            onClick$={() => {
-                              props.onSelect$(
-                                candidate.values[props.issue.field!],
-                                candidate.provider.name,
-                              );
-                              props.onClose$();
-                            }}
-                          >
-                            Compare{" "}
-                            {metadataFieldLabel(
-                              props.issue.field,
-                            ).toLowerCase()}
-                          </button>
-                        ) : (
-                          <small>
-                            This result has no{" "}
-                            {metadataFieldLabel(
-                              props.issue.field ?? "matching",
-                            ).toLowerCase()}{" "}
-                            value.
-                          </small>
-                        )}
-                      </li>
-                    );
-                  })}
+                      )}
+                      {props.issue.field &&
+                      props.issue.field in candidate.values ? (
+                        <button
+                          type="button"
+                          class="secondary-button health-lookup-select"
+                          onClick$={async () => {
+                            await props.onSelect$(
+                              candidate.values[props.issue.field!],
+                              candidate.provider.name,
+                            );
+                            await props.onClose$();
+                          }}
+                        >
+                          Compare{" "}
+                          {metadataFieldLabel(props.issue.field).toLowerCase()}
+                        </button>
+                      ) : (
+                        <small>
+                          This result has no{" "}
+                          {metadataFieldLabel(
+                            props.issue.field ?? "matching",
+                          ).toLowerCase()}{" "}
+                          value.
+                        </small>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             </>
           ) : (
@@ -594,7 +517,7 @@ const ExternalProvidersDialog = component$<{
               .filter(
                 (provider) =>
                   state.statuses[provider.id] ||
-                  !state.candidates.some(
+                  !matches.some(
                     (candidate) => candidate.provider.id === provider.id,
                   ),
               )
@@ -618,8 +541,10 @@ const ExternalProvidersDialog = component$<{
                       )}
                       <strong>{provider.name}</strong>
                       <span>
-                        {state.statuses[provider.id] ??
-                          sourceStatus(provider).label}
+                        {state.statuses[provider.id] ||
+                          (state.loading
+                            ? sourceStatus(provider).label
+                            : "No qualifying values")}
                       </span>
                     </div>
                     {notSetUp && (
@@ -696,6 +621,7 @@ function distinctValues(entries: HealthIssueEntry[], proposed: boolean) {
       ? (issue.proposedValues ?? [])
       : [{ value: issue.currentValue, sources: issue.currentSources ?? [] }];
     for (const candidate of candidates) {
+      if (proposed && !hasHealthValue(candidate.value)) continue;
       const key = displayValue(candidate.value);
       const previous = values.get(key);
       values.set(key, {
@@ -709,8 +635,22 @@ function distinctValues(entries: HealthIssueEntry[], proposed: boolean) {
   return [...values.values()];
 }
 
+function needsExternalProposal(entries: HealthIssueEntry[]): boolean {
+  return entries.every(
+    ({ issue }) =>
+      !hasHealthValue(issue.currentValue) &&
+      !issue.proposedValues?.some((candidate) =>
+        hasHealthValue(candidate.value),
+      ) &&
+      !issue.fileOverride,
+  );
+}
+
 const HealthDecisionRow = component$<{
   entries: HealthIssueEntry[];
+  query: string;
+  providers: ProviderDefinition[];
+  getSession$: GetHealthLookupSession;
   album?: AlbumTarget;
   showFile: boolean;
   sharedReason?: boolean;
@@ -725,6 +665,7 @@ const HealthDecisionRow = component$<{
   const field = issue.field ?? "";
   const editable =
     props.canEdit && isSettableField(field) && target.mediaKind !== "podcast";
+  const autoEligible = editable && needsExternalProposal(props.entries);
   const currents = distinctValues(props.entries, false);
   const proposals = distinctValues(props.entries, true);
   const apply$ = $(async (value: unknown, origin: "Current" | "Proposed") => {
@@ -790,6 +731,16 @@ const HealthDecisionRow = component$<{
               )}
             </div>
           ))
+        ) : autoEligible ? (
+          <HealthAutoProposal
+            target={target}
+            field={field}
+            query={props.query}
+            providers={props.providers}
+            getSession$={props.getSession$}
+            applying={props.applying}
+            onUse$={(value) => apply$(value, "Proposed")}
+          />
         ) : (
           <p
             class="health-value-text health-unset"
@@ -806,9 +757,10 @@ const HealthDecisionRow = component$<{
       </td>
       <td
         class={{ "health-provenance": !props.sharedReason }}
-        hidden={props.sharedReason}
+        hidden={props.sharedReason || autoEligible}
       >
         {!props.sharedReason &&
+          !autoEligible &&
           [
             ...new Set(
               props.entries.map(({ issue }) =>
@@ -823,6 +775,7 @@ const HealthDecisionRow = component$<{
 
 const HealthIssueReview = component$<{
   group: HealthGroup;
+  getSession$: GetHealthLookupSession;
   grouped: GroupedIssue;
   providers: ProviderDefinition[];
   canEdit: boolean;
@@ -874,6 +827,7 @@ const HealthIssueReview = component$<{
       ? { rootId: props.group.rootId, path: props.group.album! }
       : undefined;
   const editable = editableHealthIssue(issue, target, props.canEdit);
+  const autoEligible = editable && needsExternalProposal(entries);
   const readOnlyTitle =
     !editable && target.mediaKind === "podcast"
       ? "Podcast metadata is managed in its source app."
@@ -991,6 +945,9 @@ const HealthIssueReview = component$<{
               <tbody>
                 {album ? (
                   <HealthDecisionRow
+                    providers={props.providers}
+                    getSession$={props.getSession$}
+                    query={groupHeading(props.group).text}
                     key="album"
                     entries={entries}
                     album={album}
@@ -1005,6 +962,9 @@ const HealthIssueReview = component$<{
                 ) : (
                   entries.map((entry) => (
                     <HealthDecisionRow
+                      providers={props.providers}
+                      getSession$={props.getSession$}
+                      query={groupHeading(props.group).text}
                       key={entry.target.itemId}
                       entries={[entry]}
                       showFile={entries.length > 1}
@@ -1018,12 +978,14 @@ const HealthIssueReview = component$<{
                 )}
               </tbody>
             </table>
-            {(sharedReason || sharedSources) && (
+            {((sharedReason && !autoEligible) || sharedSources) && (
               <div class="health-provenance">
                 {sharedSources && (
                   <p>Current from {quotedList(currentSources)}.</p>
                 )}
-                {sharedReason && <p>{proposedProvenance(issue, true)}</p>}
+                {sharedReason && !autoEligible && (
+                  <p>{proposedProvenance(issue, true)}</p>
+                )}
               </div>
             )}
             {!album &&
@@ -1294,6 +1256,15 @@ interface MetadataHealthProps {
 }
 
 const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
+  const lookupSession = useSignal<NoSerialize<HealthLookupSession>>();
+  const getLookupSession$ = $(() => {
+    if (!lookupSession.value)
+      lookupSession.value = noSerialize(createHealthLookupSession());
+    return lookupSession.value!;
+  });
+  useVisibleTask$(({ cleanup }) => {
+    cleanup(() => lookupSession.value?.dispose());
+  });
   const inbox = useStore({
     rootId: props.roots.some((root) => root.id === props.initialRootId)
       ? props.initialRootId!
@@ -1353,6 +1324,8 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
 
   const inspectLibraries = $(async (rootId: string) => {
     const revision = ++requestRevision.value;
+    lookupSession.value?.dispose();
+    lookupSession.value = undefined;
     inbox.results = [];
     inbox.inspectedItems = 0;
     inbox.issueCount = 0;
@@ -1527,6 +1500,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
     },
   );
 
+  const dialog = providersDialogFor.value;
   return (
     <section
       class="health-page"
@@ -1607,6 +1581,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
           >
             {groupIssues(group.results).map((grouped) => (
               <HealthIssueReview
+                getSession$={getLookupSession$}
                 key={`${group.key}-${grouped.key}`}
                 group={group}
                 grouped={grouped}
@@ -1632,15 +1607,16 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
           </HealthResult>
         ))}
       </div>
-      {providersDialogFor.value && (
+      {dialog && (
         <ExternalProvidersDialog
-          issue={providersDialogFor.value.issue}
-          mediaKind={providersDialogFor.value.mediaKind}
+          getSession$={getLookupSession$}
+          issue={dialog.issue}
+          mediaKind={dialog.mediaKind}
           providers={providerCatalog.providers}
-          primary={providersDialogFor.value.primary}
-          itemId={providersDialogFor.value.itemId}
-          rootId={providersDialogFor.value.rootId}
-          query={providersDialogFor.value.query}
+          primary={dialog.primary}
+          itemId={dialog.itemId}
+          rootId={dialog.rootId}
+          query={dialog.query}
           onSelect$={(value, source) => {
             const active = providersDialogFor.value;
             if (!active) return;
