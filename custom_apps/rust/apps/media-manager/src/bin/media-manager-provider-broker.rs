@@ -50,6 +50,9 @@ async fn run() -> Result<(), String> {
             "/run/media-manager-eye/eye.sock",
         ));
         state = state.with_images(&base, &socket)?;
+        if let Ok(socket) = std::env::var("MEDIA_MANAGER_DECISION_SOCKET") {
+            state = state.with_decision_socket(std::path::Path::new(&socket))?;
+        }
         if env_string("MEDIA_MANAGER_IMMICH_MANAGED", "false") == "true" {
             state = state.with_managed_immich();
         }

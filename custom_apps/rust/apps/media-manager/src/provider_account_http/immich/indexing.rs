@@ -98,6 +98,24 @@ async fn process_page(
             )
             .map_err(|_| index_error(id))?;
         if index
+            .decision_retry(&asset.id, None)
+            .map_err(|_| index_error(id))?
+            <= now
+        {
+            if decisions::background(state, account, index, &asset, id)
+                .await
+                .is_err()
+            {
+                index
+                    .decision_retry(&asset.id, Some(now + 1800))
+                    .map_err(|_| index_error(id))?;
+                eprintln!(
+                    "{}",
+                    json!({"service":"media-manager-provider-broker","event":"decision_assessment_retry","requestId":id})
+                );
+            }
+        }
+        if index
             .analysis(&asset.id)
             .map_err(|_| index_error(id))?
             .is_some()
@@ -193,6 +211,9 @@ pub(in crate::provider_account_http) async fn indexed(
                     let analysis = index.analysis(&asset.id).map_err(|_| index_error(&id))?;
                     let mut item = asset.public();
                     item["analysis"] = json!(analysis);
+                    item["decisionTags"] = json!(index
+                        .decision_tags(&item["id"].as_str().unwrap_or_default())
+                        .map_err(|_| index_error(&id))?);
                     items.push(item);
                 }
                 Err(err) if err.status() == StatusCode::NOT_FOUND => {}

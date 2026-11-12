@@ -133,6 +133,14 @@ impl ProviderBrokerState {
         self
     }
 
+    /// Configure the private d1 socket after enabling image access.
+    pub fn with_decision_socket(mut self, socket: &std::path::Path) -> Result<Self, String> {
+        if let Some(runtime) = &mut self.images {
+            Arc::make_mut(runtime).decision = immich::decision_client(socket)?;
+        }
+        Ok(self)
+    }
+
     /// Deployment-owned endpoints only; callers cannot choose an Immich host.
     pub fn with_images(
         mut self,
@@ -648,6 +656,19 @@ struct AcoustidReleaseGroup {
 
 pub fn provider_account_router(state: ProviderBrokerState) -> Router {
     let router = Router::new()
+        .route(
+            "/api/v1/provider-lookups/immich/decision-rules",
+            get(immich::decisions::rules).put(immich::decisions::save_rules),
+        )
+        .route(
+            "/api/v1/provider-lookups/immich/images/{id}/decisions",
+            axum::routing::post(immich::decisions::assess),
+        )
+        .route(
+            "/api/v1/provider-lookups/immich/decision-files",
+            axum::routing::post(immich::decisions::assess_file)
+                .layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
+        )
         .route(
             "/api/v1/provider-lookups/immich/images/index",
             get(immich::indexed),

@@ -17,7 +17,8 @@ hidden, trashed and non-image assets are excluded.
    see discovered/analyzed counts and any retry notice. **Refresh results** reads
    current progress. The initial pass can take time for large libraries.
 3. Search by filename and/or comma-separated EYE tags, such as `beach, people`.
-   Choose **All tags** or **Any tag**; spaces within a tag become underscores.
+   Choose **All tags** or **Any tag**. Tags match their saved spelling, including
+   spaces and case; EYE tags use lowercase identifiers such as `computer_screen`.
    **Minimum scores and confidence** sets three independent score thresholds
    (0–100) and the minimum tag confidence (default 50%).
 4. Sort by date taken, an individual score, tag confidence, or **Combined scores**.
@@ -43,6 +44,56 @@ works for the current visit. Both pages default to three tiles per row.
 Scores are relative model judgments, not personal-value decisions. The app never
 deletes a photo or modifies Immich based on a prediction. The legacy tag-write
 endpoint returns 403, including for editors with mutations enabled.
+
+## Saved decision questions
+
+Open **Images → Decision questions** to add and save up to 16 personal Yes/No
+questions. Choose **Add tag** or **Leave unchanged** separately for Yes and No.
+For example, ask “Is the photo a computer screen or code?”, add `to be deleted`
+for Yes, and leave No unchanged. This is a tag only: nothing is deleted or moved.
+
+**Assess selected photo** uses all saved questions. Yes means a d1 probability
+of at least 50%; the result shows the answer and probability. Every successful
+assessment also adds `auto-tagged yyyyMMdd HH:mm` using the server's local time,
+including when the chosen action is Leave unchanged. Failed inference applies no tags. Editing an assessed question while inference
+is running prevents stale actions from being applied. Tags are additive: editing or
+removing a question retains previous tags and timestamps. EYE reanalysis also
+preserves them. Select a decision tag to filter the photo library by that tag;
+confidence thresholds apply to EYE suggestions, not already-applied decision tags.
+
+Enable **Automatically assess my photo library** on each question that should
+run in the background. This defaults off. The existing library sweep assesses
+new photos and changed questions once, reuses saved decisions after restart,
+and retries failed assessments on subsequent sweeps. A completed library sweeps
+every 30 minutes; a large initial pass can take longer. Decision failures have
+separate backoff and do not stop EYE indexing. The broker logs fixed
+`decision_assessment_retry` events without private contents.
+
+**Assess another file** accepts JPEG/PNG/WebP images up to 16 MiB and UTF-8 text
+up to 16 KiB, using all saved questions. PDFs, office documents and other binary
+files are unsupported. A connected Photos account is currently required.
+Contents go only to local d1 and are not retained. Tags are saved by content
+hash in the same private account partition; upload the same file again to
+reassess and recover earlier tags. This does not alter the local file or create
+sidecars. Automatic assessment currently covers the Immich photo library only.
+
+The official [LiquidAI/d1-2B GGUF model](https://huggingface.co/LiquidAI/d1-2B-GGUF)
+and vision projector are pinned at revision
+`4a181094d1b6addfaa3a0956f78e7ab2aa406a0c`. Q8_0 model weights and the F16
+projector live at `${dataRoot}/media-manager-decision/models` (normally
+`/mnt/data/media-manager-decision/models`), outside the system SSD and Nix store.
+Preparation verifies their SHA-256 checksums and downloads only missing or
+invalid artifacts. Disabling Immich retains both weights and saved metadata.
+The new inference service uses the existing pinned mainline llama.cpp runtime,
+CPU inference with one request at a time, a private Unix socket at
+`/run/media-manager-decision/d1.sock`, a 6 GiB memory ceiling, and sleep after
+five idle minutes. It exposes no browser/network host and uses no cloud API.
+
+Rules, results, retry checkpoints and tags live in additive `decision_*` tables
+in the existing provider SQLite database and inherit its persistence/backups.
+They use the same subject/origin/credential partition as EYE. These new services
+are staged in configuration and start on the next authorized config switch;
+editing the source or downloading weights does not start them.
 
 ## Runtime, persistence and isolation
 
@@ -82,7 +133,7 @@ The Node helper uses Desert Ant's official native Linux LiteRT SDK; the Rust
 broker sends only preview bytes over `/run/media-manager-eye/eye.sock`, without
 Immich credentials. The helper retains its existing memory ceiling, image/decode
 bounds and request deadline. Photos are not sent to a cloud inference service.
-Pinned weights live under `/data/eye/models`; the model loads for analysis and
+Pinned weights live under `${dataRoot}/eye/models`; the model loads for analysis and
 is released after five idle minutes. Health probes do not keep it loaded.
 Disabling Immich removes the integration and EYE services while retaining weights
 and derived database state.
@@ -93,6 +144,7 @@ After an explicitly authorized deployment, inspect:
 
 ```bash
 systemctl status media-manager-provider-broker media-manager-eye-model-prepare media-manager-eye media-manager-immich-provision
+systemctl status media-manager-decision-model-prepare media-manager-decision
 journalctl -u media-manager-eye -u media-manager-provider-broker -n 50 --no-pager
 ```
 
@@ -112,3 +164,4 @@ background progress and restart reuse without touching a real Immich instance.
 - [EYE SDK usage and scores](https://desertant.com/docs/eye/)
 - [EYE SDK model pin](https://github.com/Desert-Ant-Labs/desert-ant-core/blob/v4.2.3/Sources/Eye/Catalog.swift)
 - [Desert Ant model/SDK license](https://license.desertant.com/)
+- [d1 local inference contract and supported llama.cpp version](https://huggingface.co/LiquidAI/d1-2B-GGUF/blob/4a181094d1b6addfaa3a0956f78e7ab2aa406a0c/README.md)

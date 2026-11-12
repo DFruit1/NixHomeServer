@@ -11,6 +11,68 @@ servers:
 security:
   - forwardedIdentity: []
 paths:
+  /provider-lookups/immich/decision-rules:
+    get:
+      operationId: listDecisionRules
+      responses:
+        "200":
+          description: Caller-scoped saved d1 questions and additive tag actions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionRules" }
+    put:
+      operationId: saveDecisionRules
+      description: Replace up to 16 rules. Automatic rules run during background library sweeps; editing a question or action causes reassessment. Removing rules retains existing tags. An empty action tag means leave unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [rules]
+              properties:
+                rules: { type: array, maxItems: 16, items: { $ref: "#/components/schemas/DecisionRule" } }
+      responses:
+        "200":
+          description: Saved rules.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionRules" }
+  /provider-lookups/immich/images/{id}/decisions:
+    post:
+      operationId: assessPhotoDecisions
+      description: Assess current accessible pixels with all saved rules. Apply Yes at probability >= 0.5. Add selected tags and auto-tagged yyyyMMdd HH:mm in server local time, including leave-unchanged actions. No writes occur on inference failure or stale rules.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Persisted private assessment and tags.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionAssessment" }
+  /provider-lookups/immich/decision-files:
+    post:
+      operationId: assessPersonalFile
+      description: Assess an uploaded image (16 MiB maximum) or UTF-8 text (16 KiB maximum) using saved rules. Content is not retained; private tags are saved by SHA-256 content hash. Requires a connected Photos account. PDFs and other binary files are unsupported.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, content, image]
+              properties:
+                name: { type: string, maxLength: 4096 }
+                content: { type: string, description: Base64-encoded file bytes. }
+                image: { type: boolean }
+      responses:
+        "200":
+          description: Persisted assessment; original file unchanged.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionAssessment" }
   /provider-lookups/immich/images:
     get:
       operationId: listImmichImages
@@ -1877,6 +1939,42 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    DecisionRule:
+      type: object
+      additionalProperties: false
+      required: [id, question, yesTag, noTag, automatic]
+      properties:
+        id: { type: string, maxLength: 64, pattern: "^[a-zA-Z0-9-]+$" }
+        question: { type: string, minLength: 1, maxLength: 1000 }
+        yesTag: { type: string, maxLength: 96 }
+        noTag: { type: string, maxLength: 96 }
+        automatic: { type: boolean }
+    DecisionRules:
+      type: object
+      required: [rules, requestId]
+      properties:
+        rules: { type: array, maxItems: 16, items: { $ref: "#/components/schemas/DecisionRule" } }
+        requestId: { type: string }
+    DecisionAssessment:
+      type: object
+      required: [target, model, assessedAt, results, tags, requestId]
+      properties:
+        target: { type: string }
+        model: { const: "LiquidAI/d1-2B" }
+        assessedAt: { type: string }
+        requestId: { type: string }
+        tags: { type: array, items: { type: string } }
+        results:
+          type: array
+          items:
+            type: object
+            required: [id, question, yesProbability, answer, tag]
+            properties:
+              id: { type: string }
+              question: { type: string }
+              yesProbability: { type: number, minimum: 0, maximum: 1 }
+              answer: { enum: ["yes", "no"], type: string }
+              tag: { type: string }
     ConversionInputOptions:
       type: object
       additionalProperties: false
@@ -1946,6 +2044,7 @@ components:
       type: object
       required: [id, filename, capturedAt, tags]
       properties:
+        decisionTags: { type: array, items: { type: string } }
         id: { type: string }
         filename: { type: string }
         capturedAt: { type: string }

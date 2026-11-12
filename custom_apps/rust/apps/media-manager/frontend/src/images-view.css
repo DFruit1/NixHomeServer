@@ -274,7 +274,7 @@ fieldset.images-filter-row {
   .image-detail {
     order: -1;
   }
-  .image-detail:not(.image-detail--selected) {
+  .image-detail:not(.image-detail--selected) .image-focus--empty {
     display: none;
   }
 }
@@ -457,4 +457,110 @@ fieldset.images-filter-row {
 }
 .images-workspace .message.error {
   color: var(--stamp);
+}
+
+.decision-questions {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.decision-questions section,
+.decision-rules,
+.decision-rule,
+.decision-rule label,
+.decision-actions > div,
+.decision-toolbar > label {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.decision-questions section {
+  margin-top: 16px;
+}
+.decision-questions h3,
+.decision-questions h4,
+.decision-questions p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.decision-questions h3 {
+  font: 22px var(--font-serif);
+}
+.decision-questions .muted {
+  color: var(--ink-soft);
+  font: 14px/1.5 var(--font-sans);
+  letter-spacing: normal;
+  text-transform: none;
+}
+.decision-rules {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  gap: 16px;
+}
+.decision-rule {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  margin: 0;
+  padding: 12px;
+}
+.decision-rule legend {
+  font-weight: 600;
+}
+.decision-questions :is(textarea, select, input:not([type="checkbox"])) {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+}
+.decision-questions textarea {
+  resize: vertical;
+}
+.decision-actions {
+  display: grid;
+  align-items: start;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.decision-rule .decision-automatic {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+}
+.decision-automatic input {
+  flex: 0 0 auto;
+}
+.decision-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+.decision-toolbar > label {
+  flex: 1 1 200px;
+}
+.decision-result ul {
+  padding-left: 20px;
+  margin: 0;
+}
+.decision-result li {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .decision-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 920px) {
+  .decision-result {
+    scroll-margin-bottom: calc(110px + env(safe-area-inset-bottom, 0px));
+  }
 }

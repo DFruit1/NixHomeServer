@@ -261,6 +261,7 @@ impl ProviderAccountStore {
             )
             .map_err(storage_error)?;
         crate::image_index::initialize(&connection).map_err(storage_error)?;
+        crate::decision_index::initialize(&connection).map_err(storage_error)?;
         connection
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(storage_error)

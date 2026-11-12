@@ -18,6 +18,7 @@ import type {
 } from "./api-contract.generated";
 import { Icon } from "./icon";
 import { CollectionViewControl, useCollectionView } from "./collection-view";
+import { DecisionQuestions } from "./decision-questions";
 import { LoadingState } from "./view-states";
 
 const photoPath = (id: string) =>
@@ -103,7 +104,11 @@ export const ImagesView = component$<{
           key,
           value
             .split(",")
-            .map((tag) => tag.trim().toLowerCase().replaceAll(/\s+/g, "_"))
+            .map((tag) =>
+              key === "sortTag"
+                ? tag.trim().toLowerCase().replaceAll(/\s+/g, "_")
+                : tag.trim(),
+            )
             .join(","),
         );
       }
@@ -263,6 +268,14 @@ export const ImagesView = component$<{
         aria-label="Selected photo"
         aria-busy={busy || state.selecting}
       >
+        <DecisionQuestions
+          image={state.selected}
+          onAssessed$={(id, tags) => {
+            if (state.selected?.id === id) state.selected.decisionTags = tags;
+            const item = state.items.find((item) => item.id === id);
+            if (item) item.decisionTags = tags;
+          }}
+        />
         {state.selected ? (
           <>
             <div class="image-focus">
@@ -326,6 +339,28 @@ export const ImagesView = component$<{
               <div class="message success" role="status">
                 <span>{state.notice}</span>
               </div>
+            )}
+            {!!state.selected.decisionTags?.length && (
+              <section class="image-analysis" aria-label="Decision tags">
+                <h3>Decision tags</h3>
+                <ul class="image-suggestions">
+                  {state.selected.decisionTags.map((tag) => (
+                    <li key={tag}>
+                      <button
+                        type="button"
+                        class="image-tag-filter"
+                        onClick$={() => {
+                          state.filters.tags = tag;
+                          if (filters.value) filters.value.open = true;
+                          return load();
+                        }}
+                      >
+                        {tag}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
             )}
             {state.analysis && (
               <section class="image-analysis" aria-label="EYE analysis">
@@ -673,6 +708,11 @@ export const ImagesView = component$<{
                               ? `Aesthetic ${Math.round(image.analysis.scores.aesthetic * 100)} · Keeper ${Math.round(image.analysis.scores.keeper * 100)} · Cover ${Math.round(image.analysis.scores.cover * 100)}`
                               : "Not analyzed"}
                           </span>
+                          {!!image.decisionTags?.length && (
+                            <span class="image-item-meta">
+                              {image.decisionTags.join(", ")}
+                            </span>
+                          )}
                           {image.analysis && (
                             <span class="image-item-meta">
                               {image.analysis.suggestions

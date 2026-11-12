@@ -9,6 +9,7 @@ pub mod catalog;
 pub mod config;
 pub mod conversion_jobs;
 pub mod core;
+mod decision_index;
 pub mod http;
 mod image_index;
 pub mod media;

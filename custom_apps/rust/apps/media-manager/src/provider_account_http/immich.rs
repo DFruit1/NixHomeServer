@@ -5,6 +5,7 @@ use std::{path::Path as FilePath, time::Duration};
 use zeroize::Zeroizing;
 
 use crate::image_index::{probability, valid_tag, Analysis, Index, Search, MODEL, PAGE_SIZE};
+pub(super) mod decisions;
 mod indexing;
 pub(super) use indexing::{indexed, run_indexer};
 const MAX_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
@@ -14,6 +15,8 @@ pub(super) struct Runtime {
     pub(super) managed: bool,
     pub(super) base: reqwest::Url,
     eye: reqwest::Client,
+    pub(super) decision: reqwest::Client,
+    decision_gate: Arc<tokio::sync::Mutex<()>>,
     gate: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -34,9 +37,24 @@ impl Runtime {
             managed: false,
             base,
             eye,
+            decision: decision_client(FilePath::new("/run/media-manager-decision/d1.sock"))?,
+            decision_gate: Arc::default(),
             gate: Arc::default(),
         })
     }
+}
+
+pub(super) fn decision_client(socket: &FilePath) -> Result<reqwest::Client, String> {
+    if !socket.is_absolute() {
+        return Err("d1 socket must be absolute".into());
+    }
+    reqwest::Client::builder()
+        .unix_socket(socket)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(240))
+        .build()
+        .map_err(|_| "could not initialize d1 client".into())
 }
 
 #[derive(Clone)]
@@ -387,8 +405,16 @@ pub(super) async fn details(
     }
     .analysis(&asset_id)
     .map_err(|_| index_error(&id))?;
+    let tags = Index {
+        store: &state.store,
+        scope: &scope,
+    }
+    .decision_tags(&asset_id)
+    .map_err(|_| index_error(&id))?;
+    let mut image = asset.public();
+    image["decisionTags"] = json!(tags);
     Ok(Json(
-        json!({ "image": asset.public(), "analysis": analysis, "requestId": id }),
+        json!({ "image": image, "analysis": analysis, "requestId": id }),
     ))
 }
 

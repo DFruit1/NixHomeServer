@@ -229,6 +229,8 @@ async fn test_app(
             &format!("http://{address}/api/"),
             &temp.path().join("eye.sock"),
         )
+        .unwrap()
+        .with_decision_socket(&temp.path().join("d1.sock"))
         .unwrap();
     (provider_account_router(runtime), task)
 }
@@ -488,4 +490,208 @@ async fn eye_receives_only_preview_bytes_and_never_immich_credentials() {
     );
     eye.await.unwrap();
     task.abort();
+}
+
+// New decision endpoints carry the same catastrophic privacy risk as EYE:
+// private pixels, rule text, derived tags and credentials must stay owner-scoped.
+#[tokio::test]
+async fn decisions_isolate_private_rules_pixels_and_tags_and_fail_without_partial_writes() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let temp = tempfile::tempdir().unwrap();
+    let listener = tokio::net::UnixListener::bind(temp.path().join("d1.sock")).unwrap();
+    let d1 = tokio::spawn(async move {
+        for probability in [0.95, 2.0, 0.95] {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0u8; 8192];
+            let (start, length) = loop {
+                let n = socket.read(&mut chunk).await.unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&chunk[..n]);
+                if let Some(end) = bytes.windows(4).position(|b| b == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                    for secret in ["api-key", "authorization", "cookie", "fixture-alice"] {
+                        assert!(!headers.contains(secret));
+                    }
+                    let length = headers
+                        .lines()
+                        .find_map(|l| {
+                            l.strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap();
+                    break (end + 4, length);
+                }
+            };
+            while bytes.len() < start + length {
+                let n = socket.read(&mut chunk).await.unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&chunk[..n]);
+            }
+            let input: Value = serde_json::from_slice(&bytes[start..start + length]).unwrap();
+            assert_eq!(input["questions"]["screen"]["type"], "noul");
+            if input.get("images").is_some() {
+                assert_eq!(input["images"][0], "data:image/png;base64,iVBORw0KGgo=");
+            } else {
+                assert!(input["state"]
+                    .as_str()
+                    .unwrap()
+                    .contains("personal UTF-8 file"));
+            }
+            assert!(!input.to_string().contains("fixture-alice"));
+            let body = json!({"answers":{"screen":{"noul":probability},"untouched":{"noul":0.1}}})
+                .to_string();
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+        }
+    });
+    let (app, upstream) = test_app(
+        &temp,
+        Fixture {
+            preview_bytes: true,
+            ..Fixture::default()
+        },
+    )
+    .await;
+    let rules_path = "/api/v1/provider-lookups/immich/decision-rules";
+    let rules = json!({"rules":[
+        {"id":"screen","question":"Is this a computer screen or code?","yesTag":"to be deleted","noTag":"","automatic":false},
+        {"id":"untouched","question":"Is there a dog?","yesTag":"","noTag":"","automatic":false}
+    ]});
+    let mut cross_origin = request("PUT", rules_path, "alice", false, rules.clone());
+    cross_origin
+        .headers_mut()
+        .insert("origin", "http://outside.invalid".parse().unwrap());
+    assert_eq!(
+        app.clone().oneshot(cross_origin).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(request("PUT", rules_path, "alice", false, rules))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let bob = json_response(
+        app.clone()
+            .oneshot(request("GET", rules_path, "bob", false, Value::Null))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(bob["rules"], json!([]));
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{ROOT}/{PHOTO}/decisions"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let result = json_response(response).await;
+    assert_eq!(result["results"][1]["answer"], "no");
+    assert_eq!(result["results"][1]["tag"], "");
+    let tags = result["tags"].as_array().unwrap();
+    assert!(tags.contains(&json!("to be deleted")));
+    assert!(tags.contains(&json!(format!(
+        "auto-tagged {}",
+        result["assessedAt"].as_str().unwrap()
+    ))));
+    let details = json_response(
+        app.clone()
+            .oneshot(request(
+                "GET",
+                &format!("{ROOT}/{PHOTO}"),
+                "alice",
+                false,
+                Value::Null,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(details["image"]["decisionTags"], result["tags"]);
+    let bob = json_response(
+        app.clone()
+            .oneshot(request(
+                "GET",
+                &format!("{ROOT}/index?tags=to%20be%20deleted"),
+                "bob",
+                false,
+                Value::Null,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(bob["items"], json!([]));
+    let search = json_response(
+        app.clone()
+            .oneshot(request(
+                "GET",
+                &format!("{ROOT}/index?tags=to%20be%20deleted"),
+                "alice",
+                false,
+                Value::Null,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(search["items"].as_array().unwrap().len(), 1);
+    // Malformed probabilities must not apply even one action or timestamp.
+    assert_eq!(
+        app.clone()
+            .oneshot(request(
+                "POST",
+                &format!("{ROOT}/{PHOTO}/decisions"),
+                "alice",
+                false,
+                Value::Null
+            ))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let after = json_response(
+        app.clone()
+            .oneshot(request(
+                "GET",
+                &format!("{ROOT}/{PHOTO}"),
+                "alice",
+                false,
+                Value::Null,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(after["image"]["decisionTags"], result["tags"]);
+    let file_path = "/api/v1/provider-lookups/immich/decision-files";
+    let file = json!({"name":"notes.txt","content":"cGVyc29uYWwgVVRGLTggZmlsZQ==","image":false});
+    let bob = app
+        .clone()
+        .oneshot(request("POST", file_path, "bob", false, file.clone()))
+        .await
+        .unwrap();
+    assert_eq!(bob.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let uploaded = app
+        .oneshot(request("POST", file_path, "alice", false, file))
+        .await
+        .unwrap();
+    assert_eq!(uploaded.status(), StatusCode::OK);
+    let uploaded = json_response(uploaded).await;
+    assert!(uploaded["target"].as_str().unwrap().starts_with("file:"));
+    assert!(uploaded["tags"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("to be deleted")));
+    d1.await.unwrap();
+    upstream.abort();
 }
