@@ -42,7 +42,7 @@ paths:
   /provider-lookups/immich/images/{id}/decisions:
     post:
       operationId: assessPhotoDecisions
-      description: Assess current accessible pixels with all saved rules. Apply Yes at probability >= 0.5. Add selected tags and auto-tagged yyyyMMdd HH:mm in server local time, including leave-unchanged actions. A category result adds the photo to the named Immich album; this is the only Immich write and it never changes the original file. Questions with unmet EYE score bounds are skipped. No writes occur on inference failure or stale rules.
+      description: Assess current accessible pixels with all saved rules. Apply Yes at probability >= 0.5. Add only the selected semantic tags. No synthetic timestamp tags are created. Saved actions can archive the photo or add it to the named Immich album, without changing the original file. Questions with unmet EYE score bounds are skipped. No writes occur on inference failure or stale rules.
       parameters:
         - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -144,6 +144,18 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ImmichAnalysisResponse" }
+  /provider-lookups/immich/images/{id}/retag:
+    post:
+      operationId: markImmichImageForRetagging
+      description: Clear the caller-private EYE tagged flag for this accessible photo. Retain existing tags and scores until successful reanalysis. In-flight EYE analysis must finish before resetting. The next background sweep retries untagged photos; explicit analysis can run sooner.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Photo marked for retagging.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImmichTaggingState" }
   /provider-lookups/immich/images/{id}/tags:
     post:
       operationId: addImmichImageTags
@@ -2084,10 +2096,18 @@ components:
       properties:
         id: { type: string }
         value: { type: string }
+    ImmichTaggingState:
+      type: object
+      required: [assetId, tagged, requestId]
+      properties:
+        assetId: { type: string }
+        tagged: { type: boolean }
+        requestId: { type: string }
     ImmichImage:
       type: object
       required: [id, filename, capturedAt, tags]
       properties:
+        tagged: { type: boolean, default: false, description: "Private EYE tagging completion flag. Clearing it makes the photo eligible for reanalysis; no timestamp tag is added." }
         decisionTags: { type: array, items: { type: string } }
         id: { type: string }
         filename: { type: string }

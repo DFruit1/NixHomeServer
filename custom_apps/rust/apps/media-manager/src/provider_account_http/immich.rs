@@ -638,6 +638,12 @@ pub(super) async fn details(
     .map_err(|_| index_error(&id))?;
     let mut image = asset.public();
     image["decisionTags"] = json!(tags);
+    image["tagged"] = json!(Index {
+        store: &state.store,
+        scope: &scope
+    }
+    .tagged(&asset_id)
+    .map_err(|_| index_error(&id))?);
     Ok(Json(
         json!({ "image": image, "analysis": analysis, "requestId": id }),
     ))
@@ -696,18 +702,56 @@ pub(super) async fn analyze(
             generation,
         )
         .map_err(|_| index_error(&id))?;
-    let analysis = analyze_asset(&state, &account, &asset_id, &id, false).await?;
-    index
-        .save(&asset_id, &analysis)
-        .map_err(|_| index_error(&id))?;
+    let analysis = analyze_asset(&state, &account, &index, &asset_id, &id, false).await?;
     Ok(Json(
         json!({ "assetId": asset_id, "analysis": analysis, "requestId": id }),
+    ))
+}
+
+pub(super) async fn retag(
+    State(state): State<ProviderBrokerState>,
+    headers: HeaderMap,
+    Path(asset_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let id = request_id();
+    let identity = identity_from_headers(&headers, &id)?;
+    same_origin(&headers, &id)?;
+    let account = account(&state, &identity, &id)?;
+    let asset = account.asset(&state, &asset_id, &id).await?;
+    let _guard = account.runtime.gate.try_lock().map_err(|_| {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "eye_busy",
+            "EYE is analyzing a photo. Wait for it to finish, then mark this photo for retagging.",
+            &id,
+        )
+    })?;
+    let scope = account.scope(&identity);
+    let index = Index {
+        store: &state.store,
+        scope: &scope,
+    };
+    let (_, generation, _) = index.scan().map_err(|_| index_error(&id))?;
+    index
+        .observe(
+            &asset_id,
+            &asset.original_file_name,
+            &asset.file_created_at,
+            generation,
+        )
+        .map_err(|_| index_error(&id))?;
+    index
+        .mark_for_retagging(&asset_id)
+        .map_err(|_| index_error(&id))?;
+    Ok(Json(
+        json!({"assetId":asset_id, "tagged":false, "requestId":id}),
     ))
 }
 
 pub(super) async fn analyze_asset(
     state: &ProviderBrokerState,
     account: &Account,
+    index: &Index<'_>,
     asset_id: &str,
     id: &str,
     wait: bool,
@@ -725,7 +769,13 @@ pub(super) async fn analyze_asset(
         })?
     };
     let (bytes, mime) = account.image(state, asset_id, id).await?;
-    eye_image(&account.runtime.eye, bytes, &mime, id).await
+    let analysis = eye_image(&account.runtime.eye, bytes, &mime, id).await?;
+    // Commit before releasing the shared inference gate so a retag reset cannot
+    // be overwritten by an older in-flight analysis.
+    index
+        .save(asset_id, &analysis)
+        .map_err(|_| index_error(id))?;
+    Ok(analysis)
 }
 
 /// A distinct Unix-socket client carries pixels only, never the user's key.

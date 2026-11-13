@@ -209,7 +209,8 @@ pub(crate) fn initialize(db: &Connection) -> rusqlite::Result<()> {
             rule_id TEXT NOT NULL, signature TEXT NOT NULL,
             PRIMARY KEY(scope,asset_id,rule_id));
         CREATE TABLE IF NOT EXISTS decision_albums(scope TEXT NOT NULL, name TEXT NOT NULL, album_id TEXT NOT NULL,
-            PRIMARY KEY(scope,name));")
+            PRIMARY KEY(scope,name));
+        DELETE FROM decision_tags WHERE tag GLOB 'auto-tagged [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] [0-9][0-9]:[0-9][0-9]';")
 }
 impl Index<'_> {
     pub fn decision_retry(&self, asset: &str, after: Option<i64>) -> rusqlite::Result<i64> {
@@ -434,10 +435,6 @@ impl Index<'_> {
                 ON CONFLICT(scope,asset_id,rule_id) DO UPDATE SET signature=excluded.signature,probability=excluded.probability,assessed_at=excluded.assessed_at",
                 params![self.scope,asset,rule.id,rule.signature(),p,timestamp])?;
         }
-        tx.execute(
-            "INSERT OR IGNORE INTO decision_tags VALUES(?1,?2,?3)",
-            params![self.scope, asset, format!("auto-tagged {timestamp}")],
-        )?;
         tx.execute(
             "DELETE FROM decision_retries WHERE scope=?1 AND asset_id=?2",
             params![self.scope, asset],

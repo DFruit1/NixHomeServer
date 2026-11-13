@@ -15,6 +15,7 @@ import type {
   ImmichIndexedPage,
   ImmichIndexStatus,
   ImmichImageResponse,
+  ImmichTaggingState,
 } from "./api-contract.generated";
 import { Icon } from "./icon";
 import { CollectionViewControl, useCollectionView } from "./collection-view";
@@ -62,6 +63,7 @@ export const ImagesView = component$<{
     loadingMore: false,
     selecting: false,
     analyzing: false,
+    markingForRetag: false,
     selection: 0,
     listing: 0,
     error: "",
@@ -212,11 +214,47 @@ export const ImagesView = component$<{
       if (response.assetId !== image.id || state.selected?.id !== image.id)
         return;
       state.analysis = response.analysis;
+      state.selected.tagged = true;
+      state.selected.analysis = response.analysis;
+      const item = state.items.find((item) => item.id === image.id);
+      if (item) {
+        item.tagged = true;
+        item.analysis = response.analysis;
+      }
       state.notice = "Analysis saved in Media Manager.";
     } catch (error) {
       state.detailError = readableError(error);
     } finally {
       state.analyzing = false;
+    }
+  });
+
+  const markForRetagging = $(async () => {
+    const image = state.selected;
+    if (!image || state.analyzing || state.selecting || state.markingForRetag)
+      return;
+    state.markingForRetag = true;
+    state.detailError = "";
+    state.notice = "";
+    try {
+      const result = await api<ImmichTaggingState>(
+        `${photoPath(image.id)}/retag`,
+        { method: "POST" },
+      );
+      if (result.assetId !== image.id)
+        throw new Error("The retagging response did not match this photo.");
+      const item = state.items.find((item) => item.id === image.id);
+      if (item) item.tagged = result.tagged;
+      if (state.selected?.id === image.id) {
+        state.selected.tagged = result.tagged;
+        state.notice =
+          "Marked for retagging. Analyze now or wait for the next library sweep (up to 30 minutes).";
+      }
+    } catch (error) {
+      if (state.selected?.id === image.id)
+        state.detailError = readableError(error);
+    } finally {
+      state.markingForRetag = false;
     }
   });
 
@@ -254,7 +292,7 @@ export const ImagesView = component$<{
     }),
   );
 
-  const busy = state.analyzing;
+  const busy = state.analyzing || state.markingForRetag;
   return (
     <div class="images-page">
       <DecisionQuestions
@@ -345,6 +383,23 @@ export const ImagesView = component$<{
                   <span>{state.notice}</span>
                 </div>
               )}
+              <div class="image-tagging-state">
+                <span role="status">
+                  {state.selected.tagged
+                    ? "Tagged by EYE"
+                    : "Awaiting EYE tagging"}
+                </span>
+                {state.selected.tagged && (
+                  <button
+                    type="button"
+                    class="secondary-button"
+                    disabled={busy || state.selecting}
+                    onClick$={markForRetagging}
+                  >
+                    {state.markingForRetag ? "Marking…" : "Mark for retagging"}
+                  </button>
+                )}
+              </div>
               {!!state.selected.decisionTags?.length && (
                 <details class="image-analysis image-decision-tags">
                   <summary>Decision tags</summary>

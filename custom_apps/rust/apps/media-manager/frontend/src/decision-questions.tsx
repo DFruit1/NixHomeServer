@@ -202,7 +202,8 @@ export const DecisionQuestions = component$<{
               questions add photos to the most probable album at 50% or higher.
               Score bounds skip questions that do not match. Automatic questions
               run on the next library sweep, within 30 minutes. Saved tags stay
-              private to Media Manager, including an assessment timestamp.
+              private to Media Manager. EYE tagging completion is tracked
+              separately; no timestamp tag is added.
             </p>
           </details>
           {state.loading && <p role="status">Loading saved questions…</p>}
@@ -593,7 +594,9 @@ export const DecisionQuestions = component$<{
                   );
                 })}
               </ul>
-              <p>Saved tags: {state.result.tags.join(", ")}</p>
+              {!!state.result.tags.length && (
+                <p>Saved tags: {state.result.tags.join(", ")}</p>
+              )}
             </section>
           )}
         </section>

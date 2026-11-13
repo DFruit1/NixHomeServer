@@ -679,3 +679,14 @@ fieldset.images-filter-row {
   padding: 24px 12px;
   gap: 12px;
 }
+
+.image-tagging-state {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 14px;
+}

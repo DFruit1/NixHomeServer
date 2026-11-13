@@ -35,6 +35,7 @@ pub(crate) fn initialize(db: &Connection) -> rusqlite::Result<()> {
            filename TEXT NOT NULL, captured_at TEXT NOT NULL,
            analysis TEXT, aesthetic REAL, keeper REAL, cover REAL,
            seen INTEGER NOT NULL, retry_at INTEGER NOT NULL DEFAULT 0,
+           tagged INTEGER NOT NULL DEFAULT 0,
            PRIMARY KEY(scope, asset_id)
          );
          CREATE INDEX IF NOT EXISTS image_assets_date ON image_assets(scope, captured_at, asset_id);
@@ -49,7 +50,22 @@ pub(crate) fn initialize(db: &Connection) -> rusqlite::Result<()> {
            generation INTEGER NOT NULL DEFAULT 1, next_scan INTEGER NOT NULL DEFAULT 0,
            error TEXT
          );",
-    )
+    )?;
+    let has_tagged = db
+        .prepare("PRAGMA table_info(image_assets)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter()
+        .any(|name| name == "tagged");
+    if !has_tagged {
+        let tx = db.unchecked_transaction()?;
+        tx.execute_batch(
+            "ALTER TABLE image_assets ADD COLUMN tagged INTEGER NOT NULL DEFAULT 0;
+            UPDATE image_assets SET tagged=1 WHERE analysis IS NOT NULL;",
+        )?;
+        tx.commit()?;
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -183,7 +199,7 @@ impl Index<'_> {
     pub fn save(&self, id: &str, analysis: &Analysis) -> rusqlite::Result<()> {
         let mut db = self.store.index_connection()?;
         let tx = db.transaction()?;
-        tx.execute("UPDATE image_assets SET analysis=?3,aesthetic=?4,keeper=?5,cover=?6,retry_at=0 WHERE scope=?1 AND asset_id=?2",
+        tx.execute("UPDATE image_assets SET analysis=?3,aesthetic=?4,keeper=?5,cover=?6,retry_at=0,tagged=1 WHERE scope=?1 AND asset_id=?2",
             params![self.scope,id,serde_json::to_string(analysis).expect("validated analysis"),analysis.scores.aesthetic,analysis.scores.keeper,analysis.scores.cover])?;
         tx.execute(
             "DELETE FROM image_tags WHERE scope=?1 AND asset_id=?2",
@@ -197,6 +213,26 @@ impl Index<'_> {
             )?;
         }
         tx.commit()
+    }
+    pub fn tagged(&self, id: &str) -> rusqlite::Result<bool> {
+        Ok(self
+            .store
+            .index_connection()?
+            .query_row(
+                "SELECT tagged FROM image_assets WHERE scope=?1 AND asset_id=?2",
+                params![self.scope, id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+    }
+    /// Retain useful previous analysis until a replacement has been saved.
+    pub fn mark_for_retagging(&self, id: &str) -> rusqlite::Result<()> {
+        self.store.index_connection()?.execute(
+            "UPDATE image_assets SET tagged=0,retry_at=0 WHERE scope=?1 AND asset_id=?2",
+            params![self.scope, id],
+        )?;
+        Ok(())
     }
     pub fn retry_at(&self, id: &str, after: Option<i64>) -> rusqlite::Result<i64> {
         let db = self.store.index_connection()?;

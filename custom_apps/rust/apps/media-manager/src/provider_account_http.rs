@@ -698,6 +698,10 @@ pub fn provider_account_router(state: ProviderBrokerState) -> Router {
             axum::routing::post(immich::analyze),
         )
         .route(
+            "/api/v1/provider-lookups/immich/images/{id}/retag",
+            axum::routing::post(immich::retag),
+        )
+        .route(
             "/api/v1/provider-lookups/immich/images/{id}/tags",
             axum::routing::post(immich::add_tags),
         )

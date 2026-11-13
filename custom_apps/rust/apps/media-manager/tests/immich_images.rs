@@ -729,10 +729,7 @@ async fn decisions_isolate_private_rules_pixels_and_tags_and_fail_without_partia
     assert_eq!(result["results"][1]["tag"], "");
     let tags = result["tags"].as_array().unwrap();
     assert!(tags.contains(&json!("to be deleted")));
-    assert!(tags.contains(&json!(format!(
-        "auto-tagged {}",
-        result["assessedAt"].as_str().unwrap()
-    ))));
+    assert_eq!(tags, &vec![json!("to be deleted")]);
     let details = json_response(
         app.clone()
             .oneshot(request(
@@ -989,9 +986,7 @@ async fn category_questions_add_only_the_assessed_photo_to_the_matching_album() 
             .contains("bounds"));
         let tags = result["tags"].as_array().unwrap();
         assert!(!tags.contains(&json!("dogs")));
-        assert!(tags
-            .iter()
-            .any(|tag| tag.as_str().unwrap().starts_with("auto-tagged ")));
+        assert!(tags.is_empty());
         if attempt == 1 {
             assert!(
                 result["assessedAt"].is_string(),

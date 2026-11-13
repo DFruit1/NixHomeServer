@@ -115,10 +115,11 @@ async fn process_page(
                 );
             }
         }
-        if index
-            .analysis(&asset.id)
-            .map_err(|_| index_error(id))?
-            .is_some()
+        if (index.tagged(&asset.id).map_err(|_| index_error(id))?
+            && index
+                .analysis(&asset.id)
+                .map_err(|_| index_error(id))?
+                .is_some())
             || index
                 .retry_at(&asset.id, None)
                 .map_err(|_| index_error(id))?
@@ -126,10 +127,8 @@ async fn process_page(
         {
             continue;
         }
-        match analyze_asset(state, account, &asset.id, id, true).await {
-            Ok(analysis) => index
-                .save(&asset.id, &analysis)
-                .map_err(|_| index_error(id))?,
+        match analyze_asset(state, account, index, &asset.id, id, true).await {
+            Ok(_) => {}
             Err(err)
                 if matches!(
                     err.status(),
@@ -209,8 +208,10 @@ pub(in crate::provider_account_http) async fn indexed(
             match result {
                 Ok(asset) => {
                     let analysis = index.analysis(&asset.id).map_err(|_| index_error(&id))?;
+                    let tagged = index.tagged(&asset.id).map_err(|_| index_error(&id))?;
                     let mut item = asset.public();
                     item["analysis"] = json!(analysis);
+                    item["tagged"] = json!(tagged);
                     item["decisionTags"] = json!(index
                         .decision_tags(&item["id"].as_str().unwrap_or_default())
                         .map_err(|_| index_error(&id))?);

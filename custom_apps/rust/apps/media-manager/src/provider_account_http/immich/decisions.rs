@@ -114,10 +114,7 @@ async fn asset_scores(
     if let Some(analysis) = index.analysis(asset_id).map_err(|_| index_error(id))? {
         return Ok(analysis.scores);
     }
-    let analysis = analyze_asset(state, account, asset_id, id, wait).await?;
-    index
-        .save(asset_id, &analysis)
-        .map_err(|_| index_error(id))?;
+    let analysis = analyze_asset(state, account, index, asset_id, id, wait).await?;
     Ok(analysis.scores)
 }
 
