@@ -168,8 +168,20 @@ requests an administrator credential.
 
 The Node helper uses Desert Ant's official native Linux LiteRT SDK; the Rust
 broker sends only preview bytes over `/run/media-manager-eye/eye.sock`, without
-Immich credentials. The helper retains its existing memory ceiling, image/decode
-bounds and request deadline. Photos are not sent to a cloud inference service.
+Immich credentials. Native decoding, inference and disposal run in a separate
+child process so a blocked SDK call cannot block HTTP health checks or its
+25-second deadline. A timed-out child is killed, returns a bounded failure for
+that photo, and is replaced for the next request. Idle release terminates the
+child as well, reclaiming all native allocations. Image/decode bounds and model
+outputs are unchanged; photos are not sent to cloud inference.
+
+The service has a 4 GiB soft memory limit and 6 GiB hard cap. The former 2 GiB
+soft limit repeatedly forced reclaim around 2.03 GiB even with over 90 GiB of
+host RAM available; the native runtime also stopped answering health requests.
+A service restart restored analysis. The separate HTTP supervisor prevents the
+same native stall from defeating the timeout. To diagnose future stalls, inspect
+`memory.events` and `memory.pressure` in the service cgroup and the fixed
+`analysis_timeout` event, without logging photo contents or credentials.
 Pinned weights live under `${dataRoot}/eye/models`; the model loads for analysis and
 is released after five idle minutes. Health probes do not keep it loaded.
 Disabling Immich removes the integration and EYE services while retaining weights

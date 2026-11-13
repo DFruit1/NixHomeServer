@@ -3,8 +3,8 @@
 // this helper accepts image bytes over a private Unix socket only.
 import http from "node:http";
 import { chmodSync, lstatSync, unlinkSync } from "node:fs";
-import sharp from "sharp";
-import { Eye } from "@desert-ant-labs/eye/native";
+import { fork } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const socket = process.env.MEDIA_MANAGER_EYE_SOCKET;
 const directory = process.env.MEDIA_MANAGER_EYE_MODELS;
@@ -17,13 +17,17 @@ if (!Number.isSafeInteger(idleSeconds) || idleSeconds < 1 || idleSeconds > 86400
 }
 // Health probes must not allocate the model. Only /analyze loads it, while the
 // busy guard serializes loading, inference and disposal of the native runtime.
-let eye;
+let worker;
+let loaded = false;
 let idleTimer;
 let busy = false;
 const release = () => {
   clearTimeout(idleTimer);
-  if (eye) eye.dispose();
-  eye = undefined;
+  // Native disposal can also block. Kill the isolated process so all native
+  // allocations are reclaimed without tying up the HTTP event loop.
+  worker?.kill("SIGKILL");
+  worker = undefined;
+  loaded = false;
 };
 const releaseWhenIdle = () => {
   idleTimer = setTimeout(() => {
@@ -39,9 +43,60 @@ const reply = (response, status, body) => {
   response.end(JSON.stringify(body));
 };
 
+// Native SDK calls and disposal can block synchronously even behind an async
+// API. A separate process lets this parent enforce the existing hard deadline.
+const analyze = (bytes, response) => new Promise((resolve) => {
+  let child = worker;
+  if (!child) {
+    child = fork(fileURLToPath(new URL("./analyze.mjs", import.meta.url)), {
+      stdio: ["ignore", "ignore", "inherit", "ipc"],
+      serialization: "advanced",
+    });
+    worker = child;
+    const forget = () => {
+      if (worker === child) {
+        worker = undefined;
+        loaded = false;
+      }
+    };
+    child.once("exit", forget);
+    child.on("error", forget);
+  }
+  let settled = false;
+  const finish = (status, body) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(deadline);
+    child.off("message", onMessage);
+    child.off("error", onError);
+    child.off("exit", onExit);
+    if (status >= 500 && worker === child) release();
+    reply(response, status, body);
+    resolve();
+  };
+  const onMessage = (message) => {
+    if (message.ok) {
+      loaded = true;
+      finish(200, message.analysis);
+    } else {
+      finish(422, { error: "analysis_failed" });
+    }
+  };
+  const onError = () => finish(503, { error: "analysis_unavailable" });
+  const onExit = () => finish(503, { error: "analysis_unavailable" });
+  const deadline = setTimeout(() => {
+    console.error(JSON.stringify({ service: "media-manager-eye", event: "analysis_timeout" }));
+    finish(504, { error: "analysis_timeout" });
+  }, 25_000);
+  child.on("message", onMessage);
+  child.once("error", onError);
+  child.once("exit", onExit);
+  child.send(bytes, (error) => { if (error) onError(); });
+});
+
 const server = http.createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/health") {
-    reply(response, 200, { ready: true, loaded: !!eye });
+    reply(response, 200, { ready: true, loaded });
     return;
   }
   if (request.method !== "POST" || request.url !== "/analyze") {
@@ -55,8 +110,6 @@ const server = http.createServer(async (request, response) => {
   }
   busy = true;
   clearTimeout(idleTimer);
-  // A stuck native call is recovered by systemd restarting this helper.
-  const deadline = setTimeout(() => process.exit(1), 25_000);
   try {
     const declaredLength = request.headers["content-length"];
     if (declaredLength && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > 16 * 1024 * 1024)) {
@@ -75,29 +128,12 @@ const server = http.createServer(async (request, response) => {
       }
       chunks.push(chunk);
     }
-    const { data, info } = await sharp(Buffer.concat(chunks), {
-      limitInputPixels: 40_000_000,
-      failOn: "error",
-    })
-      .rotate()
-      .resize({ width: 2048, height: 2048, fit: "inside", withoutEnlargement: true })
-      .removeAlpha()
-      .toColourspace("srgb")
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-    eye ??= await Eye.load({ directory });
-    const photo = await eye.analyze({ data, width: info.width, height: info.height });
-    const suggestions = photo.tags()
-      .filter((tag) => /^[a-z0-9_]{1,96}$/.test(tag))
-      .slice(0, 64)
-      .map((tag) => ({ tag, confidence: photo.confidence(tag) }));
-    reply(response, 200, { model: photo.model, suggestions, scores: photo.scores });
+    await analyze(Buffer.concat(chunks), response);
   } catch {
     request.resume();
     // Neither image contents, filenames, nor upstream errors belong in logs.
     reply(response, 422, { error: "analysis_failed" });
   } finally {
-    clearTimeout(deadline);
     busy = false;
     releaseWhenIdle();
   }
@@ -114,5 +150,6 @@ try {
 server.listen(socket, () => chmodSync(socket, 0o660));
 process.on("SIGTERM", () => {
   clearTimeout(idleTimer);
-  server.close(() => { release(); process.exit(0); });
+  release();
+  server.close(() => process.exit(0));
 });

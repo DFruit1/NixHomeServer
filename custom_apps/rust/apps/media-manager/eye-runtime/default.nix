@@ -16,7 +16,7 @@ buildNpmPackage {
   installPhase = ''
     runHook preInstall
     mkdir -p "$out/lib/media-manager-eye" "$out/bin"
-    cp -r node_modules package.json server.mjs "$out/lib/media-manager-eye/"
+    cp -r node_modules package.json server.mjs analyze.mjs "$out/lib/media-manager-eye/"
     makeWrapper ${nodejs}/bin/node "$out/bin/media-manager-eye" \
       --add-flags "$out/lib/media-manager-eye/server.mjs" \
       --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ stdenv.cc.cc.lib curl zlib libuuid openssl ]}

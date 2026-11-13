@@ -143,8 +143,11 @@ in
         UMask = "0007";
         Restart = "on-failure";
         RestartSec = 5;
-        MemoryHigh = "2G";
-        MemoryMax = "3G";
+        # The native runtime exceeded 2 GiB and spent ~48% of time in
+        # cgroup reclaim despite ample host RAM. Leave inference headroom while
+        # keeping a hard cap; the HTTP supervisor bounds stuck native calls.
+        MemoryHigh = "4G";
+        MemoryMax = "6G";
         MemorySwapMax = 0;
         LimitCORE = 0;
         CPUWeight = 20;
