@@ -29,7 +29,9 @@ const newRule = (kind: "yesNo" | "category"): DecisionRule => ({
   id: crypto.randomUUID(),
   kind,
   question: kind === "category" ? defaultCategoryQuestion : "",
-  yesTag: kind === "yesNo" ? "to be deleted" : "",
+  yesTag: "",
+  yesArchive: kind === "yesNo",
+  noArchive: false,
   noTag: "",
   categories: kind === "category" ? ["", ""] : [],
   automatic: false,
@@ -37,6 +39,7 @@ const newRule = (kind: "yesNo" | "category"): DecisionRule => ({
 
 export const DecisionQuestions = component$<{
   image?: ImmichImage;
+  onOpenChange$?: QRL<(open: boolean) => void>;
   onAssessed$: QRL<(id: string, tags: string[]) => void>;
 }>((props) => {
   const output = useSignal<HTMLElement>();
@@ -75,6 +78,7 @@ export const DecisionQuestions = component$<{
   };
   const toggle = $(async () => {
     state.open = !state.open;
+    await props.onOpenChange$?.(state.open);
     if (!state.open || state.loaded) return;
     state.loading = true;
     state.error = "";
@@ -99,8 +103,7 @@ export const DecisionQuestions = component$<{
       });
       state.rules = response.rules;
       state.dirty = false;
-      state.notice =
-        "Questions saved. Automatic questions run on the next library sweep (up to 30 minutes).";
+      state.notice = "Questions saved.";
     } catch (error) {
       state.error = readableError(error);
     } finally {
@@ -172,7 +175,7 @@ export const DecisionQuestions = component$<{
   const canAssess =
     state.loaded && !busy && !state.dirty && state.rules.length > 0;
   return (
-    <div class="decision-questions">
+    <div class={{ "decision-questions": true, "is-open": state.open }}>
       <button
         type="button"
         class="secondary-button"
@@ -181,7 +184,7 @@ export const DecisionQuestions = component$<{
         onClick$={toggle}
         disabled={busy}
       >
-        {state.open ? "Hide decision questions" : "Decision questions"}
+        {state.open ? "← Back to photos" : "Decision questions"}
       </button>
       {state.open && (
         <section
@@ -190,15 +193,18 @@ export const DecisionQuestions = component$<{
           aria-busy={busy}
         >
           <h3>Decision questions</h3>
-          <p class="muted">
-            d1 assesses Yes/No at a 50% cutoff. A category question asks once
-            per album name and adds the photo to the most probable album at 50%
-            or higher. Category rules are the only Immich write; original files
-            and Immich tags stay unchanged. Every successful assessment adds
-            “auto-tagged yyyyMMdd hh:mm” in server local time, even when tag
-            actions leave tags unchanged. Optional score bounds skip a question
-            when any bound is unmet.
-          </p>
+          <details class="decision-help">
+            <summary>How decisions work</summary>
+            <p class="muted">
+              Yes/No questions use a 50% cutoff. Choose a tag, archive the photo
+              in Immich, or leave it unchanged for each answer. Archived photos
+              stay in Immich's Archive and can be restored there. Category
+              questions add photos to the most probable album at 50% or higher.
+              Score bounds skip questions that do not match. Automatic questions
+              run on the next library sweep, within 30 minutes. Saved tags stay
+              private to Media Manager, including an assessment timestamp.
+            </p>
+          </details>
           {state.loading && <p role="status">Loading saved questions…</p>}
           {state.loaded && (
             <form preventdefault:submit onSubmit$={save}>
@@ -237,6 +243,8 @@ export const DecisionQuestions = component$<{
                               rule.categories = ["", ""];
                               rule.yesTag = "";
                               rule.noTag = "";
+                              rule.yesArchive = false;
+                              rule.noArchive = false;
                             } else {
                               rule.categories = [];
                             }
@@ -303,22 +311,39 @@ export const DecisionQuestions = component$<{
                                 If {key === "yesTag" ? "yes" : "no"}
                                 <select
                                   value={
-                                    rule[key] ||
-                                    state.adding.includes(`${rule.id}-${key}`)
-                                      ? "tag"
-                                      : "unchanged"
+                                    rule[
+                                      key === "yesTag"
+                                        ? "yesArchive"
+                                        : "noArchive"
+                                    ]
+                                      ? "archive"
+                                      : rule[key] ||
+                                          state.adding.includes(
+                                            `${rule.id}-${key}`,
+                                          )
+                                        ? "tag"
+                                        : "unchanged"
                                   }
                                   onChange$={(_, el) => {
-                                    rule[key] =
-                                      el.value === "tag" ? "to be deleted" : "";
+                                    rule[key] = "";
+                                    rule[
+                                      key === "yesTag"
+                                        ? "yesArchive"
+                                        : "noArchive"
+                                    ] = el.value === "archive";
                                     state.adding = state.adding.filter(
                                       (id) => id !== `${rule.id}-${key}`,
                                     );
+                                    if (el.value === "tag")
+                                      state.adding.push(`${rule.id}-${key}`);
                                     changed();
                                   }}
                                 >
                                   <option value="unchanged">
                                     Leave unchanged
+                                  </option>
+                                  <option value="archive">
+                                    Archive in Immich
                                   </option>
                                   <option value="tag">Add tag</option>
                                 </select>
@@ -350,8 +375,8 @@ export const DecisionQuestions = component$<{
                           ))}
                         </div>
                       )}
-                      <fieldset class="decision-bounds">
-                        <legend>EYE score bounds (optional)</legend>
+                      <details class="decision-bounds">
+                        <summary>Score bounds</summary>
                         <p class="muted">
                           Skip this question unless every bound is met. Leave
                           empty for no bound.
@@ -382,7 +407,7 @@ export const DecisionQuestions = component$<{
                             ))}
                           </div>
                         ))}
-                      </fieldset>
+                      </details>
                       <label class="decision-automatic">
                         <input
                           type="checkbox"
@@ -447,7 +472,7 @@ export const DecisionQuestions = component$<{
           {state.dirty && (
             <p role="status">
               Save changes before assessing. Removing or changing a question
-              keeps tags and albums already applied.
+              keeps tags, albums and archive actions already applied.
             </p>
           )}
           {props.image && (
@@ -464,8 +489,11 @@ export const DecisionQuestions = component$<{
             >
               Assess selected photo
             </button>
+          </div>
+          <details class="decision-upload">
+            <summary>Assess another file</summary>
             <label>
-              Assess another file
+              Image or text file
               <input
                 type="file"
                 accept="image/jpeg,image/png,image/webp,text/*,.md,.json,.csv,.log,.rs,.ts"
@@ -473,13 +501,13 @@ export const DecisionQuestions = component$<{
                 onChange$={assessFile}
               />
             </label>
-          </div>
-          <p class="muted">
-            Images up to 16 MiB or UTF-8 text up to 16 KiB. File contents are
-            used locally for assessment and are not retained. Upload tags are
-            saved by content; upload the same file again to retrieve them.
-            Uploaded files never add Immich albums.
-          </p>
+            <p class="muted">
+              Images up to 16 MiB or UTF-8 text up to 16 KiB. File contents are
+              used locally and are not retained. Upload tags are saved by
+              content. Uploaded files never change Immich albums or archive
+              photos.
+            </p>
+          </details>
           {state.running && (
             <p role="status">Assessing {state.resultName} locally…</p>
           )}
@@ -539,10 +567,24 @@ export const DecisionQuestions = component$<{
                       {result.albumError && (
                         <span class="message error">{result.albumError}</span>
                       )}
+                      {result.archived && <span>Archived in Immich</span>}
+                      {result.archiveRequested &&
+                        !result.archived &&
+                        !result.archiveError && (
+                          <span>
+                            {state.result!.target.startsWith("file:")
+                              ? "Archive actions apply only to Immich photos."
+                              : "Archive action was not applied. Review the saved question before retrying."}
+                          </span>
+                        )}
+                      {result.archiveError && (
+                        <span class="message error">{result.archiveError}</span>
+                      )}
                       {result.tag ? (
                         <span>Added tag: {result.tag}</span>
                       ) : (
                         result.kind === "yesNo" &&
+                        !result.archiveRequested &&
                         result.answer !== "skipped" && (
                           <span>Existing tags unchanged</span>
                         )

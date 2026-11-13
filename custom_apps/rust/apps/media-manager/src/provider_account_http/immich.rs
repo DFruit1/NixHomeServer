@@ -1,5 +1,5 @@
-//! Immich reads are read-only; only saved category rules may add the assessed
-//! photo to a named album. Derived EYE tags and scores stay in our private index.
+//! Only saved decision rules may add the assessed photo to a named album or
+//! archive it in Immich. Derived EYE tags and scores stay in our private index.
 use super::*;
 use reqwest::Method;
 use std::{path::Path as FilePath, time::Duration};
@@ -158,11 +158,17 @@ impl Account {
         body: Option<Value>,
         id: &str,
     ) -> Result<reqwest::Response, ApiError> {
-        if method != Method::GET && !(method == Method::POST && path == "search/metadata") {
+        let archive = method == Method::PATCH
+            && path.strip_prefix("assets/").is_some_and(valid_mbid)
+            && body.as_ref() == Some(&json!({"visibility": "archive"}));
+        if method != Method::GET
+            && !(method == Method::POST && path == "search/metadata")
+            && !archive
+        {
             return Err(error(
                 StatusCode::FORBIDDEN,
                 "immich_read_only",
-                "Immich access is read-only.",
+                "This Immich write is not permitted.",
                 id,
             ));
         }
@@ -245,6 +251,33 @@ impl Account {
             return Err(upstream_error(id));
         }
         Ok(asset)
+    }
+
+    /// Immich 3.x updateAsset: PATCH /assets/:id with visibility=archive.
+    /// Only the assessed asset is addressed; originals and other metadata stay intact.
+    async fn archive(
+        &self,
+        state: &ProviderBrokerState,
+        asset_id: &str,
+        id: &str,
+    ) -> Result<(), ApiError> {
+        let asset = self.asset(state, asset_id, id).await?;
+        if asset.visibility == "archive" {
+            return Ok(());
+        }
+        self.send(
+            state,
+            Method::PATCH,
+            &format!("assets/{asset_id}"),
+            Some(json!({"visibility":"archive"})),
+            id,
+        )
+        .await?;
+        // Check the observed state rather than assuming a successful response applied it.
+        if self.asset(state, asset_id, id).await?.visibility != "archive" {
+            return Err(upstream_error(id));
+        }
+        Ok(())
     }
 
     async fn image(

@@ -1946,13 +1946,15 @@ components:
       properties:
         id: { type: string, maxLength: 64, pattern: "^[a-zA-Z0-9-]+$" }
         kind:
-          description: A Yes/No question applies tags. A category question adds the photo to the Immich album of the most probable category.
+          description: A Yes/No question applies tags or archives the photo in Immich. A category question adds the photo to the Immich album of the most probable category.
           enum: [yesNo, category]
           type: string
           default: yesNo
         question: { type: string, minLength: 1, maxLength: 1000 }
-        yesTag: { type: string, maxLength: 96, description: "Used only by yesNo rules; empty means leave unchanged." }
-        noTag: { type: string, maxLength: 96, description: "Used only by yesNo rules; empty means leave unchanged." }
+        yesTag: { type: string, maxLength: 96, description: "Used only by yesNo rules; empty means no tag. The corresponding archive action may still apply." }
+        noTag: { type: string, maxLength: 96, description: "Used only by yesNo rules; empty means no tag. The corresponding archive action may still apply." }
+        yesArchive: { type: boolean, default: false, description: "Archive the Immich photo on Yes; mutually exclusive with yesTag." }
+        noArchive: { type: boolean, default: false, description: "Archive the Immich photo on No; mutually exclusive with noTag." }
         categories:
           description: Unique album names for a category rule; empty for a yesNo rule.
           type: array
@@ -2011,6 +2013,9 @@ components:
               skipReason:
                 description: Why score bounds excluded this question, or null.
                 type: [string, "null"]
+              archiveRequested: { type: boolean, description: "The selected Yes/No action requests archiving. Uploads cannot archive an Immich asset." }
+              archived: { type: boolean, description: "The photo was successfully archived in Immich." }
+              archiveError: { type: [string, "null"], description: "Archive failure; saved work is retained for retry." }
               albumError:
                 description: Bounded album-write failure for this question, or null.
                 type: [string, "null"]

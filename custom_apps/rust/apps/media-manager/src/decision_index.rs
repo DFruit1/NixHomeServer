@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 #[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum RuleKind {
-    /// One d1 proposition with optional Yes/No tags.
+    /// One d1 proposition with optional Yes/No tag or archive actions.
     #[default]
     YesNo,
     /// One d1 proposition per category; the most probable category names an
@@ -87,13 +87,17 @@ pub(crate) struct Rule {
     pub no_tag: String,
     #[serde(default)]
     pub categories: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub yes_archive: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_archive: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bounds: Option<ScoreBounds>,
     pub automatic: bool,
 }
 impl Rule {
     pub fn signature(&self) -> String {
-        format!(
+        let original = format!(
             "{:x}",
             Sha256::digest(
                 serde_json::to_vec(&(
@@ -106,7 +110,27 @@ impl Rule {
                 ))
                 .unwrap()
             )
-        )
+        );
+        // Keep existing assessments valid when neither new action is enabled.
+        if self.yes_archive || self.no_archive {
+            format!(
+                "{:x}",
+                Sha256::digest(format!(
+                    "{original}:{}:{}",
+                    self.yes_archive, self.no_archive
+                ))
+            )
+        } else {
+            original
+        }
+    }
+    pub fn archives(&self, probability: f64) -> bool {
+        self.kind == RuleKind::YesNo
+            && if probability >= 0.5 {
+                self.yes_archive
+            } else {
+                self.no_archive
+            }
     }
     pub fn valid(&self) -> bool {
         !self.id.is_empty()
@@ -121,6 +145,8 @@ impl Rule {
             && match self.kind {
                 RuleKind::YesNo => {
                     self.categories.is_empty()
+                        && (!self.yes_archive || self.yes_tag.is_empty())
+                        && (!self.no_archive || self.no_tag.is_empty())
                         && [&self.yes_tag, &self.no_tag]
                             .into_iter()
                             .all(|s| s.is_empty() || valid_tag(s))
@@ -128,6 +154,8 @@ impl Rule {
                 RuleKind::Category => {
                     self.yes_tag.is_empty()
                         && self.no_tag.is_empty()
+                        && !self.yes_archive
+                        && !self.no_archive
                         && (2..=12).contains(&self.categories.len())
                         && self.categories.iter().all(|name| valid_category(name))
                         && {
@@ -177,6 +205,9 @@ pub(crate) fn initialize(db: &Connection) -> rusqlite::Result<()> {
         CREATE TABLE IF NOT EXISTS decision_album_assignments(scope TEXT NOT NULL, asset_id TEXT NOT NULL,
             rule_id TEXT NOT NULL, signature TEXT NOT NULL, name TEXT NOT NULL,
             PRIMARY KEY(scope,asset_id,rule_id));
+        CREATE TABLE IF NOT EXISTS decision_archive_assignments(scope TEXT NOT NULL, asset_id TEXT NOT NULL,
+            rule_id TEXT NOT NULL, signature TEXT NOT NULL,
+            PRIMARY KEY(scope,asset_id,rule_id));
         CREATE TABLE IF NOT EXISTS decision_albums(scope TEXT NOT NULL, name TEXT NOT NULL, album_id TEXT NOT NULL,
             PRIMARY KEY(scope,name));")
 }
@@ -221,7 +252,10 @@ impl Index<'_> {
         let legacy: Vec<_> = rules
             .iter()
             .filter(|r| {
-                r.kind == RuleKind::YesNo && !r.bounds.as_ref().is_some_and(ScoreBounds::any)
+                r.kind == RuleKind::YesNo
+                    && !r.yes_archive
+                    && !r.no_archive
+                    && !r.bounds.as_ref().is_some_and(ScoreBounds::any)
             })
             .map(|r| {
                 serde_json::json!({
@@ -241,25 +275,29 @@ impl Index<'_> {
             ON CONFLICT(scope) DO UPDATE SET rules=excluded.rules",
             params![self.scope, legacy],
         )?;
-        // Removing/changing a question cancels only its uncompleted album work.
-        let obsolete = {
-            let mut stmt = tx.prepare(
-                "SELECT DISTINCT rule_id,signature FROM decision_album_assignments WHERE scope=?1",
-            )?;
-            let rows = stmt.query_map([self.scope], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        for (rule_id, signature) in obsolete {
-            if !rules
-                .iter()
-                .any(|r| r.id == rule_id && r.signature() == signature)
-            {
-                tx.execute(
-                    "DELETE FROM decision_album_assignments WHERE scope=?1 AND rule_id=?2 AND signature=?3",
-                    params![self.scope, rule_id, signature],
-                )?;
+        // Rule edits cancel only pending remote actions; applied actions remain.
+        for table in ["decision_album_assignments", "decision_archive_assignments"] {
+            let obsolete = {
+                let mut stmt = tx.prepare(&format!(
+                    "SELECT DISTINCT rule_id,signature FROM {table} WHERE scope=?1"
+                ))?;
+                let rows = stmt.query_map([self.scope], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            for (rule_id, signature) in obsolete {
+                if !rules
+                    .iter()
+                    .any(|r| r.id == rule_id && r.signature() == signature)
+                {
+                    tx.execute(
+                        &format!(
+                            "DELETE FROM {table} WHERE scope=?1 AND rule_id=?2 AND signature=?3"
+                        ),
+                        params![self.scope, rule_id, signature],
+                    )?;
+                }
             }
         }
         tx.commit()
@@ -315,6 +353,17 @@ impl Index<'_> {
         )?;
         Ok(())
     }
+    pub fn pending_archive(&self, asset: &str, rule: &Rule) -> rusqlite::Result<bool> {
+        self.store.index_connection()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM decision_archive_assignments WHERE scope=?1 AND asset_id=?2 AND rule_id=?3 AND signature=?4)",
+            params![self.scope, asset, rule.id, rule.signature()], |r| r.get(0))
+    }
+    pub fn complete_archive(&self, asset: &str, rule: &Rule) -> rusqlite::Result<()> {
+        self.store.index_connection()?.execute(
+            "DELETE FROM decision_archive_assignments WHERE scope=?1 AND asset_id=?2 AND rule_id=?3 AND signature=?4",
+            params![self.scope, asset, rule.id, rule.signature()])?;
+        Ok(())
+    }
     pub fn needs_decision(&self, asset: &str, rule: &Rule) -> rusqlite::Result<bool> {
         let done: bool = self.store.index_connection()?.query_row(
             "SELECT EXISTS(SELECT 1 FROM decision_results
@@ -359,6 +408,13 @@ impl Index<'_> {
                 tx.execute(
                     "INSERT INTO decision_album_assignments VALUES(?1,?2,?3,?4,?5)",
                     params![self.scope, asset, rule.id, rule.signature(), name],
+                )?;
+            }
+            tx.execute("DELETE FROM decision_archive_assignments WHERE scope=?1 AND asset_id=?2 AND rule_id=?3", params![self.scope, asset, rule.id])?;
+            if !asset.starts_with("file:") && rule.archives(*p) {
+                tx.execute(
+                    "INSERT INTO decision_archive_assignments VALUES(?1,?2,?3,?4)",
+                    params![self.scope, asset, rule.id, rule.signature()],
                 )?;
             }
             let tag = if rule.kind == RuleKind::YesNo && *p >= 0.5 {

@@ -299,6 +299,15 @@ pub(super) async fn background(
                 .complete_album(&asset.id, &rule, &name)
                 .map_err(|_| index_error(id))?;
         }
+        if index
+            .pending_archive(&asset.id, &rule)
+            .map_err(|_| index_error(id))?
+        {
+            account.archive(state, &asset.id, id).await?;
+            index
+                .complete_archive(&asset.id, &rule)
+                .map_err(|_| index_error(id))?;
+        }
         if rule.automatic
             && index
                 .needs_decision(&asset.id, &rule)
@@ -335,10 +344,11 @@ pub(super) async fn background(
         id,
     })
     .await?;
-    if result["results"]
-        .as_array()
-        .is_some_and(|results| results.iter().any(|r| r["albumError"].is_string()))
-    {
+    if result["results"].as_array().is_some_and(|results| {
+        results
+            .iter()
+            .any(|r| r["albumError"].is_string() || r["archiveError"].is_string())
+    }) {
         return Err(upstream_error(id)); // existing worker backoff retries the saved assignment
     }
     Ok(())
@@ -621,6 +631,35 @@ pub(super) async fn evaluate(evaluation: Evaluation<'_, '_>) -> Result<Value, Ap
             }
         }
     }
+    let mut archive_results = std::collections::BTreeMap::new();
+    if let Some(photo) = album {
+        for result in &applied {
+            if result.answer == "skipped" || !result.rule.archives(result.probability) {
+                continue;
+            }
+            // A rule edited/removed since inference no longer authorizes its pending action.
+            if !index
+                .pending_archive(target, result.rule)
+                .map_err(|_| index_error(id))?
+            {
+                continue;
+            }
+            let failure = match photo.account.archive(photo.state, photo.asset_id, id).await {
+                Ok(()) => {
+                    index
+                        .complete_archive(target, result.rule)
+                        .map_err(|_| index_error(id))?;
+                    None
+                }
+                Err(err) => Some(if err.status() == StatusCode::FORBIDDEN {
+                    "Your Immich API key cannot archive photos. Enable asset.update permission."
+                } else {
+                    "Immich could not archive this photo. The saved action will be retried."
+                }),
+            };
+            archive_results.insert(result.rule.id.as_str(), failure);
+        }
+    }
     let results: Vec<Value> = applied
         .into_iter()
         .map(|applied| {
@@ -642,6 +681,9 @@ pub(super) async fn evaluate(evaluation: Evaluation<'_, '_>) -> Result<Value, Ap
                 "album": applied.album,
                 "skipReason": applied.skip,
                 "albumError": applied.album_error,
+                "archiveRequested": applied.answer != "skipped" && applied.rule.archives(applied.probability),
+                "archived": archive_results.get(applied.rule.id.as_str()).is_some_and(|failure| failure.is_none()),
+                "archiveError": archive_results.get(applied.rule.id.as_str()).copied().flatten(),
             })
         })
         .collect();
