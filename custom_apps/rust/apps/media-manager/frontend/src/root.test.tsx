@@ -821,7 +821,7 @@ describe("Media Manager conversions inbox", () => {
     expect(screen.textContent).toContain(
       "Copy a DVD ISO into the shared inbox at _Shared/_ISO/_DVDs.",
     );
-    expect(screen.textContent).toContain("No failed conversions.");
+    expect(screen.textContent).toContain("No failed jobs.");
     expect(screen.querySelector("main")?.classList).toContain(
       "main-content--conversions",
     );
