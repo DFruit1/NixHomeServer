@@ -155,8 +155,17 @@ pub(crate) fn valid_category(name: &str) -> bool {
         && name.len() <= 96
         && !name.chars().any(char::is_control)
 }
+// The rollback closure reads only the five-field document in decision_rules.
+// Use the richer document only while its legacy projection remains unchanged;
+// edits made by an older binary must win over stale newer configuration.
+const RULES_QUERY: &str = "SELECT COALESCE(d.rules,b.rules) FROM decision_rules b
+    LEFT JOIN decision_rule_documents d ON d.scope=b.scope AND d.legacy_rules=b.rules
+    WHERE b.scope=?1";
+
 pub(crate) fn initialize(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS decision_rules(scope TEXT PRIMARY KEY, rules TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS decision_rule_documents(scope TEXT PRIMARY KEY, legacy_rules TEXT NOT NULL,
+            rules TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS decision_tags(scope TEXT NOT NULL, asset_id TEXT NOT NULL, tag TEXT NOT NULL,
             PRIMARY KEY(scope,asset_id,tag));
         CREATE INDEX IF NOT EXISTS decision_tags_search ON decision_tags(scope,tag,asset_id);
@@ -190,11 +199,7 @@ impl Index<'_> {
         let raw: Option<String> = self
             .store
             .index_connection()?
-            .query_row(
-                "SELECT rules FROM decision_rules WHERE scope=?1",
-                [self.scope],
-                |r| r.get(0),
-            )
+            .query_row(RULES_QUERY, [self.scope], |r| r.get(0))
             .optional()?;
         raw.map(|s| {
             serde_json::from_str(&s).map_err(|e| {
@@ -211,10 +216,30 @@ impl Index<'_> {
     pub fn save_rules(&self, rules: &[Rule]) -> rusqlite::Result<()> {
         let mut db = self.store.index_connection()?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // Unsupported category/bounded questions remain retained in the new
+        // document, but cannot run with different semantics on an old closure.
+        let legacy: Vec<_> = rules
+            .iter()
+            .filter(|r| {
+                r.kind == RuleKind::YesNo && !r.bounds.as_ref().is_some_and(ScoreBounds::any)
+            })
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id, "question": r.question, "yesTag": r.yes_tag,
+                    "noTag": r.no_tag, "automatic": r.automatic,
+                })
+            })
+            .collect();
+        let legacy = serde_json::to_string(&legacy).unwrap();
+        tx.execute(
+            "INSERT INTO decision_rule_documents(scope,legacy_rules,rules) VALUES(?1,?2,?3)
+             ON CONFLICT(scope) DO UPDATE SET legacy_rules=excluded.legacy_rules,rules=excluded.rules",
+            params![self.scope, legacy, serde_json::to_string(rules).unwrap()],
+        )?;
         tx.execute(
             "INSERT INTO decision_rules(scope,rules) VALUES(?1,?2)
             ON CONFLICT(scope) DO UPDATE SET rules=excluded.rules",
-            params![self.scope, serde_json::to_string(rules).unwrap()],
+            params![self.scope, legacy],
         )?;
         // Removing/changing a question cancels only its uncompleted album work.
         let obsolete = {
@@ -310,11 +335,7 @@ impl Index<'_> {
         let mut db = self.store.index_connection()?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         // A saved edit/removal during inference must not apply obsolete actions.
-        let raw: String = tx.query_row(
-            "SELECT rules FROM decision_rules WHERE scope=?1",
-            [self.scope],
-            |r| r.get(0),
-        )?;
+        let raw: String = tx.query_row(RULES_QUERY, [self.scope], |r| r.get(0))?;
         let current: Vec<Rule> = serde_json::from_str(&raw).unwrap_or_default();
         if rules.len() != probabilities.len()
             || rules.len() != albums.len()

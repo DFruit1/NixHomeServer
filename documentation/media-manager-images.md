@@ -72,6 +72,14 @@ album assignments remain queued for the background sweep, preserving the saved
 inference and tags; retrying does not run d1 again. Editing or removing the
 question cancels obsolete pending assignments.
 
+New question fields live in a separate rule document. The legacy rules table
+contains only unbounded yes/no questions in the previous closure's format, so a
+guarded rollback can still read it. Category and bounded questions are retained
+but unavailable while running the old closure. Returning to this version restores
+them if the legacy document was not edited; an edit made on the old version takes
+precedence over the retained document. Keep the provider database and its backup;
+do not delete the new rule-document or pending-assignment tables during rollback.
+
 Each question can also set optional **EYE score bounds** for aesthetic, keeper
 and cover (0–100%). The question is skipped, with the reason shown, when any set
 minimum or maximum is unmet. Bounds need saved EYE analysis; assessing an Immich
