@@ -342,6 +342,94 @@ async fn caller_credentials_are_isolated_and_private_paths_are_never_returned() 
     task.abort();
 }
 
+// The tag filter used to be resolved in a per-photo correlated subquery, so
+// SQLite drove every candidate photo from the tag index and re-scanned all rows
+// sharing the tag. On the real 24k-photo library a scores/aesthetic/tag sort
+// took 46 s of SQLite time and the browser gave up at 30 s. The filter must stay
+// one indexed pass over the account's own photos.
+#[tokio::test]
+async fn tag_search_stays_bounded_on_a_large_library() {
+    use rusqlite::params;
+    use std::time::{Duration, Instant};
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = Fixture::default();
+    let (app, task) = test_app(&temp, fixture).await;
+    // The fixture has no EYE socket, so the analysis itself fails; it still
+    // registers the account scope that owns the private index.
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{ROOT}/{PHOTO}/analysis"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let mut database = rusqlite::Connection::open(temp.path().join("accounts.sqlite3")).unwrap();
+    let scope: String = database
+        .query_row("SELECT scope FROM image_assets", [], |row| row.get(0))
+        .unwrap();
+    let analysis = json!({"model":"eye@v1.0.0","suggestions":[],"scores":{"aesthetic":0.5,"keeper":0.5,"cover":0.5}}).to_string();
+    let transaction = database.transaction().unwrap();
+    for n in 100..10_100_u32 {
+        let asset_id = format!("10000000-0000-4000-8000-{n:012}");
+        transaction
+            .execute(
+                "INSERT INTO image_assets(scope,asset_id,filename,captured_at,analysis,aesthetic,keeper,cover,seen)
+                 VALUES (?1,?2,?3,?4,?5,0.5,0.5,0.5,1)",
+                params![
+                    scope,
+                    asset_id,
+                    format!("IMG_{n}.jpg"),
+                    format!("2025-01-{:02}T10:00:00Z", 1 + n % 28),
+                    analysis
+                ],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO image_tags(scope,asset_id,tag,confidence) VALUES (?1,?2,'common',0.9)",
+                params![scope, asset_id],
+            )
+            .unwrap();
+    }
+    transaction.commit().unwrap();
+    for query in [
+        "tags=common&tagMode=all&sort=scores",
+        "tags=absent&tagMode=all&sort=scores",
+        "tags=common,absent&tagMode=all&sort=tag&sortTag=common",
+    ] {
+        let started = Instant::now();
+        let response = app
+            .clone()
+            .oneshot(request(
+                "GET",
+                &format!("{ROOT}/index?page=1&{query}"),
+                "alice",
+                false,
+                Value::Null,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "{query} took {elapsed:?} over 10k photos and tags"
+        );
+        let body = json_response(response).await;
+        if query.starts_with("tags=common&") {
+            assert_eq!(body["nextPage"], 2);
+        } else {
+            assert_eq!(body["items"], json!([]));
+        }
+    }
+    task.abort();
+}
+
 #[tokio::test]
 async fn refuses_legacy_tag_writes_for_editors() {
     let temp = tempfile::tempdir().unwrap();

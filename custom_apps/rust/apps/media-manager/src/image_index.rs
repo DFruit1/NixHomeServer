@@ -221,16 +221,30 @@ impl Index<'_> {
             _ => "a.captured_at",
         };
         let direction = if q.direction == "asc" { "ASC" } else { "DESC" };
-        let sql = format!("SELECT a.asset_id FROM image_assets a WHERE a.scope=?1
+        // The tag filter is resolved once for the whole scope instead of inside a
+        // per-asset correlated subquery: a correlated "tag IN list" made SQLite
+        // drive each asset from the tag index, scanning every row sharing the tag
+        // for every candidate photo (tens of seconds on a real library).
+        let sql = format!(
+            "SELECT a.asset_id FROM image_assets a WHERE a.scope=?1
             AND instr(lower(a.filename),lower(?2))>0
-            AND (?3='[]' OR (SELECT count(DISTINCT tag) FROM (
-                SELECT t.tag FROM image_tags t WHERE t.scope=a.scope AND t.asset_id=a.asset_id AND t.confidence>=?4
-                UNION SELECT d.tag FROM decision_tags d WHERE d.scope=a.scope AND d.asset_id=a.asset_id
-              ) WHERE tag IN (SELECT value FROM json_each(?3))) >=
-              CASE WHEN ?5='any' THEN 1 ELSE json_array_length(?3) END)
+            AND (?3='[]' OR a.asset_id IN (
+                SELECT matched.asset_id FROM (
+                  SELECT t.asset_id AS asset_id, t.tag AS tag FROM image_tags t
+                    WHERE t.scope=?1 AND t.confidence>=?4
+                      AND t.tag IN (SELECT value FROM json_each(?3))
+                  UNION
+                  SELECT d.asset_id, d.tag FROM decision_tags d
+                    WHERE d.scope=?1 AND d.tag IN (SELECT value FROM json_each(?3))
+                ) matched
+                GROUP BY matched.asset_id
+                HAVING count(*) >=
+                  CASE WHEN ?5='any' THEN 1 ELSE json_array_length(?3) END
+              ))
             AND (?6=0 OR a.aesthetic>=?6) AND (?7=0 OR a.keeper>=?7) AND (?8=0 OR a.cover>=?8)
             AND (?13='capturedAt' OR a.analysis IS NOT NULL)
-            ORDER BY {sort} {direction}, a.asset_id ASC LIMIT ?14 OFFSET ?15");
+            ORDER BY {sort} {direction}, a.asset_id ASC LIMIT ?14 OFFSET ?15"
+        );
         let db = self.store.index_connection()?;
         let mut stmt = db.prepare(&sql)?;
         let tags = q
