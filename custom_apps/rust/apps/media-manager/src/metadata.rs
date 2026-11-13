@@ -1556,6 +1556,10 @@ pub fn merge_managed_sidecar(existing: &str, generated: &str) -> Result<String, 
             &replacement,
         );
     }
+    // Removing managed nodes leaves their surrounding formatting behind. Trim
+    // it so merging a sidecar with its own output is byte-stable instead of
+    // accumulating blank lines on every ordinary edit.
+    let preserved = preserved.trim();
     let generated_children = generated_nodes
         .into_iter()
         .map(|node| generated[node.range()].trim().to_string())
@@ -1821,6 +1825,19 @@ mod tests {
         assert!(merged.contains("<!-- keep -->"));
         assert!(merged.contains("<custom rating=\"A\">untouched</custom>"));
         assert!(merged.contains("data-owner=\"user\""));
+    }
+
+    #[test]
+    fn merging_a_sidecar_with_its_own_output_is_byte_stable() {
+        let generated = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<movie>\n  <title>New</title>\n  <genre>New genre</genre>\n</movie>\n";
+        let first = merge_managed_sidecar(
+            "<?xml version=\"1.0\"?><movie><title>Old</title><!-- keep --><genre>Old genre</genre></movie>",
+            generated,
+        )
+        .expect("first merge");
+        let second = merge_managed_sidecar(&first, generated).expect("repeat merge");
+        assert_eq!(second, first);
+        assert!(first.contains("<!-- keep -->"));
     }
 
     #[test]

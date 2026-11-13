@@ -582,8 +582,10 @@ fn folder_metadata_sidecar(
 }
 
 struct PreparedMetadataAction {
-    action: BrokerAction,
-    staging_path: std::path::PathBuf,
+    /// None when the generated sidecar already matches the file on disk, so the
+    /// preview is a confirmable no-op instead of a redundant replace-and-archive.
+    action: Option<BrokerAction>,
+    staging_path: Option<std::path::PathBuf>,
 }
 
 async fn prepare_embedded_metadata_action(
@@ -683,16 +685,18 @@ async fn prepare_embedded_metadata_action(
         &format!("superseded/{stem}-{request_id}.{extension}"),
     );
     Ok(PreparedMetadataAction {
-        action: BrokerAction::ReplaceEmbeddedMetadata(ReplaceEmbeddedMetadataAction {
-            staging_filename,
-            root_id: item.root_id.clone(),
-            source_relative_path: item.relative_path.clone(),
-            archived_relative_path,
-            replacement_relative_path: item.relative_path.clone(),
-            expected_source,
-            expected_replacement,
-        }),
-        staging_path,
+        action: Some(BrokerAction::ReplaceEmbeddedMetadata(
+            ReplaceEmbeddedMetadataAction {
+                staging_filename,
+                root_id: item.root_id.clone(),
+                source_relative_path: item.relative_path.clone(),
+                archived_relative_path,
+                replacement_relative_path: item.relative_path.clone(),
+                expected_source,
+                expected_replacement,
+            },
+        )),
+        staging_path: Some(staging_path),
     })
 }
 
@@ -787,8 +791,29 @@ async fn prepare_metadata_action(
                 request_id.to_string(),
             )
         })?,
-        None => generated.to_string(),
+        // Canonicalise the first write through the same merge path so a repeat
+        // request is byte-identical instead of rewriting formatting only.
+        None => merge_managed_sidecar(generated, generated).map_err(|message| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "metadata_sidecar_merge_failed",
+                message,
+                request_id.to_string(),
+            )
+        })?,
     };
+    // A repeated selection that already landed on disk must stay idempotent:
+    // return a confirmable no-op instead of replacing and archiving the sidecar
+    // again. Merge is normalised so the same request is byte-stable.
+    if existing
+        .as_ref()
+        .is_some_and(|(existing, _)| existing == &contents)
+    {
+        return Ok(PreparedMetadataAction {
+            action: None,
+            staging_path: None,
+        });
+    }
     let staged = stage_sidecar(
         config,
         "sidecar",
@@ -827,8 +852,8 @@ async fn prepare_metadata_action(
         })
     };
     Ok(PreparedMetadataAction {
-        action,
-        staging_path: staged.path,
+        action: Some(action),
+        staging_path: Some(staged.path),
     })
 }
 
@@ -838,7 +863,7 @@ fn create_metadata_plan(
     catalog: &mut Catalog,
     item: &CatalogItem,
     request: &MetadataSidecarRequest,
-    broker_action: BrokerAction,
+    broker_action: Option<BrokerAction>,
     request_id: String,
 ) -> Result<Response, ApiError> {
     let expires_at = unix_timestamp().saturating_add(30 * 60);
@@ -860,7 +885,7 @@ fn create_metadata_plan(
             request_json: serde_json::to_string(request)
                 .map_err(|_| ApiError::internal(request_id.clone()))?,
             expires_at,
-            actions: vec![broker_action.clone()],
+            actions: broker_action.iter().cloned().collect(),
         })
         .map_err(|error| {
             log_event(
@@ -887,14 +912,22 @@ fn create_metadata_plan(
             ApiError::internal(request_id.clone())
         })?;
 
-    let embedded = matches!(&broker_action, BrokerAction::ReplaceEmbeddedMetadata(_));
-    let replacing = matches!(&broker_action, BrokerAction::ReplaceMetadataSidecar(_));
+    let embedded = matches!(
+        broker_action.as_ref(),
+        Some(BrokerAction::ReplaceEmbeddedMetadata(_))
+    );
+    let replacing = matches!(
+        broker_action.as_ref(),
+        Some(BrokerAction::ReplaceMetadataSidecar(_))
+    );
     let mut warnings = if embedded {
         vec![
             "The staged EPUB or CBZ was rebuilt and parsed before this preview was created.",
             "The original book will be archived in its superseded subfolder before the replacement is installed.",
             "All non-metadata ZIP entries are copied verbatim; unknown XML elements in the metadata document are retained.",
         ]
+    } else if broker_action.is_none() {
+        vec!["The sidecar already contains these values, so this preview needs no file change."]
     } else {
         vec![
             "Metadata is written as an application-compatible NFO or OPF sidecar; media streams are not re-encoded.",
@@ -930,7 +963,7 @@ fn create_metadata_plan(
             "id": plan_id,
             "digest": digest,
             "state": "previewed",
-            "actions": [broker_action],
+            "actions": broker_action.iter().collect::<Vec<_>>(),
             "expiresAt": expires_at,
             "mutationMode": state.config.mutation_mode,
             "warnings": warnings,
@@ -1123,7 +1156,10 @@ async fn preview_item_metadata_sidecar(
         } else {
             comicinfo_sidecar(request)
         };
-        let prepared = match prepare_embedded_metadata_action(
+        let PreparedMetadataAction {
+            action,
+            staging_path,
+        } = match prepare_embedded_metadata_action(
             &state.config,
             identity,
             &item,
@@ -1142,12 +1178,14 @@ async fn preview_item_metadata_sidecar(
             &mut catalog,
             &item,
             request,
-            prepared.action,
+            action,
             request_id.to_string(),
         ) {
             Ok(response) => response,
             Err(error) => {
-                let _ = tokio::fs::remove_file(prepared.staging_path).await;
+                if let Some(staging_path) = staging_path {
+                    let _ = tokio::fs::remove_file(staging_path).await;
+                }
                 error.into_response()
             }
         };
@@ -1158,7 +1196,10 @@ async fn preview_item_metadata_sidecar(
         // share an override. This is an app-local override, not an album sidecar.
         destination_relative_path = format!("{}.{}", item.relative_path, format.extension());
     }
-    let prepared = match prepare_metadata_action(
+    let PreparedMetadataAction {
+        action,
+        staging_path,
+    } = match prepare_metadata_action(
         &state.config,
         identity,
         &item.root_id,
@@ -1178,12 +1219,14 @@ async fn preview_item_metadata_sidecar(
         &mut catalog,
         &item,
         request,
-        prepared.action,
+        action,
         request_id.to_string(),
     ) {
         Ok(response) => response,
         Err(error) => {
-            let _ = tokio::fs::remove_file(prepared.staging_path).await;
+            if let Some(staging_path) = staging_path {
+                let _ = tokio::fs::remove_file(staging_path).await;
+            }
             error.into_response()
         }
     }
@@ -1953,7 +1996,10 @@ pub(super) async fn preview_folder_metadata_sidecar(
         .into_response();
     }
     let (destination_relative_path, format, contents) = folder_metadata_sidecar(&folder, &request);
-    let prepared = match prepare_metadata_action(
+    let PreparedMetadataAction {
+        action,
+        staging_path,
+    } = match prepare_metadata_action(
         &state.config,
         &identity,
         &folder.root_id,
@@ -1980,7 +2026,9 @@ pub(super) async fn preview_folder_metadata_sidecar(
     let mut catalog = match state.catalog.open() {
         Ok(catalog) => catalog,
         Err(_) => {
-            let _ = tokio::fs::remove_file(prepared.staging_path).await;
+            if let Some(staging_path) = staging_path {
+                let _ = tokio::fs::remove_file(staging_path).await;
+            }
             return ApiError::internal(request_id).into_response();
         }
     };
@@ -1990,12 +2038,14 @@ pub(super) async fn preview_folder_metadata_sidecar(
         &mut catalog,
         &pseudo_item,
         &request,
-        prepared.action,
+        action,
         request_id.clone(),
     ) {
         Ok(response) => response,
         Err(error) => {
-            let _ = tokio::fs::remove_file(prepared.staging_path).await;
+            if let Some(staging_path) = staging_path {
+                let _ = tokio::fs::remove_file(staging_path).await;
+            }
             error.into_response()
         }
     }

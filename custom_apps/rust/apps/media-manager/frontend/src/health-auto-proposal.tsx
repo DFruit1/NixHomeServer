@@ -23,7 +23,6 @@ export const HealthAutoProposal = component$<{
   field: string;
   query: string;
   providers: ProviderDefinition[];
-  applying: boolean;
   getSession$: GetHealthLookupSession;
   onUse$: QRL<(value: unknown) => Promise<void>>;
 }>((props) => {
@@ -102,7 +101,6 @@ export const HealthAutoProposal = component$<{
           <button
             type="button"
             class="health-value-set"
-            disabled={props.applying}
             onClick$={() => props.onUse$(state.candidate!.values[props.field])}
           >
             <span>

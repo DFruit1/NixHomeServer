@@ -56,6 +56,71 @@ interface HealthRoot {
 
 type MediaKind = MetadataHealthResult["mediaKind"];
 
+const TERMINAL_PLAN_STATES = new Set([
+  "completed",
+  "failed",
+  "rejected",
+  "expired",
+]);
+// Per-target write ordering. Metadata plans are applied asynchronously by the
+// broker; previewing a second edit before the first lands makes the second
+// replacement fail its source-fingerprint check.
+const targetWriteChains = new Map<string, Promise<unknown>>();
+const unsettledTargetPlans = new Map<string, Set<string>>();
+
+function healthEntryId(itemId: string, issue: MetadataHealthIssue): string {
+  return `${itemId}\u0000${healthIssueKey(issue)}`;
+}
+
+function hiddenIssueCount(
+  results: MetadataHealthResult[],
+  hidden: Record<string, boolean>,
+): number {
+  let count = 0;
+  for (const result of results)
+    for (const issue of result.health)
+      if (hidden[healthEntryId(result.itemId, issue)]) count += 1;
+  return count;
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function trackTargetPlan(targetKey: string, planId: string) {
+  const plans = unsettledTargetPlans.get(targetKey) ?? new Set<string>();
+  plans.add(planId);
+  unsettledTargetPlans.set(targetKey, plans);
+}
+
+async function settleTargetPlans(
+  targetKey: string,
+): Promise<{ failure: string; pending: boolean }> {
+  const plans = unsettledTargetPlans.get(targetKey);
+  if (!plans?.size) return { failure: "", pending: false };
+  let failure = "";
+  for (const planId of [...plans]) {
+    let state = "";
+    let detail = "";
+    for (let attempt = 0; attempt < 240; attempt += 1) {
+      const status = await api<{ state?: string; error?: string | null }>(
+        `/plans/${encodeURIComponent(planId)}`,
+      );
+      state = status.state ?? "";
+      detail = status.error ?? "";
+      if (TERMINAL_PLAN_STATES.has(state)) break;
+      await wait(500);
+    }
+    if (!TERMINAL_PLAN_STATES.has(state)) continue;
+    plans.delete(planId);
+    if (state === "failed" && !failure)
+      failure = detail || "The metadata write failed.";
+  }
+  const pending = plans.size > 0;
+  if (!pending) unsettledTargetPlans.delete(targetKey);
+  return { failure, pending };
+}
+
 const KIND_SYMBOLS: Record<MediaKind, { icon: IconName; label: string }> = {
   video: { icon: "video", label: "Video" },
   music: { icon: "music-note", label: "Music" },
@@ -144,6 +209,99 @@ function asStringList(value: unknown): string[] {
   return [];
 }
 
+const WRITE_LANGUAGE = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/;
+const WRITE_CONTROL = /[\p{Cc}]/u;
+const SUPPORTED_MEDIA_TYPES = new Set([
+  "movie",
+  "series",
+  "season",
+  "episode",
+  "music",
+  "audiobook",
+  "book",
+]);
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+function writeText(value: unknown, maximum: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  if (!text || byteLength(text) > maximum) return undefined;
+  if (
+    [...text].some(
+      (character) =>
+        WRITE_CONTROL.test(character) &&
+        character !== "\n" &&
+        character !== "\r" &&
+        character !== "\t",
+    )
+  )
+    return undefined;
+  return text;
+}
+
+function writeTextList(value: unknown, maximumItems: number): string[] {
+  const items = asStringList(value)
+    .map((item) => writeText(item, 500))
+    .filter((item): item is string => Boolean(item));
+  return items.slice(0, maximumItems);
+}
+
+function writeLanguage(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const language = value.trim().toLowerCase();
+  return byteLength(language) <= 15 && WRITE_LANGUAGE.test(language)
+    ? language
+    : undefined;
+}
+
+function writeInteger(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+): number | undefined {
+  if (value === null || value === undefined || value === "") return undefined;
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isInteger(number) && number >= minimum && number <= maximum
+    ? number
+    : undefined;
+}
+
+function writeRating(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "") return undefined;
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) && number >= 0 && number <= 10
+    ? number
+    : undefined;
+}
+
+function writeProviderIds(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const ids: Record<string, string> = {};
+  for (const [key, candidate] of Object.entries(value)) {
+    const id = writeText(candidate, 256);
+    if (!id || !writeText(key, 64)) continue;
+    ids[key] = id;
+    if (Object.keys(ids).length >= 32) break;
+  }
+  return ids;
+}
+
+function writeSelectedText(
+  field: string,
+  value: unknown,
+  maximum: number,
+): string {
+  const text = writeText(value, maximum);
+  if (!text)
+    throw new Error(
+      `The selected ${metadataFieldLabel(field).toLowerCase()} value cannot be saved. Edit it in Review metadata and try again.`,
+    );
+  return text;
+}
+
 function applySidecarFieldValue(
   fields: Record<string, unknown>,
   field: string,
@@ -152,20 +310,52 @@ function applySidecarFieldValue(
   const empty = isUnset(value);
   switch (field) {
     case "title":
+      fields.title = empty ? "" : writeSelectedText(field, value, 500);
+      break;
     case "series":
+      if (empty) delete fields.series;
+      else fields.series = writeSelectedText(field, value, 500);
+      break;
     case "volumeNumber":
-    case "language":
-      if (empty) delete fields[field];
-      else fields[field] = displayValue(value);
+      if (empty) delete fields.volumeNumber;
+      else fields.volumeNumber = writeSelectedText(field, value, 32);
       break;
+    case "language": {
+      if (empty) {
+        delete fields.language;
+        break;
+      }
+      const language = writeLanguage(value);
+      if (!language)
+        throw new Error(
+          "The selected language must be a code such as en or en-US. Edit it in Review metadata and try again.",
+        );
+      fields.language = language;
+      break;
+    }
     case "authors":
-    case "narrators":
-      fields[field] = empty ? [] : asStringList(value);
+    case "narrators": {
+      const items = empty ? [] : writeTextList(value, 32);
+      if (!empty && items.length === 0)
+        throw new Error(
+          `The selected ${field} value cannot be saved. Edit it in Review metadata and try again.`,
+        );
+      fields[field] = items;
       break;
-    case "year":
-      if (empty) delete fields.year;
-      else fields.year = Number(value);
+    }
+    case "year": {
+      if (empty) {
+        delete fields.year;
+        break;
+      }
+      const year = writeInteger(value, 1, 2100);
+      if (year === undefined)
+        throw new Error(
+          "The selected release year must be between 1 and 2100. Edit it in Review metadata and try again.",
+        );
+      fields.year = year;
       break;
+    }
     default:
       break;
   }
@@ -176,34 +366,40 @@ function sidecarFieldsFromMetadata(
   field: string,
   value: unknown,
 ): Record<string, unknown> {
+  const mediaType =
+    typeof details.mediaType === "string" &&
+    SUPPORTED_MEDIA_TYPES.has(details.mediaType)
+      ? details.mediaType
+      : "movie";
+  // Only forward values the write endpoint accepts. Copying an unrelated
+  // invalid value must not block the field the reviewer actually chose.
   const fields: Record<string, unknown> = {
-    mediaType: details.mediaType ?? "movie",
-    title: details.title ?? "",
-    authors: asStringList(details.authors),
-    narrators: asStringList(details.narrators),
-    genres: asStringList(details.genres),
-    writers: asStringList(details.writers),
-    providerIds: details.providerIds ?? {},
+    mediaType,
+    title: writeText(details.title, 500) ?? "",
+    authors: writeTextList(details.authors, 32),
+    narrators: writeTextList(details.narrators, 32),
+    genres: writeTextList(details.genres, 64),
+    writers: writeTextList(details.writers, 64),
+    providerIds: writeProviderIds(details.providerIds),
   };
-  const optional: Array<[string, unknown]> = [
-    ["series", details.series],
-    ["volumeNumber", details.volumeNumber],
-    ["publisher", details.publisher],
-    ["isbn", details.isbn],
-    ["language", details.language],
-    ["description", details.description],
-    ["episodeTitle", details.episodeTitle],
-    ["premiereDate", details.premiereDate],
-    ["officialRating", details.officialRating],
-    ["year", details.year],
-    ["season", details.season],
-    ["episode", details.episode],
-    ["runtimeMinutes", details.runtimeMinutes],
-    ["communityRating", details.communityRating],
+  const optional: Array<[string, string | number | undefined]> = [
+    ["series", writeText(details.series, 500)],
+    ["volumeNumber", writeText(details.volumeNumber, 32)],
+    ["publisher", writeText(details.publisher, 500)],
+    ["isbn", writeText(details.isbn, 64)],
+    ["language", writeLanguage(details.language)],
+    ["description", writeText(details.description, 20_000)],
+    ["episodeTitle", writeText(details.episodeTitle, 500)],
+    ["premiereDate", writeText(details.premiereDate, 10)],
+    ["officialRating", writeText(details.officialRating, 64)],
+    ["year", writeInteger(details.year, 1, 2100)],
+    ["season", writeInteger(details.season, 0, 10_000)],
+    ["episode", writeInteger(details.episode, 1, 100_000)],
+    ["runtimeMinutes", writeInteger(details.runtimeMinutes, 1, 100_000)],
+    ["communityRating", writeRating(details.communityRating)],
   ];
   for (const [key, candidate] of optional) {
-    if (candidate !== undefined && candidate !== null && candidate !== "")
-      fields[key] = candidate;
+    if (candidate !== undefined) fields[key] = candidate;
   }
   applySidecarFieldValue(fields, field, value);
   return fields;
@@ -657,7 +853,6 @@ const HealthDecisionRow = component$<{
   sharedSources?: boolean;
   multipleFiles?: boolean;
   canEdit: boolean;
-  applying: boolean;
   onApply$: ApplyHealthValue;
 }>((props) => {
   const queuedValue = useSignal("");
@@ -677,7 +872,6 @@ const HealthDecisionRow = component$<{
       <button
         type="button"
         class="health-value-set"
-        disabled={props.applying}
         title={`Set this ${origin.toLowerCase()} value for “${field}”`}
         onClick$={() => apply$(value, origin)}
       >
@@ -738,7 +932,6 @@ const HealthDecisionRow = component$<{
             query={props.query}
             providers={props.providers}
             getSession$={props.getSession$}
-            applying={props.applying}
             onUse$={(value) => apply$(value, "Proposed")}
           />
         ) : (
@@ -779,7 +972,6 @@ const HealthIssueReview = component$<{
   grouped: GroupedIssue;
   providers: ProviderDefinition[];
   canEdit: boolean;
-  applying: boolean;
   selectedOnline?: { value: unknown; source: string };
   onApply$: ApplyHealthValue;
   onDecision$: QRL<
@@ -865,7 +1057,7 @@ const HealthIssueReview = component$<{
         JSON.stringify(currentSources),
     );
   const bulk$ = $(async (choice: "current" | "proposed") => {
-    if (bulkWorking.value || props.applying) return;
+    if (bulkWorking.value) return;
     bulkWorking.value = true;
     bulkStatus.value = "";
     try {
@@ -956,7 +1148,6 @@ const HealthIssueReview = component$<{
                     sharedSources={sharedSources}
                     multipleFiles={count > 1}
                     canEdit={props.canEdit}
-                    applying={props.applying}
                     onApply$={props.onApply$}
                   />
                 ) : (
@@ -971,7 +1162,6 @@ const HealthIssueReview = component$<{
                       sharedReason={sharedReason}
                       sharedSources={sharedSources}
                       canEdit={props.canEdit}
-                      applying={props.applying}
                       onApply$={props.onApply$}
                     />
                   ))
@@ -1048,7 +1238,6 @@ const HealthIssueReview = component$<{
                   <input
                     type="checkbox"
                     checked={individually.value}
-                    disabled={props.applying}
                     onChange$={(_, input) =>
                       (individually.value = input.checked)
                     }
@@ -1111,7 +1300,6 @@ const HealthIssueReview = component$<{
                 title={readOnlyTitle}
                 disabled={
                   !editable ||
-                  props.applying ||
                   bulkWorking.value ||
                   entries.every((entry) => entry.issue.fileOverride)
                 }
@@ -1124,7 +1312,6 @@ const HealthIssueReview = component$<{
                 title={readOnlyTitle}
                 disabled={
                   !editable ||
-                  props.applying ||
                   bulkWorking.value ||
                   !entries.some(
                     (entry) =>
@@ -1293,32 +1480,44 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
     Record<string, { value: unknown; source: string }>
   >({});
   const feedback = useStore({ error: "", notice: "" });
-  const applyingValue = useSignal(false);
-  const pendingApplies = useSignal(0);
-  const pendingTargets = useStore<Record<string, boolean>>({});
-  const rememberDecision$ = $(
+  const optimisticDecisions = useStore<Record<string, boolean>>({});
+  const pruneEntries$ = $((entries: HealthIssueEntry[]) => {
+    let remaining = inbox.results;
+    for (const entry of entries)
+      remaining = withoutHealthEntry(remaining, entry);
+    const count = (results: MetadataHealthResult[]) =>
+      results.reduce((total, result) => total + result.health.length, 0);
+    const removed = count(inbox.results) - count(remaining);
+    inbox.results = remaining;
+    inbox.issueCount = Math.max(0, inbox.issueCount - removed);
+  });
+  const saveDecision$ = $(
     async (entry: HealthIssueEntry, choice: HealthChoice, planId?: string) => {
       try {
         await saveHealthDecision(entry, choice, planId);
-        const remaining = withoutHealthEntry(inbox.results, entry);
-        const removed =
-          inbox.results.reduce(
-            (count, result) => count + result.health.length,
-            0,
-          ) -
-          remaining.reduce((count, result) => count + result.health.length, 0);
-        inbox.results = remaining;
-        inbox.issueCount = Math.max(0, inbox.issueCount - removed);
-        if (choice === "unsure")
-          feedback.notice =
-            "Hidden until the proposed values or sources change.";
-        else if (choice === "current")
-          feedback.notice = "The current values were retained.";
-        return true;
+        return "";
       } catch (cause) {
-        feedback.error = readableError(cause);
+        return readableError(cause);
+      }
+    },
+  );
+  const rememberDecision$ = $(
+    async (entry: HealthIssueEntry, choice: HealthChoice, planId?: string) => {
+      const key = healthEntryId(entry.target.itemId, entry.issue);
+      optimisticDecisions[key] = true;
+      const failure = await saveDecision$(entry, choice, planId);
+      if (failure) {
+        delete optimisticDecisions[key];
+        feedback.error = failure;
         return false;
       }
+      await pruneEntries$([entry]);
+      delete optimisticDecisions[key];
+      if (choice === "unsure")
+        feedback.notice = "Hidden until the proposed values or sources change.";
+      else if (choice === "current")
+        feedback.notice = "The current values were retained.";
+      return true;
     },
   );
 
@@ -1406,7 +1605,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
       album?: AlbumTarget,
     ) => {
       const targetKey = album ? `${album.rootId}:${album.path}` : target.itemId;
-      if (!props.canEdit || pendingTargets[targetKey]) return false;
+      if (!props.canEdit) return false;
       const field = issue.field ?? "";
       if (!field || !isSettableField(field)) return false;
       if (isUnset(value)) {
@@ -1418,89 +1617,155 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
         )
           return false;
       }
-      pendingTargets[targetKey] = true;
-      pendingApplies.value++;
-      applyingValue.value = true;
+      const decided: HealthIssueEntry[] = album
+        ? inbox.results
+            .filter(
+              (result) =>
+                result.rootId === album.rootId &&
+                result.albumGroup === album.path,
+            )
+            .flatMap((result) =>
+              result.health
+                .filter(
+                  (candidate) =>
+                    !candidate.fileOverride &&
+                    healthIssueKey(candidate) === healthIssueKey(issue),
+                )
+                .map((candidate) => ({ issue: candidate, target: result })),
+            )
+        : [{ issue, target }];
+      if (
+        !decided.length ||
+        decided.some(
+          (entry) =>
+            optimisticDecisions[
+              healthEntryId(entry.target.itemId, entry.issue)
+            ],
+        )
+      )
+        return false;
+
+      // Confirm the review choice immediately; the server write and its
+      // asynchronous broker step only roll it back if they fail.
+      const optimisticKeys = decided.map((entry) =>
+        healthEntryId(entry.target.itemId, entry.issue),
+      );
+      for (const key of optimisticKeys) optimisticDecisions[key] = true;
       feedback.error = "";
       feedback.notice = "";
-      try {
-        const endpoint = album
-          ? `/folders/metadata?rootId=${encodeURIComponent(album.rootId)}&relativePath=${encodeURIComponent(album.path)}`
-          : `/items/${encodeURIComponent(target.itemId)}/metadata`;
-        const details = await api<Record<string, unknown>>(endpoint);
-        const fields = sidecarFieldsFromMetadata(details, field, value);
-        if (["audiobook", "music"].includes(target.mediaKind))
-          fields.mediaType = target.mediaKind;
-        const fileOnly =
-          !album && ["audiobook", "music"].includes(target.mediaKind);
-        if (fileOnly) {
-          const existing = (
-            details.observations as MetadataObservation[] | undefined
-          )?.find((observation) => observation.label === "File sidecar");
-          fields.overrideFields = [
-            ...new Set([
-              ...Object.keys(existing?.fields ?? {}).filter(isSettableField),
-              field,
-            ]),
-          ];
-        }
-        const preview = await api<MutationPreview>(
-          album
-            ? `/folders/metadata/sidecar?rootId=${encodeURIComponent(album.rootId)}&relativePath=${encodeURIComponent(album.path)}`
-            : `/items/${encodeURIComponent(target.itemId)}/metadata/sidecar`,
-          {
-            method: "POST",
-            body: JSON.stringify({
-              ...fields,
-              fileOnly,
-            }),
-          },
-        );
-        await api(`/plans/${encodeURIComponent(preview.id)}/confirm`, {
-          method: "POST",
-          headers: { "if-match": `"${preview.digest}"` },
+
+      const previous = targetWriteChains.get(targetKey) ?? Promise.resolve();
+      const work = previous
+        .catch(() => undefined)
+        .then(async () => {
+          try {
+            // A confirmed plan writes the sidecar asynchronously. Previewing the
+            // next edit before it lands would fail the source fingerprint check.
+            const prior = await settleTargetPlans(targetKey);
+            if (prior.pending)
+              throw new Error(
+                "A previous change for this album or file is still queued. Check Activity, then try again.",
+              );
+            const endpoint = album
+              ? `/folders/metadata?rootId=${encodeURIComponent(album.rootId)}&relativePath=${encodeURIComponent(album.path)}`
+              : `/items/${encodeURIComponent(target.itemId)}/metadata`;
+            const details = await api<Record<string, unknown>>(endpoint);
+            const fields = sidecarFieldsFromMetadata(details, field, value);
+            if (!String(fields.title ?? "").trim())
+              throw new Error(
+                "This item needs a title before other metadata can be saved. Set the title first.",
+              );
+            if (["audiobook", "music"].includes(target.mediaKind))
+              fields.mediaType = target.mediaKind;
+            const fileOnly =
+              !album && ["audiobook", "music"].includes(target.mediaKind);
+            if (fileOnly) {
+              const existing = (
+                details.observations as MetadataObservation[] | undefined
+              )?.find((observation) => observation.label === "File sidecar");
+              fields.overrideFields = [
+                ...new Set([
+                  ...Object.keys(existing?.fields ?? {}).filter(
+                    isSettableField,
+                  ),
+                  field,
+                ]),
+              ];
+            }
+            const preview = await api<MutationPreview>(
+              album
+                ? `/folders/metadata/sidecar?rootId=${encodeURIComponent(album.rootId)}&relativePath=${encodeURIComponent(album.path)}`
+                : `/items/${encodeURIComponent(target.itemId)}/metadata/sidecar`,
+              {
+                method: "POST",
+                body: JSON.stringify({
+                  ...fields,
+                  fileOnly,
+                }),
+              },
+            );
+            // A preview without actions already matches the file on disk.
+            const queued = (preview.actions ?? []).length > 0;
+            if (queued)
+              await api(`/plans/${encodeURIComponent(preview.id)}/confirm`, {
+                method: "POST",
+                headers: { "if-match": `"${preview.digest}"` },
+              });
+            const decisionFailures = (
+              await Promise.all(
+                decided.map((entry) =>
+                  saveDecision$(
+                    entry,
+                    origin === "Current" ? "current" : "proposed",
+                    queued ? preview.id : undefined,
+                  ),
+                ),
+              )
+            ).filter(Boolean);
+            if (decisionFailures.length)
+              feedback.notice = `The ${origin.toLowerCase()} “${field}” value was saved, but the review choice could not be recorded: ${decisionFailures[0]}`;
+            else
+              feedback.notice = queued
+                ? `The ${origin.toLowerCase()} “${field}” value was queued for ${album ? "this album" : "this file"}. See Activity to revisit the decision.`
+                : `The ${origin.toLowerCase()} “${field}” value is already saved for ${album ? "this album" : "this file"}.`;
+            if (queued) {
+              trackTargetPlan(targetKey, preview.id);
+              const outcome = await settleTargetPlans(targetKey);
+              if (outcome.failure) throw new Error(outcome.failure);
+              if (outcome.pending)
+                feedback.notice = `The ${origin.toLowerCase()} “${field}” value is queued; the library is still processing it. See Activity for the result.`;
+            }
+            await pruneEntries$(decided);
+            for (const key of optimisticKeys) delete optimisticDecisions[key];
+            return true;
+          } catch (error) {
+            for (const key of optimisticKeys) delete optimisticDecisions[key];
+            feedback.error = readableError(error);
+            return false;
+          }
         });
-        const decided = album
-          ? inbox.results
-              .filter(
-                (result) =>
-                  result.rootId === album.rootId &&
-                  result.albumGroup === album.path,
-              )
-              .flatMap((result) =>
-                result.health
-                  .filter(
-                    (candidate) =>
-                      !candidate.fileOverride &&
-                      healthIssueKey(candidate) === healthIssueKey(issue),
-                  )
-                  .map((candidate) => ({ issue: candidate, target: result })),
-              )
-          : [{ issue, target }];
-        const saved = await Promise.all(
-          decided.map((entry) =>
-            rememberDecision$(
-              entry,
-              origin === "Current" ? "current" : "proposed",
-              preview.id,
-            ),
-          ),
-        );
-        if (saved.some((result) => !result)) return false;
-        feedback.notice = `The ${origin.toLowerCase()} “${field}” value was queued for ${album ? "this album" : "this file"}. See Activity to revisit the decision.`;
-        return true;
-      } catch (error) {
-        feedback.error = readableError(error);
-        return false;
-      } finally {
-        delete pendingTargets[targetKey];
-        pendingApplies.value--;
-        applyingValue.value = pendingApplies.value > 0;
-      }
+      targetWriteChains.set(targetKey, work);
+      void work.finally(() => {
+        if (targetWriteChains.get(targetKey) === work)
+          targetWriteChains.delete(targetKey);
+      });
+      return work;
     },
   );
 
   const dialog = providersDialogFor.value;
+  const visibleResults = inbox.results
+    .map((result) => ({
+      ...result,
+      health: result.health.filter(
+        (issue) => !optimisticDecisions[healthEntryId(result.itemId, issue)],
+      ),
+    }))
+    .filter((result) => result.health.length > 0);
+  const visibleIssueCount = Math.max(
+    0,
+    inbox.issueCount - hiddenIssueCount(inbox.results, optimisticDecisions),
+  );
   return (
     <section
       class="health-page"
@@ -1543,7 +1808,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
         <p class="health-summary" role="status">
           {inbox.scanning
             ? `Checking libraries · ${inbox.inspectedItems} items inspected`
-            : `${inbox.issueCount} ${inbox.issueCount === 1 ? "issue" : "issues"} across ${inbox.inspectedItems} inspected ${inbox.inspectedItems === 1 ? "item" : "items"}${inbox.errors.length ? " · incomplete" : ""}`}
+            : `${visibleIssueCount} ${visibleIssueCount === 1 ? "issue" : "issues"} across ${inbox.inspectedItems} inspected ${inbox.inspectedItems === 1 ? "item" : "items"}${inbox.errors.length ? " · incomplete" : ""}`}
         </p>
       </div>
 
@@ -1566,14 +1831,14 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
         <p>No media libraries are visible.</p>
       ) : !inbox.scanning &&
         !inbox.errors.length &&
-        inbox.results.length === 0 ? (
+        visibleResults.length === 0 ? (
         <p class="health-empty">
           No metadata issues found in the inspected libraries.
         </p>
       ) : null}
 
       <div class="health-results">
-        {groupResults(inbox.results).map((group) => (
+        {groupResults(visibleResults).map((group) => (
           <HealthResult
             group={group}
             canEdit={Boolean(props.canEdit)}
@@ -1587,7 +1852,6 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
                 grouped={grouped}
                 providers={providerCatalog.providers}
                 canEdit={Boolean(props.canEdit)}
-                applying={applyingValue.value}
                 selectedOnline={onlineSelections[`${group.key}:${grouped.key}`]}
                 onApply$={applyValue$}
                 onDecision$={rememberDecision$}

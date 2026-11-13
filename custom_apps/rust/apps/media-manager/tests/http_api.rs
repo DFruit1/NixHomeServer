@@ -1100,6 +1100,70 @@ async fn metadata_fields_create_an_opf_sidecar_preview_without_a_default_year() 
 }
 
 #[tokio::test]
+async fn identical_metadata_preview_is_an_idempotent_no_op() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    std::fs::create_dir_all(temp.path().join("shared/_Audiobooks/Author/Book"))
+        .expect("book folder");
+    std::fs::write(
+        temp.path().join("shared/_Audiobooks/Author/Book/Book.m4b"),
+        b"audio",
+    )
+    .expect("audio file");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-audiobooks"}"#).await;
+    let item_id = first_item_id(&app, "shared-audiobooks").await;
+    let request = serde_json::json!({
+        "mediaType": "audiobook",
+        "title": "The Book",
+        "authors": ["An Author"],
+    });
+    let preview = app
+        .clone()
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/metadata/sidecar"),
+            Body::from(request.to_string()),
+        ))
+        .await
+        .expect("metadata preview");
+    assert_eq!(preview.status(), StatusCode::CREATED);
+    let body = to_bytes(preview.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("preview JSON");
+    let destination = value["actions"][0]["destinationRelativePath"]
+        .as_str()
+        .expect("destination path");
+    let staged = std::fs::read_dir(temp.path().join("state/provider-staging"))
+        .expect("staging")
+        .next()
+        .expect("staged entry")
+        .expect("staged file")
+        .path();
+    std::fs::copy(
+        &staged,
+        temp.path().join("shared/_Audiobooks").join(destination),
+    )
+    .expect("install the previewed sidecar");
+
+    let repeat = app
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/metadata/sidecar"),
+            Body::from(request.to_string()),
+        ))
+        .await
+        .expect("repeat preview");
+    assert_eq!(repeat.status(), StatusCode::CREATED);
+    let body = to_bytes(repeat.into_body(), 64 * 1024).await.expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("repeat JSON");
+    assert_eq!(value["actions"].as_array().map(Vec::len), Some(0));
+    assert!(value["warnings"]
+        .as_array()
+        .is_some_and(|warnings| warnings.iter().any(|warning| warning
+            .as_str()
+            .is_some_and(|warning| warning.contains("no file change")))));
+}
+
+#[tokio::test]
 async fn core_info_writes_only_title_and_year_into_the_kind_sidecar() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);

@@ -486,7 +486,7 @@ it("applies an album issue to the file that produced it", async () => {
             id: "health-plan",
             digest: "digest-1",
             expiresAt: 0,
-            actions: [],
+            actions: [{ kind: "replace_metadata_sidecar" }],
           }),
           { status: 201 },
         );
@@ -494,6 +494,10 @@ it("applies an album issue to the file that produced it", async () => {
         return new Response(wireJson({ id: "health-plan", state: "queued" }), {
           status: 202,
         });
+      if (path.endsWith("/plans/health-plan"))
+        return new Response(
+          wireJson({ id: "health-plan", state: "completed", requestId: "req" }),
+        );
       const response = await healthResponse("lawson-01", "Title differs");
       const payload = await response.json();
       payload.results = ["01", "02"].map((track) => ({
@@ -569,6 +573,89 @@ it("applies an album issue to the file that produced it", async () => {
   ).toBe(false);
 });
 
+it("restores a chosen value when the write fails", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/provider-accounts"))
+        return new Response(wireJson(providerCatalog()));
+      if (path.endsWith("/metadata/sidecar"))
+        return new Response(
+          wireJson({
+            error: {
+              code: "write_failed",
+              message: "The write failed.",
+              requestId: "req",
+            },
+          }),
+          { status: 500 },
+        );
+      if (path.endsWith("/metadata"))
+        return new Response(
+          wireJson({
+            mediaType: "movie",
+            title: "Current title",
+            authors: [],
+            narrators: [],
+            genres: [],
+            writers: [],
+            providerIds: {},
+            sources: ["sidecar"],
+          }),
+        );
+      return new Response(
+        wireJson({
+          rootId: "root",
+          inspectedItems: 1,
+          issueCount: 1,
+          severityCounts: { error: 0, warning: 1, info: 0 },
+          nextCursor: null,
+          results: [
+            {
+              itemId: "movie-1",
+              rootId: "root",
+              relativePath: "movie-1.mkv",
+              mediaKind: "video",
+              health: [
+                {
+                  code: "conflicting-title",
+                  severity: "warning",
+                  field: "title",
+                  title: "Title differs",
+                  message: "Compare sources",
+                  sources: ["sidecar", "embedded"],
+                  currentValue: "Current title",
+                  currentSources: ["Sidecar"],
+                  proposedValues: [
+                    { value: "Proposed title", sources: ["Embedded tags"] },
+                  ],
+                  proposalSignature: "a".repeat(64),
+                },
+              ],
+            },
+          ],
+        }),
+      );
+    }),
+  );
+  const { render, screen, userEvent } = await createDOM();
+  await render(
+    <MetadataHealthView roots={[{ id: "root", label: "Videos" }]} canEdit />,
+  );
+  await vi.waitFor(() =>
+    expect(screen.textContent).toContain("Proposed title"),
+  );
+  const button = Array.from(screen.querySelectorAll(".health-value-set")).find(
+    (element) => element.textContent?.includes("Proposed title"),
+  );
+  await userEvent(button!, "click");
+  await vi.waitFor(() =>
+    expect(screen.textContent).toContain("The write failed."),
+  );
+  expect(screen.textContent).toContain("Proposed title");
+});
+
 it("queues a metadata change when a proposed value is clicked", async () => {
   const fetchMock = vi.fn(
     async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -594,7 +681,7 @@ it("queues a metadata change when a proposed value is clicked", async () => {
             id: "health-plan",
             digest: "digest-1",
             expiresAt: 0,
-            actions: [],
+            actions: [{ kind: "replace_metadata_sidecar" }],
           }),
           { status: 201 },
         );
@@ -602,6 +689,10 @@ it("queues a metadata change when a proposed value is clicked", async () => {
         return new Response(wireJson({ id: "health-plan", state: "queued" }), {
           status: 202,
         });
+      if (path.endsWith("/plans/health-plan"))
+        return new Response(
+          wireJson({ id: "health-plan", state: "completed", requestId: "req" }),
+        );
       const response = await healthResponse(
         "lawson-01",
         "Author or creator is missing",
