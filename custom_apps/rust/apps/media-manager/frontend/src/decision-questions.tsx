@@ -196,14 +196,13 @@ export const DecisionQuestions = component$<{
           <details class="decision-help">
             <summary>How decisions work</summary>
             <p class="muted">
-              Yes/No questions use a 50% cutoff. Choose a tag, archive the photo
-              in Immich, or leave it unchanged for each answer. Archived photos
-              stay in Immich's Archive and can be restored there. Category
-              questions add photos to the most probable album at 50% or higher.
-              Score bounds skip questions that do not match. Automatic questions
-              run on the next library sweep, within 30 minutes. Saved tags stay
-              private to Media Manager. EYE tagging completion is tracked
-              separately; no timestamp tag is added.
+              Yes/No answers can add a tag, archive the photo in Immich
+              (restorable from Archive), or leave it unchanged. Category
+              questions add the photo to the best-matching album at 50% or
+              higher. Score bounds are optional per question; automatic
+              questions run on the next library sweep within 30 minutes.
+              Removing a question keeps tags and albums already applied. Saved
+              tags stay private to Media Manager.
             </p>
           </details>
           {state.loading && <p role="status">Loading saved questions…</p>}
@@ -216,21 +215,19 @@ export const DecisionQuestions = component$<{
                   return (
                     <fieldset key={rule.id} class="decision-rule">
                       <legend>Question {i + 1}</legend>
-                      <label>
-                        Question
-                        <textarea
-                          required
-                          maxLength={1000}
-                          rows={2}
-                          value={rule.question}
-                          placeholder="Is the photo a computer screen or code?"
-                          onInput$={(_, el) => {
-                            rule.question = el.value;
-                            changed();
-                          }}
-                        />
-                      </label>
-                      <label>
+                      <textarea
+                        required
+                        aria-label="Question"
+                        maxLength={1000}
+                        rows={2}
+                        value={rule.question}
+                        placeholder="Is the photo a computer screen or code?"
+                        onInput$={(_, el) => {
+                          rule.question = el.value;
+                          changed();
+                        }}
+                      />
+                      <label class="decision-type">
                         Type
                         <select
                           value={kind}
@@ -435,7 +432,9 @@ export const DecisionQuestions = component$<{
                     </fieldset>
                   );
                 })}
-                {!state.rules.length && <p>No saved questions.</p>}
+                {!state.rules.length && (
+                  <p class="decision-empty">No questions yet.</p>
+                )}
                 <div class="decision-toolbar">
                   <button
                     type="button"
@@ -470,48 +469,7 @@ export const DecisionQuestions = component$<{
               </fieldset>
             </form>
           )}
-          {state.dirty && (
-            <p role="status">
-              Save changes before assessing. Removing or changing a question
-              keeps tags, albums and archive actions already applied.
-            </p>
-          )}
-          {props.image && (
-            <p class="decision-target">
-              Selected photo: {props.image.filename}
-            </p>
-          )}
-          <div class="decision-toolbar">
-            <button
-              type="button"
-              class="primary-button"
-              disabled={!canAssess || !props.image}
-              onClick$={assess}
-            >
-              Assess selected photo
-            </button>
-          </div>
-          <details class="decision-upload">
-            <summary>Assess another file</summary>
-            <label>
-              Image or text file
-              <input
-                type="file"
-                accept="image/jpeg,image/png,image/webp,text/*,.md,.json,.csv,.log,.rs,.ts"
-                disabled={!canAssess}
-                onChange$={assessFile}
-              />
-            </label>
-            <p class="muted">
-              Images up to 16 MiB or UTF-8 text up to 16 KiB. File contents are
-              used locally and are not retained. Upload tags are saved by
-              content. Uploaded files never change Immich albums or archive
-              photos.
-            </p>
-          </details>
-          {state.running && (
-            <p role="status">Assessing {state.resultName} locally…</p>
-          )}
+          {state.notice && <p role="status">{state.notice}</p>}
           {state.error && (
             <p class="message error" role="alert">
               {state.error}
@@ -529,7 +487,53 @@ export const DecisionQuestions = component$<{
               Retry loading questions
             </button>
           )}
-          {state.notice && <p role="status">{state.notice}</p>}
+          {state.dirty && (
+            <p class="decision-note" role="status">
+              Save changes before assessing.
+            </p>
+          )}
+          {!!state.rules.length && (
+            <div class="decision-assess">
+              {props.image && (
+                <p class="decision-target">
+                  Selected photo: {props.image.filename}
+                </p>
+              )}
+              <div class="decision-toolbar">
+                <button
+                  type="button"
+                  class="primary-button"
+                  disabled={!canAssess || !props.image}
+                  onClick$={assess}
+                >
+                  Assess selected photo
+                </button>
+                {!props.image && (
+                  <p class="muted">Select a photo in Images to assess it.</p>
+                )}
+              </div>
+              <details class="decision-upload">
+                <summary>Assess another file</summary>
+                <label>
+                  Image (max 16 MiB) or UTF-8 text (max 16 KiB)
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,text/*,.md,.json,.csv,.log,.rs,.ts"
+                    disabled={!canAssess}
+                    onChange$={assessFile}
+                  />
+                </label>
+                <p class="muted">
+                  Files are assessed locally and not retained; tags are saved by
+                  content for reuse. Uploads never change Immich albums or
+                  archive photos.
+                </p>
+              </details>
+            </div>
+          )}
+          {state.running && (
+            <p role="status">Assessing {state.resultName} locally…</p>
+          )}
           {state.result && (
             <section
               ref={output}
