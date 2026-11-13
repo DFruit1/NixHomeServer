@@ -361,6 +361,14 @@ spawn_terminal() {
 
 broadcast_local_shutdown() {
   local grace="$1" terminal script
+  # Schedule the poweroff from this runner first.  The countdown terminal is
+  # only a user-facing relay: if it fails to open (missing graphical
+  # environment, terminal emulator error, ...) the machine must still power off.
+  printf 'Scheduling local poweroff in %s minutes...\n' "$grace"
+  if ! loginctl poweroff "+${grace}" "Desktop poweroff after NixHomeServer shutdown"; then
+    printf 'Failed to schedule local poweroff.\n' >&2
+    return 1
+  fi
   terminal="$(detect_terminal)" || die "no terminal emulator found; set \$TERMINAL"
   script="$(mktemp "${TMPDIR:-/tmp}/desktop-server-shutdown.XXXXXX")"
   cat >"$script" <<EOF
@@ -378,10 +386,6 @@ trap cleanup EXIT
 echo "The NixHomeServer has shut down."
 echo "This PC will power off in ${grace} minutes."
 echo "Cancel with Ctrl-C or 'loginctl -c'. Closing this window also cancels."
-if ! loginctl poweroff "+${grace}" "Desktop poweroff after NixHomeServer shutdown"; then
-  printf '\nFailed to schedule local poweroff.\n' >&2
-  exit 1
-fi
 for ((remaining = grace * 60; remaining > 0; remaining--)); do
   printf '\rPowering off in %02d:%02d  (cancel: Ctrl-C or loginctl -c) ' "\$((remaining / 60))" "\$((remaining % 60))"
   sleep 1
