@@ -66,7 +66,11 @@ with exactly that name. The album is created in the caller's own library when it
 does not exist; shared albums with the same name are never modified. No other
 photo and no original file is changed. Album writes need `album.read`,
 `album.create` and `albumAsset.create` on the connected Immich API key;
-connected Kanidm accounts receive these with the managed key.
+connected Kanidm accounts receive these with the managed key. Per-photo
+insertion errors are reported even when Immich returns HTTP success. Failed
+album assignments remain queued for the background sweep, preserving the saved
+inference and tags; retrying does not run d1 again. Editing or removing the
+question cancels obsolete pending assignments.
 
 Each question can also set optional **EYE score bounds** for aesthetic, keeper
 and cover (0–100%). The question is skipped, with the reason shown, when any set

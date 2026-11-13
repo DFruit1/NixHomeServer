@@ -359,7 +359,7 @@ it("names the recommended source for a missing field and lists the alternatives"
   expect(header?.querySelector("p")).toBeFalsy();
   const heading = header?.querySelector("h3");
   expect(heading?.className).toContain("health-result-title-file");
-  expect(heading?.textContent).toBe("01_lawson.mp3");
+  expect(heading?.textContent).toBe("01_lawson");
   expect(
     header?.querySelector(".health-result-kind")?.getAttribute("aria-label"),
   ).toBe("Audiobook");
@@ -380,7 +380,7 @@ it("names the recommended source for a missing field and lists the alternatives"
   );
   expect(
     screen
-      .querySelector('[role="dialog"] .health-lookup-note')
+      .querySelector('[role="dialog"] .health-lookup-note:not([role="status"])')
       ?.textContent?.replace(/\s+/g, " "),
   ).toBe(
     "Showing matches of at least 30%, best first. Confidence is an evidence estimate, not a verified probability.",
@@ -390,7 +390,9 @@ it("names the recommended source for a missing field and lists the alternatives"
   expect(dialog?.textContent).toContain("Author or creator is missing");
   expect(dialog?.textContent).toContain("Open Library");
   expect(dialog?.textContent).toContain("Audnexus");
-  expect(dialog?.textContent).toContain("Coming soon");
+  expect(dialog?.textContent).toContain("Search with this title");
+  await userEvent(dialog?.querySelector("form"), "submit");
+  await vi.waitFor(() => expect(dialog?.textContent).toContain("Coming soon"));
   await userEvent(
     screen.querySelector('[role="dialog"] .dialog-close'),
     "click",

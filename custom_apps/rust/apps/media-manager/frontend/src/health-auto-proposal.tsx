@@ -22,6 +22,7 @@ export const HealthAutoProposal = component$<{
   target: MetadataHealthResult;
   field: string;
   query: string;
+  queryFromFilename?: boolean;
   providers: ProviderDefinition[];
   getSession$: GetHealthLookupSession;
   onUse$: QRL<(value: unknown) => Promise<void>>;
@@ -36,6 +37,7 @@ export const HealthAutoProposal = component$<{
       JSON.stringify([
         props.target.itemId,
         props.query,
+        props.queryFromFilename,
         props.field,
         props.providers,
       ]),
@@ -57,7 +59,17 @@ export const HealthAutoProposal = component$<{
         if (stopped) return;
         const metadata = await session.metadata(itemId);
         if (stopped) return;
-        const context = { ...metadata, title: metadata.title || fallbackQuery };
+        const hasTitle = Boolean(String(metadata.title ?? "").trim());
+        if (!hasTitle && props.queryFromFilename) {
+          if (!stopped)
+            state.message =
+              "Clarify the title for this album or file before searching external sources; filename guesses are not used for automatic proposals.";
+          return;
+        }
+        const context = {
+          ...metadata,
+          title: metadata.title || fallbackQuery.replace(/\.[^.\/]+$/, ""),
+        };
         const query = String(context.title).trim();
         if (!query) {
           if (!stopped)

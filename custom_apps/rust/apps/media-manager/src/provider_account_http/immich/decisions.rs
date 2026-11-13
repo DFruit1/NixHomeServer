@@ -283,17 +283,26 @@ pub(super) async fn background(
     asset: &Asset,
     id: &str,
 ) -> Result<(), ApiError> {
-    let rules: Vec<Rule> = index
-        .rules()
-        .map_err(|_| index_error(id))?
-        .into_iter()
-        .filter(|r| r.automatic)
-        .collect();
+    let rules = index.rules().map_err(|_| index_error(id))?;
     let mut pending = Vec::new();
     for rule in rules {
-        if index
-            .needs_decision(&asset.id, &rule)
+        if let Some(name) = index
+            .pending_album(&asset.id, &rule)
             .map_err(|_| index_error(id))?
+        {
+            // Retry saved album work without repeating d1 or additive tags.
+            account.asset(state, &asset.id, id).await?;
+            account
+                .add_to_album(state, index, &name, &asset.id, id)
+                .await?;
+            index
+                .complete_album(&asset.id, &rule, &name)
+                .map_err(|_| index_error(id))?;
+        }
+        if rule.automatic
+            && index
+                .needs_decision(&asset.id, &rule)
+                .map_err(|_| index_error(id))?
         {
             pending.push(rule);
         }
@@ -315,7 +324,7 @@ pub(super) async fn background(
         account,
         asset_id: &asset.id,
     };
-    evaluate(Evaluation {
+    let result = evaluate(Evaluation {
         runtime: &account.runtime,
         index,
         target: &asset.id,
@@ -326,6 +335,12 @@ pub(super) async fn background(
         id,
     })
     .await?;
+    if result["results"]
+        .as_array()
+        .is_some_and(|results| results.iter().any(|r| r["albumError"].is_string()))
+    {
+        return Err(upstream_error(id)); // existing worker backoff retries the saved assignment
+    }
     Ok(())
 }
 
@@ -507,8 +522,22 @@ pub(super) async fn evaluate(evaluation: Evaluation<'_, '_>) -> Result<Value, Ap
                 }
             })
             .collect();
+        let albums: Vec<Option<&str>> = outcomes
+            .iter()
+            .filter_map(|outcome| match outcome {
+                Outcome::Skipped { .. } => None,
+                Outcome::Category { category, .. } if album.is_some() => Some(*category),
+                _ => Some(None),
+            })
+            .collect();
         if !index
-            .save_decisions(target, &evaluated, &evaluated_probabilities, &timestamp)
+            .save_decisions(
+                target,
+                &evaluated,
+                &evaluated_probabilities,
+                &timestamp,
+                &albums,
+            )
             .map_err(|_| index_error(id))?
         {
             return Err(error(
@@ -565,7 +594,12 @@ pub(super) async fn evaluate(evaluation: Evaluation<'_, '_>) -> Result<Value, Ap
                         .add_to_album(album.state, index, category, album.asset_id, id)
                         .await
                     {
-                        Ok(()) => album_added = Some(category.to_owned()),
+                        Ok(()) => {
+                            index
+                                .complete_album(target, rule, category)
+                                .map_err(|_| index_error(id))?;
+                            album_added = Some(category.to_owned());
+                        }
                         Err(err) => {
                             album_error = Some(if err.status() == StatusCode::FORBIDDEN {
                                 "Your Immich API key cannot update albums. Check album permissions."

@@ -441,8 +441,9 @@ function groupHeading(group: HealthGroup): {
     };
   const title = first.title?.trim();
   if (title) return { text: title, fromFilename: false };
+  const filename = first.relativePath.split("/").at(-1) ?? first.relativePath;
   return {
-    text: first.relativePath.split("/").at(-1) ?? first.relativePath,
+    text: filename.replace(/\.[^.\/]+$/, "") || filename,
     fromFilename: true,
   };
 }
@@ -469,9 +470,11 @@ const ExternalProvidersDialog = component$<{
   itemId: string;
   rootId: string;
   query: string;
+  queryFromFilename: boolean;
   onSelect$: QRL<(value: unknown, source: string) => void>;
   onClose$: QRL<() => void>;
 }>((props) => {
+  const needsClarification = useSignal(props.queryFromFilename);
   const state = useStore({
     loading: false,
     error: "",
@@ -489,6 +492,7 @@ const ExternalProvidersDialog = component$<{
   const searchRevision = useSignal(0);
   const search = $(async () => {
     if (!state.query.trim() || state.loading) return;
+    needsClarification.value = false;
     const revision = ++searchRevision.value;
     const {
       itemId,
@@ -511,7 +515,9 @@ const ExternalProvidersDialog = component$<{
     }
     state.context = {
       ...state.context,
-      title: state.context.title || initialQuery,
+      // Prefer the item/album title when known; otherwise use the clarified
+      // search title (filename stem, without extension) for matching.
+      title: state.context.title || query,
     };
     const session = await getSession$();
     state.statuses = {};
@@ -533,7 +539,7 @@ const ExternalProvidersDialog = component$<{
   });
 
   useVisibleTask$(({ cleanup }) => {
-    void search();
+    if (!needsClarification.value) void search();
     cleanup(() => {
       searchRevision.value++;
     });
@@ -568,6 +574,13 @@ const ExternalProvidersDialog = component$<{
           <p class="dialog-context">{props.issue.title}</p>
           {searchable ? (
             <>
+              {needsClarification.value && (
+                <p class="health-lookup-note" role="status">
+                  Confirm the title for this album or file before searching
+                  external sources. A clear title matches the actual item more
+                  accurately than a filename.
+                </p>
+              )}
               <p class="health-lookup-note">
                 Showing matches of at least 30%, best first. Confidence is an
                 evidence estimate, not a verified probability.
@@ -578,7 +591,11 @@ const ExternalProvidersDialog = component$<{
                 onSubmit$={search}
               >
                 <label>
-                  <span>Search all sources</span>
+                  <span>
+                    {needsClarification.value
+                      ? "Title to search"
+                      : "Search all sources"}
+                  </span>
                   <input
                     value={state.query}
                     maxLength={500}
@@ -590,7 +607,11 @@ const ExternalProvidersDialog = component$<{
                   type="submit"
                   disabled={state.loading || !state.query.trim()}
                 >
-                  {state.loading ? "Searching…" : "Search"}
+                  {state.loading
+                    ? "Searching…"
+                    : needsClarification.value
+                      ? "Search with this title"
+                      : "Search"}
                 </button>
               </form>
               {state.loading ? (
@@ -603,9 +624,21 @@ const ExternalProvidersDialog = component$<{
                   {state.error}
                 </p>
               )}
-              {!state.loading && !state.error && matches.length === 0 && (
-                <p>No results supply this field with at least a 30% match.</p>
-              )}
+              {!state.loading &&
+                !state.error &&
+                !needsClarification.value &&
+                matches.length === 0 && (
+                  <p>No results supply this field with at least a 30% match.</p>
+                )}
+              {!state.loading &&
+                !state.error &&
+                needsClarification.value &&
+                matches.length === 0 && (
+                  <p>
+                    Enter or confirm the title, then search to find values that
+                    belong to this item.
+                  </p>
+                )}
               <ul class="health-lookup-results">
                 {matches.map((candidate, index) => {
                   const confidence = candidate.confidence;
@@ -845,6 +878,7 @@ function needsExternalProposal(entries: HealthIssueEntry[]): boolean {
 const HealthDecisionRow = component$<{
   entries: HealthIssueEntry[];
   query: string;
+  queryFromFilename?: boolean;
   providers: ProviderDefinition[];
   getSession$: GetHealthLookupSession;
   album?: AlbumTarget;
@@ -930,6 +964,7 @@ const HealthDecisionRow = component$<{
             target={target}
             field={field}
             query={props.query}
+            queryFromFilename={props.queryFromFilename}
             providers={props.providers}
             getSession$={props.getSession$}
             onUse$={(value) => apply$(value, "Proposed")}
@@ -1140,6 +1175,7 @@ const HealthIssueReview = component$<{
                     providers={props.providers}
                     getSession$={props.getSession$}
                     query={groupHeading(props.group).text}
+                    queryFromFilename={groupHeading(props.group).fromFilename}
                     key="album"
                     entries={entries}
                     album={album}
@@ -1156,6 +1192,7 @@ const HealthIssueReview = component$<{
                       providers={props.providers}
                       getSession$={props.getSession$}
                       query={groupHeading(props.group).text}
+                      queryFromFilename={groupHeading(props.group).fromFilename}
                       key={entry.target.itemId}
                       entries={[entry]}
                       showFile={entries.length > 1}
@@ -1474,6 +1511,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
     itemId: string;
     rootId: string;
     query: string;
+    queryFromFilename: boolean;
     selectionKey: string;
   } | null>(null);
   const onlineSelections = useStore<
@@ -1856,13 +1894,15 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
                 onApply$={applyValue$}
                 onDecision$={rememberDecision$}
                 onLookup$={(issue, target, primary) => {
+                  const heading = groupHeading(group);
                   providersDialogFor.value = {
                     issue,
                     mediaKind: target.mediaKind,
                     primary,
                     itemId: target.itemId,
                     rootId: target.rootId,
-                    query: groupHeading(group).text,
+                    query: heading.text,
+                    queryFromFilename: heading.fromFilename,
                     selectionKey: `${group.key}:${grouped.key}`,
                   };
                 }}
@@ -1881,6 +1921,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
           itemId={dialog.itemId}
           rootId={dialog.rootId}
           query={dialog.query}
+          queryFromFilename={dialog.queryFromFilename}
           onSelect$={(value, source) => {
             const active = providersDialogFor.value;
             if (!active) return;

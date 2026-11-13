@@ -165,6 +165,9 @@ pub(crate) fn initialize(db: &Connection) -> rusqlite::Result<()> {
         CREATE TABLE IF NOT EXISTS decision_results(scope TEXT NOT NULL, asset_id TEXT NOT NULL,
             rule_id TEXT NOT NULL, signature TEXT NOT NULL, probability REAL NOT NULL, assessed_at TEXT NOT NULL,
             PRIMARY KEY(scope,asset_id,rule_id));
+        CREATE TABLE IF NOT EXISTS decision_album_assignments(scope TEXT NOT NULL, asset_id TEXT NOT NULL,
+            rule_id TEXT NOT NULL, signature TEXT NOT NULL, name TEXT NOT NULL,
+            PRIMARY KEY(scope,asset_id,rule_id));
         CREATE TABLE IF NOT EXISTS decision_albums(scope TEXT NOT NULL, name TEXT NOT NULL, album_id TEXT NOT NULL,
             PRIMARY KEY(scope,name));")
 }
@@ -206,12 +209,35 @@ impl Index<'_> {
         .map(Option::unwrap_or_default)
     }
     pub fn save_rules(&self, rules: &[Rule]) -> rusqlite::Result<()> {
-        self.store.index_connection()?.execute(
+        let mut db = self.store.index_connection()?;
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute(
             "INSERT INTO decision_rules(scope,rules) VALUES(?1,?2)
             ON CONFLICT(scope) DO UPDATE SET rules=excluded.rules",
             params![self.scope, serde_json::to_string(rules).unwrap()],
         )?;
-        Ok(())
+        // Removing/changing a question cancels only its uncompleted album work.
+        let obsolete = {
+            let mut stmt = tx.prepare(
+                "SELECT DISTINCT rule_id,signature FROM decision_album_assignments WHERE scope=?1",
+            )?;
+            let rows = stmt.query_map([self.scope], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (rule_id, signature) in obsolete {
+            if !rules
+                .iter()
+                .any(|r| r.id == rule_id && r.signature() == signature)
+            {
+                tx.execute(
+                    "DELETE FROM decision_album_assignments WHERE scope=?1 AND rule_id=?2 AND signature=?3",
+                    params![self.scope, rule_id, signature],
+                )?;
+            }
+        }
+        tx.commit()
     }
     pub fn decision_tags(&self, asset: &str) -> rusqlite::Result<Vec<String>> {
         let db = self.store.index_connection()?;
@@ -245,6 +271,25 @@ impl Index<'_> {
         )?;
         Ok(())
     }
+    pub fn pending_album(&self, asset: &str, rule: &Rule) -> rusqlite::Result<Option<String>> {
+        self.store
+            .index_connection()?
+            .query_row(
+                "SELECT name FROM decision_album_assignments
+             WHERE scope=?1 AND asset_id=?2 AND rule_id=?3 AND signature=?4",
+                params![self.scope, asset, rule.id, rule.signature()],
+                |r| r.get(0),
+            )
+            .optional()
+    }
+    pub fn complete_album(&self, asset: &str, rule: &Rule, name: &str) -> rusqlite::Result<()> {
+        self.store.index_connection()?.execute(
+            "DELETE FROM decision_album_assignments
+             WHERE scope=?1 AND asset_id=?2 AND rule_id=?3 AND signature=?4 AND name=?5",
+            params![self.scope, asset, rule.id, rule.signature(), name],
+        )?;
+        Ok(())
+    }
     pub fn needs_decision(&self, asset: &str, rule: &Rule) -> rusqlite::Result<bool> {
         let done: bool = self.store.index_connection()?.query_row(
             "SELECT EXISTS(SELECT 1 FROM decision_results
@@ -260,6 +305,7 @@ impl Index<'_> {
         rules: &[Rule],
         probabilities: &[f64],
         timestamp: &str,
+        albums: &[Option<&str>],
     ) -> rusqlite::Result<bool> {
         let mut db = self.store.index_connection()?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -271,6 +317,7 @@ impl Index<'_> {
         )?;
         let current: Vec<Rule> = serde_json::from_str(&raw).unwrap_or_default();
         if rules.len() != probabilities.len()
+            || rules.len() != albums.len()
             || probabilities.iter().any(|p| !probability(*p))
             || rules.iter().any(|r| {
                 !current.iter().any(|c| {
@@ -280,7 +327,19 @@ impl Index<'_> {
         {
             return Ok(false);
         }
-        for (rule, p) in rules.iter().zip(probabilities) {
+        for ((rule, p), album) in rules.iter().zip(probabilities).zip(albums) {
+            tx.execute(
+                "DELETE FROM decision_album_assignments WHERE scope=?1 AND asset_id=?2 AND rule_id=?3",
+                params![self.scope, asset, rule.id],
+            )?;
+            if let Some(name) = album {
+                // Persist the selected category atomically with inference/tags.
+                // Network errors must not make a completed assessment lose its work.
+                tx.execute(
+                    "INSERT INTO decision_album_assignments VALUES(?1,?2,?3,?4,?5)",
+                    params![self.scope, asset, rule.id, rule.signature(), name],
+                )?;
+            }
             let tag = if rule.kind == RuleKind::YesNo && *p >= 0.5 {
                 &rule.yes_tag
             } else if rule.kind == RuleKind::YesNo {

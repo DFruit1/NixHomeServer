@@ -388,10 +388,30 @@ impl Account {
         let response = self
             .album_response(state, Method::PUT, url, Some(json!({"ids": [asset]})), id)
             .await?;
-        let _: Value = bounded_provider_json(response)
+        let results: Vec<Value> = bounded_provider_json(response)
             .await
             .map_err(|_| upstream_error(id))?;
-        Ok(())
+        // Immich reports individual failures inside an HTTP-success response.
+        // A duplicate proves membership and makes retries safe after a lost reply.
+        if results.len() != 1 || results[0]["id"].as_str() != Some(asset) {
+            return Err(upstream_error(id));
+        }
+        let result = &results[0];
+        if result["success"].as_bool() == Some(true)
+            || (result["success"].as_bool() == Some(false)
+                && result["error"].as_str() == Some("duplicate"))
+        {
+            return Ok(());
+        }
+        if result["error"].as_str() == Some("no_permission") {
+            return Err(error(
+                StatusCode::FORBIDDEN,
+                "immich_album_forbidden",
+                "Your Immich API key cannot add this photo to the album.",
+                id,
+            ));
+        }
+        Err(upstream_error(id))
     }
 
     /// Add exactly one assessed photo to the album named by a saved category
@@ -419,7 +439,12 @@ impl Account {
                 self.add_album_asset(state, &album_id, asset, id).await?;
                 album_id
             }
-            None => self.create_album(state, name, asset, id).await?,
+            None => {
+                let album_id = self.create_album(state, name, asset, id).await?;
+                // Creation may silently omit assets the caller cannot share.
+                self.add_album_asset(state, &album_id, asset, id).await?;
+                album_id
+            }
         };
         index
             .save_album(name, &album_id)

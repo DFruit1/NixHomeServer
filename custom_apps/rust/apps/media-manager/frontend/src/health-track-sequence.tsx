@@ -15,6 +15,7 @@ import type {
   TrackOrderFileRow,
 } from "./api-contract.generated";
 import "./health-track-sequence.css";
+import { HealthPlayButton } from "./health-playback";
 import { revealWhenMounted } from "./reveal";
 
 export const HealthTrackSequence = component$<{
@@ -219,38 +220,64 @@ export const HealthTrackSequence = component$<{
                 </select>
               </label>
               <ol class="health-track-list">
-                {state.files.map((file, index) => (
-                  <li key={file.fileName}>
-                    <span class="health-track-name">
-                      <strong>{file.fileName}</strong>
-                      <span>
-                        Track {index + 1}/{state.files.length} · Disc 1/1
+                {state.files.map((file, index) => {
+                  const parent = props.target.relativePath
+                    .split("/")
+                    .slice(0, -1)
+                    .join("/");
+                  const path = parent
+                    ? `${parent}/${file.fileName}`
+                    : file.fileName;
+                  const item = state.items.find(
+                    (candidate) => candidate.relativePath === path,
+                  );
+                  const playTarget = item
+                    ? ({
+                        itemId: item.id,
+                        rootId: item.rootId,
+                        relativePath: item.relativePath,
+                        mediaKind: item.mediaKind,
+                        title: file.fileName,
+                        albumGroup: null,
+                        health: [],
+                      } as MetadataHealthResult)
+                    : undefined;
+                  return (
+                    <li key={file.fileName}>
+                      {playTarget && <HealthPlayButton target={playTarget} />}
+                      <span class="health-track-name">
+                        <strong>{file.fileName}</strong>
+                        <span>
+                          Track {index + 1}/{state.files.length} · Disc 1/1
+                        </span>
                       </span>
-                    </span>
-                    <span class="health-track-move">
-                      <button
-                        type="button"
-                        aria-label={`Move ${file.fileName} up`}
-                        disabled={index === 0 || state.busy || state.submitted}
-                        onClick$={() => move$(index, -1)}
-                      >
-                        ↑
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={`Move ${file.fileName} down`}
-                        disabled={
-                          index === state.files.length - 1 ||
-                          state.busy ||
-                          state.submitted
-                        }
-                        onClick$={() => move$(index, 1)}
-                      >
-                        ↓
-                      </button>
-                    </span>
-                  </li>
-                ))}
+                      <span class="health-track-move">
+                        <button
+                          type="button"
+                          aria-label={`Move ${file.fileName} up`}
+                          disabled={
+                            index === 0 || state.busy || state.submitted
+                          }
+                          onClick$={() => move$(index, -1)}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Move ${file.fileName} down`}
+                          disabled={
+                            index === state.files.length - 1 ||
+                            state.busy ||
+                            state.submitted
+                          }
+                          onClick$={() => move$(index, 1)}
+                        >
+                          ↓
+                        </button>
+                      </span>
+                    </li>
+                  );
+                })}
               </ol>
             </>
           )}
