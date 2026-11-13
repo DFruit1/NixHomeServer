@@ -1,6 +1,7 @@
 //! d1 receives bounded pixels/text only; credentials never leave the broker.
 use super::*;
-use crate::decision_index::Rule;
+use crate::decision_index::{Rule, RuleKind, ScoreBounds};
+use crate::image_index::Scores;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use sha2::{Digest, Sha256};
 
@@ -44,7 +45,18 @@ pub(in crate::provider_account_http) async fn save_rules(
     let account = account(&state, &identity, &id)?;
     let Json(input) = body.map_err(|_| invalid(&id))?;
     let unique: std::collections::BTreeSet<_> = input.rules.iter().map(|r| &r.id).collect();
+    // One proposition per Yes/No rule and per album category. Bound the total so
+    // a saved question set always fits one local d1 request.
+    let propositions: usize = input
+        .rules
+        .iter()
+        .map(|rule| match rule.kind {
+            RuleKind::YesNo => 1,
+            RuleKind::Category => rule.categories.len(),
+        })
+        .sum();
     if input.rules.len() > 16
+        || propositions > 24
         || input.rules.iter().any(|r| !r.valid())
         || unique.len() != input.rules.len()
     {
@@ -60,7 +72,53 @@ pub(in crate::provider_account_http) async fn save_rules(
     Ok(Json(json!({"rules":input.rules,"requestId":id})))
 }
 fn invalid(id: &str) -> ApiError {
-    error(StatusCode::UNPROCESSABLE_ENTITY,"decision_invalid", "Save up to 16 questions. Use unique IDs, questions up to 1000 bytes and tags up to 96 bytes without commas or control characters.",id)
+    error(StatusCode::UNPROCESSABLE_ENTITY, "decision_invalid", "Save up to 16 questions and 24 total d1 propositions (one per yes/no question and per album). Use unique IDs, questions up to 1000 bytes, tags up to 96 bytes without commas or control characters, two to twelve unique album categories up to 96 bytes, and score bounds between 0 and 1.", id)
+}
+
+fn requires_scores(rules: &[Rule]) -> bool {
+    rules
+        .iter()
+        .any(|rule| rule.bounds.as_ref().is_some_and(ScoreBounds::any))
+}
+
+/// Bound the prompt to the question's own inputs: a short filename plus up to a
+/// few existing Immich tag values. Tag text is private metadata and never
+/// leaves this local d1 socket.
+fn photo_state(asset: &Asset) -> String {
+    let filename: String = asset.original_file_name.chars().take(512).collect();
+    let mut tags = String::new();
+    for tag in asset.tags.iter().take(32) {
+        let value: String = tag.value.chars().take(48).collect();
+        if !tags.is_empty() {
+            tags.push_str(", ");
+        }
+        tags.push_str(&value);
+        if tags.len() >= 1024 {
+            break;
+        }
+    }
+    if tags.is_empty() {
+        tags.push_str("none");
+    }
+    format!("Assess this personal photo: {filename}. Immich tags: {tags}.")
+}
+
+async fn asset_scores(
+    state: &ProviderBrokerState,
+    account: &Account,
+    index: &Index<'_>,
+    asset_id: &str,
+    id: &str,
+    wait: bool,
+) -> Result<Scores, ApiError> {
+    if let Some(analysis) = index.analysis(asset_id).map_err(|_| index_error(id))? {
+        return Ok(analysis.scores);
+    }
+    let analysis = analyze_asset(state, account, asset_id, id, wait).await?;
+    index
+        .save(asset_id, &analysis)
+        .map_err(|_| index_error(id))?;
+    Ok(analysis.scores)
 }
 
 pub(in crate::provider_account_http) async fn assess(
@@ -91,9 +149,29 @@ pub(in crate::provider_account_http) async fn assess(
     if rules.is_empty() {
         return Err(invalid(&id));
     }
+    let scores = if requires_scores(&rules) {
+        Some(asset_scores(&state, &account, &index, &asset_id, &id, false).await?)
+    } else {
+        None
+    };
     let (bytes, mime) = account.image(&state, &asset_id, &id).await?;
-    let input = json!({"state":format!("Assess this personal photo: {}",asset.original_file_name),"images":[format!("data:{mime};base64,{}",STANDARD.encode(bytes))]});
-    let result = evaluate(&account.runtime, &index, &asset_id, &rules, input, &id).await?;
+    let input = json!({"state":photo_state(&asset),"images":[format!("data:{mime};base64,{}",STANDARD.encode(bytes))]});
+    let album = AlbumTarget {
+        state: &state,
+        account: &account,
+        asset_id: &asset_id,
+    };
+    let result = evaluate(Evaluation {
+        runtime: &account.runtime,
+        index: &index,
+        target: &asset_id,
+        rules: &rules,
+        input,
+        scores: scores.as_ref(),
+        album: Some(&album),
+        id: &id,
+    })
+    .await?;
     Ok(Json(result))
 }
 
@@ -154,9 +232,48 @@ pub(in crate::provider_account_http) async fn assess_file(
     if rules.is_empty() {
         return Err(invalid(&id));
     }
+    // Uploads have no Immich asset, so category results never write an album.
+    // An image can still satisfy EYE score bounds; text files cannot.
+    let scores = if requires_scores(&rules) && file.image {
+        let mime = sniff_image_content_type(&bytes).ok_or_else(|| file_invalid(&id))?;
+        Some(
+            eye_image(&account.runtime.eye, bytes.clone(), &mime, &id)
+                .await?
+                .scores,
+        )
+    } else {
+        None
+    };
     Ok(Json(
-        evaluate(&account.runtime, &index, &target, &rules, input, &id).await?,
+        evaluate(Evaluation {
+            runtime: &account.runtime,
+            index: &index,
+            target: &target,
+            rules: &rules,
+            input,
+            scores: scores.as_ref(),
+            album: None,
+            id: &id,
+        })
+        .await?,
     ))
+}
+
+pub(super) struct AlbumTarget<'a> {
+    state: &'a ProviderBrokerState,
+    account: &'a Account,
+    asset_id: &'a str,
+}
+
+pub(super) struct Evaluation<'a, 'b> {
+    runtime: &'a Runtime,
+    index: &'a Index<'b>,
+    target: &'a str,
+    rules: &'a [Rule],
+    input: Value,
+    scores: Option<&'a Scores>,
+    album: Option<&'a AlbumTarget<'a>>,
+    id: &'a str,
 }
 
 pub(super) async fn background(
@@ -186,67 +303,314 @@ pub(super) async fn background(
     }
     // Recheck current access before sending pixels, including cached assets.
     account.asset(state, &asset.id, id).await?;
+    let scores = if requires_scores(&pending) {
+        Some(asset_scores(state, account, index, &asset.id, id, true).await?)
+    } else {
+        None
+    };
     let (bytes, mime) = account.image(state, &asset.id, id).await?;
-    let input = json!({"state":format!("Assess this personal photo: {}",asset.original_file_name),"images":[format!("data:{mime};base64,{}",STANDARD.encode(bytes))]});
-    evaluate(&account.runtime, index, &asset.id, &pending, input, id).await?;
+    let input = json!({"state":photo_state(asset),"images":[format!("data:{mime};base64,{}",STANDARD.encode(bytes))]});
+    let album = AlbumTarget {
+        state,
+        account,
+        asset_id: &asset.id,
+    };
+    evaluate(Evaluation {
+        runtime: &account.runtime,
+        index,
+        target: &asset.id,
+        rules: &pending,
+        input,
+        scores: scores.as_ref(),
+        album: Some(&album),
+        id,
+    })
+    .await?;
     Ok(())
 }
 
-pub(super) async fn evaluate(
-    runtime: &Runtime,
-    index: &Index<'_>,
-    target: &str,
-    rules: &[Rule],
-    mut input: Value,
-    id: &str,
-) -> Result<Value, ApiError> {
-    let _guard = runtime
+struct Probe {
+    id: String,
+    category: Option<usize>,
+}
+
+enum Outcome<'a> {
+    Skipped {
+        rule: &'a Rule,
+        reason: &'static str,
+    },
+    YesNo {
+        rule: &'a Rule,
+        probability: f64,
+    },
+    Category {
+        rule: &'a Rule,
+        probability: f64,
+        category: Option<&'a str>,
+    },
+}
+
+pub(super) async fn evaluate(evaluation: Evaluation<'_, '_>) -> Result<Value, ApiError> {
+    let Evaluation {
+        runtime,
+        index,
+        target,
+        rules,
+        mut input,
+        scores,
+        album,
+        id,
+    } = evaluation;
+    let guard = runtime
         .decision_gate
         .try_lock()
         .map_err(|_| decision_error(id))?;
     let mut questions = serde_json::Map::new();
+    let mut prepared: Vec<(&Rule, Vec<Probe>, Option<&'static str>)> = Vec::new();
     for rule in rules {
-        questions.insert(
-            rule.id.clone(),
-            json!({"type":"noul","instructions":rule.question}),
-        );
+        let skip = rule.bounds.as_ref().and_then(|bounds| {
+            if !bounds.any() {
+                return None;
+            }
+            match scores {
+                Some(scores) if bounds.allows(scores) => None,
+                Some(_) => Some("EYE scores are outside this question's bounds."),
+                None => {
+                    Some("EYE scores are unavailable, so this question's bounds cannot be checked.")
+                }
+            }
+        });
+        if skip.is_some() {
+            prepared.push((rule, Vec::new(), skip));
+            continue;
+        }
+        let mut probes = Vec::new();
+        match rule.kind {
+            RuleKind::YesNo => probes.push(Probe {
+                id: rule.id.clone(),
+                category: None,
+            }),
+            RuleKind::Category => {
+                for (position, _) in rule.categories.iter().enumerate() {
+                    probes.push(Probe {
+                        id: format!("{}#{}", rule.id, position),
+                        category: Some(position),
+                    });
+                }
+            }
+        }
+        for probe in &probes {
+            let instructions = match probe.category {
+                None => rule.question.clone(),
+                Some(position) => format!(
+                    "{} If the best matching category is \"{}\", answer yes; otherwise answer no.",
+                    rule.question, rule.categories[position]
+                ),
+            };
+            questions.insert(
+                probe.id.clone(),
+                json!({"type":"noul","instructions":instructions}),
+            );
+        }
+        if probes.is_empty() {
+            prepared.push((
+                rule,
+                Vec::new(),
+                Some("This question has no album categories."),
+            ));
+            continue;
+        }
+        prepared.push((rule, probes, None));
     }
-    input["questions"] = json!(questions);
-    let response = runtime
-        .decision
-        .post("http://localhost/v1/systemone")
-        .json(&input)
-        .send()
-        .await
-        .map_err(|_| decision_error(id))?;
-    if !response.status().is_success() {
-        return Err(decision_error(id));
+    let mut probabilities = std::collections::BTreeMap::new();
+    if !questions.is_empty() {
+        input["questions"] = json!(questions);
+        let response = runtime
+            .decision
+            .post("http://localhost/v1/systemone")
+            .json(&input)
+            .send()
+            .await
+            .map_err(|_| decision_error(id))?;
+        if !response.status().is_success() {
+            return Err(decision_error(id));
+        }
+        let response: Value = bounded_provider_json(response)
+            .await
+            .map_err(|_| decision_error(id))?;
+        for (_, probes, skip) in &prepared {
+            if skip.is_some() {
+                continue;
+            }
+            for probe in probes {
+                probabilities.insert(
+                    probe.id.clone(),
+                    response["answers"][&probe.id]["noul"]
+                        .as_f64()
+                        .filter(|p| probability(*p))
+                        .ok_or_else(|| decision_error(id))?,
+                );
+            }
+        }
     }
-    let response: Value = bounded_provider_json(response)
-        .await
-        .map_err(|_| decision_error(id))?;
-    let probabilities: Vec<f64> = rules
-        .iter()
-        .map(|r| {
-            response["answers"][&r.id]["noul"]
-                .as_f64()
-                .filter(|p| probability(*p))
-                .ok_or_else(|| decision_error(id))
-        })
-        .collect::<Result<_, _>>()?;
+    let mut outcomes = Vec::with_capacity(prepared.len());
+    for (rule, probes, skip) in prepared {
+        if let Some(reason) = skip {
+            outcomes.push(Outcome::Skipped { rule, reason });
+            continue;
+        }
+        match rule.kind {
+            RuleKind::YesNo => outcomes.push(Outcome::YesNo {
+                rule,
+                probability: probabilities[&rule.id],
+            }),
+            RuleKind::Category => {
+                let mut best: Option<(usize, f64)> = None;
+                for probe in &probes {
+                    let position = probe
+                        .category
+                        .expect("category rules only build category probes");
+                    let probability = probabilities[&probe.id];
+                    if best.is_none_or(|(_, current)| probability > current) {
+                        best = Some((position, probability));
+                    }
+                }
+                match best {
+                    Some((position, probability)) => outcomes.push(Outcome::Category {
+                        rule,
+                        probability,
+                        category: (probability >= 0.5).then(|| rule.categories[position].as_str()),
+                    }),
+                    None => outcomes.push(Outcome::Skipped {
+                        rule,
+                        reason: "This question has no album categories.",
+                    }),
+                }
+            }
+        }
+    }
     let timestamp = chrono::Local::now().format("%Y%m%d %H:%M").to_string();
-    if !index
-        .save_decisions(target, rules, &probabilities, &timestamp)
-        .map_err(|_| index_error(id))?
-    {
-        return Err(error(
-            StatusCode::CONFLICT,
-            "decision_rules_changed",
-            "Questions changed during assessment. Assess again using the saved questions.",
-            id,
-        ));
+    let evaluated: Vec<Rule> = outcomes
+        .iter()
+        .filter_map(|outcome| match outcome {
+            Outcome::Skipped { .. } => None,
+            Outcome::YesNo { rule, .. } | Outcome::Category { rule, .. } => Some((*rule).clone()),
+        })
+        .collect();
+    if !evaluated.is_empty() {
+        let evaluated_probabilities: Vec<f64> = outcomes
+            .iter()
+            .filter_map(|outcome| match outcome {
+                Outcome::Skipped { .. } => None,
+                Outcome::YesNo { probability, .. } | Outcome::Category { probability, .. } => {
+                    Some(*probability)
+                }
+            })
+            .collect();
+        if !index
+            .save_decisions(target, &evaluated, &evaluated_probabilities, &timestamp)
+            .map_err(|_| index_error(id))?
+        {
+            return Err(error(
+                StatusCode::CONFLICT,
+                "decision_rules_changed",
+                "Questions changed during assessment. Assess again using the saved questions.",
+                id,
+            ));
+        }
     }
-    let results:Vec<Value>=rules.iter().zip(probabilities).map(|(r,p)|json!({"id":r.id,"question":r.question,"yesProbability":p,"answer":if p>=0.5{"yes"}else{"no"},"tag":if p>=0.5{&r.yes_tag}else{&r.no_tag}})).collect();
+    // Album writes happen after d1 is released; a failed album assignment keeps
+    // applied tags and is reported per question.
+    drop(guard);
+    struct Applied<'a> {
+        rule: &'a Rule,
+        probability: f64,
+        answer: &'static str,
+        category: Option<String>,
+        skip: Option<&'static str>,
+        album: Option<String>,
+        album_error: Option<&'static str>,
+    }
+    let mut applied = Vec::with_capacity(outcomes.len());
+    for outcome in outcomes {
+        match outcome {
+            Outcome::Skipped { rule, reason } => applied.push(Applied {
+                rule,
+                probability: 0.0,
+                answer: "skipped",
+                category: None,
+                skip: Some(reason),
+                album: None,
+                album_error: None,
+            }),
+            Outcome::YesNo { rule, probability } => applied.push(Applied {
+                rule,
+                probability,
+                answer: if probability >= 0.5 { "yes" } else { "no" },
+                category: None,
+                skip: None,
+                album: None,
+                album_error: None,
+            }),
+            Outcome::Category {
+                rule,
+                probability,
+                category,
+            } => {
+                let mut album_added = None;
+                let mut album_error = None;
+                if let (Some(category), Some(album)) = (category, album) {
+                    match album
+                        .account
+                        .add_to_album(album.state, index, category, album.asset_id, id)
+                        .await
+                    {
+                        Ok(()) => album_added = Some(category.to_owned()),
+                        Err(err) => {
+                            album_error = Some(if err.status() == StatusCode::FORBIDDEN {
+                                "Your Immich API key cannot update albums. Check album permissions."
+                            } else {
+                                "Immich could not add this photo to the album."
+                            })
+                        }
+                    }
+                }
+                applied.push(Applied {
+                    rule,
+                    probability,
+                    answer: if category.is_some() { "yes" } else { "no" },
+                    category: category.map(str::to_owned),
+                    skip: None,
+                    album: album_added,
+                    album_error,
+                });
+            }
+        }
+    }
+    let results: Vec<Value> = applied
+        .into_iter()
+        .map(|applied| {
+            let tag = if applied.rule.kind == RuleKind::YesNo && applied.probability >= 0.5 {
+                applied.rule.yes_tag.clone()
+            } else if applied.rule.kind == RuleKind::YesNo {
+                applied.rule.no_tag.clone()
+            } else {
+                String::new()
+            };
+            json!({
+                "id": applied.rule.id,
+                "kind": if applied.rule.kind == RuleKind::YesNo { "yesNo" } else { "category" },
+                "question": applied.rule.question,
+                "yesProbability": applied.probability,
+                "answer": applied.answer,
+                "tag": tag,
+                "category": applied.category,
+                "album": applied.album,
+                "skipReason": applied.skip,
+                "albumError": applied.album_error,
+            })
+        })
+        .collect();
     Ok(
         json!({"target":target,"model":"LiquidAI/d1-2B","assessedAt":timestamp,"results":results,"tags":index.decision_tags(target).map_err(|_|index_error(id))?,"requestId":id}),
     )

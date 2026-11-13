@@ -11,10 +11,29 @@ import type {
   DecisionRule,
   DecisionRules,
   DecisionAssessment,
+  DecisionScoreBounds,
   ImmichImage,
 } from "./api-contract.generated";
 
 const rulesPath = "/provider-lookups/immich/decision-rules";
+const defaultCategoryQuestion =
+  "Based on the photo's contents and tags, which category does it belong to?";
+type BoundKey = keyof DecisionScoreBounds;
+const scoreNames = ["aesthetic", "keeper", "cover"] as const;
+const boundKeys = (score: (typeof scoreNames)[number]) =>
+  [`${score}Min`, `${score}Max`] as const;
+const percentValue = (value?: number) =>
+  value === undefined ? "" : String(Math.round(value * 100));
+
+const newRule = (kind: "yesNo" | "category"): DecisionRule => ({
+  id: crypto.randomUUID(),
+  kind,
+  question: kind === "category" ? defaultCategoryQuestion : "",
+  yesTag: kind === "yesNo" ? "to be deleted" : "",
+  noTag: "",
+  categories: kind === "category" ? ["", ""] : [],
+  automatic: false,
+});
 
 export const DecisionQuestions = component$<{
   image?: ImmichImage;
@@ -39,6 +58,21 @@ export const DecisionQuestions = component$<{
     const result = track(() => state.result);
     if (result) output.value?.scrollIntoView({ block: "nearest" });
   });
+  const changed = () => {
+    state.dirty = true;
+    state.notice = "";
+  };
+  const updateBound = (rule: DecisionRule, key: BoundKey, raw: string) => {
+    const bounds: DecisionScoreBounds = { ...(rule.bounds ?? {}) };
+    if (raw.trim() === "") delete bounds[key];
+    else {
+      const percent = Number(raw);
+      if (!Number.isFinite(percent) || percent < 0 || percent > 100) return;
+      bounds[key] = percent / 100;
+    }
+    rule.bounds = Object.keys(bounds).length > 0 ? bounds : undefined;
+    changed();
+  };
   const toggle = $(async () => {
     state.open = !state.open;
     if (!state.open || state.loaded) return;
@@ -157,112 +191,224 @@ export const DecisionQuestions = component$<{
         >
           <h3>Decision questions</h3>
           <p class="muted">
-            d1 assesses Yes/No at a 50% cutoff. Tags stay in Media Manager;
-            original files and Immich stay unchanged. Every successful
-            assessment adds “auto-tagged yyyyMMdd hh:mm” in server local time,
-            even when both actions leave tags unchanged.
+            d1 assesses Yes/No at a 50% cutoff. A category question asks once
+            per album name and adds the photo to the most probable album at 50%
+            or higher. Category rules are the only Immich write; original files
+            and Immich tags stay unchanged. Every successful assessment adds
+            “auto-tagged yyyyMMdd hh:mm” in server local time, even when tag
+            actions leave tags unchanged. Optional score bounds skip a question
+            when any bound is unmet.
           </p>
           {state.loading && <p role="status">Loading saved questions…</p>}
           {state.loaded && (
             <form preventdefault:submit onSubmit$={save}>
               <fieldset disabled={busy} class="decision-rules">
                 <legend class="sr-only">Saved questions</legend>
-                {state.rules.map((rule, i) => (
-                  <fieldset key={rule.id} class="decision-rule">
-                    <legend>Question {i + 1}</legend>
-                    <label>
-                      Question
-                      <textarea
-                        required
-                        maxLength={1000}
-                        rows={2}
-                        value={rule.question}
-                        placeholder="Is the photo a computer screen or code?"
-                        onInput$={(_, el) => {
-                          rule.question = el.value;
-                          state.dirty = true;
-                          state.notice = "";
-                        }}
-                      />
-                    </label>
-                    <div class="decision-actions">
-                      {(["yesTag", "noTag"] as const).map((key) => (
-                        <div key={key}>
-                          <label>
-                            If {key === "yesTag" ? "yes" : "no"}
-                            <select
-                              value={
-                                rule[key] ||
-                                state.adding.includes(`${rule.id}-${key}`)
-                                  ? "tag"
-                                  : "unchanged"
-                              }
-                              onChange$={(_, el) => {
-                                rule[key] =
-                                  el.value === "tag" ? "to be deleted" : "";
-                                state.adding = state.adding.filter(
-                                  (id) => id !== `${rule.id}-${key}`,
-                                );
-                                state.dirty = true;
-                                state.notice = "";
-                              }}
-                            >
-                              <option value="unchanged">Leave unchanged</option>
-                              <option value="tag">Add tag</option>
-                            </select>
-                          </label>
-                          {(!!rule[key] ||
-                            state.adding.includes(`${rule.id}-${key}`)) && (
-                            <label>
-                              Tag for {key === "yesTag" ? "yes" : "no"}
-                              <input
-                                required
-                                type="text"
-                                maxLength={96}
-                                value={rule[key]}
-                                pattern="[^,]+"
-                                onInput$={(_, el) => {
-                                  if (
-                                    !state.adding.includes(`${rule.id}-${key}`)
-                                  )
-                                    state.adding.push(`${rule.id}-${key}`);
-                                  rule[key] = el.value;
-                                  state.dirty = true;
-                                  state.notice = "";
+                {state.rules.map((rule, i) => {
+                  const kind = rule.kind === "category" ? "category" : "yesNo";
+                  return (
+                    <fieldset key={rule.id} class="decision-rule">
+                      <legend>Question {i + 1}</legend>
+                      <label>
+                        Question
+                        <textarea
+                          required
+                          maxLength={1000}
+                          rows={2}
+                          value={rule.question}
+                          placeholder="Is the photo a computer screen or code?"
+                          onInput$={(_, el) => {
+                            rule.question = el.value;
+                            changed();
+                          }}
+                        />
+                      </label>
+                      <label>
+                        Type
+                        <select
+                          value={kind}
+                          onChange$={(_, el) => {
+                            const next =
+                              el.value === "category" ? "category" : "yesNo";
+                            rule.kind = next;
+                            if (next === "category") {
+                              if (!rule.question.trim())
+                                rule.question = defaultCategoryQuestion;
+                              rule.categories = ["", ""];
+                              rule.yesTag = "";
+                              rule.noTag = "";
+                            } else {
+                              rule.categories = [];
+                            }
+                            changed();
+                          }}
+                        >
+                          <option value="yesNo">Yes or no</option>
+                          <option value="category">
+                            Categorise into albums
+                          </option>
+                        </select>
+                      </label>
+                      {kind === "category" ? (
+                        <div class="decision-categories">
+                          <span>Albums</span>
+                          {rule.categories.map((category, position) => (
+                            <div key={position} class="decision-category">
+                              <label>
+                                Album {position + 1}
+                                <input
+                                  required
+                                  type="text"
+                                  maxLength={96}
+                                  value={category}
+                                  onInput$={(_, el) => {
+                                    rule.categories[position] = el.value;
+                                    changed();
+                                  }}
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                class="secondary-button"
+                                aria-label={`Remove album ${position + 1}`}
+                                disabled={rule.categories.length <= 2}
+                                onClick$={() => {
+                                  rule.categories = rule.categories.filter(
+                                    (_name, index) => index !== position,
+                                  );
+                                  changed();
                                 }}
-                              />
-                            </label>
-                          )}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            class="secondary-button"
+                            disabled={rule.categories.length >= 12}
+                            onClick$={() => {
+                              rule.categories = [...rule.categories, ""];
+                              changed();
+                            }}
+                          >
+                            Add album
+                          </button>
                         </div>
-                      ))}
-                    </div>
-                    <label class="decision-automatic">
-                      <input
-                        type="checkbox"
-                        checked={rule.automatic}
-                        onChange$={(_, el) => {
-                          rule.automatic = el.checked;
-                          state.dirty = true;
-                          state.notice = "";
+                      ) : (
+                        <div class="decision-actions">
+                          {(["yesTag", "noTag"] as const).map((key) => (
+                            <div key={key}>
+                              <label>
+                                If {key === "yesTag" ? "yes" : "no"}
+                                <select
+                                  value={
+                                    rule[key] ||
+                                    state.adding.includes(`${rule.id}-${key}`)
+                                      ? "tag"
+                                      : "unchanged"
+                                  }
+                                  onChange$={(_, el) => {
+                                    rule[key] =
+                                      el.value === "tag" ? "to be deleted" : "";
+                                    state.adding = state.adding.filter(
+                                      (id) => id !== `${rule.id}-${key}`,
+                                    );
+                                    changed();
+                                  }}
+                                >
+                                  <option value="unchanged">
+                                    Leave unchanged
+                                  </option>
+                                  <option value="tag">Add tag</option>
+                                </select>
+                              </label>
+                              {(!!rule[key] ||
+                                state.adding.includes(`${rule.id}-${key}`)) && (
+                                <label>
+                                  Tag for {key === "yesTag" ? "yes" : "no"}
+                                  <input
+                                    required
+                                    type="text"
+                                    maxLength={96}
+                                    value={rule[key]}
+                                    pattern="[^,]+"
+                                    onInput$={(_, el) => {
+                                      if (
+                                        !state.adding.includes(
+                                          `${rule.id}-${key}`,
+                                        )
+                                      )
+                                        state.adding.push(`${rule.id}-${key}`);
+                                      rule[key] = el.value;
+                                      changed();
+                                    }}
+                                  />
+                                </label>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <fieldset class="decision-bounds">
+                        <legend>EYE score bounds (optional)</legend>
+                        <p class="muted">
+                          Skip this question unless every bound is met. Leave
+                          empty for no bound.
+                        </p>
+                        <div class="decision-bound-row decision-bound-head">
+                          <span aria-hidden="true" />
+                          <span aria-hidden="true">Minimum %</span>
+                          <span aria-hidden="true">Maximum %</span>
+                        </div>
+                        {scoreNames.map((score) => (
+                          <div key={score} class="decision-bound-row">
+                            <span>
+                              {score[0].toUpperCase() + score.slice(1)}
+                            </span>
+                            {boundKeys(score).map((key) => (
+                              <input
+                                key={key}
+                                type="number"
+                                min={0}
+                                max={100}
+                                step={1}
+                                aria-label={`${score} ${key.endsWith("Min") ? "minimum" : "maximum"} percent`}
+                                value={percentValue(rule.bounds?.[key])}
+                                onInput$={(_, el) =>
+                                  updateBound(rule, key, el.value)
+                                }
+                              />
+                            ))}
+                          </div>
+                        ))}
+                      </fieldset>
+                      <label class="decision-automatic">
+                        <input
+                          type="checkbox"
+                          checked={rule.automatic}
+                          onChange$={(_, el) => {
+                            rule.automatic = el.checked;
+                            changed();
+                          }}
+                        />
+                        Automatically assess my photo library
+                      </label>
+                      <button
+                        type="button"
+                        class="secondary-button"
+                        onClick$={() => {
+                          state.rules = state.rules.filter(
+                            (r) => r.id !== rule.id,
+                          );
+                          changed();
                         }}
-                      />
-                      Automatically assess my photo library
-                    </label>
-                    <button
-                      type="button"
-                      class="secondary-button"
-                      onClick$={() => {
-                        state.rules = state.rules.filter(
-                          (r) => r.id !== rule.id,
-                        );
-                        state.dirty = true;
-                        state.notice = "";
-                      }}
-                    >
-                      Remove question {i + 1}
-                    </button>
-                  </fieldset>
-                ))}
+                      >
+                        Remove question {i + 1}
+                      </button>
+                    </fieldset>
+                  );
+                })}
                 {!state.rules.length && <p>No saved questions.</p>}
                 <div class="decision-toolbar">
                   <button
@@ -270,21 +416,22 @@ export const DecisionQuestions = component$<{
                     class="secondary-button"
                     disabled={state.rules.length >= 16}
                     onClick$={() => {
-                      state.rules = [
-                        ...state.rules,
-                        {
-                          id: crypto.randomUUID(),
-                          question: "",
-                          yesTag: "to be deleted",
-                          noTag: "",
-                          automatic: false,
-                        },
-                      ];
-                      state.dirty = true;
-                      state.notice = "";
+                      state.rules = [...state.rules, newRule("category")];
+                      changed();
                     }}
                   >
-                    Add question
+                    Add category question
+                  </button>
+                  <button
+                    type="button"
+                    class="secondary-button"
+                    disabled={state.rules.length >= 16}
+                    onClick$={() => {
+                      state.rules = [...state.rules, newRule("yesNo")];
+                      changed();
+                    }}
+                  >
+                    Add yes/no question
                   </button>
                   <button
                     type="submit"
@@ -300,7 +447,7 @@ export const DecisionQuestions = component$<{
           {state.dirty && (
             <p role="status">
               Save changes before assessing. Removing or changing a question
-              keeps tags already applied.
+              keeps tags and albums already applied.
             </p>
           )}
           {props.image && (
@@ -331,6 +478,7 @@ export const DecisionQuestions = component$<{
             Images up to 16 MiB or UTF-8 text up to 16 KiB. File contents are
             used locally for assessment and are not retained. Upload tags are
             saved by content; upload the same file again to retrieve them.
+            Uploaded files never add Immich albums.
           </p>
           {state.running && (
             <p role="status">Assessing {state.resultName} locally…</p>
@@ -362,25 +510,46 @@ export const DecisionQuestions = component$<{
             >
               <h4>{state.resultName}</h4>
               <ul>
-                {state.result.results.map((result) => (
-                  <li key={result.id}>
-                    <span>{result.question}</span>
-                    <strong>
-                      {result.answer === "yes" ? "Yes" : "No"} (
-                      {Math.round(
-                        (result.answer === "yes"
-                          ? result.yesProbability
-                          : 1 - result.yesProbability) * 100,
+                {state.result.results.map((result) => {
+                  const confidence =
+                    result.answer === "no"
+                      ? 1 - result.yesProbability
+                      : result.yesProbability;
+                  const summary =
+                    result.answer === "skipped"
+                      ? "Skipped"
+                      : result.kind === "category"
+                        ? result.category
+                          ? `Category: ${result.category} (${Math.round(result.yesProbability * 100)}%)`
+                          : `No category (best ${Math.round(result.yesProbability * 100)}%)`
+                        : `${result.answer === "yes" ? "Yes" : "No"} (${Math.round(confidence * 100)}%)`;
+                  return (
+                    <li key={result.id}>
+                      <span>{result.question}</span>
+                      <strong>{summary}</strong>
+                      {result.album && (
+                        <span>Added to album: {result.album}</span>
                       )}
-                      %)
-                    </strong>
-                    <span>
-                      {result.tag
-                        ? `Added tag: ${result.tag}`
-                        : "Existing tags unchanged"}
-                    </span>
-                  </li>
-                ))}
+                      {result.category &&
+                        !result.album &&
+                        !result.albumError && (
+                          <span>Album not changed for uploaded files.</span>
+                        )}
+                      {result.skipReason && <span>{result.skipReason}</span>}
+                      {result.albumError && (
+                        <span class="message error">{result.albumError}</span>
+                      )}
+                      {result.tag ? (
+                        <span>Added tag: {result.tag}</span>
+                      ) : (
+                        result.kind === "yesNo" &&
+                        result.answer !== "skipped" && (
+                          <span>Existing tags unchanged</span>
+                        )
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
               <p>Saved tags: {state.result.tags.join(", ")}</p>
             </section>

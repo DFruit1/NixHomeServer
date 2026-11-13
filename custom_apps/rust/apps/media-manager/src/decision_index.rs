@@ -1,16 +1,94 @@
-//! Additive, subject/credential-scoped decisions. Never mutate originals or Immich.
-use crate::image_index::{probability, Index};
+//! Additive, subject/credential-scoped decisions. Never mutate originals.
+use crate::image_index::{probability, Index, Scores};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+#[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum RuleKind {
+    /// One d1 proposition with optional Yes/No tags.
+    #[default]
+    YesNo,
+    /// One d1 proposition per category; the most probable category names an
+    /// Immich album for the assessed photo.
+    Category,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ScoreBounds {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aesthetic_min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aesthetic_max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keeper_min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keeper_max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_max: Option<f64>,
+}
+
+impl ScoreBounds {
+    pub fn any(&self) -> bool {
+        [
+            self.aesthetic_min,
+            self.aesthetic_max,
+            self.keeper_min,
+            self.keeper_max,
+            self.cover_min,
+            self.cover_max,
+        ]
+        .into_iter()
+        .any(|bound| bound.is_some())
+    }
+
+    fn valid(&self) -> bool {
+        [
+            (self.aesthetic_min, self.aesthetic_max),
+            (self.keeper_min, self.keeper_max),
+            (self.cover_min, self.cover_max),
+        ]
+        .into_iter()
+        .all(|(min, max)| {
+            [min, max].into_iter().flatten().all(probability)
+                && match (min, max) {
+                    (Some(min), Some(max)) => min <= max,
+                    _ => true,
+                }
+        })
+    }
+
+    /// EYE scores are relative model judgments; a bound only gates whether the
+    /// rule runs. Scores are never used as question answers.
+    pub fn allows(&self, scores: &Scores) -> bool {
+        self.aesthetic_min.is_none_or(|min| scores.aesthetic >= min)
+            && self.aesthetic_max.is_none_or(|max| scores.aesthetic <= max)
+            && self.keeper_min.is_none_or(|min| scores.keeper >= min)
+            && self.keeper_max.is_none_or(|max| scores.keeper <= max)
+            && self.cover_min.is_none_or(|min| scores.cover >= min)
+            && self.cover_max.is_none_or(|max| scores.cover <= max)
+    }
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Rule {
     pub id: String,
+    #[serde(default)]
+    pub kind: RuleKind,
     pub question: String,
+    #[serde(default)]
     pub yes_tag: String,
+    #[serde(default)]
     pub no_tag: String,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<ScoreBounds>,
     pub automatic: bool,
 }
 impl Rule {
@@ -18,7 +96,15 @@ impl Rule {
         format!(
             "{:x}",
             Sha256::digest(
-                serde_json::to_vec(&(&self.question, &self.yes_tag, &self.no_tag)).unwrap()
+                serde_json::to_vec(&(
+                    self.kind,
+                    &self.question,
+                    &self.yes_tag,
+                    &self.no_tag,
+                    &self.categories,
+                    &self.bounds,
+                ))
+                .unwrap()
             )
         )
     }
@@ -32,9 +118,29 @@ impl Rule {
             && !self.question.trim().is_empty()
             && self.question.len() <= 1000
             && !self.question.chars().any(char::is_control)
-            && [&self.yes_tag, &self.no_tag]
-                .into_iter()
-                .all(|s| s.is_empty() || valid_tag(s))
+            && match self.kind {
+                RuleKind::YesNo => {
+                    self.categories.is_empty()
+                        && [&self.yes_tag, &self.no_tag]
+                            .into_iter()
+                            .all(|s| s.is_empty() || valid_tag(s))
+                }
+                RuleKind::Category => {
+                    self.yes_tag.is_empty()
+                        && self.no_tag.is_empty()
+                        && (2..=12).contains(&self.categories.len())
+                        && self.categories.iter().all(|name| valid_category(name))
+                        && {
+                            let unique: std::collections::BTreeSet<String> = self
+                                .categories
+                                .iter()
+                                .map(|name| name.to_lowercase())
+                                .collect();
+                            unique.len() == self.categories.len()
+                        }
+                }
+            }
+            && self.bounds.as_ref().is_none_or(ScoreBounds::valid)
     }
 }
 pub(crate) fn valid_tag(s: &str) -> bool {
@@ -42,6 +148,12 @@ pub(crate) fn valid_tag(s: &str) -> bool {
         && s == s.trim()
         && s.len() <= 96
         && !s.chars().any(|c| c.is_control() || c == ',')
+}
+pub(crate) fn valid_category(name: &str) -> bool {
+    !name.trim().is_empty()
+        && name == name.trim()
+        && name.len() <= 96
+        && !name.chars().any(char::is_control)
 }
 pub(crate) fn initialize(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS decision_rules(scope TEXT PRIMARY KEY, rules TEXT NOT NULL);
@@ -52,7 +164,9 @@ pub(crate) fn initialize(db: &Connection) -> rusqlite::Result<()> {
             PRIMARY KEY(scope,asset_id));
         CREATE TABLE IF NOT EXISTS decision_results(scope TEXT NOT NULL, asset_id TEXT NOT NULL,
             rule_id TEXT NOT NULL, signature TEXT NOT NULL, probability REAL NOT NULL, assessed_at TEXT NOT NULL,
-            PRIMARY KEY(scope,asset_id,rule_id));")
+            PRIMARY KEY(scope,asset_id,rule_id));
+        CREATE TABLE IF NOT EXISTS decision_albums(scope TEXT NOT NULL, name TEXT NOT NULL, album_id TEXT NOT NULL,
+            PRIMARY KEY(scope,name));")
 }
 impl Index<'_> {
     pub fn decision_retry(&self, asset: &str, after: Option<i64>) -> rusqlite::Result<i64> {
@@ -106,6 +220,31 @@ impl Index<'_> {
         stmt.query_map(params![self.scope, asset], |r| r.get(0))?
             .collect()
     }
+    pub fn album_id(&self, name: &str) -> rusqlite::Result<Option<String>> {
+        self.store
+            .index_connection()?
+            .query_row(
+                "SELECT album_id FROM decision_albums WHERE scope=?1 AND name=?2",
+                params![self.scope, name],
+                |r| r.get(0),
+            )
+            .optional()
+    }
+    pub fn save_album(&self, name: &str, album_id: &str) -> rusqlite::Result<()> {
+        self.store.index_connection()?.execute(
+            "INSERT INTO decision_albums(scope,name,album_id) VALUES(?1,?2,?3)
+            ON CONFLICT(scope,name) DO UPDATE SET album_id=excluded.album_id",
+            params![self.scope, name, album_id],
+        )?;
+        Ok(())
+    }
+    pub fn forget_album(&self, name: &str) -> rusqlite::Result<()> {
+        self.store.index_connection()?.execute(
+            "DELETE FROM decision_albums WHERE scope=?1 AND name=?2",
+            params![self.scope, name],
+        )?;
+        Ok(())
+    }
     pub fn needs_decision(&self, asset: &str, rule: &Rule) -> rusqlite::Result<bool> {
         let done: bool = self.store.index_connection()?.query_row(
             "SELECT EXISTS(SELECT 1 FROM decision_results
@@ -142,10 +281,12 @@ impl Index<'_> {
             return Ok(false);
         }
         for (rule, p) in rules.iter().zip(probabilities) {
-            let tag = if *p >= 0.5 {
+            let tag = if rule.kind == RuleKind::YesNo && *p >= 0.5 {
                 &rule.yes_tag
-            } else {
+            } else if rule.kind == RuleKind::YesNo {
                 &rule.no_tag
+            } else {
+                ""
             };
             if !tag.is_empty() {
                 tx.execute(

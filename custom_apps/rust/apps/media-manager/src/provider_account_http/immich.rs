@@ -1,4 +1,5 @@
-//! Read-only Immich access; derived EYE tags and scores live in our private index.
+//! Immich reads are read-only; only saved category rules may add the assessed
+//! photo to a named album. Derived EYE tags and scores stay in our private index.
 use super::*;
 use reqwest::Method;
 use std::{path::Path as FilePath, time::Duration};
@@ -14,9 +15,10 @@ const MAX_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
 pub(super) struct Runtime {
     pub(super) managed: bool,
     pub(super) base: reqwest::Url,
-    eye: reqwest::Client,
+    pub(super) eye: reqwest::Client,
     pub(super) decision: reqwest::Client,
     decision_gate: Arc<tokio::sync::Mutex<()>>,
+    album_gate: Arc<tokio::sync::Mutex<()>>,
     gate: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -39,6 +41,7 @@ impl Runtime {
             eye,
             decision: decision_client(FilePath::new("/run/media-manager-decision/d1.sock"))?,
             decision_gate: Arc::default(),
+            album_gate: Arc::default(),
             gate: Arc::default(),
         })
     }
@@ -58,7 +61,7 @@ pub(super) fn decision_client(socket: &FilePath) -> Result<reqwest::Client, Stri
 }
 
 #[derive(Clone)]
-struct Account {
+pub(super) struct Account {
     runtime: Arc<Runtime>,
     key: Zeroizing<String>,
 }
@@ -266,6 +269,163 @@ impl Account {
         let mime = sniff_image_content_type(&bytes).ok_or_else(|| upstream_error(id))?;
         Ok((bytes, mime))
     }
+
+    async fn album_response(
+        &self,
+        state: &ProviderBrokerState,
+        method: Method,
+        url: reqwest::Url,
+        body: Option<Value>,
+        id: &str,
+    ) -> Result<reqwest::Response, ApiError> {
+        let mut key = HeaderValue::from_str(&self.key).map_err(|_| upstream_error(id))?;
+        key.set_sensitive(true);
+        let mut request = state.client.request(method, url).header("x-api-key", key);
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request.send().await.map_err(|_| upstream_error(id))?;
+        match response.status() {
+            status if status.is_success() => Ok(response),
+            reqwest::StatusCode::NOT_FOUND => Err(error(
+                StatusCode::NOT_FOUND,
+                "immich_album_not_found",
+                "This album is no longer available in your Immich library.",
+                id,
+            )),
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => Err(error(
+                StatusCode::FORBIDDEN,
+                "immich_permission_denied",
+                "Your Immich API key does not permit album actions. Check its permissions in Immich.",
+                id,
+            )),
+            reqwest::StatusCode::TOO_MANY_REQUESTS => Err(error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "immich_rate_limited",
+                "Immich is busy. Try again shortly.",
+                id,
+            )),
+            _ => Err(upstream_error(id)),
+        }
+    }
+
+    async fn find_album(
+        &self,
+        state: &ProviderBrokerState,
+        name: &str,
+        id: &str,
+    ) -> Result<Option<String>, ApiError> {
+        // Exact-name search stays bounded to the caller's own albums; a shared
+        // album with the same name is never selected or modified.
+        let mut url = self
+            .runtime
+            .base
+            .join("albums")
+            .map_err(|_| unavailable(id))?;
+        url.query_pairs_mut()
+            .append_pair("name", name)
+            .append_pair("isOwned", "true");
+        let response = self
+            .album_response(state, Method::GET, url, None, id)
+            .await?;
+        let albums: Vec<Album> = bounded_provider_json(response)
+            .await
+            .map_err(|_| upstream_error(id))?;
+        if albums.len() > 10_000 {
+            return Err(upstream_error(id));
+        }
+        Ok(albums
+            .into_iter()
+            .find(|album| album.album_name == name && valid_mbid(&album.id))
+            .map(|album| album.id))
+    }
+
+    async fn create_album(
+        &self,
+        state: &ProviderBrokerState,
+        name: &str,
+        asset: &str,
+        id: &str,
+    ) -> Result<String, ApiError> {
+        let url = self
+            .runtime
+            .base
+            .join("albums")
+            .map_err(|_| unavailable(id))?;
+        let response = self
+            .album_response(
+                state,
+                Method::POST,
+                url,
+                Some(json!({"albumName": name, "assetIds": [asset]})),
+                id,
+            )
+            .await?;
+        let album: Album = bounded_provider_json(response)
+            .await
+            .map_err(|_| upstream_error(id))?;
+        if album.album_name != name || !valid_mbid(&album.id) {
+            return Err(upstream_error(id));
+        }
+        Ok(album.id)
+    }
+
+    async fn add_album_asset(
+        &self,
+        state: &ProviderBrokerState,
+        album_id: &str,
+        asset: &str,
+        id: &str,
+    ) -> Result<(), ApiError> {
+        if !valid_mbid(album_id) {
+            return Err(upstream_error(id));
+        }
+        let url = self
+            .runtime
+            .base
+            .join(&format!("albums/{album_id}/assets"))
+            .map_err(|_| unavailable(id))?;
+        let response = self
+            .album_response(state, Method::PUT, url, Some(json!({"ids": [asset]})), id)
+            .await?;
+        let _: Value = bounded_provider_json(response)
+            .await
+            .map_err(|_| upstream_error(id))?;
+        Ok(())
+    }
+
+    /// Add exactly one assessed photo to the album named by a saved category
+    /// rule. Album IDs are cached by name; a vanished album is recreated.
+    pub(super) async fn add_to_album(
+        &self,
+        state: &ProviderBrokerState,
+        index: &Index<'_>,
+        name: &str,
+        asset: &str,
+        id: &str,
+    ) -> Result<(), ApiError> {
+        let _guard = self.runtime.album_gate.lock().await;
+        if let Some(album_id) = index.album_id(name).map_err(|_| index_error(id))? {
+            match self.add_album_asset(state, &album_id, asset, id).await {
+                Ok(()) => return Ok(()),
+                Err(err) if err.status() == StatusCode::NOT_FOUND => {
+                    index.forget_album(name).map_err(|_| index_error(id))?;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        let album_id = match self.find_album(state, name, id).await? {
+            Some(album_id) => {
+                self.add_album_asset(state, &album_id, asset, id).await?;
+                album_id
+            }
+            None => self.create_album(state, name, asset, id).await?,
+        };
+        index
+            .save_album(name, &album_id)
+            .map_err(|_| index_error(id))?;
+        Ok(())
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -287,6 +447,13 @@ struct Asset {
     visibility: String,
     #[serde(default)]
     tags: Vec<Tag>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Album {
+    id: String,
+    album_name: String,
 }
 
 impl Asset {
@@ -480,7 +647,7 @@ pub(super) async fn analyze(
     ))
 }
 
-async fn analyze_asset(
+pub(super) async fn analyze_asset(
     state: &ProviderBrokerState,
     account: &Account,
     asset_id: &str,
@@ -500,10 +667,17 @@ async fn analyze_asset(
         })?
     };
     let (bytes, mime) = account.image(state, asset_id, id).await?;
-    // A distinct Unix-socket client carries pixels only, never the user's key.
-    let response = account
-        .runtime
-        .eye
+    eye_image(&account.runtime.eye, bytes, &mime, id).await
+}
+
+/// A distinct Unix-socket client carries pixels only, never the user's key.
+pub(super) async fn eye_image(
+    eye: &reqwest::Client,
+    bytes: Vec<u8>,
+    mime: &str,
+    id: &str,
+) -> Result<Analysis, ApiError> {
+    let response = eye
         .post("http://localhost/analyze")
         .header(header::CONTENT_TYPE, mime)
         .body(bytes)

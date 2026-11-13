@@ -211,14 +211,14 @@ fn run() -> Result<(), String> {
             &digest[17..20],
             &digest[20..32]
         );
-        let unchanged = database(&format!("select count(*) from api_key k join \"user\" u on u.id=k.\"userId\" where k.id='{id}' and k.name='NixHomeServer Media Manager' and u.\"oauthId\"={} and u.\"deletedAt\" is null and k.key=decode('{hash}','hex') and k.permissions=ARRAY['asset.read','asset.view','user.read','tag.read','tag.create','tag.asset']::varchar[];", sql(&subject)))?;
+        let unchanged = database(&format!("select count(*) from api_key k join \"user\" u on u.id=k.\"userId\" where k.id='{id}' and k.name='NixHomeServer Media Manager' and u.\"oauthId\"={} and u.\"deletedAt\" is null and k.key=decode('{hash}','hex') and k.permissions=ARRAY['asset.read','asset.view','album.read','album.create','albumAsset.create','user.read','tag.read','tag.create','tag.asset']::varchar[];", sql(&subject)))?;
         if unchanged.trim() == "1" {
             continue;
         }
         // bytea and permissions follow Immich 3.x's pinned ApiKeyTable schema.
         // A deterministic ID permits idempotent repair without rotating keys or
         // overwriting a human-managed key with the same display name.
-        let query = format!("begin; set local lock_timeout='5s'; set local statement_timeout='15s'; insert into api_key (id,name,key,\"userId\",permissions) select '{id}','NixHomeServer Media Manager',decode('{hash}','hex'),id,ARRAY['asset.read','asset.view','user.read','tag.read','tag.create','tag.asset']::varchar[] from \"user\" where \"oauthId\"={} and \"deletedAt\" is null on conflict(id) do update set key=excluded.key, permissions=excluded.permissions where api_key.\"userId\"=excluded.\"userId\" and api_key.name=excluded.name returning id; commit;", sql(&subject));
+        let query = format!("begin; set local lock_timeout='5s'; set local statement_timeout='15s'; insert into api_key (id,name,key,\"userId\",permissions) select '{id}','NixHomeServer Media Manager',decode('{hash}','hex'),id,ARRAY['asset.read','asset.view','album.read','album.create','albumAsset.create','user.read','tag.read','tag.create','tag.asset']::varchar[] from \"user\" where \"oauthId\"={} and \"deletedAt\" is null on conflict(id) do update set key=excluded.key, permissions=excluded.permissions where api_key.\"userId\"=excluded.\"userId\" and api_key.name=excluded.name returning id; commit;", sql(&subject));
         if database(&query)?.trim() != id {
             return Err("managed key ownership mismatch".into());
         }

@@ -22,7 +22,7 @@ paths:
               schema: { $ref: "#/components/schemas/DecisionRules" }
     put:
       operationId: saveDecisionRules
-      description: Replace up to 16 rules. Automatic rules run during background library sweeps; editing a question or action causes reassessment. Removing rules retains existing tags. An empty action tag means leave unchanged.
+      description: Replace up to 16 rules and at most 24 total d1 propositions (one per yesNo rule and per album category). A yesNo rule applies optional tags. A category rule builds one d1 proposition per album name and adds the assessed photo to the Immich album of the most probable category at 50% or higher. Optional EYE score bounds skip a question when any bound is unmet. Automatic rules run during background library sweeps; editing a question, action, category or bound causes reassessment. Removing rules retains existing tags and albums. An empty action tag means leave unchanged.
       requestBody:
         required: true
         content:
@@ -42,7 +42,7 @@ paths:
   /provider-lookups/immich/images/{id}/decisions:
     post:
       operationId: assessPhotoDecisions
-      description: Assess current accessible pixels with all saved rules. Apply Yes at probability >= 0.5. Add selected tags and auto-tagged yyyyMMdd HH:mm in server local time, including leave-unchanged actions. No writes occur on inference failure or stale rules.
+      description: Assess current accessible pixels with all saved rules. Apply Yes at probability >= 0.5. Add selected tags and auto-tagged yyyyMMdd HH:mm in server local time, including leave-unchanged actions. A category result adds the photo to the named Immich album; this is the only Immich write and it never changes the original file. Questions with unmet EYE score bounds are skipped. No writes occur on inference failure or stale rules.
       parameters:
         - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -54,7 +54,7 @@ paths:
   /provider-lookups/immich/decision-files:
     post:
       operationId: assessPersonalFile
-      description: Assess an uploaded image (16 MiB maximum) or UTF-8 text (16 KiB maximum) using saved rules. Content is not retained; private tags are saved by SHA-256 content hash. Requires a connected Photos account. PDFs and other binary files are unsupported.
+      description: Assess an uploaded image (16 MiB maximum) or UTF-8 text (16 KiB maximum) using saved rules. Content is not retained; private tags are saved by SHA-256 content hash. A connected Photos account is required. Uploads have no Immich asset, so category rules report a category but add no album. EYE score bounds apply to images only; text files skip bounded questions. PDFs and other binary files are unsupported.
       requestBody:
         required: true
         content:
@@ -1942,13 +1942,36 @@ components:
     DecisionRule:
       type: object
       additionalProperties: false
-      required: [id, question, yesTag, noTag, automatic]
+      required: [id, kind, question, yesTag, noTag, categories, automatic]
       properties:
         id: { type: string, maxLength: 64, pattern: "^[a-zA-Z0-9-]+$" }
+        kind:
+          description: A Yes/No question applies tags. A category question adds the photo to the Immich album of the most probable category.
+          enum: [yesNo, category]
+          type: string
+          default: yesNo
         question: { type: string, minLength: 1, maxLength: 1000 }
-        yesTag: { type: string, maxLength: 96 }
-        noTag: { type: string, maxLength: 96 }
+        yesTag: { type: string, maxLength: 96, description: "Used only by yesNo rules; empty means leave unchanged." }
+        noTag: { type: string, maxLength: 96, description: "Used only by yesNo rules; empty means leave unchanged." }
+        categories:
+          description: Unique album names for a category rule; empty for a yesNo rule.
+          type: array
+          maxItems: 12
+          items: { type: string, minLength: 1, maxLength: 96 }
+        bounds:
+          $ref: "#/components/schemas/DecisionScoreBounds"
         automatic: { type: boolean }
+    DecisionScoreBounds:
+      type: object
+      additionalProperties: false
+      description: Optional EYE score gates. The question is skipped when any bound is unmet; an empty object adds no gate.
+      properties:
+        aestheticMin: { type: number, minimum: 0, maximum: 1 }
+        aestheticMax: { type: number, minimum: 0, maximum: 1 }
+        keeperMin: { type: number, minimum: 0, maximum: 1 }
+        keeperMax: { type: number, minimum: 0, maximum: 1 }
+        coverMin: { type: number, minimum: 0, maximum: 1 }
+        coverMax: { type: number, minimum: 0, maximum: 1 }
     DecisionRules:
       type: object
       required: [rules, requestId]
@@ -1968,13 +1991,29 @@ components:
           type: array
           items:
             type: object
-            required: [id, question, yesProbability, answer, tag]
+            required: [id, kind, question, yesProbability, answer, tag, category, album, skipReason, albumError]
             properties:
               id: { type: string }
+              kind:
+                description: The saved question type that produced this result.
+                enum: [yesNo, category]
+                type: string
               question: { type: string }
               yesProbability: { type: number, minimum: 0, maximum: 1 }
-              answer: { enum: ["yes", "no"], type: string }
+              answer: { enum: ["yes", "no", "skipped"], type: string }
               tag: { type: string }
+              category:
+                description: Winning category for a category rule, or null.
+                type: [string, "null"]
+              album:
+                description: Album name the assessed photo was added to, or null.
+                type: [string, "null"]
+              skipReason:
+                description: Why score bounds excluded this question, or null.
+                type: [string, "null"]
+              albumError:
+                description: Bounded album-write failure for this question, or null.
+                type: [string, "null"]
     ConversionInputOptions:
       type: object
       additionalProperties: false

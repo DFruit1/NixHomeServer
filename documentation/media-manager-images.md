@@ -2,10 +2,12 @@
 
 Media Manager automatically analyzes each connected user's Immich photos with
 EYE and saves tags, confidence values and aesthetic, keeper and cover scores in
-its own SQLite database. **Immich and image files are read-only**: no Immich tag
-updates, database writes, original downloads, EXIF changes or sidecars occur in
-the analysis and search paths. Timeline and archived photos are indexed; locked,
-hidden, trashed and non-image assets are excluded.
+its own SQLite database. **Analysis, search and image files are read-only**: no
+Immich tag updates, database writes, original downloads, EXIF changes or
+sidecars occur in the analysis and search paths. The only Immich write is the
+opt-in category question adding the assessed photo to a named album. Timeline
+and archived photos are indexed; locked, hidden, trashed and non-image assets
+are excluded.
 
 ## Connect and use
 
@@ -42,22 +44,42 @@ resets these preferences. If browser storage is blocked, the chosen view still
 works for the current visit. Both pages default to three tiles per row.
 
 Scores are relative model judgments, not personal-value decisions. The app never
-deletes a photo or modifies Immich based on a prediction. The legacy tag-write
-endpoint returns 403, including for editors with mutations enabled.
+deletes a photo or changes Immich tags or originals based on a prediction. The
+only Immich mutation is adding the assessed photo to an album named by an
+enabled category question. The legacy tag-write endpoint returns 403, including
+for editors with mutations enabled.
 
 ## Saved decision questions
 
-Open **Images → Decision questions** to add and save up to 16 personal Yes/No
-questions. Choose **Add tag** or **Leave unchanged** separately for Yes and No.
-For example, ask “Is the photo a computer screen or code?”, add `to be deleted`
-for Yes, and leave No unchanged. This is a tag only: nothing is deleted or moved.
+Open **Images → Decision questions** to add and save up to 16 personal
+questions and at most 24 total d1 propositions (one per yes/no question and one
+per album name). A **Yes or no** question can choose **Add tag** or **Leave
+unchanged** separately for Yes and No. For example, ask “Is the photo a computer
+screen or code?”, add `to be deleted` for Yes, and leave No unchanged. This is a
+tag only: nothing is deleted or moved.
 
-**Assess selected photo** uses all saved questions. Yes means a d1 probability
-of at least 50%; the result shows the answer and probability. Every successful
-assessment also adds `auto-tagged yyyyMMdd HH:mm` using the server's local time,
-including when the chosen action is Leave unchanged. Failed inference applies no tags. Editing an assessed question while inference
+A **Categorise into albums** question lists two to twelve unique album names and
+defaults to “Based on the photo's contents and tags, which category does it
+belong to?”. d1 answers once per album name using that question, and the most
+probable category at 50% or higher adds the assessed photo to the Immich album
+with exactly that name. The album is created in the caller's own library when it
+does not exist; shared albums with the same name are never modified. No other
+photo and no original file is changed. Album writes need `album.read`,
+`album.create` and `albumAsset.create` on the connected Immich API key;
+connected Kanidm accounts receive these with the managed key.
+
+Each question can also set optional **EYE score bounds** for aesthetic, keeper
+and cover (0–100%). The question is skipped, with the reason shown, when any set
+minimum or maximum is unmet. Bounds need saved EYE analysis; assessing an Immich
+photo analyzes it first when necessary, and text uploads skip bounded questions.
+
+**Assess selected photo** uses all saved questions. For a yes/no question, Yes
+means a d1 probability of at least 50%; the result shows the answer and
+probability. Every successful assessment also adds `auto-tagged yyyyMMdd HH:mm`
+using the server's local time, including when the chosen action is Leave
+unchanged. Failed inference applies no tags. Editing an assessed question while inference
 is running prevents stale actions from being applied. Tags are additive: editing or
-removing a question retains previous tags and timestamps. EYE reanalysis also
+removing a question retains previous tags, albums and timestamps. EYE reanalysis also
 preserves them. Select a decision tag to filter the photo library by that tag;
 confidence thresholds apply to EYE suggestions, not already-applied decision tags.
 
@@ -72,10 +94,12 @@ separate backoff and do not stop EYE indexing. The broker logs fixed
 **Assess another file** accepts JPEG/PNG/WebP images up to 16 MiB and UTF-8 text
 up to 16 KiB, using all saved questions. PDFs, office documents and other binary
 files are unsupported. A connected Photos account is currently required.
-Contents go only to local d1 and are not retained. Tags are saved by content
-hash in the same private account partition; upload the same file again to
-reassess and recover earlier tags. This does not alter the local file or create
-sidecars. Automatic assessment currently covers the Immich photo library only.
+Contents go only to local d1 and are not retained. Uploads have no Immich asset,
+so category questions report the chosen category without adding an album. Tags
+are saved by content hash in the same private account partition; upload the same
+file again to reassess and recover earlier tags. This does not alter the local
+file or create sidecars. Automatic assessment currently covers the Immich photo
+library only.
 
 The official [LiquidAI/d1-2B GGUF model](https://huggingface.co/LiquidAI/d1-2B-GGUF)
 and vision projector are pinned at revision
@@ -89,11 +113,12 @@ CPU inference with one request at a time, a private Unix socket at
 `/run/media-manager-decision/d1.sock`, a 6 GiB memory ceiling, and sleep after
 five idle minutes. It exposes no browser/network host and uses no cloud API.
 
-Rules, results, retry checkpoints and tags live in additive `decision_*` tables
-in the existing provider SQLite database and inherit its persistence/backups.
-They use the same subject/origin/credential partition as EYE. These new services
-are staged in configuration and start on the next authorized config switch;
-editing the source or downloading weights does not start them.
+Rules, results, retry checkpoints, album IDs and tags live in additive
+`decision_*` tables in the existing provider SQLite database and inherit its
+persistence/backups. They use the same subject/origin/credential partition as
+EYE. These new services are staged in configuration and start on the next
+authorized config switch; editing the source or downloading weights does not
+start them.
 
 ## Runtime, persistence and isolation
 
@@ -154,9 +179,10 @@ Search returns persisted results during indexing; unavailable Immich authorizati
 fails closed. Other metadata providers remain independent of EYE.
 
 Focused boundary regressions in `tests/immich_images.rs` cover private-photo and
-credential disclosure, per-subject saved analysis and refusal of legacy writes.
-Use local fixture libraries to check full-library pagination, filtering, ranking,
-background progress and restart reuse without touching a real Immich instance.
+credential disclosure, per-subject saved analysis, refusal of legacy writes, and
+single-photo category album assignment with score-bound skips. Use local fixture
+libraries to check full-library pagination, filtering, ranking, background
+progress and restart reuse without touching a real Immich instance.
 
 ## Upstream contracts
 

@@ -21,7 +21,7 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
         text: "Open your existing Immich account from the Photos link on the homepage. Use User settings → API keys to create a key named Media Manager.",
       },
       {
-        text: "Grant asset.read, asset.view, user.read, tag.read, tag.create and tag.asset. These allow browsing previews, checking the connection, and adding tags. Original-download, upload and delete permissions are not needed.",
+        text: "Grant asset.read, asset.view, album.read, album.create, albumAsset.create, user.read, tag.read, tag.create and tag.asset. These allow browsing previews, checking the connection, adding tags, and letting saved category questions add this photo to an Immich album. Original-download, upload and delete permissions are not needed.",
       },
       {
         text: "Copy the key once, save a recovery copy in your password manager, then paste it here. Each person should connect their own Immich key.",
@@ -32,7 +32,7 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
         "Your Immich API key, without a Bearer prefix. Its permissions determine which photos and tag actions are available.",
     },
     troubleshooting:
-      "If browsing works but adding tags fails, check tag.create and tag.asset in Immich and your Media Manager editor access. Replacing a key does not change any photos or existing tags.",
+      "If browsing works but album or tag actions fail, check album.read, album.create, albumAsset.create, tag.create and tag.asset in Immich and your Media Manager editor access. Replacing a key does not change any photos, existing tags or albums.",
   },
   tmdb: {
     steps: [

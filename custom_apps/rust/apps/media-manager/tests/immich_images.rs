@@ -13,6 +13,8 @@ use media_manager::{
     provider_account_http::{provider_account_router, ProviderBrokerState},
     provider_accounts::ProviderAccountStore,
 };
+#[path = "support/api_contract.rs"]
+mod api_contract;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
@@ -20,6 +22,7 @@ use tower::ServiceExt;
 const PHOTO: &str = "10000000-0000-4000-8000-000000000001";
 const OLD_TAG: &str = "20000000-0000-4000-8000-000000000001";
 const NEW_TAG: &str = "20000000-0000-4000-8000-000000000002";
+const ALBUM: &str = "30000000-0000-4000-8000-000000000001";
 const ROOT: &str = "/api/v1/provider-lookups/immich/images";
 
 // Automatic keys must remain subject-bound even when a username is reused,
@@ -178,6 +181,41 @@ async fn attach(State(state): State<Fixture>, Json(body): Json<Value>) -> Json<V
     *state.tagged.lock().unwrap() = true;
     Json(json!({"count":1}))
 }
+async fn list_albums(
+    State(state): State<Fixture>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> Json<Value> {
+    assert_eq!(headers["x-api-key"], "fixture-alice");
+    let query = uri.query().unwrap_or_default();
+    assert!(query.contains("name=Beach") && query.contains("isOwned=true"));
+    state.calls.lock().unwrap().push("albums".into());
+    Json(json!([]))
+}
+async fn create_album(
+    State(state): State<Fixture>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    assert_eq!(headers["x-api-key"], "fixture-alice");
+    assert_eq!(
+        body,
+        json!({"albumName":"Beach","assetIds":[PHOTO]}),
+        "album writes must stay limited to the assessed photo"
+    );
+    state.calls.lock().unwrap().push("create-album".into());
+    Json(json!({"id":ALBUM,"albumName":"Beach"}))
+}
+async fn add_album_assets(
+    State(state): State<Fixture>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    assert_eq!(headers["x-api-key"], "fixture-alice");
+    assert_eq!(body, json!({"ids":[PHOTO]}));
+    state.calls.lock().unwrap().push("add-album-asset".into());
+    Json(json!([{"id":PHOTO,"success":true}]))
+}
 async fn redirect(State(state): State<Fixture>) -> Response {
     if state.preview_bytes {
         return (
@@ -202,6 +240,11 @@ async fn test_app(
         .route(&format!("/api/assets/{PHOTO}/thumbnail"), get(redirect))
         .route("/api/tags", put(upsert))
         .route("/api/tags/assets", put(attach))
+        .route("/api/albums", get(list_albums).post(create_album))
+        .route(
+            &format!("/api/albums/{ALBUM}/assets"),
+            put(add_album_assets),
+        )
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -692,6 +735,190 @@ async fn decisions_isolate_private_rules_pixels_and_tags_and_fail_without_partia
         .as_array()
         .unwrap()
         .contains(&json!("to be deleted")));
+    d1.await.unwrap();
+    upstream.abort();
+}
+
+async fn read_socket_request(socket: &mut tokio::net::UnixStream) -> (String, Vec<u8>) {
+    use tokio::io::AsyncReadExt;
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let (start, length) = loop {
+        let n = socket.read(&mut chunk).await.unwrap();
+        assert!(n > 0);
+        bytes.extend_from_slice(&chunk[..n]);
+        if let Some(end) = bytes.windows(4).position(|b| b == b"\r\n\r\n") {
+            let headers = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("content-length:")
+                        .map(|value| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap();
+            break (end + 4, length);
+        }
+    };
+    while bytes.len() < start + length {
+        let n = socket.read(&mut chunk).await.unwrap();
+        assert!(n > 0);
+        bytes.extend_from_slice(&chunk[..n]);
+    }
+    (
+        String::from_utf8_lossy(&bytes[..start]).to_lowercase(),
+        bytes[start..start + length].to_vec(),
+    )
+}
+
+async fn write_socket_json(socket: &mut tokio::net::UnixStream, body: &Value) {
+    use tokio::io::AsyncWriteExt;
+    let body = body.to_string();
+    socket
+        .write_all(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+}
+
+// Category rules are the only Immich write. This regression pins the narrow
+// boundary: one assessed photo, exact album name, no credentials on d1/EYE,
+// score-bound skips, and cached album reuse without listing albums again.
+#[tokio::test]
+async fn category_questions_add_only_the_assessed_photo_to_the_matching_album() {
+    let temp = tempfile::tempdir().unwrap();
+    let d1_listener = tokio::net::UnixListener::bind(temp.path().join("d1.sock")).unwrap();
+    let eye_listener = tokio::net::UnixListener::bind(temp.path().join("eye.sock")).unwrap();
+    let fixture = Fixture {
+        preview_bytes: true,
+        ..Fixture::default()
+    };
+    let (app, upstream) = test_app(&temp, fixture.clone()).await;
+
+    let eye = tokio::spawn(async move {
+        let (mut socket, _) = eye_listener.accept().await.unwrap();
+        let (headers, body) = read_socket_request(&mut socket).await;
+        assert!(headers.contains("content-type: image/png"));
+        assert!(body.starts_with(b"\x89PNG"));
+        write_socket_json(
+            &mut socket,
+            &json!({
+                "model":"eye@v1.0.0",
+                "suggestions":[{"tag":"beach","confidence":0.9}],
+                "scores":{"aesthetic":0.8,"keeper":0.2,"cover":0.4}
+            }),
+        )
+        .await;
+    });
+    let d1 = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut socket, _) = d1_listener.accept().await.unwrap();
+            let (headers, body) = read_socket_request(&mut socket).await;
+            for secret in ["api-key", "authorization", "cookie", "fixture-alice"] {
+                assert!(!headers.contains(secret));
+            }
+            let input: Value = serde_json::from_slice(&body).unwrap();
+            let questions = input["questions"].as_object().unwrap();
+            assert_eq!(questions.len(), 2);
+            assert!(questions.contains_key("category#0") && questions.contains_key("category#1"));
+            assert!(
+                !questions.contains_key("bounded"),
+                "a question outside its score bounds must not reach d1"
+            );
+            assert!(questions["category#0"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("Beach"));
+            write_socket_json(
+                &mut socket,
+                &json!({"answers":{"category#0":{"noul":0.9},"category#1":{"noul":0.2}}}),
+            )
+            .await;
+        }
+    });
+
+    let rules_path = "/api/v1/provider-lookups/immich/decision-rules";
+    let rules = json!({"rules":[
+        {
+            "id":"category",
+            "kind":"category",
+            "question":"Based on the photo's contents and tags, which category does it belong to?",
+            "yesTag":"",
+            "noTag":"",
+            "categories":["Beach","City"],
+            "bounds":{"aestheticMin":0.5},
+            "automatic":false
+        },
+        {
+            "id":"bounded",
+            "kind":"yesNo",
+            "question":"Is there a dog?",
+            "yesTag":"dogs",
+            "noTag":"",
+            "categories":[],
+            "bounds":{"keeperMin":0.9},
+            "automatic":false
+        }
+    ]});
+    assert_eq!(
+        app.clone()
+            .oneshot(request("PUT", rules_path, "alice", false, rules))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+
+    for attempt in 0..2 {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                &format!("{ROOT}/{PHOTO}/decisions"),
+                "alice",
+                false,
+                Value::Null,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result = json_response(response).await;
+        assert_eq!(result["results"][0]["kind"], "category");
+        assert_eq!(result["results"][0]["answer"], "yes");
+        assert_eq!(result["results"][0]["category"], "Beach");
+        assert_eq!(result["results"][0]["album"], "Beach");
+        api_contract::assert_component("DecisionAssessment", &result);
+        assert_eq!(result["results"][1]["kind"], "yesNo");
+        assert_eq!(result["results"][1]["answer"], "skipped");
+        assert_eq!(result["results"][1]["tag"], "");
+        assert!(result["results"][1]["skipReason"]
+            .as_str()
+            .unwrap()
+            .contains("bounds"));
+        let tags = result["tags"].as_array().unwrap();
+        assert!(!tags.contains(&json!("dogs")));
+        assert!(tags
+            .iter()
+            .any(|tag| tag.as_str().unwrap().starts_with("auto-tagged ")));
+        if attempt == 1 {
+            assert!(
+                result["assessedAt"].is_string(),
+                "a repeated assessment still reports a time"
+            );
+        }
+    }
+    let calls = fixture.calls.lock().unwrap().clone();
+    assert_eq!(calls.iter().filter(|call| *call == "albums").count(), 1);
+    assert_eq!(
+        calls.iter().filter(|call| *call == "create-album").count(),
+        1
+    );
+    assert!(calls.iter().any(|call| call == "add-album-asset"));
+    eye.await.unwrap();
     d1.await.unwrap();
     upstream.abort();
 }
