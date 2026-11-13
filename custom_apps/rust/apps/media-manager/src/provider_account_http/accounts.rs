@@ -129,6 +129,10 @@ pub(super) async fn save_provider_account(
         return storage_failure(error, &request_id).into_response();
     }
     state.additional.invalidate(&identity, definition.id).await;
+    state
+        .lookup_cache
+        .invalidate(definition.id, &identity.subject)
+        .await;
     let summary = match state.store.list(&identity) {
         Ok(summaries) => summaries
             .into_iter()
@@ -173,6 +177,10 @@ pub(super) async fn delete_provider_account(
     match state.store.delete(&identity, &provider_id) {
         Ok(_) => {
             state.additional.invalidate(&identity, &provider_id).await;
+            state
+                .lookup_cache
+                .invalidate(&provider_id, &identity.subject)
+                .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error) => storage_failure(error, &request_id).into_response(),

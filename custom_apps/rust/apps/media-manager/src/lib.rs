@@ -12,6 +12,7 @@ pub mod core;
 mod decision_index;
 pub mod http;
 mod image_index;
+mod lookup_cache;
 pub mod media;
 pub mod metadata;
 pub mod musicbrainz;

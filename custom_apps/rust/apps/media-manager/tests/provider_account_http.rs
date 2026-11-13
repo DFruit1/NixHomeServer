@@ -39,6 +39,23 @@ fn test_app_with_endpoints(
     )
 }
 
+fn test_app_with_cached_endpoints(
+    temp: &tempfile::TempDir,
+    endpoints: ProviderTestEndpoints,
+) -> axum::Router {
+    let store = ProviderAccountStore::open(
+        &temp.path().join("provider-accounts.sqlite3"),
+        &temp.path().join("master.key"),
+    )
+    .expect("provider account store");
+    provider_account_router(
+        ProviderBrokerState::with_test_endpoints(Arc::new(store), endpoints)
+            .expect("provider broker state")
+            .with_lookup_cache(&temp.path().join("lookup-cache.sqlite3"))
+            .expect("lookup cache"),
+    )
+}
+
 fn account_request(method: &str, uri: &str, subject: &str, body: Body) -> Request<Body> {
     Request::builder()
         .method(method)
@@ -1263,5 +1280,93 @@ async fn acoustid_lookup_uses_the_callers_key_without_uploading_audio() {
         "1b022e01-4da6-387b-8658-8678046e4cef"
     );
     assert!(!response.to_string().contains("owner-client-key"));
+    mock.abort();
+}
+
+#[tokio::test]
+async fn repeated_metadata_searches_reuse_one_cached_provider_response() {
+    use axum::{extract::Query, routing::get, Json, Router};
+    use std::{
+        collections::HashMap,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    async fn search(Query(query): Query<HashMap<String, String>>) -> Json<Value> {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        let query = query.get("q").cloned().unwrap_or_default();
+        Json(serde_json::json!({
+            "numFound": 1,
+            "docs": [{
+                "key": "/works/OL893415W",
+                "title": if query == "Dune" { "Dune" } else { "Children of Dune" },
+                "author_name": ["Frank Herbert"],
+                "first_publish_year": 1965
+            }]
+        }))
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock listener");
+    let address = listener.local_addr().expect("mock address");
+    let mock = tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/search.json", get(search)))
+            .await
+            .expect("mock provider");
+    });
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let app = test_app_with_cached_endpoints(
+        &temp,
+        ProviderTestEndpoints {
+            open_library_api_base: format!("http://127.0.0.1:{}/", address.port()),
+            ..ProviderTestEndpoints::default()
+        },
+    );
+
+    let first = app
+        .clone()
+        .oneshot(account_request(
+            "POST",
+            "/api/v1/provider-lookups/open-library/search",
+            "reader-subject",
+            Body::from(r#"{"query":"Dune"}"#),
+        ))
+        .await
+        .expect("first lookup");
+    assert_eq!(first.status(), StatusCode::OK);
+    let first = response_json(first).await;
+
+    // Whitespace and object member order do not defeat reuse of one title.
+    let second = app
+        .clone()
+        .oneshot(account_request(
+            "POST",
+            "/api/v1/provider-lookups/open-library/search",
+            "reader-subject",
+            Body::from("{ \"query\" : \"Dune\" }"),
+        ))
+        .await
+        .expect("cached lookup");
+    assert_eq!(second.status(), StatusCode::OK);
+    let second = response_json(second).await;
+    assert_eq!(second["results"], first["results"]);
+    assert_ne!(second["requestId"], first["requestId"]);
+    assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+
+    let other = app
+        .oneshot(account_request(
+            "POST",
+            "/api/v1/provider-lookups/open-library/search",
+            "reader-subject",
+            Body::from(r#"{"query":"Children of Dune"}"#),
+        ))
+        .await
+        .expect("different lookup");
+    assert_eq!(other.status(), StatusCode::OK);
+    let other = response_json(other).await;
+    assert_eq!(other["results"][0]["title"], "Children of Dune");
+    assert_eq!(CALLS.load(Ordering::SeqCst), 2);
     mock.abort();
 }

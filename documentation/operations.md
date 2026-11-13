@@ -1616,6 +1616,15 @@ state is persisted and included in encrypted backups. The database and
 `master.key` must be restored together; losing the key fails closed and users
 must re-enter their accounts from their password managers.
 
+Successful metadata-provider searches and detail lookups are cached per
+signed-in user and provider for one week in
+`/var/lib/media-manager-provider/lookup-cache.sqlite3`. The web process keeps its
+MusicBrainz and legacy TMDB lookup cache in `metadata-lookups.sqlite3` under the
+Media Manager state directory. Replacing or removing a provider account drops
+that user's cached responses for the provider. Both caches are disposable:
+deleting either file only makes the next lookup query the provider again.
+Subtitle searches and artwork/download references are not cached.
+
 The deployed service no longer consumes the old agenix-backed OpenSubtitles or
 AcoustID inputs. TMDB, OpenSubtitles, and AcoustID lookups use the signed-in
 user's runtime broker account, so rotating a key does not require a NixOS

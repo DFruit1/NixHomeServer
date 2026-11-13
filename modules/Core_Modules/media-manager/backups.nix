@@ -5,6 +5,16 @@ let
 in
 {
   repo.backups = {
+    # Provider lookup responses are disposable and change frequently; refill
+    # them from the providers instead of snapshotting up to 64 MiB per cache.
+    rebuildableSnapshotPaths = [
+      "var/lib/media-manager/metadata-lookups.sqlite3"
+      "var/lib/media-manager/metadata-lookups.sqlite3-shm"
+      "var/lib/media-manager/metadata-lookups.sqlite3-wal"
+      "var/lib/media-manager-provider/lookup-cache.sqlite3"
+      "var/lib/media-manager-provider/lookup-cache.sqlite3-shm"
+      "var/lib/media-manager-provider/lookup-cache.sqlite3-wal"
+    ];
     appStateEntries = [
       {
         app = "media-manager";

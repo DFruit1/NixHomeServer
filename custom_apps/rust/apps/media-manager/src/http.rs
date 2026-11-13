@@ -283,6 +283,15 @@ pub(super) struct TmdbDetailsRequest {
 }
 
 pub fn router(state: AppState) -> Router {
+    let lookup_cache = match crate::lookup_cache::LookupCache::open(
+        &state.config.state_dir.join("metadata-lookups.sqlite3"),
+    ) {
+        Ok(cache) => Arc::new(cache),
+        Err(error) => {
+            log_event("lookup_cache_unavailable", "", json!({ "error": error }));
+            Arc::new(crate::lookup_cache::LookupCache::disabled())
+        }
+    };
     let router = Router::new()
         .route("/", get(index))
         .route("/assets/{*asset_path}", get(frontend_asset))
@@ -427,6 +436,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/plans/{plan_id}/abandon", post(plans::abandon_plan))
         .layer(axum::extract::DefaultBodyLimit::max(
             MAX_SUBTITLE_BYTES + 1024,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            lookup_cache,
+            crate::lookup_cache::cache_media_metadata_lookups,
         ))
         .layer(axum::middleware::from_fn(enforce_same_origin))
         .fallback(not_found)

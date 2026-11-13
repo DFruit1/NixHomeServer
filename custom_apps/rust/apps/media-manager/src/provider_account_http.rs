@@ -2,6 +2,7 @@ use crate::{
     artwork::sniff_image_content_type,
     config::Identity,
     http::{identity_from_headers, unix_timestamp, ApiError},
+    lookup_cache::LookupCache,
     open_library,
     provider_accounts::{ProviderAccountError, ProviderAccountStore, ProviderAccountSummary},
     subtitles::{MovieHash, OpenSubtitlesClient, OpenSubtitlesCredentials},
@@ -41,6 +42,7 @@ pub struct ProviderBrokerState {
     open_library_gate: open_library::RequestGate,
     additional: Arc<additional::Runtime>,
     images: Option<Arc<immich::Runtime>>,
+    pub(crate) lookup_cache: Arc<LookupCache>,
 }
 
 #[derive(Clone, Debug)]
@@ -117,7 +119,15 @@ impl ProviderBrokerState {
             open_library_gate: open_library::RequestGate::default(),
             additional: Arc::new(additional::Runtime::default()),
             images: None,
+            lookup_cache: Arc::new(LookupCache::disabled()),
         })
+    }
+
+    /// Persist successful provider lookups so repeated item searches reuse one
+    /// response for a week instead of calling the upstream service again.
+    pub fn with_lookup_cache(mut self, database_path: &std::path::Path) -> Result<Self, String> {
+        self.lookup_cache = Arc::new(LookupCache::open(database_path)?);
+        Ok(self)
     }
 
     /// Run the resumable photo index for every saved Immich account.
@@ -655,6 +665,7 @@ struct AcoustidReleaseGroup {
 }
 
 pub fn provider_account_router(state: ProviderBrokerState) -> Router {
+    let lookup_cache = state.lookup_cache.clone();
     let router = Router::new()
         .route(
             "/api/v1/provider-lookups/immich/decision-rules",
@@ -768,6 +779,10 @@ pub fn provider_account_router(state: ProviderBrokerState) -> Router {
             get(additional::image),
         )
         .layer(DefaultBodyLimit::max(64 * 1024))
+        .layer(middleware::from_fn_with_state(
+            lookup_cache,
+            crate::lookup_cache::cache_provider_lookups,
+        ))
         .layer(middleware::from_fn(no_store_responses))
         .with_state(state);
     homelab_common::work::isolate_handlers(router, 16)

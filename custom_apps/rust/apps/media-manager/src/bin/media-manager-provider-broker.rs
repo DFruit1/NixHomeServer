@@ -43,7 +43,9 @@ async fn run() -> Result<(), String> {
     )
     .map_err(|error| format!("initialize provider accounts: {error}"))?;
     let mut state = ProviderBrokerState::new(Arc::new(store))
-        .map_err(|error| format!("initialize provider client: {error}"))?;
+        .map_err(|error| format!("initialize provider client: {error}"))?
+        .with_lookup_cache(&state_dir.join("lookup-cache.sqlite3"))
+        .map_err(|error| format!("initialize provider lookup cache: {error}"))?;
     if let Ok(base) = std::env::var("MEDIA_MANAGER_IMMICH_API_BASE") {
         let socket = PathBuf::from(env_string(
             "MEDIA_MANAGER_EYE_SOCKET",
