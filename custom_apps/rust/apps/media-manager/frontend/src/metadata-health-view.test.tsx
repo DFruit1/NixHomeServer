@@ -391,7 +391,7 @@ it("names the recommended source for a missing field and lists the alternatives"
   expect(dialog?.textContent).toContain("Open Library");
   expect(dialog?.textContent).toContain("Audnexus");
   expect(dialog?.textContent).toContain("Search with this title");
-  await userEvent(dialog?.querySelector("form"), "submit");
+  await userEvent(dialog?.querySelector("form") ?? null, "submit");
   await vi.waitFor(() => expect(dialog?.textContent).toContain("Coming soon"));
   await userEvent(
     screen.querySelector('[role="dialog"] .dialog-close'),
