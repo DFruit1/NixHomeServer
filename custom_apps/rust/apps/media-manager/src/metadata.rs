@@ -52,6 +52,15 @@ pub struct MetadataObservation {
 impl MetadataObservation {
     #[cfg(test)]
     fn for_test(source: &str, fields: Value) -> Self {
+        let storage = if source == "filename" {
+            "filename"
+        } else if source.starts_with("embedded") {
+            "embedded-file"
+        } else if source == "sidecar" {
+            "sidecar-file"
+        } else {
+            "application-database"
+        };
         Self {
             source: source.to_string(),
             label: source.to_string(),
@@ -59,14 +68,9 @@ impl MetadataObservation {
             relative_path: None,
             format: None,
             app_item_id: None,
-            storage: if source == "filename" {
-                "filename"
-            } else {
-                "application-database"
-            }
-            .to_string(),
+            storage: storage.to_string(),
             consumed_by: Vec::new(),
-            survives_rescan: source == "filename",
+            survives_rescan: source == "filename" || storage != "application-database",
             writable: false,
             locked: None,
             fields,
@@ -1044,10 +1048,10 @@ pub fn health_issues(
         "language",
     ] {
         let mut values = BTreeMap::<String, Vec<String>>::new();
-        for observation in observations
-            .iter()
-            .filter(|observation| observation.source != "filename")
-        {
+        for observation in observations.iter().filter(|observation| {
+            observation_usable_for_title(observation, effective)
+                && observation.source != "filename"
+        }) {
             if let Some(value) = observation
                 .fields
                 .get(field)
@@ -1080,7 +1084,10 @@ pub fn health_issues(
         let current = effective.get(field).cloned().unwrap_or(Value::Null);
         let normalized_current = normalized_metadata_value(&current);
         let mut alternatives = BTreeMap::<String, MetadataHealthValue>::new();
-        for observation in observations {
+        for observation in observations
+            .iter()
+            .filter(|observation| observation_usable_for_title(observation, effective))
+        {
             let Some(value) = observation.fields.get(field) else {
                 continue;
             };
@@ -1106,10 +1113,57 @@ pub fn health_issues(
             }
         }
         issue.current_value = Some(current);
-        issue.proposed_values = alternatives.into_values().collect();
+        let mut proposals: Vec<MetadataHealthValue> = alternatives.into_values().collect();
+        proposals.sort_by(|left, right| {
+            right
+                .sources
+                .len()
+                .cmp(&left.sources.len())
+                .then_with(|| left.sources.join("\0").cmp(&right.sources.join("\0")))
+        });
+        let corroborated = proposals
+            .iter()
+            .filter(|candidate| candidate.sources.len() >= 2)
+            .cloned()
+            .collect::<Vec<_>>();
+        issue.proposed_values = if corroborated.is_empty() {
+            proposals
+        } else {
+            corroborated
+        };
     }
 
     issues
+}
+
+fn observation_usable_for_title(observation: &MetadataObservation, effective: &Value) -> bool {
+    match observation.storage.as_str() {
+        "filename" | "folder-name" | "sidecar-file" | "embedded-file" => return true,
+        _ => {}
+    }
+    // Application observations are associated with this item by path. Only
+    // exclude them when they carry an explicit identifier for a different item.
+    !has_conflicting_provider_id(&observation.fields, effective)
+}
+
+fn has_conflicting_provider_id(fields: &Value, effective: &Value) -> bool {
+    let Some(observed) = fields.get("providerIds").and_then(Value::as_object) else {
+        return false;
+    };
+    let Some(current) = effective.get("providerIds").and_then(Value::as_object) else {
+        return false;
+    };
+    observed.iter().any(|(key, value)| {
+        current
+            .get(key)
+            .and_then(Value::as_str)
+            .zip(value.as_str())
+            .is_some_and(|(left, right)| {
+                let left = left.trim();
+                let right = right.trim();
+                !left.is_empty() && !right.is_empty() && !left.eq_ignore_ascii_case(right)
+            })
+    })
 }
 
 fn value_as_u64(value: &Value) -> Option<u64> {
