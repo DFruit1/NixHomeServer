@@ -27,6 +27,8 @@ import { Icon } from "./icon";
 import { HealthPlayback, HealthPlayButton } from "./health-playback";
 import { HealthTrackSequence } from "./health-track-sequence";
 import {
+  enqueueHealthWrite,
+  healthValueKey,
   healthIssueKey,
   saveHealthDecision,
   withoutHealthEntry,
@@ -62,11 +64,8 @@ const TERMINAL_PLAN_STATES = new Set([
   "rejected",
   "expired",
 ]);
-// Per-target write ordering. Metadata plans are applied asynchronously by the
-// broker; previewing a second edit before the first lands makes the second
-// replacement fail its source-fingerprint check.
-const targetWriteChains = new Map<string, Promise<unknown>>();
-const unsettledTargetPlans = new Map<string, Set<string>>();
+// Confirmed plans must settle before a later selection reads fresh metadata.
+const unsettledPlans = new Set<string>();
 
 function healthEntryId(itemId: string, issue: MetadataHealthIssue): string {
   return `${itemId}\u0000${healthIssueKey(issue)}`;
@@ -87,19 +86,12 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function trackTargetPlan(targetKey: string, planId: string) {
-  const plans = unsettledTargetPlans.get(targetKey) ?? new Set<string>();
-  plans.add(planId);
-  unsettledTargetPlans.set(targetKey, plans);
-}
-
-async function settleTargetPlans(
-  targetKey: string,
-): Promise<{ failure: string; pending: boolean }> {
-  const plans = unsettledTargetPlans.get(targetKey);
-  if (!plans?.size) return { failure: "", pending: false };
+async function settleHealthPlans(): Promise<{
+  failure: string;
+  pending: boolean;
+}> {
   let failure = "";
-  for (const planId of [...plans]) {
+  for (const planId of [...unsettledPlans]) {
     let state = "";
     let detail = "";
     for (let attempt = 0; attempt < 240; attempt += 1) {
@@ -112,13 +104,11 @@ async function settleTargetPlans(
       await wait(500);
     }
     if (!TERMINAL_PLAN_STATES.has(state)) continue;
-    plans.delete(planId);
-    if (state === "failed" && !failure)
+    unsettledPlans.delete(planId);
+    if (state !== "completed" && !failure)
       failure = detail || "The metadata write failed.";
   }
-  const pending = plans.size > 0;
-  if (!pending) unsettledTargetPlans.delete(targetKey);
-  return { failure, pending };
+  return { failure, pending: unsettledPlans.size > 0 };
 }
 
 const KIND_SYMBOLS: Record<MediaKind, { icon: IconName; label: string }> = {
@@ -813,6 +803,14 @@ const ALBUM_HEALTH_FIELDS = new Set([
   "language",
 ]);
 
+interface HealthSelection {
+  origin: "Current" | "Proposed";
+  valueKey: string;
+  revision: number;
+  error?: string;
+}
+type HealthSelections = Record<string, HealthSelection>;
+
 type AlbumTarget = { rootId: string; path: string };
 type ApplyHealthValue = QRL<
   (
@@ -887,9 +885,9 @@ const HealthDecisionRow = component$<{
   sharedSources?: boolean;
   multipleFiles?: boolean;
   canEdit: boolean;
+  selections: HealthSelections;
   onApply$: ApplyHealthValue;
 }>((props) => {
-  const queuedValue = useSignal("");
   const { issue, target } = props.entries[0];
   const field = issue.field ?? "";
   const editable =
@@ -897,20 +895,44 @@ const HealthDecisionRow = component$<{
   const autoEligible = editable && needsExternalProposal(props.entries);
   const currents = distinctValues(props.entries, false);
   const proposals = distinctValues(props.entries, true);
-  const apply$ = $(async (value: unknown, origin: "Current" | "Proposed") => {
-    if (await props.onApply$(value, origin, issue, target, props.album))
-      queuedValue.value = `Queued: ${displayValue(value)}`;
-  });
+  const selectionEntries = props.album
+    ? props.entries.filter((entry) => !entry.issue.fileOverride)
+    : props.entries;
+  const selections = selectionEntries.map(
+    (entry) =>
+      props.selections[healthEntryId(entry.target.itemId, entry.issue)],
+  );
+  const selected = (value: unknown, origin: "Current" | "Proposed") =>
+    selections.length > 0 &&
+    selections.every(
+      (selection) =>
+        selection &&
+        !selection.error &&
+        selection.origin === origin &&
+        selection.valueKey === healthValueKey(value),
+    );
+  const failure = selections.find((selection) => selection?.error)?.error;
+  const apply$ = $((value: unknown, origin: "Current" | "Proposed") =>
+    props.onApply$(value, origin, issue, target, props.album),
+  );
   const valueButton = (value: unknown, origin: "Current" | "Proposed") =>
     editable ? (
       <button
         type="button"
-        class="health-value-set"
+        class={{
+          "health-value-set": true,
+          "is-selected": selected(value, origin),
+        }}
+        aria-pressed={selected(value, origin)}
         title={`Set this ${origin.toLowerCase()} value for “${field}”`}
         onClick$={() => apply$(value, origin)}
       >
         <span>{renderValue(value)}</span>
-        <span class="health-value-action">Use {origin.toLowerCase()}</span>
+        <span class="health-value-action">
+          {selected(value, origin)
+            ? "✓ Selected"
+            : `Use ${origin.toLowerCase()}`}
+        </span>
       </button>
     ) : (
       <p class="health-value-text">{renderValue(value)}</p>
@@ -967,7 +989,21 @@ const HealthDecisionRow = component$<{
             queryFromFilename={props.queryFromFilename}
             providers={props.providers}
             getSession$={props.getSession$}
-            onUse$={(value) => apply$(value, "Proposed")}
+            selectedValueKey={
+              selections.length > 0 &&
+              selections.every(
+                (selection) =>
+                  selection &&
+                  !selection.error &&
+                  selection.origin === "Proposed" &&
+                  selection.valueKey === selections[0]?.valueKey,
+              )
+                ? selections[0]?.valueKey
+                : undefined
+            }
+            onUse$={async (value) => {
+              await apply$(value, "Proposed");
+            }}
           />
         ) : (
           <p
@@ -977,9 +1013,9 @@ const HealthDecisionRow = component$<{
             ???
           </p>
         )}
-        {queuedValue.value && (
-          <p class="health-queued-value" role="status">
-            {queuedValue.value}
+        {failure && (
+          <p class="health-choice-error" role="alert">
+            {failure}
           </p>
         )}
       </td>
@@ -1008,6 +1044,7 @@ const HealthIssueReview = component$<{
   providers: ProviderDefinition[];
   canEdit: boolean;
   selectedOnline?: { value: unknown; source: string };
+  selections: HealthSelections;
   onApply$: ApplyHealthValue;
   onDecision$: QRL<
     (entry: HealthIssueEntry, choice: HealthChoice) => Promise<boolean>
@@ -1021,7 +1058,6 @@ const HealthIssueReview = component$<{
   >;
 }>((props) => {
   const individually = useSignal(false);
-  const bulkWorking = useSignal(false);
   const bulkStatus = useSignal("");
   const selectionElement = useSignal<HTMLElement>();
   useVisibleTask$(({ track }) => {
@@ -1092,63 +1128,56 @@ const HealthIssueReview = component$<{
         JSON.stringify(currentSources),
     );
   const bulk$ = $(async (choice: "current" | "proposed") => {
-    if (bulkWorking.value) return;
-    bulkWorking.value = true;
     bulkStatus.value = "";
-    try {
-      const eligible = entries.filter(
-        ({ issue }) =>
-          !issue.fileOverride &&
-          (choice !== "proposed" || issue.proposedValues?.length === 1),
+    const eligible = entries.filter(
+      ({ issue }) =>
+        !issue.fileOverride &&
+        (choice !== "proposed" || issue.proposedValues?.length === 1),
+    );
+    const selected = (entry: HealthIssueEntry) =>
+      choice === "current"
+        ? entry.issue.currentValue
+        : entry.issue.proposedValues![0].value;
+    if (
+      eligible.length &&
+      album &&
+      entries.every(
+        (entry) => entry.issue.fileOverride || eligible.includes(entry),
+      ) &&
+      eligible.every(
+        (entry) =>
+          displayValue(selected(entry)) === displayValue(selected(eligible[0])),
+      ) &&
+      !isUnset(selected(eligible[0]))
+    ) {
+      await props.onApply$(
+        selected(eligible[0]),
+        choice === "current" ? "Current" : "Proposed",
+        issue,
+        target,
+        album,
       );
-      const selected = (entry: HealthIssueEntry) =>
-        choice === "current"
-          ? entry.issue.currentValue
-          : entry.issue.proposedValues![0].value;
-      if (
-        eligible.length &&
-        album &&
-        entries.every(
-          (entry) => entry.issue.fileOverride || eligible.includes(entry),
-        ) &&
-        eligible.every(
-          (entry) =>
-            displayValue(selected(entry)) ===
-            displayValue(selected(eligible[0])),
-        ) &&
-        !isUnset(selected(eligible[0]))
-      ) {
-        await props.onApply$(
-          selected(eligible[0]),
-          choice === "current" ? "Current" : "Proposed",
-          issue,
-          target,
-          album,
-        );
-      } else {
-        const saved = await Promise.all(
-          eligible.map(async (entry) => {
-            return choice === "current" &&
-              (!compares || isUnset(entry.issue.currentValue))
-              ? await props.onDecision$(entry, choice)
-              : await props.onApply$(
-                  selected(entry),
-                  choice === "current" ? "Current" : "Proposed",
-                  entry.issue,
-                  entry.target,
-                );
-          }),
-        );
-        if (saved.some((result) => !result))
-          bulkStatus.value =
-            "Some files could not be saved. Their issues remain available to retry.";
-      }
-      if (eligible.length < entries.length)
+    } else {
+      const saved = await Promise.all(
+        eligible.map(async (entry) => {
+          return choice === "current" &&
+            (!compares || isUnset(entry.issue.currentValue))
+            ? await props.onDecision$(entry, choice)
+            : await props.onApply$(
+                selected(entry),
+                choice === "current" ? "Current" : "Proposed",
+                entry.issue,
+                entry.target,
+              );
+        }),
+      );
+      if (saved.some((result) => !result))
         bulkStatus.value =
-          "Individual choices were retained. Files without one clear proposal still need review.";
-    } finally {
-      bulkWorking.value = false;
+          "Some files could not be saved. Their issues remain available to retry.";
     }
+    if (eligible.length < entries.length)
+      bulkStatus.value =
+        "Individual choices were retained. Files without one clear proposal still need review.";
   });
   return (
     <section class="health-result-issue">
@@ -1184,6 +1213,7 @@ const HealthIssueReview = component$<{
                     sharedSources={sharedSources}
                     multipleFiles={count > 1}
                     canEdit={props.canEdit}
+                    selections={props.selections}
                     onApply$={props.onApply$}
                   />
                 ) : (
@@ -1199,6 +1229,7 @@ const HealthIssueReview = component$<{
                       sharedReason={sharedReason}
                       sharedSources={sharedSources}
                       canEdit={props.canEdit}
+                      selections={props.selections}
                       onApply$={props.onApply$}
                     />
                   ))
@@ -1337,7 +1368,6 @@ const HealthIssueReview = component$<{
                 title={readOnlyTitle}
                 disabled={
                   !editable ||
-                  bulkWorking.value ||
                   entries.every((entry) => entry.issue.fileOverride)
                 }
                 onClick$={() => bulk$("current")}
@@ -1349,7 +1379,6 @@ const HealthIssueReview = component$<{
                 title={readOnlyTitle}
                 disabled={
                   !editable ||
-                  bulkWorking.value ||
                   !entries.some(
                     (entry) =>
                       !entry.issue.fileOverride &&
@@ -1518,6 +1547,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
     Record<string, { value: unknown; source: string }>
   >({});
   const feedback = useStore({ error: "", notice: "" });
+  const selections = useStore<HealthSelections>({}, { deep: false });
   const optimisticDecisions = useStore<Record<string, boolean>>({});
   const pruneEntries$ = $((entries: HealthIssueEntry[]) => {
     let remaining = inbox.results;
@@ -1540,21 +1570,34 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
     },
   );
   const rememberDecision$ = $(
-    async (entry: HealthIssueEntry, choice: HealthChoice, planId?: string) => {
+    (entry: HealthIssueEntry, choice: HealthChoice, planId?: string) => {
       const key = healthEntryId(entry.target.itemId, entry.issue);
-      optimisticDecisions[key] = true;
-      const failure = await saveDecision$(entry, choice, planId);
-      if (failure) {
-        delete optimisticDecisions[key];
-        feedback.error = failure;
-        return false;
-      }
-      await pruneEntries$([entry]);
-      delete optimisticDecisions[key];
-      if (choice === "unsure")
-        feedback.notice = "Hidden until the proposed values or sources change.";
-      else if (choice === "current")
-        feedback.notice = "The current values were retained.";
+      const selection: HealthSelection = {
+        origin: choice === "proposed" ? "Proposed" : "Current",
+        valueKey: healthValueKey(entry.issue.currentValue),
+        revision: (selections[key]?.revision ?? 0) + 1,
+      };
+      if (choice === "unsure") optimisticDecisions[key] = true;
+      else selections[key] = selection;
+      enqueueHealthWrite(async () => {
+        const failure = await saveDecision$(entry, choice, planId);
+        if (failure) {
+          delete optimisticDecisions[key];
+          if (choice === "unsure") feedback.error = failure;
+          else if (selections[key]?.revision === selection.revision)
+            selections[key] = {
+              ...selection,
+              error: `Could not save this choice: ${failure} Select a value to retry.`,
+            };
+          return;
+        }
+        if (choice === "unsure") {
+          await pruneEntries$([entry]);
+          delete optimisticDecisions[key];
+          feedback.notice =
+            "Hidden until the proposed values or sources change.";
+        }
+      });
       return true;
     },
   );
@@ -1635,14 +1678,13 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
   });
 
   const applyValue$ = $(
-    async (
+    (
       value: unknown,
       origin: "Current" | "Proposed",
       issue: MetadataHealthIssue,
       target: MetadataHealthResult,
       album?: AlbumTarget,
     ) => {
-      const targetKey = album ? `${album.rootId}:${album.path}` : target.itemId;
       if (!props.canEdit) return false;
       const field = issue.field ?? "";
       if (!field || !isSettableField(field)) return false;
@@ -1672,122 +1714,104 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
                 .map((candidate) => ({ issue: candidate, target: result })),
             )
         : [{ issue, target }];
-      if (
-        !decided.length ||
-        decided.some(
-          (entry) =>
-            optimisticDecisions[
-              healthEntryId(entry.target.itemId, entry.issue)
-            ],
-        )
-      )
-        return false;
+      if (!decided.length) return false;
 
-      // Confirm the review choice immediately; the server write and its
-      // asynchronous broker step only roll it back if they fail.
-      const optimisticKeys = decided.map((entry) =>
-        healthEntryId(entry.target.itemId, entry.issue),
-      );
-      for (const key of optimisticKeys) optimisticDecisions[key] = true;
-      feedback.error = "";
-      feedback.notice = "";
-
-      const previous = targetWriteChains.get(targetKey) ?? Promise.resolve();
-      const work = previous
-        .catch(() => undefined)
-        .then(async () => {
-          try {
-            // A confirmed plan writes the sidecar asynchronously. Previewing the
-            // next edit before it lands would fail the source fingerprint check.
-            const prior = await settleTargetPlans(targetKey);
-            if (prior.pending)
-              throw new Error(
-                "A previous change for this album or file is still queued. Check Activity, then try again.",
-              );
-            const endpoint = album
-              ? `/folders/metadata?rootId=${encodeURIComponent(album.rootId)}&relativePath=${encodeURIComponent(album.path)}`
-              : `/items/${encodeURIComponent(target.itemId)}/metadata`;
-            const details = await api<Record<string, unknown>>(endpoint);
-            const fields = sidecarFieldsFromMetadata(details, field, value);
-            if (!String(fields.title ?? "").trim())
-              throw new Error(
-                "This item needs a title before other metadata can be saved. Set the title first.",
-              );
-            if (["audiobook", "music"].includes(target.mediaKind))
-              fields.mediaType = target.mediaKind;
-            const fileOnly =
-              !album && ["audiobook", "music"].includes(target.mediaKind);
-            if (fileOnly) {
-              const existing = (
-                details.observations as MetadataObservation[] | undefined
-              )?.find((observation) => observation.label === "File sidecar");
-              fields.overrideFields = [
-                ...new Set([
-                  ...Object.keys(existing?.fields ?? {}).filter(
-                    isSettableField,
-                  ),
-                  field,
-                ]),
-              ];
-            }
-            const preview = await api<MutationPreview>(
-              album
-                ? `/folders/metadata/sidecar?rootId=${encodeURIComponent(album.rootId)}&relativePath=${encodeURIComponent(album.path)}`
-                : `/items/${encodeURIComponent(target.itemId)}/metadata/sidecar`,
-              {
-                method: "POST",
-                body: JSON.stringify({
-                  ...fields,
-                  fileOnly,
-                }),
-              },
-            );
-            // A preview without actions already matches the file on disk.
-            const queued = (preview.actions ?? []).length > 0;
-            if (queued)
-              await api(`/plans/${encodeURIComponent(preview.id)}/confirm`, {
-                method: "POST",
-                headers: { "if-match": `"${preview.digest}"` },
-              });
-            const decisionFailures = (
-              await Promise.all(
-                decided.map((entry) =>
-                  saveDecision$(
-                    entry,
-                    origin === "Current" ? "current" : "proposed",
-                    queued ? preview.id : undefined,
-                  ),
-                ),
-              )
-            ).filter(Boolean);
-            if (decisionFailures.length)
-              feedback.notice = `The ${origin.toLowerCase()} “${field}” value was saved, but the review choice could not be recorded: ${decisionFailures[0]}`;
-            else
-              feedback.notice = queued
-                ? `The ${origin.toLowerCase()} “${field}” value was queued for ${album ? "this album" : "this file"}. See Activity to revisit the decision.`
-                : `The ${origin.toLowerCase()} “${field}” value is already saved for ${album ? "this album" : "this file"}.`;
-            if (queued) {
-              trackTargetPlan(targetKey, preview.id);
-              const outcome = await settleTargetPlans(targetKey);
-              if (outcome.failure) throw new Error(outcome.failure);
-              if (outcome.pending)
-                feedback.notice = `The ${origin.toLowerCase()} “${field}” value is queued; the library is still processing it. See Activity for the result.`;
-            }
-            await pruneEntries$(decided);
-            for (const key of optimisticKeys) delete optimisticDecisions[key];
-            return true;
-          } catch (error) {
-            for (const key of optimisticKeys) delete optimisticDecisions[key];
-            feedback.error = readableError(error);
-            return false;
-          }
-        });
-      targetWriteChains.set(targetKey, work);
-      void work.finally(() => {
-        if (targetWriteChains.get(targetKey) === work)
-          targetWriteChains.delete(targetKey);
+      // Keep rows mounted and publish the picked value before starting any I/O.
+      // Repeated picks are allowed; older saves cannot overwrite newer feedback.
+      const picked = decided.map((entry) => {
+        const key = healthEntryId(entry.target.itemId, entry.issue);
+        const selection: HealthSelection = {
+          origin,
+          valueKey: healthValueKey(value),
+          revision: (selections[key]?.revision ?? 0) + 1,
+        };
+        selections[key] = selection;
+        return { key, selection };
       });
-      return work;
+
+      enqueueHealthWrite(async () => {
+        try {
+          // A confirmed plan writes the sidecar asynchronously. Previewing the
+          // next edit before it lands would fail the source fingerprint check.
+          const prior = await settleHealthPlans();
+          if (prior.pending)
+            throw new Error(
+              "A previous metadata change is still queued. Check Activity, then try again.",
+            );
+          const endpoint = album
+            ? `/folders/metadata?rootId=${encodeURIComponent(album.rootId)}&relativePath=${encodeURIComponent(album.path)}`
+            : `/items/${encodeURIComponent(target.itemId)}/metadata`;
+          const details = await api<Record<string, unknown>>(endpoint);
+          const fields = sidecarFieldsFromMetadata(details, field, value);
+          if (!String(fields.title ?? "").trim())
+            throw new Error(
+              "This item needs a title before other metadata can be saved. Set the title first.",
+            );
+          if (["audiobook", "music"].includes(target.mediaKind))
+            fields.mediaType = target.mediaKind;
+          const fileOnly =
+            !album && ["audiobook", "music"].includes(target.mediaKind);
+          if (fileOnly) {
+            const existing = (
+              details.observations as MetadataObservation[] | undefined
+            )?.find((observation) => observation.label === "File sidecar");
+            fields.overrideFields = [
+              ...new Set([
+                ...Object.keys(existing?.fields ?? {}).filter(isSettableField),
+                field,
+              ]),
+            ];
+          }
+          const preview = await api<MutationPreview>(
+            album
+              ? `/folders/metadata/sidecar?rootId=${encodeURIComponent(album.rootId)}&relativePath=${encodeURIComponent(album.path)}`
+              : `/items/${encodeURIComponent(target.itemId)}/metadata/sidecar`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                ...fields,
+                fileOnly,
+              }),
+            },
+          );
+          // A preview without actions already matches the file on disk.
+          const queued = (preview.actions ?? []).length > 0;
+          if (queued) {
+            await api(`/plans/${encodeURIComponent(preview.id)}/confirm`, {
+              method: "POST",
+              headers: { "if-match": `"${preview.digest}"` },
+            });
+            unsettledPlans.add(preview.id);
+          }
+          const decisionFailures: string[] = [];
+          for (const entry of decided) {
+            const failure = await saveDecision$(
+              entry,
+              origin === "Current" ? "current" : "proposed",
+              queued ? preview.id : undefined,
+            );
+            if (failure) decisionFailures.push(failure);
+          }
+          if (queued) {
+            const outcome = await settleHealthPlans();
+            if (outcome.failure) throw new Error(outcome.failure);
+            if (outcome.pending)
+              throw new Error(
+                "The library is still processing this change. Check Activity before retrying.",
+              );
+          }
+          if (decisionFailures.length)
+            throw new Error(
+              `The value was saved, but the review choice could not be recorded: ${decisionFailures[0]}`,
+            );
+        } catch (error) {
+          const failure = `Could not save this choice: ${readableError(error)} Select a value to retry.`;
+          for (const { key, selection } of picked)
+            if (selections[key]?.revision === selection.revision)
+              selections[key] = { ...selection, error: failure };
+        }
+      });
+      return true;
     },
   );
 
@@ -1891,6 +1915,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
                 providers={providerCatalog.providers}
                 canEdit={Boolean(props.canEdit)}
                 selectedOnline={onlineSelections[`${group.key}:${grouped.key}`]}
+                selections={selections}
                 onApply$={applyValue$}
                 onDecision$={rememberDecision$}
                 onLookup$={(issue, target, primary) => {

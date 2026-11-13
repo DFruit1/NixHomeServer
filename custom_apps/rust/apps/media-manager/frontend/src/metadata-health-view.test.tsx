@@ -3,9 +3,16 @@ import { wireJson } from "./test-support/wire-fixtures";
 
 import { createDOM } from "@builder.io/qwik/testing";
 import { afterEach, expect, it, vi } from "vitest";
+import { enqueueHealthWrite } from "./health-decisions";
 import { MetadataHealthView } from "./metadata-health-view";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(async () => {
+  // Clicks return before the shared background save completes.
+  await new Promise<void>((resolve) =>
+    enqueueHealthWrite(async () => resolve()),
+  );
+  vi.unstubAllGlobals();
+});
 
 it("does not append a stale page after selecting another library", async () => {
   let resolveNextPage!: (response: Response) => void;
@@ -652,9 +659,10 @@ it("restores a chosen value when the write fails", async () => {
     (element) => element.textContent?.includes("Proposed title"),
   );
   await userEvent(button!, "click");
-  await vi.waitFor(() =>
-    expect(screen.textContent).toContain("The write failed."),
-  );
+  await vi.waitFor(async () => {
+    await userEvent(screen, "click");
+    expect(screen.textContent).toContain("The write failed.");
+  });
   expect(screen.textContent).toContain("Proposed title");
 });
 
@@ -741,9 +749,10 @@ it("queues a metadata change when a proposed value is clicked", async () => {
   );
   await userEvent(proposedButton!, "click");
   await vi.waitFor(() =>
-    expect(screen.textContent).toContain(
-      "See Activity to revisit the decision.",
-    ),
+    expect(proposedButton?.getAttribute("aria-pressed")).toBe("true"),
+  );
+  await new Promise<void>((resolve) =>
+    enqueueHealthWrite(async () => resolve()),
   );
 
   const sidecarCall = fetchMock.mock.calls.find(

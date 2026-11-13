@@ -9,6 +9,15 @@ export interface HealthIssueEntry {
   target: MetadataHealthResult;
 }
 
+// All health selections share one FIFO, including different albums and files.
+// Click handlers enqueue immediately; only the worker waits for network I/O.
+let healthWriteChain = Promise.resolve();
+export function enqueueHealthWrite(work: () => Promise<void>): void {
+  healthWriteChain = healthWriteChain.then(work).catch(() => undefined);
+}
+
+export const healthValueKey = (value: unknown) => JSON.stringify(value ?? null);
+
 export type HealthChoice = "current" | "proposed" | "unsure";
 export const healthIssueKey = (issue: MetadataHealthIssue) =>
   issue.field ?? issue.code;

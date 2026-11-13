@@ -8,6 +8,7 @@ import type {
   ProviderDefinition,
   MetadataHealthResult,
 } from "./api-contract.generated";
+import { healthValueKey } from "./health-decisions";
 import { readableError } from "./api";
 import {
   automaticHealthMatch,
@@ -25,6 +26,7 @@ export const HealthAutoProposal = component$<{
   queryFromFilename?: boolean;
   providers: ProviderDefinition[];
   getSession$: GetHealthLookupSession;
+  selectedValueKey?: string;
   onUse$: QRL<(value: unknown) => Promise<void>>;
 }>((props) => {
   const state = useStore({
@@ -106,13 +108,17 @@ export const HealthAutoProposal = component$<{
     void load();
   });
   const proposedValue = state.candidate?.values[props.field];
+  const selected =
+    !!state.candidate &&
+    props.selectedValueKey === healthValueKey(proposedValue);
   return (
     <div class="health-auto-proposal" aria-busy={state.loading}>
       {state.candidate ? (
         <>
           <button
             type="button"
-            class="health-value-set"
+            class={{ "health-value-set": true, "is-selected": selected }}
+            aria-pressed={selected}
             onClick$={() => props.onUse$(state.candidate!.values[props.field])}
           >
             <span>
@@ -120,7 +126,9 @@ export const HealthAutoProposal = component$<{
                 ? proposedValue.join(", ")
                 : String(proposedValue)}
             </span>
-            <span class="health-value-action">Use proposed</span>
+            <span class="health-value-action">
+              {selected ? "✓ Selected" : "Use proposed"}
+            </span>
           </button>
           <small>
             {state.candidate.provider.name} · {state.candidate.confidence.score}
