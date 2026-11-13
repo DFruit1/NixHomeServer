@@ -49,6 +49,11 @@ do not ask again. A request to implement the skill alone does not.
    normal schedule. The desktop inhibitor is released when the runner exits.
    If protection cannot be acquired, resolve the failure before retrying.
 5. Verify the runner remains alive and read the server guard status again.
+   The runner cancels any leftover scheduled desktop poweroff on startup and on
+   early exit; use `scripts/admin/desktop-server-shutdown.sh --cleanup` to
+   remove a stale scheduled poweroff without starting a new shutdown. A
+   scheduled poweroff is only allowed to remain if its state record is fresh
+   (less than four hours old); older records are canceled automatically.
    Also run `sudo nixhomeserver-shutdown-guard check` over SSH (server-side
    view of desktop activity). Inspect the desktop detector with
    `scripts/admin/desktop-server-shutdown.sh --check` (prints `idle` or

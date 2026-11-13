@@ -23,9 +23,11 @@ DESKTOP_RUNNABLE_THRESHOLD="${SHUTDOWN_GUARD_DESKTOP_RUNNABLE_THRESHOLD:-2}"
 DESKTOP_TTY_ACTIVITY_SEC="${SHUTDOWN_GUARD_DESKTOP_TTY_ACTIVITY_SEC:-300}"
 CHECK_MODE=false
 STATUS_MODE=false
+CLEANUP_MODE=false
 FORCE=false
 UID_NUM="$(id -u)"
 PID_FILE="${XDG_RUNTIME_DIR:-/tmp}/desktop-server-shutdown.${UID_NUM}.pid"
+POWEROFF_STATE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/desktop-server-shutdown-poweroff.state"
 LOG_FILE="${DESKTOP_SHUTDOWN_LOG:-}"
 
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
@@ -53,6 +55,7 @@ Options:
   --no-local-shutdown   Manage the server only; never power off this PC.
   --check               Print desktop work state (idle/busy) and exit.
   --status              Print runner status and exit.
+  --cleanup             Cancel any stale/leftover scheduled desktop poweroff and exit.
   --force               Bypass the single-runner guard.
   -h, --help            Show this help.
 EOF
@@ -173,9 +176,46 @@ cleanup_on_exit() {
         "sudo $GUARD cancel" >/dev/null 2>&1 && break
       sleep 1
     done
+    # Do not leave a desktop poweroff scheduled if this run did not complete.
+    loginctl -c >/dev/null 2>&1 || true
+    rm -f -- "$POWEROFF_STATE_FILE"
   fi
   rm -f -- "$PID_FILE"
   return "$rc"
+}
+
+cancel_local_poweroff() {
+  loginctl -c >/dev/null 2>&1 || true
+  rm -f -- "$POWEROFF_STATE_FILE"
+}
+
+stale_poweroff() {
+  # A scheduled poweroff without a matching, fresh state record is treated as
+  # stale/leftover and is eligible for cancellation.
+  local now created
+  [[ -f "$POWEROFF_STATE_FILE" ]] || return 0
+  created="$(sed -n 's/^created=//p' "$POWEROFF_STATE_FILE" 2>/dev/null || true)"
+  [[ "$created" =~ ^[0-9]+$ ]] || return 0
+  now="$(date +%s)"
+  # Four hours is the maximum lifetime of an unattended scheduled shutdown.
+  (( now - created >= 4 * 3600 )) && return 0
+  return 1
+}
+
+cleanup_stale_local_poweroff() {
+  local scheduled
+  scheduled="$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager ScheduledShutdown 2>/dev/null || true)"
+  if [[ "$scheduled" == *poweroff* ]]; then
+    if stale_poweroff; then
+      cancel_local_poweroff
+      printf 'Cancelled stale/leftover scheduled desktop poweroff.\\n'
+    else
+      printf 'A fresh scheduled desktop poweroff is still pending; not cancelling.\\n'
+    fi
+  else
+    rm -f -- "$POWEROFF_STATE_FILE"
+    printf 'No scheduled desktop poweroff is pending.\\n'
+  fi
 }
 
 while (($# > 0)); do
@@ -226,6 +266,10 @@ while (($# > 0)); do
       STATUS_MODE=true
       shift
       ;;
+    --cleanup)
+      CLEANUP_MODE=true
+      shift
+      ;;
     --force)
       FORCE=true
       shift
@@ -268,6 +312,11 @@ if [[ "$STATUS_MODE" == true ]]; then
   else
     printf 'runner: not running\n'
   fi
+  exit 0
+fi
+
+if [[ "$CLEANUP_MODE" == true ]]; then
+  cleanup_stale_local_poweroff
   exit 0
 fi
 
@@ -369,14 +418,18 @@ broadcast_local_shutdown() {
     printf 'Failed to schedule local poweroff.\n' >&2
     return 1
   fi
+  mkdir -p -- "$(dirname "$POWEROFF_STATE_FILE")" 2>/dev/null || true
+  printf 'created=%s\nrun_pid=%s\ngrace=%s\n' "$(date +%s)" "$$" "$grace" >"$POWEROFF_STATE_FILE"
   terminal="$(detect_terminal)" || die "no terminal emulator found; set \$TERMINAL"
   script="$(mktemp "${TMPDIR:-/tmp}/desktop-server-shutdown.XXXXXX")"
   cat >"$script" <<EOF
 #!/usr/bin/env bash
 set -uo pipefail
 grace=${grace}
+POWEROFF_STATE_FILE=${POWEROFF_STATE_FILE}
 cancel() {
   loginctl -c >/dev/null 2>&1 || true
+  rm -f -- "$POWEROFF_STATE_FILE"
   printf '\nLocal shutdown cancelled.\n'
   exit 0
 }
@@ -420,6 +473,9 @@ if [[ "$DRY_RUN" == true ]]; then
     "$HOST" "$GUARD" "$TIMEOUT_MIN" "$GRACE_MIN"
   exit 0
 fi
+
+# Never inherit a leftover scheduled desktop poweroff from a previous run.
+cancel_local_poweroff
 
 printf '%s\n' "$$" >"$PID_FILE"
 
