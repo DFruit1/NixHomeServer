@@ -49,7 +49,10 @@ do not ask again. A request to implement the skill alone does not.
    normal schedule. The desktop inhibitor is released when the runner exits.
    If protection cannot be acquired, resolve the failure before retrying.
 5. Verify the runner remains alive and read the server guard status again.
-   Also run `sudo nixhomeserver-shutdown-guard check`. A persistent
+   Also run `sudo nixhomeserver-shutdown-guard check` over SSH (server-side
+   view of desktop activity). Inspect the desktop detector with
+   `scripts/admin/desktop-server-shutdown.sh --check` (prints `idle` or
+   `busy <reason>`) or `--status` for runner liveness. A persistent
    `busy desktop:active-work` needs diagnosis; it is not proof of real work.
    Inspect the desktop detector's matching process or terminal. The runner's
    own terminal output, idle interpreter daemons, and idle shell helpers have

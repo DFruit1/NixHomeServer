@@ -360,7 +360,7 @@ fi
 # 12. The desktop script reports local work during the final five minutes.
 : >"$flags/ssh.log"
 touch "$flags/pgrep_busy"
-MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh \
+MOCK_FAST_SLEEP=1 DESKTOP_SHUTDOWN_ALLOW_CONCURRENT=1 scripts/admin/desktop-server-shutdown.sh \
   --host test@server --timeout 1 --grace 10 --no-local-shutdown >/dev/null
 rm -f "$flags/pgrep_busy"
 require_fixed "$flags/ssh.log" "sudo nixhomeserver-shutdown-guard mark-activity" \

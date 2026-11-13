@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
 # desktop-server-shutdown: request a guarded shutdown of the NixHomeServer,
 # wait for it to go down, then broadcast and schedule a local poweroff.
-#
-# The server-side `nixhomeserver-shutdown-guard` must be deployed. Run this from
-# a terminal inside the desktop session so the broadcast window is visible.
-#
-# Usage:
-#   scripts/admin/desktop-server-shutdown.sh [--host USER@HOST] [--timeout MIN]
-#       [--grace MIN] [--local-grace MIN] [--poll SEC] [--poll-timeout MIN]
-#       [--dry-run] [--no-local-shutdown]
 
 set -euo pipefail
 
@@ -29,6 +21,12 @@ SERVER_SHUTDOWN_COMPLETED=false
 DESKTOP_LOAD_FACTOR="${SHUTDOWN_GUARD_DESKTOP_LOAD_FACTOR:-1.0}"
 DESKTOP_RUNNABLE_THRESHOLD="${SHUTDOWN_GUARD_DESKTOP_RUNNABLE_THRESHOLD:-2}"
 DESKTOP_TTY_ACTIVITY_SEC="${SHUTDOWN_GUARD_DESKTOP_TTY_ACTIVITY_SEC:-300}"
+CHECK_MODE=false
+STATUS_MODE=false
+FORCE=false
+UID_NUM="$(id -u)"
+PID_FILE="${XDG_RUNTIME_DIR:-/tmp}/desktop-server-shutdown.${UID_NUM}.pid"
+LOG_FILE="${DESKTOP_SHUTDOWN_LOG:-}"
 
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
 
@@ -53,6 +51,10 @@ Options:
   --poll-timeout MIN    Give up polling after this many minutes. Default 90.
   --dry-run             Print the plan without touching the server or PC.
   --no-local-shutdown   Manage the server only; never power off this PC.
+  --check               Print desktop work state (idle/busy) and exit.
+  --status              Print runner status and exit.
+  --force               Bypass the single-runner guard.
+  -h, --help            Show this help.
 EOF
 }
 
@@ -64,12 +66,115 @@ require_seconds() {
   [[ "$1" =~ ^[0-9]+$ ]] || die "$2 must be a non-negative integer number of seconds"
 }
 
+is_runner_subtree() {
+  local pid="$1" cur="$pid" ppid
+  while [[ "$cur" =~ ^[0-9]+$ ]] && (( cur > 1 )); do
+    if (( cur == $$ )); then
+      return 0
+    fi
+    ppid="$(awk '{print $4}' "/proc/$cur/stat" 2>/dev/null || true)"
+    [[ "$ppid" =~ ^[0-9]+$ ]] || return 1
+    cur="$ppid"
+  done
+  return 1
+}
+
+desktop_work_reason() {
+  local process pattern
+  local out pid active
+
+  for process in aapt2 apksigner cargo cargo-nextest cc1 cc1plus clang cmake esbuild gcc \
+    go javac make meson ninja nix nix-build nix-instantiate nix-store nixos-rebuild \
+    opencode playwright pnpm pytest rustc tsc vitest wasm-pack \
+    zipalign zpool; do
+    if pgrep -x "$process" >/dev/null 2>&1; then
+      printf 'process:%s' "$process"
+      return 0
+    fi
+  done
+
+  for pattern in \
+    '(^|[[:space:]/])validate-repo[.]sh([[:space:]]|$)' \
+    '(^|[[:space:]/])run-script-tests[.]sh([[:space:]]|$)' \
+    '(^|[[:space:]/])deploy[.]sh([[:space:]]|$)' \
+    '(^|[[:space:]/])build-android[.]sh([[:space:]]|$)' \
+    'org[.]gradle[.]wrapper[.]GradleWrapperMain' \
+    '(^|[[:space:]/])(pnpm|npm|npx)([[:space:]]|$)' \
+    '(^|[[:space:]/])nix[[:space:]]+(build|develop|shell|flake|run|copy|store|why-depends)([[:space:]]|$)' \
+    '(^|[[:space:]/])cargo[[:space:]]+(build|test|check|clippy|nextest|run|install)([[:space:]]|$)' \
+    '(^|[[:space:]/])nixos-rebuild[[:space:]]' \
+    '(^|[[:space:]/])(vite|esbuild|tsc|rollup)[[:space:]]+(build|--build)([[:space:]]|$)' \
+    '(^|[[:space:]/])git[[:space:]]+(gc|repack|fetch|clone|fsck)([[:space:]]|$)' \
+    '(^|[[:space:]/])(vitest|playwright|jest|pytest|ctest|bats)([[:space:]]|$)' \
+    '(^|[[:space:]/])dotnet[[:space:]]+(build|test|publish|restore|pack|msbuild)([[:space:]]|$)'; do
+    out="$(pgrep -f -- "$pattern" 2>/dev/null || true)"
+    if [[ -n "$out" ]]; then
+      active=false
+      for pid in $out; do
+        if ! is_runner_subtree "$pid"; then
+          active=true
+          break
+        fi
+      done
+      if [[ "$active" == true ]]; then
+        printf 'pattern:%s' "$pattern"
+        return 0
+      fi
+    else
+      if pgrep -f -- "$pattern" >/dev/null 2>&1; then
+        printf 'pattern:%s' "$pattern"
+        return 0
+      fi
+    fi
+  done
+
+  if awk -v ld="$(awk '{print $1}' /proc/loadavg 2>/dev/null)" \
+         -v cpus="$(nproc 2>/dev/null || echo 1)" \
+         -v factor="$DESKTOP_LOAD_FACTOR" \
+         'BEGIN { exit !(ld+0 > cpus*factor) }' >/dev/null 2>&1; then
+    printf 'load'
+    return 0
+  fi
+
+  runnable=0
+  for st in /proc/[0-9]*/stat; do
+    [[ -r "$st" ]] || continue
+    state="$(awk '{print $3}' "$st" 2>/dev/null || true)"
+    [[ "$state" == "R" ]] && runnable=$((runnable + 1))
+  done
+  if (( runnable > DESKTOP_RUNNABLE_THRESHOLD )); then
+    printf 'runnable'
+    return 0
+  fi
+
+  runner_tty="$(tty 2>/dev/null || true)"
+  now="$(date +%s)"
+  for tty in /dev/pts/[0-9]*; do
+    [[ -e "$tty" && "$tty" != "$runner_tty" ]] || continue
+    mtime="$(stat -c %Y "$tty" 2>/dev/null || echo 0)"
+    if (( now - mtime <= DESKTOP_TTY_ACTIVITY_SEC )); then
+      printf 'terminal'
+      return 0
+    fi
+  done
+
+  printf 'idle'
+}
+
+desktop_work_active() {
+  [[ "$(desktop_work_reason)" != "idle" ]]
+}
+
 cleanup_on_exit() {
   local rc=$?
   if [[ "$SERVER_SHUTDOWN_COMPLETED" != true && "$DRY_RUN" != true ]]; then
-    ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "$HOST" \
-      "sudo $GUARD cancel" >/dev/null 2>&1 || true
+    for _ in 1 2 3; do
+      ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "$HOST" \
+        "sudo $GUARD cancel" >/dev/null 2>&1 && break
+      sleep 1
+    done
   fi
+  rm -f -- "$PID_FILE"
   return "$rc"
 }
 
@@ -113,6 +218,18 @@ while (($# > 0)); do
       LOCAL_SHUTDOWN=false
       shift
       ;;
+    --check)
+      CHECK_MODE=true
+      shift
+      ;;
+    --status)
+      STATUS_MODE=true
+      shift
+      ;;
+    --force)
+      FORCE=true
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -130,17 +247,40 @@ require_minutes "$LOCAL_GRACE_MIN" "--local-grace"
 require_seconds "$POLL_SEC" "--poll"
 require_minutes "$POLL_TIMEOUT_MIN" "--poll-timeout"
 
+if [[ "$CHECK_MODE" == true ]]; then
+  reason="$(desktop_work_reason)"
+  if [[ "$reason" == "idle" ]]; then
+    printf 'idle\n'
+  else
+    printf 'busy %s\n' "$reason"
+  fi
+  exit 0
+fi
+
+if [[ "$STATUS_MODE" == true ]]; then
+  if [[ -f "$PID_FILE" ]]; then
+    pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      printf 'runner: running (pid %s)\n' "$pid"
+    else
+      printf 'runner: stale pid file (pid %s)\n' "${pid:-unknown}"
+    fi
+  else
+    printf 'runner: not running\n'
+  fi
+  exit 0
+fi
+
 remote() {
   ssh "${SSH_OPTS[@]}" "$HOST" "$@"
 }
 
-# Reuse the power scheduler's expiring hold, retaining any longer early-wake
-# hold. Refresh hourly so active work can extend the shutdown beyond two hours.
 protect_server_sleep() {
-  local now
+  local now attempt
   now="$(date +%s)"
   (( now >= SLEEP_HOLD_REFRESH )) || return 0
-  remote sudo bash -s <<'REMOTE'
+  for attempt in 1 2; do
+    if remote sudo bash -s <<'REMOTE'
 set -euo pipefail
 state=/var/lib/power-schedule
 install -d -m 0755 "$state"
@@ -152,83 +292,30 @@ if [[ -e "$state/resume-hold.json" ]]; then
   [[ "$existing" =~ ^[0-9]+$ ]] || exit 1
   (( existing >= until_epoch )) && exit 0
 fi
-# Same-directory rename preserves atomic reads by the scheduler.
 tmp="$(mktemp "$state/.guarded-shutdown-hold.XXXXXX")"
 trap 'rm -f -- "$tmp"' EXIT
 printf '{"holdUntil":%s}\n' "$until_epoch" >"$tmp"
 chmod 0644 "$tmp"
 mv -f -- "$tmp" "$state/resume-hold.json"
 REMOTE
-  SLEEP_HOLD_REFRESH=$(( now + 3600 ))
+    then
+      SLEEP_HOLD_REFRESH=$(( now + 3600 ))
+      return 0
+    fi
+    sleep 2
+  done
+  printf 'warning: could not renew server sleep hold\n' >&2
+  return 1
 }
 
 server_reachable() {
   ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "$HOST" true >/dev/null 2>&1
 }
 
-desktop_work_active() {
-  local process pattern runner_tty
-  # Interpreter names also belong to permanent desktop services; match their
-  # task commands below and retain load/runnable/terminal activity detection.
-  # Generic shell-script matches also catch this runner and idle desktop helpers.
-  for process in aapt2 apksigner cargo cargo-nextest cc1 cc1plus clang cmake esbuild gcc \
-    go javac make meson ninja nix nix-build nix-instantiate nix-store nixos-rebuild \
-    opencode playwright pnpm pytest rustc tsc vitest wasm-pack \
-    zipalign zpool; do
-    if pgrep -x "$process" >/dev/null 2>&1; then
-      return 0
-    fi
-  done
-  for pattern in \
-    '(^|[[:space:]/])validate-repo[.]sh([[:space:]]|$)' \
-    '(^|[[:space:]/])run-script-tests[.]sh([[:space:]]|$)' \
-    '(^|[[:space:]/])deploy[.]sh([[:space:]]|$)' \
-    '(^|[[:space:]/])build-android[.]sh([[:space:]]|$)' \
-    'org[.]gradle[.]wrapper[.]GradleWrapperMain' \
-    '(^|[[:space:]/])(pnpm|npm|npx)([[:space:]]|$)' \
-    '(^|[[:space:]/])nix[[:space:]]+(build|develop|shell|flake|run|copy|store|why-depends)([[:space:]]|$)' \
-    '(^|[[:space:]/])cargo[[:space:]]+(build|test|check|clippy|nextest|run|install)([[:space:]]|$)' \
-    '(^|[[:space:]/])nixos-rebuild[[:space:]]' \
-    '(^|[[:space:]/])(vite|esbuild|tsc|rollup)[[:space:]]+(build|--build)([[:space:]]|$)' \
-    '(^|[[:space:]/])git[[:space:]]+(gc|repack|fetch|clone|fsck)([[:space:]]|$)' \
-    '(^|[[:space:]/])(vitest|playwright|jest|pytest|ctest|bats)([[:space:]]|$)' \
-    '(^|[[:space:]/])dotnet[[:space:]]+(build|test|publish|restore|pack|msbuild)([[:space:]]|$)'; do
-    if pgrep -f -- "$pattern" >/dev/null 2>&1; then
-      return 0
-    fi
-  done
-  # Catch unnamed heavy desktop work (compiles, backups, agent tasks).
-  if awk -v load="$(awk '{print $1}' /proc/loadavg 2>/dev/null)" \
-         -v cpus="$(nproc 2>/dev/null || echo 1)" \
-         -v factor="$DESKTOP_LOAD_FACTOR" \
-         'BEGIN { exit !(load+0 > cpus*factor) }' >/dev/null 2>&1; then
-    return 0
-  fi
-  # Runnable-process signal.
-  runnable=0
-  for st in /proc/[0-9]*/stat; do
-    [[ -r "$st" ]] || continue
-    state="$(awk '{print $3}' "$st" 2>/dev/null)"
-    [[ "$state" == "R" ]] && runnable=$((runnable + 1))
-  done
-  (( runnable > DESKTOP_RUNNABLE_THRESHOLD )) && return 0
-  # Polling writes to our own terminal every 30 seconds. Counting those writes
-  # as activity would keep the server awake forever after the first deadline.
-  runner_tty="$(tty 2>/dev/null || true)"
-  # Terminal-activity signal from other terminals.
-  now="$(date +%s)"
-  for tty in /dev/pts/[0-9]*; do
-    [[ -e "$tty" && "$tty" != "$runner_tty" ]] || continue
-    mtime="$(stat -c %Y "$tty" 2>/dev/null || echo 0)"
-    (( now - mtime <= DESKTOP_TTY_ACTIVITY_SEC )) && return 0
-  done
-  return 1
-}
- 
 wait_for_server_deadline() {
   local remaining=$(( TIMEOUT_MIN * 60 )) step
   while (( remaining > 0 )); do
-    protect_server_sleep
+    protect_server_sleep || true
     if desktop_work_active; then
       if ! remote sudo "$GUARD" mark-activity >/dev/null; then
         printf 'Could not report desktop work to the server; retrying at the next check.\n' >&2
@@ -269,8 +356,6 @@ spawn_terminal() {
     kitty) setsid kitty "$@" >/dev/null 2>&1 & ;;
     *) setsid "$terminal" -e "$@" >/dev/null 2>&1 & ;;
   esac
-  # Keep the launching terminal alive until its child has finished. Otherwise
-  # closing the parent PTY can send SIGHUP before the new terminal calls setsid.
   wait "$!"
 }
 
@@ -308,6 +393,21 @@ EOF
   spawn_terminal "$terminal" "$script"
 }
 
+command -v ssh >/dev/null 2>&1 || die "ssh is required"
+if ! command -v elogind-inhibit >/dev/null 2>&1 && ! command -v systemd-inhibit >/dev/null 2>&1; then
+  die "systemd-inhibit or elogind-inhibit is required for desktop sleep protection"
+fi
+
+if [[ "$FORCE" != true && "${DESKTOP_SHUTDOWN_ALLOW_CONCURRENT:-0}" != "1" ]]; then
+  if [[ -f "$PID_FILE" ]]; then
+    existing_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
+      printf 'A guarded shutdown runner is already active (pid %s). Use --status or --force.\n' "$existing_pid"
+      exit 0
+    fi
+  fi
+fi
+
 if [[ "$DRY_RUN" == true ]]; then
   printf 'dry-run: host=%s timeout=%sm grace=%sm poll=%ss poll_timeout=%sm local_grace=%sm local_shutdown=%s\n' \
     "$HOST" "$TIMEOUT_MIN" "$GRACE_MIN" "$POLL_SEC" "$POLL_TIMEOUT_MIN" "$LOCAL_GRACE_MIN" "$LOCAL_SHUTDOWN"
@@ -317,10 +417,18 @@ if [[ "$DRY_RUN" == true ]]; then
   exit 0
 fi
 
-command -v ssh >/dev/null 2>&1 || die "ssh is required"
+printf '%s\n' "$$" >"$PID_FILE"
 
-# The inhibitor owns the child lifetime and releases its lock on exit, including
-# cancellation. Do not inhibit shutdown: the final poweroff must remain usable.
+if [[ -z "$LOG_FILE" ]]; then
+  state_dir="${XDG_STATE_HOME:-$HOME/.local/state}"
+  if mkdir -p "$state_dir" 2>/dev/null; then
+    LOG_FILE="$state_dir/desktop-server-shutdown.log"
+  fi
+fi
+if [[ -n "$LOG_FILE" ]]; then
+  exec > >(tee -a "$LOG_FILE") 2>&1
+fi
+
 if [[ "${DESKTOP_SHUTDOWN_SLEEP_INHIBITED:-}" != 1 ]]; then
   inhibitor=""
   for candidate in systemd-inhibit elogind-inhibit; do
@@ -336,7 +444,7 @@ if [[ "${DESKTOP_SHUTDOWN_SLEEP_INHIBITED:-}" != 1 ]]; then
     bash "$0" "${ORIGINAL_ARGS[@]}"
 fi
 
-protect_server_sleep
+protect_server_sleep || true
 printf 'Sleep protection active: desktop inhibitor and renewable two-hour server hold.\n'
 trap cleanup_on_exit INT TERM HUP EXIT
 
@@ -351,7 +459,7 @@ printf 'Polling %s until it powers off...\n' "$HOST"
 poll_deadline=$(( $(date +%s) + POLL_TIMEOUT_MIN * 60 ))
 consecutive_failures=0
 while server_reachable; do
-  protect_server_sleep
+  protect_server_sleep || true
   status="$(remote sudo cat "$STATUS_FILE" 2>/dev/null || true)"
   state="$(printf '%s\n' "$status" | sed -n 's/^state=//p')"
   message="$(printf '%s\n' "$status" | sed -n 's/^message=//p')"
@@ -365,8 +473,6 @@ while server_reachable; do
   sleep "$POLL_SEC"
 done
 
-# Require a couple of consecutive failed probes so a brief SSH blip does not
-# trigger the local poweroff.
 while :; do
   if server_reachable; then
     consecutive_failures=0
