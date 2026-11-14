@@ -43,14 +43,14 @@ export const VaultFreshrssCard = component$(({ feature, username }: { feature: V
         <p>{feature.description}</p>
       </header>
       {!confirmGenerate.value ? (
-        <button type="button" class="vault-danger-button" onClick$={() => {
+        <button type="button" class="vault-button" onClick$={() => {
           confirmGenerate.value = true;
         }}>
           {result.value ? 'Replace app password' : 'Create app password'}
         </button>
       ) : (
         <div class="vault-confirm">
-          <p>Generate a new FreshRSS app password for <strong>{username}</strong>?</p>
+          <p>Generate a new FreshRSS app password for <strong>{username}</strong>? Any earlier password stops working straight away.</p>
           <button type="button" class="vault-danger-button" disabled={generating.value} onClick$={generate}>
             {generating.value ? 'Generating…' : 'Yes, generate'}
           </button>

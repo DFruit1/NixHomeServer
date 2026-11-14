@@ -25,7 +25,7 @@ export const serviceSetupLabel = (service: ServiceCard): string => {
     case 'monitor':
       return 'Open Monitor and sign in with the Beszel login from an admin';
     default:
-      return `Open ${service.name} once to finish setup with your Kanidm sign-in`;
+      return `Open ${service.name}`;
   }
 };
 

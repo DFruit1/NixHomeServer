@@ -1,4 +1,4 @@
-import { component$ } from '@builder.io/qwik';
+import { $, component$, useSignal } from '@builder.io/qwik';
 
 const tokenClass = (token: string) => {
   if (/^\s+$/.test(token)) {
@@ -30,19 +30,46 @@ const tokenClass = (token: string) => {
 
 const tokenize = (command: string) => command.match(/\s+|[^\s]+/g) ?? [];
 
-export const CommandSnippet = component$(({ command, class: className }: { command: string; class?: string }) => (
-  <pre class={`command-snippet${className ? ` ${className}` : ''}`}>
-    <code>
-      {tokenize(command).map((token, index) => {
-        const classForToken = tokenClass(token);
-        return classForToken ? (
-          <span class={classForToken} key={`${index}-${token}`}>
-            {token}
-          </span>
-        ) : (
-          token
-        );
-      })}
-    </code>
-  </pre>
-));
+/**
+ * A command to run on the reader's own device. The optional class (for example
+ * an OS panel) is applied to both the wrapper and the <pre>, so a hidden panel
+ * hides its Copy button with it.
+ */
+export const CommandSnippet = component$(({ command, class: className }: { command: string; class?: string }) => {
+  const copied = useSignal(false);
+  const extraClass = className ? ` ${className}` : '';
+
+  const copyCommand = $(async () => {
+    try {
+      await navigator.clipboard.writeText(command);
+    } catch {
+      return;
+    }
+    copied.value = true;
+    window.setTimeout(() => {
+      copied.value = false;
+    }, 1600);
+  });
+
+  return (
+    <div class={`command-snippet-wrap${extraClass}`}>
+      <pre class={`command-snippet${extraClass}`}>
+        <code>
+          {tokenize(command).map((token, index) => {
+            const classForToken = tokenClass(token);
+            return classForToken ? (
+              <span class={classForToken} key={`${index}-${token}`}>
+                {token}
+              </span>
+            ) : (
+              token
+            );
+          })}
+        </code>
+      </pre>
+      <button type="button" class="command-snippet__copy" aria-label={copied.value ? 'Copied command' : 'Copy command'} onClick$={copyCommand}>
+        {copied.value ? 'Copied' : 'Copy'}
+      </button>
+    </div>
+  );
+});

@@ -56,11 +56,8 @@ export default component$(() => {
       <header class="section-heading stacked">
         <h1>Keys &amp; Secrets</h1>
         <p>
-          This section lets you create credentials for apps and services that cannot use your regular username and
-          password. Save every new credential in your password manager as soon as it is shown.
-        </p>
-        <p class="hint">
-          Everything here stays locked. Unlock it with a second Kanidm sign-in, and lock it again when you are done.
+          Create passwords and keys for apps and devices that cannot use your regular username and password. Save every
+          new credential in your password manager as soon as it is shown.
         </p>
       </header>
 
@@ -101,7 +98,6 @@ export default component$(() => {
                 <section class="vault-group" aria-labelledby="vault-device-keys">
                   <header class="vault-group__head">
                     <h2 id="vault-device-keys">Device keys</h2>
-                    <p>Keys that let your own computer, phone, or tablet reach your files without a password.</p>
                   </header>
                   <VaultSshKeysCard feature={sshKeys} username={user.username} isAdmin={data?.isAdmin ?? false} />
                 </section>

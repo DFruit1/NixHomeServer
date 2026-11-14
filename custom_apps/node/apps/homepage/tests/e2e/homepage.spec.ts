@@ -112,6 +112,9 @@ test('homepage navigation and SFTP upload flow stay client-side', async ({ page 
   // The OS tabs default to the detected operating system (Linux in the test runner).
   await expect(setup.locator('pre.linux code').first()).toBeVisible();
   await expect(setup.getByText('Install sshfs, then mount the server manually')).toBeVisible();
+  // Automatic mounting is optional, so it stays collapsed until asked for.
+  await expect(setup.locator('pre code').filter({ hasText: 'systemctl --user enable --now nixhomeserver-files.service' })).toBeHidden();
+  await setup.locator('div.os-panel.linux details.auto-mount > summary').click();
   await expect(setup.locator('pre code').filter({ hasText: 'systemctl --user enable --now nixhomeserver-files.service' })).toBeVisible();
   await expect(setup.locator('label[for="sftp-setup-linux-systemd"]')).toBeChecked();
 
@@ -126,6 +129,7 @@ test('homepage navigation and SFTP upload flow stay client-side', async ({ page 
   await expect(setup.locator('pre.windows code').first()).toContainText('ssh-keygen -t rsa -b 4096');
   await expect(setup.locator('pre.windows code').first()).toContainText('Get-Content $env:USERPROFILE');
   await expect(setup.getByText('Install WinFsp and SSHFS-Win before mounting the server.')).toBeVisible();
+  await setup.locator('div.os-panel.windows details.auto-mount > summary').click();
   await expect(setup.getByText('Mount the same drive automatically when Windows starts')).toBeVisible();
   await expect(setup.locator('pre code').filter({ hasText: '/persistent:yes' })).toBeVisible();
   await expect(setup.locator('pre code').filter({ hasText: '!2022' }).first()).toBeVisible();
@@ -134,6 +138,7 @@ test('homepage navigation and SFTP upload flow stay client-side', async ({ page 
   await expect(setup.locator('pre.macos code').first()).toBeVisible();
   await expect(setup.locator('pre.macos code').first()).toContainText('mkdir -p ~/.ssh && chmod 700 ~/.ssh');
   await expect(setup.getByText('Install macFUSE and sshfs before mounting the server.')).toBeVisible();
+  await setup.locator('div.os-panel.macos details.auto-mount > summary').click();
   await expect(setup.locator('pre code').filter({ hasText: 'LaunchAgents/org.nixhomeserver.sshfs.plist' })).toBeVisible();
 
   await setup.locator('label[for="sftp-setup-linux"]').click();
@@ -251,7 +256,11 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await expect(page.getByLabel('Available services').getByText('Local Backups')).toBeVisible();
   await expect(page.getByLabel('Available services').getByText('Passwords')).toHaveCount(0);
   await expect(page.getByLabel('Open Local Backups and sign in with the Kopia password from an admin')).toBeVisible();
+  await expect(page.getByLabel('Available services').getByRole('link', { name: 'Go to Photos' })).toHaveAttribute('target', '_blank');
   await expect(page.getByText(/Jellyfin password/)).toHaveCount(0);
+  // Troubleshooting stays collapsed until something fails.
+  await expect(page.getByText('Local Backups has two sign-in gates.')).toBeHidden();
+  await page.getByText("If an app doesn't open").click();
   await expect(page.getByText('Local Backups has two sign-in gates.')).toBeVisible();
   await expect(page.getByText('If access was just changed, refresh your sign-in first.')).toBeVisible();
 
@@ -417,6 +426,9 @@ test('unused SSHFS guidance hides connection details from accounts without SSHFS
 
   await page.locator('summary.profile-trigger').click();
   await page.getByLabel('Show unused apps in Detailed Guide').check();
+  // On phones the open profile menu overlaps the contents chips; close it as a tap outside would.
+  await page.keyboard.press('Escape');
+  await expect(page.getByLabel('Include apps that are not enabled')).toBeChecked();
   await page.getByRole('navigation', { name: 'Detailed guide contents' }).getByRole('link', { name: 'SSHFS Mount' }).click();
 
   await expect(page.getByText('Your account does not currently have SSHFS access.')).toBeVisible();

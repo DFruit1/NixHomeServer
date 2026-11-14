@@ -55,7 +55,7 @@ test('the vault stays locked until a correct second sign-in', async ({ page, bas
 
   await page.getByLabel('Kanidm password for your account').fill(vaultPassword);
   await page.getByRole('button', { name: 'Unlock' }).click();
-  await expect(page.getByText('Unlocked.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('status', { name: 'Status: unlocked' })).toBeVisible();
   await expect(page.getByText(/Locks in \d+ min/)).toBeVisible();
 
   await page.getByRole('button', { name: 'Lock now' }).click();
@@ -88,7 +88,7 @@ test('accounts with TOTP get a second-step prompt', async ({ page }) => {
   await startUnlock();
   await page.getByLabel('Six-digit sign-in code').fill(totpCode);
   await page.getByRole('button', { name: 'Finish unlock' }).click();
-  await expect(page.getByText('Unlocked.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('status', { name: 'Status: unlocked' })).toBeVisible();
 });
 
 test('the SSH card lists and registers device keys', async ({ page, baseURL }) => {
@@ -184,7 +184,7 @@ test('features outside the account permissions are listed as unavailable', async
 test('an expired vault session returns to the unlock form', async ({ page, baseURL }) => {
   await unlockThroughApi(page, baseURL, 'dsaw', allAccessGroups);
   await page.goto('/keys');
-  await expect(page.getByText('Unlocked.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('status', { name: 'Status: unlocked' })).toBeVisible();
 
   const cleared = await page.context().clearCookies();
   void cleared;

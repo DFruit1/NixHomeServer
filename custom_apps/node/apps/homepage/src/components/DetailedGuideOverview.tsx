@@ -2,7 +2,6 @@ import { component$ } from '@builder.io/qwik';
 
 export const DetailedGuideOverview = component$(({ enabledServiceCount }: { enabledServiceCount: number }) => (
   <article id="guide-detail" class="guide-panel detailed-guide-overview">
-    <span class="eyebrow">Reference guide</span>
     <h2>Overview</h2>
     <p class="guide-lead">Use this guide when you want to understand an app, choose where a file belongs, connect a device, or diagnose an access problem. Your account currently has {enabledServiceCount} enabled app{enabledServiceCount === 1 ? '' : 's'} in this guide.</p>
 
@@ -29,11 +28,6 @@ export const DetailedGuideOverview = component$(({ enabledServiceCount }: { enab
         <li>Choose the destination from the File placement section. Personal and shared paths grant different audiences access.</li>
         <li>Upload one test item and wait for the destination app to scan it before moving a large library.</li>
       </ol>
-    </section>
-
-    <section>
-      <h3>Profile preferences</h3>
-      <p>“Show inactive apps in Services” controls inactive launcher cards. “Show unused apps in Detailed Guide” independently reveals reference topics for apps and file workflows that are not currently enabled. Both preferences are off by default and are stored only in this browser profile.</p>
     </section>
 
     <section>
