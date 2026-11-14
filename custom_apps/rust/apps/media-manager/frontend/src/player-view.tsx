@@ -117,6 +117,17 @@ export const PlayerView = component$<{
   );
 
   const loadGeneration = useSignal(0);
+  const routeKey = useSignal("");
+
+  // A route change invalidates a catalog load started for the previous link,
+  // so a late response cannot replace the tracks the user is now playing.
+  useVisibleTask$(({ track }) => {
+    const key = track(
+      () => `${props.initialItemId ?? ""}|${props.initialPath ?? ""}`,
+    );
+    if (routeKey.value && routeKey.value !== key) loadGeneration.value++;
+    routeKey.value = key;
+  });
 
   const loadTracks = $(async () => {
     const generation = ++loadGeneration.value;
@@ -387,6 +398,8 @@ export const PlayerView = component$<{
           index = playerState.tracks.length;
           playerState.tracks = [...playerState.tracks, item];
         } catch (cause) {
+          if (navigation !== navigationGeneration.value) return;
+          if (targetKey !== currentTargetKey()) return;
           playerState.error = readableError(cause);
           props.state.miniPlayerItemId = "";
           return;
@@ -400,13 +413,16 @@ export const PlayerView = component$<{
         // the reload cannot start a second navigation or playback.
         deepLinkRefresh.value = targetKey;
         initialTargetApplied.value = targetKey;
+        const linkStillCurrent = () =>
+          navigation === navigationGeneration.value &&
+          targetKey === currentTargetKey();
         await refreshAudioRoots(props.initialRootId);
-        // The catalog still reloads because the finished download belongs in
-        // the list; the guard only stops this link from taking over a view,
-        // playback or newer link the user already chose.
+        // Do not start a catalog reload for a link the route or the user has
+        // already moved past; that load would replace tracks and could pause
+        // playback.
+        if (!linkStillCurrent()) return;
         await loadTracks();
-        if (navigation !== navigationGeneration.value) return;
-        if (targetKey !== currentTargetKey()) return;
+        if (!linkStillCurrent()) return;
         index = findTargetIndex(
           playerState.tracks,
           undefined,

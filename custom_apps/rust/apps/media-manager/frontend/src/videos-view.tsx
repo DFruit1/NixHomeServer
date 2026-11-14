@@ -96,13 +96,31 @@ export const VideosView = component$<{
   const titleGeneration = useSignal(0);
   const deepLinkRefresh = useSignal("");
   const deepLinkNotice = useSignal("");
+  const deepLinkGeneration = useSignal(0);
+  const deepLinkRouteKey = useSignal("");
   // Bumped by any deliberate choice, so a deep-link rescan that finishes later
   // cannot move the selection away from the video the user picked.
   const navigationGeneration = useSignal(0);
 
-  const loadVideos = $(async () => {
+  // Every route change (and unmount) invalidates a deep link that is still
+  // waiting on a scan or a reload, including a path that returns to a value
+  // an older task already captured.
+  useVisibleTask$(({ track, cleanup }) => {
+    const key = track(
+      () => `${props.initialItemId ?? ""}|${props.initialPath ?? ""}`,
+    );
+    if (deepLinkRouteKey.value && deepLinkRouteKey.value !== key)
+      deepLinkGeneration.value++;
+    deepLinkRouteKey.value = key;
+    cleanup(() => {
+      deepLinkGeneration.value++;
+    });
+  });
+
+  const loadVideos = $(async (valid?: () => boolean) => {
     const generation = ++loadGeneration.value;
-    const current = () => generation === loadGeneration.value;
+    const current = () =>
+      generation === loadGeneration.value && (valid?.() ?? true);
     state.loading = true;
     state.error = "";
     try {
@@ -196,15 +214,19 @@ export const VideosView = component$<{
   // block the next link's task from running. A newer link replaces the value
   // checked here, so the older scan can finish without taking over.
   const applyVideoDeepLink = $(async (path: string) => {
+    const generation = ++deepLinkGeneration.value;
     const navigation = navigationGeneration.value;
     const stillCurrent = () =>
+      generation === deepLinkGeneration.value &&
       deepLinkRefresh.value === path &&
       props.initialPath === path &&
       !props.initialItemId &&
       navigation === navigationGeneration.value;
     await refreshVideoRoots(props.initialRootId);
     if (!stillCurrent()) return;
-    await loadVideos();
+    // The reload is guarded too: a route change while it runs must not let its
+    // items, selection or error land on the newer link.
+    await loadVideos(stillCurrent);
     if (!stillCurrent()) return;
     const index = findTargetIndex(state.items, undefined, path);
     if (index < 0) {

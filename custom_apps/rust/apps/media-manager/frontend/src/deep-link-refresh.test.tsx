@@ -207,11 +207,6 @@ describe("downloader deep links into the music player", () => {
       ),
     );
     pendingRefresh.release?.();
-    const catalogCalls = () =>
-      fetch.mock.calls.filter(([input]) =>
-        String(input).includes("/items?rootId=personal-music"),
-      ).length;
-    await vi.waitFor(() => expect(catalogCalls()).toBe(2));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(screen.textContent).not.toContain("isn't in the music library");
     expect(screen.querySelector("audio")?.getAttribute("src")).toBe(
