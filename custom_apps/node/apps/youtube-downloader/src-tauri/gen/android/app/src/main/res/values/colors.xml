@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Matches --bg in src/client/styles.css (light). -->
+    <!-- Matches the web UI page background (light). -->
     <color name="app_background">#FFF7F3F3</color>
     <color name="app_accent">#FFB91C1C</color>
 </resources>
