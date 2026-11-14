@@ -58,9 +58,11 @@ export const CollectionViewControl = component$<{
   label: string;
   value: CollectionView;
   onChange$: QRL<(value: CollectionView) => void>;
+  /** Hide the visible "View" caption where space is tight; the select keeps its accessible name. */
+  hideCaption?: boolean;
 }>((props) => (
   <label class="collection-view-choice">
-    View
+    {props.hideCaption ? <span class="sr-only">View</span> : "View"}
     <select
       aria-label={props.label}
       value={props.value}

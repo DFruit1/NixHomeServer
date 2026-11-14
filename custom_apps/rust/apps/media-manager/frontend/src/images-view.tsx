@@ -34,7 +34,9 @@ export const ImagesView = component$<{
   const layout = useCollectionView(props, "images", "tiles-3");
   const detail = useSignal<HTMLElement>();
   const rulesOpen = useSignal(false);
-  const filters = useSignal<HTMLDetailsElement>();
+  const rulesButton = useSignal<HTMLButtonElement>();
+  const filtersOpen = useSignal(false);
+  const moreOpen = useSignal(false);
   const pushedImageId = useSignal<string | null>(null);
   const state = useStore({
     items: [] as ImmichImage[],
@@ -167,6 +169,7 @@ export const ImagesView = component$<{
     state.notice = "";
     state.imageFailed = false;
     state.selecting = true;
+    moreOpen.value = false;
     if (
       typeof window !== "undefined" &&
       pushHistory &&
@@ -292,14 +295,65 @@ export const ImagesView = component$<{
     }),
   );
 
+  const searchTag = $((tag: string) => {
+    state.filters.tags = tag;
+    filtersOpen.value = true;
+    return load();
+  });
+
+  const openRules = $(() => {
+    moreOpen.value = false;
+    rulesOpen.value = true;
+  });
+  const closeRules = $(async () => {
+    rulesOpen.value = false;
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
+    rulesButton.value?.focus();
+  });
+
+  useOnWindow(
+    "keydown",
+    $((event: KeyboardEvent) => {
+      if (event.key === "Escape" && moreOpen.value) moreOpen.value = false;
+    }),
+  );
+  useOnWindow(
+    "click",
+    $((event: MouseEvent) => {
+      if (
+        moreOpen.value &&
+        !(event.target as Element | null)?.closest?.(".image-more")
+      )
+        moreOpen.value = false;
+    }),
+  );
+
   const busy = state.analyzing || state.markingForRetag;
+  const sortReady =
+    state.filters.sort !== "tag" || !!state.filters.sortTag.trim();
+  const byDate = state.filters.sort === "capturedAt";
+  const directionLabel =
+    state.filters.direction === "desc"
+      ? byDate
+        ? "Newest first"
+        : "Highest first"
+      : byDate
+        ? "Oldest first"
+        : "Lowest first";
+  const activeFilters =
+    (state.filters.tags.trim() ? 1 : 0) +
+    (["minAesthetic", "minKeeper", "minCover"] as const).filter(
+      (key) => Number(state.filters[key]) > 0,
+    ).length;
+  const tiles = layout.view.value.startsWith("tiles-");
   return (
     <div class="images-page">
       <DecisionQuestions
+        open={rulesOpen.value}
         image={state.selected}
-        onOpenChange$={(open) => {
-          rulesOpen.value = open;
-        }}
+        onClose$={closeRules}
         onAssessed$={(id, tags) => {
           if (state.selected?.id === id) state.selected.decisionTags = tags;
           const item = state.items.find((item) => item.id === id);
@@ -323,8 +377,8 @@ export const ImagesView = component$<{
             <>
               <div class="image-focus">
                 {state.imageFailed ? (
-                  <div class="images-empty" role="status">
-                    <Icon name="image" size={32} />
+                  <div class="image-preview-missing" role="status">
+                    <Icon name="image" size={28} />
                     <p>
                       The preview is unavailable. Saved analysis is shown below.
                     </p>
@@ -340,15 +394,22 @@ export const ImagesView = component$<{
                 )}
                 <header class="image-detail-header">
                   <h2>{state.selected.filename}</h2>
-                  {props.immichUrl && (
-                    <a
-                      href={`${props.immichUrl}/photos/${encodeURIComponent(state.selected.id)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      Open in Immich <span aria-hidden="true">↗</span>
-                    </a>
-                  )}
+                  <p class="image-detail-meta">
+                    <span role="status">
+                      {state.selected.tagged
+                        ? "Tagged by EYE"
+                        : "Awaiting EYE tagging"}
+                    </span>
+                    {props.immichUrl && (
+                      <a
+                        href={`${props.immichUrl}/photos/${encodeURIComponent(state.selected.id)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        Open in Immich <span aria-hidden="true">↗</span>
+                      </a>
+                    )}
+                  </p>
                 </header>
                 <div class="image-detail-actions">
                   <button
@@ -363,14 +424,46 @@ export const ImagesView = component$<{
                         ? "Analyze again"
                         : "Analyze photo"}
                   </button>
-                  <button
-                    type="button"
-                    class="secondary-button"
-                    disabled={busy || state.selecting}
-                    onClick$={() => state.selected && choose(state.selected)}
-                  >
-                    Refresh analysis
-                  </button>
+                  <div class="image-more">
+                    <button
+                      type="button"
+                      class="secondary-button"
+                      aria-expanded={moreOpen.value}
+                      aria-controls="image-more-actions"
+                      disabled={busy || state.selecting}
+                      onClick$={() => (moreOpen.value = !moreOpen.value)}
+                    >
+                      {state.markingForRetag ? "Marking…" : "More"}
+                    </button>
+                    {moreOpen.value && (
+                      <ul id="image-more-actions" class="image-more-actions">
+                        <li>
+                          <button
+                            type="button"
+                            onClick$={() => {
+                              moreOpen.value = false;
+                              return state.selected && choose(state.selected);
+                            }}
+                          >
+                            Refresh analysis
+                          </button>
+                        </li>
+                        {state.selected.tagged && (
+                          <li>
+                            <button
+                              type="button"
+                              onClick$={() => {
+                                moreOpen.value = false;
+                                return markForRetagging();
+                              }}
+                            >
+                              Mark for retagging
+                            </button>
+                          </li>
+                        )}
+                      </ul>
+                    )}
+                  </div>
                 </div>
               </div>
               {state.detailError && (
@@ -383,101 +476,83 @@ export const ImagesView = component$<{
                   <span>{state.notice}</span>
                 </div>
               )}
-              <div class="image-tagging-state">
-                <span role="status">
-                  {state.selected.tagged
-                    ? "Tagged by EYE"
-                    : "Awaiting EYE tagging"}
-                </span>
-                {state.selected.tagged && (
-                  <button
-                    type="button"
-                    class="secondary-button"
-                    disabled={busy || state.selecting}
-                    onClick$={markForRetagging}
-                  >
-                    {state.markingForRetag ? "Marking…" : "Mark for retagging"}
-                  </button>
-                )}
-              </div>
-              {!!state.selected.decisionTags?.length && (
-                <details class="image-analysis image-decision-tags">
-                  <summary>Decision tags</summary>
-                  <ul class="image-suggestions">
-                    {state.selected.decisionTags.map((tag) => (
-                      <li key={tag}>
-                        <button
-                          type="button"
-                          class="image-tag-filter"
-                          onClick$={() => {
-                            state.filters.tags = tag;
-                            if (filters.value) filters.value.open = true;
-                            return load();
-                          }}
-                        >
-                          {tag}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              )}
-              {state.analysis && (
+              {(state.analysis || !!state.selected.decisionTags?.length) && (
                 <section class="image-analysis" aria-label="EYE analysis">
-                  <h3>Saved analysis</h3>
-                  <dl class="image-scores">
-                    {(["aesthetic", "keeper", "cover"] as const).map(
-                      (score) => (
-                        <div key={score}>
-                          <dt>
-                            {score === "aesthetic"
-                              ? "Aesthetic"
-                              : score === "keeper"
-                                ? "Keeper"
-                                : "Cover"}
-                          </dt>
-                          <dd>
-                            {Math.round(state.analysis!.scores[score] * 100)}
-                            <span>/100</span>
-                          </dd>
-                        </div>
-                      ),
-                    )}
-                  </dl>
-                  <p class="muted">
-                    Relative scores from EYE; higher is better. Tags and scores
-                    are saved only in Media Manager.
-                  </p>
-                  <ul class="image-suggestions">
-                    {state.analysis.suggestions.map((suggestion) => (
-                      <li key={suggestion.tag}>
-                        <button
-                          type="button"
-                          class="image-tag-filter"
-                          onClick$={() => {
-                            state.filters.tags = suggestion.tag;
-                            if (filters.value) filters.value.open = true;
-                            return load();
-                          }}
-                          aria-label={`Find photos tagged ${tagLabel(suggestion.tag)}`}
-                        >
-                          {tagLabel(suggestion.tag)}
-                        </button>
-                        <small>
-                          {Math.round(suggestion.confidence * 100)}%
-                        </small>
-                      </li>
-                    ))}
-                  </ul>
-                  {!state.analysis.suggestions.length && (
-                    <p>No suggested tags for this photo.</p>
+                  {state.analysis && (
+                    <>
+                      <dl class="image-scores">
+                        {(["aesthetic", "keeper", "cover"] as const).map(
+                          (score) => (
+                            <div key={score}>
+                              <dt>
+                                {score === "aesthetic"
+                                  ? "Aesthetic"
+                                  : score === "keeper"
+                                    ? "Keeper"
+                                    : "Cover"}
+                              </dt>
+                              <dd>
+                                {Math.round(
+                                  state.analysis!.scores[score] * 100,
+                                )}
+                              </dd>
+                            </div>
+                          ),
+                        )}
+                      </dl>
+                      {state.analysis.suggestions.length ? (
+                        <ul class="image-chips" aria-label="Tags">
+                          {state.analysis.suggestions.map((suggestion) => (
+                            <li key={suggestion.tag}>
+                              <button
+                                type="button"
+                                class="image-chip"
+                                onClick$={() => searchTag(suggestion.tag)}
+                                aria-label={`Find photos tagged ${tagLabel(suggestion.tag)}, ${Math.round(suggestion.confidence * 100)}% confidence`}
+                              >
+                                {tagLabel(suggestion.tag)}
+                                <span class="image-chip-meta">
+                                  {Math.round(suggestion.confidence * 100)}%
+                                </span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p class="image-analysis-note">
+                          No suggested tags for this photo.
+                        </p>
+                      )}
+                    </>
+                  )}
+                  {!!state.selected.decisionTags?.length && (
+                    <div class="image-decision-tags">
+                      <h3 id="image-decision-tags">Decision tags</h3>
+                      <ul
+                        class="image-chips"
+                        aria-labelledby="image-decision-tags"
+                      >
+                        {state.selected.decisionTags.map((tag) => (
+                          <li key={tag}>
+                            <button
+                              type="button"
+                              class="image-chip"
+                              aria-label={`Find photos tagged ${tag}`}
+                              onClick$={() => searchTag(tag)}
+                            >
+                              {tag}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
                 </section>
               )}
             </>
           ) : (
-            <div class="images-empty image-focus image-focus--empty">
-              <Icon name="image" size={36} />
+            <div class="image-focus image-focus--empty">
+              <Icon name="image" size={28} />
               <h2>Choose a photo</h2>
               <p>Select a photo to see its saved tags and scores.</p>
             </div>
@@ -486,9 +561,20 @@ export const ImagesView = component$<{
         <section class="images-browser" aria-label="Immich photos">
           <header class="images-browser-header">
             <h2>Photos</h2>
-            <div class="images-view-options">
+            <div class="images-header-actions">
+              <button
+                ref={rulesButton}
+                type="button"
+                class="text-button images-rules-button"
+                aria-controls="decision-editor"
+                aria-expanded={rulesOpen.value}
+                onClick$={openRules}
+              >
+                Decision questions
+              </button>
               <CollectionViewControl
                 label="View"
+                hideCaption
                 value={layout.view.value}
                 onChange$={layout.change}
               />
@@ -500,35 +586,36 @@ export const ImagesView = component$<{
               preventdefault:submit
               onSubmit$={() => load()}
             >
-              <label for="image-search" class="sr-only">
-                Search filenames
-              </label>
-              <div class="images-search-controls">
-                <input
-                  id="image-search"
-                  type="search"
-                  maxLength={200}
-                  value={state.query}
-                  onInput$={(_, input) => (state.query = input.value)}
-                  placeholder="Search filenames"
-                />
-                <button
-                  class="secondary-button"
-                  type="submit"
-                  disabled={state.loading || state.loadingMore}
-                >
-                  Search
-                </button>
-              </div>
-              <div class="images-sort-row">
-                <label>
-                  Sort by
+              <div class="images-toolbar">
+                <div class="images-search-field">
+                  <label for="image-search" class="sr-only">
+                    Search filenames
+                  </label>
+                  <input
+                    id="image-search"
+                    type="search"
+                    maxLength={200}
+                    value={state.query}
+                    onInput$={(_, input) => (state.query = input.value)}
+                    placeholder="Search"
+                  />
+                  <button
+                    class="images-search-submit"
+                    type="submit"
+                    aria-label="Search"
+                    disabled={state.loading || state.loadingMore}
+                  >
+                    <Icon name="search" size={18} />
+                  </button>
+                </div>
+                <div class="images-sort">
                   <select
+                    aria-label="Sort by"
                     value={state.filters.sort}
                     onChange$={(_, el) => {
                       state.filters.sort = el.value;
-                      if (["tag", "scores"].includes(el.value) && filters.value)
-                        filters.value.open = true;
+                      if (["tag", "scores"].includes(el.value))
+                        filtersOpen.value = true;
                       if (el.value !== "tag" || state.filters.sortTag.trim())
                         return load();
                     }}
@@ -540,41 +627,66 @@ export const ImagesView = component$<{
                     <option value="scores">Combined scores</option>
                     <option value="tag">Tag confidence</option>
                   </select>
-                </label>
-                <label>
-                  Order
-                  <select
-                    value={state.filters.direction}
-                    onChange$={(_, el) => {
-                      state.filters.direction = el.value;
-                      if (
-                        state.filters.sort !== "tag" ||
-                        state.filters.sortTag.trim()
-                      )
-                        return load();
+                  <button
+                    type="button"
+                    class={{
+                      "secondary-button": true,
+                      "images-icon-button": true,
+                      "images-direction": true,
+                      ascending: state.filters.direction === "asc",
+                    }}
+                    aria-label={directionLabel}
+                    title={directionLabel}
+                    onClick$={() => {
+                      state.filters.direction =
+                        state.filters.direction === "desc" ? "asc" : "desc";
+                      if (sortReady) return load();
                     }}
                   >
-                    <option value="desc">
-                      {state.filters.sort === "capturedAt"
-                        ? "Newest first"
-                        : "Highest first"}
-                    </option>
-                    <option value="asc">
-                      {state.filters.sort === "capturedAt"
-                        ? "Oldest first"
-                        : "Lowest first"}
-                    </option>
-                  </select>
-                </label>
+                    <Icon name="arrow" size={18} />
+                  </button>
+                  <button
+                    type="button"
+                    class="secondary-button images-icon-button images-filter-toggle"
+                    aria-expanded={filtersOpen.value}
+                    aria-controls="image-filters"
+                    aria-label={
+                      activeFilters
+                        ? `Filters, ${activeFilters} active`
+                        : "Filters"
+                    }
+                    title="Filters"
+                    onClick$={() => (filtersOpen.value = !filtersOpen.value)}
+                  >
+                    <svg
+                      aria-hidden="true"
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.75"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path d="M4 6h16M7 12h10M10 18h4" />
+                    </svg>
+                    {activeFilters > 0 && (
+                      <span class="images-filter-count" aria-hidden="true">
+                        {activeFilters}
+                      </span>
+                    )}
+                  </button>
+                </div>
               </div>
-              <details
-                ref={filters}
-                class="images-filter-details images-search-filters"
+              <div
+                id="image-filters"
+                class="images-filters"
+                hidden={!filtersOpen.value}
               >
-                <summary>Filters and advanced sorting</summary>
-                <div class="images-filter-row">
+                <div class="images-filter-row images-filter-tags">
                   <label>
-                    Tags (comma separated)
+                    Tags
                     <input
                       type="text"
                       maxLength={3104}
@@ -584,7 +696,7 @@ export const ImagesView = component$<{
                     />
                   </label>
                   <label>
-                    Match tags
+                    Match
                     <select
                       value={state.filters.tagMode}
                       onChange$={(_, el) => (state.filters.tagMode = el.value)}
@@ -594,9 +706,6 @@ export const ImagesView = component$<{
                     </select>
                   </label>
                 </div>
-                <button type="submit" class="secondary-button">
-                  Apply filters
-                </button>
                 {state.filters.sort === "tag" && (
                   <label>
                     Tag to sort by
@@ -612,38 +721,43 @@ export const ImagesView = component$<{
                   </label>
                 )}
                 {state.filters.sort === "scores" && (
-                  <fieldset class="images-filter-row">
+                  <fieldset class="images-filter-group">
                     <legend>Score weights</legend>
-                    {(
-                      [
-                        "aestheticWeight",
-                        "keeperWeight",
-                        "coverWeight",
-                      ] as const
-                    ).map((key) => (
-                      <label key={key}>
-                        {key.replace("Weight", "")}
-                        <input
-                          type="number"
-                          min={0}
-                          max={100}
-                          step="any"
-                          value={state.filters[key]}
-                          onInput$={(_, el) =>
-                            (state.filters[key] = Number(el.value))
-                          }
-                        />
-                      </label>
-                    ))}
-                    <p class="muted">
-                      Higher weights have more influence. Use 0 to ignore a
-                      score; at least one must be above 0.
+                    <div class="images-filter-row images-filter-row--3">
+                      {(
+                        [
+                          "aestheticWeight",
+                          "keeperWeight",
+                          "coverWeight",
+                        ] as const
+                      ).map((key) => (
+                        <label key={key}>
+                          {key === "aestheticWeight"
+                            ? "Aesthetic"
+                            : key === "keeperWeight"
+                              ? "Keeper"
+                              : "Cover"}
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            step="any"
+                            value={state.filters[key]}
+                            onInput$={(_, el) =>
+                              (state.filters[key] = Number(el.value))
+                            }
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    <p class="images-filter-note">
+                      Use 0 to ignore a score; at least one must be above 0.
                     </p>
                   </fieldset>
                 )}
-                <details class="images-filter-details">
-                  <summary>Minimum scores and confidence</summary>
-                  <div class="images-filter-row">
+                <fieldset class="images-filter-group">
+                  <legend>Minimum scores and confidence (0–100)</legend>
+                  <div class="images-filter-row images-filter-row--4">
                     {(
                       [
                         "minAesthetic",
@@ -654,8 +768,8 @@ export const ImagesView = component$<{
                     ).map((key) => (
                       <label key={key}>
                         {key === "confidence"
-                          ? "Tag confidence (%)"
-                          : `${key.replace("min", "")} (0–100)`}
+                          ? "Tag confidence"
+                          : key.replace("min", "")}
                         <input
                           type="number"
                           min={0}
@@ -668,40 +782,40 @@ export const ImagesView = component$<{
                       </label>
                     ))}
                   </div>
-                </details>
-              </details>
+                </fieldset>
+                <button type="submit" class="secondary-button">
+                  Apply filters
+                </button>
+              </div>
             </form>
+            {state.index?.error && (
+              <div class="message error" role="alert">
+                <span>Indexing needs attention: {state.index.error}</span>
+              </div>
+            )}
             {state.index && (
-              <details class="images-index-status" open={!!state.index.error}>
-                <summary>
+              <p class="images-index-line">
+                <span role="status">
+                  {state.index.analyzed.toLocaleString()} of{" "}
+                  {state.index.discovered.toLocaleString()} analyzed
                   {state.index.error
-                    ? "Index needs attention"
-                    : "Library indexing"}
-                </summary>
-                <div role="status">
-                  <p>
-                    {state.index.analyzed} of {state.index.discovered}{" "}
-                    discovered photos analyzed
-                    {state.index.error
-                      ? " · Retry scheduled"
-                      : state.index.scanning
-                        ? " · Indexing…"
-                        : " · Watching for new photos"}
-                    {state.index.failed
-                      ? ` · ${state.index.failed} awaiting retry`
+                    ? " · retry scheduled"
+                    : state.index.scanning
+                      ? " · indexing…"
                       : ""}
-                  </p>
-                  {state.index.error && <p>{state.index.error}</p>}
-                </div>
+                  {state.index.failed
+                    ? ` · ${state.index.failed.toLocaleString()} awaiting retry`
+                    : ""}
+                </span>
                 <button
                   type="button"
-                  class="secondary-button"
+                  class="text-button"
                   disabled={state.loading || state.loadingMore}
                   onClick$={() => load()}
                 >
-                  Refresh results
+                  Refresh
                 </button>
-              </details>
+              </p>
             )}
             {state.error && (
               <div class="message error" role="alert">
@@ -710,32 +824,33 @@ export const ImagesView = component$<{
             )}
             {state.setupRequired ? (
               <div class="images-empty">
-                <Icon name="image" size={32} />
                 <h2>Connect your Immich library</h2>
                 <p>
                   {state.automaticConnection
                     ? "Sign into Photos once to create your account. Media Manager connects automatically within a few minutes, without an API key."
                     : "Add your Immich API key under Metadata sources → Immich, then return here."}
                 </p>
-                <a
-                  class="secondary-button"
-                  href={
-                    state.automaticConnection
-                      ? (props.immichUrl ?? "?view=accounts")
-                      : "?view=accounts"
-                  }
-                >
-                  {state.automaticConnection
-                    ? "Open Photos"
-                    : "Open Metadata sources"}
-                </a>
-                <button
-                  type="button"
-                  class="secondary-button"
-                  onClick$={() => load()}
-                >
-                  Try again
-                </button>
+                <div class="images-empty-actions">
+                  <a
+                    class="primary-button"
+                    href={
+                      state.automaticConnection
+                        ? (props.immichUrl ?? "?view=accounts")
+                        : "?view=accounts"
+                    }
+                  >
+                    {state.automaticConnection
+                      ? "Open Photos"
+                      : "Open Metadata sources"}
+                  </a>
+                  <button
+                    type="button"
+                    class="text-button"
+                    onClick$={() => load()}
+                  >
+                    Try again
+                  </button>
+                </div>
               </div>
             ) : state.loading ? (
               <LoadingState />
@@ -743,7 +858,6 @@ export const ImagesView = component$<{
               <>
                 {!state.items.length && (
                   <div class="images-empty">
-                    <Icon name="image" size={32} />
                     <h2>No photos found</h2>
                     <p>
                       {state.appliedQuery
@@ -765,6 +879,7 @@ export const ImagesView = component$<{
                         selected: state.selected?.id === image.id,
                       }}
                       aria-pressed={state.selected?.id === image.id}
+                      title={tiles ? image.filename : undefined}
                       disabled={busy}
                       onClick$={() => choose(image)}
                     >
