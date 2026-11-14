@@ -101,6 +101,18 @@ describe("music player playback options", () => {
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="player" />);
     await vi.waitFor(() => expect(screen.textContent).toContain("Blue Hour"));
+    const searchButton = screen.querySelector<HTMLButtonElement>(
+      'button[aria-label="Search albums and tracks"]',
+    );
+    expect(searchButton).toBeTruthy();
+    await userEvent(searchButton ?? null, "click");
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector(
+          'input[aria-label="Search loaded albums and tracks"]',
+        ),
+      ).toBeTruthy(),
+    );
     const search = screen.querySelector<HTMLInputElement>(
       'input[aria-label="Search loaded albums and tracks"]',
     );

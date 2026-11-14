@@ -175,6 +175,8 @@ export type IconName =
   | "scan"
   | "arrow"
   | "image"
+  | "grid"
+  | "list"
   | "chevron-down"
   | "chevron-right"
   | "chevron-left"

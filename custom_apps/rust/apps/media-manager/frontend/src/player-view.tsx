@@ -8,7 +8,7 @@ import {
 } from "@builder.io/qwik";
 import { api, catalogItems, readableError } from "./api";
 import { Icon } from "./icon";
-import { CollectionViewControl, useCollectionView } from "./collection-view";
+import { collectionViews, useCollectionView } from "./collection-view";
 import "./music-collection.css";
 import { LibraryMiniPlayer } from "./mini-player";
 import { PlaybackSettings } from "./playback-settings";
@@ -47,6 +47,11 @@ export const PlayerView = component$<{
   const audioRef = useSignal<HTMLAudioElement>();
   const settingsRef = useSignal<HTMLElement>();
   const search = useSignal("");
+  const libraryMenu = useSignal<"" | "search" | "view">("");
+  const libraryToolsRef = useSignal<HTMLElement>();
+  const searchButtonRef = useSignal<HTMLButtonElement>();
+  const viewButtonRef = useSignal<HTMLButtonElement>();
+  const searchInputRef = useSignal<HTMLInputElement>();
   const lastSavedPosition = useSignal(0);
   const playbackGeneration = useSignal(0);
   const activeTrackId = useSignal("");
@@ -72,7 +77,6 @@ export const PlayerView = component$<{
     volume: number;
     loading: boolean;
     error: string;
-    selectedRootFilter: string;
     shuffle: ShuffleScope;
     shuffleOrder: number[];
     stopAfterCurrent: boolean;
@@ -92,7 +96,6 @@ export const PlayerView = component$<{
     volume: 1,
     loading: true,
     error: "",
-    selectedRootFilter: "",
     shuffle: "off",
     shuffleOrder: [],
     stopAfterCurrent: false,
@@ -109,18 +112,15 @@ export const PlayerView = component$<{
 
   const loadGeneration = useSignal(0);
 
-  const loadTracks = $(async (rootId?: string) => {
+  const loadTracks = $(async () => {
     const generation = ++loadGeneration.value;
     const current = () => generation === loadGeneration.value;
     playerState.loading = true;
     playerState.error = "";
     const playingTrack = playerState.tracks[playerState.currentIndex];
     try {
-      const rootsToLoad = rootId
-        ? musicRoots.filter((r) => r.id === rootId)
-        : musicRoots;
       const results = await Promise.all(
-        rootsToLoad.map((root) => catalogItems(root.id, current)),
+        musicRoots.map((root) => catalogItems(root.id, current)),
       );
       if (!current()) return;
       const allItems = results.flatMap((r) => r.items);
@@ -766,6 +766,13 @@ export const PlayerView = component$<{
     });
   });
 
+  // Moving into the compact toolbar, the search field only exists while its
+  // popover is open, so focus it as soon as it renders.
+  useVisibleTask$(({ track }) => {
+    if (track(() => libraryMenu.value) !== "search") return;
+    searchInputRef.value?.focus();
+  });
+
   const upNextStep = queuedNext(
     playerState.tracks,
     playerState.shuffleOrder,
@@ -1220,64 +1227,149 @@ export const PlayerView = component$<{
                 Albums
               </button>
             )}
-            {playerState.albumView && <h3>Albums</h3>}
-            <div class="sidebar-header-actions">
-              {musicRoots.length > 1 && (
-                <select
-                  class="root-filter-select"
-                  aria-label="Music library"
-                  value={playerState.selectedRootFilter}
-                  onChange$={(_, el) => {
-                    playerState.selectedRootFilter = el.value;
-                    playerState.albumView = true;
-                    playerState.selectedAlbumDir = "";
-                    loadTracks(el.value || undefined);
+            <div
+              class="sidebar-header-actions"
+              ref={libraryToolsRef}
+              document:onClick$={(event: MouseEvent) => {
+                const container = libraryToolsRef.value;
+                const target = event.target as Node | null;
+                if (!container || !target || container.contains(target)) return;
+                libraryMenu.value = "";
+              }}
+              document:onKeyDown$={(event: KeyboardEvent) => {
+                if (event.key !== "Escape" || !libraryMenu.value) return;
+                const wasSearch = libraryMenu.value === "search";
+                libraryMenu.value = "";
+                (wasSearch
+                  ? searchButtonRef.value
+                  : viewButtonRef.value
+                )?.focus();
+              }}
+            >
+              <div class="library-tool">
+                <button
+                  type="button"
+                  class={{
+                    "library-tool-button": true,
+                    "tool-active":
+                      libraryMenu.value === "search" || search.value !== "",
                   }}
+                  aria-label="Search albums and tracks"
+                  aria-haspopup="dialog"
+                  aria-expanded={libraryMenu.value === "search"}
+                  title="Search albums and tracks"
+                  ref={searchButtonRef}
+                  onClick$={() =>
+                    (libraryMenu.value =
+                      libraryMenu.value === "search" ? "" : "search")
+                  }
                 >
-                  <option value="">All music</option>
-                  {musicRoots.map((root) => (
-                    <option value={root.id} key={root.id}>
-                      {root.label}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {playerState.selectedAlbumDir ? (
+                  <Icon name="search" size={18} />
+                </button>
+                {libraryMenu.value === "search" && (
+                  <div
+                    class="library-tool-popover library-search-popover"
+                    role="search"
+                  >
+                    <label class="library-search-field">
+                      <span class="sr-only">
+                        Search loaded albums and tracks
+                      </span>
+                      <input
+                        ref={searchInputRef}
+                        type="search"
+                        aria-label="Search loaded albums and tracks"
+                        placeholder="Find albums or tracks"
+                        value={search.value}
+                        onInput$={(_, input) => (search.value = input.value)}
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                class="library-tool-button"
+                aria-label={
+                  playerState.selectedAlbumDir ? "Play album" : "Play all music"
+                }
+                title={
+                  playerState.selectedAlbumDir ? "Play album" : "Play all music"
+                }
+                disabled={
+                  !playerState.selectedAlbumDir &&
+                  playerState.tracks.length === 0
+                }
+                onClick$={() => {
+                  libraryMenu.value = "";
+                  if (playerState.selectedAlbumDir)
+                    void playAlbum(playerState.selectedAlbumDir);
+                  else void playAllTracks();
+                }}
+              >
+                <Icon name="play" size={18} />
+              </button>
+              <div class="library-tool">
                 <button
                   type="button"
-                  class="secondary-button compact-action"
-                  onClick$={() => playAlbum(playerState.selectedAlbumDir)}
+                  class={{
+                    "library-tool-button": true,
+                    "tool-active": libraryMenu.value === "view",
+                  }}
+                  aria-label="Change music view"
+                  aria-haspopup="menu"
+                  aria-expanded={libraryMenu.value === "view"}
+                  title="Change music view"
+                  ref={viewButtonRef}
+                  onClick$={() =>
+                    (libraryMenu.value =
+                      libraryMenu.value === "view" ? "" : "view")
+                  }
                 >
-                  <Icon name="play" size={14} /> Play album
+                  <Icon
+                    name={layout.view.value.endsWith("-list") ? "list" : "grid"}
+                    size={18}
+                  />
                 </button>
-              ) : (
-                <button
-                  type="button"
-                  class="secondary-button compact-action"
-                  disabled={playerState.tracks.length === 0}
-                  onClick$={playAllTracks}
-                >
-                  <Icon name="play" size={14} /> Play all
-                </button>
-              )}
+                {libraryMenu.value === "view" && (
+                  <div
+                    class="library-tool-popover library-view-popover"
+                    role="menu"
+                    aria-label="Music view"
+                  >
+                    {collectionViews.map(([value, label]) => {
+                      const selected = layout.view.value === value;
+                      return (
+                        <button
+                          key={value}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={selected}
+                          class={{
+                            "library-view-option": true,
+                            selected,
+                          }}
+                          onClick$={() => {
+                            layout.change(value);
+                            libraryMenu.value = "";
+                            viewButtonRef.value?.focus();
+                          }}
+                        >
+                          <Icon
+                            name={value.endsWith("-list") ? "list" : "grid"}
+                            size={16}
+                          />
+                          <span>{label}</span>
+                          <span class="library-view-check" aria-hidden="true">
+                            {selected && <Icon name="check" size={14} />}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-          <div class="music-library-tools">
-            <label class="video-library-filter">
-              <span class="sr-only">Search loaded albums and tracks</span>
-              <input
-                type="search"
-                aria-label="Search loaded albums and tracks"
-                placeholder="Find albums or tracks"
-                value={search.value}
-                onInput$={(_, input) => (search.value = input.value)}
-              />
-            </label>
-            <CollectionViewControl
-              label="Music view"
-              value={layout.view.value}
-              onChange$={layout.change}
-            />
           </div>
           {playerState.loading ? (
             <LoadingState />

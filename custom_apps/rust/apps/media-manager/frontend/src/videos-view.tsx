@@ -11,23 +11,40 @@ import { Icon } from "./icon";
 import { findTargetIndex, prepareBrowserPlayback } from "./playback-target";
 import type { CatalogItem, MediaRoot } from "./root-types";
 import { thumbnailSizes, thumbnailSrc, thumbnailSrcset } from "./thumbnail";
+import {
+  audioNeedsBrowserConversion,
+  decodedAudioState,
+  probeReportsNoAudio,
+} from "./video-audio";
 
 const THEATRE_STORAGE_KEY = "media-manager.videos.theatre";
+
+function fileName(relativePath: string): string {
+  return relativePath.split("/").at(-1) ?? relativePath;
+}
+
+// The title shown for a video is its metadata title; the file name without the
+// extension is the fallback when no title has been set.
+function fileStem(relativePath: string): string {
+  const filename = fileName(relativePath);
+  const extension = filename.match(/\.[^.\s]{1,5}$/)?.[0] ?? "";
+  return extension && extension.length < filename.length
+    ? filename.slice(0, -extension.length)
+    : filename;
+}
 
 // Rows show only the title: the extension stays in the tooltip and for screen
 // readers, and the folder remains searchable through the filter.
 const VideoListCopy = component$<{ relativePath: string }>((props) => {
-  const filename = props.relativePath.split("/").at(-1) ?? props.relativePath;
-  const extension = filename.match(/\.[^.\s]{1,5}$/)?.[0] ?? "";
-  const stem =
-    extension && extension.length < filename.length
-      ? filename.slice(0, -extension.length)
-      : filename;
+  const filename = fileName(props.relativePath);
+  const stem = fileStem(props.relativePath);
   return (
     <span class="video-list-copy">
       <strong title={filename}>
         {stem}
-        {stem !== filename && <span class="sr-only">{extension}</span>}
+        {stem !== filename && (
+          <span class="sr-only">{filename.slice(stem.length)}</span>
+        )}
       </strong>
     </span>
   );
@@ -45,12 +62,14 @@ export const VideosView = component$<{
   const state = useStore({
     items: [] as CatalogItem[],
     selectedId: "",
+    title: "",
     rootId: "",
     query: "",
     loading: true,
     error: "",
     transcode: false,
     transcodeLoading: false,
+    audioChecked: false,
   });
   const configuredVideoRoots = props.roots.filter(
     (root) => root.category === "videos",
@@ -61,6 +80,7 @@ export const VideosView = component$<{
 
   const loadGeneration = useSignal(0);
   const preparationGeneration = useSignal(0);
+  const titleGeneration = useSignal(0);
 
   const loadVideos = $(async () => {
     const generation = ++loadGeneration.value;
@@ -72,7 +92,7 @@ export const VideosView = component$<{
         ? videoRoots.filter((root) => root.id === state.rootId)
         : videoRoots;
       const results = await Promise.all(
-        roots.map((root) => catalogItems(root.id, current)),
+        roots.map((root) => catalogItems(root.id, current, true)),
       );
       if (!current()) return;
       state.items = results
@@ -105,6 +125,7 @@ export const VideosView = component$<{
             : (state.items[0]?.id ?? "");
         state.transcode = false;
         state.transcodeLoading = false;
+        state.audioChecked = false;
       }
     } catch (error) {
       if (current()) state.error = readableError(error);
@@ -122,9 +143,77 @@ export const VideosView = component$<{
   const chooseVideo = $((id: string) => {
     preparationGeneration.value++;
     state.selectedId = id;
+    state.title = "";
     state.transcode = false;
     state.transcodeLoading = false;
+    state.audioChecked = false;
     state.error = "";
+  });
+
+  // Browsers render a video whose audio codec they cannot decode without
+  // raising an error, so a silent track never reaches the error fallback.
+  // Prepare the H.264/AAC conversion up front whenever we already know the
+  // track would be dropped.
+  const prepareBrowserCopy = $(async (id: string) => {
+    const generation = ++preparationGeneration.value;
+    const current = () =>
+      generation === preparationGeneration.value && state.selectedId === id;
+    state.transcodeLoading = true;
+    try {
+      if (await prepareBrowserPlayback(id, current)) state.transcode = true;
+    } catch (error) {
+      if (current()) state.error = readableError(error);
+    } finally {
+      if (current()) state.transcodeLoading = false;
+    }
+  });
+
+  useTask$(async ({ track }) => {
+    track(() => state.selectedId);
+    const item = selected();
+    if (!item || !audioNeedsBrowserConversion(item.videoProbe)) return;
+    await prepareBrowserCopy(item.id);
+  });
+
+  // The probe cache fills in the background, so a just-scanned video may not
+  // have one yet. Chrome and Firefox report whether audio was actually decoded
+  // after playback starts; an unprobed silent element means the track was
+  // dropped, and the conversion restores it.
+  const checkDecodedAudio = $(() => {
+    const video = videoRef.value;
+    if (
+      !video ||
+      state.transcode ||
+      state.transcodeLoading ||
+      state.audioChecked
+    )
+      return;
+    if (video.currentTime < 3) return;
+    state.audioChecked = true;
+    const item = selected();
+    if (!item || item.videoProbe || probeReportsNoAudio(item.videoProbe))
+      return;
+    if (decodedAudioState(video) !== "silent") return;
+    void prepareBrowserCopy(item.id);
+  });
+
+  useTask$(async ({ track }) => {
+    track(() => state.selectedId);
+    const itemId = state.selectedId;
+    const generation = ++titleGeneration.value;
+    const current = () => generation === titleGeneration.value;
+    state.title = "";
+    if (!itemId) return;
+    try {
+      const metadata = await api<{ title?: string }>(
+        `/items/${encodeURIComponent(itemId)}/metadata`,
+      );
+      if (!current()) return;
+      const title = String(metadata.title ?? "").trim();
+      if (title) state.title = title;
+    } catch {
+      // Without a metadata title the file name remains the fallback.
+    }
   });
 
   useVisibleTask$(({ cleanup }) => {
@@ -167,6 +256,11 @@ export const VideosView = component$<{
 
   const selected = () =>
     state.items.find((item) => item.id === state.selectedId);
+  const displayTitle = () => {
+    const item = selected();
+    if (!item) return "";
+    return state.title || fileStem(item.relativePath);
+  };
   const streamUrl = () => {
     const item = selected();
     if (!item) return "";
@@ -273,22 +367,10 @@ export const VideosView = component$<{
                   "This video could not be played after conversion.";
                 return;
               }
-              const id = state.selectedId;
-              const generation = ++preparationGeneration.value;
-              const current = () =>
-                generation === preparationGeneration.value &&
-                state.selectedId === id;
-              state.transcodeLoading = true;
-              try {
-                if (await prepareBrowserPlayback(id, current))
-                  state.transcode = true;
-              } catch (error) {
-                if (current()) state.error = readableError(error);
-              } finally {
-                if (current()) state.transcodeLoading = false;
-              }
+              await prepareBrowserCopy(state.selectedId);
             }}
             onCanPlay$={() => (state.transcodeLoading = false)}
+            onTimeUpdate$={checkDecodedAudio}
           />
         ) : (
           <div class="video-screen video-screen-empty">
@@ -300,7 +382,9 @@ export const VideosView = component$<{
           <div class="video-title">
             <div class="video-title-text">
               {selected() && (
-                <h2>{selected()!.relativePath.split("/").at(-1)}</h2>
+                <h2 title={fileName(selected()!.relativePath)}>
+                  {displayTitle()}
+                </h2>
               )}
               {videoRoots.length > 1 && (
                 <label class="video-library-select">
@@ -334,14 +418,26 @@ export const VideosView = component$<{
                 {pipSupported.value && (
                   <button
                     type="button"
-                    class="secondary-button compact-action video-action-button"
+                    class="secondary-button compact-action video-action-button video-pip-button"
+                    aria-label={
+                      pipActive.value
+                        ? "Exit picture in picture"
+                        : "Picture in picture"
+                    }
+                    title={
+                      pipActive.value
+                        ? "Exit picture in picture"
+                        : "Picture in picture"
+                    }
                     aria-pressed={pipActive.value}
                     onClick$={togglePip}
                   >
                     <Icon name="picture-in-picture" size={14} />
-                    {pipActive.value
-                      ? "Exit picture in picture"
-                      : "Picture in picture"}
+                    <span class="video-action-label">
+                      {pipActive.value
+                        ? "Exit picture in picture"
+                        : "Picture in picture"}
+                    </span>
                   </button>
                 )}
               </div>
