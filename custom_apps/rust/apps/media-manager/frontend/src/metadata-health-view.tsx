@@ -12,6 +12,8 @@ import {
   component$,
   Slot,
   type QRL,
+  type Signal,
+  useConstant,
   useSignal,
   noSerialize,
   type NoSerialize,
@@ -74,15 +76,26 @@ function healthEntryId(itemId: string, issue: MetadataHealthIssue): string {
   return `${itemId}\u0000${healthIssueKey(issue)}`;
 }
 
-function hiddenIssueCount(
+function issueTotal(results: MetadataHealthResult[]): number {
+  return results.reduce((total, result) => total + result.health.length, 0);
+}
+
+// Results unaffected by hidden issues keep their identity, so their groups
+// (and the components rendering them) are reused rather than rebuilt.
+function visibleHealthResults(
   results: MetadataHealthResult[],
-  hidden: Record<string, boolean>,
-): number {
-  let count = 0;
-  for (const result of results)
-    for (const issue of result.health)
-      if (hidden[healthEntryId(result.itemId, issue)]) count += 1;
-  return count;
+  hidden: ReadonlySet<string>,
+): MetadataHealthResult[] {
+  if (hidden.size === 0) return results;
+  const visible: MetadataHealthResult[] = [];
+  for (const result of results) {
+    const health = result.health.filter(
+      (issue) => !hidden.has(healthEntryId(result.itemId, issue)),
+    );
+    if (health.length === result.health.length) visible.push(result);
+    else if (health.length) visible.push({ ...result, health });
+  }
+  return visible;
 }
 
 function wait(milliseconds: number): Promise<void> {
@@ -804,12 +817,16 @@ const ALBUM_HEALTH_FIELDS = new Set([
   "language",
 ]);
 
+// The value shown as chosen. It is published as soon as the reviewer picks
+// it; a failed save puts back the last value the server confirmed (none when
+// nothing was confirmed) and keeps the failure beside the choice.
 interface HealthSelection {
-  origin: "Current" | "Proposed";
-  valueKey: string;
+  origin?: "Current" | "Proposed";
+  valueKey?: string;
   revision: number;
   error?: string;
 }
+type ConfirmedChoice = Pick<HealthSelection, "origin" | "valueKey">;
 type HealthSelections = Record<string, HealthSelection>;
 
 type AlbumTarget = { rootId: string; path: string };
@@ -854,25 +871,23 @@ function blocksLaterChecks(grouped: GroupedIssue, canEdit: boolean): boolean {
   );
 }
 
+// Hidden ("unsure") issues are already filtered out of the results passed in.
 function issueAnswered(
   grouped: GroupedIssue,
   selections: HealthSelections,
-  hidden: Record<string, boolean>,
 ): boolean {
-  return grouped.entries.every(({ issue, target }) => {
-    const key = healthEntryId(target.itemId, issue);
-    const selection = selections[key];
-    return Boolean(hidden[key] || (selection && !selection.error));
-  });
+  return grouped.entries.every(
+    ({ issue, target }) =>
+      selections[healthEntryId(target.itemId, issue)]?.origin !== undefined,
+  );
 }
 
-// Count the checks a settled priority issue keeps hidden. This reads the
-// selection store, so it belongs in a small subscribing component rather than
-// the page render.
+// Count the checks a settled priority issue keeps hidden. This walks every
+// result, so it runs outside rendering (see the page's idle summary task)
+// rather than on the click that changed a selection.
 function heldIssueCount(
   results: MetadataHealthResult[],
   selections: HealthSelections,
-  hidden: Record<string, boolean>,
   canEdit: boolean,
 ): number {
   let total = 0;
@@ -881,7 +896,7 @@ function heldIssueCount(
     const held = issues.some(
       (grouped) =>
         blocksLaterChecks(grouped, canEdit) &&
-        !issueAnswered(grouped, selections, hidden),
+        !issueAnswered(grouped, selections),
     );
     if (!held) continue;
     for (const grouped of issues)
@@ -950,13 +965,10 @@ function sharedSelectionKey(
 ): string | undefined {
   if (selections.length === 0) return undefined;
   const first = selections[0];
-  if (!first || first.error || first.origin !== origin) return undefined;
+  if (!first || first.origin !== origin) return undefined;
   return selections.every(
     (selection) =>
-      selection &&
-      !selection.error &&
-      selection.origin === origin &&
-      selection.valueKey === first.valueKey,
+      selection?.origin === origin && selection.valueKey === first.valueKey,
   )
     ? first.valueKey
     : undefined;
@@ -1206,8 +1218,7 @@ const HealthNumberRow = component$<{
   const failure = selection?.error;
   // A typed value matches neither column, so it is shown beside them.
   const custom =
-    selection &&
-    !selection.error &&
+    selection?.valueKey !== undefined &&
     ![issue.currentValue, ...proposed.map((candidate) => candidate.value)]
       .map(healthValueKey)
       .includes(selection.valueKey)
@@ -1219,9 +1230,7 @@ const HealthNumberRow = component$<{
     sources: string[],
   ) => {
     const pressed =
-      !!selection &&
-      !selection.error &&
-      selection.origin === origin &&
+      selection?.origin === origin &&
       selection.valueKey === healthValueKey(value);
     return props.editable && !isUnset(value) ? (
       <button
@@ -2089,7 +2098,6 @@ const HealthGroupChecks = component$<{
   getSession$: GetHealthLookupSession;
   providers: ProviderDefinition[];
   selections: HealthSelections;
-  hidden: Record<string, boolean>;
   onlineSelections: Record<string, { value: unknown; source: string }>;
   onApply$: ApplyHealthValue;
   onDecision$: QRL<
@@ -2110,7 +2118,7 @@ const HealthGroupChecks = component$<{
   const held = issues.some(
     (grouped) =>
       blocksLaterChecks(grouped, props.canEdit) &&
-      !issueAnswered(grouped, props.selections, props.hidden),
+      !issueAnswered(grouped, props.selections),
   );
   const shown = held
     ? issues.filter((grouped) => isPriorityIssue(grouped.issue))
@@ -2146,29 +2154,16 @@ const HealthGroupChecks = component$<{
   );
 });
 
-// The toolbar total has to follow held priority checks, so it subscribes on its
-// own instead of making the page render read every selection.
+// The held count is computed off the click path and arrives as a signal, so
+// only this line repaints when a priority pick reveals or holds checks.
 const HealthSummary = component$<{
-  results: MetadataHealthResult[];
-  visibleResults: MetadataHealthResult[];
-  issueCount: number;
+  shownIssueCount: number;
+  held: Signal<number>;
   inspectedItems: number;
   scanning: boolean;
   incomplete: boolean;
-  canEdit: boolean;
-  selections: HealthSelections;
-  hidden: Record<string, boolean>;
 }>((props) => {
-  const held = heldIssueCount(
-    props.visibleResults,
-    props.selections,
-    props.hidden,
-    props.canEdit,
-  );
-  const visible = Math.max(
-    0,
-    props.issueCount - hiddenIssueCount(props.results, props.hidden) - held,
-  );
+  const visible = Math.max(0, props.shownIssueCount - props.held.value);
   return (
     <p class="health-summary" role="status">
       {props.scanning
@@ -2195,16 +2190,21 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
   useVisibleTask$(({ cleanup }) => {
     cleanup(() => lookupSession.value?.dispose());
   });
-  const inbox = useStore({
-    rootId: props.roots.some((root) => root.id === props.initialRootId)
-      ? props.initialRootId!
-      : "",
-    results: [] as MetadataHealthResult[],
-    inspectedItems: 0,
-    issueCount: 0,
-    scanning: false,
-    errors: [] as string[],
-  });
+  const inbox = useStore(
+    {
+      rootId: props.roots.some((root) => root.id === props.initialRootId)
+        ? props.initialRootId!
+        : "",
+      results: [] as MetadataHealthResult[],
+      inspectedItems: 0,
+      issueCount: 0,
+      scanning: false,
+      errors: [] as string[],
+      // Results are replaced, never mutated, so the store stays shallow: reading
+      // hundreds of results must not create a subscription per nested field.
+    },
+    { deep: false },
+  );
   const requestRevision = useSignal(0);
   const providerCatalog = useStore<{
     providers: ProviderDefinition[];
@@ -2224,15 +2224,53 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
     Record<string, { value: unknown; source: string }>
   >({});
   const feedback = useStore({ error: "", notice: "" });
+  // Each row subscribes to its own keys. Whole-library derivations read the
+  // store outside rendering, so a pick repaints only the rows it changed.
   const selections = useStore<HealthSelections>({}, { deep: false });
-  const optimisticDecisions = useStore<Record<string, boolean>>({});
+  // Values the server has confirmed; a failed save reverts to these.
+  const confirmed = useConstant(() =>
+    noSerialize(new Map<string, ConfirmedChoice>()),
+  )!;
+  // Issues answered "unsure", hidden at once and restored only on failure.
+  const hidden = useSignal<ReadonlySet<string>>(new Set());
+  const selectionVersion = useSignal(0);
+  const heldCount = useSignal(0);
+  const groupCache = useConstant(() =>
+    noSerialize(new Map<string, HealthGroup>()),
+  )!;
+  // Settle each picked key once its queued write finishes. Only the latest
+  // pick for a key may change what is shown; an older outcome just updates
+  // the confirmed value a later failure would revert to.
+  const settle$ = $(
+    (
+      picked: { key: string; selection: HealthSelection }[],
+      saved: boolean,
+      failure: string,
+    ) => {
+      let reverted = false;
+      for (const { key, selection } of picked) {
+        if (saved)
+          confirmed.set(key, {
+            origin: selection.origin,
+            valueKey: selection.valueKey,
+          });
+        if (!failure || selections[key]?.revision !== selection.revision)
+          continue;
+        selections[key] = {
+          ...confirmed.get(key),
+          revision: selection.revision,
+          error: failure,
+        };
+        reverted = true;
+      }
+      if (reverted) selectionVersion.value++;
+    },
+  );
   const pruneEntries$ = $((entries: HealthIssueEntry[]) => {
     let remaining = inbox.results;
     for (const entry of entries)
       remaining = withoutHealthEntry(remaining, entry);
-    const count = (results: MetadataHealthResult[]) =>
-      results.reduce((total, result) => total + result.health.length, 0);
-    const removed = count(inbox.results) - count(remaining);
+    const removed = issueTotal(inbox.results) - issueTotal(remaining);
     inbox.results = remaining;
     inbox.issueCount = Math.max(0, inbox.issueCount - removed);
   });
@@ -2249,32 +2287,43 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
   const rememberDecision$ = $(
     (entry: HealthIssueEntry, choice: HealthChoice, planId?: string) => {
       const key = healthEntryId(entry.target.itemId, entry.issue);
+      if (choice === "unsure") {
+        hidden.value = new Set(hidden.value).add(key);
+        enqueueHealthWrite(async () => {
+          const failure = await saveDecision$(entry, choice, planId);
+          if (failure) feedback.error = failure;
+          else {
+            await pruneEntries$([entry]);
+            feedback.notice =
+              "Hidden until the proposed values or sources change.";
+          }
+          const next = new Set(hidden.value);
+          next.delete(key);
+          hidden.value = next;
+        });
+        return true;
+      }
       const selection: HealthSelection = {
         origin: choice === "proposed" ? "Proposed" : "Current",
         valueKey: healthValueKey(entry.issue.currentValue),
         revision: (selections[key]?.revision ?? 0) + 1,
       };
-      if (choice === "unsure") optimisticDecisions[key] = true;
-      else selections[key] = selection;
-      enqueueHealthWrite(async () => {
-        const failure = await saveDecision$(entry, choice, planId);
-        if (failure) {
-          delete optimisticDecisions[key];
-          if (choice === "unsure") feedback.error = failure;
-          else if (selections[key]?.revision === selection.revision)
-            selections[key] = {
-              ...selection,
-              error: `Could not save this choice: ${failure} Select a value to retry.`,
-            };
-          return;
-        }
-        if (choice === "unsure") {
-          await pruneEntries$([entry]);
-          delete optimisticDecisions[key];
-          feedback.notice =
-            "Hidden until the proposed values or sources change.";
-        }
-      });
+      selections[key] = selection;
+      selectionVersion.value++;
+      const picked = [{ key, selection }];
+      enqueueHealthWrite(
+        async () => {
+          const failure = await saveDecision$(entry, choice, planId);
+          await settle$(
+            picked,
+            !failure,
+            failure
+              ? `Could not save this choice: ${failure} Select a value to retry.`
+              : "",
+          );
+        },
+        () => selections[key]?.revision !== selection.revision,
+      );
       return true;
     },
   );
@@ -2283,6 +2332,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
     const revision = ++requestRevision.value;
     lookupSession.value?.dispose();
     lookupSession.value = undefined;
+    groupCache.clear();
     inbox.results = [];
     inbox.inspectedItems = 0;
     inbox.issueCount = 0;
@@ -2418,20 +2468,28 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
         : [{ issue, target }];
       if (!decided.length) return false;
 
-      // Keep rows mounted and publish the picked value before starting any I/O.
+      // Publish the picked value before any I/O; the queue drains afterwards.
       // Repeated picks are allowed; older saves cannot overwrite newer feedback.
+      const valueKey = healthValueKey(value);
       const picked = decided.map((entry) => {
         const key = healthEntryId(entry.target.itemId, entry.issue);
         const selection: HealthSelection = {
           origin,
-          valueKey: healthValueKey(value),
+          valueKey,
           revision: (selections[key]?.revision ?? 0) + 1,
         };
         selections[key] = selection;
         return { key, selection };
       });
+      selectionVersion.value++;
 
+      const superseded = () =>
+        picked.every(
+          ({ key, selection }) =>
+            selections[key]?.revision !== selection.revision,
+        );
       enqueueHealthWrite(async () => {
+        let written = false;
         try {
           // A confirmed plan writes the sidecar asynchronously. Previewing the
           // next edit before it lands would fail the source fingerprint check.
@@ -2484,7 +2542,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
               headers: { "if-match": `"${preview.digest}"` },
             });
             unsettledPlans.add(preview.id);
-          }
+          } else written = true;
           const decisionFailures: string[] = [];
           for (const entry of decided) {
             const failure = await saveDecision$(
@@ -2501,31 +2559,62 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
               throw new Error(
                 "The library is still processing this change. Check Activity before retrying.",
               );
+            written = true;
           }
           if (decisionFailures.length)
             throw new Error(
               `The value was saved, but the review choice could not be recorded: ${decisionFailures[0]}`,
             );
+          await settle$(picked, true, "");
         } catch (error) {
-          const failure = `Could not save this choice: ${readableError(error)} Select a value to retry.`;
-          for (const { key, selection } of picked)
-            if (selections[key]?.revision === selection.revision)
-              selections[key] = { ...selection, error: failure };
+          await settle$(
+            picked,
+            written,
+            `Could not save this choice: ${readableError(error)} Select a value to retry.`,
+          );
         }
-      });
+      }, superseded);
       return true;
     },
   );
 
+  // Whole-library derivations stay off the click path: the held count is
+  // recomputed once the browser is idle, from untracked store reads.
+  useVisibleTask$(({ track, cleanup }) => {
+    track(() => selectionVersion.value);
+    const results = track(() => inbox.results);
+    const hiddenKeys = track(() => hidden.value);
+    const canEdit = track(() => Boolean(props.canEdit));
+    const compute = () => {
+      heldCount.value = heldIssueCount(
+        visibleHealthResults(results, hiddenKeys),
+        selections,
+        canEdit,
+      );
+    };
+    if (typeof requestIdleCallback === "function") {
+      const handle = requestIdleCallback(compute, { timeout: 500 });
+      cleanup(() => cancelIdleCallback(handle));
+    } else {
+      const handle = setTimeout(compute, 50);
+      cleanup(() => clearTimeout(handle));
+    }
+  });
+
   const dialog = providersDialogFor.value;
-  const visibleResults = inbox.results
-    .map((result) => ({
-      ...result,
-      health: result.health.filter(
-        (issue) => !optimisticDecisions[healthEntryId(result.itemId, issue)],
-      ),
-    }))
-    .filter((result) => result.health.length > 0);
+  const visibleResults = visibleHealthResults(inbox.results, hidden.value);
+  // Reuse unchanged groups so hiding one issue re-renders only its item.
+  const groups = groupResults(visibleResults).map((group) => {
+    const previous = groupCache.get(group.key);
+    if (
+      previous &&
+      previous.results.length === group.results.length &&
+      previous.results.every((result, index) => result === group.results[index])
+    )
+      return previous;
+    groupCache.set(group.key, group);
+    return group;
+  });
   return (
     <section
       class="health-page"
@@ -2566,15 +2655,14 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
           </select>
         </label>
         <HealthSummary
-          results={inbox.results}
-          visibleResults={visibleResults}
-          issueCount={inbox.issueCount}
+          shownIssueCount={
+            inbox.issueCount -
+            (issueTotal(inbox.results) - issueTotal(visibleResults))
+          }
+          held={heldCount}
           inspectedItems={inbox.inspectedItems}
           scanning={inbox.scanning}
           incomplete={inbox.errors.length > 0}
-          canEdit={Boolean(props.canEdit)}
-          selections={selections}
-          hidden={optimisticDecisions}
         />
       </div>
 
@@ -2604,7 +2692,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
       ) : null}
 
       <div class="health-results">
-        {groupResults(visibleResults).map((group) => (
+        {groups.map((group) => (
           <HealthGroupChecks
             key={group.key}
             group={group}
@@ -2612,7 +2700,6 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
             getSession$={getLookupSession$}
             providers={providerCatalog.providers}
             selections={selections}
-            hidden={optimisticDecisions}
             onlineSelections={onlineSelections}
             onApply$={applyValue$}
             onDecision$={rememberDecision$}

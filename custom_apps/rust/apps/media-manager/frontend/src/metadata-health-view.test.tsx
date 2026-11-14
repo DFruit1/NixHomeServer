@@ -969,7 +969,9 @@ it("settles a priority value and reveals the item's remaining checks", async () 
       canEdit
     />,
   );
-  await vi.waitFor(() => {
+  // The held count is computed off the click path; flush the test platform.
+  await vi.waitFor(async () => {
+    await userEvent(screen, "click");
     expect(screen.querySelectorAll(".health-result-issue")).toHaveLength(1);
     expect(screen.textContent).toContain("1 issue across 1 inspected item");
   });
@@ -979,7 +981,8 @@ it("settles a priority value and reveals the item's remaining checks", async () 
   ).find((button) => button.textContent?.includes("New title"));
   if (!proposed) throw new Error("missing proposed priority value");
   await userEvent(proposed, "click");
-  await vi.waitFor(() => {
+  await vi.waitFor(async () => {
+    await userEvent(screen, "click");
     expect(screen.querySelectorAll(".health-result-issue")).toHaveLength(2);
     expect(screen.textContent).toContain("Volume Number differs");
     expect(screen.textContent).toContain("2 issues across 1 inspected item");

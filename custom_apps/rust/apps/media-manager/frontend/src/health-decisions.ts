@@ -10,10 +10,36 @@ export interface HealthIssueEntry {
 }
 
 // All health selections share one FIFO, including different albums and files.
-// Click handlers enqueue immediately; only the worker waits for network I/O.
-let healthWriteChain = Promise.resolve();
-export function enqueueHealthWrite(work: () => Promise<void>): void {
-  healthWriteChain = healthWriteChain.then(work).catch(() => undefined);
+// A click handler only appends a job; draining starts on a later task, so the
+// pick is rendered before any queued work (or its network I/O) begins. A job
+// whose picks were all replaced by later picks is skipped: the later job
+// writes the value the reviewer ended up with.
+interface HealthWrite {
+  run: () => Promise<void>;
+  superseded?: () => boolean;
+}
+const healthWrites: HealthWrite[] = [];
+let healthWriteDrain: Promise<void> | undefined;
+
+async function drainHealthWrites() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let job = healthWrites.shift(); job; job = healthWrites.shift()) {
+    if (job.superseded?.()) continue;
+    try {
+      await job.run();
+    } catch {
+      // Each job reports its own failure beside the choice it saved.
+    }
+  }
+  healthWriteDrain = undefined;
+}
+
+export function enqueueHealthWrite(
+  run: () => Promise<void>,
+  superseded?: () => boolean,
+): void {
+  healthWrites.push({ run, superseded });
+  healthWriteDrain ??= drainHealthWrites();
 }
 
 export const healthValueKey = (value: unknown) => JSON.stringify(value ?? null);
