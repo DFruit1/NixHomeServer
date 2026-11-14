@@ -1192,7 +1192,9 @@ async function saveSessionBackup(): Promise<void> {
   if (!invoke) return;
   try {
     const backup = await invoke<string | null>('session_backup');
+    // Device-key sessions are never backed up; drop any older copy too.
     if (backup) localStorage.setItem(SESSION_BACKUP_KEY, backup);
+    else localStorage.removeItem(SESSION_BACKUP_KEY);
   } catch { /* The session stays available in secure storage only. */ }
 }
 

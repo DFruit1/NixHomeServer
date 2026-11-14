@@ -449,11 +449,14 @@ async fn finish_login<R: Runtime>(
     let existing = load_session(&app).ok().flatten();
 
     // A sign-in on a device that already holds this account's sync key only
-    // unlocks settings: keep the key and drop the new Kanidm session.
+    // unlocks settings: keep the key and drop the new Kanidm session. Replace
+    // the key only when the server says it was revoked; if the API cannot be
+    // reached, keeping the working key beats swapping it for a Kanidm session.
     if let (Some(existing), Some(username)) = (existing.as_ref(), claimed.as_deref()) {
         if existing.device_key
             && existing.api_base == session.api_base
             && existing.username.as_deref() == Some(username)
+            && !matches!(check_identity(&client, existing).await, Identity::Revoked)
         {
             unlock_settings(&app)?;
             revoke_kanidm_session(&client, &session).await;
@@ -664,16 +667,76 @@ async fn current_user<R: Runtime>(app: AppHandle<R>) -> Result<Option<String>, S
     };
     let client = http_client()?;
     let session = upgrade_to_device_key(&client, &app, session).await?;
-    match fetch_current_user(&client, &session).await {
-        Err(error) if session.device_key && error.contains("HTTP 401") => {
-            // The server no longer knows this device's key (signed out
-            // elsewhere or revoked by the operator).
-            let _ = app.mobile_files().clear_session();
-            let _ = app.mobile_files().schedule_background_sync(false);
+    if !session.device_key {
+        return fetch_current_user(&client, &session).await.map(Some);
+    }
+    match check_identity(&client, &session).await {
+        Identity::User(username) => Ok(Some(username)),
+        Identity::Revoked => {
+            forget_revoked_device_key(&app, &session.access_token)?;
             Err("This device's sync key was revoked. Sign in again to reconnect File Sync.".into())
         }
-        result => result.map(Some),
+        // Keep the key on any other failure, including a 401 from a server
+        // rolled back to before device keys: syncing resumes once it returns.
+        Identity::Failed(error) => Err(error),
     }
+}
+
+enum Identity {
+    User(String),
+    /// The server reported this device key as revoked.
+    Revoked,
+    Failed(String),
+}
+
+async fn check_identity(client: &reqwest::Client, session: &StoredSession) -> Identity {
+    let response = match client
+        .get(format!("{}/api/v1/me", session.api_base))
+        .bearer_auth(&session.access_token)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return Identity::Failed(network_error(error)),
+    };
+    let status = response.status();
+    let body: Value = response.json().await.unwrap_or(Value::Null);
+    if status == reqwest::StatusCode::UNAUTHORIZED
+        && body.pointer("/error/code").and_then(Value::as_str) == Some("DEVICE_KEY_REVOKED")
+    {
+        return Identity::Revoked;
+    }
+    if !status.is_success() {
+        return Identity::Failed(format!(
+            "The server rejected the request (HTTP {}).",
+            status.as_u16()
+        ));
+    }
+    match body.get("username").and_then(Value::as_str) {
+        Some(username) => Identity::User(username.to_owned()),
+        None => Identity::Failed("The sync API returned an invalid identity response.".into()),
+    }
+}
+
+/// Clear the stored session only if it still holds the revoked key; a sign-in
+/// may have replaced it meanwhile.
+fn forget_revoked_device_key<R: Runtime>(app: &AppHandle<R>, token: &str) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    app.mobile_files()
+        .acquire_session_lock()
+        .map_err(|_| "Android could not coordinate clearing the revoked key.".to_owned())?;
+    let result = (|| {
+        if load_session(app)?.is_some_and(|current| current.access_token == token) {
+            app.mobile_files()
+                .clear_session()
+                .map_err(|error| error.to_string())?;
+            let _ = app.mobile_files().schedule_background_sync(false);
+        }
+        Ok(())
+    })();
+    #[cfg(target_os = "android")]
+    let _ = app.mobile_files().release_session_lock();
+    result
 }
 
 #[tauri::command]
@@ -2019,6 +2082,12 @@ fn session_backup<R: Runtime>(app: AppHandle<R>) -> Result<Option<String>, Strin
     let Some(session) = load_session(&app)? else {
         return Ok(None);
     };
+    // Never copy a permanent device key out of secure storage: WebView
+    // storage is plain text and eligible for Android backup. Losing secure
+    // storage then means one more sign-in.
+    if session.device_key {
+        return Ok(None);
+    }
     serde_json::to_string(&session)
         .map(Some)
         .map_err(|_| "The saved session could not be backed up.".to_owned())

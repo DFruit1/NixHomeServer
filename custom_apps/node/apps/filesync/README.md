@@ -63,8 +63,12 @@ Device keys never expire. **Sign out** revokes the device's key on the server.
 The server stores only SHA-256 digests of keys in
 `/var/lib/filesync-api/devices.json` (kept 16 per account, oldest dropped).
 Disabling a Kanidm account does not revoke its device keys: to revoke a lost
-device, remove its entries from that file and restart `filesync-api`. A revoked
-key stops background sync and asks the user to sign in again.
+device, stop `filesync-api`, remove its entries from that file, then start the
+service again (the running service rewrites the file on every key change). A
+revoked key stops background sync and asks the user to sign in again. The app
+forgets a key only when the server reports it revoked, so other rejections
+(such as a server rolled back to before device keys) leave it in place. The
+key is never copied out of secure storage into the WebView session backup.
 
 The server API runs as a dedicated unprivileged account. While it is running,
 systemd grants that account ACL access to the enabled personal library trees; the

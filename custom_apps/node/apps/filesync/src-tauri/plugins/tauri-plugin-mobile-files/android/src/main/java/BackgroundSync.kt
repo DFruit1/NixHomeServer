@@ -339,7 +339,7 @@ internal object SyncEngine {
    * the newer session is used as is — refreshing again would spend a rotated
    * refresh token twice.
    */
-  private fun currentSession(context: Context, rejectedToken: String? = null): JSONObject {
+  private fun currentSession(context: Context, rejectedToken: String? = null, keyRevoked: Boolean = false): JSONObject {
     sessionLock.acquire()
     try {
       val raw = SecureSecrets.load(context, SESSION_SLOT)
@@ -348,8 +348,11 @@ internal object SyncEngine {
       val fresh = session.optLong("expiresAt") > epochSeconds() + 60
       val refused = rejectedToken != null && session.optString("accessToken") == rejectedToken
       if (session.optBoolean("deviceKey")) {
-        // Device keys never expire; a rejection means the key was revoked.
+        // Device keys never expire. Forget one only when the server says it
+        // revoked it: any other 401 (for example a rolled-back server that
+        // predates device keys) keeps the key so sync resumes on its own.
         if (!refused) return session
+        if (!keyRevoked) throw SyncFailure("The sync server did not accept this device's key. Sync will retry.", true)
         SecureSecrets.clear(context, SESSION_SLOT)
         throw SyncFailure("This device's sync key was revoked. Sign in again to resume sync.", false, needsSignIn = true)
       }
@@ -405,8 +408,8 @@ internal object SyncEngine {
       return verified(session.getString("accessToken"))
     }
 
-    fun refreshAfterRejection(rejected: String): String {
-      session = currentSession(context, rejectedToken = rejected)
+    fun refreshAfterRejection(rejected: String, keyRevoked: Boolean): String {
+      session = currentSession(context, rejectedToken = rejected, keyRevoked = keyRevoked)
       return verified(session.getString("accessToken"))
     }
 
@@ -445,7 +448,8 @@ internal object SyncEngine {
     val token = tokens.token()
     val first = request(url, method, token, json = json, file = file, checksum = checksum, readTimeoutMs = readTimeoutMs)
     if (first.code != 401) return first
-    val renewed = tokens.refreshAfterRejection(token)
+    val errorCode = runCatching { JSONObject(first.body).getJSONObject("error").optString("code") }.getOrNull()
+    val renewed = tokens.refreshAfterRejection(token, keyRevoked = errorCode == "DEVICE_KEY_REVOKED")
     return request(url, method, renewed, json = json, file = file, checksum = checksum, readTimeoutMs = readTimeoutMs)
   }
 

@@ -353,9 +353,11 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<String, R
     if token.starts_with(devices::TOKEN_PREFIX) {
         return match state.devices.lookup(token).await {
             Some(record) if valid_username(&record.username) => Ok(record.username),
+            // Clients forget a stored key only on this exact code, so no
+            // other 401 (such as a rolled-back server) signs a phone out.
             _ => Err(api_error(
                 StatusCode::UNAUTHORIZED,
-                "INVALID_TOKEN",
+                "DEVICE_KEY_REVOKED",
                 "This device's sync key was revoked. Sign in again.",
             )),
         };
