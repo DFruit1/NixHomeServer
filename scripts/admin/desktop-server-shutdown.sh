@@ -82,8 +82,25 @@ is_runner_subtree() {
   return 1
 }
 
+# esbuild runs most work through a long-lived service daemon
+# (`esbuild --service=<version> --ping`) that a dev server or watch mode keeps
+# alive while idle. That daemon would otherwise look like permanent build work
+# and block the guard indefinitely; real builds still show up through the
+# command patterns, load and runnable-process checks below.
+esbuild_build_active() {
+  local pid cmdline
+  for pid in ${1:-}; do
+    cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+    if [[ -n "$cmdline" && "$cmdline" == *--service=* && "$cmdline" == *--ping* ]]; then
+      continue
+    fi
+    return 0
+  done
+  return 1
+}
+
 desktop_work_reason() {
-  local process pattern
+  local process pattern pids
   local out pid active
 
   for process in aapt2 apksigner cargo cargo-nextest cc1 cc1plus clang cmake esbuild gcc \
@@ -91,6 +108,13 @@ desktop_work_reason() {
     opencode playwright pnpm pytest rustc tsc vitest wasm-pack \
     zipalign zpool; do
     if pgrep -x "$process" >/dev/null 2>&1; then
+      if [[ "$process" == esbuild ]]; then
+        pids="$(pgrep -x esbuild 2>/dev/null || true)"
+        # No pid list (for example a mocked pgrep) keeps the original behavior.
+        if [[ -n "$pids" ]] && ! esbuild_build_active "$pids"; then
+          continue
+        fi
+      fi
       printf 'process:%s' "$process"
       return 0
     fi
