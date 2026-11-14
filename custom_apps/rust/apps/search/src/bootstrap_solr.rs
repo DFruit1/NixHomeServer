@@ -39,7 +39,8 @@ pub async fn run() -> Result<(), String> {
 
 async fn ensure_core(solr: &SolrClient) -> Result<(), String> {
     // Solr's CoreAdmin STATUS does not report a `state` field for standalone
-    // cores in 9.10, so any existing core entry counts as ready.
+    // cores in 9.10. core_status distinguishes a loaded core from the empty
+    // placeholder Solr returns for a missing name.
     match solr.core_status(solr.core()).await? {
         Some(_state) => {
             if let Ok(core) = std::env::var("SEARCH_PASSAGE_CORE") {

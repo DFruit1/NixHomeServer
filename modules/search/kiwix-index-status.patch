@@ -1,0 +1,14 @@
+--- a/src/searcher/kiwix-search.cpp
++++ b/src/searcher/kiwix-search.cpp
+@@ -43,0 +44 @@
++  kiwix-search --index-status ZIM
+@@ -51,0 +53 @@
++  --index-status     Report fulltext index availability from archive metadata.
+@@ -89 +91 @@
+-  auto pattern = args.at("PATTERN").asString();
++  auto pattern = args.at("--index-status").asBool() ? std::string{} : args.at("PATTERN").asString();
+@@ -94,0 +97,4 @@
++    if (args.at("--index-status").asBool()) {
++      cout << (archive.hasFulltextIndex() ? "fulltext" : "titles") << endl;
++      return 0;
++    }

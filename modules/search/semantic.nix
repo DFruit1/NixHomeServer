@@ -98,10 +98,12 @@ in {
         ReadWritePaths = [ cfg.paths.models ];
       };
     };
+    # Pooled embeddings/reranking need a whole input in one physical batch.
+    # Smaller micro-batches make llama.cpp clamp the accepted prompt length.
     systemd.services.search-embedding-query = lib.recursiveUpdate inferenceService {
       description = "Qwen3 4B query embeddings on CPU and system RAM";
       serviceConfig = {
-        ExecStart = "${runtime}/bin/llama-server --model ${lib.escapeShellArg embeddingModel} --host ${loopback} --port ${toString ports.searchEmbeddingQuery} --embedding --pooling last --n-gpu-layers 0 --device none --ctx-size 2048 --batch-size 2048 --ubatch-size 512 --parallel 1 --threads 4";
+        ExecStart = "${runtime}/bin/llama-server --model ${lib.escapeShellArg embeddingModel} --host ${loopback} --port ${toString ports.searchEmbeddingQuery} --embedding --pooling last --n-gpu-layers 0 --device none --ctx-size 2048 --batch-size 2048 --ubatch-size 2048 --parallel 1 --threads 4";
         MemoryHigh = "10G";
         MemoryMax = "12G";
         CPUQuota = "400%";
@@ -110,7 +112,7 @@ in {
     systemd.services.search-reranker = lib.recursiveUpdate inferenceService {
       description = "Qwen3 0.6B passage reranker resident on GPU";
       serviceConfig = {
-        ExecStart = "${runtime}/bin/llama-server --model ${lib.escapeShellArg rerankerModel} --host ${loopback} --port ${toString ports.searchReranker} --reranking --n-gpu-layers all --ctx-size 4096 --batch-size 2048 --ubatch-size 256 --parallel 1 --threads 2 --flash-attn on";
+        ExecStart = "${runtime}/bin/llama-server --model ${lib.escapeShellArg rerankerModel} --host ${loopback} --port ${toString ports.searchReranker} --reranking --n-gpu-layers all --ctx-size 4096 --batch-size 4096 --ubatch-size 4096 --parallel 1 --threads 2 --flash-attn on";
         SupplementaryGroups = [ "render" "video" ];
         MemoryHigh = "2G";
         MemoryMax = "3G";

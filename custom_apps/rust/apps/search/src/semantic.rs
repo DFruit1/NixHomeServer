@@ -15,6 +15,7 @@ const CANDIDATES: usize = 100;
 const RERANK_DOCS: usize = 40;
 const PASSAGE_BYTES: usize = 1600;
 const OVERLAP_BYTES: usize = 200;
+const INDEX_BATCH_SIZE: usize = 1;
 
 type QueryCache = std::sync::Arc<tokio::sync::Mutex<HashMap<String, (Instant, Vec<f32>)>>>;
 
@@ -64,10 +65,21 @@ impl Semantic {
     }
 
     async fn post(&self, url: &str, body: &Value) -> Result<Value, String> {
+        self.post_with_timeout(url, body, Duration::from_secs(90))
+            .await
+    }
+
+    async fn post_with_timeout(
+        &self,
+        url: &str,
+        body: &Value,
+        timeout: Duration,
+    ) -> Result<Value, String> {
         let response: Value = self
             .http
             .post(url)
             .json(body)
+            .timeout(timeout)
             .send()
             .await
             .map_err(|e| format!("inference/index request: {e}"))?
@@ -82,11 +94,17 @@ impl Semantic {
         Ok(response)
     }
 
-    async fn embed(&self, endpoint: &str, inputs: &[String]) -> Result<Vec<Vec<f32>>, String> {
+    async fn embed(
+        &self,
+        endpoint: &str,
+        inputs: &[String],
+        timeout: Duration,
+    ) -> Result<Vec<Vec<f32>>, String> {
         let body = self
-            .post(
+            .post_with_timeout(
                 &format!("{endpoint}/v1/embeddings"),
                 &json!({"input": inputs, "encoding_format": "float"}),
+                timeout,
             )
             .await?;
         let rows = body["data"]
@@ -132,7 +150,10 @@ impl Semantic {
             }
         }
         let input = format!("Instruct: Given a library search query, retrieve relevant passages that address the user's request\nQuery: {query}");
-        let vector = self.embed(&self.query_url, &[input]).await?.remove(0);
+        let vector = self
+            .embed(&self.query_url, &[input], Duration::from_secs(90))
+            .await?
+            .remove(0);
         let mut cache = self.query_cache.lock().await;
         if cache.len() >= 128 {
             cache.clear();
@@ -176,6 +197,49 @@ fn passage_input(title: &str, body: &str) -> String {
         "{}\n\n{body}",
         &title[..title.floor_char_boundary(title.len().min(256))]
     )
+}
+
+/// Before vector backfill reaches a book, retain its strongest lexical
+/// passages, including grammatical forms. A last-match tie can otherwise
+/// present an unrelated chapter to the reranker and hide the useful section.
+fn lexical_passages<'a>(body: &'a str, query: &str) -> Vec<&'a str> {
+    let words =
+        crate::text::discovery_words(query).unwrap_or_else(|| crate::text::query_terms(query));
+    let forms: Vec<HashSet<String>> = words
+        .iter()
+        .map(|word| {
+            std::iter::once(word.clone())
+                .chain(crate::thesaurus::word_forms(word))
+                .collect()
+        })
+        .collect();
+    let mut candidates: Vec<_> = passages(body)
+        .into_iter()
+        .map(|(start, end)| {
+            let text = &body[start..end];
+            let lower = text.to_lowercase();
+            let tokens: Vec<_> = lower
+                .split(|ch: char| !ch.is_alphanumeric())
+                .filter(|word| !word.is_empty())
+                .collect();
+            let counts: Vec<_> = forms
+                .iter()
+                .map(|group| tokens.iter().filter(|word| group.contains(**word)).count())
+                .collect();
+            let score = (
+                counts.iter().filter(|count| **count > 0).count(),
+                counts.iter().min().copied().unwrap_or(0),
+                counts.iter().sum::<usize>(),
+            );
+            (text, score)
+        })
+        .collect();
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.1));
+    candidates
+        .into_iter()
+        .take(2)
+        .map(|(text, _)| text)
+        .collect()
 }
 
 /// A separate maintenance pass catches existing and newly changed documents.
@@ -278,7 +342,7 @@ pub(crate) async fn run_index() -> Result<(), String> {
             "--batch-size",
             "2048",
             "--ubatch-size",
-            "512",
+            "2048",
             "--parallel",
             "1",
             "--threads",
@@ -310,15 +374,17 @@ pub(crate) async fn run_index() -> Result<(), String> {
                 // A document fingerprint doubles as a generation identifier.
                 // New vectors become visible before old generations are pruned.
                 let generation = crate::timeutil::sha256_hex(&[&id, &record.checksum, VERSION]);
-                for (batch, pairs) in spans.chunks(4).enumerate() {
+                for (batch, pairs) in spans.chunks(INDEX_BATCH_SIZE).enumerate() {
                     let input: Vec<_> = pairs.iter().map(|&(start, end)| passage_input(&record.title, &record.body_text[start..end])).collect();
-                    let vectors = semantic.embed(&endpoint, &input).await?;
+                    // Limited GPU offload leaves most 4B work on CPU. A library
+                    // batch can take minutes; do not apply the query deadline.
+                    let vectors = semantic.embed(&endpoint, &input, Duration::from_secs(10 * 60)).await?;
                     let mut docs = Vec::new();
                     for (index, ((start, end), vector)) in pairs.iter().zip(vectors).enumerate() {
                         let mut doc = projection.to_solr_json();
                         let object = doc.as_object_mut().unwrap();
                         object.remove("body");
-                        object.insert("id".into(), json!(format!("{generation}:{}", batch * 4 + index)));
+                        object.insert("id".into(), json!(format!("{generation}:{}", batch * INDEX_BATCH_SIZE + index)));
                         object.insert("parent_s".into(), json!(id));
                         object.insert("generation_s".into(), json!(generation));
                         object.insert("start_l".into(), json!(start));
@@ -327,7 +393,7 @@ pub(crate) async fn run_index() -> Result<(), String> {
                         object.insert("vector".into(), json!(vector));
                         docs.push(doc);
                     }
-                    semantic.post(&format!("{}/update", semantic.core_url), &json!(docs)).await?;
+                    semantic.post(&format!("{}/update?commitWithin=10000", semantic.core_url), &json!(docs)).await?;
                 }
                 semantic.post(&format!("{}/update?commit=true", semantic.core_url), &json!([
                     {"id": format!("{}:manifest", crate::timeutil::sha256_hex(&[&id])), "parent_s": id, "source": source_id, "manifest_b": true}
@@ -550,7 +616,6 @@ impl Semantic {
         let mut inputs = Vec::new();
         let mut owners = Vec::new();
         let mut contexts = Vec::new();
-        let query_terms = crate::text::query_terms(query);
         for hit in response.hits.iter().take(RERANK_DOCS) {
             let Some(record) = documents.get(&hit.id) else {
                 continue;
@@ -563,19 +628,23 @@ impl Semantic {
                 .filter(|(_, _, generation)| generation == &expected)
                 .filter_map(|&(start, end, _)| record.body_text.get(start..end))
                 .collect();
-            if texts.is_empty() {
-                let best = passages(&record.body_text)
-                    .into_iter()
-                    .max_by_key(|&(start, end)| {
-                        let lower = record.body_text[start..end].to_lowercase();
-                        query_terms
-                            .iter()
-                            .filter(|term| lower.contains(term.as_str()))
-                            .count()
-                    })
-                    .unwrap_or((0, 0));
-                texts.push(&record.body_text[best.0..best.1]);
+            // Give both retrieval methods a chance to supply evidence while
+            // keeping the same two-passage budget per document.
+            let lexical = lexical_passages(&record.body_text, query);
+            if let Some(best) = lexical.first()
+                && !texts.contains(best)
+            {
+                texts.insert(texts.len().min(1), best);
             }
+            for text in lexical {
+                if texts.len() >= 2 {
+                    break;
+                }
+                if !texts.contains(&text) {
+                    texts.push(text);
+                }
+            }
+            texts.truncate(2);
             for text in texts {
                 inputs.push(passage_input(&record.title, text));
                 owners.push(hit.id.clone());
@@ -658,5 +727,26 @@ impl Semantic {
         // Lexical facets remain lexical counts; the caller labels the bounded
         // semantic window explicitly rather than claiming exhaustive facets.
         Ok(Ranked { response, snippets })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lexical_passages;
+
+    #[test]
+    fn reranking_reads_cultivation_instead_of_late_keyword_mentions() {
+        // "Growing potatoes" relevance regressed twice: first through scattered
+        // document terms, then because rollout selected a late poultry chapter
+        // instead of the gardening manual's cultivation passages.
+        let cultivation = "Potato crops grow in loose soil. Plant seed tubers in rows and hill soil around the stems. ".repeat(50);
+        let poultry = format!(
+            "{} Growing hens can eat potatoes as part of their feed.",
+            "Keep the hens in a fenced yard. ".repeat(50)
+        );
+        let body = format!("{cultivation}\n{poultry}");
+        let passages = lexical_passages(&body, "growing potatoes");
+        assert!(passages[0].contains("Plant seed tubers"));
+        assert!(!passages[0].contains("Growing hens"));
     }
 }

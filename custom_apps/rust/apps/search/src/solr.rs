@@ -497,12 +497,17 @@ impl SolrClient {
             .pointer("/status")
             .and_then(Value::as_object)
             .ok_or_else(|| format!("unexpected solr status response: {response}"))?;
-        Ok(status.get(name).map(|core| {
-            core.get("state")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_string()
-        }))
+        // Solr returns `{ "requested-name": {} }` for an absent core. Only
+        // a populated entry naming the loaded core proves it exists.
+        Ok(status
+            .get(name)
+            .filter(|core| core.get("name").and_then(Value::as_str) == Some(name))
+            .map(|core| {
+                core.get("state")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string()
+            }))
     }
 
     /// Creates the search core from the default configset if it does not exist.
