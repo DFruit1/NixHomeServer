@@ -34,11 +34,12 @@ impl ZimInventoryCache {
             .clone();
         cache
             .get_or_refresh_background({
-                let zimdump = config.zimdump.clone();
+                let index_tool = config.kiwix_search.clone();
                 let root = config.library_root.clone();
                 move || async move {
-                    let zimdump = zimdump.ok_or("Offline archive search tools are unavailable.")?;
-                    zim_search::discover_zims(&zimdump, &root)
+                    let index_tool =
+                        index_tool.ok_or("Offline archive search tools are unavailable.")?;
+                    zim_search::discover_zims(&index_tool, &root)
                         .await
                         .map(std::sync::Arc::new)
                 }
@@ -80,7 +81,7 @@ for archive do :; done
 root=${archive%/*}
 printf 'probe\n' >> "$root/probes"
 until [ -f "$root/release" ]; do sleep 0.01; done
-printf '\017\015Xapian Glass\n'
+printf 'fulltext\n'
 "#,
         ));
         let cache = Arc::new(ZimInventoryCache::default());
@@ -130,10 +131,7 @@ printf '\017\015Xapian Glass\n'
         use std::sync::Arc;
         use std::time::Duration;
         let root = tempfile::tempdir().unwrap();
-        let config = fixture(
-            root.path(),
-            "#!/bin/sh\nprintf '\\017\\015Xapian Glass\\n'\n",
-        );
+        let config = fixture(root.path(), "#!/bin/sh\nprintf 'fulltext\\n'\n");
         let cache = ZimInventoryCache::default();
         cache.entries.lock().unwrap().insert(
             config.library_root.clone(),
@@ -145,7 +143,11 @@ printf '\017\015Xapian Glass\n'
         assert!(failed.warning.is_some());
         assert!(Arc::ptr_eq(&first, failed.value.as_ref().unwrap()));
         // A failed refresh is cached briefly, even if the tool recovers now.
-        std::fs::write(config.zimdump.as_ref().unwrap(), "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(
+            config.zimdump.as_ref().unwrap(),
+            "#!/bin/sh\nprintf 'fulltext\\n'\n",
+        )
+        .unwrap();
         let damped = cache.get(&config).await;
         assert!(damped.warning.is_some());
         assert!(Arc::ptr_eq(&first, damped.value.as_ref().unwrap()));
@@ -163,7 +165,7 @@ printf '\017\015Xapian Glass\n'
 if [ "$1" = info ]; then exit 0; fi
 for archive do :; done
 printf 'probe\n' >> "${archive%/*}/probes"
-printf '\017\015Xapian Glass\n'
+printf 'fulltext\n'
 "#,
         )
         .unwrap();

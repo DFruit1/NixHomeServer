@@ -390,6 +390,8 @@ in
     systemd.services.search-index = {
       description = "Index all configured sources into the Search platform";
       wantedBy = [ "multi-user.target" ];
+      requires = [ "search-solr-core-bootstrap.service" ];
+      after = [ "search-solr-core-bootstrap.service" ];
       # A long-running loop (Type=simple) instead of a oneshot: multi-hour
       # initial extractions must never block or be killed by a NixOS
       # activation.

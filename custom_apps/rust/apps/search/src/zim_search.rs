@@ -6,7 +6,7 @@ use futures_util::{stream, StreamExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use crate::extract::kiwix::{clean_title_from_path, entry_origin, probe_fulltext_index};
+use crate::extract::kiwix::{clean_title_from_path, entry_origin};
 use crate::text::{html_title, snippet_from_html};
 
 /// How many ZIM archives a single query searches concurrently. Every Xapian-
@@ -65,7 +65,7 @@ pub struct ZimHit {
 /// Discover archives with bounded, cancellable index probes. A failed scan is
 /// distinct from a successful empty inventory, so callers can retain stale data.
 pub async fn discover_zims(
-    zimdump: &Path,
+    index_tool: &Path,
     library_root: &Path,
 ) -> Result<Vec<ZimIndexEntry>, String> {
     let mut directory = tokio::fs::read_dir(library_root)
@@ -87,17 +87,27 @@ pub async fn discover_zims(
             zims.push(path);
         }
     }
-    let zimdump = zimdump.to_path_buf();
+    let index_tool = index_tool.to_path_buf();
     let mut probes = stream::iter(zims)
         .map(move |path: PathBuf| {
-            let zimdump = zimdump.clone();
+            let index_tool = index_tool.clone();
             async move {
-                let probe_path = path.clone();
-                let has_xapian = tokio::task::spawn_blocking(move || {
-                    probe_fulltext_index(&zimdump, &probe_path)
-                })
-                .await
-                .map_err(|_| "Archive index discovery failed.".to_string())??;
+                // libzim's metadata API checks index availability without
+                // streaming or decompressing the Xapian database itself.
+                let mut command = Command::new(&index_tool);
+                command.arg("--index-status").arg(&path).kill_on_drop(true);
+                let output = timeout(Duration::from_secs(5), command.output())
+                    .await
+                    .map_err(|_| "Archive index discovery timed out.".to_string())?
+                    .map_err(|_| "Archive index discovery failed.".to_string())?;
+                if !output.status.success() {
+                    return Err("An archive index could not be read.".into());
+                }
+                let has_xapian = match std::str::from_utf8(&output.stdout).unwrap_or("").trim() {
+                    "fulltext" => true,
+                    "titles" => false,
+                    _ => return Err("Archive index discovery returned an invalid status.".into()),
+                };
                 let stem = path
                     .file_name()
                     .and_then(|name| name.to_str())
@@ -610,7 +620,7 @@ exec sleep 60
         std::fs::write(root.path().join("b.zim"), b"fixture").unwrap();
         std::fs::write(root.path().join("a.zim"), b"fixture").unwrap();
         std::fs::write(root.path().join("notes.txt"), b"ignore").unwrap();
-        let tool = fixture_tool(root.path(), "zimdump", "#!/bin/sh\nexit 0\n");
+        let tool = fixture_tool(root.path(), "zimdump", "#!/bin/sh\nprintf 'titles\\n'\n");
         let entries = discover_zims(&tool, root.path()).await.unwrap();
         assert_eq!(
             entries

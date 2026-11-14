@@ -2251,6 +2251,11 @@ After guarded activation:
   changed PostgreSQL documents without extracting source files again. It loads
   an indexing embedder on loopback port 18094 only when work is pending and
   unloads it on completion or failure.
+- Library embedding sends one passage per request with a ten-minute request
+  budget, independently of the 90-second interactive inference deadline.
+  Limited offload can take longer than an interactive query; completed
+  passages are published progressively while document checkpoints wait for
+  the complete document.
 - The owner chose to keep chat available. Indexing therefore defaults to one
   GPU layer, with the remaining 4B weights in RAM. No chat service is stopped
   or reconfigured. This deliberately conservative offload may make the first
@@ -2267,6 +2272,15 @@ also rechecked against the current document index and all selected filters
 before use. A recreated vector core invalidates the checkpoints and rebuilds
 from the retained text. Set `repo.search.semantic.enable = false` to return
 to keyword-only operation while retaining weights and derived index state.
+
+Archive inventory discovery uses the Search-owned `kiwix-search --index-status`
+extension to read libzim metadata. It does not stream/decompress the embedded
+Xapian database or count every article merely to discover index availability.
+The existing native tool owns this extension so Rust does not need separate
+C++ bindings or another archive reader. Search indexing waits for successful
+Solr core bootstrap, preventing source-sync failures caused by a reloading
+core during activation. A source warning clears after its next successful
+index pass; do not clear the database error merely to hide a failed sync.
 
 ### Keyword fallback
 
