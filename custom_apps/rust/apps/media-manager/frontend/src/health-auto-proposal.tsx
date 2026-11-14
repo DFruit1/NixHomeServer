@@ -18,6 +18,13 @@ import {
 import type { HealthLookupSession } from "./health-lookup-session";
 export type GetHealthLookupSession = QRL<() => HealthLookupSession>;
 
+const NO_SOURCES = "No configured sources available.";
+/** Reasons that only restate "No suggestion" and give nothing to act on. */
+const QUIET_MESSAGES = new Set([
+  "No matching source supplied this value.",
+  "The available evidence is too weak to suggest a value automatically.",
+]);
+
 /** Suggestions stay read-only until Use proposed follows the existing plan flow. */
 export const HealthAutoProposal = component$<{
   target: MetadataHealthResult;
@@ -31,7 +38,7 @@ export const HealthAutoProposal = component$<{
 }>((props) => {
   const state = useStore({
     loading: false,
-    message: "No configured sources available.",
+    message: NO_SOURCES,
     candidate: undefined as RankedHealthMatch | undefined,
   });
   useVisibleTask$(({ track, cleanup }) => {
@@ -145,14 +152,18 @@ export const HealthAutoProposal = component$<{
         </>
       ) : (
         <>
-          <p
-            class="health-value-text health-unset"
-            aria-label="No proposed value"
-          >
-            ???
+          <p class="health-value-text health-no-suggestion">
+            {state.loading ? "Checking sources…" : "No suggestion"}
           </p>
           <small role="status">
-            {state.loading ? "Checking external sources…" : state.message}
+            {state.loading ? null : state.message === NO_SOURCES ? (
+              <>
+                Set up a source in <a href="?view=accounts">Metadata sources</a>{" "}
+                to get suggestions.
+              </>
+            ) : QUIET_MESSAGES.has(state.message) ? null : (
+              state.message
+            )}
           </small>
         </>
       )}

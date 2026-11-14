@@ -222,6 +222,7 @@ export const ConversionInput = component$<{
             >
               <button
                 type="button"
+                class="secondary-button"
                 aria-pressed={form.source === "server"}
                 onClick$={async () => {
                   form.source = "server";
@@ -235,6 +236,7 @@ export const ConversionInput = component$<{
               </button>
               <button
                 type="button"
+                class="secondary-button"
                 aria-pressed={form.source === "upload"}
                 onClick$={async () => {
                   form.source = "upload";
@@ -265,6 +267,7 @@ export const ConversionInput = component$<{
                   />
                   <button
                     type="button"
+                    class="secondary-button"
                     aria-expanded={form.browsing}
                     aria-controls="conversion-browser"
                     onClick$={() => {
@@ -300,6 +303,7 @@ export const ConversionInput = component$<{
                       <span>{form.folder || "/"}</span>
                       <button
                         type="button"
+                        class="secondary-button"
                         disabled={!form.folder}
                         onClick$={() => {
                           form.folder = form.folder
@@ -324,6 +328,7 @@ export const ConversionInput = component$<{
                           <li key={entry.name}>
                             <button
                               type="button"
+                              class="conversion-browser__entry"
                               onClick$={async () => {
                                 if (entry.directory) {
                                   form.folder = [form.folder, entry.name]

@@ -281,6 +281,14 @@ describe("Media Manager navigation", () => {
       "/api/v1/provider-accounts",
       expect.objectContaining({ credentials: "same-origin" }),
     );
+    expect(screen.querySelector(".provider-state.connected")?.textContent).toBe(
+      "Connected",
+    );
+    expect(screen.textContent).not.toContain("Replace credentials");
+    const manage = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Manage",
+    );
+    await userEvent(manage ?? null, "click");
     const replace = Array.from(screen.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Replace credentials",
     );
@@ -455,16 +463,40 @@ describe("Media Manager navigation", () => {
     await render(<Root initialView="accounts" />);
     await vi.waitFor(() => expect(screen.textContent).toContain("TMDB"));
 
-    expect(screen.textContent).not.toContain("TheTVDB");
-    const comingSoon = Array.from(screen.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Coming soon",
+    expect(screen.querySelector(".provider-state.attention")?.textContent).toBe(
+      "Needs attention",
     );
-    await userEvent(comingSoon ?? null, "click");
-    await vi.waitFor(() => expect(screen.textContent).toContain("TheTVDB"));
-    const plannedCard = Array.from(
-      screen.querySelectorAll(".provider-account-card"),
-    ).find((card) => card.textContent?.includes("TheTVDB"));
-    expect(plannedCard?.textContent).not.toContain("Set up");
+    const usableRows = screen.querySelectorAll(
+      ".provider-list-panel > .provider-list > .provider-row",
+    );
+    expect(usableRows).toHaveLength(1);
+    expect(usableRows[0]?.textContent).not.toContain("TheTVDB");
+    const planned = screen.querySelector(".provider-planned-section");
+    expect(planned?.hasAttribute("open")).toBe(false);
+    expect(planned?.querySelector("summary")?.textContent).toContain(
+      "Coming soon",
+    );
+    const plannedRow = Array.from(
+      planned?.querySelectorAll(".provider-row") ?? [],
+    ).find((row) => row.textContent?.includes("TheTVDB"));
+    expect(plannedRow?.textContent).not.toContain("Set up");
+    await userEvent(
+      plannedRow?.querySelector(".provider-row-toggle") ?? null,
+      "click",
+    );
+    await vi.waitFor(() =>
+      expect(plannedRow?.textContent).toContain("Account and API key guide"),
+    );
+    expect(plannedRow?.textContent).not.toContain("Set up");
+
+    const needsSetup = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Needs setup",
+    );
+    await userEvent(needsSetup ?? null, "click");
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".provider-planned-section")).toBeFalsy(),
+    );
+    expect(screen.textContent).toContain("TMDB");
   });
 
   it("loads a media root selected by a native root-row URL", async () => {
@@ -817,7 +849,9 @@ describe("Media Manager conversions inbox", () => {
     expect(screen.textContent).toContain("MOVIE_DISC.ISO");
     expect(screen.textContent).toContain("Processed");
     expect(screen.textContent).toContain("Failed");
-    expect(screen.textContent).toContain("OLD_MOVIE.ISO");
+    // Each finished disc is named once: the file name without its extension.
+    expect(screen.textContent).toContain("OLD_MOVIE");
+    expect(screen.textContent).not.toContain("OLD_MOVIE.ISO");
     expect(screen.textContent).toContain(
       "Copy a DVD ISO into the shared inbox at _Shared/_ISO/_DVDs.",
     );
@@ -879,8 +913,18 @@ describe("Media Manager conversions inbox", () => {
       expect(screen.textContent).toContain("Active Film (2000)"),
     );
     expect(screen.textContent).toContain("In queue (2)");
-    expect(screen.textContent).toContain("Another Film 1999.iso");
-    expect(screen.textContent).toContain("A Series S2 Disc 1.iso");
+    const queue = screen.querySelector(".conversion-queue__list");
+    expect(queue?.textContent).toContain("Another Film 1999");
+    expect(queue?.textContent).toContain("A Series S2 Disc 1");
+    expect(queue?.textContent).not.toContain(".iso");
+    const progress = screen.querySelector('[role="progressbar"]');
+    expect(progress?.getAttribute("aria-valuenow")).toBe("42");
+    // "Converting" is stated once, in the card header.
+    expect(
+      screen
+        .querySelector(".conversion-focus")
+        ?.textContent?.match(/Converting/g),
+    ).toHaveLength(1);
   });
 });
 

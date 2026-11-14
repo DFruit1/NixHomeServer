@@ -759,7 +759,8 @@ const ProviderAccountsView = component$(() => {
     selectedProviderId: string;
     credentialValues: Record<string, string>;
     query: string;
-    filter: "available" | "configured" | "planned" | "all";
+    filter: "all" | "connected" | "setup";
+    expandedProviderId: string;
     testAfterSave: boolean;
     loading: boolean;
     saving: boolean;
@@ -773,7 +774,8 @@ const ProviderAccountsView = component$(() => {
     selectedProviderId: "",
     credentialValues: {},
     query: "",
-    filter: "available",
+    filter: "all",
+    expandedProviderId: "",
     testAfterSave: true,
     loading: true,
     saving: false,
@@ -916,9 +918,6 @@ const ProviderAccountsView = component$(() => {
     }
   });
 
-  const selectedProvider = accounts.providers.find(
-    (provider) => provider.id === accounts.selectedProviderId,
-  );
   const query = accounts.query.trim().toLowerCase();
   const matchingProviders = query
     ? accounts.providers.filter((provider) =>
@@ -928,17 +927,20 @@ const ProviderAccountsView = component$(() => {
           .includes(query),
       )
     : accounts.providers;
+  const plannedProviders = matchingProviders.filter(
+    (provider) => provider.implementationStatus === "planned",
+  );
   const providers = matchingProviders
     .filter((provider) => {
+      if (provider.implementationStatus === "planned") return false;
+      const status = providerAccountStatus(provider);
       switch (accounts.filter) {
-        case "configured":
-          return provider.account.state === "configured";
-        case "planned":
-          return provider.implementationStatus === "planned";
-        case "all":
-          return true;
+        case "connected":
+          return status === "connected" || status === "untested";
+        case "setup":
+          return status === "notSetUp" || status === "attention";
         default:
-          return provider.implementationStatus === "active";
+          return true;
       }
     })
     .sort(
@@ -946,160 +948,241 @@ const ProviderAccountsView = component$(() => {
         Number(right.account.state !== "notRequired") -
         Number(left.account.state !== "notRequired"),
     );
+  const showPlanned = accounts.filter === "all" && plannedProviders.length > 0;
 
-  return (
-    <section class="provider-accounts-page">
-      {accounts.error && (
-        <div class="message error" role="alert">
-          <Icon name="alert" size={18} />
-          <span>{accounts.error}</span>
-        </div>
-      )}
-      {accounts.notice && (
-        <div class="message success" role="status">
-          <Icon name="check" size={18} />
-          <span>{accounts.notice}</span>
-        </div>
-      )}
-
-      <label class="library-filter provider-account-search">
-        <Icon name="search" size={16} />
-        <input
-          type="search"
-          aria-label="Filter metadata sources"
-          placeholder="Find a source"
-          value={accounts.query}
-          onInput$={(_, input) => (accounts.query = input.value)}
-        />
-      </label>
-      <div
-        class="provider-filter-tabs"
-        role="group"
-        aria-label="Filter metadata sources"
-      >
-        {(
-          [
-            ["available", "Available now"],
-            ["configured", "Configured"],
-            ["planned", "Coming soon"],
-            ["all", "All sources"],
-          ] as const
-        ).map(([id, label]) => (
-          <button
-            class={{
-              "provider-filter-tab": true,
-              active: accounts.filter === id,
-            }}
-            type="button"
-            aria-pressed={accounts.filter === id}
-            key={id}
-            onClick$={() => (accounts.filter = id)}
-          >
-            {label}
-          </button>
-        ))}
+  const renderEditor = (provider: ProviderDefinition) => (
+    <section
+      class="provider-credential-editor"
+      aria-labelledby={`provider-editor-${provider.id}`}
+    >
+      <div class="provider-credential-heading">
+        <h4 id={`provider-editor-${provider.id}`}>
+          {provider.account.state === "configured"
+            ? "Replace credentials"
+            : "Set up credentials"}
+        </h4>
+        <button
+          class="close-button"
+          type="button"
+          aria-label="Close credential editor"
+          disabled={accounts.saving}
+          onClick$={closeProvider}
+        >
+          ×
+        </button>
       </div>
-
-      {accounts.loading ? (
-        <LoadingState />
-      ) : providers.length === 0 ? (
-        <p class="provider-empty" role="status">
-          {accounts.query.trim()
-            ? `No sources match “${accounts.query.trim()}”.`
-            : accounts.filter === "configured"
-              ? "No sources are configured yet."
-              : accounts.filter === "planned"
-                ? "No upcoming sources."
-                : "No metadata sources available."}
+      <p class="credential-guidance" role="note">
+        <Icon name="shield" size={18} />
+        <span>
+          {accounts.recoveryAdvice} Existing values are never loaded here, and
+          saving replaces the complete set.
+        </span>
+      </p>
+      <details class="provider-access-details">
+        <summary>Get access for {provider.name}</summary>
+        <div class="provider-access-scroll">
+          {PROVIDER_SETUP_GUIDES[provider.id] ? (
+            <ProviderSetupGuide providerId={provider.id} />
+          ) : (
+            <p>
+              Create the requested credentials in your provider account.{" "}
+              <a href={provider.setupUrl} target="_blank" rel="noreferrer">
+                Open provider setup
+              </a>
+            </p>
+          )}
+        </div>
+      </details>
+      <form preventdefault:submit onSubmit$={saveProvider} autocomplete="off">
+        <div class="credential-field-grid">
+          {provider.credentialFields.map((field) => (
+            <label key={field.id}>
+              <span>
+                {field.label}
+                {field.isRequired ? " *" : ""}
+              </span>
+              <input
+                type={field.inputType}
+                name={`provider-${provider.id}-${field.id}`}
+                value={accounts.credentialValues[field.id] ?? ""}
+                required={field.isRequired}
+                disabled={accounts.saving}
+                autocomplete={
+                  field.inputType === "password" ? "new-password" : "off"
+                }
+                spellcheck={false}
+                onInput$={(_, input) =>
+                  (accounts.credentialValues[field.id] = input.value)
+                }
+              />
+              <small>
+                {PROVIDER_SETUP_GUIDES[provider.id]?.credentialHelp[field.id] ??
+                  field.help}
+              </small>
+            </label>
+          ))}
+        </div>
+        {provider.canTest && (
+          <label class="provider-test-choice">
+            <input
+              type="checkbox"
+              checked={accounts.testAfterSave}
+              disabled={accounts.saving}
+              onChange$={(_, input) => (accounts.testAfterSave = input.checked)}
+            />
+            <span>Test the connection after saving</span>
+          </label>
+        )}
+        <p class="provider-save-help">
+          {provider.canTest && accounts.testAfterSave
+            ? "Testing checks account access and may count against your provider quota. Try the source on an item to verify matching or downloads."
+            : "Saving replaces these credentials without testing account access. Your media files are unchanged."}
         </p>
-      ) : (
-        <div class="provider-account-grid">
-          {providers.map((provider) => {
-            const configured = provider.account.state === "configured";
-            const publicSource = provider.account.state === "notRequired";
-            const connected = provider.account.lastTestStatus === "ready";
-            const planned = provider.implementationStatus === "planned";
-            return (
-              <article
+        <div class="provider-credential-footer">
+          <button
+            class="secondary-button"
+            type="button"
+            disabled={accounts.saving}
+            onClick$={closeProvider}
+          >
+            Cancel
+          </button>
+          <button
+            class="primary-button"
+            type="submit"
+            disabled={accounts.saving}
+          >
+            {accounts.saving
+              ? "Encrypting…"
+              : provider.canTest && accounts.testAfterSave
+                ? "Save and test"
+                : "Encrypt and save"}
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+
+  const renderRow = (provider: ProviderDefinition) => {
+    const status = providerAccountStatus(provider);
+    const planned = provider.implementationStatus === "planned";
+    const configured = provider.account.state === "configured";
+    const editing = accounts.selectedProviderId === provider.id;
+    const expanded = editing || accounts.expandedProviderId === provider.id;
+    const canSetUp =
+      !planned &&
+      provider.account.state !== "notRequired" &&
+      provider.canConfigure &&
+      provider.credentialFields.length > 0;
+    const detailsId = `provider-details-${provider.id}`;
+    const toggle = $(async () => {
+      if (editing) await closeProvider();
+      accounts.expandedProviderId = expanded ? "" : provider.id;
+    });
+    return (
+      <li
+        class={{
+          "provider-row": true,
+          "is-expanded": expanded,
+          "is-editing": editing,
+        }}
+        key={provider.id}
+      >
+        <div class="provider-row-summary">
+          <h3 class="provider-row-heading">
+            <button
+              class="provider-row-toggle"
+              type="button"
+              aria-expanded={expanded}
+              aria-controls={detailsId}
+              onClick$={toggle}
+            >
+              <Icon
+                name={expanded ? "chevron-down" : "chevron-right"}
+                size={16}
+              />
+              <span class="provider-row-name">{provider.name}</span>
+              <span class="provider-row-types">
+                {provider.mediaDomains.join(" · ")}
+              </span>
+            </button>
+          </h3>
+          {!planned &&
+            (status === "noSetup" ? (
+              <span class="provider-state quiet">No setup needed</span>
+            ) : (
+              <span class={["provider-state", status]}>
+                {PROVIDER_STATUS_LABELS[status]}
+              </span>
+            ))}
+          {!planned && configured ? (
+            <button
+              class="secondary-button provider-row-action"
+              type="button"
+              aria-expanded={expanded}
+              aria-controls={detailsId}
+              onClick$={toggle}
+            >
+              Manage
+            </button>
+          ) : canSetUp && !editing ? (
+            <button
+              class="secondary-button provider-row-action"
+              type="button"
+              disabled={accounts.saving}
+              onClick$={() => {
+                accounts.expandedProviderId = provider.id;
+                return openProvider(provider);
+              }}
+            >
+              Set up
+            </button>
+          ) : null}
+        </div>
+        {expanded && (
+          <div class="provider-row-details" id={detailsId}>
+            <p>{provider.notes}</p>
+            {provider.account.lastTestMessage && (
+              <p
                 class={{
-                  "provider-account-card": true,
-                  "is-editing": accounts.selectedProviderId === provider.id,
+                  "provider-last-test": true,
+                  attention: status === "attention",
                 }}
-                key={provider.id}
+                key={provider.account.lastTestMessage}
               >
-                <div class="provider-account-card-heading">
-                  <div>
-                    <h3>{provider.name}</h3>
-                    <span>{provider.mediaDomains.join(" · ")}</span>
-                    <span
-                      class={{
-                        "provider-state": true,
-                        ready: connected,
-                        planned,
-                      }}
-                    >
-                      {planned
-                        ? "Coming soon"
-                        : publicSource
-                          ? "Public, no setup"
-                          : configured
-                            ? connected
-                              ? "Connected"
-                              : provider.account.lastTestStatus
-                                ? "Connection needs attention"
-                                : "Configured"
-                            : "Not configured"}
-                    </span>
-                  </div>
-                  {provider.logoUrl && (
-                    <img
-                      class="provider-logo"
-                      src={provider.logoUrl}
-                      alt={`${provider.name} logo`}
-                      loading="lazy"
-                    />
-                  )}
-                </div>
-                <p>{provider.notes}</p>
-                {provider.account.lastTestMessage && (
-                  <p
-                    class="provider-last-test"
-                    key={provider.account.lastTestMessage}
-                  >
-                    <strong>Last test:</strong>{" "}
-                    {provider.account.lastTestMessage}
-                  </p>
-                )}
+                Last test: {provider.account.lastTestMessage}
+              </p>
+            )}
+            {editing ? (
+              renderEditor(provider)
+            ) : (
+              <>
                 <div class="provider-account-actions">
-                  {!publicSource &&
-                  provider.canConfigure &&
-                  provider.credentialFields.length > 0 ? (
+                  {configured && provider.canTest && !planned && (
                     <button
-                      class="primary-button"
+                      class="secondary-button"
+                      type="button"
+                      disabled={
+                        accounts.saving ||
+                        accounts.busyProviderId === provider.id
+                      }
+                      onClick$={() => testProvider(provider)}
+                    >
+                      {accounts.busyProviderId === provider.id
+                        ? "Testing…"
+                        : "Test connection"}
+                    </button>
+                  )}
+                  {configured && canSetUp && (
+                    <button
+                      class="secondary-button"
                       type="button"
                       disabled={accounts.saving}
                       onClick$={() => openProvider(provider)}
                     >
-                      {configured ? "Replace credentials" : "Set up"}
+                      Replace credentials
                     </button>
-                  ) : null}
-                  {configured &&
-                    provider.implementationStatus === "active" &&
-                    provider.canTest && (
-                      <button
-                        class="secondary-button"
-                        type="button"
-                        disabled={
-                          accounts.saving ||
-                          accounts.busyProviderId === provider.id
-                        }
-                        onClick$={() => testProvider(provider)}
-                      >
-                        {accounts.busyProviderId === provider.id
-                          ? "Testing…"
-                          : "Test connection"}
-                      </button>
-                    )}
+                  )}
                   <a
                     class="provider-doc-link"
                     href={provider.documentationUrl}
@@ -1134,140 +1217,126 @@ const ProviderAccountsView = component$(() => {
                     <ProviderSetupGuide providerId={provider.id} />
                   </details>
                 )}
-              </article>
-            );
-          })}
+              </>
+            )}
+          </div>
+        )}
+      </li>
+    );
+  };
+
+  return (
+    <section class="provider-accounts-page">
+      {accounts.error && (
+        <div class="message error" role="alert">
+          <Icon name="alert" size={18} />
+          <span>{accounts.error}</span>
+        </div>
+      )}
+      {accounts.notice && (
+        <div class="message success" role="status">
+          <Icon name="check" size={18} />
+          <span>{accounts.notice}</span>
         </div>
       )}
 
-      {selectedProvider && (
-        <section class="provider-credential-editor panel">
-          <div class="panel-heading">
-            <div>
-              <h3>{selectedProvider.name}</h3>
-              <p>
-                Existing values are never loaded into this form. Saving replaces
-                the complete set.
-              </p>
-            </div>
+      <div class="provider-account-toolbar">
+        <label class="library-filter provider-account-search">
+          <Icon name="search" size={16} />
+          <input
+            type="search"
+            aria-label="Filter metadata sources"
+            placeholder="Find a source"
+            value={accounts.query}
+            onInput$={(_, input) => (accounts.query = input.value)}
+          />
+        </label>
+        <div
+          class="provider-filter-tabs"
+          role="group"
+          aria-label="Show metadata sources"
+        >
+          {(
+            [
+              ["all", "All"],
+              ["connected", "Connected"],
+              ["setup", "Needs setup"],
+            ] as const
+          ).map(([id, label]) => (
             <button
-              class="close-button"
+              class={{
+                "provider-filter-tab": true,
+                active: accounts.filter === id,
+              }}
               type="button"
-              aria-label="Close credential editor"
-              disabled={accounts.saving}
-              onClick$={closeProvider}
+              aria-pressed={accounts.filter === id}
+              key={id}
+              onClick$={() => (accounts.filter = id)}
             >
-              ×
+              {label}
             </button>
-          </div>
-          <aside class="credential-guidance" role="note">
-            <Icon name="shield" size={22} />
-            <div>
-              <strong>Keep the recovery copy in a password manager</strong>
-              <p>{accounts.recoveryAdvice}</p>
-            </div>
-          </aside>
-          <details class="provider-access-details">
-            <summary>Get access for {selectedProvider.name}</summary>
-            {PROVIDER_SETUP_GUIDES[selectedProvider.id] ? (
-              <ProviderSetupGuide providerId={selectedProvider.id} />
-            ) : (
-              <>
-                <p>
-                  Create the requested credentials in your provider account.
-                </p>
-                <a
-                  href={selectedProvider.setupUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open provider setup
-                </a>
-              </>
-            )}
-          </details>
-          <form
-            preventdefault:submit
-            onSubmit$={saveProvider}
-            autocomplete="off"
-          >
-            <div class="credential-field-grid">
-              {selectedProvider.credentialFields.map((field) => (
-                <label key={field.id}>
-                  <span>
-                    {field.label}
-                    {field.isRequired ? " *" : ""}
-                  </span>
-                  <input
-                    type={field.inputType}
-                    name={`provider-${selectedProvider.id}-${field.id}`}
-                    value={accounts.credentialValues[field.id] ?? ""}
-                    required={field.isRequired}
-                    disabled={accounts.saving}
-                    autocomplete={
-                      field.inputType === "password" ? "new-password" : "off"
-                    }
-                    spellcheck={false}
-                    onInput$={(_, input) =>
-                      (accounts.credentialValues[field.id] = input.value)
-                    }
-                  />
-                  <small>
-                    {PROVIDER_SETUP_GUIDES[selectedProvider.id]?.credentialHelp[
-                      field.id
-                    ] ?? field.help}
-                  </small>
-                </label>
-              ))}
-            </div>
-            {selectedProvider.canTest && (
-              <label class="provider-test-choice">
-                <input
-                  type="checkbox"
-                  checked={accounts.testAfterSave}
-                  disabled={accounts.saving}
-                  onChange$={(_, input) =>
-                    (accounts.testAfterSave = input.checked)
-                  }
-                />
-                <span>Test the connection after saving</span>
-              </label>
-            )}
-            <p class="provider-save-help">
-              {selectedProvider.canTest && accounts.testAfterSave
-                ? "Testing checks account access and may count against your provider quota. Try the source on an item to verify matching or downloads."
-                : "Saving replaces these credentials without testing account access. Your media files are unchanged."}
-            </p>
-            <div class="provider-credential-footer">
-              <span>Credentials are encrypted before storage.</span>
-              <div>
-                <button
-                  class="secondary-button"
-                  type="button"
-                  disabled={accounts.saving}
-                  onClick$={closeProvider}
-                >
-                  Cancel
-                </button>
-                <button
-                  class="primary-button"
-                  type="submit"
-                  disabled={accounts.saving}
-                >
-                  {accounts.saving
-                    ? "Encrypting…"
-                    : selectedProvider.canTest && accounts.testAfterSave
-                      ? "Save and test"
-                      : "Encrypt and save"}
-                </button>
-              </div>
-            </div>
-          </form>
-        </section>
+          ))}
+        </div>
+      </div>
+
+      {accounts.loading ? (
+        <LoadingState />
+      ) : providers.length === 0 && !showPlanned ? (
+        <p class="provider-empty" role="status">
+          {accounts.query.trim()
+            ? `No sources match “${accounts.query.trim()}”.`
+            : accounts.filter === "connected"
+              ? "No sources are connected yet."
+              : accounts.filter === "setup"
+                ? "Every source is set up."
+                : "No metadata sources available."}
+        </p>
+      ) : (
+        <div class="provider-list-panel">
+          {providers.length > 0 && (
+            <ul class="provider-list">{providers.map(renderRow)}</ul>
+          )}
+          {showPlanned && (
+            <details class="provider-planned-section">
+              <summary>
+                <Icon name="chevron-right" size={16} />
+                Coming soon
+                <span class="provider-planned-count">
+                  {plannedProviders.length}
+                </span>
+              </summary>
+              <ul class="provider-list">{plannedProviders.map(renderRow)}</ul>
+            </details>
+          )}
+        </div>
       )}
     </section>
   );
 });
+
+type ProviderAccountStatus =
+  | "connected"
+  | "untested"
+  | "attention"
+  | "notSetUp"
+  | "noSetup";
+
+const PROVIDER_STATUS_LABELS: Record<ProviderAccountStatus, string> = {
+  connected: "Connected",
+  untested: "Not tested",
+  attention: "Needs attention",
+  notSetUp: "Not set up",
+  noSetup: "No setup needed",
+};
+
+function providerAccountStatus(
+  provider: ProviderDefinition,
+): ProviderAccountStatus {
+  if (provider.account.state === "notRequired") return "noSetup";
+  if (provider.account.state !== "configured") return "notSetUp";
+  if (provider.account.lastTestStatus === "ready") return "connected";
+  return provider.account.lastTestStatus ? "attention" : "untested";
+}
 
 interface TreeNode {
   name: string;

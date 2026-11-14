@@ -47,24 +47,27 @@ const ConversionList = component$<{
           <div class="conversion-copy">
             <h3>{props.conversion.title}</h3>
             <p>
-              Converting {isoName}{" "}
-              {props.conversion.detail
-                ? `— ${props.conversion.detail}`
-                : "— Encoding a Jellyfin-compatible MKV"}
+              {[
+                isoName,
+                props.conversion.detail || "Encoding a Jellyfin-compatible MKV",
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </p>
-            <div
-              class="progress-track"
-              role="progressbar"
-              aria-label="DVD conversion"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={percent}
-            >
-              <span style={{ transform: `scaleX(${percent / 100})` }} />
-            </div>
-            <div class="progress-meta">
-              <span>Converting</span>
-              <strong class="tabular">{percent.toFixed(0)}%</strong>
+            <div class="progress-row">
+              <div
+                class="progress-track"
+                role="progressbar"
+                aria-label={`Converting ${props.conversion.title}`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={percent}
+              >
+                <span style={{ transform: `scaleX(${percent / 100})` }} />
+              </div>
+              <strong class="tabular" aria-hidden="true">
+                {percent.toFixed(0)}%
+              </strong>
             </div>
           </div>
         </article>
@@ -82,8 +85,13 @@ const ConversionList = component$<{
               <li key={`${item.isoName}-${index}`}>
                 <span class="conversion-queue__number">{index + 1}.</span>
                 <span class="conversion-queue__title" title={item.isoName}>
-                  {item.title}{" "}
-                  <span class="conversion-queue__file">({item.isoName})</span>
+                  {item.title}
+                  {item.isoName.replace(/\.iso$/i, "") !== item.title && (
+                    <span class="conversion-queue__file">
+                      {" "}
+                      ({item.isoName})
+                    </span>
+                  )}
                 </span>
               </li>
             ))}
@@ -93,6 +101,11 @@ const ConversionList = component$<{
     </div>
   );
 });
+
+/** One readable name per disc: the volume label, else the file name without `.iso`. */
+function isoTitle(iso: InboxIso): string {
+  return iso.volumeId || iso.name.replace(/\.iso$/i, "");
+}
 
 interface QueuedConversion {
   title: string;
@@ -441,17 +454,7 @@ export const ConversionsView = component$<{
           </section>
         )}
       </div>
-      <aside
-        class={{
-          "conv-sidebar": true,
-          "conv-sidebar--no-completed":
-            !inboxProcessed.length &&
-            !transcripts.some((job) => job.state === "completed"),
-          "conv-sidebar--no-failed":
-            !inboxFailed.length &&
-            !transcripts.some((job) => job.state === "failed"),
-        }}
-      >
+      <aside class="conv-sidebar">
         <ProcessedCard
           isos={inboxProcessed}
           filesBaseUrl={filesBaseUrl}
@@ -520,11 +523,8 @@ const ProcessedCard = component$<{
           ))}
           {props.isos.map((iso) => (
             <li key={iso.name}>
-              <span class="side-item-name">
-                <strong>{iso.volumeId || iso.name}</strong>
-                {iso.volumeId && iso.volumeId !== iso.name && (
-                  <small>{iso.name}</small>
-                )}
+              <span class="side-item-name" title={iso.name}>
+                <strong>{isoTitle(iso)}</strong>
               </span>
               {iso.outputDir && props.filesBaseUrl ? (
                 <a
@@ -533,14 +533,13 @@ const ProcessedCard = component$<{
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  <Icon name="folder" size={12} />
-                  &ensp;Open output
+                  <Icon name="folder" size={14} />
+                  <span>{iso.outputDir}</span>
                 </a>
               ) : iso.outputDir ? (
                 <span class="side-item-path">
-                  <Icon name="folder" size={12} />
-                  &ensp;
-                  {iso.outputDir}
+                  <Icon name="folder" size={14} />
+                  <span>{iso.outputDir}</span>
                 </span>
               ) : null}
             </li>
@@ -585,16 +584,14 @@ const FailedCard = component$<{
           ))}
           {props.isos.map((iso) => (
             <li key={iso.name}>
-              <span class="side-item-name">
-                <strong>{iso.volumeId || iso.name}</strong>
-                {iso.volumeId && iso.volumeId !== iso.name && (
-                  <small>{iso.name}</small>
-                )}
+              <span class="side-item-name" title={iso.name}>
+                <strong>{isoTitle(iso)}</strong>
               </span>
               {iso.hasErrorLog && (
                 <button
                   type="button"
-                  class="side-item-log-btn"
+                  class="text-button danger side-item-log-btn"
+                  aria-label={`Show error log for ${isoTitle(iso)}`}
                   onClick$={() => props.onShowLog$(iso.name)}
                 >
                   Show log

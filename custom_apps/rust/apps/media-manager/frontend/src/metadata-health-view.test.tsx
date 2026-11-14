@@ -360,6 +360,12 @@ it("names the recommended source for a missing field and lists the alternatives"
     "Proposed from “Embedded audio tags”.",
   );
   expect(screen.querySelector(".health-unset")?.textContent).toBe("Not set");
+  // An unset current value has nothing to keep, so it offers no action.
+  expect(
+    Array.from(screen.querySelectorAll("button")).some((button) =>
+      button.textContent?.includes("Use current"),
+    ),
+  ).toBe(false);
 
   const header = screen.querySelector(".health-result header");
   expect(header).toBeTruthy();
