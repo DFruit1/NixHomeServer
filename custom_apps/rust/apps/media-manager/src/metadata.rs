@@ -940,7 +940,9 @@ fn valid_archive_metadata_path(path: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
-fn validate_archive_entry_names<R: Read + Seek>(archive: &ZipArchive<R>) -> Result<(), String> {
+pub(crate) fn validate_archive_entry_names<R: Read + Seek>(
+    archive: &ZipArchive<R>,
+) -> Result<(), String> {
     for index in 0..archive.len() {
         let name = archive
             .name_for_index(index)

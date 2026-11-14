@@ -6,6 +6,7 @@ pub mod audio_sequence_plan;
 pub mod broker;
 pub mod capabilities;
 pub mod catalog;
+pub mod comic_archive;
 pub mod config;
 pub mod conversion_jobs;
 pub mod core;

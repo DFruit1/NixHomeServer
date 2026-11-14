@@ -1336,6 +1336,50 @@ async fn preview_item_metadata_sidecar(
     }
 }
 
+/// A CBR cannot carry edited metadata. Point to the fix that fits what the
+/// file actually contains: a rename for a disguised ZIP, otherwise a CBZ repack.
+async fn comic_archive_issue(
+    state: &AppState,
+    identity: &Identity,
+    item: &CatalogItem,
+) -> Option<MetadataHealthIssue> {
+    use crate::comic_archive::ArchiveFormat;
+    let root = state.config.resolve_visible_root(identity, &item.root_id)?;
+    let relative_path = item.relative_path.clone();
+    let format = tokio::task::spawn_blocking(move || {
+        crate::comic_archive::sniff_beneath(FilePath::new(&root.resolved_path), &relative_path)
+    })
+    .await
+    .ok()?
+    .ok()?;
+    let (code, title, message) = match format {
+        ArchiveFormat::Zip => (
+            "comic-archive-misnamed",
+            "This CBR is a ZIP archive",
+            "Its metadata cannot be edited while it is named .cbr. Renaming it to .cbz leaves the pages unchanged.",
+        ),
+        ArchiveFormat::Rar | ArchiveFormat::SevenZip => (
+            "comic-archive-proprietary",
+            "CBR comics cannot be edited",
+            "CBR uses RAR, a proprietary format that free software can read but not write, so metadata cannot be saved into it. Converting to CBZ, the same pages in an open ZIP archive, makes it editable.",
+        ),
+        ArchiveFormat::Unknown => return None,
+    };
+    Some(MetadataHealthIssue {
+        code: code.to_string(),
+        severity: "warning".to_string(),
+        field: None,
+        title: title.to_string(),
+        message: message.to_string(),
+        sources: Vec::new(),
+        current_value: None,
+        current_sources: Vec::new(),
+        proposed_values: Vec::new(),
+        affected_files: Vec::new(),
+        affected_file_count: None,
+    })
+}
+
 pub(super) async fn item_metadata(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1518,7 +1562,14 @@ async fn item_metadata_value(
     }
     let application_available = consumers.iter().any(|consumer| consumer.available);
     response["consumers"] = json!(consumers);
-    response["health"] = json!(health_issues(item.media_kind, &response, &observations));
+    let mut health = health_issues(item.media_kind, &response, &observations);
+    if item.media_kind == MediaKind::Book
+        && crate::comic_archive::is_cbr(&item.relative_path)
+        && let Some(issue) = comic_archive_issue(state, identity, item).await
+    {
+        health.insert(0, issue);
+    }
+    response["health"] = json!(health);
     response["modificationTargets"] = json!(modification_targets(
         item.media_kind,
         &extension,

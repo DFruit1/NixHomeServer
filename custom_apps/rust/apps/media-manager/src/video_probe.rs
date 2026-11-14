@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-const PROBE_CACHE_SCHEMA_VERSION: i64 = 1;
+const PROBE_CACHE_SCHEMA_VERSION: i64 = 2;
 const MAX_PROBES_PER_REFRESH: usize = 50;
 pub static PROBE_LIMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
@@ -24,6 +24,11 @@ pub struct VideoProbe {
     pub height: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codec: Option<String>,
+    /// Distinct audio codec names from the container. Browsers silently drop
+    /// tracks they cannot decode (AC-3, E-AC-3, DTS, ...), so the player uses
+    /// this to choose its H.264/AAC conversion before playing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_codecs: Vec<String>,
     pub has_embedded_subtitles: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subtitle_languages: Vec<String>,
@@ -201,6 +206,15 @@ fn parse_probe_json(bytes: &[u8]) -> Result<VideoProbe, String> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
+    let audio_codecs = output
+        .streams
+        .iter()
+        .filter(|stream| stream.codec_type == "audio")
+        .map(|stream| stream.codec_name.to_ascii_lowercase())
+        .filter(|codec| !codec.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     let subtitle_streams = output
         .streams
         .iter()
@@ -231,6 +245,7 @@ fn parse_probe_json(bytes: &[u8]) -> Result<VideoProbe, String> {
         codec: video
             .map(|stream| stream.codec_name.clone())
             .filter(|codec| !codec.is_empty()),
+        audio_codecs,
         has_embedded_subtitles: output
             .streams
             .iter()
@@ -474,11 +489,25 @@ mod tests {
 
     #[test]
     fn probe_json_without_video_stream_is_empty() {
+        let probe = parse_probe_json(br#"{"streams":[]}"#).expect("probe json");
+        assert_eq!(probe, VideoProbe::default());
+    }
+
+    #[test]
+    fn probe_json_collects_distinct_audio_codecs() {
         let probe = parse_probe_json(
-            br#"{"streams":[{"codec_type":"audio","codec_name":"aac","tags":{}}]}"#,
+            br#"{"streams":[
+                {"codec_type":"video","codec_name":"h264","width":720,"height":480,"avg_frame_rate":"25","tags":{}},
+                {"index":1,"codec_type":"audio","codec_name":"AC3","tags":{}},
+                {"index":2,"codec_type":"audio","codec_name":"aac","tags":{}},
+                {"index":3,"codec_type":"audio","codec_name":"ac3","tags":{}}
+            ]}"#,
         )
         .expect("probe json");
-        assert_eq!(probe, VideoProbe::default());
+        assert_eq!(
+            probe.audio_codecs,
+            vec!["aac".to_string(), "ac3".to_string()]
+        );
     }
 
     #[test]

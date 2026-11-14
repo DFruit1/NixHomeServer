@@ -74,6 +74,7 @@ pub struct ArchiveEmbeddedArtworkAction {
 
 pub type ReplaceMetadataSidecarAction = ReplaceArtworkAction;
 pub type ReplaceEmbeddedMetadataAction = ReplaceArtworkAction;
+pub type ConvertComicArchiveAction = ReplaceArtworkAction;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -86,6 +87,8 @@ pub enum BrokerAction {
     ReplaceMetadataSidecar(ReplaceMetadataSidecarAction),
     ReplaceEmbeddedMetadata(ReplaceEmbeddedMetadataAction),
     ReplaceArtwork(ReplaceArtworkAction),
+    /// Install a validated CBZ repack beside a CBR comic and archive the CBR.
+    ConvertComicArchive(ConvertComicArchiveAction),
 }
 
 impl From<MoveAction> for BrokerAction {
@@ -219,6 +222,10 @@ pub fn apply_broker_action(
             apply_replace_file(config, username, action)
         }
         BrokerAction::ReplaceArtwork(action) => apply_replace_artwork(config, username, action),
+        BrokerAction::ConvertComicArchive(action) => {
+            validate_convert_comic_archive_action(config, username, action)?;
+            apply_replace_file(config, username, action)
+        }
     }
 }
 
@@ -248,6 +255,10 @@ pub fn recover_broker_action(
             recover_replaced_file(config, username, action)
         }
         BrokerAction::ReplaceArtwork(action) => recover_replaced_artwork(config, username, action),
+        BrokerAction::ConvertComicArchive(action) => {
+            validate_convert_comic_archive_action(config, username, action)?;
+            recover_replaced_file(config, username, action)
+        }
     }
 }
 
@@ -281,6 +292,11 @@ pub fn discard_staged_broker_action(
             &action.expected_replacement,
         ),
         BrokerAction::ReplaceArtwork(action) => discard_staged_file(
+            config,
+            &action.staging_filename,
+            &action.expected_replacement,
+        ),
+        BrokerAction::ConvertComicArchive(action) => discard_staged_file(
             config,
             &action.staging_filename,
             &action.expected_replacement,
@@ -1064,6 +1080,64 @@ fn validate_replace_embedded_metadata_action(
     {
         return Err(BrokerError::new(
             "embedded metadata replacement paths must use the same supported book/audio extension",
+        ));
+    }
+    Ok(())
+}
+
+/// A CBR becomes a same-stem CBZ in the same folder; the CBR moves to the
+/// folder's superseded child. Nothing else may be renamed or replaced.
+#[cfg(target_os = "linux")]
+fn validate_convert_comic_archive_action(
+    config: &AppConfig,
+    username: &str,
+    action: &ConvertComicArchiveAction,
+) -> Result<(), BrokerError> {
+    if !safe_component(&action.staging_filename) {
+        return Err(BrokerError::new("staging filename is not a safe component"));
+    }
+    let identity = Identity::try_new(username, ["users"])
+        .map_err(|_| BrokerError::new("plan owner is not a safe identity component"))?;
+    let root = config
+        .resolve_visible_root(&identity, &action.root_id)
+        .ok_or_else(|| BrokerError::new("comic root ID is not registered"))?;
+    if root.category != LibraryCategory::Books {
+        return Err(BrokerError::new(
+            "comic archives may only be converted in a book root",
+        ));
+    }
+    let (source_parent, source_leaf) = safe_parent_and_leaf(&action.source_relative_path)?;
+    let (archive_parent, archive_leaf) = safe_parent_and_leaf(&action.archived_relative_path)?;
+    let (replacement_parent, replacement_leaf) =
+        safe_parent_and_leaf(&action.replacement_relative_path)?;
+    let mut expected_archive_parent = source_parent.clone();
+    expected_archive_parent.push("superseded");
+    let split = |leaf: &str| {
+        leaf.rsplit_once('.')
+            .map(|(stem, extension)| (stem.to_string(), extension.to_ascii_lowercase()))
+    };
+    let valid = archive_parent == expected_archive_parent
+        && replacement_parent == source_parent
+        && match (
+            split(source_leaf),
+            split(archive_leaf),
+            split(replacement_leaf),
+        ) {
+            (
+                Some((source_stem, source)),
+                Some((_, archived)),
+                Some((replacement_stem, replacement)),
+            ) => {
+                source == "cbr"
+                    && archived == "cbr"
+                    && replacement == "cbz"
+                    && source_stem == replacement_stem
+            }
+            _ => false,
+        };
+    if !valid {
+        return Err(BrokerError::new(
+            "comic conversion must install a same-name .cbz beside the .cbr and archive the .cbr in its superseded child",
         ));
     }
     Ok(())

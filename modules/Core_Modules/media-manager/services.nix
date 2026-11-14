@@ -28,7 +28,11 @@ let
   webEnvironment = commonEnvironment
     // lib.foldl' (environment: integration: environment // integration.environment) { }
     (lib.attrValues activeIntegrations)
-    // { MEDIA_MANAGER_FPCALC_PATH = "${pkgs.chromaprint}/bin/fpcalc"; };
+    // {
+      MEDIA_MANAGER_FPCALC_PATH = "${pkgs.chromaprint}/bin/fpcalc";
+      # Reads RAR/7z comics for CBR -> CBZ conversion (no free RAR writer exists).
+      MEDIA_MANAGER_BSDTAR = "${pkgs.libarchive}/bin/bsdtar";
+    };
   providerEnvironment = {
     MEDIA_MANAGER_PROVIDER_ADDRESS = cfg.address;
     MEDIA_MANAGER_PROVIDER_PORT = toString cfg.providerPort;

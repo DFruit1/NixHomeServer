@@ -833,6 +833,21 @@ paths:
               schema: { $ref: "#/components/schemas/ConversionFiles" }
         "400": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+  /comic-archives:
+    get:
+      operationId: listComicArchives
+      description: >-
+        Lists .cbr comics in the caller's visible book libraries (at most 1000
+        per library) with the archive format found inside each file. A zip
+        format is a misnamed CBZ that only needs renaming; rar and 7z are
+        repacked by the comic_archive_to_cbz plan operation.
+      responses:
+        "200":
+          description: CBR comics and whether repacking is available.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComicArchiveList" }
+        "401": { $ref: "#/components/responses/Error" }
   /conversions/inbox:
     get:
       operationId: listConversionInbox
@@ -2889,6 +2904,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/CanonicalizeNames"
             - $ref: "#/components/schemas/SequenceTracks"
+            - $ref: "#/components/schemas/ComicArchiveToCbz"
             - $ref: "#/components/schemas/SemanticMove"
             - $ref: "#/components/schemas/Tombstone"
         itemIds:
@@ -2903,6 +2919,35 @@ components:
       description: Ordered itemIds must contain every audio file in one music or audiobook folder. Stage verified embedded tags, matching names, portable playlists and track-order.json in one guarded plan; preserve original media for recovery.
       properties:
         kind: { const: sequence_tracks }
+    ComicArchiveToCbz:
+      type: object
+      required: [kind]
+      additionalProperties: false
+      description: >-
+        Exactly one .cbr book item. A ZIP archive is renamed to .cbz in place
+        with no-replace semantics. A RAR or 7z archive is repacked by bsdtar
+        into a stored ZIP whose per-entry SHA-256 manifest must equal the
+        source's; the broker installs the same-name .cbz and archives the .cbr
+        in its superseded child.
+      properties:
+        kind: { const: comic_archive_to_cbz }
+    ComicArchive:
+      type: object
+      required: [itemId, rootId, rootLabel, relativePath, sizeBytes, format]
+      properties:
+        itemId: { type: string }
+        rootId: { type: string }
+        rootLabel: { type: string }
+        relativePath: { type: string }
+        sizeBytes: { type: integer }
+        format: { type: string, enum: [zip, rar, 7z, unknown, unreadable] }
+    ComicArchiveList:
+      type: object
+      required: [items, truncated, conversionAvailable]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/ComicArchive" } }
+        truncated: { type: boolean }
+        conversionAvailable: { type: boolean }
     SequenceTrack:
       type: object
       required: [sourceRelativePath, destinationRelativePath, trackNumber, trackTotal, discNumber, discTotal]
@@ -2973,6 +3018,10 @@ components:
         width: { type: integer }
         height: { type: integer }
         codec: { type: string }
+        audioCodecs:
+          type: array
+          items: { type: string }
+          description: Distinct audio codec names in the container; browsers that cannot decode one (AC-3, E-AC-3, DTS) play the video silently, so the player converts it first.
         hasEmbeddedSubtitles: { type: boolean }
         subtitleLanguages: { type: array, items: { type: string } }
         subtitleStreams:
@@ -3027,6 +3076,13 @@ components:
         warnings: { type: array, items: { type: string } }
         affectedConsumers: { type: array, items: { $ref: "#/components/schemas/MetadataConsumer" } }
         trackSequence: { type: array, items: { $ref: "#/components/schemas/SequenceTrack" } }
+        comicArchive:
+          type: object
+          required: [format, destinationRelativePath]
+          properties:
+            format: { type: string, enum: [zip, rar, 7z] }
+            destinationRelativePath: { type: string }
+            files: { type: [integer, "null"] }
     ItemsResponse:
       type: object
       required: [items]

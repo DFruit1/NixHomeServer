@@ -33,6 +33,7 @@ use crate::{
     video_probe::{probe_video_beneath, refresh_root_probes, VideoProbe, VideoProbeCache},
 };
 mod artwork_http;
+mod comic_archives;
 pub use artwork_http::{ArtworkCandidateCache, JellyfinImageCache};
 mod conversion_inputs;
 mod conversions;
@@ -343,6 +344,7 @@ pub fn router(state: AppState) -> Router {
             get(conversion_inputs::jobs).post(conversion_inputs::server_file),
         )
         .route("/api/v1/conversions/files", get(conversion_inputs::files))
+        .route("/api/v1/comic-archives", get(comic_archives::list))
         .route(
             "/api/v1/conversions/uploads",
             post(conversion_inputs::upload),

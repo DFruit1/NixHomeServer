@@ -265,6 +265,11 @@ pub(super) async fn preview_plan(
             return ApiError::internal(request_id).into_response();
         }
     };
+    if plan.operation.get("kind").and_then(Value::as_str)
+        == Some(super::comic_archives::OPERATION_KIND)
+    {
+        return super::comic_archives::preview(&state, &identity, catalog, &plan, request_id).await;
+    }
     if plan.operation.get("kind").and_then(Value::as_str) == Some("sequence_tracks") {
         return super::track_sequence::preview_sequence(
             &state, &identity, catalog, &plan, request_id,
