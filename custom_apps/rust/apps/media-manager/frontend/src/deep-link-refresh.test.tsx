@@ -76,7 +76,6 @@ const refreshCalls = (mock: ReturnType<typeof vi.fn>) =>
   mock.mock.calls.filter(([input]) =>
     String(input).includes("/catalog/refresh"),
   );
-
 describe("downloader deep links into the music player", () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -152,5 +151,71 @@ describe("downloader deep links into the music player", () => {
       ),
     );
     expect(refreshCalls(fetch)).toHaveLength(1);
+  });
+
+  it("does not apply a deep link after the user starts something else", async () => {
+    const otherSong = {
+      id: "other-1",
+      rootId: "personal-music",
+      relativePath: "_YouTube/Other Album/01 - Other.flac",
+      mediaKind: "music",
+      sizeBytes: 1024,
+    };
+    const pendingRefresh: { release: (() => void) | null } = {
+      release: null,
+    };
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/status"))
+        return new Response(
+          wireJson({ mutationMode: "enabled", integrations: [] }),
+        );
+      if (path.endsWith("/session"))
+        return new Response(
+          wireJson({ username: "dsaw", groups: ["users"], canEdit: true }),
+        );
+      if (path.endsWith("/roots")) return new Response(wireJson(roots));
+      if (path.endsWith("/catalog/refresh")) {
+        await new Promise<void>((resolve) => {
+          pendingRefresh.release = resolve;
+        });
+        return new Response(wireJson(scanResult));
+      }
+      if (path.includes("/items?rootId=personal-music"))
+        return new Response(wireJson({ items: [otherSong], nextCursor: null }));
+      if (path.includes("/items?rootId=shared-music"))
+        return new Response(wireJson({ items: [], nextCursor: null }));
+      return new Response(wireJson({ available: false, progress: {} }));
+    });
+    vi.stubGlobal("fetch", fetch);
+    const { render, screen, userEvent } = await createDOM();
+    await render(
+      <Root
+        initialView="player"
+        initialRootId="personal-music"
+        initialPath="Channel One/01 - Song.flac"
+      />,
+    );
+    await vi.waitFor(() => expect(refreshCalls(fetch)).toHaveLength(1));
+    // The user starts the album that is already in the catalog while the
+    // rescan is still pending.
+    const playAll = screen.querySelector('button[aria-label="Play all music"]');
+    await userEvent(playAll ?? null, "click");
+    await vi.waitFor(() =>
+      expect(screen.querySelector("audio")?.getAttribute("src")).toBe(
+        "/api/v1/items/other-1/stream",
+      ),
+    );
+    pendingRefresh.release?.();
+    const catalogCalls = () =>
+      fetch.mock.calls.filter(([input]) =>
+        String(input).includes("/items?rootId=personal-music"),
+      ).length;
+    await vi.waitFor(() => expect(catalogCalls()).toBe(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.textContent).not.toContain("isn't in the music library");
+    expect(screen.querySelector("audio")?.getAttribute("src")).toBe(
+      "/api/v1/items/other-1/stream",
+    );
   });
 });

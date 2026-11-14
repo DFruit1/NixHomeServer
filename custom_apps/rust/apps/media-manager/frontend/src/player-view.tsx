@@ -66,6 +66,9 @@ export const PlayerView = component$<{
   const initialTargetApplied = useSignal("");
   const deepLinkRefresh = useSignal("");
   const deepLinkNotice = useSignal("");
+  // Bumped by any deliberate navigation or playback start, so a deep-link
+  // rescan that finishes later cannot hijack the view the user chose.
+  const navigationGeneration = useSignal(0);
   const pipEnabled = useSignal(true);
   const started = useSignal(false);
   const landscapeArtwork = useSignal(false);
@@ -317,6 +320,7 @@ export const PlayerView = component$<{
       void savePlaybackPosition(snapshot);
     }
     const generation = ++playbackGeneration.value;
+    navigationGeneration.value++;
     resumedGeneration.value = -1;
     playerState.currentIndex = index;
     playerState.dismissedNext = [];
@@ -358,6 +362,7 @@ export const PlayerView = component$<{
       if (playerState.loading || initialTargetApplied.value === targetKey) {
         return;
       }
+      const navigation = navigationGeneration.value;
       let index = findTargetIndex(
         playerState.tracks,
         requestId || props.initialItemId,
@@ -370,6 +375,7 @@ export const PlayerView = component$<{
           const item = await api<CatalogItem>(
             `/items/${encodeURIComponent(targetId)}`,
           );
+          if (navigation !== navigationGeneration.value) return;
           if (requestId && props.state.miniPlayerItemId !== requestId) return;
           if (item.mediaKind !== "music" && item.mediaKind !== "audiobook") {
             throw new Error("This file is not playable audio.");
@@ -391,7 +397,12 @@ export const PlayerView = component$<{
         deepLinkRefresh.value = targetKey;
         initialTargetApplied.value = targetKey;
         await refreshAudioRoots(props.initialRootId);
+        // Check after every await so a newer selection wins. The catalog still
+        // reloads because the finished download belongs in the list; the guard
+        // only stops this link from taking over the chosen view or playback.
+        const stillCurrent = navigation === navigationGeneration.value;
         await loadTracks();
+        if (!stillCurrent || navigation !== navigationGeneration.value) return;
         index = findTargetIndex(
           playerState.tracks,
           undefined,
@@ -403,7 +414,7 @@ export const PlayerView = component$<{
           return;
         }
       }
-      if (index < 0) {
+      if (index < 0 || navigation !== navigationGeneration.value) {
         return;
       }
       deepLinkNotice.value = "";
@@ -1271,6 +1282,7 @@ export const PlayerView = component$<{
                 class="back-button"
                 aria-label="Back to albums"
                 onClick$={() => {
+                  navigationGeneration.value++;
                   playerState.albumView = true;
                   playerState.selectedAlbumDir = "";
                 }}
