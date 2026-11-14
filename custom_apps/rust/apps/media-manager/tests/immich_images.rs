@@ -2,7 +2,7 @@
 //! or credentials across users or redirects. They never contact a real Immich.
 use axum::{
     body::{to_bytes, Body},
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, Request, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post, put},
@@ -138,6 +138,9 @@ struct Fixture {
     calls: Arc<Mutex<Vec<String>>>,
     tagged: Arc<Mutex<bool>>,
     preview_bytes: bool,
+    semantic_pages: Arc<Mutex<Vec<Vec<Value>>>>,
+    semantic_requests: Arc<Mutex<Vec<Value>>>,
+    revoked: Arc<Mutex<Vec<String>>>,
 }
 fn photo(tagged: bool) -> Value {
     let mut tags = vec![json!({"id":OLD_TAG,"value":"Family"})];
@@ -161,10 +164,51 @@ async fn search(
     assert_eq!(body["size"], 48);
     Json(json!({"assets":{"items":[photo(false)],"nextPage":"2"}}))
 }
-async fn asset(State(state): State<Fixture>, headers: HeaderMap) -> Json<Value> {
+async fn asset(
+    State(state): State<Fixture>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
     assert_eq!(headers["x-api-key"], "fixture-alice");
     state.calls.lock().unwrap().push("asset".into());
-    Json(photo(*state.tagged.lock().unwrap()))
+    let found = state
+        .semantic_pages
+        .lock()
+        .unwrap()
+        .iter()
+        .flatten()
+        .find(|asset| asset["id"] == id)
+        .cloned();
+    let mut value = match found {
+        Some(asset) => asset,
+        None if id == PHOTO => photo(*state.tagged.lock().unwrap()),
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+    if state.revoked.lock().unwrap().contains(&id) {
+        value["visibility"] = json!("locked");
+    }
+    Json(value).into_response()
+}
+
+async fn smart_search(
+    State(state): State<Fixture>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    assert_eq!(body["type"], "IMAGE");
+    assert_eq!(body["size"], 48);
+    state.semantic_requests.lock().unwrap().push(body.clone());
+    if headers["x-api-key"] != "fixture-alice" {
+        return Json(json!({"assets":{"items":[],"nextPage":null}})).into_response();
+    }
+    if body["query"] == "unavailable" {
+        return (StatusCode::BAD_REQUEST, "private upstream details").into_response();
+    }
+    let page = body["page"].as_u64().unwrap() as usize;
+    let pages = state.semantic_pages.lock().unwrap();
+    let items = pages.get(page - 1).cloned().unwrap_or_default();
+    let next = (page < pages.len()).then(|| (page + 1).to_string());
+    Json(json!({"assets":{"items":items,"nextPage":next}})).into_response()
 }
 async fn upsert(
     State(state): State<Fixture>,
@@ -236,7 +280,8 @@ async fn test_app(
 ) -> (Router, tokio::task::JoinHandle<()>) {
     let mock = Router::new()
         .route("/api/search/metadata", post(search))
-        .route(&format!("/api/assets/{PHOTO}"), get(asset))
+        .route("/api/search/smart", post(smart_search))
+        .route("/api/assets/{id}", get(asset))
         .route(&format!("/api/assets/{PHOTO}/thumbnail"), get(redirect))
         .route("/api/tags", put(upsert))
         .route("/api/tags/assets", put(attach))
@@ -339,6 +384,224 @@ async fn caller_credentials_are_isolated_and_private_paths_are_never_returned() 
         .unwrap();
     assert_eq!(response.status(), StatusCode::PRECONDITION_REQUIRED);
     assert_eq!(fixture.calls.lock().unwrap().len(), 2);
+    task.abort();
+}
+
+// Smart Search adds a route to photos outside the local EYE index. Exercise
+// the concrete privacy risk: scope mixups and stale locked/trashed search hits
+// must not reveal pixels, filenames, or another account's saved analysis.
+#[tokio::test]
+async fn semantic_search_rechecks_access_and_scopes_metadata_across_filtered_pages() {
+    use rusqlite::params;
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = Fixture::default();
+    let pages: Vec<Vec<Value>> = [48, 48, 10]
+        .into_iter()
+        .enumerate()
+        .map(|(page, size)| {
+            (0..size)
+                .map(|position| {
+                    let mut asset = photo(false);
+                    asset["id"] = json!(format!(
+                        "10000000-0000-4000-8000-{:012}",
+                        100 + page * 48 + position
+                    ));
+                    asset["originalFileName"] = json!(format!(
+                        "{}-{position}.jpg",
+                        if page == 0 { "other" } else { "target" }
+                    ));
+                    if page == 1 {
+                        match position {
+                            0 => asset["id"] = json!(PHOTO),
+                            1 => asset["visibility"] = json!("locked"),
+                            2 => asset["isTrashed"] = json!(true),
+                            3 => asset["type"] = json!("VIDEO"),
+                            _ => {}
+                        }
+                    }
+                    asset
+                })
+                .collect()
+        })
+        .collect();
+    let revoked = pages[1][4]["id"].as_str().unwrap().to_owned();
+    fixture.revoked.lock().unwrap().push(revoked.clone());
+    *fixture.semantic_pages.lock().unwrap() = pages;
+    let (app, task) = test_app(&temp, fixture.clone()).await;
+    // Discover one asset, leaving most of the semantic matches unindexed.
+    assert_eq!(
+        app.clone()
+            .oneshot(request(
+                "POST",
+                &format!("{ROOT}/{PHOTO}/analysis"),
+                "alice",
+                false,
+                Value::Null
+            ))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_GATEWAY
+    );
+    let db = rusqlite::Connection::open(temp.path().join("accounts.sqlite3")).unwrap();
+    let scope: String = db
+        .query_row("SELECT scope FROM image_assets", [], |r| r.get(0))
+        .unwrap();
+    let analysis = json!({"model":"eye@v1.0.0","suggestions":[{"tag":"rock","confidence":0.9}],
+        "scores":{"aesthetic":0.8,"keeper":0.7,"cover":0.9}});
+    db.execute("UPDATE image_assets SET analysis=?1,aesthetic=0.8,keeper=0.7,cover=0.9,tagged=1 WHERE scope=?2",
+        params![analysis.to_string(), scope]).unwrap();
+    db.execute(
+        "INSERT INTO image_tags VALUES (?1,?2,'rock',0.9)",
+        params![scope, PHOTO],
+    )
+    .unwrap();
+    drop(db);
+
+    let uri = format!("{ROOT}/index?semanticQuery=rocks%20beside%20the%20sea&query=target");
+    let response = app
+        .clone()
+        .oneshot(request("GET", &uri, "alice", false, Value::Null))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-store, max-age=0");
+    let first = json_response(response).await;
+    api_contract::assert_component("ImmichIndexedPage", &first);
+    assert_eq!(first["items"].as_array().unwrap().len(), 48);
+    assert_eq!(first["items"][0]["id"], PHOTO);
+    assert_eq!(first["items"][0]["analysis"], analysis);
+    assert_eq!(first["items"][1]["analysis"], Value::Null);
+    assert_eq!(first["nextPage"], Value::Null);
+    assert_eq!(first["nextCursor"], 100);
+    assert!(!first.to_string().contains(&revoked));
+    assert!(!first.to_string().contains("originalPath"));
+    assert!(!first.to_string().contains("fixture-"));
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("{uri}&cursor=100"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    let second = json_response(response).await;
+    assert_eq!(second["items"].as_array().unwrap().len(), 6);
+    assert_eq!(second["nextCursor"], Value::Null);
+    for image in second["items"].as_array().unwrap() {
+        assert!(!first["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|old| old["id"] == image["id"]));
+    }
+    for filters in ["minAesthetic=0.75", "tags=rocks&related=false"] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "GET",
+                &format!("{uri}&{filters}"),
+                "alice",
+                false,
+                Value::Null,
+            ))
+            .await
+            .unwrap();
+        let body = json_response(response).await;
+        assert_eq!(body["items"].as_array().unwrap().len(), 1, "{body}");
+        assert_eq!(body["items"][0]["id"], PHOTO);
+    }
+    let response = app
+        .clone()
+        .oneshot(request("GET", &uri, "bob", false, Value::Null))
+        .await
+        .unwrap();
+    let body = json_response(response).await;
+    assert_eq!(body["items"], json!([]));
+    assert_eq!(body["index"]["analyzed"], 0);
+    assert!(!body.to_string().contains("rock"));
+    let response = app
+        .clone()
+        .oneshot(request("GET", &uri, "charlie", false, Value::Null))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PRECONDITION_REQUIRED);
+    assert_eq!(
+        fixture.semantic_requests.lock().unwrap()[0]["query"],
+        "rocks beside the sea"
+    );
+    let later = photo(false);
+    let filler = fixture.semantic_pages.lock().unwrap()[0].clone();
+    *fixture.semantic_pages.lock().unwrap() = vec![filler; 8];
+    fixture.semantic_pages.lock().unwrap().push(vec![later]);
+    let uri = format!("{ROOT}/index?semanticQuery=coast&query=portrait");
+    let response = app
+        .clone()
+        .oneshot(request("GET", &uri, "alice", false, Value::Null))
+        .await
+        .unwrap();
+    let batch = json_response(response).await;
+    assert_eq!(batch["items"], json!([]));
+    assert_eq!(batch["nextCursor"], 384);
+    let response = app
+        .oneshot(request(
+            "GET",
+            &format!("{uri}&cursor=384"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    let batch = json_response(response).await;
+    assert_eq!(batch["items"][0]["id"], PHOTO);
+    assert_eq!(batch["nextCursor"], Value::Null);
+    task.abort();
+}
+
+#[tokio::test]
+async fn semantic_failures_do_not_expose_upstream_details_or_silently_change_search() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = Fixture::default();
+    let (app, task) = test_app(&temp, fixture.clone()).await;
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("{ROOT}/index?semanticQuery=unavailable"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = json_response(response).await;
+    assert!(body.to_string().contains("immich_semantic_unavailable"));
+    assert!(!body.to_string().contains("private upstream details"));
+    let before = fixture.semantic_requests.lock().unwrap().len();
+    for query in [
+        "cursor=1",
+        "semanticQuery=rock&cursor=4800000",
+        "semanticQuery=rock&page=2",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "GET",
+                &format!("{ROOT}/index?{query}"),
+                "alice",
+                false,
+                Value::Null,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    assert_eq!(fixture.semantic_requests.lock().unwrap().len(), before);
     task.abort();
 }
 

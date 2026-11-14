@@ -431,6 +431,9 @@
 .images-filter-row--3 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+.images-filter-tags {
+  grid-template-columns: minmax(0, 1fr) 10rem;
+}
 .images-filter-row--4 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -947,6 +950,9 @@
   }
 }
 @media (max-width: 640px) {
+  .images-filter-tags {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .images-sort {
     flex: 1 1 100%;
   }

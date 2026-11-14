@@ -42,6 +42,7 @@ export const ImagesView = component$<{
   const rulesOpen = useSignal(false);
   const rulesButton = useSignal<HTMLButtonElement>();
   const filtersOpen = useSignal(false);
+  const semanticSearch = useSignal(true);
   const moreOpen = useSignal(false);
   const pushedImageId = useSignal<string | null>(null);
   const state = useStore({
@@ -69,6 +70,7 @@ export const ImagesView = component$<{
     query: "",
     appliedQuery: "",
     nextPage: null as number | null,
+    nextCursor: null as number | null,
     loading: true,
     loadingMore: false,
     selecting: false,
@@ -86,7 +88,11 @@ export const ImagesView = component$<{
   });
 
   const load = $(async (more = false) => {
-    if (state.loadingMore || (more && (state.loading || !state.nextPage)))
+    if (
+      state.loadingMore ||
+      (more &&
+        (state.loading || (!state.nextPage && state.nextCursor === null)))
+    )
       return;
     const listing = ++state.listing;
     if (more) state.loadingMore = true;
@@ -96,9 +102,11 @@ export const ImagesView = component$<{
     try {
       const query = more ? state.appliedQuery : state.query.trim();
       const params = new URLSearchParams({
-        page: String(more ? state.nextPage : 1),
+        page: String(more ? (state.nextPage ?? 1) : 1),
         query,
       });
+      if (more && state.nextCursor !== null)
+        params.set("cursor", String(state.nextCursor));
       const filters = more
         ? new URLSearchParams(state.appliedFilters)
         : new URLSearchParams(
@@ -111,6 +119,11 @@ export const ImagesView = component$<{
                 : String(value),
             ]),
           );
+      if (!more && semanticSearch.value && state.filters.tags.trim()) {
+        filters.set("semanticQuery", state.filters.tags.trim());
+        filters.set("tags", "");
+        filters.set("sort", "capturedAt");
+      }
       for (const key of ["tags", "sortTag"]) {
         const value = filters.get(key) ?? "";
         filters.set(
@@ -143,6 +156,7 @@ export const ImagesView = component$<{
         : result.items;
       state.appliedQuery = query;
       state.nextPage = result.nextPage;
+      state.nextCursor = result.nextCursor ?? null;
     } catch (error) {
       if (listing !== state.listing) return;
       state.error = readableError(error);
@@ -308,6 +322,7 @@ export const ImagesView = component$<{
     state.filters.tags = tag;
     // A saved tag chip means that exact tag; related wording stays opt-in.
     state.filters.related = false;
+    semanticSearch.value = false;
     filtersOpen.value = true;
     return load();
   });
@@ -342,8 +357,11 @@ export const ImagesView = component$<{
   );
 
   const busy = state.analyzing || state.markingForRetag;
+  const semanticActive = semanticSearch.value && !!state.filters.tags.trim();
   const sortReady =
-    state.filters.sort !== "tag" || !!state.filters.sortTag.trim();
+    semanticActive ||
+    state.filters.sort !== "tag" ||
+    !!state.filters.sortTag.trim();
   const byDate = state.filters.sort === "capturedAt";
   const directionLabel =
     state.filters.direction === "desc"
@@ -621,7 +639,8 @@ export const ImagesView = component$<{
                 <div class="images-sort">
                   <select
                     aria-label="Sort by"
-                    value={state.filters.sort}
+                    value={semanticActive ? "relevance" : state.filters.sort}
+                    disabled={semanticActive}
                     onChange$={(_, el) => {
                       state.filters.sort = el.value;
                       if (["tag", "scores"].includes(el.value))
@@ -630,6 +649,9 @@ export const ImagesView = component$<{
                         return load();
                     }}
                   >
+                    {semanticActive && (
+                      <option value="relevance">Relevance</option>
+                    )}
                     <option value="capturedAt">Date taken</option>
                     <option value="aesthetic">Aesthetic</option>
                     <option value="keeper">Keeper</option>
@@ -637,24 +659,26 @@ export const ImagesView = component$<{
                     <option value="scores">Combined scores</option>
                     <option value="tag">Tag confidence</option>
                   </select>
-                  <button
-                    type="button"
-                    class={{
-                      "secondary-button": true,
-                      "images-icon-button": true,
-                      "images-direction": true,
-                      ascending: state.filters.direction === "asc",
-                    }}
-                    aria-label={directionLabel}
-                    title={directionLabel}
-                    onClick$={() => {
-                      state.filters.direction =
-                        state.filters.direction === "desc" ? "asc" : "desc";
-                      if (sortReady) return load();
-                    }}
-                  >
-                    <Icon name="arrow" size={18} />
-                  </button>
+                  {!semanticActive && (
+                    <button
+                      type="button"
+                      class={{
+                        "secondary-button": true,
+                        "images-icon-button": true,
+                        "images-direction": true,
+                        ascending: state.filters.direction === "asc",
+                      }}
+                      aria-label={directionLabel}
+                      title={directionLabel}
+                      onClick$={() => {
+                        state.filters.direction =
+                          state.filters.direction === "desc" ? "asc" : "desc";
+                        if (sortReady) return load();
+                      }}
+                    >
+                      <Icon name="arrow" size={18} />
+                    </button>
+                  )}
                   <button
                     type="button"
                     class="secondary-button images-icon-button images-filter-toggle"
@@ -696,48 +720,72 @@ export const ImagesView = component$<{
               >
                 <div class="images-filter-row images-filter-tags">
                   <label>
-                    Tags
+                    {semanticSearch.value ? "Tags or description" : "Tags"}
                     <input
                       type="text"
-                      maxLength={3104}
+                      maxLength={semanticSearch.value ? 200 : 3104}
                       value={state.filters.tags}
-                      placeholder="beach, people"
+                      placeholder={
+                        semanticSearch.value
+                          ? "rocks beside the sea"
+                          : "beach, people"
+                      }
                       onInput$={(_, el) => (state.filters.tags = el.value)}
                     />
                   </label>
                   <label>
-                    Match
+                    Search in
                     <select
-                      value={state.filters.tagMode}
-                      onChange$={(_, el) => (state.filters.tagMode = el.value)}
+                      value={semanticSearch.value ? "content" : "tags"}
+                      onChange$={(_, el) =>
+                        (semanticSearch.value = el.value === "content")
+                      }
                     >
-                      <option value="all">All tags</option>
-                      <option value="any">Any tag</option>
+                      <option value="content">Image content</option>
+                      <option value="tags">Saved tags</option>
                     </select>
                   </label>
                 </div>
-                <label class="checkbox-field">
-                  <input
-                    type="checkbox"
-                    checked={state.filters.related}
-                    onChange$={(_, el) => (state.filters.related = el.checked)}
-                  />
-                  Also match related tags
-                </label>
-                {state.tagMatches.length > 0 && (
-                  <p class="images-filter-note">
-                    Also matched:{" "}
-                    {state.tagMatches
-                      .map(
-                        (match) =>
-                          `${tagLabel(match.term)} → ${match.tags
-                            .map(tagLabel)
-                            .join(", ")}`,
-                      )
-                      .join("; ")}
-                  </p>
+                {!semanticSearch.value && (
+                  <>
+                    <label>
+                      Match
+                      <select
+                        value={state.filters.tagMode}
+                        onChange$={(_, el) =>
+                          (state.filters.tagMode = el.value)
+                        }
+                      >
+                        <option value="all">All tags</option>
+                        <option value="any">Any tag</option>
+                      </select>
+                    </label>
+                    <label class="checkbox-field">
+                      <input
+                        type="checkbox"
+                        checked={state.filters.related}
+                        onChange$={(_, el) =>
+                          (state.filters.related = el.checked)
+                        }
+                      />
+                      Also match related tags
+                    </label>
+                    {state.tagMatches.length > 0 && (
+                      <p class="images-filter-note">
+                        Also matched:{" "}
+                        {state.tagMatches
+                          .map(
+                            (match) =>
+                              `${tagLabel(match.term)} → ${match.tags
+                                .map(tagLabel)
+                                .join(", ")}`,
+                          )
+                          .join("; ")}
+                      </p>
+                    )}
+                  </>
                 )}
-                {state.filters.sort === "tag" && (
+                {!semanticActive && state.filters.sort === "tag" && (
                   <label>
                     Tag to sort by
                     <input
@@ -751,7 +799,7 @@ export const ImagesView = component$<{
                     />
                   </label>
                 )}
-                {state.filters.sort === "scores" && (
+                {!semanticActive && state.filters.sort === "scores" && (
                   <fieldset class="images-filter-group">
                     <legend>Score weights</legend>
                     <div class="images-filter-row images-filter-row--3">
@@ -787,14 +835,21 @@ export const ImagesView = component$<{
                   </fieldset>
                 )}
                 <fieldset class="images-filter-group">
-                  <legend>Minimum scores and confidence (0–100)</legend>
-                  <div class="images-filter-row images-filter-row--4">
+                  <legend>
+                    Minimum scores
+                    {!semanticSearch.value ? " and confidence" : ""} (0–100)
+                  </legend>
+                  <div
+                    class={`images-filter-row images-filter-row--${semanticSearch.value ? 3 : 4}`}
+                  >
                     {(
                       [
                         "minAesthetic",
                         "minKeeper",
                         "minCover",
-                        "confidence",
+                        ...(!semanticSearch.value
+                          ? ["confidence" as const]
+                          : []),
                       ] as const
                     ).map((key) => (
                       <label key={key}>
@@ -889,11 +944,23 @@ export const ImagesView = component$<{
               <>
                 {!state.items.length && (
                   <div class="images-empty">
-                    <h2>No photos found</h2>
+                    <h2>
+                      {state.nextCursor !== null
+                        ? "No matches in this batch"
+                        : "No photos found"}
+                    </h2>
                     <p>
-                      {state.appliedQuery
-                        ? "Try different tags, scores or a filename."
-                        : "Photos appear as background indexing discovers your library. Refresh to see progress."}
+                      {state.nextCursor !== null
+                        ? "Continue searching more photos, or adjust your filters."
+                        : state.appliedQuery ||
+                            new URLSearchParams(state.appliedFilters).get(
+                              "semanticQuery",
+                            ) ||
+                            new URLSearchParams(state.appliedFilters).get(
+                              "tags",
+                            )
+                          ? "Try a different description, tags, scores or filename."
+                          : "Photos appear as background indexing discovers your library. Refresh to see progress."}
                     </p>
                   </div>
                 )}
@@ -972,7 +1039,7 @@ export const ImagesView = component$<{
                     </button>
                   ))}
                 </div>
-                {state.nextPage && (
+                {(state.nextPage || state.nextCursor !== null) && (
                   <button
                     type="button"
                     class="secondary-button images-load-more"

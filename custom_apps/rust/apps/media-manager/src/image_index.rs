@@ -69,11 +69,13 @@ pub(crate) fn initialize(db: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct Search {
     pub page: u32,
     pub query: String,
+    pub semantic_query: String,
+    pub cursor: u32,
     pub tags: String,
     pub tag_mode: String,
     pub related: bool,
@@ -93,6 +95,8 @@ impl Default for Search {
         Self {
             page: 1,
             query: String::new(),
+            semantic_query: String::new(),
+            cursor: 0,
             tags: String::new(),
             tag_mode: "all".into(),
             related: true,
@@ -136,6 +140,11 @@ impl Search {
         (1..=100_000).contains(&self.page)
             && self.query.len() <= 200
             && !self.query.chars().any(char::is_control)
+            && self.semantic_query.len() <= 200
+            && !self.semantic_query.chars().any(char::is_control)
+            && self.cursor < 100_000 * PAGE_SIZE as u32
+            && (self.cursor == 0 || !self.semantic_query.trim().is_empty())
+            && (self.semantic_query.trim().is_empty() || self.page == 1)
             && self.tags.len() <= 3104
             && terms.len() <= image_search::MAX_TERMS
             && terms.iter().all(|term| valid_tag(term))
@@ -259,6 +268,29 @@ impl Index<'_> {
         &self,
         q: &Search,
     ) -> rusqlite::Result<(Vec<String>, Vec<image_search::TagMatch>)> {
+        self.select(q, None)
+    }
+
+    /// Apply the same private filters to upstream results, including photos
+    /// not yet discovered by EYE. This does not mutate the background index.
+    pub fn filter_candidates(
+        &self,
+        q: &Search,
+        candidates: &[(String, String, String)],
+    ) -> rusqlite::Result<Vec<String>> {
+        let filters = Search {
+            page: 1,
+            sort: "capturedAt".into(),
+            ..q.clone()
+        };
+        self.select(&filters, Some(candidates)).map(|(ids, _)| ids)
+    }
+
+    fn select(
+        &self,
+        q: &Search,
+        candidates: Option<&[(String, String, String)]>,
+    ) -> rusqlite::Result<(Vec<String>, Vec<image_search::TagMatch>)> {
         // Only fixed expressions are interpolated. Every user value is bound.
         let sort = match q.sort.as_str() {
             "aesthetic" => "a.aesthetic", "keeper" => "a.keeper", "cover" => "a.cover",
@@ -275,8 +307,24 @@ impl Index<'_> {
         // Each typed word keeps its own candidate group, so a widened word still
         // counts once toward "all tags". Decision tags are compared with their
         // saved spelling; the caller adds the raw values to the same group.
+        let (prefix, source) = if candidates.is_some() {
+            (
+                "WITH candidates AS (
+                SELECT json_extract(value,'$[0]') AS asset_id,
+                       json_extract(value,'$[1]') AS filename,
+                       json_extract(value,'$[2]') AS captured_at FROM json_each(?16)
+              ), searchable AS (
+                SELECT ?1 AS scope,c.asset_id,c.filename,c.captured_at,
+                       a.analysis,a.aesthetic,a.keeper,a.cover
+                FROM candidates c LEFT JOIN image_assets a ON a.scope=?1 AND a.asset_id=c.asset_id
+              ) ",
+                "searchable",
+            )
+        } else {
+            ("", "image_assets")
+        };
         let sql = format!(
-            "SELECT a.asset_id FROM image_assets a WHERE a.scope=?1
+            "{prefix}SELECT a.asset_id FROM {source} a WHERE a.scope=?1
             AND instr(lower(a.filename),lower(?2))>0
             AND (?3='[]' OR a.asset_id IN (
                 SELECT matched.asset_id FROM (
@@ -307,27 +355,32 @@ impl Index<'_> {
         };
         let present = present_tags(&db, self.scope, q.confidence, &plan, &decision_tags)?;
         let mut stmt = db.prepare(&sql)?;
+        let mut values: Vec<rusqlite::types::Value> = vec![
+            self.scope.to_owned().into(),
+            q.query.trim().to_owned().into(),
+            plan.groups().into(),
+            q.confidence.into(),
+            q.tag_mode.clone().into(),
+            q.min_aesthetic.into(),
+            q.min_keeper.into(),
+            q.min_cover.into(),
+            sort_plan.flat().into(),
+            q.aesthetic_weight.into(),
+            q.keeper_weight.into(),
+            q.cover_weight.into(),
+            q.sort.clone().into(),
+            (PAGE_SIZE as i64 + 1).into(),
+            ((q.page as i64 - 1) * PAGE_SIZE as i64).into(),
+        ];
+        if let Some(candidates) = candidates {
+            values.push(
+                serde_json::to_string(candidates)
+                    .expect("serializable photo candidates")
+                    .into(),
+            );
+        }
         let ids = stmt
-            .query_map(
-                params![
-                    self.scope,
-                    q.query.trim(),
-                    plan.groups(),
-                    q.confidence,
-                    q.tag_mode,
-                    q.min_aesthetic,
-                    q.min_keeper,
-                    q.min_cover,
-                    sort_plan.flat(),
-                    q.aesthetic_weight,
-                    q.keeper_weight,
-                    q.cover_weight,
-                    q.sort,
-                    PAGE_SIZE as i64 + 1,
-                    (q.page as i64 - 1) * PAGE_SIZE as i64
-                ],
-                |r| r.get(0),
-            )?
+            .query_map(rusqlite::params_from_iter(values), |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok((ids, plan.report(&present)))
     }

@@ -18,8 +18,16 @@ are excluded.
    broker runs, even if the user never opens Media Manager. Open **Images** to
    see discovered/analyzed counts and any retry notice. **Refresh results** reads
    current progress. The initial pass can take time for large libraries.
-3. Search by filename and/or comma-separated tags, such as `beach, people`.
-   Choose **All tags** or **Any tag**. Typed words are normalised for case,
+3. Open **Filters** and enter tags or a description, such as `rocks beside the
+   sea`. **Search in → Image content** is the default: it searches Immich's
+   existing Smart Search image embeddings rather than requiring matching EYE
+   tags. Results appear in **Relevance** order. The toolbar search remains a
+   filename filter; minimum aesthetic, keeper and cover scores also apply.
+   Photos without EYE analysis remain eligible unless a score filter excludes
+   them. Immich must have Smart Search enabled and its image-indexing jobs
+   completed for the photos you want to find.
+   Choose **Search in → Saved tags** for **All tags** or **Any tag** matching.
+   Typed words are normalised for case,
    spacing and plurals, so `Rocks`, `rock's` and `personal computer` find the
    saved `rock` and `personal_computer`. **Also match related tags** (on by
    default) also accepts closely related saved tags, so `woods` finds `forest`
@@ -27,18 +35,24 @@ are excluded.
    matching. The filter panel names the saved tags a typed word matched.
    **Minimum scores and confidence** sets three independent score thresholds
    (0–100) and the minimum tag confidence (default 50%).
-4. Sort by date taken, an individual score, tag confidence, or **Combined scores**.
+4. When browsing or searching saved tags, sort by date taken, an individual
+   score, tag confidence, or **Combined scores**.
    Combined ranking uses the weighted average of aesthetic, keeper and cover;
    weights default to 1 each. Set a weight to 0 to ignore that score; at least one
    must remain positive. Tag sorting uses the specified word's confidence, taking
    the highest value among its normalised and, when enabled, related tags, and
    treating an absent tag as 0. Choose ascending or descending order.
-5. Sorting and filtering apply to the whole index before 48-photo pagination.
+5. Saved-tag sorting and filtering apply to the whole index before 48-photo pagination.
+   Image-content searches retain Immich's relevance order, scan past filtered
+   results and return up to 48 photos per batch. Each request examines at most
+   eight upstream pages; **Load more photos** remains available when further
+   results need searching, including after an empty batch. A relevance ranking
+   is not a probability or a guarantee that every later result matches.
    Photos not yet analyzed appear in date order but are excluded from score/tag
    sorting and positive score/tag filters. Select a photo to inspect saved
    analysis; choose **Analyze again** to replace only its Media Manager analysis.
    Selecting a saved tag searches for exactly that tag with the current other
-   filters and turns related matching off.
+   filters, switches to **Saved tags**, and turns related matching off.
 
 The **View** selector offers Detailed list, Simple list and 1–4 tiles per row.
 Detailed rows show the capture date, saved scores and a short tag summary;
@@ -55,13 +69,17 @@ only Immich mutation is adding the assessed photo to an album named by an
 enabled category question. The legacy tag-write endpoint returns 403, including
 for editors with mutations enabled.
 
-Tag relations are a reviewed table over the pinned EYE vocabulary, plus
+Saved-tag relations are a reviewed table over the pinned EYE vocabulary, plus
 grammatical forms and compound-tag words. They are deterministic and local: no
-model runs during a search, no keyword is sent anywhere, and a library needs no
-extra index. EYE itself supplies image understanding, not a text-to-image
-embedding, so it cannot translate arbitrary keywords into new photo matches on
-its own; the curated table covers synonyms and closely related subjects for its
-tags. Extend that table when a usual word for a scene is missing.
+model runs during a saved-tag search. Image-content search instead calls the
+local Immich API using the signed-in user's existing linked credentials and
+reuses Immich's SigLIP2 model and vector index. It adds no model weights,
+embedding store or reranker, and never sends a query to an external AI service.
+EYE remains responsible for saved tags and quality scores; its image embeddings
+are not copied into a second search index. Each returned asset's current access
+is checked before attaching private analysis. If Smart Search is unavailable,
+the app reports the failure and offers **Saved tags**, rather than silently
+changing the meaning of the search.
 
 ## Saved decision questions
 

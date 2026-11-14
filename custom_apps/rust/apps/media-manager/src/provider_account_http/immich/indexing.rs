@@ -185,6 +185,14 @@ pub(in crate::provider_account_http) async fn indexed(
         store: &state.store,
         scope: &scope,
     };
+    if !query.semantic_query.trim().is_empty() {
+        let (items, next_cursor) = semantic_page(&state, &account, &index, &query, &id).await?;
+        return Ok(Json(
+            json!({"items":items,"nextPage":null,"nextCursor":next_cursor,
+            "canTag":false,"index":index.status().map_err(|_|index_error(&id))?,
+            "tagMatches":[],"requestId":id}),
+        ));
+    }
     let (mut ids, tag_matches) = index.search(&query).map_err(|_| index_error(&id))?;
     let next = (ids.len() > PAGE_SIZE && query.page < 100_000).then_some(query.page + 1);
     ids.truncate(PAGE_SIZE);
@@ -207,15 +215,7 @@ pub(in crate::provider_account_http) async fn indexed(
             let result = task.await.map_err(|_| index_error(&id))?;
             match result {
                 Ok(asset) => {
-                    let analysis = index.analysis(&asset.id).map_err(|_| index_error(&id))?;
-                    let tagged = index.tagged(&asset.id).map_err(|_| index_error(&id))?;
-                    let mut item = asset.public();
-                    item["analysis"] = json!(analysis);
-                    item["tagged"] = json!(tagged);
-                    item["decisionTags"] = json!(index
-                        .decision_tags(&item["id"].as_str().unwrap_or_default())
-                        .map_err(|_| index_error(&id))?);
-                    items.push(item);
+                    items.push(indexed_item(&index, asset, &id)?);
                 }
                 Err(err) if err.status() == StatusCode::NOT_FOUND => {}
                 Err(err) => return Err(err),
@@ -225,4 +225,120 @@ pub(in crate::provider_account_http) async fn indexed(
     Ok(Json(
         json!({"items":items,"nextPage":next,"canTag":false,"index":index.status().map_err(|_|index_error(&id))?,"tagMatches":tag_matches,"requestId":id}),
     ))
+}
+
+fn indexed_item(index: &Index<'_>, asset: Asset, id: &str) -> Result<Value, ApiError> {
+    let analysis = index.analysis(&asset.id).map_err(|_| index_error(id))?;
+    let tagged = index.tagged(&asset.id).map_err(|_| index_error(id))?;
+    let decision_tags = index
+        .decision_tags(&asset.id)
+        .map_err(|_| index_error(id))?;
+    let mut item = asset.public();
+    item["analysis"] = json!(analysis);
+    item["tagged"] = json!(tagged);
+    item["decisionTags"] = json!(decision_tags);
+    Ok(item)
+}
+
+/// Reuse Immich's image embeddings and text encoder. The cursor counts raw
+/// upstream results, not filtered matches, so sparse filters cannot hide later
+/// pages or skip the remainder of a page. Bound work even for a huge library;
+/// an empty batch can still have a continuation, which the UI must retain.
+async fn semantic_page(
+    state: &ProviderBrokerState,
+    account: &Account,
+    index: &Index<'_>,
+    query: &Search,
+    id: &str,
+) -> Result<(Vec<Value>, Option<u32>), ApiError> {
+    let mut cursor = query.cursor;
+    let mut items = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..8 {
+        let page = cursor / PAGE_SIZE as u32 + 1;
+        let offset = cursor as usize % PAGE_SIZE;
+        let response: SearchResponse = account
+            .json(
+                state,
+                Method::POST,
+                "search/smart",
+                Some(
+                    json!({"query":query.semantic_query.trim(),"type":"IMAGE","page":page,
+                "size":PAGE_SIZE,"withExif":false}),
+                ),
+                id,
+            )
+            .await?;
+        if response.assets.items.len() > PAGE_SIZE
+            || response.assets.items.iter().any(|a| !a.valid())
+        {
+            return Err(upstream_error(id));
+        }
+        let next = response
+            .assets
+            .next_page
+            .map(|p| p.parse::<u32>())
+            .transpose()
+            .map_err(|_| upstream_error(id))?;
+        if next.is_some_and(|p| p <= page || p > 100_000) {
+            return Err(upstream_error(id));
+        }
+        let candidates: Vec<_> = response
+            .assets
+            .items
+            .iter()
+            .filter(|a| {
+                a.kind == "IMAGE"
+                    && !a.is_trashed
+                    && matches!(a.visibility.as_str(), "timeline" | "archive")
+            })
+            .map(|a| {
+                (
+                    a.id.clone(),
+                    a.original_file_name.clone(),
+                    a.file_created_at.clone(),
+                )
+            })
+            .collect();
+        let allowed = index
+            .filter_candidates(query, &candidates)
+            .map_err(|_| index_error(id))?;
+        let matches: Vec<_> = response
+            .assets
+            .items
+            .into_iter()
+            .enumerate()
+            .skip(offset)
+            .filter(|(_, candidate)| {
+                allowed.contains(&candidate.id) && seen.insert(candidate.id.clone())
+            })
+            .collect();
+        for chunk in matches.chunks(6) {
+            // A stale search hit must not expose cached metadata after locking,
+            // deletion, or an access change. Keep the existing per-asset check.
+            // Limit concurrency to the same six reads as saved-tag browsing.
+            let current = futures_util::future::join_all(chunk.iter().map(
+                |(position, candidate)| async move {
+                    (*position, account.asset(state, &candidate.id, id).await)
+                },
+            ))
+            .await;
+            for (position, result) in current {
+                let asset = match result {
+                    Ok(asset) => asset,
+                    Err(err) if err.status() == StatusCode::NOT_FOUND => continue,
+                    Err(err) => return Err(err),
+                };
+                if items.len() == PAGE_SIZE {
+                    return Ok((items, Some((page - 1) * PAGE_SIZE as u32 + position as u32)));
+                }
+                items.push(indexed_item(index, asset, id)?);
+            }
+        }
+        let Some(next) = next else {
+            return Ok((items, None));
+        };
+        cursor = (next - 1) * PAGE_SIZE as u32;
+    }
+    Ok((items, Some(cursor)))
 }

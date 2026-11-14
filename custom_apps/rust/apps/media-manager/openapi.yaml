@@ -89,10 +89,12 @@ paths:
   /provider-lookups/immich/images/index:
     get:
       operationId: searchIndexedImmichImages
-      description: Search private EYE analysis of timeline and archived photos. Current Immich access is rechecked. Tags are comma-separated words; case, spacing and plurals are normalised, and related=true also accepts curated wording for the same subject. Score filters use 0..1. Global sorting precedes pagination; unknown scores are excluded from score/tag sorts.
+      description: Search timeline and archived photos with current Immich access rechecked. A nonempty semanticQuery uses Immich Smart Search and its existing image embeddings, always in relevance order; query (filename), tags and minimum scores remain filters. Unanalyzed photos are eligible unless an explicit tag or score filter excludes them. Continue with nextCursor and unchanged filters, including after an empty batch; nextPage is null in this mode. Without semanticQuery, search private EYE analysis; tags are comma-separated, with case, spacing and plurals normalised and optional curated related wording. Score filters use 0..1. Local sorting precedes pagination; unknown scores are excluded from score/tag sorts.
       parameters:
         - { in: query, name: page, schema: { type: integer, minimum: 1, maximum: 100000 } }
         - { in: query, name: query, schema: { type: string, maxLength: 200 } }
+        - { in: query, name: semanticQuery, schema: { type: string, maxLength: 200 } }
+        - { in: query, name: cursor, description: Continuation offset returned as nextCursor. Only valid with semanticQuery and page=1., schema: { type: integer, minimum: 0, maximum: 4799999, default: 0 } }
         - { in: query, name: tags, schema: { type: string, maxLength: 3104 } }
         - { in: query, name: tagMode, schema: { type: string, enum: [all, any], default: all } }
         - { in: query, name: related, schema: { type: boolean, default: true } }
@@ -2162,6 +2164,7 @@ components:
           required: [index, tagMatches]
           properties:
             index: { $ref: "#/components/schemas/ImmichIndexStatus" }
+            nextCursor: { type: [integer, "null"], minimum: 0, maximum: 4799999, description: Semantic-search continuation offset; null when exhausted. An empty batch may still have a continuation. }
             tagMatches:
               type: array
               maxItems: 16

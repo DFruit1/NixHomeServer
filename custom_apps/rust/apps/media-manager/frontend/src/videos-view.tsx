@@ -72,6 +72,7 @@ export const VideosView = component$<{
   // Position to restore when the converted copy replaces the original, so a
   // long conversion does not send the viewer back to the start.
   const resumeAt = useSignal(0);
+  const resumePlaying = useSignal(false);
   const state = useStore({
     items: [] as CatalogItem[],
     selectedId: "",
@@ -187,6 +188,7 @@ export const VideosView = component$<{
     state.error = "";
     deepLinkNotice.value = "";
     resumeAt.value = 0;
+    resumePlaying.value = false;
   });
 
   // A finished download can reach the library before the next scheduled scan
@@ -269,7 +271,11 @@ export const VideosView = component$<{
     try {
       const started = videoRef.value?.currentTime ?? 0;
       if (await prepareBrowserPlayback(id, current)) {
-        resumeAt.value = started;
+        // The original (silent) copy keeps playing while the server converts,
+        // so keep the position the viewer has reached, not the one they had
+        // when the conversion started.
+        resumeAt.value = videoRef.value?.currentTime ?? started;
+        resumePlaying.value = !(videoRef.value?.paused ?? true);
         state.transcode = true;
       }
     } catch (error) {
@@ -279,11 +285,14 @@ export const VideosView = component$<{
     }
   });
 
-  useTask$(async ({ track }) => {
+  useTask$(({ track }) => {
     track(() => state.selectedId);
     const item = selectedItem(state.items, state.selectedId);
     if (!item || !audioNeedsBrowserConversion(item.videoProbe)) return;
-    await prepareBrowserCopy(item.id);
+    // Preparing polls until the server has the file, which takes minutes for a
+    // full film. Awaiting it here would hold Qwik's render flush, so the
+    // "converting" status and every other update would appear only at the end.
+    void prepareBrowserCopy(item.id);
   });
 
   // The probe cache fills in the background, so a just-scanned video may not
@@ -481,9 +490,14 @@ export const VideosView = component$<{
               await prepareBrowserCopy(state.selectedId);
             }}
             onLoadedMetadata$={(_, element) => {
-              if (resumeAt.value <= 0) return;
-              element.currentTime = resumeAt.value;
-              resumeAt.value = 0;
+              if (resumeAt.value > 0) {
+                element.currentTime = resumeAt.value;
+                resumeAt.value = 0;
+              }
+              if (resumePlaying.value) {
+                resumePlaying.value = false;
+                void element.play?.()?.catch(() => {});
+              }
             }}
             onTimeUpdate$={checkDecodedAudio}
           />

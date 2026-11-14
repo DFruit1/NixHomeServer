@@ -163,7 +163,7 @@ impl Account {
             && path.strip_prefix("assets/").is_some_and(valid_mbid)
             && body.as_ref() == Some(&json!({"visibility": "archive"}));
         if method != Method::GET
-            && !(method == Method::POST && path == "search/metadata")
+            && !(method == Method::POST && matches!(path, "search/metadata" | "search/smart"))
             && !archive
         {
             return Err(error(
@@ -199,6 +199,13 @@ impl Account {
                 StatusCode::TOO_MANY_REQUESTS,
                 "immich_rate_limited",
                 "Immich is busy. Try again shortly.",
+                id,
+            )),
+            reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::SERVICE_UNAVAILABLE
+                | reqwest::StatusCode::INTERNAL_SERVER_ERROR if path == "search/smart" => Err(error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "immich_semantic_unavailable",
+                "Image-content search is unavailable. Check Smart Search in Photos or choose Saved tags.",
                 id,
             )),
             _ => Err(upstream_error(id)),
