@@ -22,12 +22,16 @@ const browserAudioCodecs = new Set([
 /** Minimal probe shape so callers can pass the catalog's `videoProbe`. */
 export type AudioTrackProbe = { audioCodecs?: string[] } | null | undefined;
 
-/** True when the file carries an audio track the browser cannot decode, so the
- * player must serve its H.264/AAC conversion to get sound. */
+/** True when the file carries no audio track the browser can decode, so the
+ * player must serve its H.264/AAC conversion to get sound. A file that also
+ * has a playable track is left alone: converting takes minutes and the browser
+ * can already produce audio from it. */
 export function audioNeedsBrowserConversion(probe: AudioTrackProbe): boolean {
-  return (probe?.audioCodecs ?? []).some(
-    (codec) => !browserAudioCodecs.has(codec.trim().toLowerCase()),
+  const codecs = (probe?.audioCodecs ?? []).map((codec) =>
+    codec.trim().toLowerCase(),
   );
+  if (codecs.length === 0) return false;
+  return !codecs.some((codec) => browserAudioCodecs.has(codec));
 }
 
 /** True only when a probe positively reports a video without audio tracks. */

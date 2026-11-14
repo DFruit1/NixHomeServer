@@ -796,7 +796,7 @@ fn inspect_pdf_xmp(root: &Path, item: &CatalogItem) -> Result<Option<MetadataObs
             storage: "embedded-file".to_string(),
             consumed_by: vec!["kavita".to_string()],
             survives_rescan: true,
-            writable: true,
+            writable: !document.signed,
             locked: None,
             fields,
             raw_preview: Some(bounded_preview(raw)),

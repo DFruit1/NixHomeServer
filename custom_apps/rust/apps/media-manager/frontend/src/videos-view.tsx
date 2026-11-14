@@ -377,7 +377,6 @@ export const VideosView = component$<{
               }
               await prepareBrowserCopy(state.selectedId);
             }}
-            onCanPlay$={() => (state.transcodeLoading = false)}
             onLoadedMetadata$={(_, element) => {
               if (resumeAt.value <= 0) return;
               element.currentTime = resumeAt.value;

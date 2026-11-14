@@ -841,6 +841,57 @@ impl<'f, F: Read + Seek> PdfDocument<'f, F> {
         Ok(Some(data))
     }
 
+    /// Whether the document carries a digital signature field or a
+    /// certification signature. Writing an incremental update would leave
+    /// those signatures covering only the original revision, so viewers would
+    /// report a modified or policy-violating document.
+    fn has_signature(&mut self) -> Result<bool, String> {
+        let (_, _, catalog) = self.catalog()?;
+        if get(&catalog, b"Perms").is_some() {
+            return Ok(true);
+        }
+        let Some(acro_form) = get(&catalog, b"AcroForm").cloned() else {
+            return Ok(false);
+        };
+        let Object::Dictionary(acro_form) = self.dereference(&acro_form)? else {
+            return Ok(false);
+        };
+        let Some(Object::Array(fields)) = get(&acro_form, b"Fields").cloned() else {
+            return Ok(false);
+        };
+        let mut pending = fields;
+        let mut visited = 0usize;
+        while let Some(field) = pending.pop() {
+            visited += 1;
+            if visited > 4096 {
+                return Err("PDF form field tree exceeds the safe limit".to_string());
+            }
+            let Object::Dictionary(field) = self.dereference(&field)? else {
+                continue;
+            };
+            let kind_is_signature =
+                get(&field, b"FT").is_some_and(|kind| kind == &Object::Name(b"Sig".to_vec()));
+            let value_is_signature = match get(&field, b"V").cloned() {
+                Some(value) => match self.dereference(&value)? {
+                    Object::Dictionary(value) => {
+                        get(&value, b"ByteRange").is_some()
+                            || get(&value, b"Type")
+                                .is_some_and(|kind| kind == &Object::Name(b"Sig".to_vec()))
+                    }
+                    _ => false,
+                },
+                None => false,
+            };
+            if kind_is_signature || value_is_signature {
+                return Ok(true);
+            }
+            if let Some(Object::Array(kids)) = get(&field, b"Kids").cloned() {
+                pending.extend(kids);
+            }
+        }
+        Ok(false)
+    }
+
     fn next_object_number(&self) -> Result<u32, String> {
         let size = match get(&self.trailer, b"Size") {
             Some(Object::Integer(size)) if *size >= 0 => *size as u64,
@@ -1045,6 +1096,10 @@ pub struct PdfDocumentMetadata {
     pub xmp: Option<Vec<u8>>,
     /// Info dictionary text entries (Title, Author, Subject, Keywords, ...).
     pub info: BTreeMap<String, String>,
+    /// Whether the document carries a digital signature or certification.
+    /// An incremental update leaves the signed byte range intact but adds a
+    /// revision outside it, so the writer refuses these documents.
+    pub signed: bool,
 }
 
 /// Read the document XMP packet and Info dictionary through the
@@ -1055,6 +1110,7 @@ pub fn read_document_metadata<F: Read + Seek>(file: &mut F) -> Result<PdfDocumen
     if get(&document.trailer, b"Encrypt").is_some() {
         return Err("PDF is encrypted".to_string());
     }
+    let signed = document.has_signature()?;
     let xmp = document.xmp()?;
     let info = document
         .info()?
@@ -1067,7 +1123,7 @@ pub fn read_document_metadata<F: Read + Seek>(file: &mut F) -> Result<PdfDocumen
             _ => None,
         })
         .collect();
-    Ok(PdfDocumentMetadata { xmp, info })
+    Ok(PdfDocumentMetadata { xmp, info, signed })
 }
 
 /// Info dictionary keys that a metadata edit owns. A `None` value removes the
@@ -1099,6 +1155,12 @@ where
     let mut document = PdfDocument::open(input)?;
     if get(&document.trailer, b"Encrypt").is_some() {
         return Err("encrypted PDFs cannot be edited safely".to_string());
+    }
+    if document.has_signature()? {
+        return Err(
+            "signed PDFs cannot be edited; the new revision would invalidate the signature"
+                .to_string(),
+        );
     }
     let (catalog_number, catalog_generation, mut catalog) = document.catalog()?;
     if get(&catalog, b"Type").is_some_and(|kind| kind != &Object::Name(b"Catalog".to_vec())) {
@@ -1537,5 +1599,65 @@ mod tests {
         damaged.truncate(position);
         damaged.extend_from_slice(b"startxref\n3\n%%EOF");
         assert!(read_document_metadata(&mut Cursor::new(damaged)).is_err());
+    }
+
+    /// A minimal signed file: either a signature field or a certification
+    /// signature in the catalog's `/Perms`.
+    fn signed_pdf(certified: bool) -> Vec<u8> {
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let catalog = if certified {
+            b"<< /Type /Catalog /Pages 2 0 R /Perms << /DocMDP 5 0 R >> >>".to_vec()
+        } else {
+            b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R] >> >>".to_vec()
+        };
+        let objects: Vec<Vec<u8>> = vec![
+            catalog,
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".to_vec(),
+            b"<< /Title (Signed book) >>".to_vec(),
+            b"<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 0 0 0] /Contents <00> >>".to_vec(),
+            b"<< /FT /Sig /T (Signature1) /V 5 0 R >>".to_vec(),
+        ];
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+            pdf.extend_from_slice(body);
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 7\n0000000000 65535 f\r\n");
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n\r\n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 7 /Root 1 0 R /Info 4 0 R >>\nstartxref\n{xref}\n%%EOF")
+                .as_bytes(),
+        );
+        pdf
+    }
+
+    #[test]
+    fn refuses_signed_and_certified_documents() {
+        for certified in [false, true] {
+            let mut file = Cursor::new(signed_pdf(certified));
+            let metadata = read_document_metadata(&mut file).expect("read signed PDF");
+            assert!(metadata.signed, "certified={certified}");
+            let error = append_metadata_update(
+                &mut Cursor::new(signed_pdf(certified)),
+                &mut Cursor::new(Vec::new()),
+                XMP,
+                &PdfInfoUpdate {
+                    title: Some("T".into()),
+                    author: None,
+                    subject: None,
+                    keywords: None,
+                },
+            )
+            .unwrap_err();
+            assert!(error.contains("signed"), "{error}");
+        }
+        let unsigned = read_document_metadata(&mut Cursor::new(classic_pdf())).unwrap();
+        assert!(!unsigned.signed);
     }
 }

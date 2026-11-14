@@ -9,17 +9,21 @@ const videoWith = (fields: Record<string, unknown>) =>
   fields as unknown as HTMLVideoElement;
 
 describe("video audio conversion", () => {
-  it("asks for conversion when a track cannot be decoded", () => {
+  it("asks for conversion only when no track can be decoded", () => {
     expect(audioNeedsBrowserConversion({ audioCodecs: ["ac3"] })).toBe(true);
-    expect(audioNeedsBrowserConversion({ audioCodecs: ["aac", "eac3"] })).toBe(
+    expect(audioNeedsBrowserConversion({ audioCodecs: ["ac3", "eac3"] })).toBe(
       true,
     );
     expect(audioNeedsBrowserConversion({ audioCodecs: ["DTS"] })).toBe(true);
   });
 
-  it("plays decodable, silent or unknown tracks directly", () => {
+  it("plays files with a decodable track, or no probe, directly", () => {
     expect(audioNeedsBrowserConversion({ audioCodecs: ["aac"] })).toBe(false);
     expect(audioNeedsBrowserConversion({ audioCodecs: ["AAC", "mp3"] })).toBe(
+      false,
+    );
+    // A playable default track wins over an alternate DTS track.
+    expect(audioNeedsBrowserConversion({ audioCodecs: ["aac", "dts"] })).toBe(
       false,
     );
     expect(audioNeedsBrowserConversion({ audioCodecs: [] })).toBe(false);
