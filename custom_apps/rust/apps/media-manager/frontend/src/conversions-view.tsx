@@ -16,6 +16,7 @@ import {
   RecentSubmissions,
 } from "./conversion-input";
 import type { ConversionInputs } from "./api-contract.generated";
+import { ComicConversions } from "./comic-conversions";
 import { Icon } from "./icon";
 import type {
   Conversion,
@@ -107,8 +108,10 @@ const ConversionList = component$<{
   );
 });
 
+type ConversionsTask = ConversionTask | "comics";
+
 const tasks: {
-  id: ConversionTask;
+  id: ConversionsTask;
   icon: IconName;
   title: string;
   detail: string;
@@ -130,6 +133,12 @@ const tasks: {
     icon: "captions",
     title: "Make subtitles",
     detail: "Create subtitles for a video in your library.",
+  },
+  {
+    id: "comics",
+    icon: "book",
+    title: "Make comics editable",
+    detail: "Convert CBR comics to CBZ so their details can be edited.",
   },
 ];
 
@@ -237,6 +246,7 @@ const LogDialog = component$<{
 export const ConversionsView = component$<{
   initial?: ConversionEnvelope;
   transcriptionAvailable?: boolean;
+  canEdit?: boolean;
 }>((props) => {
   const conv = useStore<{
     conversions?: ConversionEnvelope;
@@ -254,7 +264,7 @@ export const ConversionsView = component$<{
     inputError: "",
   });
   const logDialog = useSignal<string>("");
-  const task = useSignal<ConversionTask | "">("");
+  const task = useSignal<ConversionsTask | "">("");
 
   useTask$(({ cleanup, track }) => {
     const transcribe = track(() => props.transcriptionAvailable);
@@ -417,7 +427,8 @@ export const ConversionsView = component$<{
           <div class="conversion-task-list">
             {tasks.map((option) => {
               const unavailable =
-                option.id !== "dvd" && !props.transcriptionAvailable;
+                (option.id === "transcribe" || option.id === "subtitles") &&
+                !props.transcriptionAvailable;
               return (
                 <button
                   key={option.id}
@@ -445,7 +456,10 @@ export const ConversionsView = component$<{
             })}
           </div>
         </section>
-        {task.value && (
+        {task.value === "comics" && (
+          <ComicConversions canEdit={props.canEdit ?? false} />
+        )}
+        {task.value && task.value !== "comics" && (
           <ConversionInput
             task={task.value}
             inputs={conv.inputs}

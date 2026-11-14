@@ -1,0 +1,80 @@
+.comic-archive-action {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  min-width: 0;
+}
+.comic-archive-action p,
+.comic-archive-action li {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.comic-archive-action ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-inline-start: 1.1rem;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+.comic-archive-action__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.comic-archive-action > .message {
+  justify-self: stretch;
+}
+.health-comic-archive {
+  display: grid;
+  gap: 6px;
+  margin-block-start: 10px;
+  min-width: 0;
+}
+.health-comic-archive > span {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.comic-conversions__body {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+  min-width: 0;
+}
+.comic-conversions__body > p {
+  margin: 0;
+  max-width: 68ch;
+  line-height: 1.5;
+}
+.comic-conversions__list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.comic-conversions__list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding-block: 12px;
+  border-top: 1px solid var(--line);
+}
+.comic-conversions__name {
+  display: grid;
+  flex: 1 1 260px;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.comic-conversions__name small {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+@media (max-width: 640px) {
+  .comic-conversions__body {
+    padding: 16px;
+  }
+}

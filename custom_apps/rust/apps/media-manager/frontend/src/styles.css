@@ -4156,32 +4156,9 @@ a:focus-visible {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   padding-bottom: 0;
-}
-
-.player-sidebar-header h3 {
-  font-family: var(--font-serif);
-  font-size: var(--title-sm);
-  font-weight: 500;
-  color: var(--ink);
-  white-space: nowrap;
-}
-
-.root-filter-select {
-  font: inherit;
-  font-size: var(--text-md);
-  min-width: 0;
-  min-height: 44px;
-  padding: 8px 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-control);
-  background: var(--card);
-  color: var(--ink);
-  max-width: 100%;
-  flex: 1 1 150px;
-  cursor: pointer;
 }
 
 .track-list {
@@ -4376,19 +4353,19 @@ a:focus-visible {
 /* ── Player sidebar enhancements ── */
 .sidebar-header-actions {
   display: flex;
-  flex: 1 1 230px;
+  flex: 0 0 auto;
+  margin-left: auto;
   min-width: 0;
-  flex-wrap: wrap;
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
 }
 
 .back-button {
   display: flex;
   align-items: center;
   gap: 4px;
+  margin-right: auto;
   padding: 4px 8px;
   min-height: 44px;
   border: none;
@@ -5325,10 +5302,6 @@ a:focus-visible {
   gap: 2px 10px;
   padding: 6px 0;
 }
-.health-issue-lookup {
-  color: var(--ink-faint);
-  font-size: var(--text-sm);
-}
 .health-issue-footer {
   position: relative;
 }
@@ -5423,6 +5396,18 @@ a:focus-visible {
   min-width: 0;
   padding: 10px 0;
   border-bottom: 1px solid var(--line);
+}
+/* Fixes that unblock provider search and comic editing sit on a slightly
+   deeper cream so they lead the item without competing with the banner. */
+.health-result-issue.is-priority {
+  margin-block: 6px;
+  padding: 10px 12px;
+  border-bottom: 0;
+  border-radius: var(--radius-control);
+  background: var(--paper-recess);
+}
+.health-result-issue.is-priority + .health-result-issue {
+  margin-top: 8px;
 }
 .health-result-issue h4 {
   margin-bottom: 0;
@@ -5935,6 +5920,9 @@ a:focus-visible {
   }
   .health-result-art {
     width: min(56%, 220px);
+  }
+  .health-result-issue.is-priority {
+    padding: 10px;
   }
   .health-issue-table tbody tr {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6493,7 +6481,6 @@ a:focus-visible {
 }
 
 @media (max-width: 640px) {
-  .root-filter-select,
   .collection-view-choice select,
   .video-library-select select,
   .video-library-filter input,
@@ -7343,6 +7330,66 @@ a:focus-visible {
 }
 .video-list-icon img[hidden] {
   display: none;
+}
+
+/* A touch device cannot hover, so the rail's tooltips would stay over the
+   content after a tap. Keep the labels for assistive technology only. */
+@media (min-width: 641px) and (max-width: 1199px) and (hover: none) {
+  .brand > div:last-child,
+  .nav-item > span,
+  .sidebar-footer > div:nth-child(2),
+  .sidebar-footer > .role-dot {
+    display: none;
+  }
+}
+
+/* Phones stack the player above the library, so keep the title row to the
+   title and the icon-only controls. */
+@media (max-width: 640px),
+  (min-width: 641px) and (max-width: 1000px) and (orientation: landscape) and (max-height: 560px) {
+  .video-library-select,
+  .video-action-label {
+    display: none;
+  }
+  .video-pip-button {
+    width: var(--control-height);
+    min-width: 0;
+    padding-inline: 0;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 1000px) {
+  .video-title h2 {
+    font-size: var(--title-sm);
+  }
+}
+
+/* Phone landscape: the portrait height cap would letterbox the player in a
+   short strip, so let it use the viewport height and trim the frame around it. */
+@media (min-width: 641px) and (orientation: landscape) and (max-height: 560px) {
+  .main-content--videos {
+    height: auto;
+    min-height: 100dvh;
+    padding: 4px 12px 12px;
+    display: block;
+    overflow: visible;
+  }
+  .video-player-column {
+    padding: 4px;
+  }
+  .video-title {
+    padding: 6px 2px 0;
+  }
+  .video-screen {
+    width: auto;
+    max-width: 100%;
+    height: calc(100dvh - 96px);
+    max-height: none;
+    margin-inline: auto;
+    aspect-ratio: auto;
+    border-radius: 6px;
+  }
 }
 
 /* Adapt to the player column, including beside the expanded desktop nav. */

@@ -26,6 +26,7 @@ import { revealWhenMounted } from "./reveal";
 import { Icon } from "./icon";
 import { HealthPlayback, HealthPlayButton } from "./health-playback";
 import { HealthTrackSequence } from "./health-track-sequence";
+import { ComicArchiveAction } from "./comic-archive-action";
 import "./health-number-table.css";
 import {
   enqueueHealthWrite,
@@ -822,16 +823,47 @@ type ApplyHealthValue = QRL<
   ) => Promise<boolean>
 >;
 
-// Provider lookups search with these fields, so they are settled first.
-const LOOKUP_FIELD_ORDER = ["title", "authors", "year"];
+// Provider lookups search with these fields, so they are settled before the
+// remaining checks. A CBR cannot hold edited metadata either, so converting it
+// is just as much a prerequisite.
+const PRIORITY_FIELD_ORDER = ["title", "authors", "year"];
+const COMIC_ARCHIVE_CODES = new Set([
+  "comic-archive-misnamed",
+  "comic-archive-proprietary",
+]);
 
-function lookupRank(issue: MetadataHealthIssue): number {
-  const rank = LOOKUP_FIELD_ORDER.indexOf(issue.field ?? "");
-  return rank === -1 ? LOOKUP_FIELD_ORDER.length : rank;
+function priorityRank(issue: MetadataHealthIssue): number {
+  const rank = PRIORITY_FIELD_ORDER.indexOf(issue.field ?? "");
+  if (rank !== -1) return rank;
+  return COMIC_ARCHIVE_CODES.has(issue.code)
+    ? PRIORITY_FIELD_ORDER.length
+    : PRIORITY_FIELD_ORDER.length + 1;
 }
 
-function isLookupIssue(issue: MetadataHealthIssue): boolean {
-  return lookupRank(issue) < LOOKUP_FIELD_ORDER.length;
+function isPriorityIssue(issue: MetadataHealthIssue): boolean {
+  return priorityRank(issue) <= PRIORITY_FIELD_ORDER.length;
+}
+
+// Only issues the reviewer can actually settle hold back the rest, so a
+// read-only viewer or a podcast keeps every check visible.
+function blocksLaterChecks(grouped: GroupedIssue, canEdit: boolean): boolean {
+  if (!canEdit || !isPriorityIssue(grouped.issue)) return false;
+  if (COMIC_ARCHIVE_CODES.has(grouped.issue.code)) return true;
+  return grouped.entries.every(({ issue, target }) =>
+    editableHealthIssue(issue, target, canEdit),
+  );
+}
+
+function issueAnswered(
+  grouped: GroupedIssue,
+  selections: HealthSelections,
+  hidden: Record<string, boolean>,
+): boolean {
+  return grouped.entries.every(({ issue, target }) => {
+    const key = healthEntryId(target.itemId, issue);
+    const selection = selections[key];
+    return Boolean(hidden[key] || (selection && !selection.error));
+  });
 }
 
 function groupIssues(results: MetadataHealthResult[]): GroupedIssue[] {
@@ -851,7 +883,7 @@ function groupIssues(results: MetadataHealthResult[]): GroupedIssue[] {
     }
   }
   return [...grouped.values()].sort(
-    (left, right) => lookupRank(left.issue) - lookupRank(right.issue),
+    (left, right) => priorityRank(left.issue) - priorityRank(right.issue),
   );
 }
 
@@ -1395,6 +1427,7 @@ const HealthIssueReview = component$<{
   onDecision$: QRL<
     (entry: HealthIssueEntry, choice: HealthChoice) => Promise<boolean>
   >;
+  onConverted$: QRL<() => void>;
   onLookup$: QRL<
     (
       issue: MetadataHealthIssue,
@@ -1540,15 +1573,36 @@ const HealthIssueReview = component$<{
         "Individual choices were retained. Files without one clear proposal still need review.";
   });
   return (
-    <section class="health-result-issue">
+    <section
+      class={{
+        "health-result-issue": true,
+        "is-priority": isPriorityIssue(issue),
+      }}
+    >
       <header class="health-issue-header">
         <h4>{issueTitle}</h4>
-        {isLookupIssue(issue) && (
-          <span class="health-issue-lookup">Used to search providers</span>
-        )}
       </header>
       <div class="health-comparison">
         {!compares && <p>{issue.message}</p>}
+        {COMIC_ARCHIVE_CODES.has(issue.code) &&
+          entries.map((entry) => (
+            <div key={entry.target.itemId} class="health-comic-archive">
+              {entries.length > 1 && (
+                <span>{entry.target.relativePath.split("/").at(-1)}</span>
+              )}
+              <ComicArchiveAction
+                itemId={entry.target.itemId}
+                rootId={entry.target.rootId}
+                format={
+                  entry.issue.code === "comic-archive-misnamed"
+                    ? "zip"
+                    : undefined
+                }
+                canEdit={props.canEdit}
+                onConverted$={props.onConverted$}
+              />
+            </div>
+          ))}
         {compares && (
           <>
             {numbered ? (
@@ -1889,7 +1943,7 @@ const HealthResult = component$<{ group: HealthGroup; canEdit: boolean }>(
           </div>
         </header>
         <div class="health-result-issues" ref={issuesElement}>
-          <Slot name="lookup" />
+          <Slot name="priority" />
           <Slot />
         </div>
       </article>
@@ -2051,6 +2105,8 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
     );
     if (revision === requestRevision.value) inbox.scanning = false;
   });
+
+  const rescanAfterConversion$ = $(() => inspectLibraries(inbox.rootId));
 
   const inspection = useResource$(({ track, cleanup }) => {
     const rootId = track(() => inbox.rootId);
@@ -2220,9 +2276,43 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
       ),
     }))
     .filter((result) => result.health.length > 0);
+  // Important fixes come first for each item; its remaining checks stay out of
+  // the way until those are settled.
+  const issueGroups = groupResults(visibleResults).map((group) => {
+    const issues = groupIssues(group.results);
+    const held = issues.some(
+      (grouped) =>
+        blocksLaterChecks(grouped, Boolean(props.canEdit)) &&
+        !issueAnswered(grouped, selections, optimisticDecisions),
+    );
+    return {
+      group,
+      issues,
+      held,
+      shown: held
+        ? issues.filter((grouped) => isPriorityIssue(grouped.issue))
+        : issues,
+    };
+  });
+  const heldIssueCount = issueGroups.reduce(
+    (total, entry) =>
+      entry.held
+        ? total +
+          entry.issues.reduce(
+            (count, grouped) =>
+              isPriorityIssue(grouped.issue)
+                ? count
+                : count + grouped.entries.length,
+            0,
+          )
+        : total,
+    0,
+  );
   const visibleIssueCount = Math.max(
     0,
-    inbox.issueCount - hiddenIssueCount(inbox.results, optimisticDecisions),
+    inbox.issueCount -
+      hiddenIssueCount(inbox.results, optimisticDecisions) -
+      heldIssueCount,
   );
   return (
     <section
@@ -2296,17 +2386,17 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
       ) : null}
 
       <div class="health-results">
-        {groupResults(visibleResults).map((group) => (
+        {issueGroups.map(({ group, issues, shown }) => (
           <HealthResult
             group={group}
             canEdit={Boolean(props.canEdit)}
             key={group.key}
           >
-            {groupIssues(group.results).map((grouped, index, all) => (
+            {shown.map((grouped, index) => (
               <HealthIssueReview
-                q:slot={isLookupIssue(grouped.issue) ? "lookup" : undefined}
+                q:slot={isPriorityIssue(grouped.issue) ? "priority" : undefined}
                 trackSequence={
-                  all.findIndex((candidate) =>
+                  issues.findIndex((candidate) =>
                     candidate.entries.some((entry) =>
                       TRACK_SEQUENCE_CODES.has(entry.issue.code),
                     ),
@@ -2322,6 +2412,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
                 selections={selections}
                 onApply$={applyValue$}
                 onDecision$={rememberDecision$}
+                onConverted$={rescanAfterConversion$}
                 onLookup$={(issue, target, primary) => {
                   const heading = groupHeading(group);
                   providersDialogFor.value = {
