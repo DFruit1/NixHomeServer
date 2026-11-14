@@ -55,6 +55,7 @@ export const Icon = component$<{ name: IconName; size?: number }>((props) => {
     image: ["M4 5h16v14H4z", "m4 15 4.5-4.5 3.5 3.5 3-3L20 16", "M9.5 9.5h.01"],
     "chevron-down": ["m6 9 6 6 6-6"],
     "chevron-right": ["m9 6 6 6-6 6"],
+    "chevron-left": ["m15 6-6 6 6 6"],
     audiobookshelf: [
       "M3 18v-6a9 9 0 0 1 18 0v6",
       "M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z",

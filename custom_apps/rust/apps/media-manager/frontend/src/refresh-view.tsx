@@ -5,6 +5,11 @@ import { refreshPresentation } from "./root-routing";
 import type { IconName, Integration, IntegrationRefresh } from "./root-types";
 import { EmptyState } from "./view-states";
 
+const CAPABILITY_LABELS: Record<string, string> = {
+  "library-refresh": "Library scan",
+  "folder-rescan": "Folder rescan",
+};
+
 export const RefreshView = component$<{ integrations: Integration[] }>(
   (props) => {
     const refresh = useStore<{
@@ -81,7 +86,7 @@ export const RefreshView = component$<{ integrations: Integration[] }>(
       refresh.statuses[integrationId] = {
         integrationId,
         state: "failed",
-        message: "Timed out waiting for the refresh adapter to finish.",
+        message: "Timed out waiting for the refresh to finish.",
       };
     });
 
@@ -160,8 +165,10 @@ export const RefreshView = component$<{ integrations: Integration[] }>(
                 <div class="integration-copy">
                   <h3>{integration.label}</h3>
                   <p class="integration-capabilities">
-                    {integration.capabilities.join(" · ") ||
-                      "No manual adapter registered"}
+                    {integration.capabilities
+                      .map((capability) => CAPABILITY_LABELS[capability])
+                      .filter(Boolean)
+                      .join(" · ")}
                   </p>
                   {canRefresh && integration.available && (
                     <div
@@ -173,12 +180,14 @@ export const RefreshView = component$<{ integrations: Integration[] }>(
                       aria-live="polite"
                     >
                       <strong>{presentation.label}</strong>
-                      <span>{presentation.detail}</span>
+                      {presentation.detail && (
+                        <span>{presentation.detail}</span>
+                      )}
                     </div>
                   )}
                 </div>
                 <button
-                  class="secondary-button compact-action"
+                  class="secondary-button"
                   type="button"
                   disabled={!integration.available || presentation.busy}
                   onClick$={() => triggerRefresh(integration)}
@@ -190,10 +199,7 @@ export const RefreshView = component$<{ integrations: Integration[] }>(
           })}
         </div>
         {refreshableIntegrations.length === 0 && (
-          <EmptyState
-            title="No refreshable applications"
-            detail="Applications with a manual refresh adapter appear here once they are enabled on the server."
-          />
+          <EmptyState title="Nothing to refresh" />
         )}
       </section>
     );

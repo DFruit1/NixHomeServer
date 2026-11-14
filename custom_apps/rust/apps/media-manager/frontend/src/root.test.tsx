@@ -99,6 +99,21 @@ describe("Media Manager navigation", () => {
       expect(link, `${label} navigation link`).toBeDefined();
       expect(link?.getAttribute("href")).toBe(href);
     }
+    // Ordered by frequency of use; setup tools come last.
+    expect(
+      Array.from(screen.querySelectorAll("a.nav-item")).map((link) =>
+        link.getAttribute("href"),
+      ),
+    ).toEqual([
+      "?view=player",
+      "?view=videos",
+      "?view=images",
+      "?view=library",
+      "?view=health",
+      "?view=conversions",
+      "?view=accounts",
+      "?view=refresh",
+    ]);
     expect(screen.querySelector('a[href="?view=subtitles"]')).toBeFalsy();
     expect(screen.textContent).not.toContain("Overview");
   });
@@ -967,7 +982,25 @@ describe("Media Manager library browser", () => {
   });
 
   it("splits library content into Personal and Shared panes", async () => {
-    vi.stubGlobal("fetch", libraryFetchMock([]));
+    vi.stubGlobal(
+      "fetch",
+      libraryFetchMock([
+        {
+          id: "mine",
+          rootId: "personal-videos",
+          relativePath: "Home/Birthday.mkv",
+          mediaKind: "video",
+          sizeBytes: 1024,
+        },
+        {
+          id: "ours",
+          rootId: "shared-videos",
+          relativePath: "Movies/Arrival.mkv",
+          mediaKind: "video",
+          sizeBytes: 2048,
+        },
+      ]),
+    );
 
     const { render, screen } = await createDOM();
     await render(<Root initialView="library" initialRootId="shared-videos" />);
@@ -976,11 +1009,40 @@ describe("Media Manager library browser", () => {
       screen.querySelectorAll(".pane-heading h3"),
     ).map((heading) => heading.textContent);
     expect(headings).toEqual(["Personal", "Shared"]);
+    expect(screen.querySelectorAll(".catalog-panel")).toHaveLength(2);
     expect(
-      screen.querySelectorAll(".catalog-panel").length,
-    ).toBeGreaterThanOrEqual(2);
+      Array.from(screen.querySelectorAll(".pane-count")).map((count) =>
+        count.textContent?.trim(),
+      ),
+    ).toEqual(["1 item", "1 item"]);
     expect(screen.textContent).not.toContain("Shared videos");
     expect(screen.textContent).not.toContain("My videos");
+  });
+
+  it("collapses an empty Personal pane to one line beside a full Shared pane", async () => {
+    vi.stubGlobal(
+      "fetch",
+      libraryFetchMock([
+        {
+          id: "ours",
+          rootId: "shared-videos",
+          relativePath: "Movies/Arrival.mkv",
+          mediaKind: "video",
+          sizeBytes: 2048,
+        },
+      ]),
+    );
+
+    const { render, screen } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+
+    expect(screen.querySelector(".library-layout--single")).toBeDefined();
+    expect(screen.querySelector(".personal-pane")).toBeUndefined();
+    expect(screen.querySelector(".shared-pane")).toBeDefined();
+    expect(screen.querySelector(".library-empty-line")?.textContent).toBe(
+      "No personal videos",
+    );
+    expect(screen.querySelector(".empty-state")).toBeUndefined();
   });
 
   it("starts library content without redundant panel headings", async () => {
@@ -1036,21 +1098,24 @@ describe("Media Manager library browser", () => {
     expect(screen.querySelector(".kind-pill")).toBeUndefined();
     expect(screen.textContent).toContain("Example Movie (2020).mkv");
 
-    const filterButtons = Array.from(
-      screen.querySelectorAll(".folder-filter-button"),
+    // The tree's top level is the folder index; there is no separate chip row.
+    expect(screen.querySelector(".folder-filter")).toBeUndefined();
+    const topFolders = Array.from(
+      screen.querySelectorAll(".shared-pane .item-tree > .tree-branch"),
+    ).map((branch) => branch.querySelector(".tree-name")?.textContent);
+    expect(topFolders).toEqual(["_Movies", "_Shows"]);
+
+    const toggle = screen.querySelector(
+      ".shared-pane .tree-toggle[aria-label='Expand Example Show']",
     );
-    expect(filterButtons.map((button) => button.textContent)).toEqual([
-      "Movies",
-      "Shows",
-    ]);
-
-    await userEvent(filterButtons[1] ?? null, "click");
-    expect(filterButtons[1]?.classList.contains("active")).toBe(true);
-    expect(screen.textContent).not.toContain("Example Movie (2020).mkv");
+    await userEvent(toggle, "click");
+    await userEvent(
+      screen.querySelector(
+        ".shared-pane .tree-toggle[aria-label='Expand Season 01']",
+      ),
+      "click",
+    );
     expect(screen.textContent).toContain("Episode.mkv");
-
-    await userEvent(filterButtons[1] ?? null, "click");
-    expect(screen.textContent).toContain("Example Movie (2020).mkv");
   });
 
   it("selects folder names separately from caret-only expansion", async () => {
@@ -1110,7 +1175,7 @@ describe("Media Manager library browser", () => {
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="library" initialRootId="shared-videos" />);
 
-    const sharedPane = screen.querySelectorAll(".catalog-panel")[1];
+    const sharedPane = screen.querySelector(".shared-pane");
     const folderRow = (name: string) =>
       Array.from(sharedPane?.querySelectorAll(".tree-row.folder") ?? []).find(
         (row) => row.querySelector(".tree-name")?.textContent === name,
@@ -1361,7 +1426,7 @@ describe("Media Manager library browser", () => {
 
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="library" initialRootId="shared-videos" />);
-    const sharedPane = screen.querySelectorAll(".catalog-panel")[1];
+    const sharedPane = screen.querySelector(".shared-pane");
 
     await userEvent(
       sharedPane?.querySelector(".tree-row.file") ?? null,
@@ -3187,14 +3252,14 @@ describe("Media Manager library browser", () => {
     await vi.waitFor(() =>
       expect(
         Array.from(screen.querySelectorAll("button")).find(
-          (button) => button.textContent?.trim() === "Play here",
+          (button) => button.textContent?.trim() === "Play",
         ),
       ).toBeDefined(),
     );
     expect(screen.querySelector(".subtitles-accordion")).toBeUndefined();
     await userEvent(
       Array.from(screen.querySelectorAll("button")).find(
-        (button) => button.textContent?.trim() === "Play here",
+        (button) => button.textContent?.trim() === "Play",
       ) ?? null,
       "click",
     );

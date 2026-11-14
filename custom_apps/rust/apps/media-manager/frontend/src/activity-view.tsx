@@ -199,7 +199,7 @@ export const ActivityView = component$<{ canEdit: boolean }>((props) => {
         `/plans/${encodeURIComponent(plan.id)}/retry`,
         { method: "POST" },
       );
-      activity.notice = `${operationLabel(plan.operationKind)} was re-queued for the broker.`;
+      activity.notice = `${operationLabel(plan.operationKind)} was queued again.`;
       await load$();
     } catch (error) {
       activity.error = readableError(error);
@@ -225,7 +225,7 @@ export const ActivityView = component$<{ canEdit: boolean }>((props) => {
         `/plans/${encodeURIComponent(plan.id)}/abandon`,
         { method: "POST" },
       );
-      activity.notice = "The plan was cancelled.";
+      activity.notice = "The change was cancelled.";
       await load$();
     } catch (error) {
       activity.error = readableError(error);
@@ -258,27 +258,21 @@ export const ActivityView = component$<{ canEdit: boolean }>((props) => {
       {activity.mutationMode === "read-only" && (
         <div class="activity-banner" role="note">
           <Icon name="shield" size={18} />
-          <span>
-            Media Manager is in read-only mode. Queued plans will not run until
-            an operator re-enables mutations.
-          </span>
+          <span>Read-only mode: changes are queued but not applied.</span>
         </div>
       )}
 
       {activity.loading ? (
         <LoadingState />
       ) : activity.plans.length === 0 ? (
-        <EmptyState
-          title="No recent mutations"
-          detail="Rename, metadata, subtitle, and artwork plans appear here with their broker state."
-        />
+        <EmptyState title="No recent changes" />
       ) : (
         <div class="panel">
           <div class="panel-heading">
             <div>
-              <h3>Mutation queue</h3>
+              <h3>Recent changes</h3>
               <p class="activity-subtitle">
-                {activity.plans.length} recent plan
+                {activity.plans.length} recent change
                 {activity.plans.length === 1 ? "" : "s"}
               </p>
             </div>
@@ -286,7 +280,7 @@ export const ActivityView = component$<{ canEdit: boolean }>((props) => {
               <div
                 class="activity-scope"
                 role="group"
-                aria-label="Plan visibility"
+                aria-label="Whose changes to show"
               >
                 <button
                   type="button"
@@ -410,8 +404,8 @@ export const ActivityView = component$<{ canEdit: boolean }>((props) => {
                             <>
                               <span aria-hidden="true">·</span>
                               <span>
-                                {plan.completedActionCount}/{plan.actionCount}{" "}
-                                actions
+                                {plan.completedActionCount} of{" "}
+                                {plan.actionCount} steps done
                               </span>
                             </>
                           )}

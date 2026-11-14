@@ -147,13 +147,16 @@ li {
   font-weight: 500;
   letter-spacing: 0;
 }
-.brand span,
-.sidebar-footer span {
+.brand span {
   color: var(--navigation-muted);
   font-family: var(--font-mono);
   font-size: 12px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+.sidebar-footer > div > span {
+  color: var(--navigation-muted);
+  font-size: var(--text-xs);
 }
 @media (min-width: 641px) and (max-width: 1199px) {
   .brand > div:last-child {
@@ -548,10 +551,10 @@ a:focus-visible {
 }
 .root-icon,
 .integration-icon {
-  width: 33px;
-  height: 33px;
+  width: 36px;
+  height: 36px;
   border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: var(--radius-control);
   display: grid;
   place-items: center;
   color: var(--ink-soft);
@@ -785,36 +788,33 @@ a:focus-visible {
   white-space: nowrap;
 }
 .empty-state {
-  min-height: 226px;
-  padding: 32px;
+  padding: 24px 16px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   text-align: center;
 }
 .empty-glyph {
-  width: 46px;
-  height: 46px;
-  margin-bottom: 14px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-control);
   display: grid;
   place-items: center;
   color: var(--ink-faint);
-  background: transparent;
+  background: var(--paper-recess);
 }
 .empty-state h4 {
   font-family: var(--font-serif);
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 500;
 }
 .empty-state p {
-  max-width: 330px;
-  margin-top: 7px;
-  color: var(--ink-faint);
-  font-size: 12px;
-  line-height: 1.6;
+  max-width: 40ch;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  line-height: 1.5;
 }
 .message {
   min-height: 44px;
@@ -869,18 +869,35 @@ a:focus-visible {
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
   grid-template-areas: "personal shared";
 }
-.library-header {
-  flex: 0 0 auto;
-  display: grid;
-  gap: 5px;
-  padding-top: 2px;
+/* One side has nothing in this category: a quiet line, then the other pane
+   at full width. */
+.library-layout--single {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "note"
+    "pane";
+  gap: 8px;
 }
-.library-header h1 {
-  font-family: var(--font-serif);
-  font-size: clamp(28px, 3vw, 38px);
-  font-weight: 500;
-  line-height: 1.05;
-  letter-spacing: -0.01em;
+.library-layout--single > .library-empty-line {
+  order: -1;
+  grid-area: note;
+}
+.library-layout--single > .catalog-panel {
+  grid-area: pane;
+}
+.library-layout--empty {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: none;
+  align-items: start;
+}
+.library-empty-line {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+.catalog-scroll-region > .library-empty-line {
+  padding: 16px 20px;
 }
 .library-tabs {
   flex: 0 0 auto;
@@ -901,11 +918,11 @@ a:focus-visible {
   min-height: 44px;
   padding: 0 14px;
   border: 0;
-  border-radius: 8px 8px 0 0;
+  border-radius: var(--radius-control) var(--radius-control) 0 0;
   color: var(--ink-soft);
   background: transparent;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--text-md);
   font-weight: 600;
   transition:
     color 120ms ease-out,
@@ -964,13 +981,16 @@ a:focus-visible {
   overflow-y: auto;
   overscroll-behavior: auto;
 }
-.library-back {
-  position: sticky;
-  top: 0;
-  z-index: 2;
+/* "Back to libraries" and "Up one level" share one breadcrumb control. */
+.library-crumb {
+  flex: 0 0 auto;
   align-self: flex-start;
-  padding: 8px 12px;
-  background: var(--paper);
+  min-height: var(--control-height);
+  padding: 0 10px 0 4px;
+  gap: 4px;
+}
+.catalog-scroll-region > .library-crumb {
+  margin: 4px 12px 0;
 }
 .pane-heading {
   min-height: 50px;
@@ -983,14 +1003,12 @@ a:focus-visible {
 }
 .pane-heading h3 {
   font-family: var(--font-serif);
-  font-size: 16px;
+  font-size: var(--title-sm);
   font-weight: 500;
 }
 .pane-count {
   color: var(--ink-faint);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.05em;
+  font-size: var(--text-xs);
 }
 .root-choice {
   min-height: 54px;
@@ -1217,57 +1235,11 @@ a:focus-visible {
   flex-direction: column;
   overflow: hidden;
 }
-.folder-filter {
-  flex: 0 0 auto;
-  min-width: 0;
-  min-height: 52px;
-  padding: 10px 20px;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  border-bottom: 1px solid var(--line);
-}
-.folder-filter-button {
-  min-width: 0;
-  max-width: 100%;
-  min-height: 36px;
-  padding: 0 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-control);
-  color: var(--ink-soft);
-  background: transparent;
-  cursor: pointer;
-  font-family: var(--font-sans);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: normal;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition-property: color, background-color, border-color, scale;
-  transition-duration: 120ms;
-  transition-timing-function: ease-out;
-}
-.folder-filter-button:hover {
-  border-color: var(--accent-line);
-  color: var(--accent);
-  background: var(--accent-wash);
-}
-.folder-filter-button.active {
-  border-color: var(--accent);
-  color: var(--accent-ink);
-  background: var(--accent);
-}
-.folder-filter-button:active {
-  scale: 0.96;
-}
 .item-tree {
   min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
   padding: 6px 0;
-  font-size: 12px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1309,10 +1281,14 @@ a:focus-visible {
   text-overflow: clip;
   white-space: normal;
   overflow-wrap: anywhere;
+  line-height: 1.35;
+  padding-block: 4px;
 }
 .tree-row.selected .tabular,
 .tree-row .tabular {
   flex: 0 0 auto;
+  color: var(--ink-faint);
+  font-size: var(--text-xs);
 }
 .tree-row.folder .tree-name {
   font-weight: 600;
@@ -1354,7 +1330,7 @@ a:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 .muted {
   color: var(--ink-faint);
@@ -3662,14 +3638,13 @@ a:focus-visible {
   gap: 12px;
 }
 .integration-card {
-  min-height: 126px;
-  padding: 17px;
+  padding: 20px;
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 13px;
+  gap: 14px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-panel);
   background: var(--card);
   transition-property: border-color, background-color;
   transition-duration: 150ms;
@@ -3688,15 +3663,16 @@ a:focus-visible {
 }
 .integration-card h3 {
   font-family: var(--font-serif);
-  font-size: 15px;
+  font-size: var(--title-sm);
   font-weight: 500;
 }
 .integration-capabilities {
-  margin-top: 5px;
-  color: var(--ink-faint);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.03em;
+  margin-top: 4px;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+.integration-capabilities:empty {
+  display: none;
 }
 .integration-icon.spinning .icon {
   animation: refresh-spin 1s linear infinite;
@@ -3707,15 +3683,12 @@ a:focus-visible {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: baseline;
-  gap: 7px;
-  font-size: 12px;
+  gap: 8px;
+  font-size: var(--text-sm);
   line-height: 1.45;
 }
 .refresh-feedback strong {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-weight: 600;
 }
 .refresh-feedback span {
   color: var(--ink-soft);
@@ -3811,6 +3784,9 @@ a:focus-visible {
 @media (max-width: 640px) {
   .catalog-panel {
     height: 48vh;
+  }
+  .library-layout--single > .catalog-panel {
+    height: max(48vh, calc(100dvh - 300px));
   }
 }
 
@@ -3953,7 +3929,7 @@ a:focus-visible {
   margin: 0;
   overflow-wrap: anywhere;
   font-family: var(--font-serif);
-  font-size: 1.2rem;
+  font-size: var(--title-sm);
   font-weight: 500;
 }
 .video-title p {
@@ -3967,7 +3943,7 @@ a:focus-visible {
 .video-conversion-status {
   margin-top: 12px;
   color: var(--ink-soft);
-  font-size: 0.82rem;
+  font-size: var(--text-sm);
 }
 .video-library {
   display: flex;
@@ -3992,12 +3968,12 @@ a:focus-visible {
 .video-library-header h2 {
   margin: 0;
   font-family: var(--font-serif);
-  font-size: 20px;
+  font-size: var(--title-sm);
   font-weight: 500;
 }
 .video-library-header > span {
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
 }
 .video-library-header > label {
@@ -4015,7 +3991,7 @@ a:focus-visible {
   color: var(--ink);
   background: var(--card);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--text-md);
 }
 .video-library-filter {
   display: block;
@@ -4024,14 +4000,14 @@ a:focus-visible {
 }
 .video-library-filter input {
   width: 100%;
-  min-height: 40px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
+  min-height: var(--control-height);
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius-control);
-  background: var(--paper);
+  background: var(--card);
   color: var(--ink);
   font: inherit;
-  font-size: 0.82rem;
+  font-size: var(--text-md);
 }
 .video-library-filter input:focus-visible {
   outline: 2px solid var(--accent);
@@ -4094,14 +4070,14 @@ a:focus-visible {
   overflow-wrap: anywhere;
 }
 .video-list-copy strong {
-  font-size: 0.82rem;
+  font-size: var(--text-md);
   font-weight: 550;
   line-height: 1.35;
 }
 .video-list-copy span,
 .video-library-empty {
   color: var(--ink-faint);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
 }
 .video-library-empty {
   padding: 12px 16px;
@@ -4148,18 +4124,15 @@ a:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-serif);
-  font-size: 14px;
+  font-size: var(--text-md);
   font-weight: 500;
 }
 .mini-player-info span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--ink-faint);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
 }
 .mini-player-toggle {
   flex: 0 0 auto;
@@ -4187,7 +4160,7 @@ a:focus-visible {
 .mini-player-time span {
   color: var(--ink-faint);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
 }
 .mini-player-seek {
@@ -4288,7 +4261,7 @@ a:focus-visible {
 }
 
 .track-title {
-  font-size: 1.15rem;
+  font-size: var(--title-sm);
   font-weight: 600;
   color: var(--ink);
   overflow: hidden;
@@ -4298,7 +4271,7 @@ a:focus-visible {
 }
 
 .track-artist-album {
-  font-size: 0.9rem;
+  font-size: var(--text-md);
   color: var(--ink-soft);
   margin-top: 4px;
   overflow: hidden;
@@ -4313,7 +4286,7 @@ a:focus-visible {
   gap: 10px;
   width: 100%;
   max-width: 420px;
-  font-size: 0.8rem;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   font-variant-numeric: tabular-nums;
 }
@@ -4455,7 +4428,7 @@ a:focus-visible {
 
 .player-sidebar-header h3 {
   font-family: var(--font-serif);
-  font-size: 20px;
+  font-size: var(--title-sm);
   font-weight: 500;
   color: var(--ink);
   white-space: nowrap;
@@ -4463,7 +4436,7 @@ a:focus-visible {
 
 .root-filter-select {
   font: inherit;
-  font-size: 14px;
+  font-size: var(--text-md);
   min-width: 0;
   min-height: 44px;
   padding: 8px 12px;
@@ -4543,7 +4516,7 @@ a:focus-visible {
 }
 
 .track-name {
-  font-size: 0.85rem;
+  font-size: var(--text-md);
   font-weight: 500;
   color: var(--ink);
   overflow: hidden;
@@ -4552,7 +4525,7 @@ a:focus-visible {
 }
 
 .track-album {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--ink-soft);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4652,7 +4625,7 @@ a:focus-visible {
 }
 
 .album-name {
-  font-size: 0.82rem;
+  font-size: var(--text-sm);
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4661,7 +4634,7 @@ a:focus-visible {
 }
 
 .album-count {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--ink-faint);
 }
 
@@ -4684,10 +4657,10 @@ a:focus-visible {
   padding: 4px 8px;
   min-height: 44px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: transparent;
   font: inherit;
-  font-size: 0.82rem;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   cursor: pointer;
   transition: color 0.12s ease;
@@ -4705,7 +4678,7 @@ a:focus-visible {
   display: flex !important;
   align-items: center;
   gap: 4px;
-  font-size: 0.78rem !important;
+  font-size: var(--text-xs) !important;
   padding: 4px 10px !important;
   white-space: nowrap;
 }
@@ -4734,7 +4707,7 @@ a:focus-visible {
 }
 
 .sleep-label {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   margin-left: 2px;
@@ -4795,11 +4768,9 @@ a:focus-visible {
 
 .playback-settings-label {
   margin: 0 0 4px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--ink-soft);
 }
 
 .playback-settings-option {
@@ -4830,7 +4801,7 @@ a:focus-visible {
 }
 
 .playback-settings-name {
-  font-size: 0.82rem;
+  font-size: var(--text-md);
   color: var(--ink);
 }
 
@@ -4840,7 +4811,7 @@ a:focus-visible {
 }
 
 .playback-settings-detail {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   line-height: 1.4;
   color: var(--ink-soft);
 }
@@ -4864,11 +4835,11 @@ a:focus-visible {
 .playback-settings-choice {
   padding: 5px 10px;
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  border-radius: var(--radius-control);
   background: var(--paper);
   color: var(--ink-soft);
   font: inherit;
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
@@ -7351,7 +7322,6 @@ a:focus-visible {
   .collection-view-choice select,
   .video-library-header select,
   .video-library-filter input,
-  .library-filter input,
   .metadata-form input,
   .metadata-form select,
   .metadata-form textarea,
@@ -7507,32 +7477,31 @@ a:focus-visible {
   gap: 10px;
   padding: 12px 14px;
   border: 1px solid var(--accent-line);
-  border-radius: 3px;
+  border-radius: var(--radius-control);
   background: var(--accent-wash);
   color: var(--accent-strong);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .activity-subtitle {
   margin: 2px 0 0;
   color: var(--ink-faint);
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 .activity-scope {
   display: inline-flex;
   border: 1px solid var(--line-strong);
-  border-radius: 3px;
+  border-radius: var(--radius-control);
   overflow: hidden;
 }
 .scope-button {
-  padding: 7px 12px;
+  min-height: var(--control-height);
+  padding: 0 14px;
   border: 0;
   background: var(--card);
   color: var(--ink-soft);
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-md);
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  white-space: nowrap;
   cursor: pointer;
 }
 .scope-button + .scope-button {
@@ -7548,6 +7517,7 @@ a:focus-visible {
   list-style: none;
 }
 .activity-items summary {
+  font-size: var(--text-sm);
   cursor: pointer;
   overflow-wrap: anywhere;
 }
@@ -7559,9 +7529,6 @@ a:focus-visible {
 .activity-filters {
   margin: 12px 20px 0;
   flex-wrap: wrap;
-}
-.activity-filters .scope-button {
-  min-height: 44px;
 }
 .activity-row {
   display: grid;
@@ -7586,19 +7553,17 @@ a:focus-visible {
   gap: 8px;
 }
 .activity-row-title strong {
-  font-size: 14px;
+  font-size: var(--text-md);
   font-weight: 600;
 }
 .plan-state {
-  padding: 2px 8px;
+  padding: 2px 10px;
   border: 1px solid var(--line-strong);
-  border-radius: 3px;
-  color: var(--ink-faint);
-  font-family: var(--font-mono);
-  font-size: 12px;
+  border-radius: 999px;
+  color: var(--ink-soft);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
   font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
 }
 .plan-state.pending {
   border-color: var(--accent-line);
@@ -7613,8 +7578,7 @@ a:focus-visible {
 }
 .plan-owner {
   color: var(--ink-faint);
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 .activity-row-meta {
   margin: 0;
@@ -7622,12 +7586,12 @@ a:focus-visible {
   flex-wrap: wrap;
   gap: 6px;
   color: var(--ink-faint);
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 .activity-row-error {
   margin: 0;
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .activity-row-actions {
   display: flex;
@@ -7680,14 +7644,14 @@ a:focus-visible {
   color: var(--ink);
   background: transparent;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 .library-filter-clear {
   flex: none;
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
   border: 0;
-  border-radius: 3px;
+  border-radius: var(--radius-control);
   color: var(--ink-faint);
   background: transparent;
   cursor: pointer;
@@ -7712,62 +7676,11 @@ a:focus-visible {
 .library-filter-summary {
   min-width: 0;
   overflow-wrap: anywhere;
-  color: var(--ink-faint);
-  font-family: var(--font-mono);
-  font-size: 12px;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
 }
 .library-refresh {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-  min-height: 44px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  cursor: pointer;
-}
-.library-refresh:disabled {
-  opacity: 0.45;
-  cursor: wait;
-}
-.library-refresh:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
-.library-refresh:hover:not(:disabled) {
-  color: var(--accent-strong);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-.library-refresh,
-.library-advanced-search {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  text-decoration: none;
-}
-.library-advanced-search:hover {
-  color: var(--accent-strong);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-.library-footer {
   flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px 20px;
-  min-width: 0;
-  padding-top: 4px;
 }
 
 .source-accordion-body .provider-lookup-result strong {
@@ -7801,13 +7714,16 @@ a:focus-visible {
     justify-content: flex-start;
   }
   .library-filter {
-    flex-basis: 100%;
+    flex-basis: 0;
     max-width: none;
   }
   .library-toolbar-trailing {
     width: 100%;
     margin-left: 0;
     justify-content: space-between;
+  }
+  .library-toolbar-trailing:empty {
+    display: none;
   }
 }
 
@@ -7886,14 +7802,14 @@ a:focus-visible {
   flex: 1;
 }
 .up-next-copy strong {
-  font-size: 0.85rem;
+  font-size: var(--text-md);
   font-weight: 600;
   overflow-wrap: anywhere;
 }
 .up-next-copy > span,
 .up-next-empty {
   color: var(--ink-faint);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   overflow-wrap: anywhere;
 }
 .up-next .control-button {
@@ -7924,10 +7840,6 @@ a:focus-visible {
   }
 }
 
-.library-refresh,
-.library-advanced-search {
-  line-height: 1.6;
-}
 .track-title {
   white-space: normal;
   overflow-wrap: anywhere;
@@ -7983,13 +7895,13 @@ a:focus-visible {
   min-height: 44px;
   margin-block: 2px;
   padding-right: 12px;
-  border-radius: 9px;
+  border-radius: var(--radius-control);
 }
 .tree-row:hover {
   background: var(--paper-recess);
 }
 .tree-row.selected {
-  background: #e5ebdf;
+  background: var(--accent-wash);
   box-shadow: inset 3px 0 0 var(--accent);
 }
 .tree-row.selected .tree-name {
@@ -8046,7 +7958,7 @@ a:focus-visible {
   max-width: none;
   color: inherit;
   font-family: var(--font-serif);
-  font-size: clamp(1.45rem, 2.4vw, 2rem);
+  font-size: var(--title-lg);
   font-weight: 500;
   line-height: 1.08;
   letter-spacing: -0.02em;
@@ -8165,7 +8077,7 @@ a:focus-visible {
 }
 .video-title h2 {
   color: #fffdf8;
-  font-size: 1.5rem;
+  font-size: var(--title-lg);
 }
 .video-title p,
 .video-conversion-status {
@@ -8249,10 +8161,6 @@ a:focus-visible {
 }
 
 @media (max-width: 640px) {
-  .folder-filter-button {
-    min-height: 44px;
-  }
-
   .now-playing {
     grid-template-columns: 116px minmax(0, 1fr);
     grid-template-areas:
@@ -8279,11 +8187,8 @@ a:focus-visible {
     width: 52px;
     height: 52px;
   }
-  .track-title {
-    font-size: 1.4rem;
-  }
   .track-artist-album {
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
   }
   .video-player-column {
     padding: 8px;
@@ -8306,8 +8211,7 @@ a:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .nav-item:active,
   .primary-button:active,
-  .text-button:active,
-  .folder-filter-button:active {
+  .text-button:active {
     scale: none;
   }
   .album-artwork {
@@ -8348,13 +8252,6 @@ a:focus-visible {
 .now-playing--no-art > .player-controls {
   justify-content: center;
   gap: 4px;
-}
-.library-refresh,
-.library-advanced-search {
-  font-family: var(--font-sans);
-  font-size: 12px;
-  letter-spacing: normal;
-  text-transform: none;
 }
 
 /* Automatic suggestions share the existing proposed-value action and evidence. */

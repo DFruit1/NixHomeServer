@@ -1,7 +1,26 @@
+/* Occasional setup tools sit below a quiet divider at the foot of the list. */
+.nav-item--utility-start {
+  margin-top: 17px;
+}
+.nav-item--utility-start::before {
+  content: "";
+  position: absolute;
+  top: -9px;
+  right: 12px;
+  left: 12px;
+  border-top: 1px solid rgb(255 255 255 / 14%);
+  pointer-events: none;
+}
 .mobile-more {
   display: none;
 }
 @media (max-width: 640px) {
+  .nav-item--utility-start {
+    margin-top: 0;
+  }
+  .nav-item--utility-start::before {
+    display: none;
+  }
   .sidebar:has(.mobile-more[open]) {
     z-index: 50;
   }
@@ -21,7 +40,7 @@
     min-height: 60px;
     border-radius: var(--radius-control);
     color: var(--navigation-muted);
-    font-size: 12px;
+    font-size: var(--text-xs);
     list-style: none;
     cursor: pointer;
   }
@@ -33,7 +52,7 @@
     color: var(--navigation-ink);
     background: rgb(255 255 255 / 14%);
   }
-  .mobile-more.active .icon {
+  .mobile-more.active > summary .icon {
     color: #d5dea8;
   }
   .more-sections {
@@ -61,7 +80,19 @@
     padding: 10px 14px;
     border-radius: var(--radius-control);
     text-decoration: none;
-    font-size: 14px;
+    font-size: var(--text-md);
+  }
+  .more-sections a.more-utility-start {
+    position: relative;
+    margin-top: 9px;
+  }
+  .more-sections a.more-utility-start::before {
+    content: "";
+    position: absolute;
+    top: -5px;
+    right: 14px;
+    left: 14px;
+    border-top: 1px solid var(--line);
   }
   .more-sections a:hover,
   .more-sections a[aria-current="page"] {

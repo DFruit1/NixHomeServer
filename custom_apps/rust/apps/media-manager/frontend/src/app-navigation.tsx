@@ -9,7 +9,23 @@ import { Icon } from "./icon";
 import { NAV_ITEMS, type View } from "./root-types";
 import "./app-navigation.css";
 
-const primaryViews: View[] = ["library", "player", "videos", "images"];
+// Ordered by how often each destination is used. The last two are
+// occasional setup tools, separated at the foot of the sidebar list.
+const navigationOrder: View[] = [
+  "player",
+  "videos",
+  "images",
+  "library",
+  "health",
+  "conversions",
+  "accounts",
+  "refresh",
+];
+const utilityViews: View[] = ["accounts", "refresh"];
+const primaryViews: View[] = ["player", "videos", "images", "library"];
+const orderedItems = navigationOrder.flatMap((id) =>
+  NAV_ITEMS.filter((item) => item.id === id),
+);
 
 export const AppNavigation = component$<{ view: View }>((props) => {
   const more = useSignal<HTMLDetailsElement>();
@@ -36,16 +52,19 @@ export const AppNavigation = component$<{ view: View }>((props) => {
       }
     }),
   );
-  const secondary = NAV_ITEMS.filter((item) => !primaryViews.includes(item.id));
+  const secondary = orderedItems.filter(
+    (item) => !primaryViews.includes(item.id),
+  );
   return (
     <nav aria-label="Media Manager sections">
-      {NAV_ITEMS.map((item) => (
+      {orderedItems.map((item) => (
         <a
           key={item.id}
           href={`?view=${item.id}`}
           class={{
             "nav-item": true,
             "nav-item--secondary": !primaryViews.includes(item.id),
+            "nav-item--utility-start": item.id === utilityViews[0],
             active: props.view === item.id,
           }}
           aria-label={item.label}
@@ -72,6 +91,9 @@ export const AppNavigation = component$<{ view: View }>((props) => {
             <a
               key={item.id}
               href={`?view=${item.id}`}
+              class={{
+                "more-utility-start": item.id === utilityViews[0],
+              }}
               aria-current={props.view === item.id ? "page" : undefined}
             >
               <Icon name={item.icon} />

@@ -177,6 +177,7 @@ export type IconName =
   | "image"
   | "chevron-down"
   | "chevron-right"
+  | "chevron-left"
   | "audiobookshelf"
   | "jellyfin"
   | "kavita"
