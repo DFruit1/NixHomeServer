@@ -19,6 +19,9 @@ pub(super) struct Runtime {
     pub(super) base: reqwest::Url,
     pub(super) eye: reqwest::Client,
     pub(super) decision: reqwest::Client,
+    /// Original and ZIP exports stream for as long as data keeps arriving; a
+    /// total timeout would cut off large exports on slow phone links.
+    download: reqwest::Client,
     decision_gate: Arc<tokio::sync::Mutex<()>>,
     album_gate: Arc<tokio::sync::Mutex<()>>,
     gate: Arc<tokio::sync::Mutex<()>>,
@@ -42,6 +45,13 @@ impl Runtime {
             base,
             eye,
             decision: decision_client(FilePath::new("/run/media-manager-decision/d1.sock"))?,
+            download: reqwest::Client::builder()
+                .user_agent("NixHomeServer Media Manager/0.1.0")
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(10))
+                .read_timeout(Duration::from_secs(120))
+                .build()
+                .map_err(|_| "could not initialize Immich download client")?,
             decision_gate: Arc::default(),
             album_gate: Arc::default(),
             gate: Arc::default(),
@@ -181,10 +191,12 @@ impl Account {
         let url = self.runtime.base.join(path).map_err(|_| unavailable(id))?;
         let mut key = HeaderValue::from_str(&self.key).map_err(|_| upstream_error(id))?;
         key.set_sensitive(true);
-        let mut request = state.client.request(method, url).header("x-api-key", key);
-        if path == "download/archive" || path.ends_with("/original") {
-            request = request.timeout(Duration::from_secs(120));
-        }
+        let client = if path == "download/archive" || path.ends_with("/original") {
+            &self.runtime.download
+        } else {
+            &state.client
+        };
+        let mut request = client.request(method, url).header("x-api-key", key);
         if let Some(body) = body {
             request = request.json(&body);
         }
