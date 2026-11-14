@@ -1501,14 +1501,22 @@ export const ItemEditor = component$<{
         />
       )}
       {(metadata.mediaType === "music"
-        ? ["discogs", "theaudiodb", "wikidata", "fanart"]
+        ? ["discogs", "deezer", "theaudiodb", "wikidata", "fanart"]
         : metadata.mediaType === "audiobook"
           ? ["audnexus", "isbndb", "wikidata"]
           : metadata.mediaType === "book"
-            ? ["comic-vine", "isbndb", "wikidata"]
+            ? ["comic-vine", "anilist", "isbndb", "wikidata"]
             : metadata.mediaType === "podcast"
               ? ["podcast-index"]
-              : ["omdb", "tvdb", "wikidata", "fanart"]
+              : [
+                  "omdb",
+                  "tvdb",
+                  "tvmaze",
+                  "thediscdb",
+                  "anilist",
+                  "wikidata",
+                  "fanart",
+                ]
       ).map((provider) => (
         <AdditionalProviderPanel
           key={provider}
@@ -1542,7 +1550,14 @@ export const ItemEditor = component$<{
           providerIds={metadata.providerIds}
           canEdit={props.state.session?.canEdit ?? false}
           mutationMode={props.state.status?.mutationMode ?? "read-only"}
-          publicSource={["wikidata", "audnexus"].includes(provider)}
+          publicSource={[
+            "wikidata",
+            "audnexus",
+            "thediscdb",
+            "tvmaze",
+            "anilist",
+            "deezer",
+          ].includes(provider)}
           inspectOnly={metadata.mediaType === "podcast"}
           nativeEditorUrl={
             metadata.consumers.find(

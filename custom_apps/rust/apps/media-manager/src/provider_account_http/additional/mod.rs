@@ -7,10 +7,12 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+mod anilist;
 mod audnexus;
 #[cfg(test)]
 mod boundary_tests;
 mod comic_vine;
+mod deezer;
 mod discogs;
 mod fanart;
 mod isbndb;
@@ -18,7 +20,9 @@ mod omdb;
 mod podcast_index;
 pub(super) mod subdl;
 mod theaudiodb;
+mod thediscdb;
 mod tvdb;
+mod tvmaze;
 mod wikidata;
 
 const MAX_RESULTS: usize = 20;
@@ -51,6 +55,10 @@ pub(super) fn default_bases() -> BTreeMap<String, String> {
         ("audnexus", "https://api.audnex.us/"),
         ("podcast-index", "https://api.podcastindex.org/api/1.0/"),
         ("subdl", "https://api.subdl.com/api/v2/"),
+        ("thediscdb", "https://thediscdb.com/graphql"),
+        ("tvmaze", "https://api.tvmaze.com/"),
+        ("anilist", "https://graphql.anilist.co/"),
+        ("deezer", "https://api.deezer.com/"),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -241,7 +249,14 @@ pub(super) async fn search(
             || (provider == "comic-vine"
                 && ["volume:", "issue:"]
                     .iter()
-                    .any(|prefix| request.query.starts_with(prefix))))
+                    .any(|prefix| request.query.starts_with(prefix)))
+            || (provider == "thediscdb" && request.query.starts_with("item:"))
+            || (provider == "tvmaze"
+                && ["show:", "season:"]
+                    .iter()
+                    .any(|prefix| request.query.starts_with(prefix)))
+            || (provider == "anilist" && request.query.starts_with("anilist:"))
+            || (provider == "deezer" && request.query.starts_with("album:")))
     {
         request.id = Some(request.query.clone());
     }
@@ -296,6 +311,10 @@ pub(super) async fn lookup(
         "comic-vine" => comic_vine::lookup(state, identity, credentials, request).await,
         "isbndb" => isbndb::lookup(state, identity, credentials, request).await,
         "audnexus" => audnexus::lookup(state, identity, request).await,
+        "thediscdb" => thediscdb::lookup(state, identity, request).await,
+        "tvmaze" => tvmaze::lookup(state, identity, request).await,
+        "anilist" => anilist::lookup(state, identity, request).await,
+        "deezer" => deezer::lookup(state, identity, request).await,
         _ => Err(Failure::invalid()),
     }
 }
@@ -434,8 +453,9 @@ async fn json_request(
     // Reserve request times, then release the lock before waiting or doing IO.
     let gap = match provider {
         "comic-vine" => 1000,
-        "wikidata" | "audnexus" => 1000,
-        "theaudiodb" => 2100,
+        "wikidata" | "audnexus" | "thediscdb" => 1000,
+        "tvmaze" => 600,
+        "theaudiodb" | "anilist" => 2100,
         _ => 300,
     };
     let now = Instant::now();
@@ -447,7 +467,10 @@ async fn json_request(
             return Err(Failure::limited());
         }
         let global = format!("public:{provider}");
-        let global_limit = matches!(provider, "wikidata" | "audnexus" | "theaudiodb");
+        let global_limit = matches!(
+            provider,
+            "wikidata" | "audnexus" | "theaudiodb" | "thediscdb" | "tvmaze" | "anilist" | "deezer"
+        );
         let scheduled = gates
             .get(&key)
             .copied()
@@ -566,6 +589,10 @@ fn trusted_image(provider: &str, url: &reqwest::Url) -> bool {
             "images-na.ssl-images-amazon.com",
             "images-eu.ssl-images-amazon.com",
         ],
+        "thediscdb" => &["thediscdb.com"],
+        "tvmaze" => &["static.tvmaze.com"],
+        "anilist" => &["s4.anilist.co"],
+        "deezer" => &["cdn-images.dzcdn.net", "e-cdns-images.dzcdn.net"],
         _ => &[],
     };
     hosts.contains(&host)

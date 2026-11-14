@@ -108,6 +108,11 @@ export const AdditionalProviderPanel = component$<{
               ...(props.provider === "audnexus"
                 ? { region: state.region }
                 : {}),
+              ...(props.provider === "anilist"
+                ? {
+                    mediaType: props.mediaType === "book" ? "manga" : "anime",
+                  }
+                : {}),
               ...(state.artist ? { artist: state.artist } : {}),
             };
       try {
@@ -205,7 +210,7 @@ export const AdditionalProviderPanel = component$<{
               </select>
             </label>
           )}
-          {["discogs", "theaudiodb"].includes(props.provider) && (
+          {["discogs", "theaudiodb", "deezer"].includes(props.provider) && (
             <label>
               <span>Artist</span>
               <input

@@ -486,7 +486,7 @@ describe("Media Manager navigation", () => {
       "Needs attention",
     );
     const usableRows = screen.querySelectorAll(
-      ".provider-list-panel > .provider-list > .provider-row",
+      ".provider-group > .provider-list > .provider-row",
     );
     expect(usableRows).toHaveLength(1);
     expect(usableRows[0]?.textContent).not.toContain("TheTVDB");

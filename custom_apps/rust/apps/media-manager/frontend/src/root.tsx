@@ -964,6 +964,7 @@ const ProviderAccountsView = component$(() => {
         Number(left.account.state !== "notRequired"),
     );
   const showPlanned = accounts.filter === "all" && plannedProviders.length > 0;
+  const providerGroups = groupProvidersByDomain(providers);
 
   const renderEditor = (provider: ProviderDefinition) => {
     const guide = PROVIDER_SETUP_GUIDES[provider.id];
@@ -1091,6 +1092,7 @@ const ProviderAccountsView = component$(() => {
       provider.canConfigure &&
       provider.credentialFields.length > 0;
     const detailsId = `provider-details-${provider.id}`;
+    const recommendation = providerRecommendation(provider);
     const toggle = $(async () => {
       if (editing) await closeProvider();
       accounts.expandedProviderId = expanded ? "" : provider.id;
@@ -1132,7 +1134,23 @@ const ProviderAccountsView = component$(() => {
                   {provider.name.charAt(0)}
                 </span>
               )}
-              <span class="provider-row-name">{provider.name}</span>
+              <span class="provider-row-title">
+                <span class="provider-row-name">{provider.name}</span>
+                {recommendation && (
+                  <span class="provider-recommended">
+                    <span class="provider-recommended-label">
+                      <span
+                        class="provider-recommended-star"
+                        aria-hidden="true"
+                      >
+                        ★
+                      </span>
+                      {"\u00a0Highly recommended"}
+                    </span>
+                    {recommendation.scope && ` for ${recommendation.scope}`}
+                  </span>
+                )}
+              </span>
               <span class="provider-row-types">
                 {provider.mediaDomains.join(" · ")}
               </span>
@@ -1324,9 +1342,21 @@ const ProviderAccountsView = component$(() => {
         </p>
       ) : (
         <div class="provider-list-panel">
-          {providers.length > 0 && (
-            <ul class="provider-list">{providers.map(renderRow)}</ul>
-          )}
+          {providerGroups.map((group) => (
+            <section
+              class="provider-group"
+              key={group.id}
+              aria-labelledby={`provider-group-${group.id}`}
+            >
+              <h2
+                class="provider-group-heading"
+                id={`provider-group-${group.id}`}
+              >
+                {group.label}
+              </h2>
+              <ul class="provider-list">{group.providers.map(renderRow)}</ul>
+            </section>
+          ))}
           {showPlanned && (
             <details class="provider-planned-section">
               <summary>
@@ -1344,6 +1374,71 @@ const ProviderAccountsView = component$(() => {
     </section>
   );
 });
+
+const PROVIDER_DOMAIN_ORDER = [
+  "movies",
+  "television",
+  "music",
+  "books",
+  "audiobooks",
+  "comics",
+  "manga",
+  "podcasts",
+  "subtitles",
+  "images",
+];
+
+const capitalized = (value: string) =>
+  value.charAt(0).toUpperCase() + value.slice(1);
+
+/** Single-domain sources group under their media tag; sources with several
+ * tags share one "Multiple" group. Recommended sources lead each group. */
+function groupProvidersByDomain(providers: ProviderDefinition[]) {
+  const groups = new Map<string, ProviderDefinition[]>();
+  for (const provider of providers) {
+    const id =
+      provider.mediaDomains.length === 1
+        ? provider.mediaDomains[0]
+        : "multiple";
+    groups.set(id, [...(groups.get(id) ?? []), provider]);
+  }
+  const rank = (id: string) =>
+    id === "multiple"
+      ? Number.MAX_SAFE_INTEGER
+      : PROVIDER_DOMAIN_ORDER.indexOf(id) === -1
+        ? PROVIDER_DOMAIN_ORDER.length
+        : PROVIDER_DOMAIN_ORDER.indexOf(id);
+  return [...groups]
+    .sort(
+      ([left], [right]) =>
+        rank(left) - rank(right) || left.localeCompare(right),
+    )
+    .map(([id, members]) => ({
+      id,
+      label: id === "multiple" ? "Multiple" : capitalized(id),
+      providers: [...members].sort(
+        (left, right) =>
+          Number((right.recommendedFor ?? []).length > 0) -
+          Number((left.recommendedFor ?? []).length > 0),
+      ),
+    }));
+}
+
+/** Names the recommended tags only when the source also covers other tags. */
+function providerRecommendation(
+  provider: ProviderDefinition,
+): { scope: string } | undefined {
+  const recommended = (provider.recommendedFor ?? []).filter((domain) =>
+    provider.mediaDomains.includes(domain),
+  );
+  if (!recommended.length) return undefined;
+  return {
+    scope:
+      recommended.length === provider.mediaDomains.length
+        ? ""
+        : recommended.map(capitalized).join(" · "),
+  };
+}
 
 type ProviderAccountStatus =
   | "connected"

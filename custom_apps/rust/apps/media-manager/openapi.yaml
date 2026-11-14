@@ -2349,7 +2349,8 @@ components:
         cueCount: { type: integer, minimum: 0 }
     AdditionalProviderId:
       type: string
-      enum: [omdb, tvdb, wikidata, fanart, discogs, theaudiodb, comic-vine, isbndb, audnexus, podcast-index, subdl]
+      enum: [omdb, tvdb, wikidata, fanart, discogs, theaudiodb, comic-vine, isbndb, audnexus, podcast-index, subdl,
+             thediscdb, tvmaze, anilist, deezer]
     AdditionalProviderLookupRequest:
       type: object
       additionalProperties: false
@@ -2476,6 +2477,10 @@ components:
         name: { type: string }
         logoUrl: { type: string, nullable: true }
         mediaDomains: { type: array, items: { type: string } }
+        recommendedFor:
+          type: array
+          items: { type: string }
+          description: Media domains where this source is a highly recommended first setup.
         setupKind: { type: string, enum: [public, apiKey, account, managed] }
         implementationStatus: { type: string, enum: [active, planned] }
         canConfigure:

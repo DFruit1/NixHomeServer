@@ -1543,8 +1543,9 @@ requests can be limited by Cloud project or the shared outgoing server IP.
 | [Podcast Index](https://podcastindex-org.github.io/docs-api/) | Complete API signup and retain the matching **API key and original secret** together. A generated per-request authorization hash is not the secret to save. Signed requests also depend on the server clock. |
 | [SubDL](https://subdl.com/api-doc) | Obtain a key from the account panel. Media Manager uses **v1** search. Check the current account and outgoing-IP download allowances if searches work but downloads are limited. |
 
-MusicBrainz, Cover Art Archive, Open Library, Wikidata and Audnexus are public
-lookup sources: no account or API key is needed. MusicBrainz search uses artist
+MusicBrainz, Cover Art Archive, Open Library, Wikidata, Audnexus, TheDiscDB,
+TVmaze, AniList and Deezer are public lookup sources: no account or API key is
+needed. MusicBrainz search uses artist
 and album title; AcoustID is needed only for fingerprint mode. Cover Art Archive
 uses the release selected in MusicBrainz. Open Library works and editions must
 be distinguished before selecting book fields. Wikidata IDs identify entities;
@@ -1594,6 +1595,19 @@ Additional provider controls are in the selected item's metadata editor:
 - **Podcast Index:** supply its API key/secret pair. Search feeds and inspect
   recent episodes and identifiers. Editing remains in the linked Audiobookshelf
   native interface; portable podcast writes remain disabled.
+- **TheDiscDB:** search a movie or series, then open it to list its disc
+  releases. Each release names the disc playlists/files (for example
+  `00002.mpls`) and the episode or feature they contain, which helps name rips.
+  Compare fields supplies the movie/series metadata and IDs.
+- **TVmaze:** search a series; details list the series first, then seasons.
+  Open a season to compare episode titles, numbers and air dates. Specials are
+  not listed.
+- **AniList:** search anime from a video, or manga from a book or comic, by
+  English or romaji title, or enter `anilist:ID`. Check format and start year to
+  tell sequels and adaptations apart.
+- **Deezer:** search an album with its artist, then open it to check the track
+  list, label, release date and UPC before comparing fields or previewing the
+  high-resolution cover.
 - **SubDL:** open its source inside the video's subtitle tools. Supply a key,
   search by the matched title/IDs and language, preview a result, and choose an
   individual file when a pack contains several subtitles. **Prepare subtitle
@@ -1607,7 +1621,9 @@ changes artwork. Provider artwork/download references expire after fifteen
 minutes; search again to refresh an expired reference. Replacing or removing an
 account invalidates its references. See
 [the provider adapter decision](decisions/0011-additional-media-provider-adapters.md)
-for boundaries and verification limits.
+for boundaries and verification limits, and
+[public adapters and recommendations](decisions/0012-public-provider-adapters-and-recommendations.md)
+for the later public sources and the Metadata sources grouping.
 
 Provider account ciphertext, the runtime-generated master key, and non-secret
 test history live under `/var/lib/media-manager-provider`. The provider broker

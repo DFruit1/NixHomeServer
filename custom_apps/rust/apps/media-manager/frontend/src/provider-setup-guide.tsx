@@ -583,6 +583,38 @@ export const PROVIDER_USAGE_GUIDES: Record<string, UsageGuide> = {
       "Check the release name, language and hearing-impaired information. Choose Preview subtitle; if an archive contains several files, select the file for your episode. Review the cues and timing before preparing and confirming installation.",
     ],
   },
+  thediscdb: {
+    queryLabel: "Movie or series title",
+    queryPlaceholder: "e.g. Severance or item:severance-2022",
+    steps: [
+      "No account or key is needed. Search the title, then choose View details to list its disc releases. Pick the release that matches your disc: check the edition, format, region and UPC.",
+      "Each disc lists its playlists or files (for example 00002.mpls) with their running time and the episode or feature they contain. Use this to name ripped titles, then Compare fields to add series or movie metadata to the draft.",
+    ],
+  },
+  tvmaze: {
+    queryLabel: "Series title",
+    queryPlaceholder: "e.g. Severance",
+    steps: [
+      "No account or key is needed. Search the series and choose View details. The first result is the series itself; open a season to list its episodes.",
+      "Check the season, episode number and air date before Compare fields. Specials are not listed, and episode numbers follow the original broadcast order.",
+    ],
+  },
+  anilist: {
+    queryLabel: "Anime or manga title",
+    queryPlaceholder: "e.g. Frieren or Sousou no Frieren",
+    steps: [
+      "No account or key is needed. Search the English or romaji title. Videos search anime and books or comics search manga; enter anilist:ID to open a known entry.",
+      "Check the format (TV, movie, OVA or manga), start year and native title to tell sequels and adaptations apart before Compare fields or Choose artwork.",
+    ],
+  },
+  deezer: {
+    queryLabel: "Album title",
+    queryPlaceholder: "e.g. Discovery or album:302127",
+    steps: [
+      "No account or key is needed. Search the album title with its artist and choose View details for the matching release; deluxe and anniversary editions are separate albums.",
+      "Check the track list, label, release date and UPC against your copy before Compare fields. Choose artwork previews the high-resolution cover separately.",
+    ],
+  },
 };
 
 export const ProviderUsageGuide = component$<{ providerId: string }>(

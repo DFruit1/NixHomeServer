@@ -17,6 +17,10 @@ const SEARCH_PROVIDERS = new Set([
   "podcast-index",
   "subdl",
   "opensubtitles",
+  "thediscdb",
+  "tvmaze",
+  "anilist",
+  "deezer",
 ]);
 export function healthLookupAvailability(
   provider: ProviderDefinition,

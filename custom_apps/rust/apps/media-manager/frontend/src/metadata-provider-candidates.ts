@@ -365,4 +365,8 @@ export const ADDITIONAL_PROVIDER_NAMES = {
   audnexus: "Audnexus",
   "podcast-index": "Podcast Index",
   subdl: "SubDL",
+  thediscdb: "TheDiscDB",
+  tvmaze: "TVmaze",
+  anilist: "AniList",
+  deezer: "Deezer",
 };
