@@ -51,6 +51,7 @@ import {
 import type { IconName } from "./root-types";
 import { candidateSources, sourceStatus } from "./health-source-recommendation";
 
+import { thumbnailSizes, thumbnailSrc, thumbnailSrcset } from "./thumbnail";
 interface HealthRoot {
   id: string;
   label: string;
@@ -1432,7 +1433,13 @@ const HealthArtwork = component$<{ itemId: string }>((props) => {
     <div class="health-result-art" aria-hidden="true" hidden={failed.value}>
       {!failed.value && (
         <img
-          src={`/api/v1/items/${encodeURIComponent(props.itemId)}/image`}
+          src={thumbnailSrc(
+            `/api/v1/items/${encodeURIComponent(props.itemId)}/image`,
+          )}
+          srcset={thumbnailSrcset(
+            `/api/v1/items/${encodeURIComponent(props.itemId)}/image`,
+          )}
+          sizes={thumbnailSizes("360px")}
           alt=""
           loading="lazy"
           onError$={() => (failed.value = true)}

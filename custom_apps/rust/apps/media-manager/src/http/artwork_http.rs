@@ -1,6 +1,7 @@
 use super::*;
 use crate::artwork_edit::ArtworkPlanAction;
 use crate::capabilities::MediaAction;
+use crate::thumbnail::{self, ThumbnailQuery};
 
 const JELLYFIN_IMAGE_CACHE_TTL: Duration = Duration::from_secs(3600);
 const JELLYFIN_IMAGE_CACHE_MAX_ENTRIES: usize = 2048;
@@ -378,20 +379,13 @@ async fn fetch_jellyfin_image(
     jellyfin_item_id: &str,
     image_type: &str,
     image_tag: &str,
-) -> Option<Response> {
+) -> Option<ArtworkBody> {
     let cache_key = format!("{}:{}:{}", jellyfin_item_id, image_type, image_tag);
-    if let Some((cached_data, cached_ct)) = state.jellyfin_image_cache.get(&cache_key) {
-        return Some(
-            (
-                StatusCode::OK,
-                [
-                    (CONTENT_TYPE, cached_ct),
-                    (CACHE_CONTROL, "private, max-age=300".to_string()),
-                ],
-                cached_data,
-            )
-                .into_response(),
-        );
+    if let Some((bytes, content_type)) = state.jellyfin_image_cache.get(&cache_key) {
+        return Some(ArtworkBody {
+            bytes,
+            content_type,
+        });
     }
     let url = format!(
         "{}/Items/{}/Images/{}?tag={}",
@@ -431,24 +425,17 @@ async fn fetch_jellyfin_image(
     state
         .jellyfin_image_cache
         .insert(cache_key, data.to_vec(), content_type.clone());
-    Some(
-        (
-            StatusCode::OK,
-            [
-                (CONTENT_TYPE, content_type),
-                (CACHE_CONTROL, "private, max-age=300".to_string()),
-            ],
-            data,
-        )
-            .into_response(),
-    )
+    Some(ArtworkBody {
+        bytes: data.to_vec(),
+        content_type,
+    })
 }
 
 async fn try_jellyfin_image_fallback(
     state: &Arc<AppState>,
     item: &CatalogItem,
     request_id: &str,
-) -> Option<Response> {
+) -> Option<ArtworkBody> {
     let Some(cache_file) = &state.config.jellyfin_metadata_cache_file else {
         log_event(
             "jellyfin_fallback_no_cache_config",
@@ -689,6 +676,7 @@ pub(super) async fn item_image(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(item_id): Path<String>,
+    Query(query): Query<ThumbnailQuery>,
 ) -> Response {
     let request_id = request_id();
     let identity = match identity_from_headers(&headers, &request_id) {
@@ -798,10 +786,8 @@ pub(super) async fn item_image(
     {
         Ok(Ok(Some(body))) => body,
         Ok(Ok(None)) => {
-            if let Some(jellyfin_response) =
-                try_jellyfin_image_fallback(&state, &item, &request_id).await
-            {
-                return jellyfin_response;
+            if let Some(body) = try_jellyfin_image_fallback(&state, &item, &request_id).await {
+                return artwork_response(body, &query, request_id).await;
             }
             state.artwork_candidate_cache.record_miss(&item.id);
             return ApiError::new(
@@ -818,10 +804,8 @@ pub(super) async fn item_image(
                 &request_id,
                 json!({ "error": error, "itemId": item_id }),
             );
-            if let Some(jellyfin_response) =
-                try_jellyfin_image_fallback(&state, &item, &request_id).await
-            {
-                return jellyfin_response;
+            if let Some(body) = try_jellyfin_image_fallback(&state, &item, &request_id).await {
+                return artwork_response(body, &query, request_id).await;
             }
             return ApiError::new(
                 StatusCode::NOT_FOUND,
@@ -840,13 +824,27 @@ pub(super) async fn item_image(
             return ApiError::internal(request_id).into_response();
         }
     };
+    artwork_response(body, &query, request_id).await
+}
+
+/// Cover artwork, resized when the client asked for a thumbnail size.
+async fn artwork_response(
+    body: ArtworkBody,
+    query: &ThumbnailQuery,
+    request_id: String,
+) -> Response {
+    let Some((bytes, content_type)) =
+        thumbnail::sized(body.bytes, body.content_type, query.snapped()).await
+    else {
+        return ApiError::internal(request_id).into_response();
+    };
     (
         StatusCode::OK,
         [
-            (CONTENT_TYPE, body.content_type),
+            (CONTENT_TYPE, content_type),
             (CACHE_CONTROL, "private, max-age=300".to_string()),
         ],
-        body.bytes,
+        bytes,
     )
         .into_response()
 }

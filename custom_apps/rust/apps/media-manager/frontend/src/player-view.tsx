@@ -29,6 +29,12 @@ import type { EndOfTrackAction, ShuffleScope } from "./playback-queue";
 import { findTargetIndex } from "./playback-target";
 import type { CatalogItem, DashboardState } from "./root-types";
 import { EmptyState, LoadingState } from "./view-states";
+import {
+  collectionTileSizes,
+  thumbnailSizes,
+  thumbnailSrc,
+  thumbnailSrcset,
+} from "./thumbnail";
 
 export const PlayerView = component$<{
   state: DashboardState;
@@ -876,6 +882,10 @@ export const PlayerView = component$<{
     }
   })();
 
+  const musicTileSizes = collectionTileSizes(layout.view.value, 60, {
+    phone: "100vw",
+    desktop: "40vw",
+  });
   return (
     <>
       <section class="player-layout" hidden={props.active === false}>
@@ -1152,7 +1162,13 @@ export const PlayerView = component$<{
                     <Icon name="music-note" size={22} />
                     <img
                       key={upNext.id}
-                      src={`/api/v1/items/${encodeURIComponent(upNext.id)}/image`}
+                      src={thumbnailSrc(
+                        `/api/v1/items/${encodeURIComponent(upNext.id)}/image`,
+                      )}
+                      srcset={thumbnailSrcset(
+                        `/api/v1/items/${encodeURIComponent(upNext.id)}/image`,
+                      )}
+                      sizes={thumbnailSizes("48px")}
                       alt=""
                       loading="lazy"
                       onError$={(_, image) => {
@@ -1305,7 +1321,13 @@ export const PlayerView = component$<{
                             onError$={(_, image) => {
                               image.hidden = true;
                             }}
-                            src={`/api/v1/items/${encodeURIComponent(album.artworkTrackId)}/image`}
+                            src={thumbnailSrc(
+                              `/api/v1/items/${encodeURIComponent(album.artworkTrackId)}/image`,
+                            )}
+                            srcset={thumbnailSrcset(
+                              `/api/v1/items/${encodeURIComponent(album.artworkTrackId)}/image`,
+                            )}
+                            sizes={musicTileSizes}
                             alt=""
                             loading="lazy"
                           />
@@ -1364,7 +1386,13 @@ export const PlayerView = component$<{
                             onError$={(_, image) => {
                               image.hidden = true;
                             }}
-                            src={`/api/v1/items/${encodeURIComponent(track.id)}/image`}
+                            src={thumbnailSrc(
+                              `/api/v1/items/${encodeURIComponent(track.id)}/image`,
+                            )}
+                            srcset={thumbnailSrcset(
+                              `/api/v1/items/${encodeURIComponent(track.id)}/image`,
+                            )}
+                            sizes={musicTileSizes}
                             alt=""
                             loading="lazy"
                           />

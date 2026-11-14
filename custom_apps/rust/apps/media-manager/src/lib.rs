@@ -23,6 +23,7 @@ pub mod provider_accounts;
 pub mod scanner;
 pub mod subtitle_format;
 pub mod subtitles;
+mod thumbnail;
 pub mod tmdb;
 pub mod track_order;
 pub mod transcription;

@@ -10,6 +10,7 @@ import { api, catalogItems, readableError } from "./api";
 import { Icon } from "./icon";
 import { findTargetIndex, prepareBrowserPlayback } from "./playback-target";
 import type { CatalogItem, MediaRoot } from "./root-types";
+import { thumbnailSizes, thumbnailSrc, thumbnailSrcset } from "./thumbnail";
 
 // The folder line already places the file, so the title drops its extension
 // visually; the full filename stays in the tooltip and for screen readers.
@@ -375,7 +376,13 @@ export const VideosView = component$<{
                   <span class="video-list-icon">
                     <Icon name="video" />
                     <img
-                      src={`/api/v1/items/${encodeURIComponent(item.id)}/image`}
+                      src={thumbnailSrc(
+                        `/api/v1/items/${encodeURIComponent(item.id)}/image`,
+                      )}
+                      srcset={thumbnailSrcset(
+                        `/api/v1/items/${encodeURIComponent(item.id)}/image`,
+                      )}
+                      sizes={thumbnailSizes("76px")}
                       alt=""
                       loading="lazy"
                       onError$={(_, image) => {

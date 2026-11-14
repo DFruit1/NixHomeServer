@@ -20,6 +20,11 @@ import type {
 import { Icon } from "./icon";
 import { CollectionViewControl, useCollectionView } from "./collection-view";
 import { DecisionQuestions } from "./decision-questions";
+import {
+  collectionTileSizes,
+  thumbnailSrc,
+  thumbnailSrcset,
+} from "./thumbnail";
 import { LoadingState } from "./view-states";
 
 const photoPath = (id: string) =>
@@ -348,6 +353,10 @@ export const ImagesView = component$<{
       (key) => Number(state.filters[key]) > 0,
     ).length;
   const tiles = layout.view.value.startsWith("tiles-");
+  const tileSizes = collectionTileSizes(layout.view.value, 72, {
+    phone: "100vw",
+    desktop: "420px",
+  });
   return (
     <div class="images-page">
       <DecisionQuestions
@@ -375,7 +384,7 @@ export const ImagesView = component$<{
         >
           {state.selected ? (
             <>
-              <div class="image-focus">
+              <div class="image-stage">
                 {state.imageFailed ? (
                   <div class="image-preview-missing" role="status">
                     <Icon name="image" size={28} />
@@ -392,163 +401,158 @@ export const ImagesView = component$<{
                     onError$={() => (state.imageFailed = true)}
                   />
                 )}
-                <header class="image-detail-header">
-                  <h2>{state.selected.filename}</h2>
-                  <p class="image-detail-meta">
-                    <span role="status">
-                      {state.selected.tagged
-                        ? "Tagged by EYE"
-                        : "Awaiting EYE tagging"}
-                    </span>
-                    {props.immichUrl && (
-                      <a
-                        href={`${props.immichUrl}/photos/${encodeURIComponent(state.selected.id)}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        Open in Immich <span aria-hidden="true">↗</span>
-                      </a>
-                    )}
-                  </p>
-                </header>
-                <div class="image-detail-actions">
-                  <button
-                    type="button"
-                    class="primary-button"
-                    disabled={busy || state.selecting}
-                    onClick$={analyze}
+              </div>
+              <header class="image-detail-header">
+                <h2>{state.selected.filename}</h2>
+                {props.immichUrl && (
+                  <a
+                    href={`${props.immichUrl}/photos/${encodeURIComponent(state.selected.id)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
                   >
+                    Open in Immich <span aria-hidden="true">↗</span>
+                  </a>
+                )}
+              </header>
+              <section class="image-eye" aria-labelledby="image-eye-heading">
+                <div class="image-eye-head">
+                  <h3 id="image-eye-heading">EYE</h3>
+                  <span class="image-eye-status" role="status">
                     {state.analyzing
-                      ? "Analyzing photo…"
-                      : state.analysis
-                        ? "Analyze again"
-                        : "Analyze photo"}
-                  </button>
-                  <div class="image-more">
+                      ? "Analyzing…"
+                      : state.selected.tagged
+                        ? "Tagged"
+                        : "Awaiting tagging"}
+                  </span>
+                  <div class="image-eye-actions">
                     <button
                       type="button"
                       class="secondary-button"
-                      aria-expanded={moreOpen.value}
-                      aria-controls="image-more-actions"
                       disabled={busy || state.selecting}
-                      onClick$={() => (moreOpen.value = !moreOpen.value)}
+                      onClick$={analyze}
                     >
-                      {state.markingForRetag ? "Marking…" : "More"}
+                      {state.analysis ? "Analyze again" : "Analyze photo"}
                     </button>
-                    {moreOpen.value && (
-                      <ul id="image-more-actions" class="image-more-actions">
-                        <li>
-                          <button
-                            type="button"
-                            onClick$={() => {
-                              moreOpen.value = false;
-                              return state.selected && choose(state.selected);
-                            }}
-                          >
-                            Refresh analysis
-                          </button>
-                        </li>
-                        {state.selected.tagged && (
+                    <div class="image-more">
+                      <button
+                        type="button"
+                        class="secondary-button"
+                        aria-expanded={moreOpen.value}
+                        aria-controls="image-more-actions"
+                        disabled={busy || state.selecting}
+                        onClick$={() => (moreOpen.value = !moreOpen.value)}
+                      >
+                        {state.markingForRetag ? "Marking…" : "More"}
+                      </button>
+                      {moreOpen.value && (
+                        <ul id="image-more-actions" class="image-more-actions">
                           <li>
                             <button
                               type="button"
                               onClick$={() => {
                                 moreOpen.value = false;
-                                return markForRetagging();
+                                return state.selected && choose(state.selected);
                               }}
                             >
-                              Mark for retagging
+                              Refresh analysis
                             </button>
                           </li>
-                        )}
-                      </ul>
-                    )}
-                  </div>
-                </div>
-              </div>
-              {state.detailError && (
-                <div class="message error" role="alert">
-                  <span>{state.detailError}</span>
-                </div>
-              )}
-              {state.notice && (
-                <div class="message success" role="status">
-                  <span>{state.notice}</span>
-                </div>
-              )}
-              {(state.analysis || !!state.selected.decisionTags?.length) && (
-                <section class="image-analysis" aria-label="EYE analysis">
-                  {state.analysis && (
-                    <>
-                      <dl class="image-scores">
-                        {(["aesthetic", "keeper", "cover"] as const).map(
-                          (score) => (
-                            <div key={score}>
-                              <dt>
-                                {score === "aesthetic"
-                                  ? "Aesthetic"
-                                  : score === "keeper"
-                                    ? "Keeper"
-                                    : "Cover"}
-                              </dt>
-                              <dd>
-                                {Math.round(
-                                  state.analysis!.scores[score] * 100,
-                                )}
-                              </dd>
-                            </div>
-                          ),
-                        )}
-                      </dl>
-                      {state.analysis.suggestions.length ? (
-                        <ul class="image-chips" aria-label="Tags">
-                          {state.analysis.suggestions.map((suggestion) => (
-                            <li key={suggestion.tag}>
+                          {state.selected.tagged && (
+                            <li>
                               <button
                                 type="button"
-                                class="image-chip"
-                                onClick$={() => searchTag(suggestion.tag)}
-                                aria-label={`Find photos tagged ${tagLabel(suggestion.tag)}, ${Math.round(suggestion.confidence * 100)}% confidence`}
+                                onClick$={() => {
+                                  moreOpen.value = false;
+                                  return markForRetagging();
+                                }}
                               >
-                                {tagLabel(suggestion.tag)}
-                                <span class="image-chip-meta">
-                                  {Math.round(suggestion.confidence * 100)}%
-                                </span>
+                                Mark for retagging
                               </button>
                             </li>
-                          ))}
+                          )}
                         </ul>
-                      ) : (
-                        <p class="image-analysis-note">
-                          No suggested tags for this photo.
-                        </p>
                       )}
-                    </>
-                  )}
-                  {!!state.selected.decisionTags?.length && (
-                    <div class="image-decision-tags">
-                      <h3 id="image-decision-tags">Decision tags</h3>
-                      <ul
-                        class="image-chips"
-                        aria-labelledby="image-decision-tags"
-                      >
-                        {state.selected.decisionTags.map((tag) => (
-                          <li key={tag}>
+                    </div>
+                  </div>
+                </div>
+                {state.detailError && (
+                  <div class="message error" role="alert">
+                    <span>{state.detailError}</span>
+                  </div>
+                )}
+                {state.notice && (
+                  <div class="message success" role="status">
+                    <span>{state.notice}</span>
+                  </div>
+                )}
+                {state.analysis && (
+                  <>
+                    <dl class="image-scores">
+                      {(["aesthetic", "keeper", "cover"] as const).map(
+                        (score) => (
+                          <div key={score}>
+                            <dt>
+                              {score === "aesthetic"
+                                ? "Aesthetic"
+                                : score === "keeper"
+                                  ? "Keeper"
+                                  : "Cover"}
+                            </dt>
+                            <dd>
+                              {Math.round(state.analysis!.scores[score] * 100)}
+                            </dd>
+                          </div>
+                        ),
+                      )}
+                    </dl>
+                    {state.analysis.suggestions.length ? (
+                      <ul class="image-chips" aria-label="Tags">
+                        {state.analysis.suggestions.map((suggestion) => (
+                          <li key={suggestion.tag}>
                             <button
                               type="button"
                               class="image-chip"
-                              aria-label={`Find photos tagged ${tag}`}
-                              onClick$={() => searchTag(tag)}
+                              onClick$={() => searchTag(suggestion.tag)}
+                              aria-label={`Find photos tagged ${tagLabel(suggestion.tag)}, ${Math.round(suggestion.confidence * 100)}% confidence`}
                             >
-                              {tag}
+                              {tagLabel(suggestion.tag)}
+                              <span class="image-chip-meta">
+                                {Math.round(suggestion.confidence * 100)}%
+                              </span>
                             </button>
                           </li>
                         ))}
                       </ul>
-                    </div>
-                  )}
-                </section>
-              )}
+                    ) : (
+                      <p class="image-analysis-note">
+                        No suggested tags for this photo.
+                      </p>
+                    )}
+                  </>
+                )}
+                {!!state.selected.decisionTags?.length && (
+                  <div class="image-decision-tags">
+                    <h4 id="image-decision-tags">Decision tags</h4>
+                    <ul
+                      class="image-chips"
+                      aria-labelledby="image-decision-tags"
+                    >
+                      {state.selected.decisionTags.map((tag) => (
+                        <li key={tag}>
+                          <button
+                            type="button"
+                            class="image-chip"
+                            aria-label={`Find photos tagged ${tag}`}
+                            onClick$={() => searchTag(tag)}
+                          >
+                            {tag}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </section>
             </>
           ) : (
             <div class="image-focus image-focus--empty">
@@ -895,7 +899,9 @@ export const ImagesView = component$<{
                           </span>
                         ) : (
                           <img
-                            src={previewUrl(image.id)}
+                            src={thumbnailSrc(previewUrl(image.id))}
+                            srcset={thumbnailSrcset(previewUrl(image.id))}
+                            sizes={tileSizes}
                             alt=""
                             loading="lazy"
                             width={240}

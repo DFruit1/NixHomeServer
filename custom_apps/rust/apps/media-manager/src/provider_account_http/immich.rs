@@ -1,6 +1,7 @@
 //! Only saved decision rules may add the assessed photo to a named album or
 //! archive it in Immich. Derived EYE tags and scores stay in our private index.
 use super::*;
+use crate::thumbnail::{self, ThumbnailQuery};
 use reqwest::Method;
 use std::{path::Path as FilePath, time::Duration};
 use zeroize::Zeroizing;
@@ -287,11 +288,23 @@ impl Account {
         id: &str,
     ) -> Result<(Vec<u8>, String), ApiError> {
         // Preview is sufficient for EYE and never requests original downloads.
+        self.rendition(state, asset_id, "preview", id).await
+    }
+
+    /// One of Immich's generated renditions: `thumbnail` (small WebP) or
+    /// `preview` (large JPEG).
+    async fn rendition(
+        &self,
+        state: &ProviderBrokerState,
+        asset_id: &str,
+        size: &str,
+        id: &str,
+    ) -> Result<(Vec<u8>, String), ApiError> {
         let response = self
             .send(
                 state,
                 Method::GET,
-                &format!("assets/{asset_id}/thumbnail?size=preview"),
+                &format!("assets/{asset_id}/thumbnail?size={size}"),
                 None,
                 id,
             )
@@ -653,12 +666,24 @@ pub(super) async fn preview(
     State(state): State<ProviderBrokerState>,
     headers: HeaderMap,
     Path(asset_id): Path<String>,
+    Query(query): Query<ThumbnailQuery>,
 ) -> Result<Response, ApiError> {
     let id = request_id();
     let identity = identity_from_headers(&headers, &id)?;
     let account = account(&state, &identity, &id)?;
     account.asset(&state, &asset_id, &id).await?;
-    let (bytes, mime) = account.image(&state, &asset_id, &id).await?;
+    // Tiles resize from Immich's own small rendition when it is large enough;
+    // its short side is at least 250px by default.
+    let size = query.snapped();
+    let rendition = if size.is_some_and(|size| size <= 160) {
+        "thumbnail"
+    } else {
+        "preview"
+    };
+    let (bytes, mime) = account.rendition(&state, &asset_id, rendition, &id).await?;
+    let (bytes, mime) = thumbnail::sized(bytes, mime, size)
+        .await
+        .ok_or_else(|| upstream_error(&id))?;
     Ok((
         [
             (header::CONTENT_TYPE, mime),
