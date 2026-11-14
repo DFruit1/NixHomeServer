@@ -10,13 +10,18 @@ import type {
   TranscriptionEnvelope,
   TranscriptionJob,
 } from "./api-contract.generated";
-import { ConversionInput } from "./conversion-input";
+import {
+  ConversionInput,
+  type ConversionTask,
+  RecentSubmissions,
+} from "./conversion-input";
 import type { ConversionInputs } from "./api-contract.generated";
 import { Icon } from "./icon";
 import type {
   Conversion,
   ConversionEnvelope,
   ConversionInbox,
+  IconName,
   InboxIso,
 } from "./root-types";
 import { EmptyState } from "./view-states";
@@ -30,8 +35,8 @@ const ConversionList = component$<{
   if (!hasActive && !hasQueued) {
     return (
       <EmptyState
-        title="No ISO files being converted"
-        detail="Choose a server file or upload one above."
+        title="No DVDs being converted"
+        detail="Choose a disc image above to start."
       />
     );
   }
@@ -101,6 +106,32 @@ const ConversionList = component$<{
     </div>
   );
 });
+
+const tasks: {
+  id: ConversionTask;
+  icon: IconName;
+  title: string;
+  detail: string;
+}[] = [
+  {
+    id: "dvd",
+    icon: "disc",
+    title: "Convert a DVD",
+    detail: "Turn a DVD disc image into a video in your library.",
+  },
+  {
+    id: "transcribe",
+    icon: "mic",
+    title: "Transcribe audio or video",
+    detail: "Get a written transcript of what is said.",
+  },
+  {
+    id: "subtitles",
+    icon: "captions",
+    title: "Make subtitles",
+    detail: "Create subtitles for a video in your library.",
+  },
+];
 
 /** Authoring-tool defaults that say nothing about which disc this is. */
 const GENERIC_VOLUME_LABELS = new Set([
@@ -223,6 +254,7 @@ export const ConversionsView = component$<{
     inputError: "",
   });
   const logDialog = useSignal<string>("");
+  const task = useSignal<ConversionTask | "">("");
 
   useTask$(({ cleanup, track }) => {
     const transcribe = track(() => props.transcriptionAvailable);
@@ -333,6 +365,13 @@ export const ConversionsView = component$<{
     }
   }
 
+  const showDvd = task.value === "dvd" || working || queuedEntries.length > 0;
+  const showTranscription =
+    !!props.transcriptionAvailable &&
+    (task.value === "transcribe" ||
+      task.value === "subtitles" ||
+      activeTranscripts.length > 0);
+
   const dvdLink = filesBaseUrl
     ? `${filesBaseUrl}/files/_Shared/_ISO/_DVDs/`
     : "";
@@ -370,74 +409,119 @@ export const ConversionsView = component$<{
         aria-label="Current conversion work"
         tabIndex={0}
       >
-        <ConversionInput
-          inputs={conv.inputs}
-          error={conv.inputError}
-          transcriptionAvailable={props.transcriptionAvailable}
-          onQueued$={(job) => {
-            if (conv.inputs) conv.inputs.jobs = [job, ...conv.inputs.jobs];
-          }}
-        />
-        <section class="conversion-focus" aria-labelledby="dvd-heading">
-          <header class="panel-heading">
-            <h2 id="dvd-heading">DVD conversions</h2>
-            <span class="conversion-state">
-              {working ? "Converting" : "Idle"}
-            </span>
-          </header>
-          {activeConversions.length ? (
-            activeConversions.map((conversion, index) => (
-              <ConversionList
-                key={conversion.sourceIso ?? index}
-                conversion={conversion}
-                queuedEntry={
-                  index === activeConversions.length - 1 ? queuedEntries : []
-                }
-              />
-            ))
-          ) : (
-            <ConversionList
-              conversion={{} as Conversion}
-              queuedEntry={queuedEntries}
-            />
-          )}
-          <details class="conversion-help">
-            <summary>How to add DVDs</summary>
-            <div class="setup-body">
-              <p class="setup-ready">
-                {inboxReady
-                  ? "The converter is watching "
-                  : "Copy a DVD ISO into "}
-                {dvdLink ? (
-                  <a href={dvdLink} target="_blank" rel="noopener noreferrer">
-                    the shared inbox
-                  </a>
-                ) : (
-                  "the shared inbox"
-                )}
-                .
-              </p>
-              <ol class="setup-steps">
-                <li>
-                  Copy a DVD ISO into the shared inbox at _Shared/_ISO/_DVDs.
-                </li>
-                <li>
-                  Leave the ISO untouched for about one minute so the server
-                  picks it up.
-                </li>
-                <li>
-                  Finished films appear in the shared video library. Source ISOs
-                  move to _Processed, or to _Failed after repeated failures.
-                </li>
-                <li>
-                  ISO files in the queue can be safely renamed or moved, but do
-                  not modify any file that is actively being converted.
-                </li>
-              </ol>
-            </div>
-          </details>
+        <section
+          class="conversion-tasks"
+          aria-labelledby="conversion-task-heading"
+        >
+          <h2 id="conversion-task-heading">What would you like to do?</h2>
+          <div class="conversion-task-list">
+            {tasks.map((option) => {
+              const unavailable =
+                option.id !== "dvd" && !props.transcriptionAvailable;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  class="conversion-task"
+                  aria-pressed={task.value === option.id}
+                  disabled={unavailable}
+                  onClick$={() => {
+                    task.value = option.id;
+                  }}
+                >
+                  <span class="conversion-task__icon" aria-hidden="true">
+                    <Icon name={option.icon} size={24} />
+                  </span>
+                  <span class="conversion-task__copy">
+                    <strong>{option.title}</strong>
+                    <span>
+                      {unavailable
+                        ? "Transcription is unavailable right now."
+                        : option.detail}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </section>
-        {props.transcriptionAvailable && (
+        {task.value && (
+          <ConversionInput
+            task={task.value}
+            inputs={conv.inputs}
+            error={conv.inputError}
+            transcriptionAvailable={props.transcriptionAvailable}
+            onQueued$={(job) => {
+              if (conv.inputs) conv.inputs.jobs = [job, ...conv.inputs.jobs];
+            }}
+            onTask$={(next) => {
+              task.value = next;
+            }}
+          />
+        )}
+        {showDvd && (
+          <section class="conversion-focus" aria-labelledby="dvd-heading">
+            <header class="panel-heading">
+              <h2 id="dvd-heading">DVD conversions</h2>
+              <span class="conversion-state">
+                {working ? "Converting" : "Idle"}
+              </span>
+            </header>
+            {activeConversions.length ? (
+              activeConversions.map((conversion, index) => (
+                <ConversionList
+                  key={conversion.sourceIso ?? index}
+                  conversion={conversion}
+                  queuedEntry={
+                    index === activeConversions.length - 1 ? queuedEntries : []
+                  }
+                />
+              ))
+            ) : (
+              <ConversionList
+                conversion={{} as Conversion}
+                queuedEntry={queuedEntries}
+              />
+            )}
+            <details class="conversion-help">
+              <summary>How to add DVDs</summary>
+              <div class="setup-body">
+                <p class="setup-ready">
+                  {inboxReady
+                    ? "The converter is watching "
+                    : "Copy a DVD ISO into "}
+                  {dvdLink ? (
+                    <a href={dvdLink} target="_blank" rel="noopener noreferrer">
+                      the shared inbox
+                    </a>
+                  ) : (
+                    "the shared inbox"
+                  )}
+                  .
+                </p>
+                <ol class="setup-steps">
+                  <li>
+                    Copy a DVD ISO into the shared inbox at _Shared/_ISO/_DVDs.
+                  </li>
+                  <li>
+                    Leave the ISO untouched for about one minute so the server
+                    picks it up.
+                  </li>
+                  <li>
+                    Finished films appear in the shared video library. Source
+                    ISOs move to _Processed, or to _Failed after repeated
+                    failures.
+                  </li>
+                  <li>
+                    ISO files in the queue can be safely renamed or moved, but
+                    do not modify any file that is actively being converted.
+                  </li>
+                </ol>
+              </div>
+            </details>
+          </section>
+        )}
+        {showTranscription && (
           <section
             class="panel transcription-panel"
             aria-labelledby="transcription-heading"
@@ -485,6 +569,7 @@ export const ConversionsView = component$<{
             </details>
           </section>
         )}
+        <RecentSubmissions jobs={conv.inputs?.jobs ?? []} />
       </div>
       <aside class="conv-sidebar">
         <ProcessedCard

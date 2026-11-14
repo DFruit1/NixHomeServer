@@ -15,6 +15,58 @@ import type {
   ConversionInputOptions,
 } from "./api-contract.generated";
 
+export type ConversionTask = "dvd" | "transcribe" | "subtitles";
+
+const ISO_FILE = /\.iso$/i;
+const VIDEO_FILE = /\.(mp4|mkv|webm|mov|avi|m4v|mpeg|mpg|ts)$/i;
+
+const taskCopy: Record<
+  ConversionTask,
+  {
+    heading: string;
+    placeholder: string;
+    submit: string;
+    accept: string;
+    nextStep: string;
+    afterFinish: string;
+  }
+> = {
+  dvd: {
+    heading: "Choose a DVD image",
+    placeholder: "Full path to a .iso file",
+    submit: "Start conversion",
+    accept: ".iso",
+    nextStep: "The converted video will appear in the shared video library.",
+    afterFinish: "",
+  },
+  transcribe: {
+    heading: "Choose audio or video",
+    placeholder: "Full path to an audio or video file",
+    submit: "Generate transcript",
+    accept: "audio/*,video/*,.mkv,.m4b,.flac,.opus,.wma,.aiff,.ts",
+    nextStep: "Text, SRT and VTT files will appear under Completed.",
+    afterFinish: "",
+  },
+  subtitles: {
+    heading: "Choose a video",
+    placeholder: "Full path to a video in your library",
+    submit: "Generate subtitles",
+    accept: "",
+    nextStep:
+      "When it finishes, open the video in Library, expand Subtitles and pick it under Use a transcript.",
+    afterFinish:
+      "Open the video in Library, expand Subtitles and pick it under Use a transcript.",
+  },
+};
+
+/** Whether a browser entry can be used for the chosen task. */
+function entryFits(task: ConversionTask, name: string, directory: boolean) {
+  if (directory) return true;
+  if (task === "dvd") return ISO_FILE.test(name);
+  if (task === "subtitles") return VIDEO_FILE.test(name);
+  return !ISO_FILE.test(name);
+}
+
 const jobStateLabels: Record<ConversionInputJob["state"], string> = {
   queued: "Waiting to start",
   submitting: "Copying file",
@@ -25,10 +77,12 @@ const jobStateLabels: Record<ConversionInputJob["state"], string> = {
 };
 
 export const ConversionInput = component$<{
+  task: ConversionTask;
   inputs?: ConversionInputs;
   transcriptionAvailable?: boolean;
   error?: string;
   onQueued$: QRL<(job: ConversionInputJob) => void>;
+  onTask$: QRL<(task: ConversionTask) => void>;
 }>((props) => {
   const form = useStore({
     source: "server",
@@ -56,6 +110,19 @@ export const ConversionInput = component$<{
     form.message = "";
     form.lastJobId = "";
     form.error = "";
+  });
+  // A new task starts its browser at that task's folder; the chosen path is
+  // kept so a misplaced file can move to the matching task.
+  useTask$(({ track }) => {
+    const task = track(() => props.task);
+    form.browsing = false;
+    form.rootId = "";
+    form.folder = "";
+    form.error = "";
+    if (task === "subtitles" && form.source === "upload") {
+      form.source = "server";
+      fileName.value = "";
+    }
   });
   useTask$(({ track, cleanup }) => {
     const browsing = track(() => form.browsing);
@@ -89,10 +156,27 @@ export const ConversionInput = component$<{
     form.source === "upload"
       ? fileName.value
       : (form.path.trim().split("/").at(-1) ?? "");
-  const kind = /\.iso$/i.test(selectedName) ? "iso" : "transcription";
+  const copy = taskCopy[props.task];
+  const kind = props.task === "dvd" ? "iso" : "transcription";
+  const selectedIso = ISO_FILE.test(selectedName);
+  const wrongFile = !!selectedName && (kind === "iso") !== selectedIso;
   const transcriptionUnavailable =
     kind === "transcription" && !props.transcriptionAvailable;
-  const video = /\.(mp4|mkv|webm|mov|avi|m4v|mpeg|mpg|ts)$/i.test(selectedName);
+  const video = VIDEO_FILE.test(selectedName);
+  const allRoots = props.inputs?.roots ?? [];
+  const videoRoots = allRoots.filter((root) => root.category === "videos");
+  const browseRoots =
+    props.task === "subtitles" && videoRoots.length ? videoRoots : allRoots;
+  const defaultRootId =
+    (props.task === "dvd"
+      ? browseRoots.find((root) => root.category === "iso")
+      : undefined
+    )?.id ??
+    browseRoots[0]?.id ??
+    "";
+  const entries = (listing.value?.entries ?? []).filter((entry) =>
+    entryFits(props.task, entry.name, entry.directory),
+  );
   const storageRoots = (props.inputs?.roots ?? []).filter((root) =>
     video
       ? root.category === "videos"
@@ -104,7 +188,7 @@ export const ConversionInput = component$<{
       aria-labelledby="conversion-input-heading"
     >
       <header class="panel-heading">
-        <h2 id="conversion-input-heading">Transcribe or convert</h2>
+        <h2 id="conversion-input-heading">{copy.heading}</h2>
       </header>
       {props.error && (
         <p class="message error conversion-input__notice" role="alert">
@@ -127,10 +211,10 @@ export const ConversionInput = component$<{
             form.message = "";
             form.lastJobId = "";
             if (transcriptionUnavailable) {
-              form.error =
-                "Transcription is unavailable. Choose a DVD ISO to convert instead.";
+              form.error = "Transcription is unavailable right now.";
               return;
             }
+            if (wrongFile) return;
             const file = fileInput.value?.files?.[0];
             const name =
               form.source === "upload"
@@ -201,7 +285,7 @@ export const ConversionInput = component$<{
                     );
               form.lastJobId = result.job.id;
               await props.onQueued$(result.job);
-              form.message = `${name} is queued. Processing starts automatically after the inbox check.`;
+              form.message = `${name} is queued. ${copy.nextStep}`;
               if (fileInput.value) fileInput.value.value = "";
               fileName.value = "";
               form.storageRootId = "";
@@ -215,39 +299,41 @@ export const ConversionInput = component$<{
         >
           <fieldset disabled={form.busy} class="conversion-input__fields">
             <legend class="sr-only">File and processing options</legend>
-            <div
-              class="conversion-source"
-              role="group"
-              aria-label="File location"
-            >
-              <button
-                type="button"
-                class="secondary-button"
-                aria-pressed={form.source === "server"}
-                onClick$={async () => {
-                  form.source = "server";
-                  form.storageRootId = "";
-                  form.storageFolder = "";
-                  fileName.value = "";
-                  await resetFeedback();
-                }}
+            {props.task === "subtitles" ? null : (
+              <div
+                class="conversion-source"
+                role="group"
+                aria-label="File location"
               >
-                Server file
-              </button>
-              <button
-                type="button"
-                class="secondary-button"
-                aria-pressed={form.source === "upload"}
-                onClick$={async () => {
-                  form.source = "upload";
-                  form.storageRootId = "";
-                  form.storageFolder = "";
-                  await resetFeedback();
-                }}
-              >
-                Upload file
-              </button>
-            </div>
+                <button
+                  type="button"
+                  class="secondary-button"
+                  aria-pressed={form.source === "server"}
+                  onClick$={async () => {
+                    form.source = "server";
+                    form.storageRootId = "";
+                    form.storageFolder = "";
+                    fileName.value = "";
+                    await resetFeedback();
+                  }}
+                >
+                  Server file
+                </button>
+                <button
+                  type="button"
+                  class="secondary-button"
+                  aria-pressed={form.source === "upload"}
+                  onClick$={async () => {
+                    form.source = "upload";
+                    form.storageRootId = "";
+                    form.storageFolder = "";
+                    await resetFeedback();
+                  }}
+                >
+                  Upload file
+                </button>
+              </div>
+            )}
             {form.source === "server" ? (
               <div class="conversion-field">
                 <label for="conversion-server-path">Server file path</label>
@@ -259,7 +345,7 @@ export const ConversionInput = component$<{
                     type="text"
                     required
                     value={form.path}
-                    placeholder="Full path to an audio, video or ISO file"
+                    placeholder={copy.placeholder}
                     onInput$={async (_, el) => {
                       form.path = el.value;
                       await resetFeedback();
@@ -272,8 +358,7 @@ export const ConversionInput = component$<{
                     aria-controls="conversion-browser"
                     onClick$={() => {
                       form.browsing = !form.browsing;
-                      if (!form.rootId)
-                        form.rootId = props.inputs?.roots[0]?.id ?? "";
+                      if (!form.rootId) form.rootId = defaultRootId;
                     }}
                   >
                     Browse
@@ -293,7 +378,7 @@ export const ConversionInput = component$<{
                         form.folder = "";
                       }}
                     >
-                      {props.inputs.roots.map((root) => (
+                      {browseRoots.map((root) => (
                         <option value={root.id} key={root.id}>
                           {root.label}
                         </option>
@@ -324,7 +409,7 @@ export const ConversionInput = component$<{
                       <p role="status">Loading files…</p>
                     ) : (
                       <ul aria-label="Server files">
-                        {listing.value?.entries.map((entry) => (
+                        {entries.map((entry) => (
                           <li key={entry.name}>
                             <button
                               type="button"
@@ -363,8 +448,8 @@ export const ConversionInput = component$<{
                         ))}
                       </ul>
                     )}
-                    {listing.value?.entries.length === 0 && (
-                      <p>No supported files or subfolders.</p>
+                    {listing.value && entries.length === 0 && (
+                      <p>No matching files or subfolders.</p>
                     )}
                     {listing.value?.truncated && (
                       <p>
@@ -383,7 +468,7 @@ export const ConversionInput = component$<{
                   id="conversion-upload"
                   type="file"
                   required
-                  accept="audio/*,video/*,.iso,.mkv,.m4b,.flac,.opus,.wma,.aiff,.ts"
+                  accept={copy.accept}
                   onChange$={async (_, el) => {
                     fileName.value = el.files?.[0]?.name ?? "";
                     form.storageRootId = "";
@@ -394,6 +479,24 @@ export const ConversionInput = component$<{
                 <small>
                   Up to 64 GiB. Keep this page open until the upload finishes.
                 </small>
+              </div>
+            )}
+            {wrongFile && (
+              <div class="conversion-mismatch" role="status">
+                <span>
+                  {selectedIso
+                    ? "This is a DVD image."
+                    : "This is not a DVD image (.iso)."}
+                </span>
+                <button
+                  type="button"
+                  class="secondary-button"
+                  onClick$={() =>
+                    props.onTask$(selectedIso ? "dvd" : "transcribe")
+                  }
+                >
+                  {selectedIso ? "Convert this DVD" : "Transcribe it instead"}
+                </button>
               </div>
             )}
             {kind === "transcription" && (
@@ -441,13 +544,18 @@ export const ConversionInput = component$<{
                       />
                     </>
                   )}
-                  <small>Results include text, SRT and VTT files.</small>
                 </div>
               </details>
             ) : (
               <p class="quiet-copy">
                 Converted videos appear in the shared video library. The source
                 ISO is retained in the shared DVD archive.
+              </p>
+            )}
+            {props.task === "subtitles" && (
+              <p class="quiet-copy">
+                When the transcript is ready, open the video in Library, expand
+                Subtitles and pick it under Use a transcript.
               </p>
             )}
             {form.source === "upload" && kind === "transcription" && (
@@ -489,22 +597,18 @@ export const ConversionInput = component$<{
               </div>
             )}
             {transcriptionUnavailable && (
-              <p class="quiet-copy">
-                Transcription is unavailable. You can still convert a DVD ISO.
-              </p>
+              <p class="quiet-copy">Transcription is unavailable right now.</p>
             )}
             <button
               type="submit"
               class="primary-button conversion-submit"
-              disabled={transcriptionUnavailable}
+              disabled={transcriptionUnavailable || wrongFile}
             >
               {form.busy
                 ? form.source === "upload"
                   ? "Uploading…"
                   : "Copying server file…"
-                : kind === "iso"
-                  ? "Start conversion"
-                  : "Generate transcript"}
+                : copy.submit}
             </button>
           </fieldset>
           <div
@@ -524,7 +628,7 @@ export const ConversionInput = component$<{
             {form.message && submittedJob?.state !== "failed" && (
               <p class="message success" role="status">
                 {submittedJob?.state === "completed"
-                  ? `${submittedJob.name} finished.${submittedJob.savedPath ? ` Library copy: ${submittedJob.savedPath}` : ""}`
+                  ? `${submittedJob.name} finished.${submittedJob.savedPath ? ` Library copy: ${submittedJob.savedPath}` : ""}${copy.afterFinish ? ` ${copy.afterFinish}` : ""}`
                   : form.message}
               </p>
             )}
@@ -541,23 +645,28 @@ export const ConversionInput = component$<{
           )}
         </form>
       ) : null}
-      {!!props.inputs?.jobs.length && (
-        <details class="conversion-submissions">
-          <summary>Recent submissions</summary>
-          <ul>
-            {props.inputs.jobs.map((job) => (
-              <li key={job.id}>
-                <div class="conversion-submission-heading">
-                  <strong>{job.name}</strong>
-                  <span>{jobStateLabels[job.state]}</span>
-                </div>
-                {job.error && <p class="message error">{job.error}</p>}
-                {job.savedPath && <small>Library copy: {job.savedPath}</small>}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
     </section>
   );
 });
+
+/** Files submitted from this page, newest first. */
+export const RecentSubmissions = component$<{ jobs: ConversionInputJob[] }>(
+  (props) =>
+    props.jobs.length ? (
+      <details class="conversion-submissions">
+        <summary>Recent submissions</summary>
+        <ul>
+          {props.jobs.map((job) => (
+            <li key={job.id}>
+              <div class="conversion-submission-heading">
+                <strong>{job.name}</strong>
+                <span>{jobStateLabels[job.state]}</span>
+              </div>
+              {job.error && <p class="message error">{job.error}</p>}
+              {job.savedPath && <small>Library copy: {job.savedPath}</small>}
+            </li>
+          ))}
+        </ul>
+      </details>
+    ) : null,
+);

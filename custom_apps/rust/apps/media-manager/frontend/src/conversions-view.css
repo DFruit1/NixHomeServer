@@ -41,6 +41,91 @@
   outline-offset: 3px;
 }
 
+/* Task chooser: one choice per job, then only that job's form. */
+.conversion-tasks {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.conversion-tasks h2 {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: var(--title-lg);
+  font-weight: 500;
+  line-height: 1.25;
+}
+.conversion-task-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.conversion-task {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  color: var(--ink);
+  background: var(--card);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+.conversion-task:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--accent-wash);
+}
+.conversion-task[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: var(--accent-wash);
+}
+.conversion-task:disabled {
+  cursor: not-allowed;
+  color: var(--ink-soft);
+  background: var(--paper-recess);
+}
+.conversion-task__icon {
+  color: var(--accent);
+}
+.conversion-task:disabled .conversion-task__icon {
+  color: var(--ink-faint);
+}
+.conversion-task__copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.conversion-task__copy strong {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.conversion-task__copy span {
+  color: var(--ink-soft);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+.conversion-mismatch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid;
+  border-radius: var(--radius-control);
+  font-size: var(--text-md);
+  border-color: var(--warning-line);
+  color: var(--warning-strong);
+  background: var(--warning-wash);
+}
+
 /* DVD focus card */
 .conversion-focus {
   min-width: 0;
@@ -365,13 +450,15 @@
   margin-top: 16px;
 }
 .conversion-submissions {
-  padding: 0 20px 12px;
-  border-top: 1px solid var(--line);
+  padding: 0 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--card);
 }
 .conversion-submissions ul {
   display: grid;
   margin: 0;
-  padding: 0;
+  padding: 0 0 8px;
   list-style: none;
 }
 .conversion-submissions li {
@@ -401,6 +488,11 @@
   font-size: var(--text-sm);
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .conversion-task {
+    transition: none;
+  }
+}
 @media (max-width: 920px) {
   .main-content--conversions {
     height: auto;
@@ -417,6 +509,17 @@
   }
   .conversion-input :is(input:not([type="checkbox"]), select) {
     font-size: var(--text-lg);
+  }
+  .conversion-task-list {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+  .conversion-task {
+    grid-template-columns: 24px minmax(0, 1fr);
+    padding: 14px 16px;
+  }
+  .conversion-tasks h2 {
+    font-size: var(--title-sm);
   }
 }
 @media (max-width: 640px) {
