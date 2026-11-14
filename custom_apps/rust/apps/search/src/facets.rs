@@ -16,7 +16,15 @@ pub struct Facets {
 }
 
 /// Metadata keys that identify a creator, sender, or contributor.
-const AUTHOR_KEYS: [&str; 5] = ["authors", "author", "narrators", "from", "correspondent"];
+const AUTHOR_KEYS: [&str; 7] = [
+    "authors",
+    "author",
+    "writers",
+    "directors",
+    "narrators",
+    "from",
+    "correspondent",
+];
 /// Metadata keys that identify a category label.
 const TAG_KEYS: [&str; 2] = ["tags", "genres"];
 /// Metadata keys that identify a collection or series of works.

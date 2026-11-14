@@ -54,6 +54,40 @@ pub struct SolrDocument {
     pub tags: Vec<String>,
     pub series: Vec<String>,
     pub year: Option<i64>,
+    /// Content signature indexed as `dedupe_s`. Identical items filed in
+    /// several places (one message in three mail folders) share a signature,
+    /// so a search shows one result for them instead of a page of copies.
+    pub dedupe: String,
+}
+
+/// Everyday words for a kind of content, indexed as discovery text so "billy
+/// connolly movie" or "pdf manual" matches without the user knowing the filter.
+fn kind_words(kind: &str, content_type: &str) -> &'static str {
+    match (kind, content_type) {
+        ("movie", _) => "movie film video",
+        ("episode", _) => "episode tv television show series video",
+        ("video", _) => "video",
+        ("audiobook", _) => "audiobook audio book",
+        ("book", "application/pdf") => "book ebook pdf",
+        ("book", "application/epub+zip") => "book ebook epub",
+        ("book", _) => "book ebook",
+        ("email", _) => "email mail message",
+        ("feed-entry", _) => "article feed post news",
+        ("web-page", _) => "web page website article",
+        ("web-crawl", _) => "web archive crawl capture",
+        ("zim-archive", _) => "wiki offline archive collection",
+        ("zim-article", _) => "wiki article",
+        ("document", "application/pdf") => "document pdf",
+        ("document", _) => "document",
+        (_, "application/pdf") => "pdf",
+        _ => "",
+    }
+}
+
+/// Splits a file or folder name into searchable words. Release names join
+/// words with dots and underscores, which the index would keep as one token.
+fn name_words(name: &str) -> String {
+    name.replace(['_', '-', '.', '[', ']', '(', ')', '{', '}'], " ")
 }
 
 impl SolrDocument {
@@ -62,18 +96,54 @@ impl SolrDocument {
         // Rebuilds also project metadata from older records whose body predates
         // metadata enrichment. Never index URL credentials/query strings or full
         // filesystem paths; only the basename is useful for ordinary discovery.
-        let filename = std::path::Path::new(&record.file_path)
+        let path = std::path::Path::new(&record.file_path);
+        let filename = path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default();
-        let mut discovery = format!("{filename}\n{}", filename.replace(['_', '-'], " "));
+        let mut discovery = format!("{filename}\n{}", name_words(filename));
+        // A library-relative path names the author, series or album in its
+        // folders. Absolute paths stay private: they describe the server.
+        if path.is_relative() {
+            for folder in path
+                .parent()
+                .into_iter()
+                .flat_map(std::path::Path::components)
+                .filter_map(|part| part.as_os_str().to_str())
+                .take(8)
+            {
+                discovery.push_str(&format!("\n{}", name_words(folder)));
+            }
+        }
         if let Ok(url) = url::Url::parse(&record.origin_url)
             && let Some(host) = url.host_str()
         {
             discovery.push_str(&format!("\n{host}"));
         }
+        let words = kind_words(&record.kind, &record.content_type);
+        if !words.is_empty() {
+            discovery.push_str(&format!("\n{words}"));
+        }
+        if record
+            .metadata
+            .get("attachments")
+            .is_some_and(|value| value.as_array().is_some_and(|items| !items.is_empty()))
+        {
+            discovery.push_str("\nattachment attachments attached");
+        }
         crate::extract::append_search_metadata(&mut discovery, &record.metadata);
+        let created = record
+            .content_created_at
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let dedupe = crate::timeutil::sha256_hex(&[
+            &record.kind,
+            &record.title.trim().to_lowercase(),
+            &created,
+            &record.body_text,
+        ]);
         Self {
+            dedupe,
             id: db::full_document_id(source_id, &record.external_id),
             source: source_id.to_string(),
             kind: record.kind.clone(),
@@ -108,6 +178,7 @@ impl SolrDocument {
             "app_url": self.app_url,
             "file_path": self.file_path,
             "size_bytes": self.size_bytes,
+            "dedupe_s": self.dedupe,
         });
         if let Some(created) = self.content_created {
             doc["content_created"] = json!(epoch_to_solr_date(created));
@@ -149,13 +220,21 @@ pub struct SearchHit {
     pub owner: String,
     pub score: f64,
     pub created: Option<i64>,
+    /// Identical copies folded into this result.
+    pub copies: u64,
 }
 
 #[derive(Debug)]
 pub struct SearchResponse {
     pub hits: Vec<SearchHit>,
     pub total: u64,
+    /// Related wording that was searched and exists in the library.
     pub related_terms: Vec<String>,
+    /// Query words the library does not contain in any form; close spellings
+    /// were searched for these instead.
+    pub unknown_terms: Vec<String>,
+    /// Nothing contained every idea, so these results match most of them.
+    pub relaxed: bool,
     pub source_facets: Vec<(String, u64)>,
     pub kind_facets: Vec<(String, u64)>,
     pub content_type_facets: Vec<(String, u64)>,
@@ -323,13 +402,17 @@ pub enum SortOrder {
     #[default]
     Relevance,
     Newest,
+    /// Asked for in words ("latest newsletter"): still ranked by relevance,
+    /// with recency weighted heavily. A strict date order would put any item
+    /// that merely mentions the word above the thing the user means.
+    Recent,
 }
 
 impl SortOrder {
     /// Stable ordering prevents equal-score hits from moving between pages.
     fn clause(self) -> Option<&'static str> {
         match self {
-            SortOrder::Relevance => Some("score desc, id asc"),
+            SortOrder::Relevance | SortOrder::Recent => Some("score desc, id asc"),
             // The unique id also breaks equal-date, equal-score ties.
             SortOrder::Newest => Some("content_created desc, score desc, id asc"),
         }
@@ -556,6 +639,76 @@ impl SolrClient {
         .await
     }
 
+    /// How many documents contain each term in any searched text field.
+    /// Terms the library lacks are simply absent from the result.
+    async fn term_frequencies(
+        &self,
+        terms: &[String],
+    ) -> Result<std::collections::HashMap<String, u64>, String> {
+        let mut params: Vec<(&str, String)> = SEARCHED_TEXT_FIELDS
+            .iter()
+            .map(|field| ("terms.fl", (*field).to_string()))
+            .collect();
+        params.push(("terms.list", terms.join(",")));
+        params.push(("terms.limit", "-1".to_string()));
+        params.push(("omitHeader", "true".to_string()));
+        params.push(("wt", "json".to_string()));
+        let url = format!("{}/{}/terms", self.base_url, self.core);
+        let response: Value = self
+            .http
+            .post(&url)
+            .form(&params)
+            .timeout(Duration::from_secs(4))
+            .send()
+            .await
+            .map_err(|err| format!("solr term lookup failed: {err}"))?
+            .json()
+            .await
+            .map_err(|err| format!("solr term lookup response parse failed: {err}"))?;
+        let fields = response
+            .get("terms")
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("solr term lookup returned no terms: {response}"))?;
+        let mut frequencies = std::collections::HashMap::new();
+        for counts in fields.values() {
+            for (term, count) in facet_pairs(counts) {
+                let known = frequencies.entry(term).or_insert(0);
+                *known = (*known).max(count);
+            }
+        }
+        Ok(frequencies)
+    }
+
+    /// Consults the library before expanding a plain query, so only wording it
+    /// actually contains is searched and close spellings are tried solely for
+    /// words it has never seen.
+    async fn plan(&self, query: &str, filters: &SearchFilters) -> Option<Vec<PlannedConcept>> {
+        if filters.matching != MatchMode::Broad {
+            return None;
+        }
+        let concepts = crate::text::concepts(query)?;
+        let mut terms: Vec<String> = Vec::new();
+        for concept in &concepts {
+            for term in std::iter::once(&concept.word)
+                .chain(&concept.forms)
+                .chain(&concept.related)
+            {
+                // The lookup takes a comma-separated list of plain terms.
+                if !term.contains(',') && !terms.contains(term) {
+                    terms.push(term.clone());
+                }
+            }
+        }
+        let frequencies = match self.term_frequencies(&terms).await {
+            Ok(frequencies) => Some(frequencies),
+            Err(err) => {
+                eprintln!("search: {err}; searching without library term statistics");
+                None
+            }
+        };
+        Some(plan_concepts(&concepts, frequencies.as_ref()))
+    }
+
     pub async fn search(
         &self,
         query: &str,
@@ -565,10 +718,18 @@ impl SolrClient {
         offset: usize,
         sort: SortOrder,
     ) -> Result<SearchResponse, String> {
-        let response = match self
-            .select(query, selected_sources, filters, rows, offset, sort)
-            .await
-        {
+        let plan = self.plan(query, filters).await;
+        let request = SelectRequest {
+            query,
+            plan: plan.as_deref(),
+            relaxed: false,
+            selected_sources,
+            filters,
+            rows,
+            offset,
+            sort,
+        };
+        let response = match self.select(&request).await {
             Ok(response) => response,
             Err(err) => {
                 // A user query can contain Lucene syntax characters (`:`, `[`,
@@ -583,15 +744,42 @@ impl SolrClient {
                     return Err(err);
                 }
                 eprintln!("search: solr rejected the query; retrying with escaped terms");
-                self.select(&escaped, selected_sources, filters, rows, offset, sort)
-                    .await?
+                self.select(&SelectRequest {
+                    query: &escaped,
+                    plan: None,
+                    ..request
+                })
+                .await?
             }
         };
         let mut response = parse_search_response(&response)?;
-        if filters.matching == MatchMode::Broad
-            && let Some(words) = crate::text::discovery_words(query)
-        {
-            response.related_terms = crate::text::related_words(&words);
+        if let Some(plan) = &plan {
+            // Nothing holds every idea: show what holds most of them rather
+            // than an empty page. Deterministic, so later pages agree.
+            if response.total == 0 && plan.len() >= 2 {
+                let relaxed = self
+                    .select(&SelectRequest {
+                        relaxed: true,
+                        ..request
+                    })
+                    .await?;
+                let relaxed = parse_search_response(&relaxed)?;
+                if relaxed.total > 0 {
+                    response = relaxed;
+                    response.relaxed = true;
+                }
+            }
+            if sort != SortOrder::Newest {
+                response.related_terms = plan
+                    .iter()
+                    .flat_map(|concept| concept.related.iter().cloned())
+                    .collect();
+            }
+            response.unknown_terms = plan
+                .iter()
+                .filter(|concept| concept.fuzzy)
+                .map(|concept| concept.word.clone())
+                .collect();
         }
         Ok(response)
     }
@@ -599,25 +787,32 @@ impl SolrClient {
     /// Issues one Solr select and returns the raw response, surfacing a Solr
     /// error payload as an `Err` string so the caller can decide whether to
     /// retry with an escaped query.
-    async fn select(
-        &self,
-        query: &str,
-        selected_sources: &[String],
-        filters: &SearchFilters,
-        rows: usize,
-        offset: usize,
-        sort: SortOrder,
-    ) -> Result<Value, String> {
-        let broad = (filters.matching == MatchMode::Broad)
-            .then(|| broad_query(query))
-            .flatten();
+    async fn select(&self, request: &SelectRequest<'_>) -> Result<Value, String> {
+        let SelectRequest {
+            query,
+            plan,
+            relaxed,
+            selected_sources,
+            filters,
+            rows,
+            offset,
+            sort,
+        } = *request;
+        // Date order shows whatever matched, newest first, so only the user's
+        // own words and their grammatical forms may admit a document.
+        let precise = sort == SortOrder::Newest;
+        let broad = plan.map(|plan| broad_query(plan, relaxed, precise));
+        let main_query = broad
+            .clone()
+            .or_else(|| literal_reference_query(query))
+            .unwrap_or_else(|| query.to_string());
         let mut params: Vec<(&str, String)> = vec![
-            ("q", broad.clone().or_else(|| literal_reference_query(query)).unwrap_or_else(|| query.to_string())),
+            ("q", main_query.clone()),
             // Stored fields only; the body is index-only and is enriched from
             // Postgres after the query.
             (
                 "fl",
-                "id kind_s source title origin_url app_url content_type owner_s content_created score"
+                "id kind_s source title origin_url app_url content_type owner_s content_created dedupe_s score"
                     .to_string(),
             ),
             ("defType", "edismax".to_string()),
@@ -629,8 +824,26 @@ impl SolrClient {
             ("ps", "2".to_string()),
             ("qs", "0".to_string()),
             ("tie", "0.1".to_string()),
+            // Between otherwise comparable matches, prefer the more recent:
+            // up to +30% for something dated today, half of that after a
+            // year, fading to nothing. Undated documents are unaffected.
+            // "latest …" raises that to +400%, so recency dominates among
+            // relevant matches without admitting irrelevant ones.
+            (
+                "boost",
+                format!(
+                    "sum(1,product({},recip(abs(ms(NOW/DAY,content_created)),3.16e-11,1,1)))",
+                    if sort == SortOrder::Recent { "4" } else { "0.3" }
+                ),
+            ),
             ("rows", rows.to_string()),
             ("start", offset.to_string()),
+            // Identical copies share a content signature; show the best one
+            // and count the rest. Documents indexed before signatures existed
+            // have none and are each kept.
+            ("fq", "{!collapse field=dedupe_s nullPolicy=expand}".to_string()),
+            ("expand", "true".to_string()),
+            ("expand.rows", "0".to_string()),
             ("facet", "true".to_string()),
             ("facet.field", "{!ex=src}source".to_string()),
             ("facet.field", "{!ex=kind}kind_s".to_string()),
@@ -647,92 +860,98 @@ impl SolrClient {
         if !filters.wiki_full_text {
             // Extracted fallback articles must follow the same title-only
             // scope as native archive searches. Keep other kinds unrestricted.
-            params.push((
-                "wikiTitleQuery",
-                broad
-                    .clone()
-                    .or_else(|| literal_reference_query(query))
-                    .unwrap_or_else(|| query.to_string()),
-            ));
+            params.push(("wikiTitleQuery", main_query));
             params.push(("fq", r#"{!lucene}(*:* AND -kind_s:"zim-article") OR _query_:"{!edismax qf=title pf=title v=$wikiTitleQuery}""#.to_string()));
         }
         // Explicit syntax (quotes, fields, boolean operators) keeps Solr's
         // normal semantics. Broad queries require each concept, with OR only
         // between alternatives for that concept.
-        if broad.is_some() {
+        if let Some(plan) = plan {
             params.push(("q.op", "OR".to_string()));
-            params.push(("mm", "0".to_string()));
+            params.push((
+                "mm",
+                if relaxed {
+                    relaxed_minimum(plan).to_string()
+                } else {
+                    "0".to_string()
+                },
+            ));
             // Reward coverage of the whole topic even when its words are far
             // apart. This boost never admits a document by itself.
-            if let Some(concepts) = crate::text::discovery_concepts(query) {
-                let concepts = concepts
-                    .iter()
-                    .map(|terms| {
-                        let fields = terms
-                            .iter()
-                            .flat_map(|term| {
-                                [("title", 12), ("body", 3), ("discovery_txt", 4)]
-                                    .into_iter()
-                                    .map(move |(field, weight)| {
-                                        format!("{field}:{}^{weight}", solr_string_term(term))
-                                    })
-                            })
-                            .collect::<Vec<_>>();
-                        format!("({})", fields.join(" OR "))
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" AND ");
-                params.push(("primaryQuery", concepts));
-                params.push(("bq", "{!lucene v=$primaryQuery}".to_string()));
-            }
-            if let Some(words) = crate::text::discovery_words(query) {
-                let phrase = words.join(" ");
+            let coverage = plan
+                .iter()
+                .map(|concept| {
+                    let direct = std::iter::once(&concept.word)
+                        .chain(&concept.forms)
+                        .flat_map(|term| field_terms(term, [12.0, 3.0, 4.0]));
+                    let related = concept
+                        .related
+                        .iter()
+                        .flat_map(|term| field_terms(term, [4.0, 1.0, 1.3]));
+                    format!(
+                        "({})",
+                        direct.chain(related).collect::<Vec<_>>().join(" OR ")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" AND ");
+            params.push(("primaryQuery", coverage));
+            params.push(("bq", "{!lucene v=$primaryQuery}".to_string()));
+            let words: Vec<&str> = plan.iter().map(|concept| concept.word.as_str()).collect();
+            let phrase = words.join(" ");
+            params.push((
+                "bq",
+                format!(
+                    "title:{}~2^12 body:{}~2^3",
+                    solr_string_term(&phrase),
+                    solr_string_term(&phrase)
+                ),
+            ));
+            // Nearby pairs still matter in longer conversational queries.
+            for pair in words.windows(2) {
+                let phrase = pair.join(" ");
                 params.push((
                     "bq",
                     format!(
-                        "title:{}~2^12 body:{}~2^3",
+                        "title:{}~2^4 body:{}~2",
                         solr_string_term(&phrase),
                         solr_string_term(&phrase)
                     ),
                 ));
-                // Nearby pairs still matter in longer conversational queries.
-                for pair in words.windows(2) {
-                    let phrase = pair.join(" ");
-                    params.push((
-                        "bq",
-                        format!(
-                            "title:{}~2^4 body:{}~2",
-                            solr_string_term(&phrase),
-                            solr_string_term(&phrase)
-                        ),
-                    ));
-                }
             }
-            if let Some(concepts) = crate::text::discovery_concepts(query) {
-                let phrases = concepts.windows(2).flat_map(|pair| {
-                    pair[0]
-                        .iter()
-                        .take(2)
-                        .enumerate()
-                        .flat_map(move |(left_index, left)| {
-                            pair[1].iter().take(2).enumerate().filter_map(
-                                move |(right_index, right)| {
-                                    (left_index != 0 || right_index != 0)
-                                        .then(|| format!("{left} {right}"))
-                                },
-                            )
-                        })
-                });
-                for phrase in phrases.take(24) {
-                    params.push((
-                        "bq",
-                        format!(
-                            "title:{}~2^4 body:{}~2",
-                            solr_string_term(&phrase),
-                            solr_string_term(&phrase)
-                        ),
-                    ));
-                }
+            // The same adjacency through another form or related word:
+            // "water filters" also rewards "water filter" and "water filtration".
+            let alternatives: Vec<Vec<&String>> = plan
+                .iter()
+                .map(|concept| {
+                    std::iter::once(&concept.word)
+                        .chain(&concept.forms)
+                        .chain(&concept.related)
+                        .take(3)
+                        .collect()
+                })
+                .collect();
+            let phrases = alternatives.windows(2).flat_map(|pair| {
+                pair[0]
+                    .iter()
+                    .enumerate()
+                    .flat_map(move |(left_index, left)| {
+                        pair[1]
+                            .iter()
+                            .enumerate()
+                            .filter(move |(right_index, _)| left_index != 0 || *right_index != 0)
+                            .map(move |(_, right)| format!("{left} {right}"))
+                    })
+            });
+            for phrase in phrases.take(24) {
+                params.push((
+                    "bq",
+                    format!(
+                        "title:{}~2^4 body:{}~2",
+                        solr_string_term(&phrase),
+                        solr_string_term(&phrase)
+                    ),
+                ));
             }
         } else if filters.matching == MatchMode::All {
             params.push(("q.op", "AND".to_string()));
@@ -762,6 +981,98 @@ impl SolrClient {
     }
 }
 
+/// Text fields a plain query searches, strongest first.
+const SEARCHED_TEXT_FIELDS: [&str; 3] = ["title", "body", "discovery_txt"];
+
+#[derive(Clone, Copy)]
+struct SelectRequest<'a> {
+    query: &'a str,
+    plan: Option<&'a [PlannedConcept]>,
+    /// Require most ideas instead of all of them.
+    relaxed: bool,
+    selected_sources: &'a [String],
+    filters: &'a SearchFilters,
+    rows: usize,
+    offset: usize,
+    sort: SortOrder,
+}
+
+/// One required idea of a plain query, after consulting the library.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlannedConcept {
+    word: String,
+    forms: Vec<String>,
+    related: Vec<String>,
+    /// The library has neither the word nor another form of it, so it is most
+    /// likely a misspelling: close spellings are searched as well.
+    fuzzy: bool,
+    /// Documents containing the word or a form of it, when known.
+    frequency: Option<u64>,
+}
+
+/// Keeps only wording the library contains. Without statistics (a failed
+/// lookup) fall back to a bounded expansion and tolerate close spellings
+/// everywhere, which is what every plain query did before statistics existed.
+fn plan_concepts(
+    concepts: &[crate::text::Concept],
+    frequencies: Option<&std::collections::HashMap<String, u64>>,
+) -> Vec<PlannedConcept> {
+    concepts
+        .iter()
+        .map(|concept| {
+            let Some(frequencies) = frequencies else {
+                return PlannedConcept {
+                    word: concept.word.clone(),
+                    forms: concept.forms.iter().take(3).cloned().collect(),
+                    related: concept.related.iter().take(4).cloned().collect(),
+                    fuzzy: true,
+                    frequency: None,
+                };
+            };
+            let count = |term: &String| frequencies.get(term).copied().unwrap_or(0);
+            let known = |term: &&String| count(term) > 0;
+            let forms: Vec<String> = concept.forms.iter().filter(known).cloned().collect();
+            PlannedConcept {
+                fuzzy: !known(&&concept.word) && forms.is_empty(),
+                frequency: Some(forms.iter().map(count).fold(count(&concept.word), u64::max)),
+                word: concept.word.clone(),
+                forms,
+                related: concept.related.iter().filter(known).cloned().collect(),
+            }
+        })
+        .collect()
+}
+
+/// `field:"term"^weight` for each searched text field.
+fn field_terms(term: &str, weights: [f32; 3]) -> impl Iterator<Item = String> + '_ {
+    SEARCHED_TEXT_FIELDS
+        .into_iter()
+        .zip(weights)
+        .map(move |(field, weight)| format!("{field}:{}^{weight}", solr_string_term(term)))
+}
+
+/// The idea a relaxed search keeps mandatory: the rarest one the library
+/// knows. Rare words carry the meaning ("rumpole" in "rumpole season 7");
+/// dropping one in favour of two common words returns noise.
+fn relaxed_anchor(plan: &[PlannedConcept]) -> Option<usize> {
+    plan.iter()
+        .enumerate()
+        .filter_map(|(index, concept)| Some((concept.frequency.filter(|count| *count > 0)?, index)))
+        .min()
+        .map(|(_, index)| index)
+}
+
+/// Optional ideas a relaxed search still requires, besides its anchor: none
+/// for a short query, about half of a long one.
+fn relaxed_minimum(plan: &[PlannedConcept]) -> usize {
+    let optional = plan.len() - usize::from(relaxed_anchor(plan).is_some());
+    match optional {
+        0..=1 => usize::from(relaxed_anchor(plan).is_none()),
+        2..=3 => 1,
+        _ => optional / 2,
+    }
+}
+
 /// Broad discovery is the default; strict searches remain available without
 /// making users learn operators. Existing explicit syntax is never expanded.
 #[derive(Debug, Clone, Copy, Default, serde::Deserialize, PartialEq, Eq)]
@@ -772,31 +1083,43 @@ pub enum MatchMode {
     All,
 }
 
-fn broad_query(query: &str) -> Option<String> {
-    let concepts = crate::text::discovery_concepts(query)?;
-    let mut clauses = Vec::new();
-    for (index, concept) in concepts.iter().enumerate() {
-        let word = &concept[0];
-        let length = word.chars().count();
-        let mut alternatives = vec![format!("{word}^4")];
-        // Keep close spellings and beginnings within this required concept.
-        // Numeric identifiers stay literal; fuzzy expansion is bounded.
-        if (4..=32).contains(&length) && word.chars().all(char::is_alphabetic) {
-            if index < 4 {
+/// One clause per idea: the word, then its other forms, then weaker matches
+/// (close spellings, word beginnings, related wording). Every idea is required
+/// unless `relaxed`, where the caller sets how many must match.
+fn broad_query(plan: &[PlannedConcept], relaxed: bool, precise: bool) -> String {
+    let anchor = if relaxed { relaxed_anchor(plan) } else { None };
+    let clauses: Vec<String> = plan
+        .iter()
+        .enumerate()
+        .map(|(index, concept)| {
+            let word = &concept.word;
+            let length = word.chars().count();
+            let alphabetic = word.chars().all(char::is_alphabetic);
+            let mut alternatives = vec![format!("{word}^4")];
+            alternatives.extend(concept.forms.iter().map(|form| format!("{form}^3")));
+            // Numeric identifiers stay literal.
+            if concept.fuzzy && alphabetic && (4..=32).contains(&length) {
                 alternatives.push(if length >= 8 {
-                    format!("{word}~2^0.2")
-                } else if length >= 5 {
-                    format!("{word}~1^0.4")
+                    format!("{word}~2^0.4")
                 } else {
-                    format!("{word}~1^0.1")
+                    format!("{word}~1^0.4")
                 });
             }
-            alternatives.push(format!("{word}*^0.2"));
-        }
-        alternatives.extend(concept.iter().skip(1).map(|word| format!("{word}^0.6")));
-        clauses.push(format!("({})", alternatives.join(" OR ")));
-    }
-    Some(clauses.join(" AND "))
+            if !precise {
+                let base = crate::thesaurus::base_form(word);
+                if alphabetic && (5..=32).contains(&base.chars().count()) {
+                    alternatives.push(format!("{base}*^0.2"));
+                }
+                alternatives.extend(concept.related.iter().map(|term| format!("{term}^0.6")));
+            }
+            format!(
+                "{}({})",
+                if anchor == Some(index) { "+" } else { "" },
+                alternatives.join(" OR ")
+            )
+        })
+        .collect();
+    clauses.join(if relaxed { " " } else { " AND " })
 }
 
 /// A plain formatted reference must not become an OR between its numeric
@@ -964,6 +1287,13 @@ pub fn parse_search_response(response: &Value) -> Result<SearchResponse, String>
                 .and_then(Value::as_str)
                 .and_then(crate::timeutil::parse_date),
             score,
+            copies: doc
+                .get("dedupe_s")
+                .and_then(Value::as_str)
+                .and_then(|signature| response.pointer("/expanded")?.get(signature))
+                .and_then(|group| group.get("numFound"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
         });
     }
 
@@ -980,6 +1310,8 @@ pub fn parse_search_response(response: &Value) -> Result<SearchResponse, String>
         hits,
         total,
         related_terms: Vec::new(),
+        unknown_terms: Vec::new(),
+        relaxed: false,
         source_facets: facets_of("source"),
         kind_facets: facets_of("kind_s"),
         content_type_facets: facets_of("content_type"),

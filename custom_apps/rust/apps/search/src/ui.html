@@ -114,6 +114,7 @@
   .view-options summary { min-height: var(--control-height); padding: var(--space-2); cursor: pointer; }
   .view-options__controls { display: flex; flex-wrap: wrap; gap: var(--space-2); padding-block: var(--space-2); }
   #status { color: var(--text-muted); font-size: 0.875rem; }
+  .search-notice { color: var(--text-muted); font-size: 0.875rem; margin: 0 0 var(--space-3); overflow-wrap: anywhere; }
   .results { list-style: none; padding: 0; margin: 0; }
   .result { max-width: 56rem; padding: var(--space-4) 0; border-bottom: 1px solid var(--border); }
   .result:first-child { padding-top: var(--space-2); }
@@ -262,6 +263,7 @@
           <p id="status" role="status"></p>
         </div>
       </div>
+      <p id="searchNotice" class="search-notice" role="status" hidden></p>
       <p id="copyStatus" role="status"></p>
       <div class="empty" id="emptyState">
         <h2 id="emptyTitle">What are you looking for?</h2>
@@ -297,13 +299,14 @@ const resultsEl = el('results');
 const statusEl = el('status');
 const controls = { source: sourceEl, kind: el('kind'), type: typeEl, owner: ownerEl, author: el('author'), creator: el('creator'), tag: el('tag'), series: el('series'), year: el('year'), after: afterEl, before: beforeEl };
 const filterLabels = { source: 'Source', kind: 'Content', type: 'Format', owner: 'Owner', author: 'Author', creator: 'Author/sender', tag: 'Tag', series: 'Series', year: 'Year', after: 'From', before: 'To' };
-const kindLabels = { email: 'Email', document: 'Document', book: 'Book', 'web-page': 'Web page', 'zim-article': 'Kiwix pages', 'zim-archive': 'Kiwix collection titles', video: 'Video', movie: 'Movies', audiobook: 'Audiobook' };
+const kindLabels = { email: 'Email', document: 'Document', book: 'Book', 'web-page': 'Web page', 'zim-article': 'Kiwix pages', 'zim-archive': 'Kiwix collection titles', video: 'Video', movie: 'Movies', episode: 'TV episodes', audiobook: 'Audiobook' };
 if (window.SEARCH_ONLINE_PAPERS) kindLabels['online-paper'] = 'Online papers';
 const formatLabels = { 'message/rfc822': 'Email', 'application/pdf': 'PDF', 'text/html': 'Web page', 'application/epub+zip': 'EPUB', 'text/plain': 'Text', 'video/mp4': 'MP4 video', 'video/x-matroska': 'MKV video', 'audio/mpeg': 'MP3 audio', 'audio/mp4': 'MP4 audio' };
+const INTENT_KEYS = ['kind', 'creator', 'after', 'before', 'sort'];
 const sourceNames = new Map();
 sourceNames.set('online-papers', 'Online papers');
 const state = { hits: [], liveHits: [], page: 0, total: 0, hasMore: false, generation: 0, controller: null, submitted: null, loading: false, liveLoading: false,
-  inferred: {}, intentSkip: [], relatedTerms: [], indexedDone: false, liveDone: false, indexedFailed: false, liveFailed: false, indexedFacets: {}, liveFacets: {}, resultNodes: new Map() };
+  inferred: {}, intentSkip: [], literalNotice: '', relatedTerms: [], unknownTerms: [], relaxed: false, indexedDone: false, liveDone: false, indexedFailed: false, liveFailed: false, indexedFacets: {}, liveFacets: {}, resultNodes: new Map() };
 
 // These are example queries, never fabricated matches or promises of coverage.
 const searchModes = {
@@ -435,7 +438,7 @@ function params() {
   if (queryEl.value.trim()) p.set('q', queryEl.value.trim());
   for (const [key, control] of Object.entries(controls)) if (!control.disabled && control.value && state.inferred[key] !== control.value && !(key === 'source' && controls.kind.value === 'online-paper')) p.set(key, control.value);
   if (controls.kind.value !== 'online-paper' && matchingEl.value === 'all') p.set('matching', 'all');
-  if (sortEl.value === 'newest') p.set('sort', 'newest');
+  if (sortEl.value === 'newest' && state.inferred.sort !== 'newest') p.set('sort', 'newest');
   if (controls.kind.value !== 'online-paper' && pageSizeEl.value && pageSizeEl.value !== '25') p.set('pageSize', pageSizeEl.value);
   if (state.intentSkip.length) p.set('ignoreIntent', state.intentSkip.join(','));
   // The API default remains 50 for existing callers; this UI starts with 25.
@@ -446,6 +449,12 @@ function applyInterpretation(data) {
   const previous = state.inferred;
   const next = {};
   for (const [key, value] of Object.entries(data.interpretation.filters || {})) {
+    if (key === 'sort') {
+      // "latest …" asks for newest first. An explicit Newest choice is the
+      // user's own and is never recorded as a suggestion.
+      if (value === 'newest' && (sortEl.value !== 'newest' || previous.sort)) { sortEl.value = 'newest'; next.sort = 'newest'; }
+      continue;
+    }
     const control = controls[key];
     if (!control || (control.value && previous[key] !== control.value)) continue;
     if (['creator', 'after', 'before'].includes(key)) control.value = value;
@@ -453,6 +462,7 @@ function applyInterpretation(data) {
     next[key] = value;
   }
   for (const [key, value] of Object.entries(previous)) if (!next[key] && controls[key]?.value === value) controls[key].value = '';
+  if (previous.sort && !next.sort && sortEl.value === 'newest') sortEl.value = 'relevance';
   state.inferred = next;
   updateActiveFilters();
 }
@@ -520,7 +530,7 @@ function renderFacets(data, scope = 'indexed') {
 function combinedHits() {
   const groups = [['library', state.hits], ...[...new Set(state.liveHits.map(hit => hit.source || ''))].sort().map(source => [source, state.liveHits.filter(hit => (hit.source || '') === source)])];
   const query = (new URLSearchParams(state.submitted || '').get('q') || '').replace(/^"(.*)"$/, '$1').trim().toLocaleLowerCase();
-  const newest = new URLSearchParams(state.submitted || '').get('sort') === 'newest';
+  const newest = new URLSearchParams(state.submitted || '').get('sort') === 'newest' || state.inferred.sort === 'newest';
   const seen = new Set();
   const ranked = [];
   groups.forEach(([, hits], group) => hits.forEach((hit, rank) => {
@@ -613,7 +623,7 @@ function metadataValue(value) {
   return String(value).trim();
 }
 function metadataLabel(key) {
-  return ({entry_path: 'Article path', page_count: 'Pages', file: 'File name', from: 'From', to: 'To', cc: 'Cc', series_index: 'Series number', engines: 'Search engines'})[key]
+  return ({entry_path: 'Article path', page_count: 'Pages', file: 'File name', from: 'From', to: 'To', cc: 'Cc', series_index: 'Series number', engines: 'Search engines', audio_languages: 'Audio', subtitle_languages: 'Subtitles', community_rating: 'Rating', rated: 'Rated', writers: 'Written by'})[key]
     || key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
 }
 function updateResultNode(item, hit) {
@@ -659,14 +669,15 @@ function updateResultNode(item, hit) {
   if (value('formats') && same(value('formats'), format)) shown.add('formats');
   if (date && same(value('publication_year'), new Date(hit.created * 1000).getFullYear())) shown.add('publication_year');
   const formatContext = (value('formats') && !shown.has('formats')) || same(format, kind) ? '' : format;
-  text(parts.info, [archive ? '' : formatContext, hit.owner && hit.owner !== 'shared' ? `Owner: ${hit.owner}` : '', date].filter(Boolean).join(' · '));
+  const copies = Number.isInteger(hit.copies) && hit.copies > 0 ? `${hit.copies + 1} identical copies` : '';
+  text(parts.info, [archive ? '' : formatContext, hit.owner && hit.owner !== 'shared' ? `Owner: ${hit.owner}` : '', date, copies].filter(Boolean).join(' · '));
   const href = safeHref(hit.appUrl) || safeHref(hit.originUrl);
   text(parts.title, hit.title || 'Untitled');
-  const creatorKey = ['from', 'authors', 'author', 'correspondent'].find(key => available.has(key));
+  const creatorKey = ['from', 'authors', 'author', 'correspondent', 'writers'].find(key => available.has(key));
   if (creatorKey) shown.add(creatorKey);
   if (value('series')) { shown.add('series'); shown.add('series_index'); }
   if (value('narrators')) shown.add('narrators');
-  const byline = [creatorKey ? `${creatorKey === 'from' ? 'From: ' : ''}${value(creatorKey)}` : '', value('series') ? `${value('series')}${value('series_index') ? ` #${value('series_index')}` : ''}` : '', value('narrators') ? `Narrated by ${value('narrators')}` : ''].filter(Boolean).join(' · ');
+  const byline = [creatorKey ? `${creatorKey === 'from' ? 'From: ' : creatorKey === 'writers' ? 'Written by ' : ''}${value(creatorKey)}` : '', value('series') ? `${value('series')}${value('series_index') ? ` #${value('series_index')}` : ''}` : '', value('narrators') ? `Narrated by ${value('narrators')}` : ''].filter(Boolean).join(' · ');
   text(parts.byline, byline); parts.byline.hidden = !byline;
   if (byline) parts.byline.setAttribute('title', byline); else parts.byline.removeAttribute('title');
   if (href) parts.title.href = href; else parts.title.removeAttribute('href');
@@ -683,7 +694,7 @@ function updateResultNode(item, hit) {
   const factFields = [
     ['to', 'To'], ['document_type', 'Document type'], ['page_count', 'Pages'],
     ['attachments', 'Attachments'], ['formats', 'Formats'], ['tags', 'Tags'],
-    ['genres', 'Genres'], ['feed', 'Feed'], ['archive', 'Archive'], ['crawl', 'Capture'],
+    ['genres', 'Genres'], ['runtime', 'Runtime'], ['subtitle_languages', 'Subtitles'], ['feed', 'Feed'], ['archive', 'Archive'], ['crawl', 'Capture'],
   ];
   // Three primary fields keep the excerpt scannable; additional metadata stays
   // reachable in Details rather than growing an unbounded default row.
@@ -771,10 +782,10 @@ async function fetchPage(page, scope, submitted, signal) {
 }
 function resetResults() {
   state.hits = []; state.liveHits = []; state.page = 0; state.total = 0; state.hasMore = false;
-  state.relatedTerms = []; state.indexedDone = false; state.liveDone = false; state.indexedFailed = false; state.liveFailed = false;
+  state.relatedTerms = []; state.unknownTerms = []; state.relaxed = false; state.indexedDone = false; state.liveDone = false; state.indexedFailed = false; state.liveFailed = false;
   state.indexedFacets = {}; state.liveFacets = {}; state.resultNodes.clear();
   resultsEl.replaceChildren();
-  for (const id of ['moreWrap', 'searchError', 'liveError', 'searchCoverage']) el(id).hidden = true;
+  for (const id of ['moreWrap', 'searchError', 'liveError', 'searchCoverage', 'searchNotice']) el(id).hidden = true;
   renderFacets({});
   updateActiveFilters();
 }
@@ -786,7 +797,7 @@ function updateResultsStatus() {
   const failed = state.indexedFailed || state.liveFailed || !el('liveError').hidden;
   // Name the live sample separately: the library total never counted it, so
   // "N shown · M in library" otherwise implied the live hits were part of M.
-  statusEl.textContent = count ? `${count.toLocaleString()} match${count === 1 ? '' : 'es'} shown${liveShown ? ` · ${liveShown.toLocaleString()} live` : ''}${state.total > libraryShown ? ` · ${state.total.toLocaleString()} in library` : ''}${pending ? ' · searching…' : ''}` : pending ? 'Searching…' : state.indexedFailed && state.liveFailed ? 'Search is unavailable' : failed ? 'No matches from available sources' : 'No matches';
+  statusEl.textContent = count ? `${count.toLocaleString()} match${count === 1 ? '' : 'es'} shown${liveShown ? ` · ${liveShown.toLocaleString()} live` : ''}${state.total > libraryShown ? ` · ${state.total.toLocaleString()} in library` : ''}${state.relaxed ? ' · closest matches' : ''}${pending ? ' · searching…' : ''}` : pending ? 'Searching…' : state.indexedFailed && state.liveFailed ? 'Search is unavailable' : failed ? 'No matches from available sources' : 'No matches';
   el('moreWrap').hidden = !state.hasMore;
   el('loadMore').disabled = state.loading;
   el('loadMore').textContent = state.loading ? 'Loading more…' : 'Load more results';
@@ -800,12 +811,32 @@ function updateResultsStatus() {
   el('coverageText').textContent = `${state.indexedFailed ? 'Library search is unavailable' : state.indexedDone ? `${state.total.toLocaleString()} library matches` : 'Library search is still running'}. ${state.liveFailed ? 'Connected search is unavailable' : state.liveDone ? `${state.liveHits.length} matches returned by available connected sources` : 'Connected sources are still being searched'}. Connected sources return up to 100 matches each, with up to 25 per offline archive; filters apply to that sample.`;
   el('coverageText').textContent += new URLSearchParams(state.submitted || '').get('matching') === 'all' ? ' All words are required. Quotes and operators retain their meaning.' : ' Broad matching requires each main idea, allowing related wording, close spellings and word beginnings supported by each index. Exact words and nearby phrases rank higher in the library. Title-only archives require the main ideas in the title. Quotes and operators retain their meaning. Your filters remain applied.';
   if (state.relatedTerms.length) el('coverageText').textContent += ` Related wording searched: ${state.relatedTerms.join(', ')}.`;
+  if (state.relaxed) el('coverageText').textContent += ' Nothing in the library contained every main idea, so these results match most of them.';
+  if (state.unknownTerms.length) el('coverageText').textContent += ` Not found in the library as typed: ${state.unknownTerms.join(', ')}. Close spellings were searched instead.`;
+  if (state.literalNotice) el('coverageText').textContent += ` ${state.literalNotice}`;
+  // A changed reading of the query must not stay hidden in a closed panel.
+  el('searchNotice').textContent = [state.literalNotice, state.relaxed ? 'Nothing contained every word. Showing the closest matches.' : '', state.unknownTerms.length ? `“${state.unknownTerms.join('”, “')}” ${state.unknownTerms.length === 1 ? 'is' : 'are'} not in your library. Showing close spellings.` : ''].filter(Boolean).join(' ');
+  el('searchNotice').hidden = !el('searchNotice').textContent || onlinePapers();
   if (onlinePapers()) {
     if (state.liveFailed) statusEl.textContent = 'Online paper search is unavailable';
     el('emptyTitle').textContent = state.liveFailed ? 'Online paper search is unavailable' : failed ? 'No matches from available sources' : 'No matches';
     el('emptyMessage').textContent = state.liveFailed ? 'Retry online papers, or try again shortly.' : 'Try a different phrase or fewer words.';
     el('coverageText').textContent = 'Online scholarly sources are searched through SearXNG. Up to 50 results are shown; full papers are not downloaded or saved. Newest sorts the returned results with known publication dates.';
   }
+}
+// A query read as an instruction ("detective series" as TV episodes about
+// detectives) can come back empty when it was really a title or a subject.
+// Search the words as typed once, and say so, rather than show an empty page.
+function searchLiterallyIfEmpty() {
+  const read = Object.entries(state.inferred);
+  if (!read.length || state.loading || state.liveLoading || !state.indexedDone || !state.liveDone) return;
+  if (state.indexedFailed || state.liveFailed || onlinePapers() || combinedHits().length) return;
+  const reading = read.map(([key, value]) => key === 'sort' ? 'newest first' : `${filterLabels[key].toLowerCase()} ${displayValue(key, value)}`).join(', ');
+  for (const [key, value] of read) if (controls[key]?.value === value) controls[key].value = '';
+  if (state.inferred.sort && sortEl.value === 'newest') sortEl.value = 'relevance';
+  state.inferred = {}; state.intentSkip = [...INTENT_KEYS];
+  state.literalNotice = `Nothing matched when this was read as ${reading}, so the words were searched as typed.`;
+  runSearch();
 }
 async function runLive(generation, submitted, signal) {
   const retry = el('retryLive');
@@ -841,6 +872,7 @@ async function runLive(generation, submitted, signal) {
       // also idle, otherwise runIndexed clears it when it finishes.
       if (!state.loading) resultsEl.removeAttribute('aria-busy');
       updateResultsStatus();
+      searchLiterallyIfEmpty();
     }
   }
 }
@@ -851,7 +883,8 @@ async function runSearch(event, {append = false, pushHistory = true} = {}) {
     const previousQuery = new URLSearchParams(state.submitted || '').get('q') || '';
     if (queryEl.value.trim() !== previousQuery) {
       for (const [key, value] of Object.entries(state.inferred)) if (controls[key]?.value === value) controls[key].value = '';
-      state.inferred = {}; state.intentSkip = [];
+      if (state.inferred.sort && sortEl.value === 'newest') sortEl.value = 'relevance';
+      state.inferred = {}; state.intentSkip = []; state.literalNotice = '';
       updateActiveFilters();
     }
     el('inputError').hidden = true;
@@ -918,7 +951,9 @@ async function runIndexed(append = false) {
     const data = await fetchPage(page, 'indexed', submitted, signal);
     if (generation !== state.generation || !data) return;
     applyInterpretation(data);
-    state.relatedTerms = Array.isArray(data.relatedTerms) ? data.relatedTerms.filter(term => typeof term === 'string').slice(0, 12) : [];
+    state.relatedTerms = Array.isArray(data.relatedTerms) ? data.relatedTerms.filter(term => typeof term === 'string').slice(0, 16) : [];
+    state.unknownTerms = Array.isArray(data.unknownTerms) ? data.unknownTerms.filter(term => typeof term === 'string').slice(0, 12) : [];
+    state.relaxed = data.relaxed === true;
     state.page = page; state.total = data.total || 0; state.hasMore = Boolean(data.hasMore);
     const seen = new Set(state.hits.map(hit => hit.id));
     const hits = (data.hits || []).filter(hit => !seen.has(hit.id));
@@ -939,11 +974,13 @@ async function runIndexed(append = false) {
       if (!state.liveLoading) resultsEl.removeAttribute('aria-busy');
       retry.removeAttribute('aria-disabled'); retry.textContent = 'Retry search';
       updateResultsStatus();
+      searchLiterallyIfEmpty();
     }
   }
 }
 function clearFilters(resetKind = true) {
-  state.inferred = {}; state.intentSkip = ['kind', 'creator', 'after', 'before'];
+  if (state.inferred.sort && sortEl.value === 'newest') sortEl.value = 'relevance';
+  state.inferred = {}; state.intentSkip = [...INTENT_KEYS];
   for (const [key, control] of Object.entries(controls)) if (key !== 'kind' || resetKind) control.value = '';
   runSearch(); el('filterToggle').focus();
 }
@@ -996,6 +1033,8 @@ el('searchForm').addEventListener('submit', runSearch);
 for (const control of [...Object.values(controls), sortEl, pageSizeEl, matchingEl]) control.addEventListener('change', event => {
   const key = controlKey(control);
   if (state.inferred[key]) { if (!control.value) state.intentSkip = [...new Set([...state.intentSkip, key])]; delete state.inferred[key]; }
+  // Choosing an order by hand overrides "latest …" in the query for good.
+  if (control === sortEl && state.inferred.sort) { if (sortEl.value !== 'newest') state.intentSkip = [...new Set([...state.intentSkip, 'sort'])]; delete state.inferred.sort; }
   if (control === sourceEl) {
     if (sourceEl.value === 'online-papers') chooseKind('online-paper', true);
     else chooseSource(sourceEl.value);

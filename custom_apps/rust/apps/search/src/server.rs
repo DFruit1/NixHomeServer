@@ -249,6 +249,9 @@ pub(crate) struct SearchParams {
     /// hold up indexed results. Older clients retain the combined response.
     #[serde(default)]
     scope: SearchScope,
+    /// Set by the interpreter for "latest …" queries; never a wire parameter.
+    #[serde(skip)]
+    prefer_recent: bool,
 }
 
 #[derive(Clone, Copy, Default, serde::Deserialize, PartialEq, Eq)]
@@ -311,26 +314,32 @@ impl SearchParams {
     fn sort_order(&self) -> crate::solr::SortOrder {
         match nonempty(self.sort.as_deref()).as_deref() {
             Some("newest") => crate::solr::SortOrder::Newest,
+            _ if self.prefer_recent => crate::solr::SortOrder::Recent,
             _ => crate::solr::SortOrder::Relevance,
         }
     }
     fn interpret(&mut self) -> std::collections::BTreeMap<String, String> {
-        use chrono::Datelike;
         let original = self.q.clone();
         let mut inferred = std::collections::BTreeMap::new();
         if self.matching == crate::solr::MatchMode::Broad
             && self.kind.as_deref() != Some(online_papers::KIND)
         {
-            let plan = crate::intent::parse(&original, chrono::Local::now().year());
+            let skipped = self.ignore_intent.clone().unwrap_or_default();
+            let ignored = |key: &str| skipped.split(',').any(|ignored| ignored == key);
+            // A removed suggestion leaves its words in the query, so dismissing
+            // "Content: TV episodes" searches for "time series" as typed.
+            let plan = crate::intent::parse(&original, chrono::Local::now().date_naive(), &ignored);
             let filter_browse = !plan.filters.is_empty() && plan.query.is_empty();
             for (key, value) in plan.filters {
-                if self
-                    .ignore_intent
-                    .as_deref()
-                    .unwrap_or_default()
-                    .split(',')
-                    .any(|ignored| ignored == key)
-                {
+                if ignored(&key) {
+                    continue;
+                }
+                if key == "sort" {
+                    // An explicit Newest already orders strictly by date.
+                    if self.sort_order() == crate::solr::SortOrder::Relevance {
+                        self.prefer_recent = true;
+                        inferred.insert(key, value);
+                    }
                     continue;
                 }
                 let slot = match key.as_str() {
@@ -415,7 +424,30 @@ fn search_error(status: StatusCode, message: &str) -> SearchError {
 /// Local administrative access uses Unix/database/file permissions instead of
 /// gateway identity. It searches exactly the same registered sources as an admin.
 /// No HTTP endpoint can select this authorization path.
-pub(crate) async fn query_local(mut params: SearchParams) -> Result<serde_json::Value, String> {
+pub(crate) async fn query_local(params: SearchParams) -> Result<serde_json::Value, String> {
+    let body = query_local_once(params.clone()).await?;
+    // Mirror the browser: a query read as an instruction that finds nothing
+    // is searched once more exactly as typed, and the result says so.
+    let read_as = body["interpretation"]["filters"].clone();
+    let instructed = read_as
+        .as_object()
+        .is_some_and(|filters| !filters.is_empty());
+    let empty = body["hits"].as_array().is_none_or(Vec::is_empty);
+    let healthy = body["indexedFailed"] != true && body["liveFailed"] != true;
+    if instructed && empty && healthy && params.ignore_intent.is_none() {
+        let mut literal = params;
+        literal.ignore_intent = Some(INTENT_KEYS.join(","));
+        let mut retried = query_local_once(literal).await?;
+        retried["literalFallback"] = read_as;
+        return Ok(retried);
+    }
+    Ok(body)
+}
+
+/// Every filter the query interpreter can infer.
+const INTENT_KEYS: [&str; 5] = ["kind", "creator", "after", "before", "sort"];
+
+async fn query_local_once(mut params: SearchParams) -> Result<serde_json::Value, String> {
     // Mirror params()/updateSearchMode(), rather than relying on the legacy
     // combined API response: the UI submits two independent search scopes.
     params.q = crate::view::trim(&params.q).to_string();
@@ -479,6 +511,8 @@ pub(crate) async fn query_local(mut params: SearchParams) -> Result<serde_json::
             accumulated["total"] = data["total"].clone();
             accumulated["hasMore"] = json!(data["hasMore"] == true);
             accumulated["relatedTerms"] = data["relatedTerms"].clone();
+            accumulated["unknownTerms"] = data["unknownTerms"].clone();
+            accumulated["relaxed"] = data["relaxed"].clone();
             accumulated["page"] = json!(page);
             if data["hasMore"] != true {
                 break;
@@ -508,11 +542,15 @@ pub(crate) async fn query_local(mut params: SearchParams) -> Result<serde_json::
     let live_failed = live.is_err();
     let indexed = indexed.unwrap_or_else(|error| failed("indexed", error));
     let live = live.unwrap_or_else(|error| failed("live", error));
+    // "latest …" in the query orders by date just like an explicit choice.
+    let inferred_newest = [&indexed, &live]
+        .iter()
+        .any(|data| data["interpretation"]["filters"]["sort"] == "newest");
     let mut body = crate::view::combine(
         &indexed,
         &live,
         &params.q,
-        params.sort_order() == crate::solr::SortOrder::Newest,
+        inferred_newest || params.sort_order() == crate::solr::SortOrder::Newest,
     );
     if body.get("interpretation").is_none() {
         body["interpretation"] = live["interpretation"].clone();
@@ -643,7 +681,7 @@ async fn execute_search_plan(
     };
     if params.scope == SearchScope::Live {
         let mut result = live.await;
-        if params.sort_order() == crate::solr::SortOrder::Newest {
+        if params.sort_order() != crate::solr::SortOrder::Relevance {
             result
                 .hits
                 .sort_by_key(|hit| std::cmp::Reverse(hit.created));
@@ -702,6 +740,7 @@ async fn execute_search_plan(
                     "matchQuality": crate::relevance::quality(&hit.title, raw_metadata, enriched.map(|doc| doc.body_text.as_str()).unwrap_or_default(), &query),
                     "score": hit.score,
                     "created": hit.created,
+                    "copies": hit.copies,
                     "metadata": metadata,
                 }));
             }
@@ -710,6 +749,8 @@ async fn execute_search_plan(
                 "total": response.total + federated.hits.len() as u64,
                 "related": false,
                 "relatedTerms": response.related_terms,
+                "unknownTerms": response.unknown_terms,
+                "relaxed": response.relaxed,
                 "hasMore": has_more,
                 "warnings": federated.warnings,
                 "sourceFacets": facet_json(&response.source_facets),

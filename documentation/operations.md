@@ -1997,26 +1997,49 @@ a result set and drill in without leaving the page.
 ### Query instructions and relevance
 
 Broad matching recognizes bounded instructions such as `books by Ken Ham`,
-`movies about dragons`, `emails from council last year`, and
-`find invoices from last year`. Leading find/show phrases are removed from the
-content query. Recognized plural content names become Content filters;
-`by`/`from` names become case-insensitive **Author / sender contains** filters
-across the existing author, sender and correspondent metadata. `about` leaves
-the following words as the content query. A trailing `last year` or `this year`
-in an instruction becomes inclusive calendar-year Content date bounds, resolved
-in the server's local timezone. The resulting dates are visible.
+`comedy movies`, `tv shows about lawyers`, `emails from council last month`,
+`movies from the 90s`, `receipts since 2023` and `latest newsletter`
+(`intent.rs`). Leading requests (`find`, `show me`, `do we have any`, …) are
+removed from the content query.
+
+- **Content.** A content name at the start (`movies about …`, `find a book
+  by …`) or the end (`comedy movies`, `rumpole episodes`) becomes a Content
+  filter. A bare noun, a singular noun without a relation (`book of kells`) and
+  subject phrases such as `time series` stay literal. `documentaries` filters to
+  Video and stays in the query as a subject.
+- **Creator.** `by`/`from` (after a content name) and `written by`, `directed
+  by`, `narrated by`, `sent by` become case-insensitive **Author / sender
+  contains** filters across author, writer, sender and correspondent metadata.
+- **Date.** `last|this|past year|month|week`, `the last N days|weeks|months|
+  years`, `today`, `yesterday`, `in 2024`, `since 2020`, `before 2019`,
+  `between 2019 and 2021`, `march 2024` and decades (`the 90s`) become inclusive
+  Content date bounds in the server's local timezone. A date needs a preposition,
+  a content name or request, or to close the query; a title that merely
+  contains a year (`blade runner 2049`) is never reinterpreted.
+- **Order.** A leading `latest`, `newest`, `recent` or `most recent` selects
+  Newest. An order inferred this way ranks by relevance with recency weighted
+  heavily (up to +400%), rather than strictly by date, so the newest item that
+  merely mentions a word does not outrank the thing meant. Choosing Newest by
+  hand remains a strict date order.
+- `about`, `regarding`, `related to`, `mentioning` introduce the content query.
 
 Quoted titles, explicit operators and All words mode retain literal behavior.
 Bare titles without a recognized instruction are unchanged. Explicit filters
 win over inferred hints, including Year overriding inferred year dates.
 Inferred values appear in the existing filter chips and controls, while the
-original query remains visible and shareable. Removing
-a chip suppresses that hint for the current query; changing the query discards
-inferred controls and suppression. Clearing all filters explicitly permits an
-unfiltered browse for a filter-only instruction. No matching-zero fallback
-silently drops constraints. `--creator` and
-`--ignore-intent kind,creator,after,before` expose the same choices in the CLI;
-JSON responses include `interpretation.query` and `interpretation.filters`.
+original query remains visible and shareable. Removing a chip suppresses that
+hint for the current query and returns its words to the content query, so
+dismissing Content on `detective series` searches for both words. Changing the
+query discards inferred controls and suppression. Clearing all filters
+explicitly permits an unfiltered browse for a filter-only instruction.
+
+A query read as an instruction that matches nothing in any source is searched
+once more exactly as typed, and a line above the results says which reading
+found nothing. Only inferred hints are dropped this way; filters the user chose
+are never relaxed. `--creator` and
+`--ignore-intent kind,creator,after,before,sort` expose the same choices in the
+CLI, which applies the same retry and reports it as `literalFallback`; JSON
+responses include `interpretation.query` and `interpretation.filters`.
 
 All backends emit a common `matchQuality` evidence tier for relevance sorting:
 0 exact stored identifier; 1 normalized exact title; 2 title containing all main
@@ -2088,7 +2111,8 @@ ordering of returned papers. Use literal double quotes for an exact phrase
 with a hyphen, as in `sudo search-cli -- '-draft invoice'`.
 
 `--json` includes UI-ordered hits, metadata, combined facets, related terms,
-pagination and warnings. `shown` counts deduplicated loaded matches;
+unknown terms, the `relaxed` closest-match flag, per-hit `copies`, pagination
+and warnings. `shown` counts deduplicated loaded matches;
 `libraryTotal` counts all indexed matches and `liveTotal` counts the connected
 sample. `total` retains the API's library-total-plus-live-sample meaning.
 `indexedFacets` and `liveFacets` preserve the contributions used by the UI's
@@ -2151,22 +2175,54 @@ mountains?`. Up to 32 input words are reduced to at most 12 distinct main words;
 formatted numeric references match as complete phrases. Domains, quotes, fields,
 wildcard expressions, explicit exclusions and boolean operators keep their native
 interpretation.
-Common conversational filler is ignored. A small list of related-word families
-covers everyday alternatives such as movie/film, car/automobile, wifi/wireless
-and CV/resume, including their common plurals and some regional spellings.
-At most 12 related terms are added, without transitive expansion. **Search
-coverage** names these terms so the user can inspect what was searched.
-The families are deliberately narrow and inspectable in `text.rs`.
+Common conversational filler is ignored. Each remaining main word is an idea
+that must be present, satisfied by any of (`thesaurus.rs`, `text.rs`):
 
-Library queries include word beginnings for alphabetic words of 4–32 characters.
-The first four main words also allow close spellings: one edit for 4–7 letters,
-two for 8–32 letters. These use [Solr's query modifiers](https://solr.apache.org/guide/solr/latest/query-guide/standard-query-parser.html#term-modifiers).
-Literal terms receive more weight than expansions. An additional score rewards
-coverage of every main concept, accepting the bounded related terms, even when
-the words are far apart. Phrase and title boosts still favour precise matches.
-The same bounded query drives every page, so related hits remain available even
-when exact matches exist. Filters and source scope remain applied. Broad search
-never falls back to an unfiltered list or a match-all query just to avoid zero.
+- the word itself;
+- another grammatical form of it — singular/plural and `-ing`/`-ed` verb forms
+  from suffix rules (`filters`/`filter`, `documentaries`/`documentary`,
+  `building`/`build`), with irregular and non-plural `s` words left alone;
+- related wording from curated families (invoice/bill, lawyer/barrister,
+  electricity/power/energy, flight/itinerary) and one-way associations
+  (detective → mystery, crime). At most 6 per word and 16 per query, never
+  transitive, and a verb form does not inherit its stem's relations.
+
+Before a library query runs, Solr's terms handler reports which of these the
+library actually contains. Forms and related words it lacks are dropped, so
+**Search coverage** lists only related wording that could have matched. A main
+word the library contains in no form is most likely a misspelling: only then
+are close spellings searched (one edit for 4–7 letters, two for 8–32), and a
+line above the results names the word. If the lookup fails, the query falls
+back to a bounded expansion with close spellings for every word. Connected
+sources have no term statistics and use up to three forms and four related
+words per idea.
+
+Library queries also include word beginnings on the shortest stem of alphabetic
+words of 5–32 characters. These use [Solr's query modifiers](https://solr.apache.org/guide/solr/latest/query-guide/standard-query-parser.html#term-modifiers).
+The typed word outweighs its forms, which outweigh related wording and
+expansions. An additional score rewards coverage of every idea even when the
+words are far apart; phrase and title boosts still favour precise matches, and
+adjacent pairs are also rewarded through another form or related word. A mild
+recency weight (up to +30% for something dated today, fading over years)
+orders otherwise comparable matches. Under a strict Newest order only the typed
+words and their forms may admit a document. The same bounded query drives every
+page. Filters and source scope remain applied.
+
+When nothing in the library contains every idea, the query is repeated
+requiring the rarest idea the library knows plus about half of the others, and
+the results are labelled as closest matches. Broad search never falls back to
+an unfiltered list or a match-all query.
+
+Identical items filed in several places (one message in three mail folders)
+share a `dedupe_s` content signature over kind, title, date and text. Solr
+collapses them to the best copy, counts the rest (`copies` in the API, "3
+identical copies" in the result), and totals and facets count each item once.
+
+Result tiers used to interleave sources: an exact catalogue identifier (IMDb id,
+ISBN), an exact title, a title containing every idea as typed or in another
+form, the same across title plus creators/series, then the typed ideas in the
+text or related wording in the title. Excerpts open on the passage that covers
+the most ideas and highlight forms and related wording as well as typed words.
 
 **All words** requires every word without automatic expansion. Double quotes
 require an exact phrase; explicit fields, wildcards and boolean operators retain
@@ -2185,13 +2241,18 @@ instead of discarding confirmed matches or extending the source deadline.
 Library discovery also searches a bounded `discovery_txt` projection of the
 filename, original hostname and allowlisted descriptive metadata, including
 identifier dictionaries and document types. Filenames are searchable with their
-original punctuation and with underscores/hyphens treated as spaces. URL query
-strings, credentials and parent filesystem paths are excluded. The existing
-Solr `*_txt` dynamic field supplies the analyzer; no managed-schema change is
-needed. Index mapping revision 2 rebuilds this projection from the authoritative
-Postgres records during the next normal index pass, including older records
-whose bodies predate metadata enrichment. No document re-extraction is required
-for that projection rebuild.
+original punctuation and with dots, underscores, hyphens and brackets treated
+as spaces, so release-style names split into words. Library-relative paths
+(media) also contribute their folder names, which carry the author, series or
+season; absolute server paths, URL query strings and credentials are excluded.
+The projection adds everyday words for the content kind (`movie film video`,
+`email mail message`, `pdf`) and an attachment marker, so `billy connolly
+movie` and `with attachments` match without a filter. The existing Solr `*_txt`
+and `*_s` dynamic fields supply the analyzer and the `dedupe_s` signature; no
+managed-schema change is needed. Index mapping revision 3 rebuilds this
+projection from the authoritative Postgres records during the next normal index
+pass; until a source is rebuilt its documents have no signature and are simply
+not collapsed. No document re-extraction is required for that rebuild.
 
 Filter options merge library facets with live sample facets, labelling their
 counts separately. Live counts ignore that dimension's own filter while
@@ -2321,7 +2382,20 @@ Notes:
   `…-kavita` (`metadata.json`). Each entry contributes its title (with episode
   coordinates folded in), description, series, authors, narrators, genres,
   tags, publisher, language, and year, so authors and narrators are searchable
-  even when a description never names them. Search reads the snapshots as the
+  even when a description never names them. The body labels each field in plain
+  words and also carries what people ask for by name: season and episode
+  (`Season 7, Episode 4 (S07E04)`), screenwriters, runtime, official rating,
+  audio and subtitle languages as English names (`Subtitles: English`), video
+  class (`1080p HD`, `4K 2160p UHD HDR`), audiobook chapter titles, Kavita
+  publication status, and catalogue ids from the snapshot or the folder name
+  (`[tvdbid-…]`). IMDb ids, ISBNs and ASINs are stored as identifiers, so
+  pasting one returns that item first. Writers join the Author filter. An
+  episode title that only repeats its series and number is dropped, a full
+  `YYYYMMDD` date written into the year field is read as that date, and an
+  audiobook without author metadata takes its author from an `Author/Title`
+  folder (underscore folders are not people). Calibre books are dated by
+  publication date when Calibre has one, otherwise by when they were added.
+  Extraction revision 5 re-reads these sources on the next pass. Search reads the snapshots as the
   `search` user, which joins the `media-manager` group through the integration;
   no Jellyfin/Audiobookshelf/Kavita credentials or APIs are involved, and each
   application still owns its own library scan. A snapshot that is briefly

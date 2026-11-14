@@ -25,7 +25,9 @@ const ALLOW_MASS_DELETE_ENV: &str = "SEARCH_ALLOW_MASS_DELETE";
 /// Postgres, so the change reaches documents the checksum-based pass would
 /// otherwise skip. 1 is the first revision (adds `kind_s`).
 // Revision 2 adds filename, host and descriptive-metadata discovery text.
-const INDEX_VERSION: i64 = 2;
+// Revision 3 adds the `dedupe_s` content signature, folder names, content-kind
+// words and an attachment marker to discovery text, and writer/director facets.
+const INDEX_VERSION: i64 = 3;
 
 /// Guards against a source silently producing no documents at all — most often
 /// a mount that is present but empty, or an integration whose data was
