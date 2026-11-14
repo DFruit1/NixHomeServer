@@ -377,6 +377,22 @@ fn row_to_document(row: tokio_postgres::Row) -> (String, DocumentRecord) {
     )
 }
 
+pub(crate) async fn documents_by_ids(
+    client: &Client,
+    ids: &[String],
+) -> Result<Vec<(String, DocumentRecord)>, String> {
+    client
+        .query(
+            "SELECT id, external_id, kind, title, body_text, content_type,
+        origin_url, app_url, file_path, size_bytes, checksum, content_created_at,
+        content_modified_at, metadata FROM documents WHERE id = ANY($1) ORDER BY id",
+            &[&ids],
+        )
+        .await
+        .map(|rows| rows.into_iter().map(row_to_document).collect())
+        .map_err(|e| e.to_string())
+}
+
 /// Body text and metadata for one already-indexed document. Loaded after a Solr
 /// query so the authoritative body copy is only ever read from Postgres; Solr
 /// holds the inverted index, not a second stored copy of the text.

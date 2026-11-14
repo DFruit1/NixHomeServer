@@ -13,6 +13,7 @@ mod paperless_search;
 mod pdf_archive;
 mod relevance;
 mod retry;
+mod semantic;
 mod server;
 mod solr;
 mod source_cache;
@@ -30,7 +31,7 @@ fn main() -> ExitCode {
         Some(cmd) => cmd,
         None => {
             eprintln!(
-                "usage: search <query|serve|index|index-daemon|reindex|reconcile|archive-pdfs|bootstrap-solr>"
+                "usage: search <query|serve|index|index-daemon|embed|reindex|reconcile|archive-pdfs|bootstrap-solr>"
             );
             return ExitCode::FAILURE;
         }
@@ -52,6 +53,7 @@ fn main() -> ExitCode {
         "serve" => runtime.block_on(server::run()),
         "index" => runtime.block_on(indexer::run_index()),
         "index-daemon" => runtime.block_on(indexer::run_index_daemon()),
+        "embed" => runtime.block_on(semantic::run_index()),
         "reindex" => runtime.block_on(indexer::run_reindex()),
         "reconcile" => runtime.block_on(indexer::run_reconcile()),
         "archive-pdfs" => runtime.block_on(pdf_archive::run()),
@@ -59,7 +61,7 @@ fn main() -> ExitCode {
         other => {
             eprintln!("unknown command: {other}");
             eprintln!(
-                "usage: search <query|serve|index|index-daemon|reindex|reconcile|archive-pdfs|bootstrap-solr>"
+                "usage: search <query|serve|index|index-daemon|embed|reindex|reconcile|archive-pdfs|bootstrap-solr>"
             );
             return ExitCode::FAILURE;
         }

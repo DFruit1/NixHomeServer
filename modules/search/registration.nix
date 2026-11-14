@@ -2,6 +2,9 @@
   ports = {
     search = 8092;
     searchSolr = 8983;
+    searchEmbeddingQuery = 18093;
+    searchEmbeddingIndex = 18094;
+    searchReranker = 18095;
   };
   homepage = { config, vars }: [
     {

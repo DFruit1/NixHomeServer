@@ -306,7 +306,7 @@ const INTENT_KEYS = ['kind', 'creator', 'after', 'before', 'sort'];
 const sourceNames = new Map();
 sourceNames.set('online-papers', 'Online papers');
 const state = { hits: [], liveHits: [], page: 0, total: 0, hasMore: false, generation: 0, controller: null, submitted: null, loading: false, liveLoading: false,
-  inferred: {}, intentSkip: [], literalNotice: '', relatedTerms: [], unknownTerms: [], relaxed: false, indexedDone: false, liveDone: false, indexedFailed: false, liveFailed: false, indexedFacets: {}, liveFacets: {}, resultNodes: new Map() };
+  inferred: {}, intentSkip: [], literalNotice: '', relatedTerms: [], unknownTerms: [], relaxed: false, semanticLimited: false, semanticWarning: '', indexedDone: false, liveDone: false, indexedFailed: false, liveFailed: false, indexedFacets: {}, liveFacets: {}, resultNodes: new Map() };
 
 // These are example queries, never fabricated matches or promises of coverage.
 const searchModes = {
@@ -538,7 +538,8 @@ function combinedHits() {
     if (seen.has(key)) return;
     seen.add(key);
     const exact = Boolean(query) && (hit.title || '').trim().toLocaleLowerCase() === query;
-    const quality = Number.isInteger(hit.matchQuality) ? hit.matchQuality : exact ? 1 : 5;
+    const rawQuality = Number.isInteger(hit.matchQuality) ? hit.matchQuality : exact ? 1 : 5;
+    const quality = Number.isInteger(hit.semanticRank) ? Math.min(rawQuality, 2) : rawQuality;
     ranked.push({ ...hit, _key: key, _live: group > 0, _rank: rank, _group: group, _quality: quality });
   }));
   const time = hit => Number.isFinite(hit.created) ? hit.created : -Infinity;
@@ -784,6 +785,7 @@ function resetResults() {
   state.hits = []; state.liveHits = []; state.page = 0; state.total = 0; state.hasMore = false;
   state.relatedTerms = []; state.unknownTerms = []; state.relaxed = false; state.indexedDone = false; state.liveDone = false; state.indexedFailed = false; state.liveFailed = false;
   state.indexedFacets = {}; state.liveFacets = {}; state.resultNodes.clear();
+  state.semanticLimited = false; state.semanticWarning = '';
   resultsEl.replaceChildren();
   for (const id of ['moreWrap', 'searchError', 'liveError', 'searchCoverage', 'searchNotice']) el(id).hidden = true;
   renderFacets({});
@@ -809,13 +811,13 @@ function updateResultsStatus() {
   el('broadenSearch').hidden = onlinePapers() || !Object.values(controls).some(control => !control.disabled && control.value);
   el('searchCoverage').hidden = !state.submitted || (!state.indexedDone && !state.liveDone);
   el('coverageText').textContent = `${state.indexedFailed ? 'Library search is unavailable' : state.indexedDone ? `${state.total.toLocaleString()} library matches` : 'Library search is still running'}. ${state.liveFailed ? 'Connected search is unavailable' : state.liveDone ? `${state.liveHits.length} matches returned by available connected sources` : 'Connected sources are still being searched'}. Connected sources return up to 100 matches each, with up to 25 per offline archive; filters apply to that sample.`;
-  el('coverageText').textContent += new URLSearchParams(state.submitted || '').get('matching') === 'all' ? ' All words are required. Quotes and operators retain their meaning.' : ' Broad matching requires each main idea, allowing related wording, close spellings and word beginnings supported by each index. Exact words and nearby phrases rank higher in the library. Title-only archives require the main ideas in the title. Quotes and operators retain their meaning. Your filters remain applied.';
+  el('coverageText').textContent += state.semanticLimited ? ' Library results are a bounded sample of up to 200 keyword and semantic candidates, with the leading 40 reranked by passage relevance. Library facet counts describe keyword matches. Your filters remain applied.' : new URLSearchParams(state.submitted || '').get('matching') === 'all' ? ' All words are required. Quotes and operators retain their meaning.' : ' Broad matching requires each main idea, allowing related wording, close spellings and word beginnings supported by each index. Exact words and nearby phrases rank higher in the library. Title-only archives require the main ideas in the title. Quotes and operators retain their meaning. Your filters remain applied.';
   if (state.relatedTerms.length) el('coverageText').textContent += ` Related wording searched: ${state.relatedTerms.join(', ')}.`;
   if (state.relaxed) el('coverageText').textContent += ' Nothing in the library contained every main idea, so these results match most of them.';
   if (state.unknownTerms.length) el('coverageText').textContent += ` Not found in the library as typed: ${state.unknownTerms.join(', ')}. Close spellings were searched instead.`;
   if (state.literalNotice) el('coverageText').textContent += ` ${state.literalNotice}`;
   // A changed reading of the query must not stay hidden in a closed panel.
-  el('searchNotice').textContent = [state.literalNotice, state.relaxed ? 'Nothing contained every word. Showing the closest matches.' : '', state.unknownTerms.length ? `“${state.unknownTerms.join('”, “')}” ${state.unknownTerms.length === 1 ? 'is' : 'are'} not in your library. Showing close spellings.` : ''].filter(Boolean).join(' ');
+  el('searchNotice').textContent = [state.semanticWarning, state.literalNotice, state.relaxed ? 'Nothing contained every word. Showing the closest matches.' : '', state.unknownTerms.length ? `“${state.unknownTerms.join('”, “')}” ${state.unknownTerms.length === 1 ? 'is' : 'are'} not in your library. Showing close spellings.` : ''].filter(Boolean).join(' ');
   el('searchNotice').hidden = !el('searchNotice').textContent || onlinePapers();
   if (onlinePapers()) {
     if (state.liveFailed) statusEl.textContent = 'Online paper search is unavailable';
@@ -954,6 +956,8 @@ async function runIndexed(append = false) {
     state.relatedTerms = Array.isArray(data.relatedTerms) ? data.relatedTerms.filter(term => typeof term === 'string').slice(0, 16) : [];
     state.unknownTerms = Array.isArray(data.unknownTerms) ? data.unknownTerms.filter(term => typeof term === 'string').slice(0, 12) : [];
     state.relaxed = data.relaxed === true;
+    state.semanticLimited = data.semanticLimited === true;
+    state.semanticWarning = (data.warnings || []).map(item => item.message).filter(Boolean).join(' ');
     state.page = page; state.total = data.total || 0; state.hasMore = Boolean(data.hasMore);
     const seen = new Set(state.hits.map(hit => hit.id));
     const hits = (data.hits || []).filter(hit => !seen.has(hit.id));

@@ -12,6 +12,14 @@ prepare() {
     echo "Verified $file"
     return
   fi
+  if [[ -f "$partial" && $(stat -c %s "$partial") -ge "$size" ]]; then
+    if [[ $(stat -c %s "$partial") == "$size" ]] && printf '%s  %s\n' "$hash" "$partial" | sha256sum --check --status; then
+      chmod 0640 "$partial"
+      mv -- "$partial" "$dest"
+      return
+    fi
+    rm -f -- "$partial"
+  fi
   curl --fail --location --retry 5 --retry-all-errors --connect-timeout 20 \
     --continue-at - --output "$partial" \
     "https://huggingface.co/$repository/resolve/$revision/$file?download=true"
@@ -23,5 +31,5 @@ prepare() {
 }
 prepare Qwen3-Embedding-4B-f16.gguf f4602530db1d980e16da9d7d3a70294cf5c190be \
   Qwen/Qwen3-Embedding-4B-GGUF e8b4e85c8fcc26079d27418cf8d6a16df1a09890cba0966324a97280f91e782c 8049889824
-prepare Qwen.Qwen3-Reranker-0.6B.f16.gguf 62d74692e4e4672550d3372316ac047ab4a6b128 \
-  DevQuasar/Qwen.Qwen3-Reranker-0.6B-GGUF 0b249a499a66ef03da2365fdc231f9e2a6c180bb28df300aee706255685a9511 1197629376
+prepare Qwen3-Reranker-0.6B.F16.gguf eb9ad47d4e53c2a6abd6158b505f1539d1c5650c \
+  Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp fa726a72c1afafe42ae6ca6059c9a78a43f18db7389a8fa04f88bb7f37d0a8aa 1197634304

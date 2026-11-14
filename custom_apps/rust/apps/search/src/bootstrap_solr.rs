@@ -41,7 +41,17 @@ async fn ensure_core(solr: &SolrClient) -> Result<(), String> {
     // Solr's CoreAdmin STATUS does not report a `state` field for standalone
     // cores in 9.10, so any existing core entry counts as ready.
     match solr.core_status(solr.core()).await? {
-        Some(_state) => Ok(()),
+        Some(_state) => {
+            if let Ok(core) = std::env::var("SEARCH_PASSAGE_CORE") {
+                let base = std::env::var("SEARCH_SOLR_URL").map_err(|e| e.to_string())?;
+                let passages = SolrClient::new(&base, &core);
+                if passages.core_status(&core).await?.is_none() {
+                    passages.create_core("_search_passages_v1").await?;
+                    return Err("passage core create accepted; re-verifying registration".into());
+                }
+            }
+            Ok(())
+        }
         None => {
             let config_set = std::env::var("SEARCH_SOLR_CONFIGSET").unwrap_or_default();
             solr.create_core(&config_set).await?;

@@ -143,6 +143,9 @@ fn print_text(output: &mut impl Write, body: &Value) -> io::Result<()> {
             "Nothing contained every word; showing the closest matches."
         )?;
     }
+    if body["semanticLimited"] == true {
+        writeln!(output, "Semantic search: bounded candidate sample; library facet counts describe keyword matches.")?;
+    }
     if let Some(unknown) = body["unknownTerms"].as_array() {
         let unknown: Vec<_> = unknown
             .iter()

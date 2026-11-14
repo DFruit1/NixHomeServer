@@ -162,6 +162,10 @@ rec {
       "search-reindex"
       "search-reconcile"
       "search-pdf-archive"
+      "search-model-prepare"
+      "search-embedding-query"
+      "search-reranker"
+      "search-embed"
     ];
     sonarr = app ./sonarr "Sonarr" "media-automation" [
       "sonarrOauth2ProxyClientSecret"

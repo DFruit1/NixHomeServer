@@ -22,6 +22,15 @@
           notes = "Derived Solr index state; rebuilt from the search database, not backed up.";
         }
       ]
+      ++ lib.optionals config.repo.search.semantic.enable [
+        {
+          app = "search";
+          component = "models";
+          stateRoot = config.repo.search.paths.models;
+          payloadRoots = [ ];
+          notes = "Retained download archive on the data pool; pinned GGUF weights are reproducible and globally excluded from snapshots.";
+        }
+      ]
       ++ lib.optionals config.repo.search.pdfArchive.enable [
         {
           app = "search";

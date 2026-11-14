@@ -222,6 +222,7 @@ pub struct SearchHit {
     pub created: Option<i64>,
     /// Identical copies folded into this result.
     pub copies: u64,
+    pub dedupe: String,
 }
 
 #[derive(Debug)]
@@ -274,7 +275,7 @@ impl SearchFilters {
     }
 
     /// Builds the Solr `fq` clauses for the selected filters.
-    fn clauses(&self, selected_sources: &[String]) -> Vec<String> {
+    pub(crate) fn clauses(&self, selected_sources: &[String]) -> Vec<String> {
         let mut clauses = Vec::new();
         // This constraint must survive facet exclusion and a hand-edited source
         // filter. Removed/unregistered sources are never part of this search.
@@ -426,6 +427,43 @@ pub struct SolrClient {
 }
 
 impl SolrClient {
+    /// Revalidate vector candidates against the current document index and all
+    /// selected filters. Passage metadata may lag an edit or deletion.
+    pub(crate) async fn filtered_ids(
+        &self,
+        ids: &[String],
+        sources: &[String],
+        filters: &SearchFilters,
+    ) -> Result<SearchResponse, String> {
+        let mut params = vec![
+            ("q", format!("id:({})", ids.iter().map(|id| solr_string_term(id)).collect::<Vec<_>>().join(" OR "))),
+            ("rows", ids.len().to_string()),
+            ("fl", "id kind_s source title origin_url app_url content_type owner_s content_created dedupe_s score".into()),
+            ("wt", "json".into()),
+        ];
+        params.extend(
+            filters
+                .clauses(sources)
+                .into_iter()
+                .map(|clause| ("fq", clause)),
+        );
+        if !filters.wiki_full_text {
+            params.push(("fq", "-kind_s:zim-article".into()));
+        }
+        let body: Value = self
+            .http
+            .post(format!("{}/{}/select", self.base_url, self.core))
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .error_for_status()
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
+        parse_search_response(&body)
+    }
     pub fn new(base_url: &str, core: &str) -> Self {
         Self {
             http: reqwest::Client::builder()
@@ -1371,6 +1409,11 @@ pub fn parse_search_response(response: &Value) -> Result<SearchResponse, String>
                 .and_then(Value::as_str)
                 .and_then(crate::timeutil::parse_date),
             score,
+            dedupe: doc
+                .get("dedupe_s")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
             copies: doc
                 .get("dedupe_s")
                 .and_then(Value::as_str)

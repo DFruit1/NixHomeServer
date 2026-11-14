@@ -1,7 +1,12 @@
-{ lib, ... }:
+{ lib, vars, ... }:
 
 {
   options.repo.search.paths = {
+    models = lib.mkOption {
+      type = lib.types.str;
+      default = "${vars.dataRoot}/search/models";
+      description = "Retained, hash-verified semantic search weights on the data pool.";
+    };
     solrHome = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/solr/home";

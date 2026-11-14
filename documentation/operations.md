@@ -2210,6 +2210,66 @@ comparable matches. Under a strict Newest order only the typed words and their
 forms may admit a document. The same bounded query drives every page. Filters
 and source scope remain applied.
 
+### Local semantic search
+
+Search combines the keyword index with a separate `search-passages-v1` Solr
+core. Qwen3-Embedding-4B F16 produces normalized 2,560-dimensional vectors;
+Qwen3-Reranker-0.6B F16 reranks the leading 40 candidate documents using up to
+two passages each. Text stays in PostgreSQL; the vector core stores offsets,
+vectors and filter metadata. Passages overlap, respect paragraph boundaries
+where possible, and cover the whole document. Input byte limits leave room
+for titles and the model's query/reranking templates.
+
+Plain broad queries of up to 256 characters use rank fusion over up to 100
+keyword and 100 semantic candidate documents. Pagination slices that bounded
+window; it does not enumerate every semantically related item. Search coverage
+states the sample limit and that library facet counts remain keyword counts.
+Exact identifiers/titles retain priority in the shared UI/CLI ordering.
+Quotes, operators, All words and Newest retain their existing keyword semantics.
+Inference or an empty/unavailable passage core falls back to ordinary keyword
+search with a visible warning. Connected sources keep their existing search.
+
+The model preparation script pins repository revisions, file sizes and SHA-256
+hashes: [`scripts/admin/search-prepare-models.sh`](../scripts/admin/search-prepare-models.sh).
+Weights live under `${dataRoot}/search/models`, are retained when Search is
+disabled/removed, and follow the global GGUF backup exclusion. The reranker
+conversion must contain `cls.output.weight`, rank pooling, `[yes, no]` labels
+and a reranking template; an ordinary causal-language-model GGUF is not enough.
+Upstream contracts: [Qwen embedding](https://huggingface.co/Qwen/Qwen3-Embedding-4B),
+[Qwen reranker](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B),
+[F16 conversion](https://huggingface.co/Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp),
+[Solr vectors](https://solr.apache.org/guide/solr/9_10/query-guide/dense-vector-search.html).
+
+After guarded activation:
+
+- `search-embedding-query` keeps the same 4B embedder in system RAM with
+  `--device none --n-gpu-layers 0` on loopback port 18093. Queries are embedded
+  on CPU, with a bounded ten-minute in-memory vector cache.
+- `search-reranker` keeps the 0.6B model on GPU, loopback port 18095.
+- `search-embed.timer` starts a background passage-indexing pass 15 minutes
+  after boot, then 30 minutes after each pass finishes. It processes new or
+  changed PostgreSQL documents without extracting source files again. It loads
+  an indexing embedder on loopback port 18094 only when work is pending and
+  unloads it on completion or failure.
+- The owner chose to keep chat available. Indexing therefore defaults to one
+  GPU layer, with the remaining 4B weights in RAM. No chat service is stopped
+  or reconfigured. This deliberately conservative offload may make the first
+  backfill slow. `repo.search.semantic.indexingGpuLayers` may be increased
+  only after measuring concurrent chat/reranker/indexer VRAM use. GPU headroom
+  and real-model latency still require verification on the deployed system.
+
+Use `systemctl status search-embedding-query search-reranker search-embed` and
+`journalctl -u search-embed -u search-reranker -u search-embedding-query` for
+progress/errors. `systemctl start search-embed` resumes an interrupted backfill;
+database checkpoints are written only after durable vector commits. Deleted
+documents and removed integrations are pruned on the next pass. Candidates are
+also rechecked against the current document index and all selected filters
+before use. A recreated vector core invalidates the checkpoints and rebuilds
+from the retained text. Set `repo.search.semantic.enable = false` to return
+to keyword-only operation while retaining weights and derived index state.
+
+### Keyword fallback
+
 When nothing in the library contains every idea, the query is repeated
 requiring the rarest idea the library knows plus about half of the others, and
 the results are labelled as closest matches. Broad search never falls back to

@@ -57,6 +57,11 @@ pub(crate) fn combine(indexed: &Value, live: &Value, query: &str, newest: bool) 
             let quality = hit["matchQuality"]
                 .as_u64()
                 .unwrap_or(if exact { 1 } else { 5 });
+            let quality = if hit["semanticRank"].as_u64().is_some() {
+                quality.min(2)
+            } else {
+                quality
+            };
             ranked.push((hit, group, rank, quality));
         }
     }

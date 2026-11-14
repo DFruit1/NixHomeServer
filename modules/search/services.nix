@@ -67,6 +67,20 @@ let
       echo '</schema>' >> "$conf.tmp"
       mv "$conf.tmp" "$conf"
     fi
+    ${lib.optionalString cfg.semantic.enable ''
+      # A separate versioned core leaves the existing keyword index intact.
+      if [ ! -d ${paths.solrHome}/configsets/_search_passages_v1 ]; then
+        cp -R ${paths.solrHome}/configsets/_default ${paths.solrHome}/configsets/_search_passages_v1
+        conf=${paths.solrHome}/configsets/_search_passages_v1/conf/managed-schema.xml
+        head -n -1 "$conf" > "$conf.tmp"
+        cat >> "$conf.tmp" <<'SCHEMA'
+      <fieldType name="search_embedding" class="solr.DenseVectorField" vectorDimension="2560" similarityFunction="dot_product"/>
+      <field name="vector" type="search_embedding" indexed="true" stored="false"/>
+      </schema>
+      SCHEMA
+        mv "$conf.tmp" "$conf"
+      fi
+    ''}
   '';
 
   durationSeconds = value:

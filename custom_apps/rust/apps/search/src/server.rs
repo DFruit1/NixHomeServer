@@ -35,6 +35,7 @@ struct AppState {
 }
 
 struct Inner {
+    semantic: Option<crate::semantic::Semantic>,
     online_papers: Option<OnlinePapers>,
     settings: Settings,
     solr: SolrClient,
@@ -57,6 +58,7 @@ impl AppState {
         let settings = Settings::from_env()?;
         Ok(Self {
             inner: std::sync::Arc::new(Inner {
+                semantic: crate::semantic::Semantic::from_env()?,
                 online_papers: OnlinePapers::from_env()?,
                 settings,
                 solr: SolrClient::new(
@@ -692,17 +694,49 @@ async fn execute_search_plan(
         }
         return Ok(body);
     }
-    let indexed = state.inner.solr.search(
-        &query,
-        &selected,
-        &filters,
-        rows,
-        offset,
-        params.sort_order(),
-    );
+    let indexed = async {
+        let mut warning = None;
+        if let Some(semantic) = &state.inner.semantic
+            && crate::semantic::eligible(&query, &filters, params.sort_order())
+        {
+            match semantic
+                .search(crate::semantic::Request {
+                    solr: &state.inner.solr,
+                    database: client.as_ref(),
+                    query: &query,
+                    sources: &selected,
+                    filters: &filters,
+                    rows,
+                    offset,
+                })
+                .await
+            {
+                Ok(ranked) => return Ok((ranked.response, ranked.snippets, true, None)),
+                Err(error) => {
+                    eprintln!("search: semantic retrieval unavailable: {error}");
+                    warning = Some(
+                        json!({"source":"indexed", "message":"Semantic search is unavailable or still indexing; showing keyword results."}),
+                    );
+                }
+            }
+        }
+        state
+            .inner
+            .solr
+            .search(
+                &query,
+                &selected,
+                &filters,
+                rows,
+                offset,
+                params.sort_order(),
+            )
+            .await
+            .map(|response| (response, HashMap::<String, String>::new(), false, warning))
+    };
     let (response, federated) = tokio::join!(indexed, live);
     match response {
-        Ok(response) => {
+        Ok((response, semantic_snippets, semantic, warning)) => {
             // Solr never returns the body; load it once for the returned page
             // and build snippets from the authoritative Postgres copy. A failed
             // enrichment degrades to title-only results rather than a 500.
@@ -719,9 +753,11 @@ async fn execute_search_plan(
             // Federated hits are only ever returned on the first page, so more
             // results remain exactly when Solr still has rows past this page.
             let has_more = offset + response.hits.len() < response.total as usize;
-            for hit in response.hits.iter() {
+            for (rank, hit) in response.hits.iter().enumerate() {
                 let enriched = enrichment.get(&hit.id);
-                let snippet = enriched.and_then(|doc| text::result_snippet(&doc.body_text, &query));
+                let snippet = semantic_snippets.get(&hit.id).cloned().or_else(|| {
+                    enriched.and_then(|doc| text::result_snippet(&doc.body_text, &query))
+                });
                 let empty_metadata = serde_json::Value::Null;
                 let raw_metadata = enriched.map(|doc| &doc.metadata).unwrap_or(&empty_metadata);
                 let metadata = enriched
@@ -739,11 +775,14 @@ async fn execute_search_plan(
                     "owner": hit.owner,
                     "matchQuality": crate::relevance::quality(&hit.title, raw_metadata, enriched.map(|doc| doc.body_text.as_str()).unwrap_or_default(), &query),
                     "score": hit.score,
+                    "semanticRank": semantic.then_some(offset + rank),
                     "created": hit.created,
                     "copies": hit.copies,
                     "metadata": metadata,
                 }));
             }
+            let mut warnings = federated.warnings;
+            warnings.extend(warning);
             Ok(json!({
                 "hits": hits,
                 "total": response.total + federated.hits.len() as u64,
@@ -752,7 +791,10 @@ async fn execute_search_plan(
                 "unknownTerms": response.unknown_terms,
                 "relaxed": response.relaxed,
                 "hasMore": has_more,
-                "warnings": federated.warnings,
+                "warnings": warnings,
+                "semantic": semantic,
+                "semanticLimited": semantic,
+                "facetScope": if semantic { "keyword" } else { "all" },
                 "sourceFacets": facet_json(&response.source_facets),
                 "kindFacets": facet_json(&response.kind_facets),
                 "contentTypeFacets": facet_json(&response.content_type_facets),

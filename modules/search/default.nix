@@ -8,6 +8,7 @@
     ./identity.nix
     ./networking.nix
     ./services.nix
+    ./semantic.nix
   ];
 
   nixhomeserver.modules.search = true;
