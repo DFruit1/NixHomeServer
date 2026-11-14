@@ -2535,9 +2535,11 @@ const LibraryView = component$<{
     }),
   );
   const refreshing = useSignal(false);
+  const refreshDone = useSignal(false);
   const refreshLibrary$ = $(async () => {
     if (refreshing.value) return;
     refreshing.value = true;
+    refreshDone.value = false;
     props.state.error = "";
     props.state.notice = "";
     try {
@@ -2549,7 +2551,10 @@ const LibraryView = component$<{
         });
       }
       await props.loadCategoryItems$(activeCategory, filter.value);
-      props.state.notice = "The library was refreshed from disk.";
+      refreshDone.value = true;
+      setTimeout(() => {
+        refreshDone.value = false;
+      }, 1600);
     } catch (error) {
       props.state.error = readableError(error);
       props.state.errorDetail = errorDetail(error);
@@ -2676,16 +2681,23 @@ const LibraryView = component$<{
           )}
         </label>
         <button
-          class="secondary-button library-refresh"
+          class={[
+            "secondary-button library-refresh",
+            refreshing.value && "is-refreshing",
+            refreshDone.value && "is-done",
+          ]}
           type="button"
           disabled={refreshing.value}
           onClick$={refreshLibrary$}
           title="Scan this library from disk now"
           aria-label="Refresh this library from disk now"
         >
-          <Icon name="refresh" size={16} />
+          <Icon name={refreshDone.value ? "check" : "refresh"} size={16} />
           {refreshing.value ? "Refreshing…" : "Refresh"}
         </button>
+        <span class="sr-only" role="status">
+          {refreshDone.value ? "Library refreshed" : ""}
+        </span>
         <div class="library-toolbar-trailing">
           {Object.values(props.state.itemCursors ?? {}).some(Boolean) && (
             <button

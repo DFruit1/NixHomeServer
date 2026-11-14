@@ -6833,6 +6833,37 @@ a:focus-visible {
   min-width: 0;
   align-items: center;
   gap: 14px;
+.library-refresh:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+.library-refresh.is-refreshing .icon {
+  animation: refresh-spin 1s linear infinite;
+}
+.library-refresh.is-done {
+  border-color: var(--accent-line);
+  color: var(--accent);
+  background: var(--accent-wash);
+}
+.library-refresh.is-done .icon path {
+  stroke-dasharray: 22;
+  stroke-dashoffset: 22;
+  animation: refresh-tick 360ms ease-out 40ms forwards;
+}
+@keyframes refresh-tick {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .library-refresh.is-refreshing .icon {
+    animation: none;
+  }
+  .library-refresh.is-done .icon path {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+}
   margin-left: auto;
 }
 .library-toolbar-trailing .secondary-button {
