@@ -363,6 +363,9 @@ export const PlayerView = component$<{
         return;
       }
       const navigation = navigationGeneration.value;
+      const currentTargetKey = () =>
+        props.state.miniPlayerItemId ||
+        `${props.initialItemId ?? ""}|${props.initialPath ?? ""}`;
       let index = findTargetIndex(
         playerState.tracks,
         requestId || props.initialItemId,
@@ -376,6 +379,7 @@ export const PlayerView = component$<{
             `/items/${encodeURIComponent(targetId)}`,
           );
           if (navigation !== navigationGeneration.value) return;
+          if (targetKey !== currentTargetKey()) return;
           if (requestId && props.state.miniPlayerItemId !== requestId) return;
           if (item.mediaKind !== "music" && item.mediaKind !== "audiobook") {
             throw new Error("This file is not playable audio.");
@@ -397,12 +401,12 @@ export const PlayerView = component$<{
         deepLinkRefresh.value = targetKey;
         initialTargetApplied.value = targetKey;
         await refreshAudioRoots(props.initialRootId);
-        // Check after every await so a newer selection wins. The catalog still
-        // reloads because the finished download belongs in the list; the guard
-        // only stops this link from taking over the chosen view or playback.
-        const stillCurrent = navigation === navigationGeneration.value;
+        // The catalog still reloads because the finished download belongs in
+        // the list; the guard only stops this link from taking over a view,
+        // playback or newer link the user already chose.
         await loadTracks();
-        if (!stillCurrent || navigation !== navigationGeneration.value) return;
+        if (navigation !== navigationGeneration.value) return;
+        if (targetKey !== currentTargetKey()) return;
         index = findTargetIndex(
           playerState.tracks,
           undefined,
@@ -414,7 +418,11 @@ export const PlayerView = component$<{
           return;
         }
       }
-      if (index < 0 || navigation !== navigationGeneration.value) {
+      if (
+        index < 0 ||
+        navigation !== navigationGeneration.value ||
+        targetKey !== currentTargetKey()
+      ) {
         return;
       }
       deepLinkNotice.value = "";
