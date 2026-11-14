@@ -49,6 +49,15 @@ require_fixed modules/Integrations/expose_paperless_documents_to_search.nix 'pap
   "The Paperless Search integration must provision the API token service."
 require_fixed modules/Integrations/expose_media_manager_libraries_to_search.nix 'sourceType = "media-snapshot"' \
   "Media Manager libraries must be indexed from their read-only metadata snapshots."
+require_fixed modules/Integrations/expose_media_manager_libraries_to_search.nix \
+  'itemUrl = "/web/#/details?id={itemId}"' \
+  "Jellyfin results must open the item rather than the application home page."
+require_fixed modules/Integrations/expose_media_manager_libraries_to_search.nix \
+  'itemUrl = "/item/{itemId}"' \
+  "Audiobookshelf results must open the library item directly."
+require_fixed modules/Integrations/expose_media_manager_libraries_to_search.nix \
+  'itemUrl = "/library/{libraryId}/series/{itemId}"' \
+  "Kavita results must open the series inside its library."
 require_fixed modules/Integrations/expose_media_manager_libraries_to_search.nix 'users.search.extraGroups' \
   "The Media Manager Search integration must grant the indexer read access to the snapshots."
 require_fixed modules/search/services.nix 'search reindex' \

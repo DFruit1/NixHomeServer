@@ -27,7 +27,15 @@ class Element {
   focus() { this.focused = true; }
   get options() { return this.children; }
 }
-function harness(search = '') {
+function makeStorage() {
+  const values = new Map();
+  return {
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) { values.set(key, String(value)); },
+    removeItem(key) { values.delete(key); },
+  };
+}
+function harness(search = '', sessionStorage = makeStorage()) {
   const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map(([, id]) => [id, new Element()]));
   const pending = [];
   const location = { origin: 'http://localhost', pathname: '/', search, href: 'http://localhost/' };
@@ -40,15 +48,15 @@ function harness(search = '') {
   };
   const document = { getElementById(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); }, createElement: tag => new Element(tag), querySelectorAll: () => [], activeElement: null, addEventListener() {} };
   const handlers = {};
-  const window = { handlers, addEventListener(name, fn) { (handlers[name] ||= []).push(fn); }, location, history, getSelection: () => null, scrollBy() {} };
-  const context = vm.createContext({ document, window, location, history, URL, URLSearchParams, AbortController, TextEncoder, console, setTimeout, clearTimeout,
+  const window = { handlers, addEventListener(name, fn) { (handlers[name] ||= []).push(fn); }, location, history, getSelection: () => null, scrollBy() {}, scrollY: 0, scrollTo() {} };
+  const context = vm.createContext({ document, window, location, history, URL, URLSearchParams, AbortController, TextEncoder, console, setTimeout, clearTimeout, sessionStorage,
     fetch(url, options) {
       if (url === '/api/sources') return Promise.resolve({ ok: true, status: 200, json: async () => ({ sources: [{ id: 'mail', displayName: 'Mail' }] }) });
       return new Promise((resolve, reject) => pending.push({ url, options, resolve: data => resolve({ok: true, status: 200, json: async () => data}), reject }));
     },
   });
   vm.runInContext(script, context);
-  return { elements, pending, location, history, handlers, run: code => vm.runInContext(code, context) };
+  return { elements, pending, location, history, handlers, sessionStorage, run: code => vm.runInContext(code, context) };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const response = title => ({ hits: [{id: title, title}], total: 1, hasMore: false });
@@ -220,6 +228,33 @@ test('filter tweaks replace history while a new query pushes it', () => {
   assert.deepEqual(h.history.calls, ['push', 'replace']);
   h.elements.get('query').value = 'other'; h.run('runSearch()');
   assert.deepEqual(h.history.calls, ['push', 'replace', 'push']);
+});
+
+test('browser back restores the cached results instead of searching again', async () => {
+  const h = harness();
+  h.elements.get('query').value = 'Topic'; h.run('runSearch()');
+  indexed(h)[0].resolve({hits:[{id:'l1',title:'Topic'}],total:1});
+  h.pending.find(request => request.url.includes('scope=live')).resolve({hits:[]}); await flush();
+  h.elements.get('query').value = 'Other'; h.run('runSearch()');
+  indexed(h)[1].resolve({hits:[{id:'l2',title:'Other'}],total:1});
+  h.pending.filter(request => request.url.includes('scope=live'))[1].resolve({hits:[]}); await flush();
+  const requests = h.pending.length;
+  h.location.search = '?q=Topic';
+  h.handlers.popstate[0]();
+  assert.equal(h.pending.length, requests, 'going back must not fetch the same search again');
+  assert.deepEqual(renderedTitles(h), ['Topic']);
+});
+
+test('a mobile reload restores the last result set from session storage', async () => {
+  const storage = makeStorage();
+  const first = harness('', storage);
+  first.elements.get('query').value = 'Topic'; first.run('runSearch()');
+  indexed(first)[0].resolve({hits:[{id:'l1',title:'Topic'}],total:1});
+  first.pending.find(request => request.url.includes('scope=live')).resolve({hits:[]}); await flush();
+  const reloaded = harness('?q=Topic', storage);
+  assert.equal(reloaded.pending.length, 0, 'a restored result set must not be fetched again');
+  assert.deepEqual(renderedTitles(reloaded), ['Topic']);
+  assert.equal(reloaded.elements.get('query').value, 'Topic');
 });
 
 test('status names the live sample separately from the library total', async () => {

@@ -89,6 +89,7 @@ PY
             | ($metadataById[(.id|tostring)] // {}) as $details
             | $location + {
                 itemId:(.id|tostring), observedAt:$observedAt,
+                libraryId:(if (.libraryId|type) == "number" then (.libraryId|tostring) else null end),
                 title:((.localizedName // .name)|clean(500)),
                 series:(.name|clean(500)),
                 year:(if ($details.releaseYear // 0) > 0 then $details.releaseYear else null end),

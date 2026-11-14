@@ -23,7 +23,11 @@ in
             displayName = "Videos";
             sourceType = "media-snapshot";
             appBase = "https://videos.${vars.domain}";
-            settings.snapshotPath = "/var/cache/media-manager-jellyfin/metadata.json";
+            settings = {
+              snapshotPath = "/var/cache/media-manager-jellyfin/metadata.json";
+              # Modern Jellyfin web routes identify the item directly.
+              itemUrl = "/web/#/details?id={itemId}";
+            };
           };
         })
         (lib.optionalAttrs (hasApp "audiobookshelf") {
@@ -31,7 +35,10 @@ in
             displayName = "Audiobooks";
             sourceType = "media-snapshot";
             appBase = "https://audiobooks.${vars.domain}/audiobookshelf/";
-            settings.snapshotPath = "/var/cache/media-manager-audiobookshelf/metadata.json";
+            settings = {
+              snapshotPath = "/var/cache/media-manager-audiobookshelf/metadata.json";
+              itemUrl = "/item/{itemId}";
+            };
           };
         })
         (lib.optionalAttrs (hasApp "kavita") {
@@ -41,6 +48,8 @@ in
             appBase = "https://books.${vars.domain}";
             settings = {
               snapshotPath = "/var/cache/media-manager-kavita/metadata.json";
+              # Kavita opens a series within its library.
+              itemUrl = "/library/{libraryId}/series/{itemId}";
               # Kavita's snapshot omits a per-entry media type; index its
               # entries as books for the content-type facet.
               contentType = "book";

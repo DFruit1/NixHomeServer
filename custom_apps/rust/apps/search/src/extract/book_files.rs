@@ -148,6 +148,7 @@ impl<'a> BookFiles<'a> {
         entry: &Value,
         series_title: &str,
         series_metadata: &Map<String, Value>,
+        app_url: &str,
         emit: &mut dyn FnMut(ExtractedDocument),
     ) -> Result<(), String> {
         let paths = self.paths(entry)?;
@@ -209,7 +210,7 @@ impl<'a> BookFiles<'a> {
                 body_text: truncate_text(&body, document::TEXT_LIMIT),
                 content_type: document::content_type_for_format(&format),
                 origin_url: String::new(),
-                app_url: self.source.app_base.trim_end_matches('/').to_string(),
+                app_url: app_url.to_string(),
                 file_path: path.display().to_string(),
                 size_bytes: file_metadata.len() as i64,
                 content_created_at: metadata

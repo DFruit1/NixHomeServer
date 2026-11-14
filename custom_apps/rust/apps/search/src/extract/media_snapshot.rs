@@ -307,6 +307,40 @@ fn distinct_episode_title(title: &str, series: Option<&str>, code: Option<&str>)
     (!rest.is_empty()).then(|| rest.to_string())
 }
 
+/// The application page for one snapshot entry, built from the source's
+/// `itemUrl` template. Templates are relative to `appBase` so a source's
+/// hostname is configured once, and support `{itemId}` and `{libraryId}`.
+/// If a placeholder has no safe value, the application root remains a
+/// working link rather than an invented or partially substituted URL.
+fn item_app_url(entry: &Value, app_base: &str, template: &str) -> String {
+    let mut path = template.to_string();
+    for placeholder in ["itemId", "libraryId"] {
+        let marker = format!("{{{placeholder}}}");
+        if !path.contains(&marker) {
+            continue;
+        }
+        let Some(value) = string_field(entry, placeholder) else {
+            return app_base.to_string();
+        };
+        let safe = value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~'));
+        if !safe {
+            return app_base.to_string();
+        }
+        path = path.replace(&marker, &value);
+    }
+    if path.starts_with("http://") || path.starts_with("https://") {
+        path
+    } else {
+        format!(
+            "{}/{}",
+            app_base.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        )
+    }
+}
+
 fn scalar_metadata(map: &mut Map<String, Value>, key: &str, value: Option<String>) {
     if let Some(value) = value {
         map.insert(key.to_string(), Value::String(value));
@@ -553,6 +587,7 @@ impl super::Extractor for MediaSnapshotExtractor {
         let path = Self::snapshot_path(source)?;
         let entries = Self::load_entries(&path)?;
         let app_base = source.app_base.trim_end_matches('/').to_string();
+        let item_url_template = source.setting_str("itemUrl").unwrap_or_default();
         let fallback_type = source
             .setting_str("contentType")
             .unwrap_or("application/octet-stream")
@@ -565,6 +600,11 @@ impl super::Extractor for MediaSnapshotExtractor {
             let media_type = string_field(entry, "mediaType");
             let owner = owner_of(entry);
             let relative_path = string_field(entry, "relativePath").unwrap_or_default();
+            let app_url = if item_url_template.is_empty() {
+                app_base.clone()
+            } else {
+                item_app_url(entry, &app_base, item_url_template)
+            };
 
             let mut metadata = Map::new();
             metadata.insert("owner".to_string(), Value::String(owner));
@@ -630,7 +670,7 @@ impl super::Extractor for MediaSnapshotExtractor {
             if !ids.is_empty() {
                 metadata.insert("identifiers".to_string(), Value::Object(ids));
             }
-            if let Err(err) = books.extract(entry, &title, &metadata, emit) {
+            if let Err(err) = books.extract(entry, &title, &metadata, &app_url, emit) {
                 eprintln!("search: book file extraction failed: {err}");
                 book_failure = Some(err);
             }
@@ -649,7 +689,7 @@ impl super::Extractor for MediaSnapshotExtractor {
                 body_text: build_body(entry),
                 content_type: media_type.unwrap_or_else(|| fallback_type.clone()),
                 origin_url: String::new(),
-                app_url: app_base.clone(),
+                app_url: app_url.clone(),
                 file_path: relative_path,
                 size_bytes: 0,
                 content_created_at: created_at(entry),
@@ -793,5 +833,45 @@ mod tests {
     fn empty_snapshot_emits_nothing() {
         let (_dir, source) = write_snapshot("[]");
         assert!(run_with(&source).expect("extract").is_empty());
+    }
+
+    #[test]
+    fn builds_per_item_deep_links_from_the_source_template() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("metadata.json");
+        std::fs::write(
+            &path,
+            r#"{"schemaVersion":1,"entries":[
+                {"rootId":"personal-videos","ownerUsername":"dsaw","relativePath":"Films/Heat.mkv","itemId":"jf-1","mediaType":"movie","title":"Heat"},
+                {"rootId":"shared-books","ownerUsername":null,"relativePath":"Saga","itemId":"42","libraryId":"7","mediaType":"book","title":"Saga"},
+                {"rootId":"shared-books","ownerUsername":null,"relativePath":"Missing","itemId":"bad/id","mediaType":"book","title":"Unsafe"},
+                {"rootId":"shared-books","ownerUsername":null,"relativePath":"NoLibrary","itemId":"43","mediaType":"book","title":"No library id"}
+            ]}"#,
+        )
+        .expect("write snapshot");
+
+        let jellyfin = source(&format!(
+            r#"{{"snapshotPath":"{}","itemUrl":"/web/#/details?id={{itemId}}"}}"#,
+            path.display()
+        ));
+        let docs = run_with(&jellyfin).expect("extract");
+        assert_eq!(
+            docs[0].app_url,
+            "https://media.example.org/web/#/details?id=jf-1"
+        );
+
+        let kavita = source(&format!(
+            r#"{{"snapshotPath":"{}","itemUrl":"/library/{{libraryId}}/series/{{itemId}}"}}"#,
+            path.display()
+        ));
+        let docs = run_with(&kavita).expect("extract");
+        assert_eq!(
+            docs[1].app_url,
+            "https://media.example.org/library/7/series/42"
+        );
+        // An unsafe id and a missing placeholder both keep the source's
+        // working application root rather than producing a broken deep link.
+        assert_eq!(docs[2].app_url, "https://media.example.org");
+        assert_eq!(docs[3].app_url, "https://media.example.org");
     }
 }

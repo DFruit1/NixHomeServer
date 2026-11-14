@@ -103,7 +103,7 @@ jq -e '
   and (.service.ProtectSystem == "strict")
   and (.service.PrivateTmp == true)
   and ((.service.RestrictSUIDSGID // false) == false)
-  and (.service.ReadWritePaths == ["/var/lib/media-manager"])
+  and (.service.ReadWritePaths == ["/var/lib/media-manager", "/mnt/data/media-manager/intake"])
   and (.providerUserGroup == "media-manager-provider")
   and (.providerUserHome == "/var/lib/media-manager-provider")
   and (.providerService.User == "media-manager-provider")
@@ -152,6 +152,7 @@ jq -e '
   and (.broker.AmbientCapabilities == [])
   and (.broker.ReadWritePaths == [
     "/var/lib/media-manager",
+    "/mnt/data/media-manager/intake",
     "/mnt/data/shared",
     "/mnt/data/users"
   ])
@@ -295,6 +296,9 @@ require_fixed custom_apps/shell/media-manager/media-manager-jellyfin-metadata-ex
 require_fixed custom_apps/shell/media-manager/media-manager-kavita-metadata-export.sh.in \
   'Kavita did not become ready before metadata export' \
   "Kavita metadata export must tolerate service startup latency."
+require_fixed custom_apps/shell/media-manager/media-manager-kavita-metadata-export.sh.in \
+  'libraryId:(if (.libraryId|type) == "number"' \
+  "Kavita snapshots must retain the library id needed for item deep links."
 require_fixed custom_apps/shell/media-manager/media-manager-refresh-jellyfin.sh.in \
   'ScheduledTasks/Running/$task_id' \
   "Jellyfin refresh must use the current scheduled-task completion API."

@@ -308,6 +308,111 @@ sourceNames.set('online-papers', 'Online papers');
 const state = { hits: [], liveHits: [], page: 0, total: 0, hasMore: false, generation: 0, controller: null, submitted: null, loading: false, liveLoading: false,
   inferred: {}, intentSkip: [], literalNotice: '', relatedTerms: [], unknownTerms: [], relaxed: false, semanticLimited: false, semanticWarning: '', indexedDone: false, liveDone: false, indexedFailed: false, liveFailed: false, indexedFacets: {}, liveFacets: {}, resultNodes: new Map() };
 
+// Returning from a result should show the same answer, not run the search
+// again. Keep several settled result sets for this tab in memory, and the
+// most recent ones in session storage so a mobile page reload can restore
+// them too.
+const RESULT_CACHE_LIMIT = 8;
+const RESULT_CACHE_STORAGE = 'search:results:v1';
+function loadResultCache() {
+  const cache = new Map();
+  try {
+    if (typeof sessionStorage === 'undefined') return cache;
+    const stored = JSON.parse(sessionStorage.getItem(RESULT_CACHE_STORAGE) || 'null');
+    if (Array.isArray(stored)) for (const entry of stored) {
+      if (Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object') cache.set(entry[0], entry[1]);
+    }
+  } catch { /* A corrupt or unavailable cache never blocks a search. */ }
+  return cache;
+}
+const resultCache = loadResultCache();
+function persistResultCache() {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    sessionStorage.setItem(RESULT_CACHE_STORAGE, JSON.stringify([...resultCache]));
+  } catch {
+    // If one very large result set fills the tab's storage quota, keep at
+    // least the most recent answer so a reload can still restore it.
+    try { sessionStorage.setItem(RESULT_CACHE_STORAGE, JSON.stringify([...resultCache].slice(-1))); } catch { /* in-memory cache still works */ }
+  }
+}
+function rememberResults() {
+  if (!state.submitted || state.loading || state.liveLoading || !state.indexedDone || !state.liveDone
+    || state.indexedFailed || state.liveFailed
+    || !(new URLSearchParams(state.submitted).get('q') || '').trim()) return;
+  const entry = {
+    hits: state.hits, liveHits: state.liveHits, page: state.page, total: state.total, hasMore: state.hasMore,
+    inferred: { ...state.inferred }, intentSkip: [...state.intentSkip], literalNotice: state.literalNotice,
+    relatedTerms: [...state.relatedTerms], unknownTerms: [...state.unknownTerms], relaxed: state.relaxed,
+    semanticLimited: state.semanticLimited, semanticWarning: state.semanticWarning,
+    indexedFacets: state.indexedFacets, liveFacets: state.liveFacets,
+    controls: Object.fromEntries(Object.entries(controls).map(([key, control]) => [key, control.value])),
+    matching: matchingEl.value, sort: sortEl.value, pageSize: pageSizeEl.value,
+    scrollY: Number.isFinite(window.scrollY) ? window.scrollY : 0,
+  };
+  resultCache.delete(state.submitted);
+  resultCache.set(state.submitted, entry);
+  while (resultCache.size > RESULT_CACHE_LIMIT) resultCache.delete(resultCache.keys().next().value);
+  persistResultCache();
+}
+function restoreResults(submitted) {
+  const cached = submitted ? resultCache.get(submitted) : null;
+  if (!cached || !Array.isArray(cached.hits)) return false;
+  // Keep the restored answer as the most recent one for a later reload.
+  resultCache.delete(submitted);
+  resultCache.set(submitted, cached);
+  persistResultCache();
+  state.controller?.abort();
+  state.controller = new AbortController();
+  state.generation++;
+  state.submitted = submitted;
+  resetResults();
+  state.hits = cached.hits;
+  state.liveHits = Array.isArray(cached.liveHits) ? cached.liveHits : [];
+  state.page = Number.isInteger(cached.page) ? cached.page : 0;
+  state.total = Number.isFinite(cached.total) ? cached.total : 0;
+  state.hasMore = cached.hasMore === true;
+  state.inferred = cached.inferred && typeof cached.inferred === 'object' ? cached.inferred : {};
+  state.intentSkip = Array.isArray(cached.intentSkip) ? cached.intentSkip : [];
+  state.literalNotice = typeof cached.literalNotice === 'string' ? cached.literalNotice : '';
+  state.relatedTerms = Array.isArray(cached.relatedTerms) ? cached.relatedTerms : [];
+  state.unknownTerms = Array.isArray(cached.unknownTerms) ? cached.unknownTerms : [];
+  state.relaxed = cached.relaxed === true;
+  state.semanticLimited = cached.semanticLimited === true;
+  state.semanticWarning = typeof cached.semanticWarning === 'string' ? cached.semanticWarning : '';
+  state.indexedFacets = cached.indexedFacets && typeof cached.indexedFacets === 'object' ? cached.indexedFacets : {};
+  state.liveFacets = cached.liveFacets && typeof cached.liveFacets === 'object' ? cached.liveFacets : {};
+  state.indexedDone = true; state.liveDone = true;
+  state.indexedFailed = false; state.liveFailed = false;
+  for (const [key, control] of Object.entries(controls)) {
+    const value = cached.controls && typeof cached.controls[key] === 'string' ? cached.controls[key] : '';
+    if (['creator', 'after', 'before'].includes(key)) control.value = value;
+    else setSelectValue(control, value);
+  }
+  matchingEl.value = cached.matching === 'all' ? 'all' : 'broad';
+  sortEl.value = cached.sort === 'newest' ? 'newest' : 'relevance';
+  pageSizeEl.value = ['25', '50', '100'].includes(cached.pageSize) ? cached.pageSize : '25';
+  updateSearchMode();
+  updateActiveFilters();
+  renderFacets(state.indexedFacets);
+  renderFacets(state.liveFacets, 'live');
+  renderCombined();
+  const query = new URLSearchParams(submitted).get('q') || '';
+  resultsEl.removeAttribute('aria-busy');
+  el('copyStatus').textContent = '';
+  el('searchShell').dataset.searched = 'true';
+  el('resultTools').hidden = false; el('emptyState').hidden = true;
+  el('resultsHeading').hidden = false; el('resultsHeading').textContent = `Results for “${query}”`;
+  el('examples').hidden = true;
+  document.title = `${query} — Search`;
+  updateResultsStatus();
+  if (cached.scrollY && typeof window.scrollTo === 'function') window.scrollTo(0, cached.scrollY);
+  return true;
+}
+function restoreOrSearch() {
+  if (!restoreResults(state.submitted)) runSearch(null, {pushHistory: false});
+}
+
 // These are example queries, never fabricated matches or promises of coverage.
 const searchModes = {
   '': {label: 'All sources', placeholder: 'Search titles, people, phrases or topics…'},
@@ -875,6 +980,7 @@ async function runLive(generation, submitted, signal) {
       if (!state.loading) resultsEl.removeAttribute('aria-busy');
       updateResultsStatus();
       searchLiterallyIfEmpty();
+      rememberResults();
     }
   }
 }
@@ -979,6 +1085,7 @@ async function runIndexed(append = false) {
       retry.removeAttribute('aria-disabled'); retry.textContent = 'Retry search';
       updateResultsStatus();
       searchLiterallyIfEmpty();
+      rememberResults();
     }
   }
 }
@@ -1060,14 +1167,14 @@ window.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !el('searchGuide').hidden) { el('searchGuide').hidden = true; el('helpToggle').setAttribute('aria-expanded', 'false'); el('helpToggle').focus(); }
   else if (event.key === 'Escape' && !el('filtersPanel').hidden) { toggleFilters(false); el('filterToggle').focus(); }
 });
-window.addEventListener('popstate', () => { readUrlState(); runSearch(null, {pushHistory: false}); });
+window.addEventListener('popstate', () => { readUrlState(); restoreOrSearch(); });
 for (const node of document.querySelectorAll('[data-icon]')) setIcon(node, node.dataset.icon);
 initDiscovery();
 const hadQuery = readUrlState();
 if (!hadQuery) showDiscovery();
 renderFacets({});
 void loadSources();
-if (hadQuery) void runSearch(null, {pushHistory: false});
+if (hadQuery) restoreOrSearch();
 </script>
 </body>
 </html>

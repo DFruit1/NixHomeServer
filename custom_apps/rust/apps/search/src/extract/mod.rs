@@ -205,7 +205,9 @@ pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
         "browsertrix" => "5",
         // 5: publication dates for Calibre books; stream languages, runtime,
         // ratings, provider ids, chapters and season/episode wording for media.
-        "calibre" | "media-snapshot" => "5",
+        "calibre" => "5",
+        // 6: per-item application deep links for media-snapshot sources.
+        "media-snapshot" => "6",
         _ => "2",
     };
     Some(crate::timeutil::sha256_hex(&[extraction_version, &inputs]))
