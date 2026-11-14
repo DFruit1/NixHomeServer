@@ -12,20 +12,23 @@ import { findTargetIndex, prepareBrowserPlayback } from "./playback-target";
 import type { CatalogItem, MediaRoot } from "./root-types";
 import { thumbnailSizes, thumbnailSrc, thumbnailSrcset } from "./thumbnail";
 
-// The folder line already places the file, so the title drops its extension
-// visually; the full filename stays in the tooltip and for screen readers.
+const THEATRE_STORAGE_KEY = "media-manager.videos.theatre";
+
+// Rows show only the title: the extension stays in the tooltip and for screen
+// readers, and the folder remains searchable through the filter.
 const VideoListCopy = component$<{ relativePath: string }>((props) => {
   const filename = props.relativePath.split("/").at(-1) ?? props.relativePath;
-  const folder = props.relativePath.split("/").slice(0, -1).join("/");
-  const extension = folder ? (filename.match(/\.[^.\s]{1,5}$/)?.[0] ?? "") : "";
-  const stem = extension ? filename.slice(0, -extension.length) : filename;
+  const extension = filename.match(/\.[^.\s]{1,5}$/)?.[0] ?? "";
+  const stem =
+    extension && extension.length < filename.length
+      ? filename.slice(0, -extension.length)
+      : filename;
   return (
     <span class="video-list-copy">
       <strong title={filename}>
         {stem}
-        {extension && <span class="sr-only">{extension}</span>}
+        {stem !== filename && <span class="sr-only">{extension}</span>}
       </strong>
-      <span>{folder || "Video library"}</span>
     </span>
   );
 });
@@ -38,6 +41,7 @@ export const VideosView = component$<{
   const videoRef = useSignal<HTMLVideoElement>();
   const pipSupported = useSignal(false);
   const pipActive = useSignal(false);
+  const theatre = useSignal(false);
   const state = useStore({
     items: [] as CatalogItem[],
     selectedId: "",
@@ -124,9 +128,23 @@ export const VideosView = component$<{
   });
 
   useVisibleTask$(({ cleanup }) => {
+    try {
+      theatre.value = localStorage.getItem(THEATRE_STORAGE_KEY) === "1";
+    } catch {
+      // Storage can be unavailable; the default layout still works.
+    }
     cleanup(() => {
       preparationGeneration.value++;
     });
+  });
+
+  const toggleTheatre = $(() => {
+    theatre.value = !theatre.value;
+    try {
+      localStorage.setItem(THEATRE_STORAGE_KEY, theatre.value ? "1" : "0");
+    } catch {
+      // Keep the choice for this visit only.
+    }
   });
 
   // Picture-in-Picture is available in Chrome for Android and on desktop
@@ -233,7 +251,10 @@ export const VideosView = component$<{
   });
 
   return (
-    <section class="video-page" aria-label="Video player">
+    <section
+      class={{ "video-page": true, "video-page--theatre": theatre.value }}
+      aria-label="Video player"
+    >
       <div class="video-player-column">
         {selected() ? (
           <video
@@ -275,28 +296,55 @@ export const VideosView = component$<{
             <p>{state.loading ? "Loading videos…" : "No videos found"}</p>
           </div>
         )}
-        {selected() && (
+        {(selected() || videoRoots.length > 1) && (
           <div class="video-title">
             <div class="video-title-text">
-              <h2>{selected()!.relativePath.split("/").at(-1)}</h2>
-              {selected()!.relativePath.includes("/") && (
-                <p>
-                  {selected()!.relativePath.split("/").slice(0, -1).join("/")}
-                </p>
+              {selected() && (
+                <h2>{selected()!.relativePath.split("/").at(-1)}</h2>
+              )}
+              {videoRoots.length > 1 && (
+                <label class="video-library-select">
+                  <span class="sr-only">Video library</span>
+                  <select
+                    value={state.rootId}
+                    onChange$={(_, element) => (state.rootId = element.value)}
+                  >
+                    <option value="">All libraries</option>
+                    {videoRoots.map((root) => (
+                      <option key={root.id} value={root.id}>
+                        {root.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               )}
             </div>
-            {pipSupported.value && (
-              <button
-                type="button"
-                class="secondary-button compact-action video-pip-button"
-                aria-pressed={pipActive.value}
-                onClick$={togglePip}
-              >
-                <Icon name="picture-in-picture" size={14} />
-                {pipActive.value
-                  ? "Exit picture in picture"
-                  : "Picture in picture"}
-              </button>
+            {selected() && (
+              <div class="video-actions">
+                <button
+                  type="button"
+                  class="secondary-button compact-action video-action-button video-theatre-button"
+                  aria-label="Theatre mode"
+                  title="Theatre mode"
+                  aria-pressed={theatre.value}
+                  onClick$={toggleTheatre}
+                >
+                  <Icon name="theatre" size={16} />
+                </button>
+                {pipSupported.value && (
+                  <button
+                    type="button"
+                    class="secondary-button compact-action video-action-button"
+                    aria-pressed={pipActive.value}
+                    onClick$={togglePip}
+                  >
+                    <Icon name="picture-in-picture" size={14} />
+                    {pipActive.value
+                      ? "Exit picture in picture"
+                      : "Picture in picture"}
+                  </button>
+                )}
+              </div>
             )}
           </div>
         )}
@@ -314,35 +362,11 @@ export const VideosView = component$<{
       </div>
 
       <aside class="video-library" aria-label="Video library">
-        <div class="video-library-header">
-          <h2>Videos</h2>
-          {videoRoots.length > 1 && (
-            <label>
-              <span class="sr-only">Video library</span>
-              <select
-                value={state.rootId}
-                onChange$={(_, element) => (state.rootId = element.value)}
-              >
-                <option value="">All libraries</option>
-                {videoRoots.map((root) => (
-                  <option key={root.id} value={root.id}>
-                    {root.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <span>
-            {visibleItems.length === state.items.length
-              ? `${state.items.length} ${state.items.length === 1 ? "video" : "videos"}`
-              : `${visibleItems.length} of ${state.items.length}`}
-          </span>
-        </div>
         <label class="video-library-filter">
           <span class="sr-only">Filter videos by title or folder</span>
           <input
             type="search"
-            placeholder="Filter titles and folders"
+            placeholder="Filter videos"
             value={state.query}
             onInput$={(_, element) => (state.query = element.value)}
           />

@@ -193,4 +193,5 @@ export type IconName =
   | "stop"
   | "gear"
   | "album"
-  | "picture-in-picture";
+  | "picture-in-picture"
+  | "theatre";

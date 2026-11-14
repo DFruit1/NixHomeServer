@@ -3672,6 +3672,11 @@ a:focus-visible {
   min-width: 0;
 }
 .video-title-text {
+  flex: 1 1 240px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
   min-width: 0;
 }
 .video-title h2 {
@@ -3686,8 +3691,11 @@ a:focus-visible {
   color: var(--ink-soft);
   overflow-wrap: anywhere;
 }
-.video-pip-button {
+.video-actions {
+  display: flex;
   flex: none;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .video-conversion-status {
   margin-top: 12px;
@@ -3705,42 +3713,20 @@ a:focus-visible {
   border-radius: 8px;
   background: var(--card);
 }
-.video-library-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--line);
-}
-.video-library-header h2 {
-  margin: 0;
-  font-family: var(--font-serif);
-  font-size: var(--title-sm);
-  font-weight: 500;
-}
-.video-library-header > span {
-  color: var(--ink-soft);
-  font-size: var(--text-xs);
-  font-variant-numeric: tabular-nums;
-}
-.video-library-header > label {
-  min-width: 0;
-  grid-column: 1 / -1;
-  grid-row: 2;
-}
-.video-library-header select {
-  width: 100%;
+.video-library-select {
   max-width: 100%;
-  min-height: 44px;
-  padding: 8px 12px;
-  border: 1px solid var(--line-strong);
+}
+.video-library-select select {
+  max-width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid rgba(246, 243, 236, 0.3);
   border-radius: var(--radius-control);
-  color: var(--ink);
-  background: var(--card);
+  color: #fffdf8;
+  background: rgba(246, 243, 236, 0.08);
+  color-scheme: dark;
   font: inherit;
-  font-size: var(--text-md);
+  font-size: var(--text-sm);
 }
 .video-library-filter {
   display: block;
@@ -6509,7 +6495,7 @@ a:focus-visible {
 @media (max-width: 640px) {
   .root-filter-select,
   .collection-view-choice select,
-  .video-library-header select,
+  .video-library-select select,
   .video-library-filter input,
   .metadata-form input,
   .metadata-form select,
@@ -6833,6 +6819,20 @@ a:focus-visible {
   min-width: 0;
   align-items: center;
   gap: 14px;
+  margin-left: auto;
+}
+.library-toolbar-trailing .secondary-button {
+  min-height: 44px;
+}
+.library-filter-summary {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+.library-refresh {
+  flex: 0 0 auto;
+}
 .library-refresh:disabled {
   opacity: 1;
   cursor: progress;
@@ -6863,20 +6863,6 @@ a:focus-visible {
     animation: none;
     stroke-dashoffset: 0;
   }
-}
-  margin-left: auto;
-}
-.library-toolbar-trailing .secondary-button {
-  min-height: 44px;
-}
-.library-filter-summary {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--ink-soft);
-  font-size: var(--text-sm);
-}
-.library-refresh {
-  flex: 0 0 auto;
 }
 
 @media (max-width: 720px) {
@@ -7260,13 +7246,59 @@ a:focus-visible {
 .video-player-column > .message {
   margin: 12px 8px 4px;
 }
-.video-pip-button {
+.video-action-button {
   border-color: rgba(246, 243, 236, 0.3);
   color: #fffdf8;
   background: rgba(246, 243, 236, 0.08);
 }
-.video-pip-button:hover {
+.video-action-button:hover {
   background: rgba(246, 243, 236, 0.15);
+}
+.video-action-button[aria-pressed="true"] {
+  border-color: rgba(246, 243, 236, 0.7);
+  background: rgba(246, 243, 236, 0.22);
+}
+
+/* Theatre mode: the player spans the content width and the library follows
+   as a multi-column list; the page scrolls instead of the list pane. Phones
+   and narrow windows already stack, so the toggle is desktop-only. */
+.video-theatre-button {
+  width: var(--control-height);
+  min-width: 0;
+  padding-inline: 0;
+  justify-content: center;
+}
+@media (max-width: 1000px) {
+  .video-theatre-button {
+    display: none;
+  }
+}
+@media (min-width: 1001px) {
+  .video-page--theatre {
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+  }
+  .main-content--videos:has(> .video-page--theatre) {
+    overflow-y: auto;
+  }
+  .main-content--videos > .video-page--theatre {
+    flex: none;
+  }
+  .main-content--videos .video-page--theatre .video-library {
+    height: auto;
+    max-height: none;
+    min-height: 0;
+    overflow: visible;
+  }
+  .video-page--theatre .video-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 4px;
+    overflow: visible;
+  }
+  .video-page--theatre .video-list li {
+    margin-block: 0;
+  }
 }
 .video-library {
   border-radius: var(--radius-panel);
