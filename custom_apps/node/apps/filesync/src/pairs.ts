@@ -11,8 +11,6 @@ export type SyncPair = {
   direction: SyncDirection;
   server?: string;
   account?: string;
-  storageWarn?: number;
-  storageBlock?: number;
 };
 
 export function parseSavedPairs(raw: string | null, server: string): SyncPair[] {
@@ -32,9 +30,9 @@ export function parseSavedPairs(raw: string | null, server: string): SyncPair[] 
     for (const key of ['serverRoot', 'serverFolder', 'localSubpath', 'server', 'account'] as const) {
       if (typeof safe[key] !== 'string') delete safe[key];
     }
-    for (const key of ['storageWarn', 'storageBlock'] as const) {
-      if (typeof safe[key] !== 'number' || !Number.isFinite(safe[key]) || safe[key] <= 0 || safe[key] > 1) delete safe[key];
-    }
+    // Older builds stored per-pair storage limits; the limit is now fixed.
+    delete (safe as Record<string, unknown>).storageWarn;
+    delete (safe as Record<string, unknown>).storageBlock;
     return { ...safe, server: safe.server ?? server };
   });
 }

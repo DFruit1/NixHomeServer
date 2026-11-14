@@ -21,7 +21,7 @@ test('saved pairs with invalid optional fields cannot break startup rendering', 
   const pair = {
     id: 'pair-1', name: 'Notes', local: { uri: 'content://notes', displayName: 'Notes' },
     serverPath: 'notes', direction: 'phone-to-server',
-    serverRoot: 2, serverFolder: {}, localSubpath: ['bad'], server: false, account: 12,
+    serverRoot: 2, serverFolder: {}, localSubpath: ['bad'], server: false, account: 12, storageWarn: 0.8, storageBlock: 0.95,
   };
   assert.deepEqual(parseSavedPairs(JSON.stringify([pair]), 'https://sync.example'), [{
     id: 'pair-1', name: 'Notes', local: { uri: 'content://notes', displayName: 'Notes' },
