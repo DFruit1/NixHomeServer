@@ -107,12 +107,14 @@ describe("downloader deep links into the video player", () => {
         String(input).includes("/items?rootId=personal-videos"),
       ).length;
     await vi.waitFor(() => expect(catalogCalls()).toBe(2));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const theatre = screen.querySelector('button[aria-label="Theatre mode"]');
-    await userEvent(theatre ?? null, "click");
-    await vi.waitFor(() =>
-      expect(screen.querySelector("li.active")?.textContent).toContain("Clip"),
-    );
+    // The test DOM has no animation frames, so each poll dispatches a harmless
+    // toggle to flush queued task/state renders, then checks the selection.
+    // Polling avoids depending on when chooseVideo's async call lands.
+    await vi.waitFor(async () => {
+      const theatre = screen.querySelector('button[aria-label="Theatre mode"]');
+      await userEvent(theatre ?? null, "click");
+      expect(screen.querySelector("li.active")?.textContent).toContain("Clip");
+    });
   });
 
   it("does not rescan when the linked video is already catalogued", async () => {

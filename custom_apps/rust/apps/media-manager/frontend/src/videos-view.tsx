@@ -206,12 +206,18 @@ export const VideosView = component$<{
       if (deepLinkRefresh.value === path) return;
       deepLinkRefresh.value = path;
       const navigation = navigationGeneration.value;
+      // Another deep link may become current while this one is scanning, so
+      // compare the route and the user's navigation after every wait.
+      const stillCurrent = () =>
+        props.initialPath === path &&
+        !props.initialItemId &&
+        navigation === navigationGeneration.value;
       await refreshVideoRoots(props.initialRootId);
-      // Reload the catalog even if the user moved on: the finished download
-      // belongs in the list. The guard below only stops the link from taking
-      // over the selection they chose.
+      // The catalog still reloads because the finished download belongs in the
+      // list; the guard only stops this link from taking over the selection
+      // the user or a newer link has already made.
       await loadVideos();
-      if (navigation !== navigationGeneration.value) return;
+      if (!stillCurrent()) return;
       const index = findTargetIndex(state.items, undefined, path);
       if (index < 0) {
         deepLinkNotice.value =
