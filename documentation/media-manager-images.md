@@ -18,21 +18,27 @@ are excluded.
    broker runs, even if the user never opens Media Manager. Open **Images** to
    see discovered/analyzed counts and any retry notice. **Refresh results** reads
    current progress. The initial pass can take time for large libraries.
-3. Search by filename and/or comma-separated EYE tags, such as `beach, people`.
-   Choose **All tags** or **Any tag**. Tags match their saved spelling, including
-   spaces and case; EYE tags use lowercase identifiers such as `computer_screen`.
+3. Search by filename and/or comma-separated tags, such as `beach, people`.
+   Choose **All tags** or **Any tag**. Typed words are normalised for case,
+   spacing and plurals, so `Rocks`, `rock's` and `personal computer` find the
+   saved `rock` and `personal_computer`. **Also match related tags** (on by
+   default) also accepts closely related saved tags, so `woods` finds `forest`
+   and `tree`, and `dog` finds the breed tags. Turn it off for literal
+   matching. The filter panel names the saved tags a typed word matched.
    **Minimum scores and confidence** sets three independent score thresholds
    (0–100) and the minimum tag confidence (default 50%).
 4. Sort by date taken, an individual score, tag confidence, or **Combined scores**.
    Combined ranking uses the weighted average of aesthetic, keeper and cover;
    weights default to 1 each. Set a weight to 0 to ignore that score; at least one
-   must remain positive. Tag sorting uses the specified tag's confidence, treating
-   an absent tag as 0. Choose ascending or descending order.
+   must remain positive. Tag sorting uses the specified word's confidence, taking
+   the highest value among its normalised and, when enabled, related tags, and
+   treating an absent tag as 0. Choose ascending or descending order.
 5. Sorting and filtering apply to the whole index before 48-photo pagination.
    Photos not yet analyzed appear in date order but are excluded from score/tag
    sorting and positive score/tag filters. Select a photo to inspect saved
    analysis; choose **Analyze again** to replace only its Media Manager analysis.
-   Selecting a saved tag searches for that tag with the current other filters.
+   Selecting a saved tag searches for exactly that tag with the current other
+   filters and turns related matching off.
 
 The **View** selector offers Detailed list, Simple list and 1–4 tiles per row.
 Detailed rows show the capture date, saved scores and a short tag summary;
@@ -48,6 +54,14 @@ deletes a photo or changes Immich tags or originals based on a prediction. The
 only Immich mutation is adding the assessed photo to an album named by an
 enabled category question. The legacy tag-write endpoint returns 403, including
 for editors with mutations enabled.
+
+Tag relations are a reviewed table over the pinned EYE vocabulary, plus
+grammatical forms and compound-tag words. They are deterministic and local: no
+model runs during a search, no keyword is sent anywhere, and a library needs no
+extra index. EYE itself supplies image understanding, not a text-to-image
+embedding, so it cannot translate arbitrary keywords into new photo matches on
+its own; the curated table covers synonyms and closely related subjects for its
+tags. Extend that table when a usual word for a scene is missing.
 
 ## Saved decision questions
 
@@ -203,10 +217,11 @@ Search returns persisted results during indexing; unavailable Immich authorizati
 fails closed. Other metadata providers remain independent of EYE.
 
 Focused boundary regressions in `tests/immich_images.rs` cover private-photo and
-credential disclosure, per-subject saved analysis, refusal of legacy writes, and
-single-photo category album assignment with score-bound skips. Use local fixture
-libraries to check full-library pagination, filtering, ranking, background
-progress and restart reuse without touching a real Immich instance.
+credential disclosure, per-subject saved analysis, refusal of legacy writes,
+word-form and related-tag matching, and single-photo category album assignment
+with score-bound skips. Use local fixture libraries to check full-library
+pagination, filtering, ranking, background progress and restart reuse without
+touching a real Immich instance.
 
 ## Upstream contracts
 

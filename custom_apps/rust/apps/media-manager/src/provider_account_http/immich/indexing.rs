@@ -185,7 +185,7 @@ pub(in crate::provider_account_http) async fn indexed(
         store: &state.store,
         scope: &scope,
     };
-    let mut ids = index.search(&query).map_err(|_| index_error(&id))?;
+    let (mut ids, tag_matches) = index.search(&query).map_err(|_| index_error(&id))?;
     let next = (ids.len() > PAGE_SIZE && query.page < 100_000).then_some(query.page + 1);
     ids.truncate(PAGE_SIZE);
     let mut items = Vec::new();
@@ -223,6 +223,6 @@ pub(in crate::provider_account_http) async fn indexed(
         }
     }
     Ok(Json(
-        json!({"items":items,"nextPage":next,"canTag":false,"index":index.status().map_err(|_|index_error(&id))?,"requestId":id}),
+        json!({"items":items,"nextPage":next,"canTag":false,"index":index.status().map_err(|_|index_error(&id))?,"tagMatches":tag_matches,"requestId":id}),
     ))
 }

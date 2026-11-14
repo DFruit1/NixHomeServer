@@ -1,8 +1,9 @@
 //! Private, derived photo metadata. Stored beside provider accounts, never in
 //! Immich or sidecars. A credential change starts a separate index partition.
-use crate::provider_accounts::ProviderAccountStore;
+use crate::{image_search, provider_accounts::ProviderAccountStore};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 pub(crate) const MODEL: &str = "eye@v1.0.0";
 pub(crate) const PAGE_SIZE: usize = 48;
@@ -75,6 +76,7 @@ pub(crate) struct Search {
     pub query: String,
     pub tags: String,
     pub tag_mode: String,
+    pub related: bool,
     pub confidence: f64,
     pub min_aesthetic: f64,
     pub min_keeper: f64,
@@ -93,6 +95,7 @@ impl Default for Search {
             query: String::new(),
             tags: String::new(),
             tag_mode: "all".into(),
+            related: true,
             confidence: 0.5,
             min_aesthetic: 0.0,
             min_keeper: 0.0,
@@ -117,23 +120,25 @@ pub(crate) fn probability(n: f64) -> bool {
     n.is_finite() && (0.0..=1.0).contains(&n)
 }
 impl Search {
-    pub fn tags(&self) -> Vec<&str> {
+    /// Typed words as normalised EYE-style identifiers, in input order.
+    pub fn terms(&self) -> Vec<String> {
+        let mut seen = BTreeSet::new();
         self.tags
             .split(',')
             .map(str::trim)
-            .filter(|s| !s.is_empty())
+            .filter(|term| !term.is_empty())
+            .map(image_search::normalize)
+            .filter(|term| !term.is_empty() && seen.insert(term.clone()))
             .collect()
     }
     pub fn valid(&self) -> bool {
+        let terms = self.terms();
         (1..=100_000).contains(&self.page)
             && self.query.len() <= 200
             && !self.query.chars().any(char::is_control)
             && self.tags.len() <= 3104
-            && self.tags().len() <= 32
-            && self
-                .tags()
-                .iter()
-                .all(|t| crate::decision_index::valid_tag(t))
+            && terms.len() <= image_search::MAX_TERMS
+            && terms.iter().all(|term| valid_tag(term))
             && ["all", "any"].contains(&self.tag_mode.as_str())
             && [
                 self.confidence,
@@ -153,8 +158,8 @@ impl Search {
             ]
             .contains(&self.sort.as_str())
             && ["asc", "desc"].contains(&self.direction.as_str())
-            && (self.sort_tag.is_empty() || valid_tag(&self.sort_tag))
-            && (self.sort != "tag" || valid_tag(&self.sort_tag))
+            && self.sort_tag.len() <= 96
+            && (self.sort != "tag" || valid_tag(&image_search::normalize(&self.sort_tag)))
             && [self.aesthetic_weight, self.keeper_weight, self.cover_weight]
                 .into_iter()
                 .all(|w| w.is_finite() && (0.0..=100.0).contains(&w))
@@ -248,12 +253,17 @@ impl Index<'_> {
             |r| r.get(0),
         )
     }
-    pub fn search(&self, q: &Search) -> rusqlite::Result<Vec<String>> {
+    /// Matching asset ids plus the widened tags that actually occur in this
+    /// account's index, for the browser to explain them.
+    pub fn search(
+        &self,
+        q: &Search,
+    ) -> rusqlite::Result<(Vec<String>, Vec<image_search::TagMatch>)> {
         // Only fixed expressions are interpolated. Every user value is bound.
         let sort = match q.sort.as_str() {
             "aesthetic" => "a.aesthetic", "keeper" => "a.keeper", "cover" => "a.cover",
             "scores" => "(a.aesthetic*?10 + a.keeper*?11 + a.cover*?12) / (?10+?11+?12)",
-            "tag" => "coalesce((SELECT confidence FROM image_tags WHERE scope=a.scope AND asset_id=a.asset_id AND tag=?9),0)",
+            "tag" => "coalesce((SELECT max(confidence) FROM image_tags WHERE scope=a.scope AND asset_id=a.asset_id AND tag IN (SELECT value FROM json_each(?9))),0)",
             _ => "a.captured_at",
         };
         let direction = if q.direction == "asc" { "ASC" } else { "DESC" };
@@ -261,53 +271,65 @@ impl Index<'_> {
         // per-asset correlated subquery: a correlated "tag IN list" made SQLite
         // drive each asset from the tag index, scanning every row sharing the tag
         // for every candidate photo (tens of seconds on a real library).
+        //
+        // Each typed word keeps its own candidate group, so a widened word still
+        // counts once toward "all tags". Decision tags are compared with their
+        // saved spelling; the caller adds the raw values to the same group.
         let sql = format!(
             "SELECT a.asset_id FROM image_assets a WHERE a.scope=?1
             AND instr(lower(a.filename),lower(?2))>0
             AND (?3='[]' OR a.asset_id IN (
                 SELECT matched.asset_id FROM (
-                  SELECT t.asset_id AS asset_id, t.tag AS tag FROM image_tags t
+                  SELECT t.asset_id AS asset_id, qt.key AS term FROM image_tags t, json_each(?3) qt
                     WHERE t.scope=?1 AND t.confidence>=?4
-                      AND t.tag IN (SELECT value FROM json_each(?3))
+                      AND t.tag IN (SELECT value FROM json_each(qt.value))
                   UNION
-                  SELECT d.asset_id, d.tag FROM decision_tags d
-                    WHERE d.scope=?1 AND d.tag IN (SELECT value FROM json_each(?3))
+                  SELECT d.asset_id, qt.key FROM decision_tags d, json_each(?3) qt
+                    WHERE d.scope=?1
+                      AND d.tag IN (SELECT value FROM json_each(qt.value))
                 ) matched
                 GROUP BY matched.asset_id
-                HAVING count(*) >=
-                  CASE WHEN ?5='any' THEN 1 ELSE json_array_length(?3) END
+                HAVING count(DISTINCT matched.term) >=
+                  CASE WHEN ?5='any' THEN 1 ELSE (SELECT count(*) FROM json_each(?3)) END
               ))
             AND (?6=0 OR a.aesthetic>=?6) AND (?7=0 OR a.keeper>=?7) AND (?8=0 OR a.cover>=?8)
             AND (?13='capturedAt' OR a.analysis IS NOT NULL)
             ORDER BY {sort} {direction}, a.asset_id ASC LIMIT ?14 OFFSET ?15"
         );
         let db = self.store.index_connection()?;
+        let mut plan = image_search::plan(&q.terms(), q.related);
+        let decision_tags = distinct_decision_tags(&db, self.scope)?;
+        plan.attach_decision_tags(&decision_tags);
+        let sort_plan = if q.sort == "tag" {
+            image_search::plan(&[image_search::normalize(&q.sort_tag)], q.related)
+        } else {
+            image_search::plan(&[], false)
+        };
+        let present = present_tags(&db, self.scope, q.confidence, &plan, &decision_tags)?;
         let mut stmt = db.prepare(&sql)?;
-        let tags = q
-            .tags()
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>();
-        stmt.query_map(
-            params![
-                self.scope,
-                q.query.trim(),
-                serde_json::to_string(&tags).expect("tags"),
-                q.confidence,
-                q.tag_mode,
-                q.min_aesthetic,
-                q.min_keeper,
-                q.min_cover,
-                q.sort_tag,
-                q.aesthetic_weight,
-                q.keeper_weight,
-                q.cover_weight,
-                q.sort,
-                PAGE_SIZE as i64 + 1,
-                (q.page as i64 - 1) * PAGE_SIZE as i64
-            ],
-            |r| r.get(0),
-        )?
-        .collect()
+        let ids = stmt
+            .query_map(
+                params![
+                    self.scope,
+                    q.query.trim(),
+                    plan.groups(),
+                    q.confidence,
+                    q.tag_mode,
+                    q.min_aesthetic,
+                    q.min_keeper,
+                    q.min_cover,
+                    sort_plan.flat(),
+                    q.aesthetic_weight,
+                    q.keeper_weight,
+                    q.cover_weight,
+                    q.sort,
+                    PAGE_SIZE as i64 + 1,
+                    (q.page as i64 - 1) * PAGE_SIZE as i64
+                ],
+                |r| r.get(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((ids, plan.report(&present)))
     }
     pub fn scan(&self) -> rusqlite::Result<(u32, i64, i64)> {
         let db = self.store.index_connection()?;
@@ -371,4 +393,39 @@ impl Index<'_> {
             serde_json::json!({"discovered":total,"analyzed":analyzed,"failed":failed,"scanning":scan.as_ref().is_none_or(|s| s.0<=crate::http::unix_timestamp()),"error":scan.and_then(|s|s.1)}),
         )
     }
+}
+
+/// Decision tags are stored exactly as their owner wrote them. A search reads
+/// the scope's distinct values once so `image_search` can attach the matching
+/// raw spelling to each typed word.
+fn distinct_decision_tags(db: &Connection, scope: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = db.prepare("SELECT DISTINCT tag FROM decision_tags WHERE scope=?1")?;
+    stmt.query_map([scope], |row| row.get(0))?.collect()
+}
+
+/// Tags from this account's index that would count for the current search, so
+/// the response can name the widening that actually applies to these photos.
+fn present_tags(
+    db: &Connection,
+    scope: &str,
+    confidence: f64,
+    plan: &image_search::Plan,
+    decision_tags: &[String],
+) -> rusqlite::Result<BTreeSet<String>> {
+    let mut present: BTreeSet<String> = decision_tags.iter().cloned().collect();
+    if plan.terms.is_empty() {
+        return Ok(present);
+    }
+    let mut stmt = db.prepare(
+        "SELECT DISTINCT tag FROM image_tags
+         WHERE scope=?1 AND confidence>=?2
+           AND tag IN (SELECT value FROM json_each(?3))",
+    )?;
+    let matched = stmt.query_map(params![scope, confidence, plan.flat()], |row| {
+        row.get::<_, String>(0)
+    })?;
+    for tag in matched {
+        present.insert(tag?);
+    }
+    Ok(present)
 }

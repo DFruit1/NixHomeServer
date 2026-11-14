@@ -431,6 +431,88 @@ async fn tag_search_stays_bounded_on_a_large_library() {
 }
 
 #[tokio::test]
+async fn tag_search_understands_word_forms_and_optional_related_tags() {
+    use rusqlite::params;
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = Fixture::default();
+    let (app, task) = test_app(&temp, fixture).await;
+    // The fixture has no EYE socket, so analysis fails after registering the
+    // account scope that owns the private index.
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{ROOT}/{PHOTO}/analysis"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let database = rusqlite::Connection::open(temp.path().join("accounts.sqlite3")).unwrap();
+    let scope: String = database
+        .query_row("SELECT scope FROM image_assets", [], |row| row.get(0))
+        .unwrap();
+    database
+        .execute(
+            "UPDATE image_assets SET analysis='saved',aesthetic=0.5,keeper=0.5,cover=0.5,tagged=1
+             WHERE scope=?1 AND asset_id=?2",
+            params![scope, PHOTO],
+        )
+        .unwrap();
+    for tag in ["rock", "forest"] {
+        database
+            .execute(
+                "INSERT INTO image_tags(scope,asset_id,tag,confidence) VALUES (?1,?2,?3,0.9)",
+                params![scope, PHOTO, tag],
+            )
+            .unwrap();
+    }
+    database
+        .execute(
+            "INSERT INTO decision_tags VALUES (?1,?2,'To Be Deleted')",
+            params![scope, PHOTO],
+        )
+        .unwrap();
+    drop(database);
+    for (query, found) in [
+        ("tags=Rocks", true),
+        ("tags=Rocks&related=false", true),
+        ("tags=woods", true),
+        ("tags=woods&related=false", false),
+        ("tags=rock,woods&tagMode=all", true),
+        ("tags=to%20be%20deleted", true),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "GET",
+                &format!("{ROOT}/index?page=1&{query}"),
+                "alice",
+                false,
+                Value::Null,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{query}");
+        let body = json_response(response).await;
+        assert_eq!(
+            !body["items"].as_array().unwrap().is_empty(),
+            found,
+            "{query} returned {body}"
+        );
+        if query == "tags=Rocks" {
+            assert_eq!(
+                body["tagMatches"],
+                json!([{"term": "rocks", "tags": ["rock"]}])
+            );
+        }
+    }
+    task.abort();
+}
+
+#[tokio::test]
 async fn refuses_legacy_tag_writes_for_editors() {
     let temp = tempfile::tempdir().unwrap();
     let fixture = Fixture::default();

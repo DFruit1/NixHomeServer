@@ -15,6 +15,7 @@ import type {
   ImmichIndexedPage,
   ImmichIndexStatus,
   ImmichImageResponse,
+  ImmichTagMatch,
   ImmichTaggingState,
 } from "./api-contract.generated";
 import { Icon } from "./icon";
@@ -50,6 +51,7 @@ export const ImagesView = component$<{
     filters: {
       tags: "",
       tagMode: "all",
+      related: true,
       confidence: 50,
       minAesthetic: 0,
       minKeeper: 0,
@@ -63,6 +65,7 @@ export const ImagesView = component$<{
     },
     appliedFilters: "",
     index: undefined as ImmichIndexStatus | undefined,
+    tagMatches: [] as ImmichTagMatch[],
     query: "",
     appliedQuery: "",
     nextPage: null as number | null,
@@ -129,6 +132,7 @@ export const ImagesView = component$<{
       if (listing !== state.listing) return;
       state.appliedFilters = filters.toString();
       state.index = result.index;
+      state.tagMatches = result.tagMatches;
       state.items = more
         ? [
             ...state.items,
@@ -302,6 +306,8 @@ export const ImagesView = component$<{
 
   const searchTag = $((tag: string) => {
     state.filters.tags = tag;
+    // A saved tag chip means that exact tag; related wording stays opt-in.
+    state.filters.related = false;
     filtersOpen.value = true;
     return load();
   });
@@ -710,6 +716,27 @@ export const ImagesView = component$<{
                     </select>
                   </label>
                 </div>
+                <label class="checkbox-field">
+                  <input
+                    type="checkbox"
+                    checked={state.filters.related}
+                    onChange$={(_, el) => (state.filters.related = el.checked)}
+                  />
+                  Also match related tags
+                </label>
+                {state.tagMatches.length > 0 && (
+                  <p class="images-filter-note">
+                    Also matched:{" "}
+                    {state.tagMatches
+                      .map(
+                        (match) =>
+                          `${tagLabel(match.term)} → ${match.tags
+                            .map(tagLabel)
+                            .join(", ")}`,
+                      )
+                      .join("; ")}
+                  </p>
+                )}
                 {state.filters.sort === "tag" && (
                   <label>
                     Tag to sort by

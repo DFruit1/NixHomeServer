@@ -13,6 +13,7 @@ pub mod core;
 mod decision_index;
 pub mod http;
 mod image_index;
+mod image_search;
 mod lookup_cache;
 pub mod media;
 pub mod metadata;
