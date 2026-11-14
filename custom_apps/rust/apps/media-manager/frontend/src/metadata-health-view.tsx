@@ -866,6 +866,30 @@ function issueAnswered(
   });
 }
 
+// Count the checks a settled priority issue keeps hidden. This reads the
+// selection store, so it belongs in a small subscribing component rather than
+// the page render.
+function heldIssueCount(
+  results: MetadataHealthResult[],
+  selections: HealthSelections,
+  hidden: Record<string, boolean>,
+  canEdit: boolean,
+): number {
+  let total = 0;
+  for (const group of groupResults(results)) {
+    const issues = groupIssues(group.results);
+    const held = issues.some(
+      (grouped) =>
+        blocksLaterChecks(grouped, canEdit) &&
+        !issueAnswered(grouped, selections, hidden),
+    );
+    if (!held) continue;
+    for (const grouped of issues)
+      if (!isPriorityIssue(grouped.issue)) total += grouped.entries.length;
+  }
+  return total;
+}
+
 function groupIssues(results: MetadataHealthResult[]): GroupedIssue[] {
   const grouped = new Map<string, GroupedIssue>();
   for (const target of results) {
@@ -1525,6 +1549,8 @@ const HealthIssueReview = component$<{
   onConverted$: QRL<() => void>;
   onLookup$: QRL<
     (
+      group: HealthGroup,
+      grouped: GroupedIssue,
       issue: MetadataHealthIssue,
       target: MetadataHealthResult,
       primary: ProviderDefinition,
@@ -1809,7 +1835,15 @@ const HealthIssueReview = component$<{
                       ? "Metadata lookup requires editor access."
                       : undefined
                   }
-                  onClick$={() => props.onLookup$(issue, target, primary)}
+                  onClick$={() =>
+                    props.onLookup$(
+                      props.group,
+                      props.grouped,
+                      issue,
+                      target,
+                      primary,
+                    )
+                  }
                 >
                   Find from External Providers
                 </button>
@@ -2046,6 +2080,104 @@ const HealthResult = component$<{ group: HealthGroup; canEdit: boolean }>(
   },
 );
 
+// One item's issue list. Only this component reads selections to decide whether
+// the priority issues are settled, so a pick re-renders this item (and the
+// toolbar count) instead of every result on the page.
+const HealthGroupChecks = component$<{
+  group: HealthGroup;
+  canEdit: boolean;
+  getSession$: GetHealthLookupSession;
+  providers: ProviderDefinition[];
+  selections: HealthSelections;
+  hidden: Record<string, boolean>;
+  onlineSelections: Record<string, { value: unknown; source: string }>;
+  onApply$: ApplyHealthValue;
+  onDecision$: QRL<
+    (entry: HealthIssueEntry, choice: HealthChoice) => Promise<boolean>
+  >;
+  onConverted$: QRL<() => void>;
+  onLookup$: QRL<
+    (
+      group: HealthGroup,
+      grouped: GroupedIssue,
+      issue: MetadataHealthIssue,
+      target: MetadataHealthResult,
+      primary: ProviderDefinition,
+    ) => void
+  >;
+}>((props) => {
+  const issues = groupIssues(props.group.results);
+  const held = issues.some(
+    (grouped) =>
+      blocksLaterChecks(grouped, props.canEdit) &&
+      !issueAnswered(grouped, props.selections, props.hidden),
+  );
+  const shown = held
+    ? issues.filter((grouped) => isPriorityIssue(grouped.issue))
+    : issues;
+  const trackSequenceIndex = issues.findIndex((candidate) =>
+    candidate.entries.some((entry) =>
+      TRACK_SEQUENCE_CODES.has(entry.issue.code),
+    ),
+  );
+  return (
+    <HealthResult group={props.group} canEdit={props.canEdit}>
+      {shown.map((grouped, index) => (
+        <HealthIssueReview
+          q:slot={isPriorityIssue(grouped.issue) ? "priority" : undefined}
+          trackSequence={index === trackSequenceIndex}
+          getSession$={props.getSession$}
+          key={`${props.group.key}-${grouped.key}`}
+          group={props.group}
+          grouped={grouped}
+          providers={props.providers}
+          canEdit={props.canEdit}
+          selectedOnline={
+            props.onlineSelections[`${props.group.key}:${grouped.key}`]
+          }
+          selections={props.selections}
+          onApply$={props.onApply$}
+          onDecision$={props.onDecision$}
+          onConverted$={props.onConverted$}
+          onLookup$={props.onLookup$}
+        />
+      ))}
+    </HealthResult>
+  );
+});
+
+// The toolbar total has to follow held priority checks, so it subscribes on its
+// own instead of making the page render read every selection.
+const HealthSummary = component$<{
+  results: MetadataHealthResult[];
+  visibleResults: MetadataHealthResult[];
+  issueCount: number;
+  inspectedItems: number;
+  scanning: boolean;
+  incomplete: boolean;
+  canEdit: boolean;
+  selections: HealthSelections;
+  hidden: Record<string, boolean>;
+}>((props) => {
+  const held = heldIssueCount(
+    props.visibleResults,
+    props.selections,
+    props.hidden,
+    props.canEdit,
+  );
+  const visible = Math.max(
+    0,
+    props.issueCount - hiddenIssueCount(props.results, props.hidden) - held,
+  );
+  return (
+    <p class="health-summary" role="status">
+      {props.scanning
+        ? `Checking libraries · ${props.inspectedItems} items inspected`
+        : `${visible} ${visible === 1 ? "issue" : "issues"} across ${props.inspectedItems} inspected ${props.inspectedItems === 1 ? "item" : "items"}${props.incomplete ? " · incomplete" : ""}`}
+    </p>
+  );
+});
+
 interface MetadataHealthProps {
   roots: HealthRoot[];
   initialRootId?: string;
@@ -2202,6 +2334,29 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
   });
 
   const rescanAfterConversion$ = $(() => inspectLibraries(inbox.rootId));
+  // Stable across picks so an item that reveals its remaining checks does not
+  // re-render every review just because the callback identity changed.
+  const showProviders$ = $(
+    (
+      group: HealthGroup,
+      grouped: GroupedIssue,
+      issue: MetadataHealthIssue,
+      target: MetadataHealthResult,
+      primary: ProviderDefinition,
+    ) => {
+      const heading = groupHeading(group);
+      providersDialogFor.value = {
+        issue,
+        mediaKind: target.mediaKind,
+        primary,
+        itemId: target.itemId,
+        rootId: target.rootId,
+        query: heading.text,
+        queryFromFilename: heading.fromFilename,
+        selectionKey: `${group.key}:${grouped.key}`,
+      };
+    },
+  );
 
   const inspection = useResource$(({ track, cleanup }) => {
     const rootId = track(() => inbox.rootId);
@@ -2371,44 +2526,6 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
       ),
     }))
     .filter((result) => result.health.length > 0);
-  // Important fixes come first for each item; its remaining checks stay out of
-  // the way until those are settled.
-  const issueGroups = groupResults(visibleResults).map((group) => {
-    const issues = groupIssues(group.results);
-    const held = issues.some(
-      (grouped) =>
-        blocksLaterChecks(grouped, Boolean(props.canEdit)) &&
-        !issueAnswered(grouped, selections, optimisticDecisions),
-    );
-    return {
-      group,
-      issues,
-      held,
-      shown: held
-        ? issues.filter((grouped) => isPriorityIssue(grouped.issue))
-        : issues,
-    };
-  });
-  const heldIssueCount = issueGroups.reduce(
-    (total, entry) =>
-      entry.held
-        ? total +
-          entry.issues.reduce(
-            (count, grouped) =>
-              isPriorityIssue(grouped.issue)
-                ? count
-                : count + grouped.entries.length,
-            0,
-          )
-        : total,
-    0,
-  );
-  const visibleIssueCount = Math.max(
-    0,
-    inbox.issueCount -
-      hiddenIssueCount(inbox.results, optimisticDecisions) -
-      heldIssueCount,
-  );
   return (
     <section
       class="health-page"
@@ -2448,11 +2565,17 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
             ))}
           </select>
         </label>
-        <p class="health-summary" role="status">
-          {inbox.scanning
-            ? `Checking libraries · ${inbox.inspectedItems} items inspected`
-            : `${visibleIssueCount} ${visibleIssueCount === 1 ? "issue" : "issues"} across ${inbox.inspectedItems} inspected ${inbox.inspectedItems === 1 ? "item" : "items"}${inbox.errors.length ? " · incomplete" : ""}`}
-        </p>
+        <HealthSummary
+          results={inbox.results}
+          visibleResults={visibleResults}
+          issueCount={inbox.issueCount}
+          inspectedItems={inbox.inspectedItems}
+          scanning={inbox.scanning}
+          incomplete={inbox.errors.length > 0}
+          canEdit={Boolean(props.canEdit)}
+          selections={selections}
+          hidden={optimisticDecisions}
+        />
       </div>
 
       {inbox.errors.length > 0 && (
@@ -2481,49 +2604,21 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
       ) : null}
 
       <div class="health-results">
-        {issueGroups.map(({ group, issues, shown }) => (
-          <HealthResult
+        {groupResults(visibleResults).map((group) => (
+          <HealthGroupChecks
+            key={group.key}
             group={group}
             canEdit={Boolean(props.canEdit)}
-            key={group.key}
-          >
-            {shown.map((grouped, index) => (
-              <HealthIssueReview
-                q:slot={isPriorityIssue(grouped.issue) ? "priority" : undefined}
-                trackSequence={
-                  issues.findIndex((candidate) =>
-                    candidate.entries.some((entry) =>
-                      TRACK_SEQUENCE_CODES.has(entry.issue.code),
-                    ),
-                  ) === index
-                }
-                getSession$={getLookupSession$}
-                key={`${group.key}-${grouped.key}`}
-                group={group}
-                grouped={grouped}
-                providers={providerCatalog.providers}
-                canEdit={Boolean(props.canEdit)}
-                selectedOnline={onlineSelections[`${group.key}:${grouped.key}`]}
-                selections={selections}
-                onApply$={applyValue$}
-                onDecision$={rememberDecision$}
-                onConverted$={rescanAfterConversion$}
-                onLookup$={(issue, target, primary) => {
-                  const heading = groupHeading(group);
-                  providersDialogFor.value = {
-                    issue,
-                    mediaKind: target.mediaKind,
-                    primary,
-                    itemId: target.itemId,
-                    rootId: target.rootId,
-                    query: heading.text,
-                    queryFromFilename: heading.fromFilename,
-                    selectionKey: `${group.key}:${grouped.key}`,
-                  };
-                }}
-              />
-            ))}
-          </HealthResult>
+            getSession$={getLookupSession$}
+            providers={providerCatalog.providers}
+            selections={selections}
+            hidden={optimisticDecisions}
+            onlineSelections={onlineSelections}
+            onApply$={applyValue$}
+            onDecision$={rememberDecision$}
+            onConverted$={rescanAfterConversion$}
+            onLookup$={showProviders$}
+          />
         ))}
       </div>
       {dialog && (

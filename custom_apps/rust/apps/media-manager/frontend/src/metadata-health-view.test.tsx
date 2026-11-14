@@ -890,6 +890,102 @@ it("checks a number-table row and applies its current value", async () => {
   expect(box.checked).toBe(true);
 });
 
+function priorityFetch() {
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path.includes("/provider-accounts"))
+      return new Response(wireJson(providerCatalog()));
+    if (path.endsWith("/metadata"))
+      return new Response(
+        wireJson({ mediaType: "audiobook", sources: [], title: "Lawson" }),
+      );
+    if (path.endsWith("/metadata/sidecar"))
+      return new Response(
+        wireJson({
+          id: "health-plan",
+          digest: "digest-1",
+          expiresAt: 0,
+          actions: [],
+          warnings: [],
+        }),
+        { status: 201 },
+      );
+    if (path.endsWith("/health-decisions"))
+      return new Response(wireJson({ saved: true }));
+    const payload = {
+      rootId: "audiobooks",
+      inspectedItems: 1,
+      issueCount: 2,
+      severityCounts: { error: 0, warning: 2, info: 0 },
+      nextCursor: null,
+      results: [
+        {
+          itemId: "lawson-0",
+          rootId: "audiobooks",
+          relativePath: "Lawson/01_lawson.mp3",
+          mediaKind: "audiobook",
+          albumGroup: "Lawson",
+          health: [
+            {
+              code: "conflicting-title",
+              severity: "warning",
+              field: "title",
+              title: "Title needs a review",
+              message: "Compare sources",
+              sources: ["sidecar", "embedded-audio-tags"],
+              currentValue: "Old title",
+              currentSources: ["Sidecar"],
+              proposalSignature: "a".repeat(64),
+              proposedValues: [
+                { value: "New title", sources: ["Embedded audio tags"] },
+              ],
+            },
+            {
+              code: "conflicting-volumeNumber",
+              severity: "warning",
+              field: "volumeNumber",
+              title: "Volume Number differs between sources",
+              message: "Compare sources",
+              sources: ["sidecar", "embedded-audio-tags"],
+              currentValue: "1",
+              currentSources: ["Sidecar"],
+              proposalSignature: "b".repeat(64),
+              proposedValues: [{ value: "2", sources: ["Audiobook tags"] }],
+            },
+          ],
+        },
+      ],
+    };
+    return new Response(wireJson(payload));
+  });
+}
+
+it("settles a priority value and reveals the item's remaining checks", async () => {
+  vi.stubGlobal("fetch", priorityFetch());
+  const { render, screen, userEvent } = await createDOM();
+  await render(
+    <MetadataHealthView
+      roots={[{ id: "audiobooks", label: "Audiobooks" }]}
+      canEdit
+    />,
+  );
+  await vi.waitFor(() => {
+    expect(screen.querySelectorAll(".health-result-issue")).toHaveLength(1);
+    expect(screen.textContent).toContain("1 issue across 1 inspected item");
+  });
+  expect(screen.textContent).not.toContain("Volume Number differs");
+  const proposed = Array.from(
+    screen.querySelectorAll(".health-value-set"),
+  ).find((button) => button.textContent?.includes("New title"));
+  if (!proposed) throw new Error("missing proposed priority value");
+  await userEvent(proposed, "click");
+  await vi.waitFor(() => {
+    expect(screen.querySelectorAll(".health-result-issue")).toHaveLength(2);
+    expect(screen.textContent).toContain("Volume Number differs");
+    expect(screen.textContent).toContain("2 issues across 1 inspected item");
+  });
+});
+
 const OPEN_LIBRARY = {
   id: "open-library",
   name: "Open Library",
