@@ -601,7 +601,7 @@ pub(super) async fn evaluate(evaluation: Evaluation<'_, '_>) -> Result<Value, Ap
                         .add_to_album(album.state, index, category, album.asset_id, id)
                         .await
                     {
-                        Ok(()) => {
+                        Ok(_) => {
                             index
                                 .complete_album(target, rule, category)
                                 .map_err(|_| index_error(id))?;

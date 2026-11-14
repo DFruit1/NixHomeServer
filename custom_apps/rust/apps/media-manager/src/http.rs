@@ -33,6 +33,7 @@ use crate::{
     video_probe::{probe_video_beneath, refresh_root_probes, VideoProbe, VideoProbeCache},
 };
 mod artwork_http;
+mod clips;
 mod comic_archives;
 pub use artwork_http::{ArtworkCandidateCache, JellyfinImageCache};
 mod conversion_inputs;
@@ -314,6 +315,7 @@ pub fn router(state: AppState) -> Router {
             post(artwork_http::preview_artwork_replacement),
         )
         .route("/api/v1/items/{item_id}/stream", get(playback::item_stream))
+        .route("/api/v1/items/{item_id}/clips", post(clips::create_clip))
         .route(
             "/api/v1/items/{item_id}/playback-targets",
             get(playback::item_playback_targets),

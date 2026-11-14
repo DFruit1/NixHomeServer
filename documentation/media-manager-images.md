@@ -4,8 +4,9 @@ Media Manager automatically analyzes each connected user's Immich photos with
 EYE and saves tags, confidence values and aesthetic, keeper and cover scores in
 its own SQLite database. **Analysis, search and image files are read-only**: no
 Immich tag updates, database writes, original downloads, EXIF changes or
-sidecars occur in the analysis and search paths. The only Immich write is the
-opt-in category question adding the assessed photo to a named album. Timeline
+sidecars occur in the analysis and search paths. Immich writes happen only for
+the opt-in category question adding an assessed photo to a named album, and for
+the explicit **Create GIF** export described below. Timeline
 and archived photos are indexed; locked, hidden, trashed and non-image assets
 are excluded.
 
@@ -258,10 +259,26 @@ request IDs, without filenames, tags, subjects, photo contents or credentials.
 Search returns persisted results during indexing; unavailable Immich authorization
 fails closed. Other metadata providers remain independent of EYE.
 
+## Video GIFs
+
+Open **Videos**, play a video, and choose **Create GIF** beside the title. The
+dialog captures the current position, a length from 1 to 30 seconds, and an
+album. The picker lists albums you own and defaults to one named `GIF`, created
+on demand. The server encodes the clip and uploads it as an archived asset, so it
+does not enter the Immich timeline, then adds it to that album; the confirmation
+links to the album in Photos.
+
+Uploads need `asset.upload` in addition to the album permissions above. Managed
+keys receive it automatically; a hand-configured Immich key must grant it in
+Immich. The original video is never changed, and generated clips are not written
+to the media library or any Media Manager folder. Encoding shares the playback
+converter's single encoder slot, so a clip may wait for a running video
+conversion to finish.
+
 Focused boundary regressions in `tests/immich_images.rs` cover private-photo and
 credential disclosure, per-subject saved analysis, refusal of legacy writes,
-word-form and related-tag matching, and single-photo category album assignment
-with score-bound skips. Use local fixture libraries to check full-library
+word-form and related-tag matching, single-photo category album assignment with
+score-bound skips, and archived GIF upload into only the chosen album. Use local fixture libraries to check full-library
 pagination, filtering, ranking, background progress and restart reuse without
 touching a real Immich instance.
 

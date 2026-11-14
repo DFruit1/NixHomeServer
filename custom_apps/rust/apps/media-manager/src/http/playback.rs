@@ -5,7 +5,10 @@ use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 
-static VIDEO_TRANSCODE_LIMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+// Generated clips use the same sole encoder permit so a clip encode and a
+// playback conversion never compete for the server's CPU at the same time.
+pub(super) static VIDEO_TRANSCODE_LIMIT: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(1);
 
 // Remember bounded recent failures so readiness polls report a failed job
 // rather than immediately launching the same failed encode again.

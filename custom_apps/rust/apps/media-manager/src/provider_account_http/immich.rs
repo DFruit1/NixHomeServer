@@ -2,6 +2,7 @@
 //! archive it in Immich. Derived EYE tags and scores stay in our private index.
 use super::*;
 use crate::thumbnail::{self, ThumbnailQuery};
+use axum::body::Bytes;
 use reqwest::Method;
 use std::{path::Path as FilePath, time::Duration};
 use zeroize::Zeroizing;
@@ -22,6 +23,9 @@ pub(super) struct Runtime {
     /// Original and ZIP exports stream for as long as data keeps arriving; a
     /// total timeout would cut off large exports on slow phone links.
     download: reqwest::Client,
+    /// Generated clips stay bounded, so a total timeout protects Immich from a
+    /// stalled upload without cutting off a legitimate one.
+    upload: reqwest::Client,
     decision_gate: Arc<tokio::sync::Mutex<()>>,
     album_gate: Arc<tokio::sync::Mutex<()>>,
     gate: Arc<tokio::sync::Mutex<()>>,
@@ -52,6 +56,13 @@ impl Runtime {
                 .read_timeout(Duration::from_secs(120))
                 .build()
                 .map_err(|_| "could not initialize Immich download client")?,
+            upload: reqwest::Client::builder()
+                .user_agent("NixHomeServer Media Manager/0.1.0")
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(180))
+                .build()
+                .map_err(|_| "could not initialize Immich upload client")?,
             decision_gate: Arc::default(),
             album_gate: Arc::default(),
             gate: Arc::default(),
@@ -496,11 +507,11 @@ impl Account {
         name: &str,
         asset: &str,
         id: &str,
-    ) -> Result<(), ApiError> {
+    ) -> Result<String, ApiError> {
         let _guard = self.runtime.album_gate.lock().await;
         if let Some(album_id) = index.album_id(name).map_err(|_| index_error(id))? {
             match self.add_album_asset(state, &album_id, asset, id).await {
-                Ok(()) => return Ok(()),
+                Ok(()) => return Ok(album_id),
                 Err(err) if err.status() == StatusCode::NOT_FOUND => {
                     index.forget_album(name).map_err(|_| index_error(id))?;
                 }
@@ -522,7 +533,120 @@ impl Account {
         index
             .save_album(name, &album_id)
             .map_err(|_| index_error(id))?;
-        Ok(())
+        Ok(album_id)
+    }
+
+    /// Albums the caller owns, newest activity first is not guaranteed by
+    /// Immich, so the picker sorts by name. Shared albums stay excluded because
+    /// a generated clip must never land in another owner's album.
+    pub(super) async fn albums(
+        &self,
+        state: &ProviderBrokerState,
+        id: &str,
+    ) -> Result<Vec<Album>, ApiError> {
+        let mut url = self
+            .runtime
+            .base
+            .join("albums")
+            .map_err(|_| unavailable(id))?;
+        url.query_pairs_mut().append_pair("isOwned", "true");
+        let response = self
+            .album_response(state, Method::GET, url, None, id)
+            .await?;
+        let albums: Vec<Album> = bounded_provider_json(response)
+            .await
+            .map_err(|_| upstream_error(id))?;
+        if albums.len() > 10_000 {
+            return Err(upstream_error(id));
+        }
+        let mut albums = albums
+            .into_iter()
+            .filter(|album| {
+                valid_mbid(&album.id)
+                    && !album.album_name.trim().is_empty()
+                    && album.album_name.len() <= 256
+                    && !album.album_name.chars().any(char::is_control)
+            })
+            .collect::<Vec<_>>();
+        albums.sort_by_key(|album| album.album_name.to_lowercase());
+        albums.truncate(1_000);
+        Ok(albums)
+    }
+
+    /// Upload one generated clip as an archived asset so it stays out of the
+    /// timeline and only appears where the caller puts it.
+    pub(super) async fn upload_clip(
+        &self,
+        bytes: Vec<u8>,
+        filename: &str,
+        created_at: &str,
+        id: &str,
+    ) -> Result<String, ApiError> {
+        let url = self
+            .runtime
+            .base
+            .join("assets")
+            .map_err(|_| unavailable(id))?;
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(filename.to_owned())
+            .mime_str("image/gif")
+            .map_err(|_| upstream_error(id))?;
+        let form = reqwest::multipart::Form::new()
+            .text("fileCreatedAt", created_at.to_owned())
+            .text("fileModifiedAt", created_at.to_owned())
+            .text("filename", filename.to_owned())
+            .text("visibility", "archive")
+            .part("assetData", part);
+        let mut key = HeaderValue::from_str(&self.key).map_err(|_| upstream_error(id))?;
+        key.set_sensitive(true);
+        let response = self
+            .runtime
+            .upload
+            .post(url)
+            .header("x-api-key", key)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|_| upstream_error(id))?;
+        match response.status() {
+            status if status.is_success() => {}
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+                return Err(error(
+                    StatusCode::FORBIDDEN,
+                    "immich_upload_forbidden",
+                    "Your Immich API key cannot upload assets. Add the asset.upload permission in Immich.",
+                    id,
+                ));
+            }
+            reqwest::StatusCode::PAYLOAD_TOO_LARGE => {
+                return Err(error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "immich_clip_too_large",
+                    "Immich rejected this clip because it is too large. Try a shorter clip.",
+                    id,
+                ));
+            }
+            reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                return Err(error(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "immich_rate_limited",
+                    "Immich is busy. Try again shortly.",
+                    id,
+                ));
+            }
+            _ => return Err(upstream_error(id)),
+        }
+        #[derive(Deserialize)]
+        struct Uploaded {
+            id: String,
+        }
+        let uploaded: Uploaded = bounded_provider_json(response)
+            .await
+            .map_err(|_| upstream_error(id))?;
+        if !valid_mbid(&uploaded.id) {
+            return Err(upstream_error(id));
+        }
+        Ok(uploaded.id)
     }
 }
 
@@ -549,9 +673,11 @@ struct Asset {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Album {
+pub(super) struct Album {
     id: String,
     album_name: String,
+    #[serde(default)]
+    asset_count: u64,
 }
 
 impl Asset {
@@ -687,6 +813,187 @@ pub(super) async fn details(
     Ok(Json(
         json!({ "image": image, "analysis": analysis, "requestId": id }),
     ))
+}
+
+pub(super) async fn albums(
+    State(state): State<ProviderBrokerState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let id = request_id();
+    let identity = identity_from_headers(&headers, &id)?;
+    let account = account(&state, &identity, &id)?;
+    let albums = account.albums(&state, &id).await?;
+    let albums = albums
+        .into_iter()
+        .map(|album| {
+            json!({
+                "id": album.id,
+                "name": album.album_name,
+                "assetCount": album.asset_count,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(json!({ "albums": albums, "requestId": id })))
+}
+
+const MAX_CLIP_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ClipUploadQuery {
+    #[serde(default)]
+    album_id: Option<String>,
+    #[serde(default = "default_clip_album")]
+    album_name: String,
+    #[serde(default)]
+    filename: Option<String>,
+}
+
+fn default_clip_album() -> String {
+    "GIF".into()
+}
+
+fn valid_clip_filename(name: &str) -> bool {
+    name.len() <= 120
+        && name.ends_with(".gif")
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+/// Upload one generated GIF and place it in the caller's chosen album. The
+/// asset is archived at upload time so the timeline never fills with clips.
+pub(super) async fn upload_clip(
+    State(state): State<ProviderBrokerState>,
+    headers: HeaderMap,
+    Query(query): Query<ClipUploadQuery>,
+    bytes: Bytes,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let id = request_id();
+    let identity = identity_from_headers(&headers, &id)?;
+    same_origin(&headers, &id)?;
+    let mime = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim);
+    if mime != Some("image/gif") {
+        return Err(error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "immich_clip_type_invalid",
+            "Upload an animated GIF clip.",
+            &id,
+        ));
+    }
+    if bytes.is_empty() || bytes.len() > MAX_CLIP_BYTES {
+        return Err(error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "immich_clip_size_invalid",
+            "The clip is empty or too large.",
+            &id,
+        ));
+    }
+    let album_name = query.album_name.trim();
+    if album_name.is_empty() || album_name.len() > 128 || album_name.chars().any(char::is_control) {
+        return Err(error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "immich_album_name_invalid",
+            "Choose an album name between 1 and 128 characters.",
+            &id,
+        ));
+    }
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let filename = query.filename.unwrap_or_else(|| {
+        format!(
+            "clip-{}.gif",
+            timestamp
+                .chars()
+                .filter(|character| character.is_ascii_alphanumeric())
+                .collect::<String>()
+        )
+    });
+    if !valid_clip_filename(&filename) {
+        return Err(error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "immich_clip_filename_invalid",
+            "The clip file name is invalid.",
+            &id,
+        ));
+    }
+    let requested_album = match query.album_id.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(album_id) if valid_mbid(album_id) => Some(album_id.to_owned()),
+        Some(_) => {
+            return Err(error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "immich_album_invalid",
+                "Choose a valid Immich album.",
+                &id,
+            ));
+        }
+    };
+    let account = account(&state, &identity, &id)?;
+    let asset_id = account
+        .upload_clip(bytes.to_vec(), &filename, &timestamp, &id)
+        .await?;
+    let album_id = match requested_album {
+        Some(album_id) => {
+            match account
+                .add_album_asset(&state, &album_id, &asset_id, &id)
+                .await
+            {
+                Ok(()) => album_id,
+                Err(err) if err.status() == StatusCode::NOT_FOUND => {
+                    add_clip_to_album(&state, &account, &identity, album_name, &asset_id, &id)
+                        .await?
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        None => add_clip_to_album(&state, &account, &identity, album_name, &asset_id, &id).await?,
+    };
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "assetId": asset_id,
+            "albumId": album_id,
+            "albumName": album_name,
+            "requestId": id,
+        })),
+    ))
+}
+
+async fn add_clip_to_album(
+    state: &ProviderBrokerState,
+    account: &Account,
+    identity: &Identity,
+    album_name: &str,
+    asset_id: &str,
+    id: &str,
+) -> Result<String, ApiError> {
+    let scope = account.scope(identity);
+    let index = Index {
+        store: &state.store,
+        scope: &scope,
+    };
+    match account
+        .add_to_album(state, &index, album_name, asset_id, id)
+        .await
+    {
+        Ok(album_id) => Ok(album_id),
+        Err(err) if err.status() == StatusCode::FORBIDDEN => Err(error(
+            StatusCode::FORBIDDEN,
+            "immich_album_forbidden",
+            "The clip was uploaded to Photos, but your Immich API key cannot add it to the album. Add it from Photos.",
+            id,
+        )),
+        Err(_) => Err(error(
+            StatusCode::BAD_GATEWAY,
+            "immich_album_failed",
+            "The clip was uploaded to Photos, but Immich could not add it to the album. Add it from Photos.",
+            id,
+        )),
+    }
 }
 
 pub(super) async fn preview(

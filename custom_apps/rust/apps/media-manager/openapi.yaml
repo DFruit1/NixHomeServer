@@ -203,6 +203,35 @@ paths:
       responses:
         "403":
           $ref: "#/components/responses/Error"
+  /provider-lookups/immich/albums:
+    get:
+      operationId: listImmichAlbums
+      description: Lists the caller's owned Immich albums for the clip destination picker. Shared albums are excluded so a generated clip never lands in another owner's album.
+      responses:
+        "200":
+          description: Owned albums sorted by name.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImmichAlbumList" }
+  /provider-lookups/immich/clips:
+    post:
+      operationId: uploadImmichClip
+      description: Uploads one generated animated GIF as an archived asset and adds it to the chosen album, creating the album when the caller did not select an existing one. Requires the Immich asset.upload, album.create and albumAsset.create permissions.
+      parameters:
+        - { in: query, name: albumId, required: false, schema: { type: string, format: uuid } }
+        - { in: query, name: albumName, required: false, schema: { type: string, minLength: 1, maxLength: 128, default: GIF } }
+        - { in: query, name: filename, required: false, schema: { type: string, maxLength: 120, default: clip-<timestamp>.gif } }
+      requestBody:
+        required: true
+        content:
+          image/gif:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: The GIF was uploaded and placed in the album. Its asset stays archived outside the timeline.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImmichClipUpload" }
   /provider-lookups/subdl/download:
     post:
       operationId: downloadSubdlSubtitle
@@ -1018,6 +1047,27 @@ paths:
               schema: { type: integer }
         "415":
           $ref: "#/components/responses/Error"
+  /items/{itemId}/clips:
+    post:
+      operationId: createVideoClip
+      description: >-
+        Encodes an animated GIF from the current video position and uploads it to
+        the caller's Immich account in the selected album. The clip is archived
+        in Immich and only appears in that album. Encoding is limited to one job
+        at a time and clips are limited to 30 seconds.
+      parameters:
+        - { in: path, name: itemId, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VideoClipRequest" }
+      responses:
+        "201":
+          description: The GIF was created and saved to the Immich album.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VideoClip" }
   /items/{itemId}/playback-targets:
     get:
       operationId: getItemPlaybackTargets
@@ -2216,6 +2266,47 @@ components:
       properties:
         image: { $ref: "#/components/schemas/ImmichImage" }
         analysis: { anyOf: [{ $ref: "#/components/schemas/EyeAnalysis" }, { type: "null" }] }
+        requestId: { type: string }
+    ImmichAlbum:
+      type: object
+      required: [id, name, assetCount]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        assetCount: { type: integer, minimum: 0 }
+    ImmichAlbumList:
+      type: object
+      required: [albums, requestId]
+      properties:
+        albums: { type: array, maxItems: 1000, items: { $ref: "#/components/schemas/ImmichAlbum" } }
+        requestId: { type: string }
+    ImmichClipUpload:
+      type: object
+      required: [assetId, albumId, albumName, requestId]
+      properties:
+        assetId: { type: string, format: uuid }
+        albumId: { type: string, format: uuid }
+        albumName: { type: string }
+        requestId: { type: string }
+    VideoClipRequest:
+      type: object
+      additionalProperties: false
+      required: [startSeconds, durationSeconds]
+      properties:
+        startSeconds: { type: number, minimum: 0, maximum: 86400, description: Position in the video where the clip starts. }
+        durationSeconds: { type: integer, minimum: 1, maximum: 30 }
+        albumId: { type: [string, "null"], format: uuid, description: Existing Immich album to use. Omit to resolve or create albumName. }
+        albumName: { type: string, minLength: 1, maxLength: 128, default: GIF }
+    VideoClip:
+      type: object
+      required: [assetId, albumId, albumName, filename, startSeconds, durationSeconds, requestId]
+      properties:
+        assetId: { type: string, format: uuid }
+        albumId: { type: string, format: uuid }
+        albumName: { type: string }
+        filename: { type: string }
+        startSeconds: { type: number }
+        durationSeconds: { type: integer }
         requestId: { type: string }
     EyeAnalysis:
       type: object

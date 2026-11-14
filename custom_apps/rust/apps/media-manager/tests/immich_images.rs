@@ -1,7 +1,7 @@
 //! These boundary regressions cover the concrete risk of leaking private photos
 //! or credentials across users or redirects. They never contact a real Immich.
 use axum::{
-    body::{to_bytes, Body},
+    body::{to_bytes, Body, Bytes},
     extract::{Path, State},
     http::{HeaderMap, Request, StatusCode},
     response::{IntoResponse, Response},
@@ -23,6 +23,7 @@ const PHOTO: &str = "10000000-0000-4000-8000-000000000001";
 const OLD_TAG: &str = "20000000-0000-4000-8000-000000000001";
 const NEW_TAG: &str = "20000000-0000-4000-8000-000000000002";
 const ALBUM: &str = "30000000-0000-4000-8000-000000000001";
+const CLIP_ASSET: &str = "40000000-0000-4000-8000-000000000001";
 const ROOT: &str = "/api/v1/provider-lookups/immich/images";
 
 // Automatic keys must remain subject-bound even when a username is reused,
@@ -1597,5 +1598,154 @@ async fn photo_download_batches_reject_invalid_ids_before_upstream_access() {
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
     assert!(fixture.calls.lock().unwrap().is_empty());
+    task.abort();
+}
+
+#[derive(Clone, Default)]
+struct ClipFixture {
+    uploads: Arc<Mutex<Vec<Vec<u8>>>>,
+    album_adds: Arc<Mutex<Vec<String>>>,
+}
+
+async fn clip_upload(
+    State(state): State<ClipFixture>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if headers["x-api-key"] != "fixture-alice" {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    state.uploads.lock().unwrap().push(body.to_vec());
+    Json(json!({"id": CLIP_ASSET, "status": "created"})).into_response()
+}
+
+async fn clip_album_add(
+    State(state): State<ClipFixture>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    assert_eq!(headers["x-api-key"], "fixture-alice");
+    assert_eq!(body, json!({"ids":[CLIP_ASSET]}));
+    state.album_adds.lock().unwrap().push(ALBUM.to_owned());
+    Json(json!([{"id":CLIP_ASSET,"success":true}]))
+}
+
+async fn clip_albums(headers: HeaderMap) -> Json<Value> {
+    assert_eq!(headers["x-api-key"], "fixture-alice");
+    Json(json!([
+        {"id":ALBUM,"albumName":"GIF","assetCount":3},
+        {"id":"30000000-0000-4000-8000-000000000002","albumName":"Clips","assetCount":1}
+    ]))
+}
+
+// A generated clip must never expose its bytes back to the caller, and it must
+// land only in the selected album as an archived asset. A cross-origin or
+// non-GIF request is refused before any Immich access.
+#[tokio::test]
+async fn generated_clips_upload_archived_and_join_only_the_chosen_album() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = ClipFixture::default();
+    let mock = Router::new()
+        .route("/api/assets", post(clip_upload))
+        .route("/api/albums", get(clip_albums))
+        .route(&format!("/api/albums/{ALBUM}/assets"), put(clip_album_add))
+        .with_state(fixture.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, mock).await.unwrap();
+    });
+    let store = ProviderAccountStore::open(
+        &temp.path().join("accounts.sqlite3"),
+        &temp.path().join("master.key"),
+    )
+    .unwrap();
+    store
+        .save(
+            &Identity::try_new("alice", ["users"]).unwrap(),
+            "immich",
+            &[("apiKey".into(), "fixture-alice".into())].into(),
+            1,
+        )
+        .unwrap();
+    let runtime = ProviderBrokerState::new(Arc::new(store))
+        .unwrap()
+        .with_images(
+            &format!("http://{address}/api/"),
+            &temp.path().join("eye.sock"),
+        )
+        .unwrap();
+    let app = provider_account_router(runtime);
+    let clip_request = |origin: &str, content_type: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/api/v1/provider-lookups/immich/clips?albumId={ALBUM}&albumName=GIF&filename=clip-abc.gif"
+            ))
+            .header("host", "media.test")
+            .header("origin", origin)
+            .header("content-type", content_type)
+            .header("x-forwarded-user", "alice")
+            .header("x-forwarded-preferred-username", "alice")
+            .header("x-forwarded-groups", "users")
+            .body(Body::from(b"GIF89a-fixture".to_vec()))
+            .unwrap()
+    };
+    let response = app
+        .clone()
+        .oneshot(clip_request("http://media.test", "image/gif"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let payload = json_response(response).await;
+    assert_eq!(payload["assetId"], CLIP_ASSET);
+    assert_eq!(payload["albumId"], ALBUM);
+    assert_eq!(payload["albumName"], "GIF");
+    assert!(!payload.to_string().contains("GIF89a-fixture"));
+    {
+        let uploads = fixture.uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 1);
+        let multipart = String::from_utf8_lossy(&uploads[0]);
+        assert!(multipart.contains("name=\"visibility\""));
+        assert!(multipart.contains("archive"));
+        assert!(multipart.contains("filename=\"clip-abc.gif\""));
+        assert!(multipart.contains("GIF89a-fixture"));
+    }
+    assert_eq!(
+        fixture.album_adds.lock().unwrap().as_slice(),
+        [ALBUM.to_string()]
+    );
+
+    let response = app
+        .clone()
+        .oneshot(clip_request("http://evil.test", "image/gif"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = app
+        .clone()
+        .oneshot(clip_request("http://media.test", "image/png"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_eq!(fixture.uploads.lock().unwrap().len(), 1);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/provider-lookups/immich/albums")
+                .header("host", "media.test")
+                .header("x-forwarded-user", "alice")
+                .header("x-forwarded-preferred-username", "alice")
+                .header("x-forwarded-groups", "users")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let albums = json_response(response).await;
+    assert_eq!(albums["albums"][0]["name"], "Clips");
+    assert_eq!(albums["albums"][1]["name"], "GIF");
     task.abort();
 }

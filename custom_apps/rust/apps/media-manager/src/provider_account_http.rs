@@ -681,6 +681,14 @@ pub fn provider_account_router(state: ProviderBrokerState) -> Router {
                 .layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
         )
         .route(
+            "/api/v1/provider-lookups/immich/albums",
+            get(immich::albums),
+        )
+        .route(
+            "/api/v1/provider-lookups/immich/clips",
+            axum::routing::post(immich::upload_clip).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
+        .route(
             "/api/v1/provider-lookups/immich/images/index",
             get(immich::indexed),
         )

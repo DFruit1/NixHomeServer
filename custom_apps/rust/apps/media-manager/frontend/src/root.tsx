@@ -737,6 +737,12 @@ export default component$((props: RootProps) => {
         ) : view.value === "player" ? null : view.value === "videos" ? (
           <VideosView
             roots={state.roots}
+            immichUrl={
+              state.status?.integrations.find(
+                (integration) =>
+                  integration.id === "immich" && integration.available,
+              )?.url ?? undefined
+            }
             initialItemId={route.initialItemId}
             initialPath={route.initialPath}
             initialRootId={route.initialRootId}
