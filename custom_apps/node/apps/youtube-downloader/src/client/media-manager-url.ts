@@ -5,12 +5,14 @@ export const buildMediaManagerUrl = (
   mediaType: MediaType,
   location: Pick<Location, 'hostname' | 'protocol'> = defaultLocation(),
   itemPath?: string,
+  rootId?: string,
 ): string => {
   const hostname = location.hostname.split('.');
   hostname[0] = 'media';
   const view = mediaType === 'video' ? 'videos' : 'player';
   const params = new URLSearchParams({ view });
   if (itemPath) params.set('path', itemPath);
+  if (rootId) params.set('root', rootId);
   return `${location.protocol}//${hostname.join('.')}/?${params.toString()}`;
 };
 

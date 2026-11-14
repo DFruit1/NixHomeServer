@@ -1,7 +1,7 @@
 import { $, component$, useSignal } from '@builder.io/qwik';
 import type { CurrentUser, Job } from '../shared/types.js';
 import { buildMediaManagerUrl } from './media-manager-url.js';
-import { buildMediaTargetPath } from './media-target.js';
+import { buildMediaRootId, buildMediaTargetPath } from './media-target.js';
 import { apiFetch, apiUrl, isTauriRuntime } from './api.js';
 import { tauriInvoke } from './tauri.js';
 import { IN_PROGRESS_STATUSES, TERMINAL_FAILURE_STATUSES, jobDetails, readableError, statusLabel } from './job-format.js';
@@ -49,7 +49,12 @@ export const JobList = component$<JobListProps>(({ title, jobs, refresh }) => {
       job.files,
       job.request.mediaType,
     );
-    const target = buildMediaManagerUrl(job.request.mediaType, undefined, itemPath);
+    const target = buildMediaManagerUrl(
+      job.request.mediaType,
+      undefined,
+      itemPath,
+      buildMediaRootId(job.request),
+    );
     if (isTauriRuntime()) {
       void tauriInvoke()?.('open_external_url', { url: target });
       return;

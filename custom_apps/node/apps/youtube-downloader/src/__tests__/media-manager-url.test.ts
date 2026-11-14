@@ -24,4 +24,17 @@ describe('media manager deep links', () => {
       'https://media.sydneybasiniot.org/?view=player',
     );
   });
+
+  it('hints the media root a finished download belongs to', () => {
+    expect(
+      buildMediaManagerUrl('audio', location, 'Artist/Song.flac', 'shared-music'),
+    ).toBe(
+      'https://media.sydneybasiniot.org/?view=player&path=Artist%2FSong.flac&root=shared-music',
+    );
+    expect(
+      buildMediaManagerUrl('video', location, 'Clip/Clip.mkv', 'personal-videos'),
+    ).toBe(
+      'https://media.sydneybasiniot.org/?view=videos&path=Clip%2FClip.mkv&root=personal-videos',
+    );
+  });
 });

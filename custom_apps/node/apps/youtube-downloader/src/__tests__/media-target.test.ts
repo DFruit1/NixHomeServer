@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildMediaTargetPath, pickMediaFile } from '../client/media-target.js';
+import { buildMediaRootId, buildMediaTargetPath, pickMediaFile } from '../client/media-target.js';
 
 describe('media target selection', () => {
   it('prefers the file matching the job kind', () => {
@@ -47,5 +47,20 @@ describe('media target selection', () => {
     expect(
       buildMediaTargetPath('/music/Artist', ['cover.jpg'], 'audio'),
     ).toBeUndefined();
+  });
+
+  it('names the media root the download belongs to', () => {
+    expect(
+      buildMediaRootId({ destination: 'personal', mediaType: 'audio', saveAudioToAudiobooks: false }),
+    ).toBe('personal-music');
+    expect(
+      buildMediaRootId({ destination: 'shared', mediaType: 'audio', saveAudioToAudiobooks: false }),
+    ).toBe('shared-music');
+    expect(
+      buildMediaRootId({ destination: 'shared', mediaType: 'audio', saveAudioToAudiobooks: true }),
+    ).toBe('shared-audiobooks');
+    expect(buildMediaRootId({ destination: 'personal', mediaType: 'video' })).toBe(
+      'personal-videos',
+    );
   });
 });

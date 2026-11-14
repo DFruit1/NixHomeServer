@@ -689,6 +689,9 @@ export default component$((props: RootProps) => {
             initialPath={
               view.value === "player" ? route.initialPath : undefined
             }
+            initialRootId={
+              view.value === "player" ? route.initialRootId : undefined
+            }
           />
         )}
         {state.loading ? (

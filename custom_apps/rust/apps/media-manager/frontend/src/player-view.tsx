@@ -42,6 +42,7 @@ export const PlayerView = component$<{
   active?: boolean;
   initialItemId?: string;
   initialPath?: string;
+  initialRootId?: string;
 }>((props) => {
   const layout = useCollectionView(props, "music", "tiles-3");
   const audioRef = useSignal<HTMLAudioElement>();
@@ -63,6 +64,8 @@ export const PlayerView = component$<{
   });
   const saveTimerRef = useSignal<number | undefined>();
   const initialTargetApplied = useSignal("");
+  const deepLinkRefresh = useSignal("");
+  const deepLinkNotice = useSignal("");
   const pipEnabled = useSignal(true);
   const started = useSignal(false);
   const landscapeArtwork = useSignal(false);
@@ -156,6 +159,32 @@ export const PlayerView = component$<{
     } finally {
       if (current()) playerState.loading = false;
     }
+  });
+
+  // A finished download can reach the library before the next scheduled scan
+  // of its root, and the player otherwise only reads the catalog. Refresh the
+  // hinted root (or every audio root when the link carries no usable hint) so
+  // the linked track is found instead of silently leaving the player on the
+  // album grid. Errors stay quiet: a scan cooldown must not block playback of
+  // the tracks that are already catalogued.
+  const refreshAudioRoots = $(async (rootId?: string) => {
+    const hinted =
+      rootId != null ? musicRoots.filter((root) => root.id === rootId) : [];
+    const targets = (hinted.length > 0 ? hinted : musicRoots).filter(
+      (root) => root.available,
+    );
+    await Promise.all(
+      targets.map(async (root) => {
+        try {
+          await api("/catalog/refresh", {
+            method: "POST",
+            body: JSON.stringify({ rootId: root.id }),
+          });
+        } catch {
+          // Ignore cooldowns and scan failures; the retry below decides.
+        }
+      }),
+    );
   });
 
   useTask$(async () => {
@@ -271,6 +300,7 @@ export const PlayerView = component$<{
   const playTrack = $((index: number) => {
     const audio = audioRef.value;
     if (!audio || index < 0 || index >= playerState.tracks.length) return;
+    deepLinkNotice.value = "";
     const previous = playerState.tracks[playerState.currentIndex];
     if (
       previous?.mediaKind === "audiobook" &&
@@ -352,9 +382,31 @@ export const PlayerView = component$<{
           return;
         }
       }
+      if (index < 0 && !targetId && props.initialPath) {
+        if (deepLinkRefresh.value === targetKey) {
+          return;
+        }
+        // Claim the target before the scan so the loading flag toggling during
+        // the reload cannot start a second navigation or playback.
+        deepLinkRefresh.value = targetKey;
+        initialTargetApplied.value = targetKey;
+        await refreshAudioRoots(props.initialRootId);
+        await loadTracks();
+        index = findTargetIndex(
+          playerState.tracks,
+          undefined,
+          props.initialPath,
+        );
+        if (index < 0) {
+          deepLinkNotice.value =
+            "The linked download isn't in the music library. It may still be copying, or saved in a format the library doesn't index.";
+          return;
+        }
+      }
       if (index < 0) {
         return;
       }
+      deepLinkNotice.value = "";
       initialTargetApplied.value = targetKey;
       if (requestId) pipEnabled.value = true;
       const target = playerState.tracks[index];
@@ -1371,6 +1423,11 @@ export const PlayerView = component$<{
               </div>
             </div>
           </div>
+          {deepLinkNotice.value && (
+            <p class="video-library-empty" role="status">
+              {deepLinkNotice.value}
+            </p>
+          )}
           {playerState.loading ? (
             <LoadingState />
           ) : playerState.error ? (
