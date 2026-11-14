@@ -150,10 +150,8 @@ function proposedProvenance(
   multipleFiles = false,
 ): string {
   const proposed = issue.proposedValues ?? [];
-  if (proposed.length === 0)
-    return multipleFiles
-      ? "No source provided proposed values for these files."
-      : "No source provided a proposed value.";
+  // "No suggestion" already says this; a sentence would only repeat it.
+  if (proposed.length === 0) return "";
   if (proposed.length > 1)
     return "Sources disagree; compare the attributed values before choosing.";
   const sources = quotedList([
@@ -916,7 +914,7 @@ const HealthDecisionRow = component$<{
     props.onApply$(value, origin, issue, target, props.album),
   );
   const valueButton = (value: unknown, origin: "Current" | "Proposed") =>
-    editable ? (
+    editable && !isUnset(value) ? (
       <button
         type="button"
         class={{
@@ -1006,12 +1004,7 @@ const HealthDecisionRow = component$<{
             }}
           />
         ) : (
-          <p
-            class="health-value-text health-unset"
-            aria-label="No proposed value"
-          >
-            ???
-          </p>
+          <p class="health-value-text health-no-suggestion">No suggestion</p>
         )}
         {failure && (
           <p class="health-choice-error" role="alert">
@@ -1031,7 +1024,9 @@ const HealthDecisionRow = component$<{
                 proposedProvenance(issue, props.multipleFiles),
               ),
             ),
-          ].map((reason) => <p key={reason}>{reason}</p>)}
+          ]
+            .filter(Boolean)
+            .map((reason) => <p key={reason}>{reason}</p>)}
       </td>
     </tr>
   );
@@ -1127,6 +1122,15 @@ const HealthIssueReview = component$<{
         JSON.stringify((entry.issue.currentSources ?? []).slice().sort()) ===
         JSON.stringify(currentSources),
     );
+  // Bulk actions appear only when there is a value to keep or to apply.
+  const canKeepAll = entries.some(({ issue: entryIssue }) =>
+    hasHealthValue(entryIssue.currentValue),
+  );
+  const canReplaceAll = entries.some(({ issue: entryIssue }) =>
+    entryIssue.proposedValues?.some((candidate) =>
+      hasHealthValue(candidate.value),
+    ),
+  );
   const bulk$ = $(async (choice: "current" | "proposed") => {
     bulkStatus.value = "";
     const eligible = entries.filter(
@@ -1236,14 +1240,17 @@ const HealthIssueReview = component$<{
                 )}
               </tbody>
             </table>
-            {((sharedReason && !autoEligible) || sharedSources) && (
+            {((sharedReason && !autoEligible && !!proposedProvenance(issue)) ||
+              sharedSources) && (
               <div class="health-provenance">
                 {sharedSources && (
                   <p>Current from {quotedList(currentSources)}.</p>
                 )}
-                {sharedReason && !autoEligible && (
-                  <p>{proposedProvenance(issue, true)}</p>
-                )}
+                {sharedReason &&
+                  !autoEligible &&
+                  !!proposedProvenance(issue) && (
+                    <p>{proposedProvenance(issue, true)}</p>
+                  )}
               </div>
             )}
             {!album &&
@@ -1361,34 +1368,38 @@ const HealthIssueReview = component$<{
               )}
             </ul>
           </details>
-          {count > 1 && (
+          {count > 1 && (canKeepAll || canReplaceAll) && (
             <div class="health-issue-actions">
-              <button
-                type="button"
-                title={readOnlyTitle}
-                disabled={
-                  !editable ||
-                  entries.every((entry) => entry.issue.fileOverride)
-                }
-                onClick$={() => bulk$("current")}
-              >
-                Keep all
-              </button>
-              <button
-                type="button"
-                title={readOnlyTitle}
-                disabled={
-                  !editable ||
-                  !entries.some(
-                    (entry) =>
-                      !entry.issue.fileOverride &&
-                      entry.issue.proposedValues?.length === 1,
-                  )
-                }
-                onClick$={() => bulk$("proposed")}
-              >
-                Replace all
-              </button>
+              {canKeepAll && (
+                <button
+                  type="button"
+                  title={readOnlyTitle}
+                  disabled={
+                    !editable ||
+                    entries.every((entry) => entry.issue.fileOverride)
+                  }
+                  onClick$={() => bulk$("current")}
+                >
+                  Keep all
+                </button>
+              )}
+              {canReplaceAll && (
+                <button
+                  type="button"
+                  title={readOnlyTitle}
+                  disabled={
+                    !editable ||
+                    !entries.some(
+                      (entry) =>
+                        !entry.issue.fileOverride &&
+                        entry.issue.proposedValues?.length === 1,
+                    )
+                  }
+                  onClick$={() => bulk$("proposed")}
+                >
+                  Replace all
+                </button>
+              )}
             </div>
           )}
         </div>
