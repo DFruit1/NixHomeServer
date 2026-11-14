@@ -3333,6 +3333,7 @@ dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
  "chrono",
+ "flate2",
  "futures-util",
  "homelab-common",
  "html2text",

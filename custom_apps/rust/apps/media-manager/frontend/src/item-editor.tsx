@@ -2081,7 +2081,7 @@ export const ItemEditor = component$<{
                       </strong>
                       <p>
                         {portableTarget?.id === "portable-embedded"
-                          ? "Book metadata is written inside the EPUB or CBZ container; PDF XMP and CBR stay inspection-only. Each app reads it in this order:"
+                          ? "Book metadata is written inside the EPUB or CBZ container, or appended to the PDF as an XMP update; CBR archives stay read-only. Each app reads it in this order:"
                           : "Metadata is written beside the media as an NFO for video and music, or an OPF for audiobooks, leaving the media file untouched. Each app reads it in this order:"}
                       </p>
                       <ul>

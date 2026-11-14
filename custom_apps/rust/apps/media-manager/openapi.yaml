@@ -1336,7 +1336,7 @@ paths:
   /items/{itemId}/metadata/sidecar:
     post:
       operationId: previewMetadataSidecar
-      description: Creates a no-overwrite NFO/OPF install preview, a recoverable XML-preserving sidecar replacement, or a validated recoverable embedded EPUB/CBZ metadata rewrite. PDF, CBR, and podcast tag writes remain inspection-only.
+      description: Creates a no-overwrite NFO/OPF install preview, a recoverable XML-preserving sidecar replacement, a validated recoverable embedded EPUB/CBZ metadata rewrite, or a validated recoverable PDF incremental update carrying new XMP and Info metadata. CBR and podcast tag writes remain inspection-only.
       parameters:
         - in: path
           name: itemId

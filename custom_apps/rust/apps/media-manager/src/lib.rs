@@ -18,6 +18,7 @@ pub mod metadata;
 pub mod musicbrainz;
 pub mod naming;
 mod open_library;
+mod pdf_metadata;
 pub mod provider_account_http;
 pub mod provider_accounts;
 pub mod scanner;

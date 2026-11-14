@@ -410,11 +410,14 @@ pub fn rewrite_embedded_metadata(
     extension: &str,
     generated: &str,
 ) -> Result<String, String> {
-    if !matches!(extension, "epub" | "cbz") {
-        return Err("only EPUB and CBZ containers can be rewritten safely".to_string());
+    if !matches!(extension, "epub" | "cbz" | "pdf") {
+        return Err("only EPUB, CBZ and PDF files can be rewritten safely".to_string());
     }
     if generated.len() > MAX_EMBEDDED_METADATA_BYTES as usize {
         return Err("generated embedded metadata exceeds the safe edit limit".to_string());
+    }
+    if extension == "pdf" {
+        return rewrite_pdf_metadata(input, output, generated);
     }
     let mut archive =
         ZipArchive::new(input).map_err(|error| format!("open ZIP container: {error}"))?;
@@ -520,6 +523,46 @@ pub fn rewrite_embedded_metadata(
         .sync_all()
         .map_err(|error| format!("sync ZIP container: {error}"))?;
     Ok(target)
+}
+
+/// Append an incremental update carrying `xmp` and a matching Info
+/// dictionary. The original PDF bytes are copied unchanged ahead of it.
+fn rewrite_pdf_metadata(
+    mut input: std::fs::File,
+    mut output: std::fs::File,
+    xmp: &str,
+) -> Result<String, String> {
+    let fields = parse_pdf_xmp_fields(xmp)?;
+    let text = |field: &str| {
+        fields
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let list = |field: &str, separator: &str| {
+        fields
+            .get(field)
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(separator)
+            })
+            .filter(|value| !value.is_empty())
+    };
+    let info = crate::pdf_metadata::PdfInfoUpdate {
+        title: text("title"),
+        author: list("authors", "; "),
+        subject: text("description"),
+        keywords: list("genres", ", "),
+    };
+    crate::pdf_metadata::append_metadata_update(&mut input, &mut output, xmp, &info)?;
+    output
+        .sync_all()
+        .map_err(|error| format!("sync PDF: {error}"))?;
+    Ok("XMP".to_string())
 }
 
 /// Read just the disc/track numbers of one audio file for folder-level
@@ -675,6 +718,92 @@ fn inspect_pdf_xmp(root: &Path, item: &CatalogItem) -> Result<Option<MetadataObs
     let metadata = file
         .metadata()
         .map_err(|error| format!("stat PDF: {error}"))?;
+    let observed_at = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs());
+    // Resolve the document packet through the catalog first: page images can
+    // carry their own XMP, and an incremental update appends a newer packet
+    // without removing the old one. Unparseable files fall back to a scan.
+    if let Ok(document) = crate::pdf_metadata::read_document_metadata(&mut file) {
+        let packet = document
+            .xmp
+            .as_deref()
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .map(|text| {
+                let start = text.find("<x:xmpmeta");
+                let end = text
+                    .rfind("</x:xmpmeta>")
+                    .map(|end| end + "</x:xmpmeta>".len());
+                match (start, end) {
+                    (Some(start), Some(end)) if start < end => text[start..end].to_string(),
+                    _ => text.to_string(),
+                }
+            });
+        let (fields, raw, label) = match packet {
+            Some(raw) => (parse_pdf_xmp_fields(&raw)?, raw, "Embedded PDF XMP"),
+            None if document
+                .info
+                .keys()
+                .any(|key| matches!(key.as_str(), "Title" | "Author" | "Subject" | "Keywords")) =>
+            {
+                let info = |key: &str| {
+                    document
+                        .info
+                        .get(key)
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                };
+                let split = |value: Option<String>, separators: &[char]| {
+                    value
+                        .map(|value| {
+                            value
+                                .split(separators)
+                                .map(str::trim)
+                                .filter(|part| !part.is_empty())
+                                .map(str::to_string)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                };
+                let raw = document
+                    .info
+                    .iter()
+                    .map(|(key, value)| format!("/{key} ({value})"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (
+                    metadata_fields(&json!({
+                        "mediaType": "book", "title": info("Title"),
+                        "authors": split(info("Author"), &[';', '&']),
+                        "description": info("Subject"),
+                        "genres": split(info("Keywords"), &[',', ';']),
+                    })),
+                    raw,
+                    "Embedded PDF Info",
+                )
+            }
+            None => return Ok(None),
+        };
+        return Ok(Some(MetadataObservation {
+            source: "embedded-pdf-xmp".to_string(),
+            label: label.to_string(),
+            observed_at,
+            relative_path: Some(format!("{}!/XMP", item.relative_path)),
+            format: Some("xmp".to_string()),
+            app_item_id: None,
+            storage: "embedded-file".to_string(),
+            consumed_by: vec!["kavita".to_string()],
+            survives_rescan: true,
+            writable: true,
+            locked: None,
+            fields,
+            raw_preview: Some(bounded_preview(raw)),
+        }));
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("rewind PDF: {error}"))?;
     let bytes = if metadata.len() <= MAX_PDF_XMP_SCAN_BYTES {
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
         file.read_to_end(&mut bytes)
@@ -704,11 +833,6 @@ fn inspect_pdf_xmp(root: &Path, item: &CatalogItem) -> Result<Option<MetadataObs
         .map_err(|_| "PDF XMP packet is not UTF-8".to_string())?
         .to_string();
     let fields = parse_pdf_xmp_fields(&raw)?;
-    let observed_at = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs());
     Ok(Some(MetadataObservation {
         source: "embedded-pdf-xmp".to_string(),
         label: "Embedded PDF XMP".to_string(),
@@ -748,11 +872,35 @@ fn parse_pdf_xmp_fields(text: &str) -> Result<Value, String> {
     };
     let first = |name: &str| values(name).into_iter().next();
     let date = first("date");
+    // Calibre records the series as calibre:series/rdf:value with a
+    // calibreSI:series_index sibling; media-manager writes the same shape.
+    let series_node = root
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name().eq_ignore_ascii_case("series"));
+    let series = series_node.and_then(|node| {
+        node.descendants()
+            .find(|child| child.is_element() && child.tag_name().name() == "value")
+            .or_else(|| (!node.children().any(|child| child.is_element())).then_some(node))
+            .and_then(|value| value.text())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    });
+    let volume_number = first("series_index");
+    let isbn = values("identifier").into_iter().find_map(|value| {
+        let lower = value.to_ascii_lowercase();
+        lower.contains("isbn").then(|| {
+            let prefix = lower
+                .rfind("isbn:")
+                .map_or(0, |index| index + "isbn:".len());
+            value[prefix..].trim().to_string()
+        })
+    });
     Ok(metadata_fields(&json!({
         "mediaType": "book", "title": first("title"), "authors": values("creator"),
         "publisher": first("publisher"), "language": first("language"), "genres": values("subject"),
         "description": first("description"), "year": date.as_deref().and_then(|value| value.get(0..4)).and_then(|value| value.parse::<u16>().ok()),
-        "isbn": values("identifier").into_iter().find(|value| value.to_ascii_lowercase().contains("isbn")),
+        "isbn": isbn, "series": series, "volumeNumber": volume_number,
     })))
 }
 
@@ -1049,8 +1197,7 @@ pub fn health_issues(
     ] {
         let mut values = BTreeMap::<String, Vec<String>>::new();
         for observation in observations.iter().filter(|observation| {
-            observation_usable_for_title(observation, effective)
-                && observation.source != "filename"
+            observation_usable_for_title(observation, effective) && observation.source != "filename"
         }) {
             if let Some(value) = observation
                 .fields
@@ -1231,11 +1378,15 @@ pub fn modification_targets(
 ) -> Vec<MetadataModificationTarget> {
     let portable = match media_kind.carrier() {
         Some(MetadataCarrier::Embedded) => {
-            let safe = matches!(extension, "epub" | "cbz");
+            let safe = matches!(extension, "epub" | "cbz" | "pdf");
             MetadataModificationTarget {
                 id: "portable-embedded".to_string(), label: "Portable embedded metadata".to_string(),
                 kind: "portable-file".to_string(), available: safe, recommended: safe, requires_refresh: true,
-                message: if safe { "Rebuild and validate the EPUB or CBZ while preserving all other entries." } else { "PDF and CBR metadata writes are inspection-only because a safe lossless rewrite is not available." }.to_string(),
+                message: match extension {
+                    "pdf" => "Append a validated metadata update (XMP and Info) to the PDF; the original page data is left untouched.",
+                    "epub" | "cbz" => "Rebuild and validate the EPUB or CBZ while preserving all other entries.",
+                    _ => "CBR files are RAR archives, which cannot be rewritten; convert the book to CBZ to edit its metadata.",
+                }.to_string(),
             }
         }
         _ => MetadataModificationTarget {
@@ -2060,6 +2211,10 @@ mod tests {
             .any(|target| target.id == "kavita-application" && target.kind == "application-local"));
         let pdf = modification_targets(MediaKind::Book, "pdf", true);
         assert!(pdf
+            .iter()
+            .any(|target| target.id == "portable-embedded" && target.available));
+        let cbr = modification_targets(MediaKind::Book, "cbr", true);
+        assert!(cbr
             .iter()
             .any(|target| target.id == "portable-embedded" && !target.available));
     }

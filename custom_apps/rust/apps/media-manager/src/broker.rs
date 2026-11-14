@@ -1059,7 +1059,7 @@ fn validate_replace_embedded_metadata_action(
                 crate::audio_sequence::AUDIO_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
             })
         } else {
-            matches!(source_extension, Some("epub" | "cbz"))
+            matches!(source_extension, Some("epub" | "cbz" | "pdf"))
         })
     {
         return Err(BrokerError::new(

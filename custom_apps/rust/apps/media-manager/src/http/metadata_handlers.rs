@@ -508,6 +508,108 @@ fn comicinfo_sidecar(request: &MetadataSidecarRequest) -> String {
     xml
 }
 
+/// Document XMP for a PDF. Dublin Core carries the bibliographic fields
+/// Kavita and Calibre read; the series uses Calibre's XMP namespace.
+fn pdf_xmp_packet(request: &MetadataSidecarRequest) -> String {
+    fn present(value: Option<&str>) -> Option<&str> {
+        value.map(str::trim).filter(|value| !value.is_empty())
+    }
+    fn container(name: &str, kind: &str, values: &[&str], language: bool) -> String {
+        let values = values
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if values.is_empty() {
+            return String::new();
+        }
+        let attribute = if language {
+            " xml:lang=\"x-default\""
+        } else {
+            ""
+        };
+        let items = values
+            .iter()
+            .map(|value| format!("<rdf:li{attribute}>{}</rdf:li>", xml_text(value)))
+            .collect::<String>();
+        format!("   <{name}><rdf:{kind}>{items}</rdf:{kind}></{name}>\n")
+    }
+    let authors = if request.authors.is_empty() {
+        &request.writers
+    } else {
+        &request.authors
+    };
+    let mut xml = String::from(
+        "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n\
+<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n\
+ <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n\
+  <rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+xmlns:calibre=\"http://calibre-ebook.com/xmp-namespace\" \
+xmlns:calibreSI=\"http://calibre-ebook.com/xmp-namespace-series-index\" \
+xmlns:mm=\"urn:nixhomeserver:media-manager:metadata:1\">\n",
+    );
+    xml.push_str(&container("dc:title", "Alt", &[&request.title], true));
+    xml.push_str(&container(
+        "dc:creator",
+        "Seq",
+        &authors.iter().map(String::as_str).collect::<Vec<_>>(),
+        false,
+    ));
+    if let Some(description) = present(request.description.as_deref()) {
+        xml.push_str(&container("dc:description", "Alt", &[description], true));
+    }
+    if let Some(publisher) = present(request.publisher.as_deref()) {
+        xml.push_str(&container("dc:publisher", "Bag", &[publisher], false));
+    }
+    if let Some(language) = present(request.language.as_deref()) {
+        xml.push_str(&container("dc:language", "Bag", &[language], false));
+    }
+    xml.push_str(&container(
+        "dc:subject",
+        "Bag",
+        &request
+            .genres
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        false,
+    ));
+    let date = present(request.premiere_date.as_deref())
+        .map(str::to_string)
+        .or_else(|| request.year.map(|year| format!("{year:04}")));
+    if let Some(date) = date {
+        xml.push_str(&container("dc:date", "Seq", &[&date], false));
+    }
+    if let Some(isbn) = present(request.isbn.as_deref()) {
+        xml.push_str(&format!(
+            "   <dc:identifier>urn:isbn:{}</dc:identifier>\n",
+            xml_text(isbn)
+        ));
+    }
+    if let Some(series) = present(request.series.as_deref()) {
+        xml.push_str(&format!(
+            "   <calibre:series rdf:parseType=\"Resource\"><rdf:value>{}</rdf:value>",
+            xml_text(series)
+        ));
+        if let Some(index) = present(request.volume_number.as_deref()) {
+            xml.push_str(&format!(
+                "<calibreSI:series_index>{}</calibreSI:series_index>",
+                xml_text(index)
+            ));
+        }
+        xml.push_str("</calibre:series>\n");
+    }
+    if !request.provider_ids.is_empty() {
+        let identifiers = serde_json::to_string(&request.provider_ids).unwrap_or_default();
+        xml.push_str(&format!(
+            "   <mm:providerIds>{}</mm:providerIds>\n",
+            xml_text(&identifiers)
+        ));
+    }
+    xml.push_str("  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>");
+    xml
+}
+
 fn folder_metadata_sidecar(
     folder: &VisibleMediaFolder,
     request: &MetadataSidecarRequest,
@@ -628,8 +730,10 @@ async fn prepare_embedded_metadata_action(
         .map_err(|_| ApiError::internal(request_id.to_string()))?;
     let staging_filename = format!("embedded-{request_id}.{extension}");
     let staging_path = staging_directory.join(&staging_filename);
+    // Readable as well: a PDF update is validated by re-resolving the output.
     let output = std::fs::OpenOptions::new()
         .create_new(true)
+        .read(true)
         .write(true)
         .mode(0o660)
         .open(&staging_path)
@@ -1142,19 +1246,19 @@ async fn preview_item_metadata_sidecar(
             .rsplit_once('.')
             .map(|(_, extension)| extension.to_ascii_lowercase())
             .unwrap_or_default();
-        if !matches!(extension.as_str(), "epub" | "cbz") {
+        if !matches!(extension.as_str(), "epub" | "cbz" | "pdf") {
             return ApiError::new(
                 StatusCode::CONFLICT,
                 "embedded_book_metadata_read_only",
-                "PDF and CBR metadata are inspection-only. Portable in-app edits are limited to EPUB and CBZ containers.",
+                "CBR files are RAR archives, which cannot be rewritten. Convert the book to CBZ to edit its metadata.",
                 request_id.to_string(),
             )
             .into_response();
         }
-        let generated = if extension == "epub" {
-            metadata_sidecar(&item, request).2
-        } else {
-            comicinfo_sidecar(request)
+        let generated = match extension.as_str() {
+            "epub" => metadata_sidecar(&item, request).2,
+            "pdf" => pdf_xmp_packet(request),
+            _ => comicinfo_sidecar(request),
         };
         let PreparedMetadataAction {
             action,
@@ -1402,13 +1506,14 @@ async fn item_metadata_value(
         .map(|(_, extension)| extension.to_ascii_lowercase())
         .unwrap_or_default();
     let mut consumers = consumer_effects(&state.config, item.media_kind);
-    if item.media_kind == MediaKind::Book && matches!(extension.as_str(), "epub" | "cbz") {
+    if item.media_kind == MediaKind::Book && matches!(extension.as_str(), "epub" | "cbz" | "pdf") {
         for consumer in &mut consumers {
             consumer.effect = "read-after-refresh".to_string();
             consumer.portable_write_supported = true;
-            consumer.message =
-                "Kavita reads the metadata embedded in this EPUB or CBZ after a library refresh."
-                    .to_string();
+            consumer.message = format!(
+                "Kavita reads the metadata embedded in this {} after a library refresh.",
+                extension.to_ascii_uppercase()
+            );
         }
     }
     let application_available = consumers.iter().any(|consumer| consumer.available);
