@@ -1397,15 +1397,6 @@ function itemFocusPath(item: CatalogItem): string {
   return slash > 0 ? item.relativePath.slice(0, slash) : "";
 }
 
-function topLevelFolders(items: CatalogItem[]): string[] {
-  const folders = new Set<string>();
-  for (const item of items) {
-    const slash = item.relativePath.indexOf("/");
-    if (slash > 0) folders.add(item.relativePath.slice(0, slash));
-  }
-  return [...folders].sort((left, right) => left.localeCompare(right));
-}
-
 function folderDisplayName(folder: string): string {
   return folder.replace(/^_+/, "") || folder;
 }
@@ -1806,7 +1797,7 @@ const ItemQuickActions = component$<{
           onClick$={startInPagePlayer}
         >
           <Icon name="play" size={17} />
-          Play here
+          Play
         </button>
       ) : playTarget?.url ? (
         <a
@@ -1855,12 +1846,10 @@ const CATEGORY_TABS: Array<{ id: string; label: string }> = [
 
 const LibraryPane = component$<{
   title: string;
-  subtitle: string;
-  emptyDetail: string;
+  emptyTitle: string;
   browser: {
     expanded: Record<string, boolean>;
     activeByParent: Record<string, string>;
-    folderFilter: string;
     selectedFolder: string;
   };
   items: CatalogItem[];
@@ -1870,13 +1859,7 @@ const LibraryPane = component$<{
   selectItem$: QRL<(item: CatalogItem) => void>;
   selectFolder$: QRL<(path: string) => void>;
 }>((props) => {
-  const folders = topLevelFolders(props.items);
-  const visibleItems = props.browser.folderFilter
-    ? props.items.filter((item) =>
-        item.relativePath.startsWith(`${props.browser.folderFilter}/`),
-      )
-    : props.items;
-  const tree = buildTree(visibleItems);
+  const tree = buildTree(props.items);
   const focusedNode = props.focusPath
     ? findTreeNode(tree, props.focusPath)
     : undefined;
@@ -1893,54 +1876,32 @@ const LibraryPane = component$<{
     >
       <div class="pane-heading">
         <h3>{props.title}</h3>
-        <span class="pane-count">
-          {props.items.length}
-          {props.hasMore ? " loaded" : ""}
-        </span>
+        {props.items.length > 0 && (
+          <span class="pane-count">
+            {props.items.length} {props.items.length === 1 ? "item" : "items"}
+            {props.hasMore ? " loaded" : ""}
+          </span>
+        )}
       </div>
       <div class="catalog-scroll-region">
         {props.focusPath && (
           <button
             type="button"
-            class="text-button"
+            class="text-button library-crumb"
             onClick$={() =>
               props.selectFolder$(
                 props.focusPath!.split("/").slice(0, -1).join("/"),
               )
             }
           >
+            <Icon name="chevron-left" size={16} />
             Up one level
           </button>
         )}
         {props.items.length === 0 ? (
-          <EmptyState title={props.subtitle} detail={props.emptyDetail} />
+          <p class="library-empty-line">{props.emptyTitle}</p>
         ) : (
           <>
-            {!props.focusPath && folders.length > 1 && (
-              <div
-                class="folder-filter"
-                role="group"
-                aria-label="Show only one folder"
-              >
-                {folders.map((folder) => (
-                  <button
-                    class={{
-                      "folder-filter-button": true,
-                      active: props.browser.folderFilter === folder,
-                    }}
-                    type="button"
-                    key={folder}
-                    aria-pressed={props.browser.folderFilter === folder}
-                    onClick$={() => {
-                      props.browser.folderFilter =
-                        props.browser.folderFilter === folder ? "" : folder;
-                    }}
-                  >
-                    {folderDisplayName(folder)}
-                  </button>
-                ))}
-              </div>
-            )}
             <div
               class="item-tree"
               role="tree"
@@ -2015,6 +1976,44 @@ const LibraryDetailPane = component$<{
   }>({ action: "", revision: 0 });
   const coverEditing = useSignal(false);
   const palette = useSignal({ imageId: "", colors: [] as string[] });
+  const crumbRef = useSignal<HTMLElement>();
+  const heroRef = useSignal<HTMLElement>();
+  const heroStuck = useSignal(false);
+  // The header is sticky; mark it once content scrolls beneath it so it reads
+  // as lifted above the editor rather than overlapping it. It is stuck when
+  // the gap to the breadcrumb above it grows beyond the pane's normal gap.
+  useVisibleTask$(({ cleanup }) => {
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const hero = heroRef.value;
+      const crumb = crumbRef.value;
+      if (!hero || !crumb) {
+        heroStuck.value = false;
+        return;
+      }
+      const pane = hero.parentElement;
+      const gap = pane ? parseFloat(getComputedStyle(pane).rowGap) || 0 : 0;
+      heroStuck.value =
+        hero.getBoundingClientRect().top -
+          crumb.getBoundingClientRect().bottom >
+        gap + 1;
+    };
+    const schedule = () => {
+      if (!frame) frame = window.requestAnimationFrame(measure);
+    };
+    document.addEventListener("scroll", schedule, {
+      capture: true,
+      passive: true,
+    });
+    window.addEventListener("resize", schedule, { passive: true });
+    measure();
+    cleanup(() => {
+      document.removeEventListener("scroll", schedule, { capture: true });
+      window.removeEventListener("resize", schedule);
+      if (frame) window.cancelAnimationFrame(frame);
+    });
+  });
   useTask$(({ track }) => {
     track(() => props.state.selectedItemId);
     track(() => props.activeFolder);
@@ -2068,14 +2067,17 @@ const LibraryDetailPane = component$<{
       {(props.selectedItem || props.activeFolder) && (
         <button
           type="button"
-          class="text-button library-back"
+          ref={crumbRef}
+          class="text-button library-crumb"
           onClick$={props.closeSelection$}
         >
+          <Icon name="chevron-left" size={16} />
           Back to libraries
         </button>
       )}
       <section
-        class="library-selection-hero"
+        ref={heroRef}
+        class={{ "library-selection-hero": true, stuck: heroStuck.value }}
         style={{
           "--cover-first":
             palette.value.imageId === imageId
@@ -2112,7 +2114,11 @@ const LibraryDetailPane = component$<{
         </div>
         <div class="library-selection-copy">
           <span class="library-selection-context">{selectionContext}</span>
-          <h2>
+          <h2
+            class={{
+              "library-selection-title--long": props.imageTitle.length > 48,
+            }}
+          >
             <Icon name={props.selectedItem ? "file" : "folder"} size={16} />
             <span>{props.imageTitle || "Choose a title or folder"}</span>
           </h2>
@@ -2207,14 +2213,12 @@ const LibraryView = component$<{
   const personal = useStore({
     expanded: {} as Record<string, boolean>,
     activeByParent: {} as Record<string, string>,
-    folderFilter: "",
     selectedFolder:
       initialRoot?.scope === "personal" ? (props.initialPath ?? "") : "",
   });
   const shared = useStore({
     expanded: {} as Record<string, boolean>,
     activeByParent: {} as Record<string, string>,
-    folderFilter: "",
     selectedFolder:
       initialRoot?.scope === "shared" ? (props.initialPath ?? "") : "",
   });
@@ -2535,11 +2539,54 @@ const LibraryView = component$<{
       refreshing.value = false;
     }
   });
+  const categoryNoun = (
+    CATEGORY_TABS.find((tab) => tab.id === activeCategory)?.label ?? "media"
+  ).toLowerCase();
+  const personalEmpty = visiblePersonalItems.length === 0;
+  const sharedEmpty = visibleSharedItems.length === 0;
+  const layoutMode = activeScope
+    ? activeScope
+    : personalEmpty && sharedEmpty
+      ? "empty"
+      : personalEmpty || sharedEmpty
+        ? "single"
+        : "dual";
+  const emptyLine = (scope: "personal" | "shared") =>
+    filtering ? `No ${scope} matches` : `No ${scope} ${categoryNoun}`;
+  const personalPane = (
+    <LibraryPane
+      title="Personal"
+      emptyTitle={
+        filtering ? "No personal matches" : `No personal ${categoryNoun}`
+      }
+      items={visiblePersonalItems}
+      browser={personal}
+      hasMore={personalRoots.some((root) =>
+        Boolean(props.state.itemCursors?.[root.id]),
+      )}
+      focusPath={activeScope === "personal" ? activeFocusPath : ""}
+      selectedItemId={props.state.selectedItemId}
+      selectItem$={selectPersonalItem$}
+      selectFolder$={selectPersonalFolder$}
+    />
+  );
+  const sharedPane = (
+    <LibraryPane
+      title="Shared"
+      emptyTitle={filtering ? "No shared matches" : `No shared ${categoryNoun}`}
+      items={visibleSharedItems}
+      browser={shared}
+      hasMore={sharedRoots.some((root) =>
+        Boolean(props.state.itemCursors?.[root.id]),
+      )}
+      focusPath={activeScope === "shared" ? activeFocusPath : ""}
+      selectedItemId={props.state.selectedItemId}
+      selectItem$={selectSharedItem$}
+      selectFolder$={selectSharedFolder$}
+    />
+  );
   return (
     <section class="library-view">
-      <header class="library-header">
-        <h1>Manage library</h1>
-      </header>
       <div
         ref={categoryTabs}
         class="library-tabs"
@@ -2610,6 +2657,17 @@ const LibraryView = component$<{
             </button>
           )}
         </label>
+        <button
+          class="secondary-button library-refresh"
+          type="button"
+          disabled={refreshing.value}
+          onClick$={refreshLibrary$}
+          title="Scan this library from disk now"
+          aria-label="Refresh this library from disk now"
+        >
+          <Icon name="refresh" size={16} />
+          {refreshing.value ? "Refreshing…" : "Refresh"}
+        </button>
         <div class="library-toolbar-trailing">
           {Object.values(props.state.itemCursors ?? {}).some(Boolean) && (
             <button
@@ -2629,112 +2687,76 @@ const LibraryView = component$<{
                 : `${matchCount} match${matchCount === 1 ? "" : "es"}`}
             </span>
           )}
+          {advancedSearch?.url && (
+            <a
+              class="text-button library-advanced-search"
+              href={`${advancedSearch.url}/?q=${encodeURIComponent(filter.value.trim())}`}
+              target="_blank"
+              rel="noreferrer"
+              title="Search titles, authors, and tags across all libraries in the Search app"
+            >
+              <Icon name="search" size={16} />
+              Advanced search
+            </a>
+          )}
         </div>
       </div>
       <section
         class={{
           "library-layout": true,
-          [`library-layout--${activeScope || "dual"}`]: true,
+          [`library-layout--${layoutMode}`]: true,
         }}
       >
-        {activeScope === "shared" ? (
-          <LibraryDetailPane
-            placement="personal"
-            state={props.state}
-            selectedItem={selectedItem}
-            activeFolder={activeFolder}
-            activeFolderRootId={activeFolderRootId}
-            imageTitle={imageTitle}
-            previewRename$={props.previewRename$}
-            confirmRename$={props.confirmRename$}
-            closeFolderEditor$={closeFolderEditor$}
-            closeSelection$={() => selectSharedFolder$("")}
+        {layoutMode === "empty" ? (
+          <EmptyState
+            title={filtering ? "No matches" : `No ${categoryNoun} yet`}
+            detail={
+              filtering
+                ? "Clear the filter to see every item."
+                : "Add files to your personal or shared media folder."
+            }
           />
         ) : (
-          <LibraryPane
-            title="Personal"
-            subtitle={
-              filtering
-                ? "No personal matches"
-                : "No personal media files found"
-            }
-            emptyDetail={
-              filtering
-                ? "Clear the filter to see all personal items."
-                : "Add supported media files to your personal media folder to see them here."
-            }
-            browser={personal}
-            items={visiblePersonalItems}
-            hasMore={personalRoots.some((root) =>
-              Boolean(props.state.itemCursors?.[root.id]),
+          <>
+            {activeScope === "shared" ? (
+              <LibraryDetailPane
+                placement="personal"
+                state={props.state}
+                selectedItem={selectedItem}
+                activeFolder={activeFolder}
+                activeFolderRootId={activeFolderRootId}
+                imageTitle={imageTitle}
+                previewRename$={props.previewRename$}
+                confirmRename$={props.confirmRename$}
+                closeFolderEditor$={closeFolderEditor$}
+                closeSelection$={() => selectSharedFolder$("")}
+              />
+            ) : personalEmpty ? (
+              <p class="library-empty-line">{emptyLine("personal")}</p>
+            ) : (
+              personalPane
             )}
-            focusPath={activeScope === "personal" ? activeFocusPath : ""}
-            selectedItemId={props.state.selectedItemId}
-            selectItem$={selectPersonalItem$}
-            selectFolder$={selectPersonalFolder$}
-          />
-        )}
-        {activeScope === "personal" ? (
-          <LibraryDetailPane
-            placement="shared"
-            state={props.state}
-            selectedItem={selectedItem}
-            activeFolder={activeFolder}
-            activeFolderRootId={activeFolderRootId}
-            imageTitle={imageTitle}
-            previewRename$={props.previewRename$}
-            confirmRename$={props.confirmRename$}
-            closeFolderEditor$={closeFolderEditor$}
-            closeSelection$={() => selectPersonalFolder$("")}
-          />
-        ) : (
-          <LibraryPane
-            title="Shared"
-            subtitle={
-              filtering ? "No shared matches" : "No shared media files found"
-            }
-            emptyDetail={
-              filtering
-                ? "Clear the filter to see all shared items."
-                : "Add supported media files to your shared media folder to see them here."
-            }
-            browser={shared}
-            items={visibleSharedItems}
-            hasMore={sharedRoots.some((root) =>
-              Boolean(props.state.itemCursors?.[root.id]),
+            {activeScope === "personal" ? (
+              <LibraryDetailPane
+                placement="shared"
+                state={props.state}
+                selectedItem={selectedItem}
+                activeFolder={activeFolder}
+                activeFolderRootId={activeFolderRootId}
+                imageTitle={imageTitle}
+                previewRename$={props.previewRename$}
+                confirmRename$={props.confirmRename$}
+                closeFolderEditor$={closeFolderEditor$}
+                closeSelection$={() => selectPersonalFolder$("")}
+              />
+            ) : sharedEmpty ? (
+              <p class="library-empty-line">{emptyLine("shared")}</p>
+            ) : (
+              sharedPane
             )}
-            focusPath={activeScope === "shared" ? activeFocusPath : ""}
-            selectedItemId={props.state.selectedItemId}
-            selectItem$={selectSharedItem$}
-            selectFolder$={selectSharedFolder$}
-          />
+          </>
         )}
       </section>
-      <div class="library-footer">
-        {advancedSearch?.url && (
-          <a
-            class="library-advanced-search"
-            href={`${advancedSearch.url}/?q=${encodeURIComponent(filter.value.trim())}`}
-            target="_blank"
-            rel="noreferrer"
-            title="Search titles, authors, and tags across all libraries in the Search app"
-          >
-            <Icon name="search" size={15} />
-            Advanced search
-          </a>
-        )}
-        <button
-          class="library-refresh"
-          type="button"
-          disabled={refreshing.value}
-          onClick$={refreshLibrary$}
-          title="Scan this library from disk now"
-          aria-label="Refresh this library from disk now"
-        >
-          <Icon name="refresh" size={15} />
-          {refreshing.value ? "Refreshing…" : "Refresh"}
-        </button>
-      </div>
     </section>
   );
 });
@@ -2754,7 +2776,6 @@ const TreeBranch = component$<{
     expanded: Record<string, boolean>;
     activeByParent: Record<string, string>;
     selectedFolder: string;
-    folderFilter: string;
   };
   selectedItemId: string;
   selectedFolder: string;
@@ -2788,9 +2809,7 @@ const TreeBranch = component$<{
       </button>
     );
   }
-  const expanded =
-    props.browser.expanded[node.path] ??
-    (props.depth === 0 || props.browser.folderFilter !== "");
+  const expanded = props.browser.expanded[node.path] ?? props.depth === 0;
   const mutedBySibling =
     Boolean(props.browser.activeByParent[props.parentPath]) &&
     props.browser.activeByParent[props.parentPath] !== node.path;

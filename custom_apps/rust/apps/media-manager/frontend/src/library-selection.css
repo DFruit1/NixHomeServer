@@ -11,6 +11,12 @@
   border-radius: var(--radius-panel);
   background: var(--card);
   overflow: clip;
+  transition: box-shadow 160ms ease-out;
+}
+/* Once the editor scrolls beneath it, the header lifts off the content. */
+.library-selection-hero.stuck {
+  border-color: var(--line-strong);
+  box-shadow: 0 10px 18px -12px rgb(33 29 21 / 38%);
 }
 .library-selection-hero .root-picker-image {
   display: contents;
@@ -36,7 +42,7 @@
   background: var(--paper-recess);
   box-shadow: none;
   object-fit: contain;
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 .library-selection-hero .media-image-edit {
   font-size: 0;
@@ -56,23 +62,29 @@
 .library-selection-copy > p {
   max-width: 100%;
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
 .library-selection-copy h2 {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   max-width: 100%;
   font-family: var(--font-serif);
-  font-size: 22px;
+  font-size: var(--title-lg);
   font-weight: 500;
   line-height: 1.15;
   overflow-wrap: anywhere;
 }
+/* Long file and album names stay readable without filling the pane. */
+.library-selection-copy h2.library-selection-title--long {
+  font-size: var(--title-sm);
+  line-height: 1.25;
+}
 .library-selection-copy h2 .icon {
   flex-shrink: 0;
+  margin-top: 0.3em;
   color: var(--accent);
 }
 .library-selection-copy h2 > span {
@@ -85,18 +97,19 @@
   margin: 0;
 }
 .library-selection-copy .quick-action-button {
-  min-height: 44px;
-  padding-inline: 8px;
+  min-height: var(--control-height);
+  padding-inline: 14px;
   gap: 6px;
   border-radius: var(--radius-control);
   box-shadow: none;
   font-family: var(--font-sans);
-  font-size: 12px;
+  font-size: var(--text-md);
   letter-spacing: normal;
   text-transform: none;
+  white-space: nowrap;
 }
 .editor-heading-main > h3 {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
 }
 /* This is a separate grid cell, never a background beneath readable content.
@@ -135,22 +148,12 @@
   min-height: 44px;
   padding-block: 12px;
   color: var(--accent);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   cursor: pointer;
 }
 .cover-recovery .image-source-list {
   margin-bottom: 12px;
-}
-.library-detail-pane > .library-back {
-  position: static;
-  min-height: 44px;
-  padding: 0;
-  background: transparent;
-  font-family: var(--font-sans);
-  font-size: 12px;
-  letter-spacing: normal;
-  text-transform: none;
 }
 @media (max-width: 640px) {
   .library-selection-hero {
@@ -169,7 +172,13 @@
   .library-selection-copy {
     padding-block: 12px;
   }
+  .library-selection-copy {
+    gap: 4px;
+  }
   .library-selection-copy h2 {
-    font-size: 20px;
+    font-size: var(--title-sm);
+  }
+  .library-selection-copy .quick-action-button {
+    padding-inline: 12px;
   }
 }

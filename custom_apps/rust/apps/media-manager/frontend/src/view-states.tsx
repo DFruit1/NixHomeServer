@@ -1,14 +1,14 @@
 import { component$ } from "@builder.io/qwik";
 import { Icon } from "./icon";
 
-export const EmptyState = component$<{ title: string; detail: string }>(
+export const EmptyState = component$<{ title: string; detail?: string }>(
   (props) => (
     <div class="empty-state">
       <span class="empty-glyph">
-        <Icon name="library" size={23} />
+        <Icon name="library" size={20} />
       </span>
       <h4>{props.title}</h4>
-      <p>{props.detail}</p>
+      {props.detail && <p>{props.detail}</p>}
     </div>
   ),
 );

@@ -57,7 +57,7 @@ export function refreshPresentation(status?: IntegrationRefresh): {
     case "queued":
       return {
         label: "Queued",
-        detail: "Waiting for the refresh adapter to start.",
+        detail: "Waiting to start.",
         action: "Queued",
         busy: true,
         tone: "pending",
@@ -65,7 +65,7 @@ export function refreshPresentation(status?: IntegrationRefresh): {
     case "running":
       return {
         label: "Refreshing…",
-        detail: "The application is scanning its registered libraries.",
+        detail: "Scanning its libraries.",
         action: "Working…",
         busy: true,
         tone: "pending",
@@ -73,7 +73,7 @@ export function refreshPresentation(status?: IntegrationRefresh): {
     case "succeeded":
       return {
         label: "Succeeded",
-        detail: status.message ?? "The refresh completed successfully.",
+        detail: status.message ?? "The refresh finished.",
         action: "Refresh again",
         busy: false,
         tone: "success",
@@ -89,7 +89,7 @@ export function refreshPresentation(status?: IntegrationRefresh): {
     default:
       return {
         label: "Ready",
-        detail: "No refresh is currently running.",
+        detail: "",
         action: "Refresh",
         busy: false,
         tone: "idle",

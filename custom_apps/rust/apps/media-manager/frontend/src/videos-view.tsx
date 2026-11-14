@@ -11,6 +11,24 @@ import { Icon } from "./icon";
 import { findTargetIndex, prepareBrowserPlayback } from "./playback-target";
 import type { CatalogItem, MediaRoot } from "./root-types";
 
+// The folder line already places the file, so the title drops its extension
+// visually; the full filename stays in the tooltip and for screen readers.
+const VideoListCopy = component$<{ relativePath: string }>((props) => {
+  const filename = props.relativePath.split("/").at(-1) ?? props.relativePath;
+  const folder = props.relativePath.split("/").slice(0, -1).join("/");
+  const extension = folder ? (filename.match(/\.[^.\s]{1,5}$/)?.[0] ?? "") : "";
+  const stem = extension ? filename.slice(0, -extension.length) : filename;
+  return (
+    <span class="video-list-copy">
+      <strong title={filename}>
+        {stem}
+        {extension && <span class="sr-only">{extension}</span>}
+      </strong>
+      <span>{folder || "Video library"}</span>
+    </span>
+  );
+});
+
 export const VideosView = component$<{
   roots: MediaRoot[];
   initialItemId?: string;
@@ -365,13 +383,7 @@ export const VideosView = component$<{
                       }}
                     />
                   </span>
-                  <span class="video-list-copy">
-                    <strong>{item.relativePath.split("/").at(-1)}</strong>
-                    <span>
-                      {item.relativePath.split("/").slice(0, -1).join("/") ||
-                        "Video library"}
-                    </span>
-                  </span>
+                  <VideoListCopy relativePath={item.relativePath} />
                 </button>
               </li>
             ))}
