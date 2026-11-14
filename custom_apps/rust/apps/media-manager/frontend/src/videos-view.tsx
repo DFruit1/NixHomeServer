@@ -192,8 +192,33 @@ export const VideosView = component$<{
     );
   });
 
+  // Applying a link is detached from the visible task: a pending scan must not
+  // block the next link's task from running. A newer link replaces the value
+  // checked here, so the older scan can finish without taking over.
+  const applyVideoDeepLink = $(async (path: string) => {
+    const navigation = navigationGeneration.value;
+    const stillCurrent = () =>
+      deepLinkRefresh.value === path &&
+      props.initialPath === path &&
+      !props.initialItemId &&
+      navigation === navigationGeneration.value;
+    await refreshVideoRoots(props.initialRootId);
+    if (!stillCurrent()) return;
+    await loadVideos();
+    if (!stillCurrent()) return;
+    const index = findTargetIndex(state.items, undefined, path);
+    if (index < 0) {
+      deepLinkNotice.value =
+        "The linked download isn't in the video library. It may still be copying, or saved in a container the library doesn't index.";
+      return;
+    }
+    // loadVideos keeps an unrelated sibling selected when one was already
+    // present, so move the selection onto the refreshed link explicitly.
+    await chooseVideo(state.items[index]!.id);
+  });
+
   useVisibleTask$(
-    async ({ track }) => {
+    ({ track }) => {
       track(() => state.loading);
       track(() => props.initialPath);
       track(() => props.initialItemId);
@@ -205,28 +230,7 @@ export const VideosView = component$<{
       }
       if (deepLinkRefresh.value === path) return;
       deepLinkRefresh.value = path;
-      const navigation = navigationGeneration.value;
-      // Another deep link may become current while this one is scanning, so
-      // compare the route and the user's navigation after every wait.
-      const stillCurrent = () =>
-        props.initialPath === path &&
-        !props.initialItemId &&
-        navigation === navigationGeneration.value;
-      await refreshVideoRoots(props.initialRootId);
-      // The catalog still reloads because the finished download belongs in the
-      // list; the guard only stops this link from taking over the selection
-      // the user or a newer link has already made.
-      await loadVideos();
-      if (!stillCurrent()) return;
-      const index = findTargetIndex(state.items, undefined, path);
-      if (index < 0) {
-        deepLinkNotice.value =
-          "The linked download isn't in the video library. It may still be copying, or saved in a container the library doesn't index.";
-        return;
-      }
-      // loadVideos keeps an unrelated sibling selected when one was already
-      // present, so move the selection onto the refreshed link explicitly.
-      await chooseVideo(state.items[index]!.id);
+      void applyVideoDeepLink(path);
     },
     { strategy: "document-ready" },
   );
