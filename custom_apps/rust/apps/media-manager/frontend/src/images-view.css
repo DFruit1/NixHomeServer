@@ -941,6 +941,13 @@
   .images-browser-body {
     overflow: visible;
   }
+  /* Phones scroll the page: an inner scroll container has no range here and
+     its overscroll containment would swallow the touch gesture. */
+  .decision-questions.panel {
+    overflow: visible;
+    scrollbar-gutter: auto;
+    overscroll-behavior-y: auto;
+  }
   .images-search :is(input, select),
   .decision-questions :is(textarea, select, input:not([type="checkbox"])) {
     font-size: var(--text-lg);
