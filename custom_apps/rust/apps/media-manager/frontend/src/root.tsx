@@ -735,6 +735,7 @@ export default component$((props: RootProps) => {
             roots={state.roots}
             initialItemId={route.initialItemId}
             initialPath={route.initialPath}
+            initialRootId={route.initialRootId}
           />
         ) : view.value === "images" ? (
           <ImagesView

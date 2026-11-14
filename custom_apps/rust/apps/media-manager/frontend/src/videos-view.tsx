@@ -33,6 +33,15 @@ function fileStem(relativePath: string): string {
     : filename;
 }
 
+// Module scope keeps the lookup usable inside task closures, which Qwik
+// cannot serialize while it captures a component-local function.
+function selectedItem(
+  items: CatalogItem[],
+  selectedId: string,
+): CatalogItem | undefined {
+  return items.find((item) => item.id === selectedId);
+}
+
 // Rows show only the title: the extension stays in the tooltip and for screen
 // readers, and the folder remains searchable through the filter.
 const VideoListCopy = component$<{ relativePath: string }>((props) => {
@@ -54,6 +63,7 @@ export const VideosView = component$<{
   roots: MediaRoot[];
   initialItemId?: string;
   initialPath?: string;
+  initialRootId?: string;
 }>((props) => {
   const videoRef = useSignal<HTMLVideoElement>();
   const pipSupported = useSignal(false);
@@ -84,6 +94,11 @@ export const VideosView = component$<{
   const loadGeneration = useSignal(0);
   const preparationGeneration = useSignal(0);
   const titleGeneration = useSignal(0);
+  const deepLinkRefresh = useSignal("");
+  const deepLinkNotice = useSignal("");
+  // Bumped by any deliberate choice, so a deep-link rescan that finishes later
+  // cannot move the selection away from the video the user picked.
+  const navigationGeneration = useSignal(0);
 
   const loadVideos = $(async () => {
     const generation = ++loadGeneration.value;
@@ -145,14 +160,70 @@ export const VideosView = component$<{
 
   const chooseVideo = $((id: string) => {
     preparationGeneration.value++;
+    navigationGeneration.value++;
     state.selectedId = id;
     state.title = "";
     state.transcode = false;
     state.transcodeLoading = false;
     state.audioChecked = false;
     state.error = "";
+    deepLinkNotice.value = "";
     resumeAt.value = 0;
   });
+
+  // A finished download can reach the library before the next scheduled scan
+  // of its root, so a path deep link can miss the catalog even though the file
+  // exists. Refresh the hinted root (or every video root) once and retry.
+  const refreshVideoRoots = $(async (rootId?: string) => {
+    const hinted =
+      rootId != null ? videoRoots.filter((root) => root.id === rootId) : [];
+    const targets = hinted.length > 0 ? hinted : videoRoots;
+    await Promise.all(
+      targets.map(async (root) => {
+        try {
+          await api("/catalog/refresh", {
+            method: "POST",
+            body: JSON.stringify({ rootId: root.id }),
+          });
+        } catch {
+          // Ignore cooldowns and scan failures; the retry below decides.
+        }
+      }),
+    );
+  });
+
+  useVisibleTask$(
+    async ({ track }) => {
+      track(() => state.loading);
+      track(() => props.initialPath);
+      track(() => props.initialItemId);
+      const path = props.initialPath;
+      if (!path || props.initialItemId || state.loading) return;
+      if (findTargetIndex(state.items, undefined, path) >= 0) {
+        deepLinkNotice.value = "";
+        return;
+      }
+      if (deepLinkRefresh.value === path) return;
+      deepLinkRefresh.value = path;
+      const navigation = navigationGeneration.value;
+      await refreshVideoRoots(props.initialRootId);
+      // Reload the catalog even if the user moved on: the finished download
+      // belongs in the list. The guard below only stops the link from taking
+      // over the selection they chose.
+      await loadVideos();
+      if (navigation !== navigationGeneration.value) return;
+      const index = findTargetIndex(state.items, undefined, path);
+      if (index < 0) {
+        deepLinkNotice.value =
+          "The linked download isn't in the video library. It may still be copying, or saved in a container the library doesn't index.";
+        return;
+      }
+      // loadVideos keeps an unrelated sibling selected when one was already
+      // present, so move the selection onto the refreshed link explicitly.
+      await chooseVideo(state.items[index]!.id);
+    },
+    { strategy: "document-ready" },
+  );
 
   // Browsers render a video whose audio codec they cannot decode without
   // raising an error, so a silent track never reaches the error fallback.
@@ -178,7 +249,7 @@ export const VideosView = component$<{
 
   useTask$(async ({ track }) => {
     track(() => state.selectedId);
-    const item = selected();
+    const item = selectedItem(state.items, state.selectedId);
     if (!item || !audioNeedsBrowserConversion(item.videoProbe)) return;
     await prepareBrowserCopy(item.id);
   });
@@ -198,7 +269,7 @@ export const VideosView = component$<{
       return;
     if (video.currentTime < 3) return;
     state.audioChecked = true;
-    const item = selected();
+    const item = selectedItem(state.items, state.selectedId);
     if (!item || item.videoProbe || probeReportsNoAudio(item.videoProbe))
       return;
     if (decodedAudioState(video) !== "silent") return;
@@ -306,7 +377,7 @@ export const VideosView = component$<{
     if (typeof navigator === "undefined" || !("mediaSession" in navigator)) {
       return;
     }
-    const item = selected();
+    const item = selectedItem(state.items, state.selectedId);
     if (!item) return;
     const filename = item.relativePath.split("/").at(-1) ?? "";
     const folder = item.relativePath.split("/").slice(0, -1).join("/");
@@ -479,6 +550,11 @@ export const VideosView = component$<{
             onInput$={(_, element) => (state.query = element.value)}
           />
         </label>
+        {deepLinkNotice.value && (
+          <p class="video-library-empty" role="status">
+            {deepLinkNotice.value}
+          </p>
+        )}
         {state.loading ? (
           <p class="video-library-empty">Loading videos…</p>
         ) : state.items.length === 0 ? (
