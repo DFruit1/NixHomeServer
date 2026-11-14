@@ -35,11 +35,14 @@ import java.util.zip.ZipOutputStream
 
 @TauriPlugin(permissions = [Permission(strings = [Manifest.permission.WRITE_EXTERNAL_STORAGE], alias = "writeExternalStorage")])
 class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
+  // Rust takes this around reading, refreshing or replacing the stored
+  // session. It is the session lock, not the sync lock, so a long sync never
+  // holds up sign-in, sign-out or a token refresh for the app's API calls.
   @Command
-  fun acquireSyncLock(invoke: Invoke) {
+  fun acquireSessionLock(invoke: Invoke) {
     lockExecutor.execute {
       try {
-        SyncEngine.acquireSyncLock()
+        SyncEngine.acquireSessionLock()
         invoke.resolve()
       } catch (error: InterruptedException) {
         Thread.currentThread().interrupt()
@@ -49,9 +52,9 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   @Command
-  fun releaseSyncLock(invoke: Invoke) {
+  fun releaseSessionLock(invoke: Invoke) {
     try {
-      SyncEngine.releaseSyncLock()
+      SyncEngine.releaseSessionLock()
       invoke.resolve()
     } catch (error: Exception) {
       invoke.reject("Android sync lock could not be released", error, null)
@@ -97,7 +100,8 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun estimateSyncPair(invoke: Invoke) {
     val pairJson = invoke.getArgs().getString("pairJson")
-    syncExecutor.execute {
+    // Its own thread: a size check must not queue behind a long sync.
+    estimateExecutor.execute {
       try {
         invoke.resolveObject(SyncEngine.estimatePair(activity, pairJson))
       } catch (error: Exception) {
@@ -610,6 +614,7 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
 
   companion object {
     private val syncExecutor = Executors.newSingleThreadExecutor()
+    private val estimateExecutor = Executors.newSingleThreadExecutor()
     private val lockExecutor = Executors.newSingleThreadExecutor()
     private val configExecutor = Executors.newSingleThreadExecutor()
     private val secretsExecutor = Executors.newSingleThreadExecutor()

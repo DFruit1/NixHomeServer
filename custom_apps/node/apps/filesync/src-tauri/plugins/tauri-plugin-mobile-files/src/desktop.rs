@@ -21,11 +21,11 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 pub struct MobileFiles<R: Runtime>(AppHandle<R>);
 
 impl<R: Runtime> MobileFiles<R> {
-    pub fn acquire_sync_lock(&self) -> crate::Result<()> {
+    pub fn acquire_session_lock(&self) -> crate::Result<()> {
         Ok(())
     }
 
-    pub fn release_sync_lock(&self) -> crate::Result<()> {
+    pub fn release_session_lock(&self) -> crate::Result<()> {
         Ok(())
     }
 

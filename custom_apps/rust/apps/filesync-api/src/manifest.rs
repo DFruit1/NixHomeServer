@@ -34,10 +34,8 @@ const MAX_DEPTH: usize = 32;
 const MAX_ENTRIES: usize = 500_000;
 const MAX_WALK: Duration = Duration::from_secs(20);
 
-/// How long a manifest may be reused before it is re-walked. The walk itself
-/// is cheap once hashes are cached, so this only bounds how stale a size can
-/// get; it is not a performance crutch.
-const MANIFEST_TTL: Duration = Duration::from_secs(300);
+/// Names File Sync uses for its own temporary files inside a library.
+pub const INTERNAL_FILE_PREFIX: &str = ".filesync-";
 
 #[derive(Clone, Debug)]
 pub struct ManifestEntry {
@@ -85,15 +83,6 @@ pub struct CachedManifest {
     pub scanned_at: SystemTime,
 }
 
-impl CachedManifest {
-    pub fn is_fresh(&self) -> bool {
-        SystemTime::now()
-            .duration_since(self.scanned_at)
-            .map(|age| age < MANIFEST_TTL)
-            .unwrap_or(false)
-    }
-}
-
 /// One library folder's size, for the app's list of premade folders.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -139,6 +128,12 @@ pub fn scan(root: &Path) -> io::Result<Manifest> {
                 continue;
             }
             let name = item.file_name().to_string_lossy().into_owned();
+            // An upload in progress (or abandoned) is staged next to its target
+            // under this prefix. It is not user data and must never be offered
+            // to a device as something to download.
+            if name.starts_with(INTERNAL_FILE_PREFIX) {
+                continue;
+            }
             let path = if prefix.is_empty() {
                 name
             } else {
@@ -272,17 +267,43 @@ pub struct LocalFile {
     pub hash: Option<String>,
 }
 
+/// One file a sync has to move, so the client can transfer exactly these
+/// instead of listing and hashing the whole folder again.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingFile {
+    pub path: String,
+    pub size: u64,
+    /// The server copy's mtime for downloads (so the device can keep it and
+    /// later checks match by metadata alone); zero for uploads.
+    pub mtime_unix_ms: u128,
+}
+
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffResult {
     pub pending_bytes: u64,
     pub pending_count: usize,
+    /// The files behind `pending_count`, in the order they were decided.
+    pub pending: Vec<PendingFile>,
     pub skipped: usize,
     /// Files that look different by metadata and still need a content
     /// comparison. Non-empty only when something actually changed.
     pub needs_hash: Vec<String>,
     /// Files that could not be read for comparison.
     pub unreadable: Vec<String>,
+}
+
+impl DiffResult {
+    fn add_pending(&mut self, path: &str, size: u64, mtime_unix_ms: u128) {
+        self.pending_bytes = self.pending_bytes.saturating_add(size);
+        self.pending_count += 1;
+        self.pending.push(PendingFile {
+            path: path.to_owned(),
+            size,
+            mtime_unix_ms,
+        });
+    }
 }
 
 /// Decide what a sync would move, hashing only what it must.
@@ -305,8 +326,7 @@ pub fn diff(
     if direction == "phone-to-server" {
         for local_file in local {
             let Some((remote_size, remote_mtime)) = manifest.get(&local_file.path) else {
-                result.pending_bytes = result.pending_bytes.saturating_add(local_file.size);
-                result.pending_count += 1;
+                result.add_pending(&local_file.path, local_file.size, 0);
                 continue;
             };
             match compare(
@@ -321,10 +341,7 @@ pub fn diff(
                 Outcome::Same => result.skipped += 1,
                 // An upload moves the device's copy, so the device's size is
                 // what the estimate has to add.
-                Outcome::Different => {
-                    result.pending_bytes = result.pending_bytes.saturating_add(local_file.size);
-                    result.pending_count += 1;
-                }
+                Outcome::Different => result.add_pending(&local_file.path, local_file.size, 0),
                 Outcome::Unreadable => result.unreadable.push(local_file.path.clone()),
                 Outcome::NeedHash => {}
             }
@@ -350,8 +367,8 @@ pub fn diff(
             by_path.get(path).copied()
         };
         let Some(local_file) = local_file else {
-            result.pending_bytes = result.pending_bytes.saturating_add(remote_size);
-            result.pending_count += 1;
+            let path = manifest.entries[index].path.clone();
+            result.add_pending(&path, remote_size, remote_mtime);
             continue;
         };
         if remote_size == local_file.size && remote_mtime == local_file.mtime_unix_ms {
@@ -365,8 +382,8 @@ pub fn diff(
         match hash_entry_at(manifest, root, index)? {
             Some(remote_hash) if &remote_hash == local_hash => result.skipped += 1,
             Some(_) => {
-                result.pending_bytes = result.pending_bytes.saturating_add(remote_size);
-                result.pending_count += 1;
+                let path = manifest.entries[index].path.clone();
+                result.add_pending(&path, remote_size, remote_mtime);
             }
             None => result.unreadable.push(local_file.path.clone()),
         }
@@ -532,6 +549,72 @@ mod tests {
         .unwrap();
         assert_eq!(result.pending_bytes, 42);
         assert_eq!(result.pending_count, 1);
+    }
+
+    #[test]
+    fn scans_skip_in_progress_uploads() {
+        let dir = std::env::temp_dir().join(format!("filesync-scan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("song.flac"), b"x").unwrap();
+        std::fs::write(dir.join(".filesync-123.upload"), b"partial").unwrap();
+        let manifest = scan(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let paths: Vec<&str> = manifest.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, vec!["song.flac"]);
+        assert_eq!(manifest.total_bytes, 1);
+    }
+
+    #[test]
+    fn the_pending_list_names_exactly_the_files_to_move() {
+        let mut manifest = manifest_of(vec![
+            ("keep.flac", 10, 1, Some("same")),
+            ("changed.flac", 20, 2, Some("server")),
+            ("new.flac", 30, 3, Some("n")),
+        ]);
+        let mut same = local("keep.flac", 10, 9);
+        same.hash = Some("same".to_owned());
+        let mut changed = local("changed.flac", 25, 9);
+        changed.hash = Some("device".to_owned());
+        let result = diff(
+            &mut manifest,
+            &no_root(),
+            &[same, changed],
+            "server-to-phone",
+        )
+        .unwrap();
+        assert_eq!(
+            result.pending,
+            vec![
+                PendingFile {
+                    path: "changed.flac".into(),
+                    size: 20,
+                    mtime_unix_ms: 2
+                },
+                PendingFile {
+                    path: "new.flac".into(),
+                    size: 30,
+                    mtime_unix_ms: 3
+                },
+            ],
+            "downloads list the server copy with its mtime"
+        );
+        assert_eq!(result.pending_count, result.pending.len());
+
+        let upload = diff(
+            &mut Manifest::default(),
+            &no_root(),
+            &[local("up.flac", 7, 4)],
+            "phone-to-server",
+        )
+        .unwrap();
+        assert_eq!(
+            upload.pending,
+            vec![PendingFile {
+                path: "up.flac".into(),
+                size: 7,
+                mtime_unix_ms: 0
+            }]
+        );
     }
 
     #[test]

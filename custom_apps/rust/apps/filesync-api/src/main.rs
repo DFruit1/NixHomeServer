@@ -709,12 +709,16 @@ async fn manifest_for(
 }
 
 /// Keep the cache bounded so many users or deep paths cannot grow it without
-/// limit. Stale entries go first; if that is not enough, the oldest goes too.
+/// limit: when it is full, the least recently scanned folder goes.
 async fn store_manifest(state: &AppState, key: ManifestKey, manifest: manifest::Manifest) {
     const MAX_CACHED: usize = 256;
     let mut manifests = state.manifests.write().await;
-    manifests.retain(|_, entry| entry.is_fresh());
-    while manifests.len() >= MAX_CACHED {
+    // Every request rescans the folder, so an old manifest is never served as
+    // the listing; it is only the source of hashes for files whose size and
+    // mtime have not changed. Dropping it after a few minutes forced the next
+    // check to re-read every synced file, so entries now leave only to make
+    // room, oldest first.
+    while manifests.len() >= MAX_CACHED && !manifests.contains_key(&key) {
         let oldest = manifests
             .iter()
             .min_by_key(|(_, entry)| entry.scanned_at)
@@ -805,6 +809,11 @@ struct EstimateRequest {
     direction: String,
     #[serde(default)]
     local: Vec<LocalFile>,
+    /// Also return the files to transfer. The app sets this when it is about
+    /// to sync, so the sync moves exactly what the diff found instead of
+    /// listing (and hashing) the whole folder a second time.
+    #[serde(default)]
+    list: bool,
 }
 
 /// Decide what a sync of one folder would move, without sending the library's
@@ -887,6 +896,7 @@ async fn estimate(
             "files": files,
             "directories": directories,
             "truncated": truncated,
+            "pending": if request.list { json!(diff.pending) } else { serde_json::Value::Null },
         },
         "elapsedMs": started.elapsed().as_millis() as u64,
     }))
@@ -1101,7 +1111,11 @@ async fn upload(
             )
         }
     };
-    let temporary_name = format!(".filesync-{}.upload", Uuid::new_v4());
+    let temporary_name = format!(
+        "{}{}.upload",
+        manifest::INTERNAL_FILE_PREFIX,
+        Uuid::new_v4()
+    );
     let target_dir = tokio::task::spawn_blocking(move || -> io::Result<Dir> {
         let root = Dir::open_ambient_dir(base, ambient_authority())?;
         if !parent.as_os_str().is_empty() {

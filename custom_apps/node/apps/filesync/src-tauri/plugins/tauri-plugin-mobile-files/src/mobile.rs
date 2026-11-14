@@ -21,15 +21,15 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 pub struct MobileFiles<R: Runtime>(PluginHandle<R>);
 
 impl<R: Runtime> MobileFiles<R> {
-    pub fn acquire_sync_lock(&self) -> crate::Result<()> {
+    pub fn acquire_session_lock(&self) -> crate::Result<()> {
         self.0
-            .run_mobile_plugin("acquireSyncLock", serde_json::json!({}))
+            .run_mobile_plugin("acquireSessionLock", serde_json::json!({}))
             .map_err(Into::into)
     }
 
-    pub fn release_sync_lock(&self) -> crate::Result<()> {
+    pub fn release_session_lock(&self) -> crate::Result<()> {
         self.0
-            .run_mobile_plugin("releaseSyncLock", serde_json::json!({}))
+            .run_mobile_plugin("releaseSessionLock", serde_json::json!({}))
             .map_err(Into::into)
     }
 

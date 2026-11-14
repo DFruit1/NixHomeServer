@@ -91,25 +91,15 @@ struct SyncPair {
     server: Option<String>,
     #[serde(default)]
     account: Option<String>,
-    #[serde(default = "default_warn_fraction")]
-    storage_warn: f64,
-    #[serde(default = "default_block_fraction")]
-    storage_block: f64,
 }
 
 fn default_root() -> String {
     "files".into()
 }
 
-fn default_warn_fraction() -> f64 {
-    0.8
-}
-
-fn default_block_fraction() -> f64 {
-    0.95
-}
-
-const STORAGE_FLOOR_FRACTION: f64 = 0.15;
+/// Downloads may use at most this share of the device's free space. A small
+/// margin keeps a sync from filling the device to the last byte.
+const DOWNLOAD_SPACE_FRACTION: f64 = 0.99;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -435,7 +425,7 @@ async fn finish_login<R: Runtime>(
     };
     #[cfg(target_os = "android")]
     app.mobile_files()
-        .acquire_sync_lock()
+        .acquire_session_lock()
         .map_err(|_| "Android could not coordinate the new sign-in session.".to_owned())?;
     let store_result = (|| {
         store_session(&app, &session)?;
@@ -450,10 +440,10 @@ async fn finish_login<R: Runtime>(
             })
     })();
     #[cfg(target_os = "android")]
-    if let Err(error) = app.mobile_files().release_sync_lock() {
+    if let Err(error) = app.mobile_files().release_session_lock() {
         if store_result.is_ok() {
             return Err(format!(
-                "Android could not release the background sync lock: {error}"
+                "Android could not release the session lock: {error}"
             ));
         }
     }
@@ -492,7 +482,7 @@ async fn current_user<R: Runtime>(app: AppHandle<R>) -> Result<Option<String>, S
 #[tauri::command]
 async fn logout<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     #[cfg(target_os = "android")]
-    let sync_lock_held = app.mobile_files().acquire_sync_lock().is_ok();
+    let session_lock_held = app.mobile_files().acquire_session_lock().is_ok();
     let _ = app.mobile_files().schedule_background_sync(false);
     let logout_result = async {
         if let Some(session) = load_session(&app)? {
@@ -523,11 +513,11 @@ async fn logout<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     }
     .await;
     #[cfg(target_os = "android")]
-    if sync_lock_held {
-        if let Err(error) = app.mobile_files().release_sync_lock() {
+    if session_lock_held {
+        if let Err(error) = app.mobile_files().release_session_lock() {
             if logout_result.is_ok() {
                 return Err(format!(
-                    "Android could not release the background sync lock: {error}"
+                    "Android could not release the session lock: {error}"
                 ));
             }
         }
@@ -890,10 +880,15 @@ async fn sync_pair<R: Runtime>(app: AppHandle<R>, pair: SyncPair) -> Result<Sync
     {
         let pair_json = serde_json::to_string(&pair)
             .map_err(|_| "The folder pair could not be prepared for Android sync.")?;
-        let result = app
-            .mobile_files()
-            .run_sync_pair(pair_json)
-            .map_err(|error| format!("Android sync could not start: {error}"))?;
+        // The plugin call blocks until the whole sync finishes. Run it off the
+        // async runtime so a long sync cannot starve other commands of workers.
+        let handle = app.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            handle.mobile_files().run_sync_pair(pair_json)
+        })
+        .await
+        .map_err(|_| "Android sync stopped unexpectedly.".to_owned())?
+        .map_err(|error| format!("Android sync could not start: {error}"))?;
         return serde_json::from_value(result.clone()).map_err(|_| {
             let preview = result.to_string();
             let preview = preview.chars().take(160).collect::<String>();
@@ -971,10 +966,13 @@ async fn estimate_sync_pair<R: Runtime>(
     {
         let pair_json = serde_json::to_string(&pair)
             .map_err(|_| "The folder pair could not be prepared for Android estimation.")?;
-        let result = app
-            .mobile_files()
-            .estimate_sync_pair(pair_json)
-            .map_err(|error| format!("Android estimation could not start: {error}"))?;
+        let handle = app.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            handle.mobile_files().estimate_sync_pair(pair_json)
+        })
+        .await
+        .map_err(|_| "Android estimation stopped unexpectedly.".to_owned())?
+        .map_err(|error| format!("Android estimation could not start: {error}"))?;
         serde_json::from_value(result.clone()).map_err(|_| {
             let preview = result.to_string();
             let preview = preview.chars().take(160).collect::<String>();
@@ -1034,7 +1032,6 @@ struct LoadedSync {
     local_subpath: String,
     root: String,
     folder_uri: String,
-    block_fraction: f64,
     session: StoredSession,
     client: reqwest::Client,
     local_files: std::collections::HashMap<String, tauri_plugin_mobile_files::LocalEntry>,
@@ -1057,17 +1054,16 @@ async fn load_remote_files(
         .collect())
 }
 
-fn storage_budget(free_bytes: u64, total_bytes: u64) -> u64 {
-    let floor = (total_bytes as f64 * STORAGE_FLOOR_FRACTION) as u64;
-    free_bytes.saturating_sub(floor)
+fn download_limit(free_bytes: u64) -> u64 {
+    (free_bytes as f64 * DOWNLOAD_SPACE_FRACTION) as u64
 }
 
-fn not_enough_space_message(name: &str, pending_bytes: u64, block_limit: u64) -> String {
+fn not_enough_space_message(name: &str, pending_bytes: u64, free_bytes: u64) -> String {
     format!(
-        "Not enough free space: “{name}” needs {} but only {} may be used \
-         (keeps 15% of device storage free). Free up space or raise the limit in Settings.",
+        "Not enough free space: “{name}” needs {} but this device has {} free. \
+         Free up space, then sync again.",
         format_bytes(pending_bytes),
-        format_bytes(block_limit),
+        format_bytes(free_bytes),
     )
 }
 
@@ -1183,7 +1179,6 @@ async fn load_sync<R: Runtime>(app: &AppHandle<R>, pair: &SyncPair) -> Result<Lo
         local_subpath,
         root,
         folder_uri: pair.local.uri.clone(),
-        block_fraction: pair.storage_block,
         session,
         client,
         local_files,
@@ -1422,14 +1417,13 @@ async fn sync_pair_rust<R: Runtime>(
             }
         }
         let pending_bytes: u64 = pending.iter().map(|(_, entry)| entry.size).sum();
-        let (free_bytes, total_bytes) = desktop_fs_space(&plan.folder_uri)?;
-        let block_limit =
-            (storage_budget(free_bytes, total_bytes) as f64 * plan.block_fraction) as u64;
+        let (free_bytes, _) = desktop_fs_space(&plan.folder_uri)?;
+        let block_limit = download_limit(free_bytes);
         if pending_bytes > 0 && pending_bytes > block_limit {
             return Err(not_enough_space_message(
                 &plan.name,
                 pending_bytes,
-                block_limit,
+                free_bytes,
             ));
         }
         let mut written_bytes = 0_u64;
@@ -1502,8 +1496,8 @@ async fn sync_pair_rust<R: Runtime>(
             }
             if written_bytes > block_limit {
                 return Err(format!(
-                    "Sync stopped: “{}” passed its free-space limit after {}. \
-                     Free up space or raise the limit in Settings, then sync again.",
+                    "Sync stopped: “{}” ran out of free space after {}. \
+                     Free up space, then sync again.",
                     plan.name,
                     format_bytes(written_bytes),
                 ));
@@ -1718,23 +1712,23 @@ async fn refresh_if_needed<R: Runtime>(
     #[cfg(target_os = "android")]
     {
         app.mobile_files()
-            .acquire_sync_lock()
+            .acquire_session_lock()
             .map_err(|_| "Android could not coordinate a background token refresh.".to_owned())?;
         match load_session(app) {
             Ok(Some(latest)) => session = latest,
             Ok(None) => {
-                let _ = app.mobile_files().release_sync_lock();
+                let _ = app.mobile_files().release_session_lock();
                 return Err("Sign in with Kanidm before syncing.".into());
             }
             Err(error) => {
-                let _ = app.mobile_files().release_sync_lock();
+                let _ = app.mobile_files().release_session_lock();
                 return Err(error);
             }
         }
         if session.expires_at > now_seconds().saturating_add(60) {
             app.mobile_files()
-                .release_sync_lock()
-                .map_err(|_| "Android could not release the background sync lock.".to_owned())?;
+                .release_session_lock()
+                .map_err(|_| "Android could not release the session lock.".to_owned())?;
             return Ok(session);
         }
     }
@@ -1785,10 +1779,10 @@ async fn refresh_if_needed<R: Runtime>(
     .await;
 
     #[cfg(target_os = "android")]
-    if let Err(error) = app.mobile_files().release_sync_lock() {
+    if let Err(error) = app.mobile_files().release_session_lock() {
         if refresh_result.is_ok() {
             return Err(format!(
-                "Android could not release the background sync lock: {error}"
+                "Android could not release the session lock: {error}"
             ));
         }
     }
