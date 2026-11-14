@@ -1212,8 +1212,12 @@ internal object SyncEngine {
     var connection = open(token)
     try {
       if (connection.responseCode == 401) {
+        val errorCode = runCatching {
+          JSONObject(connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty())
+            .getJSONObject("error").optString("code")
+        }.getOrNull()
         connection.disconnect()
-        connection = open(tokens.refreshAfterRejection(token))
+        connection = open(tokens.refreshAfterRejection(token, keyRevoked = errorCode == "DEVICE_KEY_REVOKED"))
       }
       val code = connection.responseCode
       if (code !in 200..299) failHttp(code, "The server could not provide $relative")
