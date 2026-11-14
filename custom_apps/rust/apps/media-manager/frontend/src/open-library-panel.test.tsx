@@ -140,7 +140,7 @@ it("selects an edition and stages its cover through the confirmed artwork workfl
   );
   await userEvent(confirm ?? null, "click");
   await vi.waitFor(() =>
-    expect(screen.textContent).toContain("added to the mutation queue"),
+    expect(screen.textContent).toContain("The artwork change was queued."),
   );
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/v1/plans/plan-cover/confirm",

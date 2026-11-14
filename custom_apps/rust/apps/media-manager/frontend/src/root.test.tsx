@@ -2556,7 +2556,13 @@ describe("Media Manager library browser", () => {
       expect(screen.querySelector(".musicbrainz-panel")).toBeDefined(),
     );
     expect(screen.textContent).toContain("MusicBrainz");
-    expect(screen.textContent).toContain("Fingerprint ready");
+    expect(
+      (
+        screen.querySelector(
+          ".musicbrainz-panel option[value=fingerprint]",
+        ) as HTMLOptionElement | null
+      )?.disabled,
+    ).toBe(false);
 
     await userEvent(
       screen.querySelector(".musicbrainz-panel .primary-button"),
@@ -2683,6 +2689,32 @@ describe("Media Manager library browser", () => {
               providerIds: { tvdb: "1234" },
             }),
           );
+        if (path.endsWith("/provider-accounts"))
+          return new Response(
+            wireJson({
+              schemaVersion: 1,
+              recoveryAdvice: "Keep a recovery copy.",
+              requestId: "accounts",
+              providers: [
+                {
+                  id: "tmdb",
+                  name: "The Movie Database (TMDB)",
+                  mediaDomains: ["movies", "television"],
+                  setupKind: "apiKey",
+                  implementationStatus: "active",
+                  canConfigure: true,
+                  canTest: true,
+                  capabilities: ["search", "details"],
+                  credentialFields: [],
+                  setupUrl: "https://www.themoviedb.org/settings/api",
+                  documentationUrl:
+                    "https://developer.themoviedb.org/docs/getting-started",
+                  notes: "Movie and television matching.",
+                  account: { state: "notConfigured" },
+                },
+              ],
+            }),
+          );
         if (
           path.endsWith("/provider-lookups/tmdb/search") &&
           init?.method === "POST"
@@ -2737,11 +2769,13 @@ describe("Media Manager library browser", () => {
       expect(screen.querySelector(".tmdb-panel")).toBeDefined(),
     );
     expect(screen.textContent).toContain("The Movie Database");
-    expect(
-      screen
-        .querySelector(".tmdb-panel .metadata-source-setup-link")
-        ?.getAttribute("href"),
-    ).toBe("?view=accounts");
+    await vi.waitFor(() =>
+      expect(
+        screen
+          .querySelector(".tmdb-panel .source-setup-link")
+          ?.getAttribute("href"),
+      ).toBe("?view=accounts"),
+    );
 
     await userEvent(
       screen.querySelector(".tmdb-panel .primary-button"),
@@ -2874,7 +2908,9 @@ describe("Media Manager library browser", () => {
       expect(screen.querySelector(".open-library-panel")).toBeDefined(),
     );
     expect(screen.textContent).toContain("Open Library");
-    expect(screen.textContent).toContain("Free access");
+    expect(
+      screen.querySelector(".open-library-panel .source-setup-link"),
+    ).toBeFalsy();
 
     await userEvent(
       screen.querySelector(".open-library-panel .primary-button"),

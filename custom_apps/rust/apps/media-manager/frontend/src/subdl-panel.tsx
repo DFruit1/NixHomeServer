@@ -1,5 +1,7 @@
 import { ProviderUsageGuide } from "./provider-setup-guide";
 import { $, component$, useStore, useTask$ } from "@builder.io/qwik";
+import { Icon } from "./icon";
+import { SourceSetupLink } from "./source-setup";
 import { api, readableError } from "./api";
 import type {
   AdditionalProviderCandidate,
@@ -149,8 +151,7 @@ export const SubdlPanel = component$<{
       if (revision === state.revision) {
         state.plan = undefined;
         state.download = undefined;
-        state.notice =
-          "The SubDL subtitle install was added to the mutation queue.";
+        state.notice = "The SubDL subtitle installation was queued.";
       }
     } catch (error) {
       if (revision === state.revision) state.error = readableError(error);
@@ -159,17 +160,16 @@ export const SubdlPanel = component$<{
     }
   });
   return (
-    <details class="source-accordion">
+    <details class="source-accordion subdl-panel">
       <summary class="source-accordion-summary">
         <span class="source-accordion-title">SubDL</span>
-        <span class="status-badge access-key">API key</span>
+        <SourceSetupLink providerId="subdl" />
+        <span class="source-accordion-chevron">
+          <Icon name="chevron-down" size={16} />
+        </span>
       </summary>
       <div class="source-accordion-body">
-        <p class="quiet-copy">
-          <a href="?view=accounts">Configure SubDL in Accounts</a>
-        </p>
-        <ProviderUsageGuide providerId="subdl" />
-        <div class="metadata-form">
+        <div class="source-search">
           <label>
             <span>Movie or series title</span>
             <input
@@ -181,11 +181,12 @@ export const SubdlPanel = component$<{
               }}
             />
           </label>
-          <label>
-            <span>Language code</span>
+          <label class="source-search-short">
+            <span>Language</span>
             <input
               value={state.language}
               maxLength={15}
+              placeholder="en"
               onInput$={(_, el) => {
                 state.language = el.value;
                 state.plan = undefined;
@@ -198,7 +199,7 @@ export const SubdlPanel = component$<{
             disabled={state.loading || !props.canEdit || !state.query.trim()}
             onClick$={search}
           >
-            {state.loading ? "Working…" : "Find SubDL subtitles"}
+            {state.loading ? "Working…" : "Search"}
           </button>
         </div>
         {state.error && (
@@ -206,11 +207,15 @@ export const SubdlPanel = component$<{
             {state.error}
           </p>
         )}
-        {state.notice && <p role="status">{state.notice}</p>}
-        <div class="subtitle-results">
+        {state.notice && (
+          <p class="source-notice" role="status">
+            {state.notice}
+          </p>
+        )}
+        <div class="source-results">
           {state.matches.map((candidate) => (
             <article
-              class="subtitle-result provider-lookup-result"
+              class="source-result provider-lookup-result"
               key={candidate.id}
             >
               <div>
@@ -233,7 +238,7 @@ export const SubdlPanel = component$<{
           ))}
         </div>
         {state.download && !state.download.content && (
-          <div>
+          <div class="source-artwork-choices">
             <p>Choose a file from this subtitle pack.</p>
             {state.download.files.map((entry) => (
               <button
@@ -252,14 +257,14 @@ export const SubdlPanel = component$<{
         )}
         {state.download?.content && (
           <section class="subtitle-content">
-            <p>
+            <p class="subtitle-content-meta">
               {state.download.cueCount} cues ·{" "}
               {state.download.format?.toUpperCase()} · {state.language}
             </p>
             <pre>{state.download.content.slice(0, 6000)}</pre>
             {!state.plan ? (
               <button
-                class="primary-button"
+                class="secondary-button"
                 type="button"
                 disabled={state.loading || !props.canEdit}
                 onClick$={prepare}
@@ -267,7 +272,7 @@ export const SubdlPanel = component$<{
                 Prepare subtitle installation
               </button>
             ) : (
-              <div>
+              <div class="subtitle-install-confirm">
                 <p>
                   Destination:{" "}
                   {state.plan.actions
@@ -295,6 +300,7 @@ export const SubdlPanel = component$<{
             )}
           </section>
         )}
+        <ProviderUsageGuide providerId="subdl" />
       </div>
     </details>
   );

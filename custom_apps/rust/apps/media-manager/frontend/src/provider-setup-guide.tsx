@@ -518,7 +518,7 @@ export const PROVIDER_USAGE_GUIDES: Record<string, UsageGuide> = {
   },
   audnexus: {
     queryLabel: "Audiobook ASIN",
-    queryPlaceholder: "10-character ASIN from the Audible edition",
+    queryPlaceholder: "e.g. B002V0QK4C",
     steps: [
       "No account or key is needed. Copy the ten-character ASIN from the Audible audiobook edition, paste it here and select the edition's region, such as US, UK or AU. This lookup does not search by title or ISBN.",
       "Check the narrator, language, abridged status and series position before using Compare fields or Choose artwork. If no record is returned, check the ASIN and region; another edition can have a different ASIN.",
@@ -550,7 +550,7 @@ export const PROVIDER_USAGE_GUIDES: Record<string, UsageGuide> = {
     ],
   },
   discogs: {
-    queryLabel: "Release title, barcode, catalog number or Discogs ID",
+    queryLabel: "Release, barcode or catalog number",
     queryPlaceholder: "e.g. Nevermind, barcode:720642442517 or release:249504",
     steps: [
       "Search a release title with its artist, or use barcode:NUMBER, catalog:NUMBER, release:ID or master:ID. Use the numeric ID from the matching Discogs page; a master groups several releases.",

@@ -118,7 +118,7 @@ export const RemoteArtwork = component$<{
       });
       if (props.itemId !== itemId) return;
       state.plan = undefined;
-      state.notice = "The artwork change was added to the mutation queue.";
+      state.notice = "The artwork change was queued.";
     } catch (error) {
       if (props.itemId === itemId) state.error = readableError(error);
     } finally {
@@ -128,10 +128,8 @@ export const RemoteArtwork = component$<{
 
   return (
     <section class="open-library-cover-preview remote-artwork-preview">
-      <div>
-        <strong>
-          {props.actionNoun === "cover" ? "Cover" : "Artwork"} preview
-        </strong>
+      <div class="remote-artwork-heading">
+        <h3>{props.actionNoun === "cover" ? "Cover" : "Artwork"} preview</h3>
         <span>{props.title}</span>
       </div>
       <img
@@ -141,10 +139,12 @@ export const RemoteArtwork = component$<{
           state.dimensions = `${el.naturalWidth} × ${el.naturalHeight}`;
         }}
       />
-      {state.dimensions && <p class="quiet-copy">{state.dimensions}</p>}
+      {state.dimensions && (
+        <p class="remote-artwork-size">{state.dimensions}</p>
+      )}
       {!state.plan ? (
         <button
-          class="primary-button"
+          class="secondary-button"
           type="button"
           disabled={!props.canEdit || state.staging}
           onClick$={stage}
@@ -160,7 +160,7 @@ export const RemoteArtwork = component$<{
       ) : (
         <div class="open-library-cover-confirm">
           {state.plan.warnings.map((warning) => (
-            <p class="quiet-copy" key={warning}>
+            <p class="remote-artwork-warning" key={warning}>
               {warning}
             </p>
           ))}

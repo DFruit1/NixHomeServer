@@ -90,33 +90,18 @@ export const SubtitleCard = component$<{
 
   if (!selectedItem) {
     return (
-      <div class="subtitle-card-body">
-        <div class="subtitle-empty">
-          <Icon name="captions" size={24} />
-          <span>Select a file to inspect its subtitles.</span>
-        </div>
-      </div>
+      <p class="subtitle-empty">Select a file to inspect its subtitles.</p>
     );
   }
   if (selectedItem.mediaKind !== "video") {
     return (
-      <div class="subtitle-card-body">
-        <div class="subtitle-empty">
-          <Icon name="captions" size={24} />
-          <span>Subtitles are only listed for video files.</span>
-        </div>
-      </div>
+      <p class="subtitle-empty">Subtitles are only listed for video files.</p>
     );
   }
   return (
-    <div class="subtitle-card-body installed-subtitle-inspector">
-      <div class="installed-subtitle-heading">
-        <div>
-          <h3>Installed subtitles</h3>
-          <p>
-            External files and embedded streams, including flags and validation.
-          </p>
-        </div>
+    <section class="subtitle-section installed-subtitle-inspector">
+      <div class="subtitle-section-heading">
+        <h3>Installed subtitles</h3>
         {inspector.consumers[0]?.nativeUrl && (
           <a
             class="secondary-button"
@@ -130,15 +115,9 @@ export const SubtitleCard = component$<{
       </div>
       {inspector.error && <p class="error-copy">{inspector.error}</p>}
       {inspector.loading ? (
-        <div class="subtitle-empty">
-          <Icon name="refresh" size={24} />
-          <span>Inspecting subtitle streams and files…</span>
-        </div>
+        <p class="subtitle-empty">Loading subtitles…</p>
       ) : inspector.subtitles.length === 0 ? (
-        <div class="subtitle-empty">
-          <Icon name="captions" size={24} />
-          <span>No subtitles found for this file</span>
-        </div>
+        <p class="subtitle-empty">No subtitles found for this file.</p>
       ) : (
         <ul class="subtitle-list">
           {inspector.subtitles.map((subtitle, index) => {
@@ -148,7 +127,7 @@ export const SubtitleCard = component$<{
               `Embedded stream ${subtitle.streamIndex ?? index}`;
             return (
               <li
-                class="subtitle-item installed-subtitle-row"
+                class="subtitle-item"
                 key={
                   subtitle.itemId ?? `stream-${subtitle.streamIndex ?? index}`
                 }
@@ -185,8 +164,8 @@ export const SubtitleCard = component$<{
         </ul>
       )}
       {inspector.content && (
-        <section class="installed-subtitle-content">
-          <div>
+        <section class="subtitle-content">
+          <div class="subtitle-content-heading">
             <strong>
               {inspector.content.validation.cueCount} cues ·{" "}
               {inspector.content.validation.issueCount} issues
@@ -221,7 +200,7 @@ export const SubtitleCard = component$<{
           </ol>
         </section>
       )}
-    </div>
+    </section>
   );
 });
 
@@ -456,7 +435,7 @@ const BrowseView = component$<BrowseViewProps>((props) => {
                     <div class="browse-actions">
                       {props.providerAvailable && props.session?.canEdit && (
                         <button
-                          class="secondary-button small"
+                          class="secondary-button"
                           type="button"
                           onClick$={() => props.onVideoSelect(item.id)}
                         >
@@ -464,10 +443,7 @@ const BrowseView = component$<BrowseViewProps>((props) => {
                         </button>
                       )}
                       {!props.providerAvailable && (
-                        <a
-                          class="metadata-source-setup-link"
-                          href="?view=accounts"
-                        >
+                        <a class="source-setup-link" href="?view=accounts">
                           Set up OpenSubtitles
                         </a>
                       )}
@@ -499,9 +475,9 @@ const BrowseView = component$<BrowseViewProps>((props) => {
               </p>
             </div>
           </div>
-          <div class="subtitle-results">
+          <div class="source-results">
             {props.batchResults.map((result) => (
-              <article class="subtitle-result" key={result.itemId}>
+              <article class="source-result" key={result.itemId}>
                 <div>
                   <strong>{result.relativePath.split("/").pop()}</strong>
                   <span>
@@ -658,10 +634,10 @@ export const SubtitleView = component$<{
           "OpenSubtitles returned no matches for this title and language.";
       } else if (response.matchMethod === "movie-hash") {
         subtitle.notice =
-          "These subtitles are exact file-hash matches and are the best candidates for synchronized timing.";
+          "Exact file matches found; their timing should line up.";
       } else {
         subtitle.notice =
-          "No exact file-hash match was found, so these are title-based candidates. Check the release name before previewing.";
+          "No exact file match. These are title matches; check the release name.";
       }
     } catch (error) {
       subtitle.error = readableError(error);
@@ -718,8 +694,7 @@ export const SubtitleView = component$<{
         method: "POST",
         headers: { "if-match": `"${subtitle.preview.digest}"` },
       });
-      subtitle.notice =
-        "The subtitle install was added to the global mutation queue.";
+      subtitle.notice = "The subtitle installation was queued.";
       subtitle.preview = undefined;
     } catch (error) {
       subtitle.error = readableError(error);
@@ -814,8 +789,8 @@ export const SubtitleView = component$<{
         </div>
       )}
 
-      <section class="panel subtitle-controls">
-        {!props.item && (
+      {!props.item && (
+        <section class="subtitle-controls">
           <>
             <div class="panel-heading">
               <div>
@@ -844,96 +819,122 @@ export const SubtitleView = component$<{
               </label>
             </div>
           </>
-        )}
-        {subtitle.browseMode ? (
-          <BrowseView
-            items={subtitle.items}
-            subtitleStatus={subtitle.subtitleStatus}
-            browseFilter={subtitle.browseFilter}
-            onFilterChange={(filter) => (subtitle.browseFilter = filter)}
-            onVideoSelect={(itemId) => {
-              subtitle.browseMode = false;
-              subtitle.itemId = itemId;
-              subtitle.results = [];
-              subtitle.video = undefined;
-              subtitle.videoSummary = undefined;
-              subtitle.preview = undefined;
-              subtitle.content = undefined;
-            }}
-            language={subtitle.language}
-            hearingImpaired={subtitle.hearingImpaired}
-            providerAvailable={providerAvailable}
-            session={props.session}
-            status={props.status}
-            loadVideos={loadVideos}
-            videoRoots={videoRoots}
-            search={search}
-            selectProviderSubtitle={selectProviderSubtitle}
-            viewContent={viewContent}
-            adjustSubtitleTiming={adjustSubtitleTiming}
-            batchSearchSubtitles={batchSearchSubtitles}
-            batchResults={subtitle.batchResults}
-            onBatchResultSelect={(result) => {
-              subtitle.browseMode = false;
-              subtitle.itemId = result.itemId;
-              subtitle.results = result.results;
-              subtitle.videoSummary = result.videoSummary;
-              subtitle.preview = undefined;
-              subtitle.content = undefined;
-              subtitle.notice = `${result.results.length} candidates loaded for review; choose one to preview or install.`;
-            }}
-          />
-        ) : (
-          <div class="subtitle-fields">
-            {!props.item && (
-              <>
-                <label>
-                  <span>Video library</span>
-                  <select
-                    value={subtitle.rootId}
-                    onChange$={(_, select) => loadVideos(select.value)}
-                  >
-                    {videoRoots.map((root) => (
-                      <option value={root.id} key={root.id}>
-                        {`${root.label}${root.available ? "" : " (unavailable)"}`}
+          {subtitle.browseMode ? (
+            <BrowseView
+              items={subtitle.items}
+              subtitleStatus={subtitle.subtitleStatus}
+              browseFilter={subtitle.browseFilter}
+              onFilterChange={(filter) => (subtitle.browseFilter = filter)}
+              onVideoSelect={(itemId) => {
+                subtitle.browseMode = false;
+                subtitle.itemId = itemId;
+                subtitle.results = [];
+                subtitle.video = undefined;
+                subtitle.videoSummary = undefined;
+                subtitle.preview = undefined;
+                subtitle.content = undefined;
+              }}
+              language={subtitle.language}
+              hearingImpaired={subtitle.hearingImpaired}
+              providerAvailable={providerAvailable}
+              session={props.session}
+              status={props.status}
+              loadVideos={loadVideos}
+              videoRoots={videoRoots}
+              search={search}
+              selectProviderSubtitle={selectProviderSubtitle}
+              viewContent={viewContent}
+              adjustSubtitleTiming={adjustSubtitleTiming}
+              batchSearchSubtitles={batchSearchSubtitles}
+              batchResults={subtitle.batchResults}
+              onBatchResultSelect={(result) => {
+                subtitle.browseMode = false;
+                subtitle.itemId = result.itemId;
+                subtitle.results = result.results;
+                subtitle.videoSummary = result.videoSummary;
+                subtitle.preview = undefined;
+                subtitle.content = undefined;
+                subtitle.notice = `${result.results.length} candidates loaded for review; choose one to preview or install.`;
+              }}
+            />
+          ) : (
+            <div class="subtitle-fields">
+              {!props.item && (
+                <>
+                  <label>
+                    <span>Video library</span>
+                    <select
+                      value={subtitle.rootId}
+                      onChange$={(_, select) => loadVideos(select.value)}
+                    >
+                      {videoRoots.map((root) => (
+                        <option value={root.id} key={root.id}>
+                          {`${root.label}${root.available ? "" : " (unavailable)"}`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label class="video-select">
+                    <span>Cataloged video</span>
+                    <select
+                      value={subtitle.itemId}
+                      disabled={
+                        subtitle.loadingItems || videoItems.length === 0
+                      }
+                      onChange$={(_, select) => {
+                        subtitle.itemId = select.value;
+                        subtitle.results = [];
+                        subtitle.video = undefined;
+                        subtitle.preview = undefined;
+                        subtitle.content = undefined;
+                      }}
+                    >
+                      <option value="">
+                        {subtitle.loadingItems
+                          ? "Loading videos…"
+                          : videoItems.length === 0
+                            ? "No supported videos found in this library"
+                            : selectableVideos.length === 0
+                              ? "No videos without subtitles in this library"
+                              : "Choose a video…"}
                       </option>
-                    ))}
-                  </select>
+                      {selectableVideos.map((item) => (
+                        <option value={item.id} key={item.id}>
+                          {`${item.relativePath}${subtitleStatusLabel(
+                            subtitle.subtitleStatus[item.relativePath],
+                          )}`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </>
+              )}
+              {!props.item && (
+                <label class="checkbox-field">
+                  <input
+                    type="checkbox"
+                    checked={subtitle.showWithSubtitles}
+                    onChange$={(_, input) =>
+                      (subtitle.showWithSubtitles = input.checked)
+                    }
+                  />
+                  <span>Show files that already have subtitles</span>
                 </label>
-                <label class="video-select">
-                  <span>Cataloged video</span>
-                  <select
-                    value={subtitle.itemId}
-                    disabled={subtitle.loadingItems || videoItems.length === 0}
-                    onChange$={(_, select) => {
-                      subtitle.itemId = select.value;
-                      subtitle.results = [];
-                      subtitle.video = undefined;
-                      subtitle.preview = undefined;
-                      subtitle.content = undefined;
-                    }}
-                  >
-                    <option value="">
-                      {subtitle.loadingItems
-                        ? "Loading videos…"
-                        : videoItems.length === 0
-                          ? "No supported videos found in this library"
-                          : selectableVideos.length === 0
-                            ? "No videos without subtitles in this library"
-                            : "Choose a video…"}
-                    </option>
-                    {selectableVideos.map((item) => (
-                      <option value={item.id} key={item.id}>
-                        {`${item.relativePath}${subtitleStatusLabel(
-                          subtitle.subtitleStatus[item.relativePath],
-                        )}`}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </>
-            )}
-            <label class="language-field">
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
+      {subtitle.itemId && !subtitle.browseMode && (
+        <SubtitleCard items={subtitle.items} selectedItemId={subtitle.itemId} />
+      )}
+
+      {!subtitle.browseMode && (
+        <section class="subtitle-section subtitle-add">
+          <h3>Add subtitles</h3>
+          <div class="subtitle-options">
+            <label class="source-search-short">
               <span>Language</span>
               <input
                 value={subtitle.language}
@@ -957,311 +958,204 @@ export const SubtitleView = component$<{
               />
               <span>Prefer SDH / hearing-impaired naming</span>
             </label>
-            {!props.item && (
-              <label class="checkbox-field">
-                <input
-                  type="checkbox"
-                  checked={subtitle.showWithSubtitles}
-                  onChange$={(_, input) =>
-                    (subtitle.showWithSubtitles = input.checked)
-                  }
-                />
-                <span>Show files that already have subtitles</span>
-              </label>
-            )}
           </div>
-        )}
-      </section>
 
-      {subtitle.itemId && (
-        <section class="panel subtitle-installed-panel">
-          <SubtitleCard
-            items={subtitle.items}
-            selectedItemId={subtitle.itemId}
-          />
-        </section>
-      )}
-
-      <div class="subtitle-workflows">
-        <section class="panel provider-panel">
-          <div class="panel-heading">
-            <div>
-              <h3>OpenSubtitles</h3>
-            </div>
-            <span class={{ "status-badge": true, live: providerAvailable }}>
-              {providerAvailable ? "Configured" : "Not configured"}
-            </span>
-          </div>
-          <div class="setup-body">
+          <div class="subtitle-group">
+            <h4>OpenSubtitles</h4>
             {providerAvailable ? (
-              <p class="setup-ready">
-                Search for subtitles for the selected video. The file hash is
-                checked first for exact matches, with a title fallback.
-              </p>
-            ) : (
-              <>
-                <p class="setup-missing">
-                  Your OpenSubtitles account is not set up. You can still upload
-                  subtitle files from your device. To enable search:
-                </p>
-                <ol class="setup-steps">
-                  <li>
-                    Create an account at
-                    <a
-                      class="text-button"
-                      href="https://www.opensubtitles.com/en/signup"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      opensubtitles.com
-                    </a>
-                    .
-                  </li>
-                  <li>
-                    Log in and create an application API key at
-                    <a
-                      class="text-button"
-                      href="https://www.opensubtitles.com/consumers"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      opensubtitles.com/consumers
-                    </a>
-                    , selecting "OpenSubtitles REST API" as the API and noting
-                    your account username and password.
-                  </li>
-                  <li>
-                    Open <a href="?view=accounts">Metadata sources</a>, choose
-                    OpenSubtitles → Set up, enter its application key, account
-                    username and password, then choose Save and test. Saved
-                    values cannot be viewed again, so retain the recovery copy
-                    in Vaultwarden, KeePassXC, or another password manager.
-                  </li>
-                  <li>
-                    Return here after saving. A successful connection test
-                    checks login; you still need to select, preview and confirm
-                    each subtitle before it is installed.
-                  </li>
-                </ol>
-              </>
-            )}
-          </div>
-          <ProviderUsageGuide providerId="opensubtitles" />
-          <div class="provider-search">
-            <label>
-              <span>
-                Search title <small>optional override</small>
-              </span>
-              <input
-                value={subtitle.query}
-                maxLength={200}
-                placeholder="Only used if the file hash has no match"
-                onInput$={(_, input) => (subtitle.query = input.value)}
-              />
-            </label>
-            <button
-              class="primary-button"
-              type="button"
-              disabled={
-                !providerAvailable ||
-                !props.session?.canEdit ||
-                !subtitle.itemId ||
-                !subtitle.language ||
-                subtitle.searching
-              }
-              onClick$={search}
-            >
-              <Icon name="scan" size={18} />
-              {subtitle.searching ? "Searching…" : "Search matches"}
-            </button>
-          </div>
-          <div class="subtitle-results">
-            {subtitle.video && (
-              <div class="video-summary-card">
-                <h4>Video Information</h4>
-                <div class="video-summary-grid">
-                  <div class="video-summary-item">
-                    <span class="label">Codec</span>
-                    <span class="value">
-                      {subtitle.video.codec ?? "unknown"}
-                    </span>
-                  </div>
-                  <div class="video-summary-item">
-                    <span class="label">Resolution</span>
-                    <span class="value">
-                      {subtitle.video.width && subtitle.video.height
-                        ? `${subtitle.video.width}×${subtitle.video.height}`
-                        : "unknown"}
-                    </span>
-                  </div>
-                  <div class="video-summary-item">
-                    <span class="label">Frame Rate</span>
-                    <span class="value">
-                      {subtitle.video.fps
-                        ? `${subtitle.video.fps.toFixed(3)} fps`
-                        : "unknown"}
-                    </span>
-                  </div>
-                  <div class="video-summary-item">
-                    <span class="label">Embedded Subtitles</span>
-                    <span class="value">
-                      {subtitle.video.hasEmbeddedSubtitles
-                        ? (subtitle.video.subtitleLanguages?.length ?? 0) > 0
-                          ? (subtitle.video.subtitleLanguages ?? []).join(", ")
-                          : "Yes (embedded)"
-                        : "None"}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
-            {subtitle.results.map((match) => (
-              <article
-                class={`subtitle-result ${match.fpsCompatible === false ? "fps-mismatch" : ""} ${match.fpsCompatible === true ? "fps-match" : ""}`}
-                key={`${match.providerId}-${match.fileId}`}
-              >
-                <div class="subtitle-result-header">
-                  <strong>{match.release || match.fileName}</strong>
-                  <div class="subtitle-badges">
-                    {match.fpsCompatible === false && (
-                      <span
-                        class="badge warning"
-                        title="Frame rate mismatch - subtitle timing may drift"
-                      >
-                        <Icon name="alert" size={12} /> fps mismatch
-                      </span>
-                    )}
-                    {match.fpsCompatible === true && (
-                      <span
-                        class="badge success"
-                        title="Frame rate matches video"
-                      >
-                        <Icon name="check" size={12} /> fps match
-                      </span>
-                    )}
-                    {match.hashMatched && (
-                      <span class="badge info" title="Exact file hash match">
-                        <Icon name="shield" size={12} /> exact match
-                      </span>
-                    )}
-                    {match.hearingImpaired && (
-                      <span class="badge info" title="SDH / Hearing impaired">
-                        <Icon name="captions" size={12} /> SDH
-                      </span>
-                    )}
-                    {match.machineTranslated ||
-                      (match.aiTranslated && (
-                        <span class="badge warning" title="Machine translated">
-                          <Icon name="alert" size={12} /> auto-translated
-                        </span>
-                      ))}
-                  </div>
-                </div>
-                <div class="subtitle-meta">
-                  <span>{match.language.toUpperCase()}</span>
-                  {match.fps && <span> · {match.fps.toFixed(3)} fps</span>}
-                  {match.subFormat && (
-                    <span> · {match.subFormat.toUpperCase()}</span>
-                  )}
-                  {match.downloadCount && (
-                    <span>
-                      {" "}
-                      · {match.downloadCount.toLocaleString()} downloads
-                    </span>
-                  )}
-                  {match.votes && <span> · {match.votes} votes</span>}
-                  {match.uploadDate && (
-                    <span>
-                      {" "}
-                      · {new Date(match.uploadDate).toLocaleDateString()}
-                    </span>
-                  )}
-                </div>
-                <div class="subtitle-result-actions">
-                  <button
-                    class="secondary-button"
-                    type="button"
-                    disabled={subtitle.installing}
-                    onClick$={() => selectProviderSubtitle(match)}
-                  >
-                    Install
-                  </button>
-                  <button
-                    class="secondary-button"
-                    type="button"
-                    disabled={subtitle.loadingContent}
-                    onClick$={() => viewContent(match)}
-                  >
-                    {subtitle.loadingContent ? "Loading…" : "View content"}
-                  </button>
-                  {match.fpsCompatible === false && subtitle.video?.fps && (
-                    <button
-                      class="secondary-button"
-                      type="button"
-                      onClick$={() =>
-                        adjustSubtitleTiming(match, subtitle.video!.fps!)
-                      }
-                    >
-                      <Icon name="timer" size={16} /> Adjust timing
-                    </button>
-                  )}
-                </div>
-              </article>
-            ))}
-            {subtitle.results.length === 0 && (
-              <p class="quiet-copy">
-                Search results will show release names, language, accessibility,
-                translation flags, and frame rate so an editor can choose the
-                closest match.
-              </p>
-            )}
-          </div>
-          {subtitle.contentError && (
-            <p class="quiet-copy content-error" role="alert">
-              {subtitle.contentError}
-            </p>
-          )}
-          {subtitle.content && (
-            <section class="subtitle-content">
-              <div class="panel-heading">
-                <div>
-                  <h4>Content preview</h4>
-                </div>
+              <div class="source-search">
+                <label>
+                  <span>Title</span>
+                  <input
+                    value={subtitle.query}
+                    maxLength={200}
+                    placeholder="Used if the file hash has no match"
+                    onInput$={(_, input) => (subtitle.query = input.value)}
+                  />
+                </label>
                 <button
-                  class="close-button"
+                  class="primary-button"
                   type="button"
-                  aria-label="Close subtitle content preview"
-                  onClick$={() => (subtitle.content = undefined)}
+                  disabled={
+                    !props.session?.canEdit ||
+                    !subtitle.itemId ||
+                    !subtitle.language ||
+                    subtitle.searching
+                  }
+                  onClick$={search}
                 >
-                  ×
+                  {subtitle.searching ? "Searching…" : "Search"}
                 </button>
               </div>
-              <ol class="subtitle-cue-list">
-                {subtitle.content.cues.map((cue) => (
-                  <li class="subtitle-cue" key={cue.index}>
-                    <time>
-                      {formatCueTime(cue.startMs)} → {formatCueTime(cue.endMs)}
-                    </time>
-                    <span>{cue.text || "—"}</span>
-                  </li>
+            ) : (
+              <p class="subtitle-setup-note">
+                OpenSubtitles isn't set up.{" "}
+                <a href="?view=accounts">Set up in Metadata sources</a>
+              </p>
+            )}
+            {subtitle.video && (
+              <p class="subtitle-video-facts">
+                {[
+                  subtitle.video.codec ?? "unknown codec",
+                  subtitle.video.width && subtitle.video.height
+                    ? `${subtitle.video.width}×${subtitle.video.height}`
+                    : "",
+                  subtitle.video.fps
+                    ? `${subtitle.video.fps.toFixed(3)} fps`
+                    : "",
+                  subtitle.video.hasEmbeddedSubtitles
+                    ? `embedded subtitles${
+                        (subtitle.video.subtitleLanguages?.length ?? 0) > 0
+                          ? `: ${(subtitle.video.subtitleLanguages ?? []).join(", ")}`
+                          : ""
+                      }`
+                    : "no embedded subtitles",
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+            )}
+            {subtitle.results.length > 0 && (
+              <div class="source-results">
+                {subtitle.results.map((match) => (
+                  <article
+                    class="source-result subtitle-match"
+                    key={`${match.providerId}-${match.fileId}`}
+                  >
+                    <div>
+                      <strong>{match.release || match.fileName}</strong>
+                      <span>
+                        {[
+                          match.language.toUpperCase(),
+                          match.fps ? `${match.fps.toFixed(3)} fps` : "",
+                          match.subFormat?.toUpperCase() ?? "",
+                          match.downloadCount
+                            ? `${match.downloadCount.toLocaleString()} downloads`
+                            : "",
+                          match.votes ? `${match.votes} votes` : "",
+                          match.uploadDate
+                            ? new Date(match.uploadDate).toLocaleDateString()
+                            : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </span>
+                      <span class="subtitle-flags">
+                        {match.hashMatched && (
+                          <span
+                            class="subtitle-flag"
+                            title="Exact file hash match"
+                          >
+                            Exact match
+                          </span>
+                        )}
+                        {match.fpsCompatible === true && (
+                          <span
+                            class="subtitle-flag"
+                            title="Frame rate matches video"
+                          >
+                            Frame rate matches
+                          </span>
+                        )}
+                        {match.fpsCompatible === false && (
+                          <span
+                            class="subtitle-flag warning"
+                            title="Frame rate mismatch - subtitle timing may drift"
+                          >
+                            Frame rate differs
+                          </span>
+                        )}
+                        {match.hearingImpaired && (
+                          <span
+                            class="subtitle-flag"
+                            title="SDH / Hearing impaired"
+                          >
+                            SDH
+                          </span>
+                        )}
+                        {(match.machineTranslated || match.aiTranslated) && (
+                          <span
+                            class="subtitle-flag warning"
+                            title="Machine translated"
+                          >
+                            Auto-translated
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                    <div class="source-result-actions">
+                      <button
+                        class="secondary-button"
+                        type="button"
+                        disabled={subtitle.installing}
+                        onClick$={() => selectProviderSubtitle(match)}
+                      >
+                        Install
+                      </button>
+                      <button
+                        class="secondary-button"
+                        type="button"
+                        disabled={subtitle.loadingContent}
+                        onClick$={() => viewContent(match)}
+                      >
+                        {subtitle.loadingContent ? "Loading…" : "View content"}
+                      </button>
+                      {match.fpsCompatible === false && subtitle.video?.fps && (
+                        <button
+                          class="secondary-button"
+                          type="button"
+                          onClick$={() =>
+                            adjustSubtitleTiming(match, subtitle.video!.fps!)
+                          }
+                        >
+                          Adjust timing
+                        </button>
+                      )}
+                    </div>
+                  </article>
                 ))}
-              </ol>
-              {subtitle.content.truncated && (
-                <p class="quiet-copy">
-                  Only the first 40 cues are shown for this preview.
-                </p>
-              )}
-            </section>
-          )}
-        </section>
-
-        <section class="panel upload-panel">
-          <div class="panel-heading">
-            <div>
-              <h3>Upload subtitle</h3>
-            </div>
+              </div>
+            )}
+            {subtitle.contentError && (
+              <p class="error-copy" role="alert">
+                {subtitle.contentError}
+              </p>
+            )}
+            {subtitle.content && (
+              <section class="subtitle-content">
+                <div class="subtitle-content-heading">
+                  <strong>Content preview</strong>
+                  <button
+                    class="close-button"
+                    type="button"
+                    aria-label="Close subtitle content preview"
+                    onClick$={() => (subtitle.content = undefined)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <ol class="subtitle-cue-list">
+                  {subtitle.content.cues.map((cue) => (
+                    <li class="subtitle-cue" key={cue.index}>
+                      <time>
+                        {formatCueTime(cue.startMs)} →{" "}
+                        {formatCueTime(cue.endMs)}
+                      </time>
+                      <span>{cue.text || "—"}</span>
+                    </li>
+                  ))}
+                </ol>
+                {subtitle.content.truncated && (
+                  <p class="quiet-copy">Showing the first 40 cues.</p>
+                )}
+              </section>
+            )}
+            {providerAvailable && (
+              <ProviderUsageGuide providerId="opensubtitles" />
+            )}
           </div>
-          <div class="upload-copy">
+
+          <div class="subtitle-group subtitle-upload">
             {!!transcripts.value?.jobs.some(
               (job) =>
                 job.state === "completed" &&
@@ -1270,9 +1164,7 @@ export const SubtitleView = component$<{
                 ),
             ) && (
               <div class="transcript-picker">
-                <label for="transcript-selection">
-                  Use a completed transcript
-                </label>
+                <label for="transcript-selection">Use a transcript</label>
                 <select
                   id="transcript-selection"
                   value={selectedTranscript.value}
@@ -1351,14 +1243,6 @@ export const SubtitleView = component$<{
                 )}
               </div>
             )}
-            <div class="workflow-icon small">
-              <Icon name="captions" size={24} />
-            </div>
-            <h4>SRT, WebVTT, or ASS</h4>
-            <p>
-              Files must be UTF-8 text and no larger than 10 MiB. The video is
-              never remuxed or re-encoded.
-            </p>
             <input
               ref={uploadInput}
               class="visually-hidden"
@@ -1404,23 +1288,21 @@ export const SubtitleView = component$<{
               }
               onClick$={() => uploadInput.value?.click()}
             >
-              <Icon name="folder" size={18} />
-              {subtitle.installing ? "Preparing…" : "Choose subtitle file"}
+              {subtitle.installing ? "Preparing…" : "Upload subtitle file"}
             </button>
+            <p class="subtitle-formats">SRT, WebVTT or ASS.</p>
           </div>
         </section>
-      </div>
+      )}
 
       {subtitle.preview && (
         <section
-          class="panel subtitle-preview"
+          class="subtitle-section subtitle-preview"
           ref={transcriptPreview}
           tabIndex={-1}
         >
-          <div class="panel-heading">
-            <div>
-              <h3>Confirm sidecar destination</h3>
-            </div>
+          <div class="subtitle-section-heading">
+            <h3>Confirm subtitle file</h3>
             <button
               class="close-button"
               type="button"
@@ -1434,7 +1316,7 @@ export const SubtitleView = component$<{
             <div class="destination-card">
               <Icon name="captions" size={21} />
               <span>
-                <small>New sidecar</small>
+                <small>New subtitle file</small>
                 <strong>
                   {subtitle.preview.actions[0]?.destinationRelativePath}
                 </strong>
@@ -1447,8 +1329,8 @@ export const SubtitleView = component$<{
             ))}
             <div class="plan-actions">
               <span>
-                This preview expires in 30 minutes. The broker verifies the
-                staged file and refuses to replace an existing subtitle.
+                This preview expires in 30 minutes. An existing subtitle is
+                never replaced.
               </span>
               <button
                 class="primary-button"
