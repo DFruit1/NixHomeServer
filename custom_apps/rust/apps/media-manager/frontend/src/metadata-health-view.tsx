@@ -919,6 +919,73 @@ function needsExternalProposal(entries: HealthIssueEntry[]): boolean {
   );
 }
 
+// The value key all selected files agree on, or undefined when they differ.
+function sharedSelectionKey(
+  selections: (HealthSelection | undefined)[],
+  origin: "Current" | "Proposed",
+): string | undefined {
+  if (selections.length === 0) return undefined;
+  const first = selections[0];
+  if (!first || first.error || first.origin !== origin) return undefined;
+  return selections.every(
+    (selection) =>
+      selection &&
+      !selection.error &&
+      selection.origin === origin &&
+      selection.valueKey === first.valueKey,
+  )
+    ? first.valueKey
+    : undefined;
+}
+
+// Keeping each choice in its own component stops a pick from re-rendering every
+// other candidate in the row; the row still decides which one is pressed.
+const HealthValueCandidate = component$<{
+  value: unknown;
+  origin: "Current" | "Proposed";
+  pressed: boolean;
+  field: string;
+  issue: MetadataHealthIssue;
+  target: MetadataHealthResult;
+  album?: AlbumTarget;
+  editable: boolean;
+  showSource: boolean;
+  source: string;
+  onApply$: ApplyHealthValue;
+}>((props) => {
+  const origin = props.origin.toLowerCase();
+  const sources = props.showSource ? <small>{props.source}</small> : undefined;
+  return (
+    <div class="health-candidate">
+      {props.editable && !isUnset(props.value) ? (
+        <button
+          type="button"
+          class={{ "health-value-set": true, "is-selected": props.pressed }}
+          aria-pressed={props.pressed}
+          title={`Set this ${origin} value for “${props.field}”`}
+          onClick$={() =>
+            props.onApply$(
+              props.value,
+              props.origin,
+              props.issue,
+              props.target,
+              props.album,
+            )
+          }
+        >
+          <span>{renderValue(props.value)}</span>
+          <span class="health-value-action">
+            {props.pressed ? "✓ Selected" : `Use ${origin}`}
+          </span>
+        </button>
+      ) : (
+        <p class="health-value-text">{renderValue(props.value)}</p>
+      )}
+      {sources}
+    </div>
+  );
+});
+
 const HealthDecisionRow = component$<{
   entries: HealthIssueEntry[];
   query: string;
@@ -948,41 +1015,34 @@ const HealthDecisionRow = component$<{
     (entry) =>
       props.selections[healthEntryId(entry.target.itemId, entry.issue)],
   );
-  const selected = (value: unknown, origin: "Current" | "Proposed") =>
-    selections.length > 0 &&
-    selections.every(
-      (selection) =>
-        selection &&
-        !selection.error &&
-        selection.origin === origin &&
-        selection.valueKey === healthValueKey(value),
-    );
+  // Compare all file choices once per pick instead of recomputing them for
+  // every candidate and DOM attribute.
+  const currentKey = sharedSelectionKey(selections, "Current");
+  const proposedKey = sharedSelectionKey(selections, "Proposed");
   const failure = selections.find((selection) => selection?.error)?.error;
   const apply$ = $((value: unknown, origin: "Current" | "Proposed") =>
     props.onApply$(value, origin, issue, target, props.album),
   );
-  const valueButton = (value: unknown, origin: "Current" | "Proposed") =>
-    editable && !isUnset(value) ? (
-      <button
-        type="button"
-        class={{
-          "health-value-set": true,
-          "is-selected": selected(value, origin),
-        }}
-        aria-pressed={selected(value, origin)}
-        title={`Set this ${origin.toLowerCase()} value for “${field}”`}
-        onClick$={() => apply$(value, origin)}
-      >
-        <span>{renderValue(value)}</span>
-        <span class="health-value-action">
-          {selected(value, origin)
-            ? "✓ Selected"
-            : `Use ${origin.toLowerCase()}`}
-        </span>
-      </button>
-    ) : (
-      <p class="health-value-text">{renderValue(value)}</p>
-    );
+  const candidateProps = (
+    candidate: { value: unknown; sources: string[] },
+    origin: "Current" | "Proposed",
+    showSource: boolean,
+    fallback = "",
+  ) => ({
+    value: candidate.value,
+    origin,
+    pressed:
+      (origin === "Current" ? currentKey : proposedKey) ===
+      healthValueKey(candidate.value),
+    field,
+    issue,
+    target,
+    album: props.album,
+    editable,
+    showSource,
+    source: candidate.sources.join(" · ") || fallback,
+    onApply$: props.onApply$,
+  });
   return (
     <tr>
       {props.showFile && (
@@ -1004,12 +1064,14 @@ const HealthDecisionRow = component$<{
         {!editable && <span class="health-value-label">Current</span>}
         {currents.length > 1 && <small>Varies by file</small>}
         {currents.map((candidate, index) => (
-          <div class="health-candidate" key={index}>
-            {valueButton(candidate.value, "Current")}
-            {!props.sharedSources && !!candidate.sources.length && (
-              <small>{candidate.sources.join(" · ")}</small>
+          <HealthValueCandidate
+            key={index}
+            {...candidateProps(
+              candidate,
+              "Current",
+              !props.sharedSources && !!candidate.sources.length,
             )}
-          </div>
+          />
         ))}
       </td>
       <td class="health-value">
@@ -1018,14 +1080,15 @@ const HealthDecisionRow = component$<{
         )}
         {proposals.length ? (
           proposals.map((candidate, index) => (
-            <div class="health-candidate" key={index}>
-              {valueButton(candidate.value, "Proposed")}
-              {proposals.length > 1 && (
-                <small>
-                  {candidate.sources.join(" · ") || "Unknown source"}
-                </small>
+            <HealthValueCandidate
+              key={index}
+              {...candidateProps(
+                candidate,
+                "Proposed",
+                proposals.length > 1,
+                "Unknown source",
               )}
-            </div>
+            />
           ))
         ) : autoEligible ? (
           <HealthAutoProposal
@@ -1035,18 +1098,7 @@ const HealthDecisionRow = component$<{
             queryFromFilename={props.queryFromFilename}
             providers={props.providers}
             getSession$={props.getSession$}
-            selectedValueKey={
-              selections.length > 0 &&
-              selections.every(
-                (selection) =>
-                  selection &&
-                  !selection.error &&
-                  selection.origin === "Proposed" &&
-                  selection.valueKey === selections[0]?.valueKey,
-              )
-                ? selections[0]?.valueKey
-                : undefined
-            }
+            selectedValueKey={proposedKey}
             onUse$={async (value) => {
               await apply$(value, "Proposed");
             }}
@@ -1110,45 +1162,177 @@ function usableProposals(issue: MetadataHealthIssue) {
 
 type NumberAction = "current" | "proposed" | "set" | "sequence";
 
-const HealthNumberTable = component$<{
-  entries: HealthIssueEntry[];
+// One row per file. Keeping the picked flag and the saved choice inside the row
+// means a checkbox or value pick repaints that row instead of the whole table.
+const HealthNumberRow = component$<{
+  entry: HealthIssueEntry;
+  id: string;
   field: string;
   editable: boolean;
+  sharedOverride: boolean;
+  picked: Record<string, boolean>;
   selections: HealthSelections;
+  onApply$: ApplyHealthValue;
+}>((props) => {
+  const { issue, target } = props.entry;
+  const name = target.relativePath.split("/").at(-1);
+  const proposed = usableProposals(issue);
+  const label = metadataFieldLabel(props.field).toLowerCase();
+  const selection = props.selections[props.id];
+  const failure = selection?.error;
+  // A typed value matches neither column, so it is shown beside them.
+  const custom =
+    selection &&
+    !selection.error &&
+    ![issue.currentValue, ...proposed.map((candidate) => candidate.value)]
+      .map(healthValueKey)
+      .includes(selection.valueKey)
+      ? (JSON.parse(selection.valueKey) as unknown)
+      : undefined;
+  const valueCell = (
+    value: unknown,
+    origin: "Current" | "Proposed",
+    sources: string[],
+  ) => {
+    const pressed =
+      !!selection &&
+      !selection.error &&
+      selection.origin === origin &&
+      selection.valueKey === healthValueKey(value);
+    return props.editable && !isUnset(value) ? (
+      <button
+        type="button"
+        class={{ "health-number-value": true, "is-selected": pressed }}
+        aria-pressed={pressed}
+        aria-label={`Use ${origin.toLowerCase()} ${label} ${displayValue(value)} for ${name}`}
+        title={sources.length ? sources.join(" · ") : undefined}
+        onClick$={() =>
+          props.onApply$(value, origin, props.entry.issue, target)
+        }
+      >
+        {displayValue(value)}
+      </button>
+    ) : (
+      <span
+        class="health-number-text"
+        title={sources.length ? sources.join(" · ") : undefined}
+      >
+        {renderValue(value)}
+      </span>
+    );
+  };
+  return (
+    <tr class={{ "is-picked": !!props.picked[props.id] }}>
+      {props.editable && (
+        <td class="health-number-pick">
+          <input
+            type="checkbox"
+            aria-label={`Select ${name}`}
+            checked={!!props.picked[props.id]}
+            onChange$={(_, input) => (props.picked[props.id] = input.checked)}
+          />
+        </td>
+      )}
+      <th scope="row">
+        <a
+          class="health-review-link health-file-link"
+          href={`?view=library&root=${encodeURIComponent(target.rootId)}&item=${encodeURIComponent(target.itemId)}`}
+          title={target.relativePath}
+        >
+          {name}
+        </a>
+        {issue.fileOverride && !props.sharedOverride && (
+          <small>Individual choice</small>
+        )}
+        {failure && (
+          <p class="health-choice-error" role="alert">
+            {failure}
+          </p>
+        )}
+      </th>
+      <td>
+        {valueCell(issue.currentValue, "Current", issue.currentSources ?? [])}
+      </td>
+      <td>
+        <span class="health-number-options">
+          {proposed.map((candidate, candidateIndex) => (
+            <span key={candidateIndex}>
+              {valueCell(candidate.value, "Proposed", candidate.sources)}
+            </span>
+          ))}
+          {custom !== undefined ? (
+            <span
+              class="health-number-value is-selected is-custom"
+              title="Set in this review"
+            >
+              <span class="sr-only">Set to </span>
+              {displayValue(custom)}
+            </span>
+          ) : (
+            !proposed.length && (
+              <span class="health-number-text health-no-suggestion">—</span>
+            )
+          )}
+        </span>
+      </td>
+      <td class="health-number-play">
+        <HealthPlayButton target={target} />
+      </td>
+    </tr>
+  );
+});
+
+const HealthNumberSelectAll = component$<{
+  ids: string[];
+  picked: Record<string, boolean>;
+}>((props) => {
+  const selectAll = useSignal<HTMLInputElement>();
+  const chosen = props.ids.filter((id) => props.picked[id]).length;
+  useVisibleTask$(({ track }) => {
+    const count = track(
+      () => props.ids.filter((id) => props.picked[id]).length,
+    );
+    if (selectAll.value)
+      selectAll.value.indeterminate = count > 0 && count < props.ids.length;
+  });
+  return (
+    <th scope="col" class="health-number-pick">
+      <input
+        type="checkbox"
+        ref={selectAll}
+        aria-label="Select all files"
+        checked={chosen === props.ids.length}
+        onChange$={(_, input) => {
+          for (const id of props.ids) props.picked[id] = input.checked;
+        }}
+      />
+    </th>
+  );
+});
+
+// The bulk bar owns its own state so checking a row does not re-render the rows.
+const HealthNumberActions = component$<{
+  rows: HealthIssueEntry[];
+  ids: string[];
+  field: string;
+  anyProposal: boolean;
+  picked: Record<string, boolean>;
   onApply$: ApplyHealthValue;
   onDecision$: QRL<
     (entry: HealthIssueEntry, choice: HealthChoice) => Promise<boolean>
   >;
 }>((props) => {
-  const picked = useStore<Record<string, boolean>>({});
   const number = useSignal("1");
   const status = useSignal("");
-  const selectAll = useSignal<HTMLInputElement>();
-  const rows = byFileName(props.entries);
-  const ids = rows.map((entry) =>
-    healthEntryId(entry.target.itemId, entry.issue),
-  );
-  const chosen = ids.filter((id) => picked[id]).length;
-  useVisibleTask$(({ track }) => {
-    const count = track(
-      () =>
-        props.entries.filter(
-          (entry) => picked[healthEntryId(entry.target.itemId, entry.issue)],
-        ).length,
-    );
-    if (selectAll.value)
-      selectAll.value.indeterminate = count > 0 && count < props.entries.length;
-  });
   const label = metadataFieldLabel(props.field).toLowerCase();
   const typed = number.value.trim();
-  const sharedOverride = rows.every((entry) => entry.issue.fileOverride);
-  const anyProposal = rows.some((entry) => usableProposals(entry.issue).length);
+  const chosen = props.ids.filter((id) => props.picked[id]).length;
   const apply$ = $(async (action: NumberAction) => {
     status.value = "";
     const start = Number(number.value.trim());
     const set = number.value.trim();
-    const selected = byFileName(props.entries).filter(
-      (entry) => picked[healthEntryId(entry.target.itemId, entry.issue)],
+    const selected = props.rows.filter(
+      (entry) => props.picked[healthEntryId(entry.target.itemId, entry.issue)],
     );
     let skipped = 0;
     const saved = await Promise.all(
@@ -1199,117 +1383,103 @@ const HealthNumberTable = component$<{
     else if (skipped)
       status.value = `${skipped} ${skipped === 1 ? "file has" : "files have"} no single proposal and ${skipped === 1 ? "was" : "were"} left unchanged.`;
   });
-  const valueCell = (
-    entry: HealthIssueEntry,
-    value: unknown,
-    origin: "Current" | "Proposed",
-    sources: string[],
-  ) => {
-    const selection =
-      props.selections[healthEntryId(entry.target.itemId, entry.issue)];
-    const pressed =
-      !!selection &&
-      !selection.error &&
-      selection.origin === origin &&
-      selection.valueKey === healthValueKey(value);
-    const name = entry.target.relativePath.split("/").at(-1);
-    return props.editable && !isUnset(value) ? (
-      <button
-        type="button"
-        class={{ "health-number-value": true, "is-selected": pressed }}
-        aria-pressed={pressed}
-        aria-label={`Use ${origin.toLowerCase()} ${label} ${displayValue(value)} for ${name}`}
-        title={sources.length ? sources.join(" · ") : undefined}
-        onClick$={() =>
-          props.onApply$(value, origin, entry.issue, entry.target)
-        }
-      >
-        {displayValue(value)}
-      </button>
-    ) : (
-      <span
-        class="health-number-text"
-        title={sources.length ? sources.join(" · ") : undefined}
-      >
-        {renderValue(value)}
-      </span>
-    );
-  };
   return (
-    <div class="health-number-review">
-      {props.editable && (
-        <div
-          class={{
-            "health-number-actions": true,
-            "is-active": chosen > 0,
-          }}
-          role="group"
-          aria-label={`Change the ${label} of selected files`}
+    <>
+      <div
+        class={{
+          "health-number-actions": true,
+          "is-active": chosen > 0,
+        }}
+        role="group"
+        aria-label={`Change the ${label} of selected files`}
+      >
+        <span class="health-number-count" aria-live="polite">
+          {chosen} of {props.ids.length} selected
+        </span>
+        <button
+          type="button"
+          disabled={!chosen}
+          onClick$={() => apply$("current")}
         >
-          <span class="health-number-count" aria-live="polite">
-            {chosen} of {rows.length} selected
-          </span>
+          Use current
+        </button>
+        {props.anyProposal && (
           <button
             type="button"
             disabled={!chosen}
-            onClick$={() => apply$("current")}
+            onClick$={() => apply$("proposed")}
           >
-            Use current
+            Use proposed
           </button>
-          {anyProposal && (
-            <button
-              type="button"
-              disabled={!chosen}
-              onClick$={() => apply$("proposed")}
-            >
-              Use proposed
-            </button>
-          )}
-          <span class="health-number-custom">
-            <input
-              type="text"
-              inputMode="decimal"
-              aria-label={`${metadataFieldLabel(props.field)} for selected files`}
-              value={number.value}
-              maxLength={7}
-              onInput$={(_, input) => (number.value = input.value)}
-            />
-            <button
-              type="button"
-              disabled={!chosen || !NUMBER_VALUE.test(typed)}
-              onClick$={() => apply$("set")}
-            >
-              Set to {NUMBER_VALUE.test(typed) ? typed : "…"}
-            </button>
-            <button
-              type="button"
-              disabled={chosen < 2 || !SEQUENCE_START.test(typed)}
-              title="Numbers the selected files in filename order"
-              onClick$={() => apply$("sequence")}
-            >
-              {SEQUENCE_START.test(typed)
-                ? `Number ${Number(typed)}, ${Number(typed) + 1}, ${Number(typed) + 2}…`
-                : "Number in order"}
-            </button>
-          </span>
-        </div>
-      )}
+        )}
+        <span class="health-number-custom">
+          <input
+            type="text"
+            inputMode="decimal"
+            aria-label={`${metadataFieldLabel(props.field)} for selected files`}
+            value={number.value}
+            maxLength={7}
+            onInput$={(_, input) => (number.value = input.value)}
+          />
+          <button
+            type="button"
+            disabled={!chosen || !NUMBER_VALUE.test(typed)}
+            onClick$={() => apply$("set")}
+          >
+            Set to {NUMBER_VALUE.test(typed) ? typed : "…"}
+          </button>
+          <button
+            type="button"
+            disabled={chosen < 2 || !SEQUENCE_START.test(typed)}
+            title="Numbers the selected files in filename order"
+            onClick$={() => apply$("sequence")}
+          >
+            {SEQUENCE_START.test(typed)
+              ? `Number ${Number(typed)}, ${Number(typed) + 1}, ${Number(typed) + 2}…`
+              : "Number in order"}
+          </button>
+        </span>
+      </div>
       {status.value && <p role="status">{status.value}</p>}
+    </>
+  );
+});
+
+const HealthNumberTable = component$<{
+  entries: HealthIssueEntry[];
+  field: string;
+  editable: boolean;
+  selections: HealthSelections;
+  onApply$: ApplyHealthValue;
+  onDecision$: QRL<
+    (entry: HealthIssueEntry, choice: HealthChoice) => Promise<boolean>
+  >;
+}>((props) => {
+  const picked = useStore<Record<string, boolean>>({});
+  const rows = byFileName(props.entries);
+  const ids = rows.map((entry) =>
+    healthEntryId(entry.target.itemId, entry.issue),
+  );
+  const sharedOverride = rows.every((entry) => entry.issue.fileOverride);
+  const anyProposal = rows.some((entry) => usableProposals(entry.issue).length);
+  return (
+    <div class="health-number-review">
+      {props.editable && (
+        <HealthNumberActions
+          rows={rows}
+          ids={ids}
+          field={props.field}
+          anyProposal={anyProposal}
+          picked={picked}
+          onApply$={props.onApply$}
+          onDecision$={props.onDecision$}
+        />
+      )}
       <table class="health-number-table">
         <thead>
           <tr>
             {props.editable && (
-              <th scope="col" class="health-number-pick">
-                <input
-                  type="checkbox"
-                  ref={selectAll}
-                  aria-label="Select all files"
-                  checked={chosen === rows.length}
-                  onChange$={(_, input) => {
-                    for (const id of ids) picked[id] = input.checked;
-                  }}
-                />
-              </th>
+              <HealthNumberSelectAll ids={ids} picked={picked} />
             )}
             <th scope="col">File</th>
             <th scope="col">Current</th>
@@ -1320,94 +1490,19 @@ const HealthNumberTable = component$<{
           </tr>
         </thead>
         <tbody>
-          {rows.map((entry, index) => {
-            const id = ids[index];
-            const { issue, target } = entry;
-            const name = target.relativePath.split("/").at(-1);
-            const proposals = usableProposals(issue);
-            const selection = props.selections[id];
-            const failure = selection?.error;
-            // A typed value matches neither column, so it is shown beside them.
-            const custom =
-              selection &&
-              !selection.error &&
-              ![issue.currentValue, ...proposals.map((p) => p.value)]
-                .map(healthValueKey)
-                .includes(selection.valueKey)
-                ? (JSON.parse(selection.valueKey) as unknown)
-                : undefined;
-            return (
-              <tr key={id} class={{ "is-picked": !!picked[id] }}>
-                {props.editable && (
-                  <td class="health-number-pick">
-                    <input
-                      type="checkbox"
-                      aria-label={`Select ${name}`}
-                      checked={!!picked[id]}
-                      onChange$={(_, input) => (picked[id] = input.checked)}
-                    />
-                  </td>
-                )}
-                <th scope="row">
-                  <a
-                    class="health-review-link health-file-link"
-                    href={`?view=library&root=${encodeURIComponent(target.rootId)}&item=${encodeURIComponent(target.itemId)}`}
-                    title={target.relativePath}
-                  >
-                    {name}
-                  </a>
-                  {issue.fileOverride && !sharedOverride && (
-                    <small>Individual choice</small>
-                  )}
-                  {failure && (
-                    <p class="health-choice-error" role="alert">
-                      {failure}
-                    </p>
-                  )}
-                </th>
-                <td>
-                  {valueCell(
-                    entry,
-                    issue.currentValue,
-                    "Current",
-                    issue.currentSources ?? [],
-                  )}
-                </td>
-                <td>
-                  <span class="health-number-options">
-                    {proposals.map((candidate, candidateIndex) => (
-                      <span key={candidateIndex}>
-                        {valueCell(
-                          entry,
-                          candidate.value,
-                          "Proposed",
-                          candidate.sources,
-                        )}
-                      </span>
-                    ))}
-                    {custom !== undefined ? (
-                      <span
-                        class="health-number-value is-selected is-custom"
-                        title="Set in this review"
-                      >
-                        <span class="sr-only">Set to </span>
-                        {displayValue(custom)}
-                      </span>
-                    ) : (
-                      !proposals.length && (
-                        <span class="health-number-text health-no-suggestion">
-                          —
-                        </span>
-                      )
-                    )}
-                  </span>
-                </td>
-                <td class="health-number-play">
-                  <HealthPlayButton target={target} />
-                </td>
-              </tr>
-            );
-          })}
+          {rows.map((entry, index) => (
+            <HealthNumberRow
+              key={ids[index]}
+              entry={entry}
+              id={ids[index]}
+              field={props.field}
+              editable={props.editable}
+              sharedOverride={sharedOverride}
+              picked={picked}
+              selections={props.selections}
+              onApply$={props.onApply$}
+            />
+          ))}
         </tbody>
       </table>
     </div>

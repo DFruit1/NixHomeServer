@@ -781,6 +781,115 @@ it("queues a metadata change when a proposed value is clicked", async () => {
   expect(new Headers(confirmInit?.headers).get("if-match")).toBe('"digest-1"');
 });
 
+function albumIssues(
+  count: number,
+  field: "volumeNumber" | "authors",
+): object[] {
+  return Array.from({ length: count }, (_, index) => ({
+    itemId: `lawson-${index}`,
+    rootId: "audiobooks",
+    relativePath: `Lawson/${String(index + 1).padStart(2, "0")}_lawson.mp3`,
+    mediaKind: "audiobook",
+    albumGroup: "Lawson",
+    health: [
+      {
+        code: `conflicting-${field}`,
+        severity: "warning",
+        field,
+        title: `${field} differs between sources`,
+        message: "Compare sources",
+        sources: ["sidecar", "embedded-audio-tags"],
+        currentValue:
+          field === "volumeNumber" ? String(index + 1) : `Current ${index + 1}`,
+        currentSources: ["Sidecar"],
+        proposalSignature: "a".repeat(64),
+        proposedValues: [
+          {
+            value:
+              field === "volumeNumber"
+                ? String(index + 2)
+                : `Proposed ${index + 1}`,
+            sources: ["Embedded audio tags"],
+          },
+        ],
+      },
+    ],
+  }));
+}
+
+function albumFetch(field: "volumeNumber" | "authors") {
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path.includes("/provider-accounts"))
+      return new Response(wireJson(providerCatalog()));
+    if (path.endsWith("/metadata"))
+      return new Response(
+        wireJson({ mediaType: "audiobook", sources: [], title: "Lawson" }),
+      );
+    if (path.endsWith("/metadata/sidecar"))
+      return new Response(
+        wireJson({
+          id: "health-plan",
+          digest: "digest-1",
+          expiresAt: 0,
+          actions: [],
+          warnings: [],
+        }),
+        { status: 201 },
+      );
+    if (path.endsWith("/health-decisions"))
+      return new Response(wireJson({ saved: true }));
+    const payload = {
+      rootId: "audiobooks",
+      inspectedItems: 31,
+      issueCount: 31,
+      severityCounts: { error: 0, warning: 31, info: 0 },
+      nextCursor: null,
+      results: albumIssues(31, field),
+    };
+    return new Response(wireJson(payload));
+  });
+}
+
+it("checks a number-table row and applies its current value", async () => {
+  const fetchMock = albumFetch("volumeNumber");
+  vi.stubGlobal("fetch", fetchMock);
+  const { render, screen, userEvent } = await createDOM();
+  await render(
+    <MetadataHealthView
+      roots={[{ id: "audiobooks", label: "Audiobooks" }]}
+      canEdit
+    />,
+  );
+  await vi.waitFor(() =>
+    expect(
+      screen.querySelectorAll(".health-number-table tbody tr"),
+    ).toHaveLength(31),
+  );
+  const box = screen.querySelector<HTMLInputElement>(
+    ".health-number-table tbody input[type=checkbox]",
+  );
+  if (!box) throw new Error("missing row checkbox");
+  box.checked = true;
+  await userEvent(box, "change");
+  await vi.waitFor(() =>
+    expect(screen.textContent).toContain("1 of 31 selected"),
+  );
+  const useCurrent = Array.from(
+    screen.querySelectorAll(".health-number-actions button"),
+  ).find((button) => button.textContent === "Use current");
+  if (!useCurrent) throw new Error("missing current action");
+  await userEvent(useCurrent, "click");
+  await vi.waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).includes("/items/lawson-0/metadata/sidecar"),
+      ),
+    ).toBe(true),
+  );
+  expect(box.checked).toBe(true);
+});
+
 const OPEN_LIBRARY = {
   id: "open-library",
   name: "Open Library",
