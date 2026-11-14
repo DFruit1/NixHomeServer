@@ -17,6 +17,7 @@ mod server;
 mod solr;
 mod source_cache;
 mod text;
+mod thesaurus;
 mod timeutil;
 mod view;
 mod zim_inventory;

@@ -50,6 +50,11 @@ fn number_field(entry: &Value, key: &str) -> Option<i64> {
 /// Jellyfin (`writers`, `genres`), Audiobookshelf (`authors`, `narrators`),
 /// and Kavita (`authors`, `writers`, `genres`, `tags`) exports.
 fn string_list(entry: &Value, key: &str) -> Vec<String> {
+    string_list_by(entry, key, "name")
+}
+
+/// As `string_list`, naming the object field that holds each item's text.
+fn string_list_by(entry: &Value, key: &str, field: &str) -> Vec<String> {
     let Some(items) = entry.get(key).and_then(Value::as_array) else {
         return Vec::new();
     };
@@ -58,7 +63,7 @@ fn string_list(entry: &Value, key: &str) -> Vec<String> {
         let value = match item {
             Value::String(text) => text.trim().to_string(),
             Value::Object(map) => map
-                .get("name")
+                .get(field)
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .unwrap_or_default()
@@ -70,6 +75,236 @@ fn string_list(entry: &Value, key: &str) -> Vec<String> {
         }
     }
     values
+}
+
+/// The publication year. Some exporters write a full `YYYYMMDD` date into the
+/// year field; read its year rather than indexing "the year 20130301".
+fn publication_year(entry: &Value) -> Option<i64> {
+    let raw = number_field(entry, "year")?;
+    let year = if (10_000_101..=99_991_231).contains(&raw) {
+        raw / 10_000
+    } else {
+        raw
+    };
+    (1000..=2200).contains(&year).then_some(year)
+}
+
+/// English names for the language codes media files carry (ISO 639-1 and both
+/// ISO 639-2 forms), so "english subtitles" finds a stream tagged `eng`.
+fn language_name(code: &str) -> Option<&'static str> {
+    Some(match code.trim().to_ascii_lowercase().as_str() {
+        "en" | "eng" => "English",
+        "fr" | "fre" | "fra" => "French",
+        "de" | "ger" | "deu" => "German",
+        "es" | "spa" => "Spanish",
+        "it" | "ita" => "Italian",
+        "pt" | "por" => "Portuguese",
+        "nl" | "dut" | "nld" => "Dutch",
+        "sv" | "swe" => "Swedish",
+        "no" | "nor" | "nob" => "Norwegian",
+        "da" | "dan" => "Danish",
+        "fi" | "fin" => "Finnish",
+        "is" | "ice" | "isl" => "Icelandic",
+        "pl" | "pol" => "Polish",
+        "cs" | "cze" | "ces" => "Czech",
+        "sk" | "slo" | "slk" => "Slovak",
+        "hu" | "hun" => "Hungarian",
+        "ro" | "rum" | "ron" => "Romanian",
+        "bg" | "bul" => "Bulgarian",
+        "hr" | "hrv" => "Croatian",
+        "sr" | "srp" => "Serbian",
+        "sl" | "slv" => "Slovenian",
+        "el" | "gre" | "ell" => "Greek",
+        "ru" | "rus" => "Russian",
+        "uk" | "ukr" => "Ukrainian",
+        "tr" | "tur" => "Turkish",
+        "ar" | "ara" => "Arabic",
+        "he" | "heb" => "Hebrew",
+        "fa" | "per" | "fas" => "Persian",
+        "hi" | "hin" => "Hindi",
+        "ta" | "tam" => "Tamil",
+        "th" | "tha" => "Thai",
+        "vi" | "vie" => "Vietnamese",
+        "id" | "ind" => "Indonesian",
+        "ms" | "may" | "msa" => "Malay",
+        "zh" | "chi" | "zho" | "cmn" => "Chinese",
+        "yue" => "Cantonese",
+        "ja" | "jpn" => "Japanese",
+        "ko" | "kor" => "Korean",
+        "la" | "lat" => "Latin",
+        "et" | "est" => "Estonian",
+        "lv" | "lav" => "Latvian",
+        "lt" | "lit" => "Lithuanian",
+        "ca" | "cat" => "Catalan",
+        _ => return None,
+    })
+}
+
+/// Distinct language names across one kind of stream, in stream order.
+fn stream_languages(entry: &Value, key: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for stream in entry
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(name) = string_field(stream, "language")
+            .as_deref()
+            .and_then(language_name)
+            && !names.iter().any(|existing| existing == name)
+        {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+/// Describes the main video stream the way people ask for it: "1080p HD",
+/// "4K UHD HDR".
+fn resolution(entry: &Value) -> Option<String> {
+    let stream = entry.get("videoStreams")?.as_array()?.first()?;
+    let width = number_field(stream, "width").unwrap_or(0);
+    let height = number_field(stream, "height").unwrap_or(0);
+    let mut label = if width >= 3800 || height >= 2000 {
+        "4K 2160p UHD".to_string()
+    } else if width >= 1900 || height >= 1000 {
+        "1080p HD".to_string()
+    } else if width >= 1260 || height >= 700 {
+        "720p HD".to_string()
+    } else if height > 0 {
+        format!("{height}p SD")
+    } else {
+        return None;
+    };
+    if string_field(stream, "videoRange").is_some_and(|range| !range.eq_ignore_ascii_case("SDR")) {
+        label.push_str(" HDR");
+    }
+    Some(label)
+}
+
+/// External catalogue ids: the exporter's provider ids plus ids embedded in
+/// the folder name (`[tvdbid-72995]`), keyed by lowercase provider.
+fn provider_ids(entry: &Value) -> Vec<(String, String)> {
+    let mut ids: Vec<(String, String)> = Vec::new();
+    let add = |provider: &str, id: &str, ids: &mut Vec<(String, String)>| {
+        let provider = provider.trim().to_ascii_lowercase();
+        let id = id.trim();
+        // Free-form links and empty placeholders are not identifiers.
+        if !provider.is_empty()
+            && !id.is_empty()
+            && id.len() <= 40
+            && !id.contains(char::is_whitespace)
+            && !id.contains("://")
+            && !ids.iter().any(|(existing, _)| existing == &provider)
+        {
+            ids.push((provider, id.to_string()));
+        }
+    };
+    if let Some(map) = entry.get("providerIds").and_then(Value::as_object) {
+        for (provider, id) in map {
+            match id {
+                Value::String(text) => add(provider, text, &mut ids),
+                Value::Number(number) => add(provider, &number.to_string(), &mut ids),
+                _ => {}
+            }
+        }
+    }
+    if let Some(isbn) = string_field(entry, "isbn") {
+        add("isbn", &isbn, &mut ids);
+    }
+    let path = string_field(entry, "relativePath").unwrap_or_default();
+    for provider in ["imdb", "tmdb", "tvdb"] {
+        let marker = format!("[{provider}id-");
+        if let Some(start) = path.to_ascii_lowercase().find(&marker) {
+            let rest = &path[start + marker.len()..];
+            if let Some(end) = rest.find(']') {
+                add(provider, &rest[..end], &mut ids);
+            }
+        }
+    }
+    ids
+}
+
+fn provider_label(provider: &str) -> String {
+    match provider {
+        "imdb" => "IMDb".to_string(),
+        "tmdb" => "TMDb".to_string(),
+        "tvdb" => "TVDB".to_string(),
+        "isbn" => "ISBN".to_string(),
+        "asin" => "ASIN".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Kavita reports publication status as a number.
+fn publication_status(entry: &Value) -> Option<String> {
+    if let Some(text) = string_field(entry, "publicationStatus") {
+        return Some(text);
+    }
+    Some(
+        match number_field(entry, "publicationStatus")? {
+            0 => "Ongoing",
+            1 => "On hiatus",
+            2 => "Completed",
+            3 => "Cancelled",
+            4 => "Ended",
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
+/// Creators for the entry. Audiobook libraries are filed as
+/// `Author/Title` or `Author/Series/Title`; when the item carries no author
+/// metadata the top folder is the best available evidence of one.
+fn authors(entry: &Value) -> Vec<String> {
+    let listed = string_list(entry, "authors");
+    if !listed.is_empty() || string_field(entry, "mediaType").as_deref() != Some("audiobook") {
+        return listed;
+    }
+    let path = string_field(entry, "relativePath").unwrap_or_default();
+    let mut parts = path.split('/').filter(|part| !part.is_empty());
+    match (parts.next(), parts.next()) {
+        // Underscore folders are this library's own groupings, not people.
+        (Some(folder), Some(_)) if !folder.starts_with('_') => vec![folder.trim().to_string()],
+        _ => Vec::new(),
+    }
+}
+
+/// `S07E04` for an episode with both coordinates.
+fn episode_code(entry: &Value) -> Option<String> {
+    match (
+        number_field(entry, "season"),
+        number_field(entry, "episode"),
+    ) {
+        (Some(season), Some(episode)) => Some(format!("S{season:02}E{episode:02}")),
+        _ => None,
+    }
+}
+
+/// An episode title that only repeats its series and number ("Sherlock Holmes
+/// S03E34 -") says nothing; return what remains once those are removed.
+fn distinct_episode_title(title: &str, series: Option<&str>, code: Option<&str>) -> Option<String> {
+    let mut rest = title.trim();
+    if let Some(series) = series
+        && rest.len() >= series.len()
+        && rest.is_char_boundary(series.len())
+        && rest[..series.len()].eq_ignore_ascii_case(series)
+    {
+        rest = &rest[series.len()..];
+    }
+    let separators = |ch: char| ch.is_whitespace() || matches!(ch, '-' | '–' | '—' | ':' | '.');
+    rest = rest.trim_matches(separators);
+    if let Some(code) = code
+        && rest.len() >= code.len()
+        && rest.is_char_boundary(code.len())
+        && rest[..code.len()].eq_ignore_ascii_case(code)
+    {
+        rest = &rest[code.len()..];
+    }
+    rest = rest.trim_matches(separators);
+    (!rest.is_empty()).then(|| rest.to_string())
 }
 
 fn scalar_metadata(map: &mut Map<String, Value>, key: &str, value: Option<String>) {
@@ -108,45 +343,97 @@ fn display_title(entry: &Value) -> String {
         .unwrap_or_else(|| "(untitled)".to_string());
     let series = series_name(entry);
     if media_type.as_deref() == Some("episode") {
-        let coordinates = match (
-            number_field(entry, "season"),
-            number_field(entry, "episode"),
-        ) {
-            (Some(season), Some(episode)) => Some(format!("S{season:02}E{episode:02}")),
-            _ => None,
-        };
-        return match (series, coordinates) {
-            (Some(series), Some(coordinates)) => format!("{series} {coordinates} — {title}"),
-            (Some(series), None) => format!("{series} — {title}"),
-            (None, _) => title,
+        let code = episode_code(entry);
+        let episode = distinct_episode_title(&title, series.as_deref(), code.as_deref());
+        return match (series, code, episode) {
+            (Some(series), Some(code), Some(episode)) => format!("{series} {code} — {episode}"),
+            (Some(series), Some(code), None) => format!("{series} {code}"),
+            (Some(series), None, Some(episode)) => format!("{series} — {episode}"),
+            (Some(series), None, None) => series,
+            (None, _, _) => title,
         };
     }
     title
 }
 
 /// Builds the searchable body from every descriptive field in the snapshot, so
-/// a query for an author, narrator, series, genre, or publisher matches even
-/// when the description itself does not mention it.
+/// a query for an author, narrator, series, genre, language, rating or
+/// catalogue id matches even when the description does not mention it. Each
+/// line is labelled in plain words: the label is what people type ("english
+/// subtitles", "season 7"), and it makes the excerpt readable.
 fn build_body(entry: &Value) -> String {
     let mut parts: Vec<String> = Vec::new();
+    let list = |label: &str, values: Vec<String>| {
+        (!values.is_empty()).then(|| format!("{label}: {}", values.join(", ")))
+    };
     if let Some(series) = series_name(entry) {
-        parts.push(match string_field(entry, "volumeNumber") {
-            Some(volume) => format!("{series} {volume}"),
-            None => series,
+        let mut line = match string_field(entry, "volumeNumber") {
+            Some(volume) => format!("Series: {series}, volume {volume}"),
+            None => format!("Series: {series}"),
+        };
+        match (
+            number_field(entry, "season"),
+            number_field(entry, "episode"),
+        ) {
+            (Some(season), Some(episode)) => line.push_str(&format!(
+                " — Season {season}, Episode {episode} (S{season:02}E{episode:02})"
+            )),
+            (Some(season), None) => line.push_str(&format!(" — Season {season}")),
+            _ => {}
+        }
+        parts.push(line);
+    }
+    let creators = authors(entry);
+    let writers: Vec<String> = string_list(entry, "writers")
+        .into_iter()
+        .filter(|writer| !creators.contains(writer))
+        .collect();
+    parts.extend(list("By", creators));
+    parts.extend(list("Written by", writers));
+    parts.extend(list("Narrated by", string_list(entry, "narrators")));
+    parts.extend(list("Genres", string_list(entry, "genres")));
+    parts.extend(list("Tags", string_list(entry, "tags")));
+    if let Some(publisher) = string_field(entry, "publisher") {
+        parts.push(format!("Publisher: {publisher}"));
+    }
+    if let Some(year) = publication_year(entry) {
+        parts.push(format!("Released: {year}"));
+    }
+    if let Some(language) = string_field(entry, "language") {
+        parts.push(match language_name(&language) {
+            Some(name) => format!("Language: {name}"),
+            None => format!("Language: {language}"),
         });
     }
-    for key in ["authors", "narrators", "writers", "genres", "tags"] {
-        parts.push(string_list(entry, key).join(", "));
+    if let Some(rating) = string_field(entry, "officialRating") {
+        parts.push(format!("Rated: {rating}"));
     }
-    parts.push(string_field(entry, "publisher").unwrap_or_default());
-    parts.push(
-        number_field(entry, "year")
-            .map(|year| year.to_string())
-            .unwrap_or_default(),
-    );
-    parts.push(string_field(entry, "language").unwrap_or_default());
-    parts.push(string_field(entry, "officialRating").unwrap_or_default());
-    parts.push(string_field(entry, "publicationStatus").unwrap_or_default());
+    if let Some(status) = publication_status(entry) {
+        parts.push(format!("Status: {status}"));
+    }
+    if let Some(minutes) = number_field(entry, "runtimeMinutes").filter(|minutes| *minutes > 0) {
+        parts.push(format!("Runtime: {minutes} minutes"));
+    }
+    parts.extend(list("Audio", stream_languages(entry, "audioStreams")));
+    parts.extend(list(
+        "Subtitles",
+        stream_languages(entry, "subtitleStreams"),
+    ));
+    if let Some(resolution) = resolution(entry) {
+        parts.push(format!("Video: {resolution}"));
+    }
+    let ids: Vec<String> = provider_ids(entry)
+        .into_iter()
+        .map(|(provider, id)| format!("{} {id}", provider_label(&provider)))
+        .collect();
+    if !ids.is_empty() {
+        parts.push(ids.join(" · "));
+    }
+    let chapters: Vec<String> = string_list_by(entry, "chapters", "title")
+        .into_iter()
+        .take(200)
+        .collect();
+    parts.extend(list("Chapters", chapters));
     parts.push(string_field(entry, "subtitle").unwrap_or_default());
     parts.push(string_field(entry, "description").unwrap_or_default());
     let mut body: String = parts
@@ -174,7 +461,19 @@ fn created_at(entry: &Value) -> Option<i64> {
             return Some(timestamp);
         }
     }
-    number_field(entry, "year").and_then(|year| parse_date(&format!("{year:04}-01-01")))
+    // A full date written into the year field keeps its month and day.
+    if let Some(raw) = number_field(entry, "year").filter(|raw| *raw > 9999) {
+        let date = format!(
+            "{:04}-{:02}-{:02}",
+            raw / 10_000,
+            raw / 100 % 100,
+            raw % 100
+        );
+        if let Some(timestamp) = parse_date(&date) {
+            return Some(timestamp);
+        }
+    }
+    publication_year(entry).and_then(|year| parse_date(&format!("{year:04}-01-01")))
 }
 
 /// Owner facet value: the per-user root owner, or the shared sentinel when the
@@ -270,17 +569,67 @@ impl super::Extractor for MediaSnapshotExtractor {
             let mut metadata = Map::new();
             metadata.insert("owner".to_string(), Value::String(owner));
             scalar_metadata(&mut metadata, "series", series_name(entry));
-            list_metadata(&mut metadata, "authors", string_list(entry, "authors"));
+            let creators = authors(entry);
+            let writers: Vec<String> = string_list(entry, "writers")
+                .into_iter()
+                .filter(|writer| !creators.contains(writer))
+                .collect();
+            list_metadata(&mut metadata, "authors", creators);
+            list_metadata(&mut metadata, "writers", writers);
             list_metadata(&mut metadata, "narrators", string_list(entry, "narrators"));
             list_metadata(&mut metadata, "genres", string_list(entry, "genres"));
             list_metadata(&mut metadata, "tags", string_list(entry, "tags"));
             scalar_metadata(
                 &mut metadata,
                 "year",
-                number_field(entry, "year").map(|y| y.to_string()),
+                publication_year(entry).map(|y| y.to_string()),
             );
             scalar_metadata(&mut metadata, "publisher", string_field(entry, "publisher"));
             scalar_metadata(&mut metadata, "language", string_field(entry, "language"));
+            for key in ["season", "episode"] {
+                if let Some(number) = number_field(entry, key) {
+                    metadata.insert(key.to_string(), Value::from(number));
+                }
+            }
+            scalar_metadata(
+                &mut metadata,
+                "runtime",
+                number_field(entry, "runtimeMinutes")
+                    .filter(|minutes| *minutes > 0)
+                    .map(|minutes| format!("{minutes} min")),
+            );
+            scalar_metadata(
+                &mut metadata,
+                "rated",
+                string_field(entry, "officialRating"),
+            );
+            if let Some(rating) = entry.get("communityRating").and_then(Value::as_f64) {
+                metadata.insert(
+                    "community_rating".to_string(),
+                    Value::from((rating * 10.0).round() / 10.0),
+                );
+            }
+            list_metadata(
+                &mut metadata,
+                "audio_languages",
+                stream_languages(entry, "audioStreams"),
+            );
+            list_metadata(
+                &mut metadata,
+                "subtitle_languages",
+                stream_languages(entry, "subtitleStreams"),
+            );
+            scalar_metadata(&mut metadata, "resolution", resolution(entry));
+            scalar_metadata(&mut metadata, "status", publication_status(entry));
+            // Exact catalogue ids make a pasted IMDb id or ISBN a top match.
+            let ids: Map<String, Value> = provider_ids(entry)
+                .into_iter()
+                .filter(|(provider, _)| matches!(provider.as_str(), "imdb" | "isbn" | "asin"))
+                .map(|(provider, id)| (provider, Value::String(id)))
+                .collect();
+            if !ids.is_empty() {
+                metadata.insert("identifiers".to_string(), Value::Object(ids));
+            }
             if let Err(err) = books.extract(entry, &title, &metadata, emit) {
                 eprintln!("search: book file extraction failed: {err}");
                 book_failure = Some(err);

@@ -74,6 +74,30 @@ fn load_books(connection: &Connection) -> Result<Vec<BookRow>, String> {
     Ok(books)
 }
 
+/// Publication dates by book. Calibre writes year 101 for "unknown", and a
+/// library from an older schema may lack the column; both simply yield no
+/// date, leaving the caller to fall back to when the book was added.
+fn load_publication_dates(connection: &Connection) -> HashMap<i64, i64> {
+    let Ok(mut statement) = connection.prepare("SELECT id, pubdate FROM books") else {
+        return HashMap::new();
+    };
+    let Ok(rows) = statement.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+    }) else {
+        return HashMap::new();
+    };
+    rows.filter_map(Result::ok)
+        .filter_map(|(book, published)| {
+            let published = published?;
+            let year: i32 = published.get(..4)?.parse().ok()?;
+            (year >= 1000)
+                .then(|| parse_date(&published))
+                .flatten()
+                .map(|date| (book, date))
+        })
+        .collect()
+}
+
 /// Loads a `(book, value)` association table into a map, dropping empty values.
 fn load_book_values(
     connection: &Connection,
@@ -229,6 +253,7 @@ impl super::Extractor for CalibreExtractor {
             "SELECT book, type || ':' || val FROM identifiers",
         )?;
         let comments = load_comments(&connection)?;
+        let published = load_publication_dates(&connection);
         let formats = load_formats(&connection)?;
 
         for book in books {
@@ -348,7 +373,13 @@ impl super::Extractor for CalibreExtractor {
                 app_url: format!("{app_base}/book/{}", book.id),
                 file_path: primary_path,
                 size_bytes: total_size,
-                content_created_at: book.timestamp.as_deref().and_then(parse_date),
+                // A book is dated by its publication, so "books from 2018" and
+                // the year filter mean what they say; the date it was added to
+                // the library is only a fallback.
+                content_created_at: published
+                    .get(&book.id)
+                    .copied()
+                    .or_else(|| book.timestamp.as_deref().and_then(parse_date)),
                 content_modified_at: book.last_modified.as_deref().and_then(parse_date),
                 metadata: serde_json::Value::Object(metadata),
             });

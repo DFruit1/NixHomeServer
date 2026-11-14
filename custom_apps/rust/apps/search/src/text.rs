@@ -217,15 +217,9 @@ pub fn discovery_words(query: &str) -> Option<Vec<String>> {
     }
     // Remove conversational glue, not arbitrary query words. When a title is
     // made entirely of these words, keep it searchable as entered.
-    const FILLER: &[&str] = &[
-        "a", "an", "the", "and", "or", "for", "of", "in", "on", "to", "with", "about", "find",
-        "show", "me", "how", "do", "does", "i", "can", "is", "are", "please", "tell", "you",
-        "could", "would", "what", "what's", "what’s", "where", "when", "why", "which", "some",
-        "any", "my", "our", "your",
-    ];
     let meaningful: Vec<_> = words
         .iter()
-        .filter(|word| !FILLER.contains(&word.as_str()))
+        .filter(|word| !is_filler(word))
         .cloned()
         .collect();
     let words = if meaningful.is_empty() {
@@ -236,61 +230,97 @@ pub fn discovery_words(query: &str) -> Option<Vec<String>> {
     (!words.is_empty() && words.len() <= 12).then_some(words)
 }
 
-/// Small, explicit families of common alternative wording. These are related
-/// search terms, not semantic equivalence: they receive less weight than the
-/// user's own words, never expand transitively and share a 12-term budget.
-pub fn related_words(words: &[String]) -> Vec<String> {
-    const FAMILIES: &[&[&str]] = &[
-        &["movie", "film", "cinema"],
-        &["tv", "television"],
-        &["photo", "photograph", "photography"],
-        &["car", "automobile", "vehicle"],
-        &["bike", "bicycle", "cycling"],
-        &["phone", "telephone"],
-        &["wifi", "wireless", "wlan"],
-        &["computer", "computing", "pc"],
-        &["invoice", "bill", "billing"],
-        &["manual", "handbook", "guide"],
-        &[
-            "fix",
-            "repair",
-            "fixing",
-            "repairs",
-            "repairing",
-            "fixed",
-            "fixes",
-            "repaired",
-        ],
-        &["tablet", "ipad"],
-        &["resume", "cv"],
-        &["math", "maths", "mathematics"],
-        &["doctor", "physician"],
-        &["lawyer", "solicitor", "attorney"],
-        &["holiday", "vacation"],
-        &["beginner", "introductory", "introduction"],
-        &["garden", "gardening", "horticulture"],
-        &["cook", "cooking", "recipe", "culinary"],
-        &["groundwater", "aquifer", "hydrogeology"],
-        &["colour", "color"],
-        &["organisation", "organization"],
-        &["behaviour", "behavior"],
-    ];
-    let mut related = Vec::new();
-    for word in words {
-        let singular = word.strip_suffix('s').unwrap_or(word);
-        if let Some(family) = FAMILIES
+/// Conversational glue that carries no search meaning of its own. A query made
+/// entirely of these words is still searched as entered.
+const FILLER: &[&str] = &[
+    "a", "an", "the", "and", "or", "for", "of", "in", "on", "to", "with", "about", "find", "show",
+    "me", "how", "do", "does", "i", "can", "is", "are", "please", "tell", "you", "could", "would",
+    "what", "what's", "what’s", "where", "when", "why", "which", "some", "any", "my", "our",
+    "your", "from", "by", "that", "this", "at", "as", "it", "we", "was", "were", "be", "has",
+    "have", "had", "get", "want", "need", "looking", "i'm", "i’m", "im", "there", "their",
+];
+
+pub fn is_filler(word: &str) -> bool {
+    FILLER.contains(&word)
+}
+
+/// One idea in a plain query: the word as typed, other grammatical forms of
+/// it, and related wording. Every concept stays required; forms and related
+/// words only widen what satisfies it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Concept {
+    pub word: String,
+    /// Singular/plural and verb forms, most reliable first.
+    pub forms: Vec<String>,
+    /// Curated related wording; weaker evidence than the word or its forms.
+    pub related: Vec<String>,
+}
+
+impl Concept {
+    /// Terms a source without term statistics should try: reliable forms and
+    /// the strongest related words, bounded so native parsers stay fast.
+    fn bounded_terms(&self) -> Vec<String> {
+        std::iter::once(self.word.clone())
+            .chain(self.forms.iter().take(3).cloned())
+            .chain(self.related.iter().take(4).cloned())
+            .collect()
+    }
+}
+
+/// Related words shared across one query, so a long question cannot expand
+/// into an unbounded boolean expression.
+const MAX_RELATED_PER_QUERY: usize = 16;
+
+/// Interprets a plain query as required concepts. Returns `None` for explicit
+/// syntax, which keeps its literal meaning.
+pub fn concepts(query: &str) -> Option<Vec<Concept>> {
+    let words = discovery_words(query)?;
+    let mut budget = MAX_RELATED_PER_QUERY;
+    let mut claimed: Vec<String> = Vec::new();
+    Some(
+        words
             .iter()
-            .find(|family| family.contains(&word.as_str()) || family.contains(&singular))
-        {
-            for alternative in *family {
-                if !words.iter().any(|word| word == alternative)
-                    && !related.iter().any(|word| word == alternative)
-                {
-                    related.push((*alternative).to_string());
-                    if related.len() == 12 {
-                        return related;
+            .map(|word| {
+                let forms: Vec<String> = crate::thesaurus::word_forms(word)
+                    .into_iter()
+                    .filter(|form| !words.contains(form))
+                    .collect();
+                let mut related = Vec::new();
+                for candidate in crate::thesaurus::related_to(word) {
+                    if budget == 0 {
+                        break;
                     }
+                    // Never transitive, never a repeat of the user's own words.
+                    if words.contains(&candidate)
+                        || forms.contains(&candidate)
+                        || claimed.contains(&candidate)
+                    {
+                        continue;
+                    }
+                    claimed.push(candidate.clone());
+                    related.push(candidate);
+                    budget -= 1;
                 }
+                Concept {
+                    word: word.clone(),
+                    forms,
+                    related,
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Related wording for a set of query words, in query order.
+pub fn related_words(words: &[String]) -> Vec<String> {
+    let mut related: Vec<String> = Vec::new();
+    for word in words {
+        for candidate in crate::thesaurus::related_to(word) {
+            if related.len() == MAX_RELATED_PER_QUERY {
+                return related;
+            }
+            if !words.contains(&candidate) && !related.contains(&candidate) {
+                related.push(candidate);
             }
         }
     }
@@ -300,20 +330,10 @@ pub fn related_words(words: &[String]) -> Vec<String> {
 /// Keep alternatives attached to the word they explain. Each concept remains
 /// required; a synonym for one word must never replace the rest of the query.
 pub fn discovery_concepts(query: &str) -> Option<Vec<Vec<String>>> {
-    let words = discovery_words(query)?;
-    let related = related_words(&words);
     Some(
-        words
+        concepts(query)?
             .iter()
-            .map(|word| {
-                std::iter::once(word.clone())
-                    .chain(
-                        related_words(std::slice::from_ref(word))
-                            .into_iter()
-                            .filter(|term| related.contains(term)),
-                    )
-                    .collect()
-            })
+            .map(Concept::bounded_terms)
             .collect(),
     )
 }
@@ -325,19 +345,20 @@ pub fn connected_query(query: &str, prefixes: bool) -> Option<String> {
         discovery_concepts(query)?
             .into_iter()
             .map(|concept| {
-                let terms = concept
-                    .into_iter()
-                    .map(|word| {
-                        if prefixes
-                            && (4..=32).contains(&word.chars().count())
-                            && word.chars().all(char::is_alphabetic)
+                let mut terms = Vec::new();
+                for (index, word) in concept.into_iter().enumerate() {
+                    terms.push(word.clone());
+                    // One word-beginning match per concept, on its shortest
+                    // stem, covers the remaining endings.
+                    if index == 0 && prefixes {
+                        let base = crate::thesaurus::base_form(&word);
+                        if (4..=32).contains(&base.chars().count())
+                            && base.chars().all(char::is_alphabetic)
                         {
-                            format!("{word} OR {word}*")
-                        } else {
-                            word
+                            terms.push(format!("{base}*"));
                         }
-                    })
-                    .collect::<Vec<_>>();
+                    }
+                }
                 format!("({})", terms.join(" OR "))
             })
             .collect::<Vec<_>>()
@@ -345,23 +366,56 @@ pub fn connected_query(query: &str, prefixes: bool) -> Option<String> {
     )
 }
 
-/// Whole-concept title coverage for archive completion, where the source only
-/// accepts a prefix. Match words, never arbitrary substrings (fix != prefix).
-pub fn title_covers_concepts(title: &str, concepts: &[Vec<String>]) -> bool {
-    let words: Vec<_> = title
+fn title_words(title: &str) -> Vec<String> {
+    title
         .split(|ch: char| !ch.is_alphanumeric())
         .filter(|word| !word.is_empty())
         .map(str::to_lowercase)
-        .collect();
+        .collect()
+}
+
+fn word_matches(word: &str, term: &str) -> bool {
+    word == term
+        || ((4..=32).contains(&term.chars().count()) && word.starts_with(term))
+        || word.strip_suffix('s') == Some(term)
+}
+
+/// Whole-concept title coverage for archive completion, where the source only
+/// accepts a prefix. Match words, never arbitrary substrings (fix != prefix).
+pub fn title_covers_concepts(title: &str, concepts: &[Vec<String>]) -> bool {
+    let words = title_words(title);
     concepts.iter().all(|concept| {
-        concept.iter().any(|term| {
-            words.iter().any(|word| {
-                word == term
-                    || ((4..=32).contains(&term.chars().count()) && word.starts_with(term))
-                    || word.strip_suffix('s') == Some(term.as_str())
-            })
-        })
+        concept
+            .iter()
+            .any(|term| words.iter().any(|word| word_matches(word, term)))
     })
+}
+
+/// How completely a piece of text covers a query's concepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coverage {
+    /// Every concept appears as typed or in another grammatical form.
+    Direct,
+    /// Every concept appears, at least one only through related wording.
+    Related,
+    Partial,
+}
+
+pub fn concept_coverage(text: &str, concepts: &[Concept]) -> Coverage {
+    let words: std::collections::HashSet<String> = title_words(text).into_iter().collect();
+    let has = |term: &String| words.contains(term);
+    let mut coverage = Coverage::Direct;
+    for concept in concepts {
+        if has(&concept.word) || concept.forms.iter().any(has) {
+            continue;
+        }
+        if concept.related.iter().any(has) {
+            coverage = Coverage::Related;
+        } else {
+            return Coverage::Partial;
+        }
+    }
+    coverage
 }
 
 /// Returns at most `limit` bytes of `text`, rounded down to a character
@@ -419,25 +473,154 @@ fn snippet_window_bounds(text: &str, match_start: usize) -> (usize, usize) {
     (start, end)
 }
 
-/// Builds a short plain-text snippet around the first query-order term present
-/// in the bounded body and wraps every query term present in the window in
-/// `<em>` tags, the same highlight markup Solr used to emit, so the UI has one
-/// rendering path for every source. The visible window is at most
-/// `SNIPPET_CHARS` scalar values, never grows to fit a long term, and the text is
-/// HTML-escaped before the markers are inserted, so a body that literally
-/// contains `<em>` cannot masquerade as a highlight and no other markup can leak
-/// through. Returns `None` when no eligible term is present in the bounded body
-/// or the text is empty.
+/// One highlightable term: its strength as evidence and the query idea it
+/// belongs to, so several forms of one word never outweigh a second idea.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnippetTerm {
+    pub term: String,
+    pub weight: u8,
+    pub idea: usize,
+}
+
+/// Terms worth showing for a query, strongest first: the user's meaningful
+/// words, then their other grammatical forms, then related wording. Explicit
+/// syntax falls back to its literal words.
+pub fn snippet_terms(query: &str) -> Vec<SnippetTerm> {
+    let Some(concepts) = concepts(query) else {
+        return query_terms(query)
+            .into_iter()
+            .enumerate()
+            .map(|(idea, term)| SnippetTerm {
+                term,
+                weight: 3,
+                idea,
+            })
+            .collect();
+    };
+    let mut terms: Vec<SnippetTerm> = Vec::new();
+    let add = |term: &String, weight: u8, idea: usize, terms: &mut Vec<SnippetTerm>| {
+        if terms.len() < MAX_SNIPPET_TERMS && !terms.iter().any(|existing| &existing.term == term) {
+            terms.push(SnippetTerm {
+                term: term.clone(),
+                weight,
+                idea,
+            });
+        }
+    };
+    for (idea, concept) in concepts.iter().enumerate() {
+        add(&concept.word, 3, idea, &mut terms);
+    }
+    for (idea, concept) in concepts.iter().enumerate() {
+        for form in &concept.forms {
+            add(form, 3, idea, &mut terms);
+        }
+    }
+    for (idea, concept) in concepts.iter().enumerate() {
+        for related in &concept.related {
+            add(related, 1, idea, &mut terms);
+        }
+    }
+    terms
+}
+
+/// Bound on highlight terms and on occurrences examined per term, so a long
+/// question against a multi-megabyte body stays cheap.
+const MAX_SNIPPET_TERMS: usize = 32;
+const MAX_OCCURRENCES_PER_TERM: usize = 256;
+/// Bytes of body one excerpt can usefully cover after its leading context.
+const SNIPPET_COVER_BYTES: usize = 190;
+
+/// Whether `[start, end)` in `text` stands alone as a word. Short terms only
+/// count as whole words; "a" must not light up inside every other word.
+fn is_whole_word(text: &str, start: usize, end: usize) -> bool {
+    let before = text[..start].chars().next_back();
+    let after = text[end..].chars().next();
+    !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+}
+
+/// Chooses the passage that covers the most query ideas, each counted once at
+/// its strongest evidence. Ties go to the earliest idea in query order, then
+/// the earliest position, so a single-idea match still opens on the user's
+/// first word.
+fn best_term_span(body: &str, terms: &[SnippetTerm]) -> Option<(usize, usize, usize)> {
+    let lowered = body.to_lowercase();
+    if lowered.len() != body.len() {
+        // Lowercasing moved byte offsets; fall back to the first present term.
+        let plain: Vec<String> = terms.iter().map(|term| term.term.clone()).collect();
+        let (term, start, end) = first_present_term_span(body, &plain)?;
+        let index = plain.iter().position(|candidate| candidate == term)?;
+        return Some((index, start, end));
+    }
+    let mut occurrences: Vec<(usize, usize, usize)> = Vec::new();
+    for (index, term) in terms.iter().enumerate() {
+        let term = term.term.as_str();
+        if term.is_empty() {
+            continue;
+        }
+        let mut from = 0;
+        let mut found = 0;
+        while found < MAX_OCCURRENCES_PER_TERM
+            && let Some(at) = lowered[from..].find(term)
+        {
+            let start = from + at;
+            let end = start + term.len();
+            if term.chars().count() >= 3 || is_whole_word(&lowered, start, end) {
+                occurrences.push((start, end, index));
+                found += 1;
+            }
+            from = end;
+        }
+    }
+    // At one position the earliest-listed (strongest) term anchors the window.
+    occurrences.sort_unstable_by_key(|&(start, _, index)| (start, index));
+    let ideas = terms.iter().map(|term| term.idea + 1).max().unwrap_or(0);
+    let mut best: Option<(u32, usize, usize, usize, usize)> = None;
+    for (first, &(start, end, index)) in occurrences.iter().enumerate() {
+        let mut strongest = vec![0u8; ideas];
+        let mut lead = terms[index].idea;
+        for &(other_start, _, other_index) in &occurrences[first..] {
+            if other_start > start + SNIPPET_COVER_BYTES {
+                break;
+            }
+            let other = &terms[other_index];
+            strongest[other.idea] = strongest[other.idea].max(other.weight);
+            lead = lead.min(other.idea);
+        }
+        let score: u32 = strongest.iter().map(|&weight| u32::from(weight)).sum();
+        let better = match best {
+            None => true,
+            Some((best_score, best_lead, ..)) => {
+                score > best_score || (score == best_score && lead < best_lead)
+            }
+        };
+        if better {
+            best = Some((score, lead, start, end, index));
+        }
+    }
+    best.map(|(_, _, start, end, index)| (index, start, end))
+}
+
+/// Builds a short plain-text snippet around the passage that best covers the
+/// query and wraps every query term present in the window in `<em>` tags, the
+/// same highlight markup Solr used to emit, so the UI has one rendering path
+/// for every source. Other grammatical forms and related wording count too, so
+/// a match found through them shows why it matched. The visible window is at
+/// most `SNIPPET_CHARS` scalar values, never grows to fit a long term, and the
+/// text is HTML-escaped before the markers are inserted, so a body that
+/// literally contains `<em>` cannot masquerade as a highlight and no other
+/// markup can leak through. Returns `None` when no eligible term is present in
+/// the bounded body or the text is empty.
 pub fn snippet_from_text(text: &str, query: &str) -> Option<String> {
-    let terms = query_terms(query);
-    if terms.is_empty() {
+    let weighted = snippet_terms(query);
+    if weighted.is_empty() {
         return None;
     }
+    let terms: Vec<String> = weighted.iter().map(|term| term.term.clone()).collect();
     let body = bounded_prefix(text, SNIPPET_SCAN_LIMIT).trim();
     if body.is_empty() {
         return None;
     }
-    let (term, match_start, match_end) = first_present_term_span(body, &terms)?;
+    let (anchor, match_start, match_end) = best_term_span(body, &weighted)?;
     let match_end = snap_to_boundary(body, match_end);
     let (start, end) = snippet_window_bounds(body, match_start);
     let window = body[start..end].trim();
@@ -449,8 +632,9 @@ pub fn snippet_from_text(text: &str, query: &str) -> Option<String> {
         // not marked up as a partial highlight and the window is not extended.
         let others: Vec<String> = terms
             .iter()
-            .filter(|candidate| candidate.as_str() != term)
-            .cloned()
+            .enumerate()
+            .filter(|(index, _)| *index != anchor)
+            .map(|(_, term)| term.clone())
             .collect();
         return Some(highlight_terms(window, &others));
     }
@@ -491,10 +675,22 @@ pub fn highlight_terms(text: &str, terms: &[String]) -> String {
     }
     let mut marked = String::with_capacity(text.len());
     let mut cursor = 0;
+    // At one position prefer the longest term ("filters" over "filter"); a
+    // very short term must stand alone as a word.
     while let Some((start, end)) = terms
         .iter()
-        .filter_map(|term| find_case_insensitive_from(text, cursor, term))
-        .min_by_key(|&(start, _)| start)
+        .filter(|term| !term.is_empty())
+        .filter_map(|term| {
+            let mut from = cursor;
+            loop {
+                let (start, end) = find_case_insensitive_from(text, from, term)?;
+                if term.chars().count() >= 3 || is_whole_word(text, start, end) {
+                    return Some((start, end));
+                }
+                from = end;
+            }
+        })
+        .min_by_key(|&(start, end)| (start, std::cmp::Reverse(end)))
     {
         marked.push_str(&escape_html(&text[cursor..start]));
         marked.push_str("<em>");

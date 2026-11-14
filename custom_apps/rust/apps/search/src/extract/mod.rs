@@ -121,6 +121,7 @@ pub(crate) fn append_search_metadata(body: &mut String, metadata: &Value) {
         "author",
         "narrators",
         "writers",
+        "directors",
         "from",
         "to",
         "cc",
@@ -139,6 +140,9 @@ pub(crate) fn append_search_metadata(body: &mut String, metadata: &Value) {
         "document_type",
         "subject",
         "subtitle",
+        "audio_languages",
+        "subtitle_languages",
+        "resolution",
     ] {
         if let Some(value) = metadata.get(key) {
             // Identifier dictionaries use provider names as keys (isbn,
@@ -199,7 +203,9 @@ pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
     let extraction_version = match source.source_type.as_str() {
         "mail-archive" | "freshrss" | "kiwix" => "3",
         "browsertrix" => "5",
-        "calibre" | "media-snapshot" => "4",
+        // 5: publication dates for Calibre books; stream languages, runtime,
+        // ratings, provider ids, chapters and season/episode wording for media.
+        "calibre" | "media-snapshot" => "5",
         _ => "2",
     };
     Some(crate::timeutil::sha256_hex(&[extraction_version, &inputs]))

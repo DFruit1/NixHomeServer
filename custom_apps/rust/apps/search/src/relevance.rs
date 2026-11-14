@@ -21,7 +21,6 @@ pub(crate) fn quality(title: &str, metadata: &Value, body: &str, query: &str) ->
     if raw.is_empty() || raw == "*:*" {
         return 5;
     }
-    let terms = crate::text::discovery_words(raw);
     if let Some(ids) = metadata.get("identifiers") {
         let values: Vec<_> = match ids {
             Value::Object(map) => map.values().collect(),
@@ -53,8 +52,38 @@ pub(crate) fn quality(title: &str, metadata: &Value, body: &str, query: &str) ->
     if title == normalized {
         return 1;
     }
-    let words =
-        terms.unwrap_or_else(|| normalized.split_whitespace().map(str::to_string).collect());
+    let facets = crate::facets::extract(metadata, None);
+    let people = facets
+        .authors
+        .iter()
+        .chain(&facets.series)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" ");
+    // Keep per-result work bounded, including a very long mail/PDF body.
+    let body = &body[..body.floor_char_boundary(body.len().min(400_000))];
+    // A plain query is judged idea by idea. Another grammatical form of a word
+    // is as good as the word; related wording in a title is weaker evidence
+    // than the user's own words in the text, so it never outranks them.
+    if let Some(concepts) = crate::text::concepts(raw) {
+        use crate::text::{concept_coverage, Coverage};
+        let in_title = concept_coverage(&title, &concepts);
+        if in_title == Coverage::Direct {
+            return 2;
+        }
+        if !people.is_empty()
+            && concept_coverage(&format!("{title} {people}"), &concepts) == Coverage::Direct
+        {
+            return 3;
+        }
+        if in_title == Coverage::Related
+            || concept_coverage(&format!("{title} {people} {body}"), &concepts) == Coverage::Direct
+        {
+            return 4;
+        }
+        return 5;
+    }
+    let words: Vec<String> = normalized.split_whitespace().map(str::to_string).collect();
     let contains_all = |value: &str| {
         let value = format!(" {} ", normalise(value));
         words
@@ -64,17 +93,9 @@ pub(crate) fn quality(title: &str, metadata: &Value, body: &str, query: &str) ->
     if contains_all(&title) {
         return 2;
     }
-    let facets = crate::facets::extract(metadata, None);
-    if facets
-        .authors
-        .iter()
-        .chain(&facets.series)
-        .any(|value| contains_all(value))
-    {
+    if contains_all(&people) {
         return 3;
     }
-    // Keep per-result work bounded, including a very long mail/PDF body.
-    let body = &body[..body.floor_char_boundary(body.len().min(400_000))];
     if contains_all(body) {
         return 4;
     }

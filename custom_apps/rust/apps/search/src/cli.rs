@@ -39,7 +39,7 @@ struct Args {
     /// Partial author, sender or correspondent name.
     #[arg(long)]
     creator: Option<String>,
-    /// Inferred filter keys to ignore: kind,creator,after,before.
+    /// Inferred filter keys to ignore: kind,creator,after,before,sort.
     #[arg(long)]
     ignore_intent: Option<String>,
     #[arg(long)]
@@ -126,6 +126,37 @@ fn print_text(output: &mut impl Write, body: &Value) -> io::Result<()> {
             )?;
         }
     }
+    if let Some(read_as) = body["literalFallback"].as_object() {
+        let reading: Vec<String> = read_as
+            .iter()
+            .map(|(name, value)| format!("{name} {}", clean(value.as_str().unwrap_or_default())))
+            .collect();
+        writeln!(
+            output,
+            "Nothing matched when read as {}; searched the words as typed.",
+            reading.join(", ")
+        )?;
+    }
+    if body["relaxed"] == true {
+        writeln!(
+            output,
+            "Nothing contained every word; showing the closest matches."
+        )?;
+    }
+    if let Some(unknown) = body["unknownTerms"].as_array() {
+        let unknown: Vec<_> = unknown
+            .iter()
+            .filter_map(Value::as_str)
+            .map(clean)
+            .collect();
+        if !unknown.is_empty() {
+            writeln!(
+                output,
+                "Not in the library as typed: {}. Close spellings were searched.",
+                unknown.join(", ")
+            )?;
+        }
+    }
     write!(output, "{} matches shown", body["shown"])?;
     if body["liveTotal"].as_u64().unwrap_or(0) > 0 {
         write!(output, " · {} live", body["liveTotal"])?;
@@ -147,6 +178,9 @@ fn print_text(output: &mut impl Write, body: &Value) -> io::Result<()> {
             ));
             if !snippet.is_empty() {
                 writeln!(output, "  {snippet}")?;
+            }
+            if let Some(copies) = hit["copies"].as_u64().filter(|copies| *copies > 0) {
+                writeln!(output, "  {} identical copies", copies + 1)?;
             }
             writeln!(output, "  {}", string(hit, "appUrl"))?;
         }
