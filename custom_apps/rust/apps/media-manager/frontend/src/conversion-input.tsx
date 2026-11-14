@@ -314,6 +314,12 @@ export const ConversionInput = component$<{
                     form.storageRootId = "";
                     form.storageFolder = "";
                     fileName.value = "";
+                    // Opening the folder browser makes the choice actionable:
+                    // server mode is already the default, so toggling only the
+                    // source would otherwise leave the button doing nothing.
+                    form.browsing = !form.browsing;
+                    if (form.browsing && !form.rootId)
+                      form.rootId = defaultRootId;
                     await resetFeedback();
                   }}
                 >
@@ -327,6 +333,7 @@ export const ConversionInput = component$<{
                     form.source = "upload";
                     form.storageRootId = "";
                     form.storageFolder = "";
+                    form.browsing = false;
                     await resetFeedback();
                   }}
                 >
