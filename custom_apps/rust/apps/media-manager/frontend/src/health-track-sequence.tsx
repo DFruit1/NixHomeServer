@@ -161,7 +161,7 @@ export const HealthTrackSequence = component$<{
   });
   return (
     <section
-      class="health-track-sequence"
+      class={{ "health-track-sequence": true, "is-open": state.open }}
       aria-label="Continuous track numbers"
     >
       {!state.open ? (

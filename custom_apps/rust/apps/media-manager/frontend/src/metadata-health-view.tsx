@@ -26,6 +26,7 @@ import { revealWhenMounted } from "./reveal";
 import { Icon } from "./icon";
 import { HealthPlayback, HealthPlayButton } from "./health-playback";
 import { HealthTrackSequence } from "./health-track-sequence";
+import "./health-number-table.css";
 import {
   enqueueHealthWrite,
   healthValueKey,
@@ -1047,10 +1048,345 @@ const HealthDecisionRow = component$<{
   );
 });
 
+// Per-file numbers are settled as one selectable list rather than a repeated
+// comparison per file, so a folder of tracks stays scannable and can be
+// renumbered in one action.
+const NUMBERED_HEALTH_FIELDS = new Set(["volumeNumber"]);
+const TRACK_SEQUENCE_CODES = new Set([
+  "track-sequence-gap-or-duplicate",
+  "track-order-mismatch",
+  "missing-track-numbers",
+]);
+const NUMBER_VALUE = /^\d{1,4}(?:\.\d{1,2})?$/;
+const SEQUENCE_START = /^\d{1,4}$/;
+
+function byFileName(entries: HealthIssueEntry[]): HealthIssueEntry[] {
+  return [...entries].sort((left, right) =>
+    left.target.relativePath.localeCompare(
+      right.target.relativePath,
+      undefined,
+      { numeric: true },
+    ),
+  );
+}
+
+function usableProposals(issue: MetadataHealthIssue) {
+  return (issue.proposedValues ?? []).filter((candidate) =>
+    hasHealthValue(candidate.value),
+  );
+}
+
+type NumberAction = "current" | "proposed" | "set" | "sequence";
+
+const HealthNumberTable = component$<{
+  entries: HealthIssueEntry[];
+  field: string;
+  editable: boolean;
+  selections: HealthSelections;
+  onApply$: ApplyHealthValue;
+  onDecision$: QRL<
+    (entry: HealthIssueEntry, choice: HealthChoice) => Promise<boolean>
+  >;
+}>((props) => {
+  const picked = useStore<Record<string, boolean>>({});
+  const number = useSignal("1");
+  const status = useSignal("");
+  const selectAll = useSignal<HTMLInputElement>();
+  const rows = byFileName(props.entries);
+  const ids = rows.map((entry) =>
+    healthEntryId(entry.target.itemId, entry.issue),
+  );
+  const chosen = ids.filter((id) => picked[id]).length;
+  useVisibleTask$(({ track }) => {
+    const count = track(
+      () =>
+        props.entries.filter(
+          (entry) => picked[healthEntryId(entry.target.itemId, entry.issue)],
+        ).length,
+    );
+    if (selectAll.value)
+      selectAll.value.indeterminate = count > 0 && count < props.entries.length;
+  });
+  const label = metadataFieldLabel(props.field).toLowerCase();
+  const typed = number.value.trim();
+  const sharedOverride = rows.every((entry) => entry.issue.fileOverride);
+  const anyProposal = rows.some((entry) => usableProposals(entry.issue).length);
+  const apply$ = $(async (action: NumberAction) => {
+    status.value = "";
+    const start = Number(number.value.trim());
+    const set = number.value.trim();
+    const selected = byFileName(props.entries).filter(
+      (entry) => picked[healthEntryId(entry.target.itemId, entry.issue)],
+    );
+    let skipped = 0;
+    const saved = await Promise.all(
+      selected.map(async (entry, index) => {
+        const { issue, target } = entry;
+        if (action === "current")
+          return isUnset(issue.currentValue)
+            ? await props.onDecision$(entry, "current")
+            : await props.onApply$(
+                issue.currentValue,
+                "Current",
+                issue,
+                target,
+              );
+        if (action === "proposed") {
+          const proposals = usableProposals(issue);
+          if (proposals.length !== 1) {
+            skipped += 1;
+            return true;
+          }
+          return await props.onApply$(
+            proposals[0].value,
+            "Proposed",
+            issue,
+            target,
+          );
+        }
+        const text = action === "sequence" ? String(start + index) : set;
+        // A typed number that matches an offered value is recorded as that choice.
+        const proposal = usableProposals(issue).find(
+          (candidate) => displayValue(candidate.value) === text,
+        );
+        return proposal
+          ? await props.onApply$(proposal.value, "Proposed", issue, target)
+          : await props.onApply$(
+              displayValue(issue.currentValue) === text
+                ? issue.currentValue
+                : text,
+              "Current",
+              issue,
+              target,
+            );
+      }),
+    );
+    if (saved.some((result) => !result))
+      status.value =
+        "Some files could not be saved. Their rows remain available to retry.";
+    else if (skipped)
+      status.value = `${skipped} ${skipped === 1 ? "file has" : "files have"} no single proposal and ${skipped === 1 ? "was" : "were"} left unchanged.`;
+  });
+  const valueCell = (
+    entry: HealthIssueEntry,
+    value: unknown,
+    origin: "Current" | "Proposed",
+    sources: string[],
+  ) => {
+    const selection =
+      props.selections[healthEntryId(entry.target.itemId, entry.issue)];
+    const pressed =
+      !!selection &&
+      !selection.error &&
+      selection.origin === origin &&
+      selection.valueKey === healthValueKey(value);
+    const name = entry.target.relativePath.split("/").at(-1);
+    return props.editable && !isUnset(value) ? (
+      <button
+        type="button"
+        class={{ "health-number-value": true, "is-selected": pressed }}
+        aria-pressed={pressed}
+        aria-label={`Use ${origin.toLowerCase()} ${label} ${displayValue(value)} for ${name}`}
+        title={sources.length ? sources.join(" · ") : undefined}
+        onClick$={() =>
+          props.onApply$(value, origin, entry.issue, entry.target)
+        }
+      >
+        {displayValue(value)}
+      </button>
+    ) : (
+      <span
+        class="health-number-text"
+        title={sources.length ? sources.join(" · ") : undefined}
+      >
+        {renderValue(value)}
+      </span>
+    );
+  };
+  return (
+    <div class="health-number-review">
+      {props.editable && (
+        <div
+          class={{
+            "health-number-actions": true,
+            "is-active": chosen > 0,
+          }}
+          role="group"
+          aria-label={`Change the ${label} of selected files`}
+        >
+          <span class="health-number-count" aria-live="polite">
+            {chosen} of {rows.length} selected
+          </span>
+          <button
+            type="button"
+            disabled={!chosen}
+            onClick$={() => apply$("current")}
+          >
+            Use current
+          </button>
+          {anyProposal && (
+            <button
+              type="button"
+              disabled={!chosen}
+              onClick$={() => apply$("proposed")}
+            >
+              Use proposed
+            </button>
+          )}
+          <span class="health-number-custom">
+            <input
+              type="text"
+              inputMode="decimal"
+              aria-label={`${metadataFieldLabel(props.field)} for selected files`}
+              value={number.value}
+              maxLength={7}
+              onInput$={(_, input) => (number.value = input.value)}
+            />
+            <button
+              type="button"
+              disabled={!chosen || !NUMBER_VALUE.test(typed)}
+              onClick$={() => apply$("set")}
+            >
+              Set to {NUMBER_VALUE.test(typed) ? typed : "…"}
+            </button>
+            <button
+              type="button"
+              disabled={chosen < 2 || !SEQUENCE_START.test(typed)}
+              title="Numbers the selected files in filename order"
+              onClick$={() => apply$("sequence")}
+            >
+              {SEQUENCE_START.test(typed)
+                ? `Number ${Number(typed)}, ${Number(typed) + 1}, ${Number(typed) + 2}…`
+                : "Number in order"}
+            </button>
+          </span>
+        </div>
+      )}
+      {status.value && <p role="status">{status.value}</p>}
+      <table class="health-number-table">
+        <thead>
+          <tr>
+            {props.editable && (
+              <th scope="col" class="health-number-pick">
+                <input
+                  type="checkbox"
+                  ref={selectAll}
+                  aria-label="Select all files"
+                  checked={chosen === rows.length}
+                  onChange$={(_, input) => {
+                    for (const id of ids) picked[id] = input.checked;
+                  }}
+                />
+              </th>
+            )}
+            <th scope="col">File</th>
+            <th scope="col">Current</th>
+            <th scope="col">Proposed</th>
+            <th scope="col" class="health-number-play">
+              <span class="sr-only">Play</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((entry, index) => {
+            const id = ids[index];
+            const { issue, target } = entry;
+            const name = target.relativePath.split("/").at(-1);
+            const proposals = usableProposals(issue);
+            const selection = props.selections[id];
+            const failure = selection?.error;
+            // A typed value matches neither column, so it is shown beside them.
+            const custom =
+              selection &&
+              !selection.error &&
+              ![issue.currentValue, ...proposals.map((p) => p.value)]
+                .map(healthValueKey)
+                .includes(selection.valueKey)
+                ? (JSON.parse(selection.valueKey) as unknown)
+                : undefined;
+            return (
+              <tr key={id} class={{ "is-picked": !!picked[id] }}>
+                {props.editable && (
+                  <td class="health-number-pick">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${name}`}
+                      checked={!!picked[id]}
+                      onChange$={(_, input) => (picked[id] = input.checked)}
+                    />
+                  </td>
+                )}
+                <th scope="row">
+                  <a
+                    class="health-review-link health-file-link"
+                    href={`?view=library&root=${encodeURIComponent(target.rootId)}&item=${encodeURIComponent(target.itemId)}`}
+                    title={target.relativePath}
+                  >
+                    {name}
+                  </a>
+                  {issue.fileOverride && !sharedOverride && (
+                    <small>Individual choice</small>
+                  )}
+                  {failure && (
+                    <p class="health-choice-error" role="alert">
+                      {failure}
+                    </p>
+                  )}
+                </th>
+                <td>
+                  {valueCell(
+                    entry,
+                    issue.currentValue,
+                    "Current",
+                    issue.currentSources ?? [],
+                  )}
+                </td>
+                <td>
+                  <span class="health-number-options">
+                    {proposals.map((candidate, candidateIndex) => (
+                      <span key={candidateIndex}>
+                        {valueCell(
+                          entry,
+                          candidate.value,
+                          "Proposed",
+                          candidate.sources,
+                        )}
+                      </span>
+                    ))}
+                    {custom !== undefined ? (
+                      <span
+                        class="health-number-value is-selected is-custom"
+                        title="Set in this review"
+                      >
+                        <span class="sr-only">Set to </span>
+                        {displayValue(custom)}
+                      </span>
+                    ) : (
+                      !proposals.length && (
+                        <span class="health-number-text health-no-suggestion">
+                          —
+                        </span>
+                      )
+                    )}
+                  </span>
+                </td>
+                <td class="health-number-play">
+                  <HealthPlayButton target={target} />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+});
+
 const HealthIssueReview = component$<{
   group: HealthGroup;
   getSession$: GetHealthLookupSession;
   grouped: GroupedIssue;
+  trackSequence?: boolean;
   providers: ProviderDefinition[];
   canEdit: boolean;
   selectedOnline?: { value: unknown; source: string };
@@ -1101,6 +1437,11 @@ const HealthIssueReview = component$<{
       : undefined;
   const editable = editableHealthIssue(issue, target, props.canEdit);
   const autoEligible = editable && needsExternalProposal(entries);
+  const numbered =
+    compares &&
+    !album &&
+    entries.length > 1 &&
+    NUMBERED_HEALTH_FIELDS.has(field);
   const readOnlyTitle =
     !editable && target.mediaKind === "podcast"
       ? "Podcast metadata is managed in its source app."
@@ -1210,54 +1551,67 @@ const HealthIssueReview = component$<{
         {!compares && <p>{issue.message}</p>}
         {compares && (
           <>
-            <table class="health-issue-table">
-              <caption class="sr-only">{issueTitle}</caption>
-              <thead class="sr-only">
-                <tr>
-                  {!album && entries.length > 1 && <th scope="col">File</th>}
-                  <th scope="col">Current</th>
-                  <th scope="col">Proposed</th>
-                  <th scope="col">Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {album ? (
-                  <HealthDecisionRow
-                    providers={props.providers}
-                    getSession$={props.getSession$}
-                    query={groupHeading(props.group).text}
-                    queryFromFilename={groupHeading(props.group).fromFilename}
-                    key="album"
-                    entries={entries}
-                    album={album}
-                    showFile={false}
-                    sharedReason={sharedReason}
-                    sharedSources={sharedSources}
-                    multipleFiles={count > 1}
-                    canEdit={props.canEdit}
-                    selections={props.selections}
-                    onApply$={props.onApply$}
-                  />
-                ) : (
-                  entries.map((entry) => (
+            {numbered ? (
+              <HealthNumberTable
+                entries={entries}
+                field={field}
+                editable={editable}
+                selections={props.selections}
+                onApply$={props.onApply$}
+                onDecision$={props.onDecision$}
+              />
+            ) : (
+              <table class="health-issue-table">
+                <caption class="sr-only">{issueTitle}</caption>
+                <thead class="sr-only">
+                  <tr>
+                    {!album && entries.length > 1 && <th scope="col">File</th>}
+                    <th scope="col">Current</th>
+                    <th scope="col">Proposed</th>
+                    <th scope="col">Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {album ? (
                     <HealthDecisionRow
                       providers={props.providers}
                       getSession$={props.getSession$}
                       query={groupHeading(props.group).text}
                       queryFromFilename={groupHeading(props.group).fromFilename}
-                      key={entry.target.itemId}
-                      entries={[entry]}
-                      showFile={entries.length > 1}
+                      key="album"
+                      entries={entries}
+                      album={album}
+                      showFile={false}
                       sharedReason={sharedReason}
                       sharedSources={sharedSources}
+                      multipleFiles={count > 1}
                       canEdit={props.canEdit}
                       selections={props.selections}
                       onApply$={props.onApply$}
                     />
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : (
+                    entries.map((entry) => (
+                      <HealthDecisionRow
+                        providers={props.providers}
+                        getSession$={props.getSession$}
+                        query={groupHeading(props.group).text}
+                        queryFromFilename={
+                          groupHeading(props.group).fromFilename
+                        }
+                        key={entry.target.itemId}
+                        entries={[entry]}
+                        showFile={entries.length > 1}
+                        sharedReason={sharedReason}
+                        sharedSources={sharedSources}
+                        canEdit={props.canEdit}
+                        selections={props.selections}
+                        onApply$={props.onApply$}
+                      />
+                    ))
+                  )}
+                </tbody>
+              </table>
+            )}
             {((sharedReason && !autoEligible && !!proposedProvenance(issue)) ||
               sharedSources) && (
               <div class="health-provenance">
@@ -1315,113 +1669,128 @@ const HealthIssueReview = component$<{
           </>
         )}
       </div>
-      {(count > 1 ||
-        props.group.results.length > 1 ||
-        (compares && albumField)) && (
-        <div class={{ "health-issue-footer": true, "has-bulk": count > 1 }}>
-          <details class="health-file-details">
-            <summary>
-              {count > 1 || props.group.results.length > 1
-                ? `Affects ${count} ${count === 1 ? "file" : "files"}`
-                : "Files in this folder"}
-            </summary>
-            {compares && albumField && (
-              <div class="health-album-scope">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={individually.value}
-                    onChange$={(_, input) =>
-                      (individually.value = input.checked)
+      {!numbered &&
+        (count > 1 ||
+          props.group.results.length > 1 ||
+          (compares && albumField) ||
+          props.trackSequence) && (
+          <div
+            class={{
+              "health-issue-footer": true,
+              "has-bulk": count > 1 || props.trackSequence,
+            }}
+          >
+            <details class="health-file-details">
+              <summary>
+                {count > 1 || props.group.results.length > 1
+                  ? `Affects ${count} ${count === 1 ? "file" : "files"}`
+                  : "Files in this folder"}
+              </summary>
+              {compares && albumField && (
+                <div class="health-album-scope">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={individually.value}
+                      onChange$={(_, input) =>
+                        (individually.value = input.checked)
+                      }
+                    />
+                    Edit files individually
+                  </label>
+                  <p>
+                    {album
+                      ? "One value for this folder and its files. Individual overrides take priority; embedded tags are retained."
+                      : "File choices override the album in Media Manager. Other apps continue to read the album sidecar."}
+                  </p>
+                </div>
+              )}
+              <ul class="health-affected-files">
+                {files.map((file) => {
+                  const matches = (result: MetadataHealthResult) =>
+                    result.relativePath === file ||
+                    result.relativePath.endsWith(`/${file}`);
+                  const fileTarget = props.group.results.find(matches);
+                  const issueTitles = mixedIssues
+                    ? [
+                        ...new Set(
+                          entries
+                            .filter((entry) => matches(entry.target))
+                            .map((entry) => entry.issue.title),
+                        ),
+                      ]
+                    : [];
+                  return (
+                    <li key={file}>
+                      <div class="health-affected-file">
+                        {fileTarget ? (
+                          <>
+                            <a
+                              class="health-review-link"
+                              href={`?view=library&root=${encodeURIComponent(fileTarget.rootId)}&item=${encodeURIComponent(fileTarget.itemId)}`}
+                              title={fileTarget.relativePath}
+                            >
+                              {file}
+                            </a>
+                            <HealthPlayButton target={fileTarget} />
+                          </>
+                        ) : (
+                          <span>{file}</span>
+                        )}
+                      </div>
+                      {issueTitles.length > 0 && (
+                        <p>{issueTitles.join("; ")}</p>
+                      )}
+                    </li>
+                  );
+                })}
+                {count > files.length && (
+                  <li aria-label="Additional affected files">…</li>
+                )}
+              </ul>
+            </details>
+            {count > 1 && (canKeepAll || canReplaceAll) && (
+              <div class="health-issue-actions">
+                {canKeepAll && (
+                  <button
+                    type="button"
+                    title={readOnlyTitle}
+                    disabled={
+                      !editable ||
+                      entries.every((entry) => entry.issue.fileOverride)
                     }
-                  />
-                  Edit files individually
-                </label>
-                <p>
-                  {album
-                    ? "One value for this folder and its files. Individual overrides take priority; embedded tags are retained."
-                    : "File choices override the album in Media Manager. Other apps continue to read the album sidecar."}
-                </p>
+                    onClick$={() => bulk$("current")}
+                  >
+                    Keep all
+                  </button>
+                )}
+                {canReplaceAll && (
+                  <button
+                    type="button"
+                    title={readOnlyTitle}
+                    disabled={
+                      !editable ||
+                      !entries.some(
+                        (entry) =>
+                          !entry.issue.fileOverride &&
+                          entry.issue.proposedValues?.length === 1,
+                      )
+                    }
+                    onClick$={() => bulk$("proposed")}
+                  >
+                    Replace all
+                  </button>
+                )}
               </div>
             )}
-            <ul class="health-affected-files">
-              {files.map((file) => {
-                const matches = (result: MetadataHealthResult) =>
-                  result.relativePath === file ||
-                  result.relativePath.endsWith(`/${file}`);
-                const fileTarget = props.group.results.find(matches);
-                const issueTitles = mixedIssues
-                  ? [
-                      ...new Set(
-                        entries
-                          .filter((entry) => matches(entry.target))
-                          .map((entry) => entry.issue.title),
-                      ),
-                    ]
-                  : [];
-                return (
-                  <li key={file}>
-                    <div class="health-affected-file">
-                      {fileTarget ? (
-                        <>
-                          <a
-                            class="health-review-link"
-                            href={`?view=library&root=${encodeURIComponent(fileTarget.rootId)}&item=${encodeURIComponent(fileTarget.itemId)}`}
-                            title={fileTarget.relativePath}
-                          >
-                            {file}
-                          </a>
-                          <HealthPlayButton target={fileTarget} />
-                        </>
-                      ) : (
-                        <span>{file}</span>
-                      )}
-                    </div>
-                    {issueTitles.length > 0 && <p>{issueTitles.join("; ")}</p>}
-                  </li>
-                );
-              })}
-              {count > files.length && (
-                <li aria-label="Additional affected files">…</li>
-              )}
-            </ul>
-          </details>
-          {count > 1 && (canKeepAll || canReplaceAll) && (
-            <div class="health-issue-actions">
-              {canKeepAll && (
-                <button
-                  type="button"
-                  title={readOnlyTitle}
-                  disabled={
-                    !editable ||
-                    entries.every((entry) => entry.issue.fileOverride)
-                  }
-                  onClick$={() => bulk$("current")}
-                >
-                  Keep all
-                </button>
-              )}
-              {canReplaceAll && (
-                <button
-                  type="button"
-                  title={readOnlyTitle}
-                  disabled={
-                    !editable ||
-                    !entries.some(
-                      (entry) =>
-                        !entry.issue.fileOverride &&
-                        entry.issue.proposedValues?.length === 1,
-                    )
-                  }
-                  onClick$={() => bulk$("proposed")}
-                >
-                  Replace all
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+            {props.trackSequence && (
+              <HealthTrackSequence
+                target={props.group.results[0]}
+                canEdit={props.canEdit}
+              />
+            )}
+          </div>
+        )}
       {bulkStatus.value && <p role="status">{bulkStatus.value}</p>}
     </section>
   );
@@ -1521,15 +1890,6 @@ const HealthResult = component$<{ group: HealthGroup; canEdit: boolean }>(
         </header>
         <div class="health-result-issues" ref={issuesElement}>
           <Slot name="lookup" />
-          {props.group.results.some((result) =>
-            result.health.some((issue) =>
-              [
-                "track-sequence-gap-or-duplicate",
-                "track-order-mismatch",
-                "missing-track-numbers",
-              ].includes(issue.code),
-            ),
-          ) && <HealthTrackSequence target={first} canEdit={props.canEdit} />}
           <Slot />
         </div>
       </article>
@@ -1942,9 +2302,16 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
             canEdit={Boolean(props.canEdit)}
             key={group.key}
           >
-            {groupIssues(group.results).map((grouped) => (
+            {groupIssues(group.results).map((grouped, index, all) => (
               <HealthIssueReview
                 q:slot={isLookupIssue(grouped.issue) ? "lookup" : undefined}
+                trackSequence={
+                  all.findIndex((candidate) =>
+                    candidate.entries.some((entry) =>
+                      TRACK_SEQUENCE_CODES.has(entry.issue.code),
+                    ),
+                  ) === index
+                }
                 getSession$={getLookupSession$}
                 key={`${group.key}-${grouped.key}`}
                 group={group}

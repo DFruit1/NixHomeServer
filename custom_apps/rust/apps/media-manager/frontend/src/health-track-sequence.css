@@ -1,6 +1,17 @@
 .health-track-sequence {
   margin-block: 1rem;
 }
+/* Closed, the editor is the issue's own action beside its affected files;
+   open, it takes the full width below them. */
+.health-issue-footer > .health-track-sequence {
+  flex: 0 0 auto;
+  margin-block: 0;
+  margin-inline-start: auto;
+}
+.health-issue-footer > .health-track-sequence.is-open {
+  flex-basis: 100%;
+  margin-block-start: 0.5rem;
+}
 .health-track-sequence p,
 .health-track-preview li {
   overflow-wrap: anywhere;
