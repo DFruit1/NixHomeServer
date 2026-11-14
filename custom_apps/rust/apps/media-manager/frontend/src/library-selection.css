@@ -36,7 +36,7 @@
   background: var(--paper-recess);
   box-shadow: none;
   object-fit: contain;
-  font-size: 11px;
+  font-size: 12px;
 }
 .library-selection-hero .media-image-edit {
   font-size: 0;

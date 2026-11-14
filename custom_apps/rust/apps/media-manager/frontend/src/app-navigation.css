@@ -21,7 +21,7 @@
     min-height: 60px;
     border-radius: var(--radius-control);
     color: var(--navigation-muted);
-    font-size: 11px;
+    font-size: 12px;
     list-style: none;
     cursor: pointer;
   }
