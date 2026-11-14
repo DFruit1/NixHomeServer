@@ -101,19 +101,17 @@ async fn process_page(
             .decision_retry(&asset.id, None)
             .map_err(|_| index_error(id))?
             <= now
-        {
-            if decisions::background(state, account, index, &asset, id)
+            && decisions::background(state, account, index, &asset, id)
                 .await
                 .is_err()
-            {
-                index
-                    .decision_retry(&asset.id, Some(now + 1800))
-                    .map_err(|_| index_error(id))?;
-                eprintln!(
-                    "{}",
-                    json!({"service":"media-manager-provider-broker","event":"decision_assessment_retry","requestId":id})
-                );
-            }
+        {
+            index
+                .decision_retry(&asset.id, Some(now + 1800))
+                .map_err(|_| index_error(id))?;
+            eprintln!(
+                "{}",
+                json!({"service":"media-manager-provider-broker","event":"decision_assessment_retry","requestId":id})
+            );
         }
         if (index.tagged(&asset.id).map_err(|_| index_error(id))?
             && index
@@ -193,10 +191,11 @@ pub(in crate::provider_account_http) async fn indexed(
             "tagMatches":[],"requestId":id}),
         ));
     }
-    let (mut ids, tag_matches) = index.search(&query).map_err(|_| index_error(&id))?;
+    let mut ids = index.search(&query).map_err(|_| index_error(&id))?;
     let next = (ids.len() > PAGE_SIZE && query.page < 100_000).then_some(query.page + 1);
     ids.truncate(PAGE_SIZE);
     let mut items = Vec::new();
+    let mut verified_ids = Vec::new();
     // Recheck current upstream authorization before returning *any* cached
     // filename, tag or score. Deletion, archive/lock changes, credential changes
     // and lost access must not expose previously indexed private metadata.
@@ -215,6 +214,7 @@ pub(in crate::provider_account_http) async fn indexed(
             let result = task.await.map_err(|_| index_error(&id))?;
             match result {
                 Ok(asset) => {
+                    verified_ids.push(asset.id.clone());
                     items.push(indexed_item(&index, asset, &id)?);
                 }
                 Err(err) if err.status() == StatusCode::NOT_FOUND => {}
@@ -222,6 +222,9 @@ pub(in crate::provider_account_http) async fn indexed(
             }
         }
     }
+    let tag_matches = index
+        .tag_matches(&query, &verified_ids)
+        .map_err(|_| index_error(&id))?;
     Ok(Json(
         json!({"items":items,"nextPage":next,"canTag":false,"index":index.status().map_err(|_|index_error(&id))?,"tagMatches":tag_matches,"requestId":id}),
     ))

@@ -262,13 +262,43 @@ impl Index<'_> {
             |r| r.get(0),
         )
     }
-    /// Matching asset ids plus the widened tags that actually occur in this
-    /// account's index, for the browser to explain them.
-    pub fn search(
+    /// Cached candidates only. Their current access must be checked before
+    /// returning any private metadata, including the tag-widening report.
+    pub fn search(&self, q: &Search) -> rusqlite::Result<Vec<String>> {
+        self.select(q, None)
+    }
+
+    /// Explain only tags on assets whose current access the caller verified
+    /// for this response. Never report from the whole cached account scope.
+    pub fn tag_matches(
         &self,
         q: &Search,
-    ) -> rusqlite::Result<(Vec<String>, Vec<image_search::TagMatch>)> {
-        self.select(q, None)
+        verified_ids: &[String],
+    ) -> rusqlite::Result<Vec<image_search::TagMatch>> {
+        let mut plan = image_search::plan(&q.terms(), q.related);
+        if verified_ids.is_empty() || plan.terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let db = self.store.index_connection()?;
+        let mut stmt = db.prepare(
+            "SELECT tag FROM image_tags WHERE scope=?1 AND confidence>=?2
+               AND asset_id IN (SELECT value FROM json_each(?3))
+             UNION
+             SELECT tag FROM decision_tags WHERE scope=?1
+               AND asset_id IN (SELECT value FROM json_each(?3))",
+        )?;
+        let present: BTreeSet<String> = stmt
+            .query_map(
+                params![
+                    self.scope,
+                    q.confidence,
+                    serde_json::to_string(verified_ids).expect("serializable verified photo ids")
+                ],
+                |row| row.get(0),
+            )?
+            .collect::<rusqlite::Result<_>>()?;
+        plan.attach_decision_tags(&present.iter().cloned().collect::<Vec<_>>());
+        Ok(plan.report(&present))
     }
 
     /// Apply the same private filters to upstream results, including photos
@@ -283,14 +313,14 @@ impl Index<'_> {
             sort: "capturedAt".into(),
             ..q.clone()
         };
-        self.select(&filters, Some(candidates)).map(|(ids, _)| ids)
+        self.select(&filters, Some(candidates))
     }
 
     fn select(
         &self,
         q: &Search,
         candidates: Option<&[(String, String, String)]>,
-    ) -> rusqlite::Result<(Vec<String>, Vec<image_search::TagMatch>)> {
+    ) -> rusqlite::Result<Vec<String>> {
         // Only fixed expressions are interpolated. Every user value is bound.
         let sort = match q.sort.as_str() {
             "aesthetic" => "a.aesthetic", "keeper" => "a.keeper", "cover" => "a.cover",
@@ -353,7 +383,6 @@ impl Index<'_> {
         } else {
             image_search::plan(&[], false)
         };
-        let present = present_tags(&db, self.scope, q.confidence, &plan, &decision_tags)?;
         let mut stmt = db.prepare(&sql)?;
         let mut values: Vec<rusqlite::types::Value> = vec![
             self.scope.to_owned().into(),
@@ -379,10 +408,8 @@ impl Index<'_> {
                     .into(),
             );
         }
-        let ids = stmt
-            .query_map(rusqlite::params_from_iter(values), |r| r.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok((ids, plan.report(&present)))
+        stmt.query_map(rusqlite::params_from_iter(values), |r| r.get(0))?
+            .collect()
     }
     pub fn scan(&self) -> rusqlite::Result<(u32, i64, i64)> {
         let db = self.store.index_connection()?;
@@ -454,31 +481,4 @@ impl Index<'_> {
 fn distinct_decision_tags(db: &Connection, scope: &str) -> rusqlite::Result<Vec<String>> {
     let mut stmt = db.prepare("SELECT DISTINCT tag FROM decision_tags WHERE scope=?1")?;
     stmt.query_map([scope], |row| row.get(0))?.collect()
-}
-
-/// Tags from this account's index that would count for the current search, so
-/// the response can name the widening that actually applies to these photos.
-fn present_tags(
-    db: &Connection,
-    scope: &str,
-    confidence: f64,
-    plan: &image_search::Plan,
-    decision_tags: &[String],
-) -> rusqlite::Result<BTreeSet<String>> {
-    let mut present: BTreeSet<String> = decision_tags.iter().cloned().collect();
-    if plan.terms.is_empty() {
-        return Ok(present);
-    }
-    let mut stmt = db.prepare(
-        "SELECT DISTINCT tag FROM image_tags
-         WHERE scope=?1 AND confidence>=?2
-           AND tag IN (SELECT value FROM json_each(?3))",
-    )?;
-    let matched = stmt.query_map(params![scope, confidence, plan.flat()], |row| {
-        row.get::<_, String>(0)
-    })?;
-    for tag in matched {
-        present.insert(tag?);
-    }
-    Ok(present)
 }

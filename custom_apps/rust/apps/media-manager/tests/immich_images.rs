@@ -775,6 +775,145 @@ async fn tag_search_understands_word_forms_and_optional_related_tags() {
     task.abort();
 }
 
+// R4-01: a scope-wide widening report could disclose private cached tags from
+// deleted, locked, or off-page photos even though no such photo was returned.
+#[tokio::test]
+async fn tag_match_reports_only_describe_access_verified_returned_photos() {
+    use rusqlite::params;
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = Fixture::default();
+    let (app, task) = test_app(&temp, fixture.clone()).await;
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{ROOT}/{PHOTO}/analysis"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let db = rusqlite::Connection::open(temp.path().join("accounts.sqlite3")).unwrap();
+    let scope: String = db
+        .query_row("SELECT scope FROM image_assets", [], |row| row.get(0))
+        .unwrap();
+    let stale = "10000000-0000-4000-8000-000000000099";
+    db.execute("INSERT INTO image_assets(scope,asset_id,filename,captured_at,seen) VALUES (?1,?2,'private.jpg','2020-01-01',1)",
+        params![scope, stale]).unwrap();
+    for (asset_id, tag) in [(PHOTO, "forest"), (stale, "tree")] {
+        db.execute(
+            "INSERT INTO image_tags VALUES (?1,?2,?3,0.9)",
+            params![scope, asset_id, tag],
+        )
+        .unwrap();
+    }
+    for (asset_id, tag) in [(PHOTO, "Keep Photo"), (stale, "Private Review")] {
+        db.execute(
+            "INSERT INTO decision_tags VALUES (?1,?2,?3)",
+            params![scope, asset_id, tag],
+        )
+        .unwrap();
+    }
+    // Missing upstream asset (HTTP 404), then a stale search hit whose current
+    // visibility is locked. Neither can contribute EYE or raw decision tags.
+    for revoked in [false, true] {
+        if revoked {
+            let mut asset = photo(false);
+            asset["id"] = json!(stale);
+            *fixture.semantic_pages.lock().unwrap() = vec![vec![asset]];
+            fixture.revoked.lock().unwrap().push(stale.to_owned());
+        }
+        let response = app
+            .clone()
+            .oneshot(request(
+                "GET",
+                &format!("{ROOT}/index?tags=woods"),
+                "alice",
+                false,
+                Value::Null,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_response(response).await;
+        assert_eq!(body["items"].as_array().unwrap().len(), 1);
+        assert_eq!(body["items"][0]["id"], PHOTO);
+        assert_eq!(
+            body["tagMatches"],
+            json!([{"term":"woods","tags":["forest"]}]),
+            "revoked={revoked}"
+        );
+        let response = app
+            .clone()
+            .oneshot(request(
+                "GET",
+                &format!("{ROOT}/index?tags=private%20review"),
+                "alice",
+                false,
+                Value::Null,
+            ))
+            .await
+            .unwrap();
+        let body = json_response(response).await;
+        assert_eq!(body["items"], json!([]));
+        assert_eq!(body["tagMatches"], json!([]), "revoked={revoked}");
+    }
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("{ROOT}/index?tags=keep%20photo"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        json_response(response).await["tagMatches"],
+        json!([{"term":"keep_photo","tags":["Keep Photo"]}])
+    );
+    // A cached photo beyond the returned page (including lookahead) has not
+    // been checked either. Fill page one with accessible forest-only photos.
+    for position in 2..=49 {
+        let asset_id = format!("10000000-0000-4000-8000-{position:012}");
+        db.execute("INSERT INTO image_assets(scope,asset_id,filename,captured_at,seen) VALUES (?1,?2,'visible.jpg','2026-01-01',1)",
+            params![scope, asset_id]).unwrap();
+        db.execute(
+            "INSERT INTO image_tags VALUES (?1,?2,?3,0.9)",
+            params![
+                scope,
+                asset_id,
+                if position == 49 { "tree" } else { "forest" }
+            ],
+        )
+        .unwrap();
+        let mut asset = photo(false);
+        asset["id"] = json!(asset_id);
+        fixture.semantic_pages.lock().unwrap()[0].push(asset);
+    }
+    let response = app
+        .oneshot(request(
+            "GET",
+            &format!("{ROOT}/index?tags=woods"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    let body = json_response(response).await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 48);
+    assert_eq!(body["nextPage"], 2);
+    assert_eq!(
+        body["tagMatches"],
+        json!([{"term":"woods","tags":["forest"]}])
+    );
+    task.abort();
+}
+
 #[tokio::test]
 async fn refuses_legacy_tag_writes_for_editors() {
     let temp = tempfile::tempdir().unwrap();
