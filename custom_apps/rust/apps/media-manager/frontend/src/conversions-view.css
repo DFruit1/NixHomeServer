@@ -126,42 +126,36 @@
   background: var(--warning-wash);
 }
 
-/* DVD focus card */
+/* DVD progress: an ordinary panel, so the task form keeps the attention. */
 .conversion-focus {
   min-width: 0;
-  border-radius: var(--radius-panel);
-  color: var(--accent-ink);
-  background: var(--media-surface);
-}
-.conversion-focus .panel-heading {
-  border-color: var(--media-line);
 }
 .conversion-state {
-  color: var(--navigation-muted);
+  color: var(--ink-soft);
   font-size: var(--text-md);
 }
 .conversion-focus .conversion-list {
   min-height: 0;
 }
 .conversion-focus .conversion-card {
-  padding: 24px 20px;
+  padding: 20px;
   grid-template-columns: 44px minmax(0, 1fr);
 }
 .conversion-symbol {
   padding-top: 4px;
-  color: var(--navigation-muted);
+  color: var(--accent);
 }
 .conversion-focus .conversion-copy h3 {
   margin: 0 0 6px;
   overflow-wrap: anywhere;
   font-family: var(--font-serif);
-  font-size: var(--title-lg);
+  font-size: var(--title-sm);
   font-weight: 500;
   line-height: 1.25;
 }
 .conversion-focus :is(.conversion-copy p, .empty-state p) {
   margin: 0;
-  color: var(--navigation-muted);
+  color: var(--ink-soft);
   font-size: var(--text-md);
   line-height: 1.5;
   overflow-wrap: anywhere;
@@ -176,46 +170,31 @@
   flex: 1 1 auto;
   height: 6px;
   margin: 0;
-  background: var(--media-line);
-}
-.conversion-focus .progress-track span {
-  background: var(--navigation-muted);
 }
 .conversion-focus .progress-row strong {
   flex: none;
   min-width: 4ch;
-  color: var(--accent-ink);
   font-size: var(--text-md);
   text-align: right;
 }
-.conversion-focus .conversion-queue {
-  margin: 0 20px 20px;
-  border-color: var(--media-line);
-}
 .conversion-focus .conversion-queue__heading,
 .conversion-focus :is(.conversion-queue__number, .conversion-queue__file) {
-  color: var(--navigation-muted);
-}
-.conversion-focus .conversion-queue__title {
-  color: var(--accent-ink);
+  color: var(--ink-soft);
 }
 .conversion-focus .empty-state {
-  min-height: 140px;
+  min-height: 96px;
 }
 .conversion-focus .empty-glyph {
   display: none;
 }
 .conversion-focus .empty-state h4 {
   font-family: var(--font-serif);
-  font-size: var(--title-sm);
+  font-size: var(--text-lg);
   font-weight: 500;
 }
 .conversion-help {
   border-top: 1px solid var(--line);
   font-size: var(--text-md);
-}
-.conversion-focus .conversion-help {
-  border-color: var(--media-line);
 }
 .conversion-help > summary {
   min-height: var(--control-height);
@@ -234,11 +213,7 @@
   font-size: var(--text-md);
   overflow-wrap: anywhere;
 }
-.conversion-focus :is(.setup-ready, .setup-steps, .setup-body a) {
-  color: var(--navigation-muted);
-}
 .conversion-focus :is(a, summary):focus-visible {
-  outline-color: var(--navigation-muted);
   outline-offset: -3px;
 }
 .conversions-layout .setup-body a {
@@ -267,6 +242,28 @@
   overflow-wrap: anywhere;
 }
 
+.side-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 16px;
+}
+.side-item-actions .side-item-log-btn,
+.side-item-requeue {
+  padding-left: 0;
+}
+.side-item-status {
+  min-height: var(--control-height);
+  display: inline-flex;
+  align-items: center;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+.side-item-error {
+  flex-basis: 100%;
+  font-size: var(--text-sm);
+}
+
 /* Input form */
 .conversion-input {
   overflow: visible;
@@ -293,24 +290,87 @@
   opacity: 0.7;
 }
 .conversion-source {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
 }
-.conversion-source .secondary-button[aria-pressed="true"] {
+.conversion-source__option {
+  min-width: 0;
+  min-height: 72px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-tile);
+  color: var(--ink);
+  background: var(--accent-wash);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+.conversion-source__option > .icon {
+  color: var(--accent);
+}
+.conversion-source__option > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.conversion-source__option strong {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.conversion-source__option small {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+.conversion-source__option:hover {
   border-color: var(--accent);
-  color: var(--accent-ink);
-  background: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--card));
 }
-.conversion-source .secondary-button[aria-pressed="true"]:hover {
-  border-color: var(--accent-strong);
-  background: var(--accent-strong);
+.conversion-source__file:focus-visible + .conversion-source__option {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.conversion-selected {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--paper);
+}
+.conversion-selected > .icon {
+  margin-top: 1px;
+  color: var(--ink-soft);
+}
+.conversion-selected__copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.conversion-selected__copy strong {
+  font-size: var(--text-md);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.conversion-selected__copy small {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
 }
 .conversion-input .secondary-button {
   flex: none;
   white-space: nowrap;
 }
-.conversion-input :is(input:not([type="checkbox"]), select) {
+.conversion-input :is(input:not([type="checkbox"], [type="file"]), select) {
   width: 100%;
   min-width: 0;
   max-width: 100%;
@@ -322,10 +382,6 @@
   background: var(--card);
   font: inherit;
   font-size: var(--text-md);
-}
-.conversion-input input[type="file"] {
-  padding-block: 8px;
-  overflow: hidden;
 }
 .conversion-input :is(input, select):focus-visible {
   border-color: var(--accent);
@@ -351,10 +407,6 @@
   color: var(--ink-soft);
   font-size: var(--text-sm);
   overflow-wrap: anywhere;
-}
-.conversion-path-control {
-  display: flex;
-  gap: 8px;
 }
 .conversion-advanced > summary,
 .conversion-submissions > summary {
@@ -386,33 +438,57 @@
   justify-self: start;
   white-space: nowrap;
 }
-.conversion-browser {
+/* Server file dialog */
+.server-file-dialog {
+  width: min(100%, 640px);
+}
+.server-file-dialog__body {
   display: grid;
-  gap: 8px;
-  padding-block: 12px;
-}
-.conversion-browser__location {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-content: start;
   gap: 12px;
-  font-size: var(--text-sm);
 }
-.conversion-browser__location span {
+.server-file-dialog__place {
+  display: flex;
+  gap: 8px;
+}
+.server-file-dialog :is(select, input) {
+  flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--ink-soft);
-  font-family: var(--font-mono);
+  min-height: var(--control-height);
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  color: var(--ink);
+  background: var(--card);
+  font: inherit;
+  font-size: var(--text-md);
 }
-.conversion-browser ul {
-  max-height: 260px;
+.server-file-dialog :is(select, input):focus-visible {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-wash);
+}
+.server-file-dialog .secondary-button {
+  flex: none;
+  white-space: nowrap;
+}
+.server-file-dialog__location {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.server-file-dialog__list {
+  min-height: 0;
+  max-height: min(360px, 45vh);
   overflow-y: auto;
   margin: 0;
   padding: 0;
   list-style: none;
   border-block: 1px solid var(--line);
 }
-.conversion-browser__entry {
+.server-file-dialog__entry {
   width: 100%;
   min-height: var(--control-height);
   display: flex;
@@ -429,13 +505,31 @@
   text-align: left;
   overflow-wrap: anywhere;
 }
-.conversion-browser__entry:hover {
-  background: var(--paper-deep);
+.server-file-dialog__entry .icon {
+  flex: none;
+  color: var(--ink-soft);
 }
-.conversion-browser p {
+.server-file-dialog__entry:hover {
+  background: var(--accent-wash);
+}
+.server-file-dialog__entry:focus-visible {
+  outline-offset: -2px;
+}
+.server-file-dialog__note {
   margin: 0;
   color: var(--ink-soft);
   font-size: var(--text-sm);
+}
+.server-file-dialog__manual > summary {
+  min-height: var(--control-height);
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  font-size: var(--text-md);
+}
+.server-file-dialog__manual-form {
+  display: flex;
+  gap: 8px;
 }
 .conversion-input .message.success {
   color: var(--ink);
@@ -507,7 +601,7 @@
   .conversions-layout .conv-main {
     overflow: visible;
   }
-  .conversion-input :is(input:not([type="checkbox"]), select) {
+  .conversion-input :is(input:not([type="checkbox"], [type="file"]), select) {
     font-size: var(--text-lg);
   }
   .conversion-task-list {

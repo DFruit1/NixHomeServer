@@ -209,6 +209,55 @@ impl Dir {
         }
         result
     }
+    /// Rename `leaf` from `source` into this directory without replacing any
+    /// entry. Both ends are directory descriptors, so neither follows a link.
+    pub fn rename_new(&self, value: &str, source: &Dir, leaf: &str) -> Result<(), String> {
+        let target = name(value)?;
+        let leaf = name(leaf)?;
+        let renamed = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                source.0.as_raw_fd(),
+                leaf.as_ptr(),
+                self.0.as_raw_fd(),
+                target.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if renamed != 0 {
+            let error = std::io::Error::last_os_error();
+            return Err(if error.raw_os_error() == Some(libc::EEXIST) {
+                format!("Cannot move to {value}: a file with that name already exists.")
+            } else {
+                error.to_string()
+            });
+        }
+        self.0.sync_all().map_err(|e| e.to_string())?;
+        source.0.sync_all().map_err(|e| e.to_string())
+    }
+    /// Unlink `value` only while it is still the file that was opened as `file`
+    /// and has not changed since, so a replacement is never deleted.
+    pub fn remove_same(&self, value: &str, file: &File) -> Result<(), String> {
+        let opened = file.metadata().map_err(|e| e.to_string())?;
+        let current = self.file(value)?.metadata().map_err(|e| e.to_string())?;
+        if (
+            opened.dev(),
+            opened.ino(),
+            opened.len(),
+            opened.mtime(),
+            opened.mtime_nsec(),
+        ) != (
+            current.dev(),
+            current.ino(),
+            current.len(),
+            current.mtime(),
+            current.mtime_nsec(),
+        ) {
+            return Err("The original changed after it was copied, so it was kept.".into());
+        }
+        self.remove(value)?;
+        self.0.sync_all().map_err(|e| e.to_string())
+    }
     pub fn remove(&self, value: &str) -> Result<(), String> {
         let value = name(value)?;
         if unsafe { libc::unlinkat(self.0.as_raw_fd(), value.as_ptr(), 0) } != 0 {

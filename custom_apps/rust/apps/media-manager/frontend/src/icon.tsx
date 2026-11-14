@@ -48,6 +48,11 @@ export const Icon = component$<{ name: IconName; size?: number }>((props) => {
     ],
     folder: ["M3 6h7l2 2h9v11H3z"],
     file: ["M6 2h8l4 4v16H6z", "M14 2v5h5"],
+    upload: [
+      "M12 15V4",
+      "m7 9 5-5 5 5",
+      "M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4",
+    ],
     check: ["m5 12 4 4L19 6"],
     grid: ["M4 4h6v6H4z", "M14 4h6v6h-6z", "M4 14h6v6H4z", "M14 14h6v6h-6z"],
     list: [

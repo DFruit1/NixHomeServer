@@ -1,5 +1,7 @@
 //! Durable bridge from the web's staging area to the existing watched inboxes.
-//! Only the filesystem broker writes libraries; server originals are never moved.
+//! Only the filesystem broker writes libraries. Transcription inputs are copied
+//! and their originals kept; a DVD ISO chosen on the server moves into the DVD
+//! inbox, which is how archived discs are reprocessed (owner request, 2026-11-15).
 use crate::{
     config::{AppConfig, Identity},
     media::LibraryCategory,
@@ -7,7 +9,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
@@ -117,6 +119,87 @@ pub fn validate_folder(folder: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Input root holding the converter's inbox and its archive folders.
+pub const DVD_INBOX_ROOT: &str = "dvd-inbox";
+const DVD_ARCHIVES: [&str; 3] = ["_Processed", "_Failed", "_Duplicate"];
+
+/// Folders a user may pick conversion inputs from. The broker recomputes the
+/// same list for the job owner, so a stored root id never widens access.
+pub fn source_roots(config: &AppConfig, identity: &Identity) -> Vec<Value> {
+    let mut roots: Vec<Value> = config
+        .visible_roots(identity)
+        .into_iter()
+        .filter(|r| r.available && r.category != LibraryCategory::Books)
+        .map(|r| json!({"id":r.id,"label":r.label,"path":r.resolved_path,"category":r.category}))
+        .collect();
+    if config.dvd_inbox_path().is_dir() {
+        roots.push(json!({"id":DVD_INBOX_ROOT,"label":"Shared DVD inbox","path":config.dvd_inbox_path(),"category":"iso"}));
+    }
+    let transcribe = config
+        .users_root
+        .join(&identity.username)
+        .join("_Transcribe");
+    if transcribe.is_dir() {
+        roots.push(json!({"id":"transcription-inbox","label":"My transcription inbox","path":transcribe,"category":"transcription"}));
+    }
+    roots
+}
+
+/// A server file named by its input root and a contained relative path.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceFile {
+    pub root_id: String,
+    pub relative_path: String,
+}
+impl SourceFile {
+    pub fn locate(config: &AppConfig, identity: &Identity, path: &str) -> Result<Self, String> {
+        let path = Path::new(path);
+        for root in source_roots(config, identity) {
+            let base = Path::new(root["path"].as_str().ok_or("Invalid root")?);
+            if let Ok(relative) = path.strip_prefix(base) {
+                let relative = relative.to_str().ok_or("Invalid file path")?;
+                if relative.is_empty() || validate_folder(relative).is_err() {
+                    return Err("Choose a file inside one of the listed folders.".into());
+                }
+                return Ok(Self {
+                    root_id: root["id"].as_str().unwrap_or_default().into(),
+                    relative_path: relative.into(),
+                });
+            }
+        }
+        Err("Choose a file in a listed shared library, your own library, or an input inbox.".into())
+    }
+    /// Whether this file is already waiting at the top of the DVD inbox.
+    pub fn in_dvd_queue(&self) -> bool {
+        self.root_id == DVD_INBOX_ROOT && !self.relative_path.contains('/')
+    }
+    /// Open the parent directory and file without following any link.
+    pub fn open(
+        &self,
+        config: &AppConfig,
+        identity: &Identity,
+    ) -> Result<(Dir, String, std::fs::File), String> {
+        let root = source_roots(config, identity)
+            .into_iter()
+            .find(|r| r["id"] == self.root_id.as_str())
+            .ok_or("The source folder is no longer available.")?;
+        validate_folder(&self.relative_path)?;
+        let (folder, leaf) = self
+            .relative_path
+            .rsplit_once('/')
+            .unwrap_or(("", &self.relative_path));
+        let mut dir = Dir::open(Path::new(root["path"].as_str().ok_or("Invalid root")?))?;
+        for part in folder.split('/').filter(|p| !p.is_empty()) {
+            dir = dir.child(part)?;
+        }
+        let file = dir
+            .file(leaf)
+            .map_err(|_| format!("{leaf} is no longer in that folder."))?;
+        Ok((dir, leaf.into(), file))
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Job {
@@ -129,6 +212,9 @@ pub struct Job {
     pub error: Option<String>,
     pub saved_path: Option<String>,
     pub transcript_id: Option<String>,
+    /// Set when a DVD ISO moves from the server instead of a staged copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceFile>,
 }
 impl Job {
     pub fn new(owner: String, options: Options) -> Self {
@@ -166,6 +252,7 @@ impl Job {
             error: None,
             saved_path: None,
             transcript_id,
+            source: None,
         }
     }
     pub fn view(&self) -> Value {
@@ -211,6 +298,36 @@ pub fn jobs(config: &AppConfig, username: &str) -> Result<Vec<Job>, String> {
     }
     jobs.sort_by_key(|j| std::cmp::Reverse(j.created_at));
     Ok(jobs)
+}
+/// The converter and job tracking identify discs by file name, so a new ISO
+/// may not share a name with any queued or archived disc other than itself.
+pub fn check_dvd_name(
+    config: &AppConfig,
+    inbox_name: &str,
+    source: Option<&SourceFile>,
+) -> Result<(), String> {
+    let dir = Dir::open(&config.dvd_inbox_path())
+        .map_err(|_| "The DVD converter inbox is unavailable.")?;
+    for archive in std::iter::once("").chain(DVD_ARCHIVES) {
+        let location = if archive.is_empty() {
+            Dir(dir.0.try_clone().map_err(|e| e.to_string())?)
+        } else {
+            match dir.child(archive) {
+                Ok(location) => location,
+                Err(_) => continue,
+            }
+        };
+        let clash = location.names()?.into_iter().any(|n| {
+            n.eq_ignore_ascii_case(inbox_name)
+                && !source.is_some_and(|s| {
+                    s.root_id == DVD_INBOX_ROOT && s.relative_path == format!("{archive}/{n}")
+                })
+        });
+        if clash {
+            return Err("An ISO with that name already exists in the DVD inbox or archive. Rename your source before submitting it again.".into());
+        }
+    }
+    Ok(())
 }
 fn inbox(config: &AppConfig, job: &Job) -> Result<Dir, String> {
     if job.options.kind == "iso" {
@@ -280,20 +397,7 @@ fn advance(config: &AppConfig, job: &mut Job) -> Result<(), String> {
         job.options.validate(config, &identity)?;
         let dir = inbox(config, job)?;
         if job.options.kind == "iso" {
-            for archive in ["", "_Processed", "_Failed", "_Duplicate"] {
-                let location = if archive.is_empty() {
-                    Dir(dir.0.try_clone().map_err(|e| e.to_string())?)
-                } else {
-                    dir.child(archive)?
-                };
-                if location
-                    .names()?
-                    .iter()
-                    .any(|n| n.eq_ignore_ascii_case(&job.inbox_name))
-                {
-                    return Err("An ISO with that name already exists in the DVD inbox or archive. Rename your source before submitting it again.".into());
-                }
-            }
+            check_dvd_name(config, &job.inbox_name, job.source.as_ref())?;
         }
         job.state = "submitting".into();
         job.save(config)?;
@@ -306,18 +410,46 @@ fn advance(config: &AppConfig, job: &mut Job) -> Result<(), String> {
                 &serde_json::to_vec(&job.options.request()).map_err(|e| e.to_string())?,
             )?;
         }
-        let source = staging_dir(config, &job.owner)?.file(&format!("{}.source", job.id))?;
-        dir.copy_new(&job.inbox_name, source)?;
-        job.state = "processing".into();
-        job.save(config)?;
-        // The inbox now owns the durable copy. Only our staging copy is removed.
-        let _ = staging_dir(config, &job.owner)?.remove(&format!("{}.source", job.id));
+        if let Some(source) = job.source.clone() {
+            let (parent, leaf, file) = source.open(config, &identity)?;
+            if source.root_id == DVD_INBOX_ROOT {
+                // Archived discs already carry the converter's permissions.
+                drop(file);
+                dir.rename_new(&job.inbox_name, &parent, &leaf)?;
+            } else {
+                // A fresh copy inherits the inbox ACLs that the converter needs;
+                // a rename would keep the library's. Then drop the original.
+                dir.copy_new(
+                    &job.inbox_name,
+                    file.try_clone().map_err(|e| e.to_string())?,
+                )?;
+                if let Err(error) = parent.remove_same(&leaf, &file) {
+                    job.error = Some(format!(
+                        "The ISO was queued, but the original could not be removed: {error}"
+                    ));
+                }
+            }
+            job.state = "processing".into();
+            job.save(config)?;
+        } else {
+            let source = staging_dir(config, &job.owner)?.file(&format!("{}.source", job.id))?;
+            dir.copy_new(&job.inbox_name, source)?;
+            job.state = "processing".into();
+            job.save(config)?;
+            // The inbox now owns the durable copy. Only our staging copy is removed.
+            let _ = staging_dir(config, &job.owner)?.remove(&format!("{}.source", job.id));
+        }
     }
     if job.state != "processing" {
         return Ok(());
     }
     let dir = inbox(config, job)?;
     let source = if job.options.kind == "iso" {
+        // Still queued or converting. Checked first so results left by an
+        // earlier run of a reprocessed disc are not mistaken for this one.
+        if dir.file(&job.inbox_name).is_ok() {
+            return Ok(());
+        }
         if dir
             .child("_Failed")
             .and_then(|d| d.file(&job.inbox_name))
@@ -442,5 +574,78 @@ mod safety_tests {
             .unwrap()
             .iter()
             .any(|n| n.starts_with(".media-copy-")));
+    }
+
+    // Queuing a server ISO now removes or renames the original. It must never
+    // replace an existing disc, and a library original goes only after its
+    // copy is published in the inbox.
+    #[test]
+    fn dvd_moves_never_replace_and_remove_originals_only_after_copying() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared = temp.path().join("shared");
+        let inbox = shared.join("_ISO/_DVDs");
+        std::fs::create_dir_all(inbox.join("_Processed")).unwrap();
+        std::fs::create_dir_all(shared.join("_Videos")).unwrap();
+        std::fs::create_dir_all(temp.path().join("state")).unwrap();
+        std::fs::write(inbox.join("_Processed/Old.iso"), b"archived disc").unwrap();
+        std::fs::write(shared.join("_Videos/New.iso"), b"library disc").unwrap();
+        std::fs::write(shared.join("_Videos/Taken.iso"), b"second disc").unwrap();
+        std::fs::write(inbox.join("Taken.iso"), b"queued disc").unwrap();
+        let mut config = AppConfig::for_test(
+            shared.to_str().unwrap(),
+            temp.path().join("users").to_str().unwrap(),
+        );
+        config.state_dir = temp.path().join("state");
+        config.mutation_mode = crate::config::MutationMode::Enabled;
+        let alice = Identity::try_new("alice", ["users"]).unwrap();
+        let queue = |path: std::path::PathBuf, created_at| {
+            let source = SourceFile::locate(&config, &alice, path.to_str().unwrap()).unwrap();
+            let name = path.file_name().unwrap().to_str().unwrap();
+            let options: Options = serde_json::from_value(
+                json!({"name":name,"kind":"iso","language":null,"storageRootId":null}),
+            )
+            .unwrap();
+            let mut job = Job::new("alice".into(), options);
+            job.created_at = created_at;
+            job.source = Some(source);
+            job.save(&config).unwrap();
+            job.id
+        };
+        // The archived disc may return to the inbox under its own name.
+        assert!(check_dvd_name(&config, "Old.iso", None).is_err());
+        let old = queue(inbox.join("_Processed/Old.iso"), 1);
+        let new = queue(shared.join("_Videos/New.iso"), 2);
+        let taken = queue(shared.join("_Videos/Taken.iso"), 3);
+        for _ in 0..3 {
+            reconcile(&config).unwrap();
+        }
+        let state = |id: &str| {
+            jobs(&config, "alice")
+                .unwrap()
+                .into_iter()
+                .find(|j| j.id == id)
+                .unwrap()
+        };
+        assert_eq!(
+            std::fs::read(inbox.join("Old.iso")).unwrap(),
+            b"archived disc"
+        );
+        assert!(!inbox.join("_Processed/Old.iso").exists());
+        assert_eq!(state(&old).state, "processing");
+        assert_eq!(
+            std::fs::read(inbox.join("New.iso")).unwrap(),
+            b"library disc"
+        );
+        assert!(!shared.join("_Videos/New.iso").exists());
+        assert_eq!(state(&new).state, "processing");
+        assert_eq!(state(&taken).state, "failed");
+        assert_eq!(
+            std::fs::read(inbox.join("Taken.iso")).unwrap(),
+            b"queued disc"
+        );
+        assert_eq!(
+            std::fs::read(shared.join("_Videos/Taken.iso")).unwrap(),
+            b"second disc"
+        );
     }
 }

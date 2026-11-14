@@ -3,6 +3,7 @@ import {
   useSignal,
   useStore,
   useTask$,
+  useVisibleTask$,
   $,
   type QRL,
 } from "@builder.io/qwik";
@@ -14,6 +15,7 @@ import type {
   ConversionFiles,
   ConversionInputOptions,
 } from "./api-contract.generated";
+import { Icon } from "./icon";
 
 export type ConversionTask = "dvd" | "transcribe" | "subtitles";
 
@@ -24,7 +26,9 @@ const taskCopy: Record<
   ConversionTask,
   {
     heading: string;
+    browseHeading: string;
     placeholder: string;
+    serverNote: string;
     submit: string;
     accept: string;
     nextStep: string;
@@ -33,7 +37,9 @@ const taskCopy: Record<
 > = {
   dvd: {
     heading: "Choose a DVD image",
+    browseHeading: "Choose a DVD image on the server",
     placeholder: "Full path to a .iso file",
+    serverNote: "Moves into the shared DVD inbox for conversion.",
     submit: "Start conversion",
     accept: ".iso",
     nextStep: "The converted video will appear in the shared video library.",
@@ -41,7 +47,9 @@ const taskCopy: Record<
   },
   transcribe: {
     heading: "Choose audio or video",
+    browseHeading: "Choose audio or video on the server",
     placeholder: "Full path to an audio or video file",
+    serverNote: "Your original stays in place.",
     submit: "Generate transcript",
     accept: "audio/*,video/*,.mkv,.m4b,.flac,.opus,.wma,.aiff,.ts",
     nextStep: "Text, SRT and VTT files will appear under Completed.",
@@ -49,7 +57,9 @@ const taskCopy: Record<
   },
   subtitles: {
     heading: "Choose a video",
+    browseHeading: "Choose a video in your library",
     placeholder: "Full path to a video in your library",
+    serverNote: "Your original stays in place.",
     submit: "Generate subtitles",
     accept: "",
     nextStep:
@@ -76,6 +86,201 @@ const jobStateLabels: Record<ConversionInputJob["state"], string> = {
   failed: "Needs attention",
 };
 
+/** Modal folder browser for picking one server file for the chosen task. */
+const ServerFileDialog = component$<{
+  task: ConversionTask;
+  roots: ConversionInputs["roots"];
+  initialRootId: string;
+  onChoose$: QRL<(path: string) => void>;
+  onClose$: QRL<() => void>;
+}>((props) => {
+  const view = useStore({
+    rootId: props.initialRootId,
+    folder: "",
+    loading: false,
+    error: "",
+    manualPath: "",
+  });
+  const listing = useSignal<ConversionFiles>();
+  const firstControl = useSignal<HTMLSelectElement>();
+  const copy = taskCopy[props.task];
+  useVisibleTask$(() => {
+    firstControl.value?.focus();
+  });
+  useTask$(({ track, cleanup }) => {
+    const rootId = track(() => view.rootId);
+    const path = track(() => view.folder);
+    let stopped = false;
+    cleanup(() => {
+      stopped = true;
+    });
+    if (!rootId) return;
+    view.loading = true;
+    view.error = "";
+    listing.value = undefined;
+    void api<ConversionFiles>(
+      `/conversions/files?${new URLSearchParams({ rootId, path })}`,
+    )
+      .then((result) => {
+        if (!stopped) listing.value = result;
+      })
+      .catch((error) => {
+        if (!stopped) view.error = readableError(error);
+      })
+      .finally(() => {
+        if (!stopped) view.loading = false;
+      });
+  });
+  const entries = (listing.value?.entries ?? []).filter((entry) =>
+    entryFits(props.task, entry.name, entry.directory),
+  );
+  const root = props.roots.find((r) => r.id === view.rootId);
+  return (
+    <div class="dialog-backdrop" onClick$={props.onClose$}>
+      <div
+        class="dialog server-file-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="server-file-dialog-heading"
+        onClick$={(event) => event.stopPropagation()}
+        onKeyDown$={(event) => {
+          if (event.key === "Escape") props.onClose$();
+        }}
+      >
+        <div class="dialog-header">
+          <h3 id="server-file-dialog-heading">{copy.browseHeading}</h3>
+          <button
+            type="button"
+            class="dialog-close"
+            aria-label="Close"
+            onClick$={props.onClose$}
+          >
+            ×
+          </button>
+        </div>
+        <div class="dialog-body server-file-dialog__body">
+          <div class="server-file-dialog__place">
+            <label class="sr-only" for="server-file-root">
+              Folder
+            </label>
+            <select
+              ref={firstControl}
+              id="server-file-root"
+              value={view.rootId}
+              onChange$={(_, el) => {
+                view.rootId = el.value;
+                view.folder = "";
+              }}
+            >
+              {props.roots.map((r) => (
+                <option value={r.id} key={r.id}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              class="secondary-button"
+              disabled={!view.folder}
+              onClick$={() => {
+                view.folder = view.folder.split("/").slice(0, -1).join("/");
+              }}
+            >
+              Up one folder
+            </button>
+          </div>
+          <p class="server-file-dialog__location">
+            {root?.label}
+            {view.folder ? ` / ${view.folder.split("/").join(" / ")}` : ""}
+          </p>
+          {view.error && (
+            <p class="message error" role="alert">
+              {view.error}
+            </p>
+          )}
+          {view.loading ? (
+            <p class="server-file-dialog__note" role="status">
+              Loading files…
+            </p>
+          ) : listing.value && entries.length === 0 ? (
+            <p class="server-file-dialog__note">
+              No matching files or subfolders.
+            </p>
+          ) : (
+            <ul class="server-file-dialog__list" aria-label="Server files">
+              {entries.map((entry) => (
+                <li key={entry.name}>
+                  <button
+                    type="button"
+                    class="server-file-dialog__entry"
+                    onClick$={async () => {
+                      if (entry.directory) {
+                        view.folder = [view.folder, entry.name]
+                          .filter(Boolean)
+                          .join("/");
+                        return;
+                      }
+                      await props.onChoose$(
+                        [root?.path, view.folder, entry.name]
+                          .filter(Boolean)
+                          .join("/"),
+                      );
+                    }}
+                  >
+                    <Icon
+                      name={entry.directory ? "folder" : "file"}
+                      size={18}
+                    />
+                    <span>{entry.name}</span>
+                    {entry.directory && <span class="sr-only"> (folder)</span>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {listing.value?.truncated && (
+            <p class="server-file-dialog__note">
+              Showing the first 200 entries. Enter a full path below to choose
+              another file.
+            </p>
+          )}
+          <details class="server-file-dialog__manual">
+            <summary>Enter a full path instead</summary>
+            <form
+              class="server-file-dialog__manual-form"
+              preventdefault:submit
+              onSubmit$={async () => {
+                const path = view.manualPath.trim();
+                if (!path.startsWith("/")) {
+                  view.error = "Enter the full path, starting with /.";
+                  return;
+                }
+                await props.onChoose$(path);
+              }}
+            >
+              <label class="sr-only" for="server-file-manual">
+                Full server path
+              </label>
+              <input
+                id="server-file-manual"
+                type="text"
+                value={view.manualPath}
+                placeholder={copy.placeholder}
+                onInput$={(_, el) => {
+                  view.manualPath = el.value;
+                }}
+              />
+              <button type="submit" class="secondary-button">
+                Use path
+              </button>
+            </form>
+          </details>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 export const ConversionInput = component$<{
   task: ConversionTask;
   inputs?: ConversionInputs;
@@ -85,69 +290,42 @@ export const ConversionInput = component$<{
   onTask$: QRL<(task: ConversionTask) => void>;
 }>((props) => {
   const form = useStore({
-    source: "server",
+    source: "" as "" | "server" | "upload",
     path: "",
     backend: "parakeet",
     diarize: false,
     language: "",
     storageRootId: "",
     storageFolder: "",
-    rootId: "",
-    folder: "",
     browsing: false,
-    browseLoading: false,
-    browseError: "",
     busy: false,
     message: "",
     lastJobId: "",
     error: "",
   });
   const fileInput = useSignal<HTMLInputElement>();
-  const serverPathInput = useSignal<HTMLInputElement>();
+  const serverButton = useSignal<HTMLButtonElement>();
   const fileName = useSignal("");
-  const listing = useSignal<ConversionFiles>();
   const resetFeedback = $(() => {
     form.message = "";
     form.lastJobId = "";
     form.error = "";
   });
-  // A new task starts its browser at that task's folder; the chosen path is
-  // kept so a misplaced file can move to the matching task.
+  // The chosen file is kept across tasks so a misplaced file can move to the
+  // matching task; subtitles take library videos only, never uploads.
   useTask$(({ track }) => {
     const task = track(() => props.task);
     form.browsing = false;
-    form.rootId = "";
-    form.folder = "";
     form.error = "";
     if (task === "subtitles" && form.source === "upload") {
-      form.source = "server";
+      form.source = "";
       fileName.value = "";
+      if (fileInput.value) fileInput.value.value = "";
     }
   });
-  useTask$(({ track, cleanup }) => {
-    const browsing = track(() => form.browsing);
-    const rootId = track(() => form.rootId);
-    const path = track(() => form.folder);
-    let stopped = false;
-    cleanup(() => {
-      stopped = true;
-    });
-    if (!browsing || !rootId) return;
-    form.browseLoading = true;
-    form.browseError = "";
-    listing.value = undefined;
-    void api<ConversionFiles>(
-      `/conversions/files?${new URLSearchParams({ rootId, path })}`,
-    )
-      .then((result) => {
-        if (!stopped) listing.value = result;
-      })
-      .catch((error) => {
-        if (!stopped) form.browseError = readableError(error);
-      })
-      .finally(() => {
-        if (!stopped) form.browseLoading = false;
-      });
+  const closeBrowser = $(() => {
+    form.browsing = false;
+    serverButton.value?.focus();
   });
   const submittedJob = props.inputs?.jobs.find(
     (job) => job.id === form.lastJobId,
@@ -155,7 +333,9 @@ export const ConversionInput = component$<{
   const selectedName =
     form.source === "upload"
       ? fileName.value
-      : (form.path.trim().split("/").at(-1) ?? "");
+      : form.source === "server"
+        ? (form.path.trim().split("/").at(-1) ?? "")
+        : "";
   const copy = taskCopy[props.task];
   const kind = props.task === "dvd" ? "iso" : "transcription";
   const selectedIso = ISO_FILE.test(selectedName);
@@ -174,9 +354,6 @@ export const ConversionInput = component$<{
     )?.id ??
     browseRoots[0]?.id ??
     "";
-  const entries = (listing.value?.entries ?? []).filter((entry) =>
-    entryFits(props.task, entry.name, entry.directory),
-  );
   const storageRoots = (props.inputs?.roots ?? []).filter((root) =>
     video
       ? root.category === "videos"
@@ -224,7 +401,7 @@ export const ConversionInput = component$<{
               !name ||
               (form.source === "server" && !form.path.trim().startsWith("/"))
             ) {
-              form.error = "Select a file or enter its full server path.";
+              form.error = "Choose a file from the server or upload one.";
               return;
             }
             if (
@@ -288,6 +465,8 @@ export const ConversionInput = component$<{
               form.message = `${name} is queued. ${copy.nextStep}`;
               if (fileInput.value) fileInput.value.value = "";
               fileName.value = "";
+              form.source = "";
+              form.path = "";
               form.storageRootId = "";
               form.storageFolder = "";
             } catch (error) {
@@ -299,193 +478,73 @@ export const ConversionInput = component$<{
         >
           <fieldset disabled={form.busy} class="conversion-input__fields">
             <legend class="sr-only">File and processing options</legend>
-            {props.task === "subtitles" ? null : (
-              <div
-                class="conversion-source"
-                role="group"
-                aria-label="File location"
+            <div
+              class="conversion-source"
+              role="group"
+              aria-label="Choose a file"
+            >
+              <button
+                ref={serverButton}
+                type="button"
+                class="conversion-source__option"
+                aria-haspopup="dialog"
+                onClick$={() => {
+                  form.browsing = true;
+                }}
               >
-                <button
-                  type="button"
-                  class="secondary-button"
-                  aria-pressed={form.source === "server"}
-                  onClick$={async () => {
-                    form.source = "server";
-                    form.storageRootId = "";
-                    form.storageFolder = "";
-                    fileName.value = "";
-                    // Opening the folder browser makes the choice actionable:
-                    // server mode is already the default, so toggling only the
-                    // source would otherwise leave the button doing nothing.
-                    form.browsing = !form.browsing;
-                    if (form.browsing && !form.rootId)
-                      form.rootId = defaultRootId;
-                    await resetFeedback();
-                  }}
-                >
-                  Server file
-                </button>
-                <button
-                  type="button"
-                  class="secondary-button"
-                  aria-pressed={form.source === "upload"}
-                  onClick$={async () => {
-                    form.source = "upload";
-                    form.storageRootId = "";
-                    form.storageFolder = "";
-                    form.browsing = false;
-                    await resetFeedback();
-                  }}
-                >
-                  Upload file
-                </button>
-              </div>
-            )}
-            {form.source === "server" ? (
-              <div class="conversion-field">
-                <label for="conversion-server-path">Server file path</label>
-                <div class="conversion-path-control">
+                <Icon name="folder" size={22} />
+                <span>
+                  <strong>
+                    {props.task === "subtitles"
+                      ? "Choose from library"
+                      : "Choose from server"}
+                  </strong>
+                  <small>Browse the server's folders</small>
+                </span>
+              </button>
+              {props.task !== "subtitles" && (
+                <>
                   <input
-                    ref={serverPathInput}
-                    id="conversion-server-path"
-                    aria-describedby="conversion-server-note"
-                    type="text"
-                    required
-                    value={form.path}
-                    placeholder={copy.placeholder}
-                    onInput$={async (_, el) => {
-                      form.path = el.value;
+                    ref={fileInput}
+                    id="conversion-upload"
+                    class="sr-only conversion-source__file"
+                    type="file"
+                    accept={copy.accept}
+                    onChange$={async (_, el) => {
+                      const name = el.files?.[0]?.name ?? "";
+                      if (!name) return;
+                      form.source = "upload";
+                      fileName.value = name;
+                      form.storageRootId = "";
+                      form.storageFolder = "";
                       await resetFeedback();
                     }}
                   />
-                  <button
-                    type="button"
-                    class="secondary-button"
-                    aria-expanded={form.browsing}
-                    aria-controls="conversion-browser"
-                    onClick$={() => {
-                      form.browsing = !form.browsing;
-                      if (!form.rootId) form.rootId = defaultRootId;
-                    }}
+                  <label
+                    for="conversion-upload"
+                    class="conversion-source__option"
                   >
-                    Browse
-                  </button>
-                </div>
-                <small id="conversion-server-note">
-                  Your original stays in place.
-                </small>
-                {form.browsing && (
-                  <div id="conversion-browser" class="conversion-browser">
-                    <label for="conversion-source-root">Folder</label>
-                    <select
-                      id="conversion-source-root"
-                      value={form.rootId}
-                      onChange$={(_, el) => {
-                        form.rootId = el.value;
-                        form.folder = "";
-                      }}
-                    >
-                      {browseRoots.map((root) => (
-                        <option value={root.id} key={root.id}>
-                          {root.label}
-                        </option>
-                      ))}
-                    </select>
-                    <div class="conversion-browser__location">
-                      <span>{form.folder || "/"}</span>
-                      <button
-                        type="button"
-                        class="secondary-button"
-                        disabled={!form.folder}
-                        onClick$={() => {
-                          form.folder = form.folder
-                            .split("/")
-                            .slice(0, -1)
-                            .join("/");
-                        }}
-                      >
-                        Up one folder
-                      </button>
-                    </div>
-                    {form.browseError && (
-                      <p class="message error" role="alert">
-                        {form.browseError}
-                      </p>
-                    )}
-                    {form.browseLoading ? (
-                      <p role="status">Loading files…</p>
-                    ) : (
-                      <ul aria-label="Server files">
-                        {entries.map((entry) => (
-                          <li key={entry.name}>
-                            <button
-                              type="button"
-                              class="conversion-browser__entry"
-                              onClick$={async () => {
-                                if (entry.directory) {
-                                  form.folder = [form.folder, entry.name]
-                                    .filter(Boolean)
-                                    .join("/");
-                                  return;
-                                }
-                                const root = props.inputs?.roots.find(
-                                  (r) => r.id === form.rootId,
-                                );
-                                form.path = [
-                                  root?.path,
-                                  form.folder,
-                                  entry.name,
-                                ]
-                                  .filter(Boolean)
-                                  .join("/");
-                                await resetFeedback();
-                                form.browsing = false;
-                                serverPathInput.value?.focus();
-                              }}
-                            >
-                              <span aria-hidden="true">
-                                {entry.directory ? "▸" : "·"}
-                              </span>
-                              {entry.name}
-                              {entry.directory && (
-                                <span class="sr-only"> (folder)</span>
-                              )}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {listing.value && entries.length === 0 && (
-                      <p>No matching files or subfolders.</p>
-                    )}
-                    {listing.value?.truncated && (
-                      <p>
-                        Showing the first 200 entries. Enter a full file path to
-                        select another file.
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div class="conversion-field">
-                <label for="conversion-upload">File to upload</label>
-                <input
-                  ref={fileInput}
-                  id="conversion-upload"
-                  type="file"
-                  required
-                  accept={copy.accept}
-                  onChange$={async (_, el) => {
-                    fileName.value = el.files?.[0]?.name ?? "";
-                    form.storageRootId = "";
-                    form.storageFolder = "";
-                    await resetFeedback();
-                  }}
-                />
-                <small>
-                  Up to 64 GiB. Keep this page open until the upload finishes.
-                </small>
+                    <Icon name="upload" size={22} />
+                    <span>
+                      <strong>Upload from this device</strong>
+                      <small>Up to 64 GiB</small>
+                    </span>
+                  </label>
+                </>
+              )}
+            </div>
+            {selectedName && (
+              <div class="conversion-selected" aria-live="polite">
+                <Icon name="file" size={18} />
+                <span class="conversion-selected__copy">
+                  <strong>{selectedName}</strong>
+                  {form.source === "server" && <small>{form.path}</small>}
+                  <small>
+                    {form.source === "upload"
+                      ? "Keep this page open until the upload finishes."
+                      : copy.serverNote}
+                  </small>
+                </span>
               </div>
             )}
             {wrongFile && (
@@ -555,8 +614,8 @@ export const ConversionInput = component$<{
               </details>
             ) : (
               <p class="quiet-copy">
-                Converted videos appear in the shared video library. The source
-                ISO is retained in the shared DVD archive.
+                Converted videos appear in the shared video library. The ISO is
+                then kept in the shared DVD archive.
               </p>
             )}
             {props.task === "subtitles" && (
@@ -614,7 +673,9 @@ export const ConversionInput = component$<{
               {form.busy
                 ? form.source === "upload"
                   ? "Uploading…"
-                  : "Copying server file…"
+                  : kind === "iso"
+                    ? "Queuing…"
+                    : "Copying server file…"
                 : copy.submit}
             </button>
           </fieldset>
@@ -623,7 +684,7 @@ export const ConversionInput = component$<{
             aria-live="polite"
             aria-atomic="true"
           >
-            {form.busy && (
+            {form.busy && kind === "transcription" && (
               <p class="quiet-copy">
                 {selectedName} —{" "}
                 {form.source === "upload"
@@ -652,6 +713,24 @@ export const ConversionInput = component$<{
           )}
         </form>
       ) : null}
+      {form.browsing && (
+        <ServerFileDialog
+          task={props.task}
+          roots={browseRoots}
+          initialRootId={defaultRootId}
+          onClose$={closeBrowser}
+          onChoose$={async (path) => {
+            form.source = "server";
+            form.path = path;
+            form.storageRootId = "";
+            form.storageFolder = "";
+            fileName.value = "";
+            if (fileInput.value) fileInput.value.value = "";
+            await resetFeedback();
+            await closeBrowser();
+          }}
+        />
+      )}
     </section>
   );
 });

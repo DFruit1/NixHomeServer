@@ -827,7 +827,7 @@ paths:
               schema: { $ref: "#/components/schemas/ConversionInputs" }
     post:
       operationId: submitServerConversion
-      description: Copies a regular server file from a visible media root into the existing worker inbox. Requires editor access and enabled mutations; leaves the original untouched.
+      description: Queues a regular server file from a visible media root for the existing worker inbox. Transcription inputs are copied and the original kept; a DVD ISO is moved into the DVD inbox by the filesystem broker, which also returns archived discs from _Processed or _Failed for reprocessing. Requires editor access and enabled mutations.
       requestBody:
         required: true
         content:

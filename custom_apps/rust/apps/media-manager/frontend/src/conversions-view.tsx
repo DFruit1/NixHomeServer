@@ -1,4 +1,5 @@
 import {
+  $,
   component$,
   type QRL,
   useSignal,
@@ -15,7 +16,10 @@ import {
   type ConversionTask,
   RecentSubmissions,
 } from "./conversion-input";
-import type { ConversionInputs } from "./api-contract.generated";
+import type {
+  ConversionInputAccepted,
+  ConversionInputs,
+} from "./api-contract.generated";
 import { ComicConversions } from "./comic-conversions";
 import { Icon } from "./icon";
 import type {
@@ -173,6 +177,47 @@ interface QueuedConversion {
   isoName: string;
 }
 
+type DvdArchive = "_Processed" | "_Failed";
+/** Per-disc requeue state, keyed by archive folder and file name. */
+type Requeues = Record<
+  string,
+  { busy?: boolean; queued?: boolean; error?: string }
+>;
+
+const RequeueAction = component$<{
+  iso: InboxIso;
+  archive: DvdArchive;
+  requeues: Requeues;
+  onRequeue$: QRL<(archive: DvdArchive, iso: InboxIso) => void>;
+}>((props) => {
+  const state = props.requeues[`${props.archive}/${props.iso.name}`];
+  if (state?.queued)
+    return <small class="side-item-status">Moved back to the queue</small>;
+  return (
+    <>
+      <button
+        type="button"
+        class="text-button side-item-requeue"
+        disabled={state?.busy}
+        aria-label={`${props.archive === "_Failed" ? "Try again" : "Convert again"}: ${isoTitle(props.iso)}`}
+        onClick$={() => props.onRequeue$(props.archive, props.iso)}
+      >
+        <Icon name="refresh" size={14} />
+        {state?.busy
+          ? "Queuing…"
+          : props.archive === "_Failed"
+            ? "Try again"
+            : "Convert again"}
+      </button>
+      {state?.error && (
+        <p class="message error side-item-error" role="alert">
+          {state.error}
+        </p>
+      )}
+    </>
+  );
+});
+
 const LogDialog = component$<{
   iso: InboxIso;
   onClose$: QRL<() => void>;
@@ -265,6 +310,28 @@ export const ConversionsView = component$<{
   });
   const logDialog = useSignal<string>("");
   const task = useSignal<ConversionsTask | "">("");
+  const requeues = useStore<Requeues>({});
+  // Archived discs move back into the inbox through the same server-file
+  // submission as any other ISO, so the broker applies the same checks.
+  const requeue = $(async (archive: DvdArchive, iso: InboxIso) => {
+    const key = `${archive}/${iso.name}`;
+    const root = conv.inputs?.roots.find((r) => r.id === "dvd-inbox");
+    if (!root || requeues[key]?.busy) return;
+    requeues[key] = { busy: true };
+    try {
+      const result = await api<ConversionInputAccepted>("/conversions/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          serverPath: `${root.path}/${key}`,
+          options: { name: iso.name, kind: "iso" },
+        }),
+      });
+      if (conv.inputs) conv.inputs.jobs = [result.job, ...conv.inputs.jobs];
+      requeues[key] = { queued: true };
+    } catch (error) {
+      requeues[key] = { error: readableError(error) };
+    }
+  });
 
   useTask$(({ cleanup, track }) => {
     const transcribe = track(() => props.transcriptionAvailable);
@@ -382,6 +449,9 @@ export const ConversionsView = component$<{
       task.value === "subtitles" ||
       activeTranscripts.length > 0);
 
+  const canRequeue =
+    !!conv.inputs?.canSubmit &&
+    !!conv.inputs.roots.some((r) => r.id === "dvd-inbox");
   const dvdLink = filesBaseUrl
     ? `${filesBaseUrl}/files/_Shared/_ISO/_DVDs/`
     : "";
@@ -474,7 +544,7 @@ export const ConversionsView = component$<{
           />
         )}
         {showDvd && (
-          <section class="conversion-focus" aria-labelledby="dvd-heading">
+          <section class="panel conversion-focus" aria-labelledby="dvd-heading">
             <header class="panel-heading">
               <h2 id="dvd-heading">DVD conversions</h2>
               <span class="conversion-state">
@@ -590,11 +660,17 @@ export const ConversionsView = component$<{
           isos={inboxProcessed}
           filesBaseUrl={filesBaseUrl}
           transcripts={transcripts.filter((j) => j.state === "completed")}
+          canRequeue={canRequeue}
+          requeues={requeues}
+          onRequeue$={requeue}
         />
         <FailedCard
           isos={inboxFailed}
           onShowLog$={(name) => (logDialog.value = name)}
           transcripts={transcripts.filter((j) => j.state === "failed")}
+          canRequeue={canRequeue}
+          requeues={requeues}
+          onRequeue$={requeue}
         />
       </aside>
     </section>
@@ -605,6 +681,9 @@ const ProcessedCard = component$<{
   isos: InboxIso[];
   filesBaseUrl: string;
   transcripts: TranscriptionJob[];
+  canRequeue: boolean;
+  requeues: Requeues;
+  onRequeue$: QRL<(archive: DvdArchive, iso: InboxIso) => void>;
 }>((props) => (
   <section class="panel side-panel">
     <div class="panel-heading">
@@ -660,22 +739,32 @@ const ProcessedCard = component$<{
                   <small>Finished {finishedAt(iso)}</small>
                 ) : null}
               </span>
-              {iso.outputDir && props.filesBaseUrl ? (
-                <a
-                  class="side-item-link"
-                  href={`${props.filesBaseUrl}/files/_Shared/${iso.outputDir}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <Icon name="folder" size={14} />
-                  <span>{iso.outputDir}</span>
-                </a>
-              ) : iso.outputDir ? (
-                <span class="side-item-path">
-                  <Icon name="folder" size={14} />
-                  <span>{iso.outputDir}</span>
-                </span>
-              ) : null}
+              <div class="side-item-actions">
+                {iso.outputDir && props.filesBaseUrl ? (
+                  <a
+                    class="side-item-link"
+                    href={`${props.filesBaseUrl}/files/_Shared/${iso.outputDir}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <Icon name="folder" size={14} />
+                    <span>{iso.outputDir}</span>
+                  </a>
+                ) : iso.outputDir ? (
+                  <span class="side-item-path">
+                    <Icon name="folder" size={14} />
+                    <span>{iso.outputDir}</span>
+                  </span>
+                ) : null}
+                {props.canRequeue && (
+                  <RequeueAction
+                    iso={iso}
+                    archive="_Processed"
+                    requeues={props.requeues}
+                    onRequeue$={props.onRequeue$}
+                  />
+                )}
+              </div>
             </li>
           ))}
         </ul>
@@ -688,6 +777,9 @@ const FailedCard = component$<{
   isos: InboxIso[];
   onShowLog$: QRL<(name: string) => void>;
   transcripts: TranscriptionJob[];
+  canRequeue: boolean;
+  requeues: Requeues;
+  onRequeue$: QRL<(archive: DvdArchive, iso: InboxIso) => void>;
 }>((props) => (
   <section class="panel side-panel">
     <div class="panel-heading">
@@ -727,16 +819,26 @@ const FailedCard = component$<{
               {iso.failureSummary && (
                 <p class="side-item-reason">{iso.failureSummary}</p>
               )}
-              {iso.hasErrorLog && (
-                <button
-                  type="button"
-                  class="text-button danger side-item-log-btn"
-                  aria-label={`${iso.failureHint ? "How to fix" : "Show details for"} ${isoTitle(iso)}`}
-                  onClick$={() => props.onShowLog$(iso.name)}
-                >
-                  {iso.failureHint ? "How to fix" : "Show details"}
-                </button>
-              )}
+              <div class="side-item-actions">
+                {iso.hasErrorLog && (
+                  <button
+                    type="button"
+                    class="text-button danger side-item-log-btn"
+                    aria-label={`${iso.failureHint ? "How to fix" : "Show details for"} ${isoTitle(iso)}`}
+                    onClick$={() => props.onShowLog$(iso.name)}
+                  >
+                    {iso.failureHint ? "How to fix" : "Show details"}
+                  </button>
+                )}
+                {props.canRequeue && (
+                  <RequeueAction
+                    iso={iso}
+                    archive="_Failed"
+                    requeues={props.requeues}
+                    onRequeue$={props.onRequeue$}
+                  />
+                )}
+              </div>
             </li>
           ))}
         </ul>

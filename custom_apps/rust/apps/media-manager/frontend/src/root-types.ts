@@ -170,6 +170,7 @@ export type IconName =
   | "shield"
   | "folder"
   | "file"
+  | "upload"
   | "check"
   | "alert"
   | "scan"

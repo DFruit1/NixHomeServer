@@ -25,25 +25,6 @@ fn invalid(message: impl Into<String>, id: &str) -> ApiError {
         id.to_string(),
     )
 }
-fn roots(config: &AppConfig, identity: &Identity) -> Vec<Value> {
-    let mut roots: Vec<Value> = config
-        .visible_roots(identity)
-        .into_iter()
-        .filter(|r| r.available && r.category != crate::media::LibraryCategory::Books)
-        .map(|r| json!({"id":r.id,"label":r.label,"path":r.resolved_path,"category":r.category}))
-        .collect();
-    if config.dvd_inbox_path().is_dir() {
-        roots.push(json!({"id":"dvd-inbox","label":"Shared DVD inbox","path":config.dvd_inbox_path(),"category":"iso"}));
-    }
-    let transcribe = config
-        .users_root
-        .join(&identity.username)
-        .join("_Transcribe");
-    if transcribe.is_dir() {
-        roots.push(json!({"id":"transcription-inbox","label":"My transcription inbox","path":transcribe,"category":"transcription"}));
-    }
-    roots
-}
 pub(super) async fn jobs(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let id = request_id();
     let identity = match identity_from_headers(&headers, &id) {
@@ -53,7 +34,7 @@ pub(super) async fn jobs(State(state): State<Arc<AppState>>, headers: HeaderMap)
     let config = state.config.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let jobs = intake::jobs(&config, &identity.username)?;
-        Ok(json!({"jobs":jobs.iter().take(200).map(Job::view).collect::<Vec<_>>(),"roots":roots(&config, &identity),"canSubmit":identity.can_edit(&config.editor_group) && config.mutation_mode == MutationMode::Enabled,"maxUploadBytes":intake::MAX_INPUT_BYTES}))
+        Ok(json!({"jobs":jobs.iter().take(200).map(Job::view).collect::<Vec<_>>(),"roots":intake::source_roots(&config, &identity),"canSubmit":identity.can_edit(&config.editor_group) && config.mutation_mode == MutationMode::Enabled,"maxUploadBytes":intake::MAX_INPUT_BYTES}))
     }).await;
     match result {
         Ok(Ok(value)) => Json(value).into_response(),
@@ -78,7 +59,7 @@ pub(super) async fn files(
         Ok(i) => i,
         Err(e) => return e.into_response(),
     };
-    let Some(root) = roots(&state.config, &identity)
+    let Some(root) = intake::source_roots(&state.config, &identity)
         .into_iter()
         .find(|r| r["id"] == query.root_id)
     else {
@@ -139,7 +120,7 @@ pub(super) struct ServerInput {
 
 fn source(config: &AppConfig, identity: &Identity, path: &str) -> Result<std::fs::File, String> {
     let path = FilePath::new(path);
-    for root in roots(config, identity) {
+    for root in intake::source_roots(config, identity) {
         let base = FilePath::new(root["path"].as_str().ok_or("Invalid root")?);
         if let Ok(relative) = path.strip_prefix(base) {
             let relative = relative.to_str().ok_or("Invalid file path")?;
@@ -148,11 +129,7 @@ fn source(config: &AppConfig, identity: &Identity, path: &str) -> Result<std::fs
     }
     Err("Choose a file in a listed shared library, your own library, or an input inbox.".into())
 }
-fn prepare(
-    config: &AppConfig,
-    identity: &Identity,
-    options: &Options,
-) -> Result<tempfile::NamedTempFile, String> {
+fn admit(config: &AppConfig, identity: &Identity, options: &Options) -> Result<(), String> {
     options.validate(config, identity)?;
     let active = intake::jobs(config, &identity.username)?
         .iter()
@@ -161,6 +138,14 @@ fn prepare(
     if active >= 8 {
         return Err("Eight files are already waiting. Let a job finish before adding more.".into());
     }
+    Ok(())
+}
+fn prepare(
+    config: &AppConfig,
+    identity: &Identity,
+    options: &Options,
+) -> Result<tempfile::NamedTempFile, String> {
+    admit(config, identity, options)?;
     intake::staging_dir(config, &identity.username)?;
     tempfile::Builder::new()
         .prefix(".upload-")
@@ -223,7 +208,6 @@ pub(super) async fn server_file(
     };
     let config = state.config.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let mut file = source(&config, &identity, &request.server_path)?;
         // The name is derived from the selected source, not a client rename.
         let mut options = request.options;
         options.name = FilePath::new(&request.server_path)
@@ -231,6 +215,10 @@ pub(super) async fn server_file(
             .and_then(|s| s.to_str())
             .ok_or("Invalid file name")?
             .into();
+        if options.kind == "iso" {
+            return queue_iso_move(&config, identity, options, &request.server_path);
+        }
+        let mut file = source(&config, &identity, &request.server_path)?;
         let before = opened_file_fingerprint(&file).map_err(|e| e.to_string())?;
         let size = file.metadata().map_err(|e| e.to_string())?.len();
         if size > intake::MAX_INPUT_BYTES {
@@ -257,6 +245,26 @@ pub(super) async fn server_file(
         Ok(Err(error)) => invalid(error, &id).into_response(),
         Err(_) => ApiError::internal(id).into_response(),
     }
+}
+/// A server ISO is moved by the broker rather than copied here, so the
+/// request returns at once and the disc is not left behind in its old folder.
+fn queue_iso_move(
+    config: &AppConfig,
+    identity: Identity,
+    options: Options,
+    server_path: &str,
+) -> Result<Value, String> {
+    let located = intake::SourceFile::locate(config, &identity, server_path)?;
+    if located.in_dvd_queue() {
+        return Err("This ISO is already waiting in the DVD inbox.".into());
+    }
+    located.open(config, &identity)?;
+    admit(config, &identity, &options)?;
+    let mut job = Job::new(identity.username, options);
+    intake::check_dvd_name(config, &job.inbox_name, Some(&located))?;
+    job.source = Some(located);
+    job.save(config)?;
+    Ok(json!({"job":job.view()}))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
