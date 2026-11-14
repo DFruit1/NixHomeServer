@@ -2200,13 +2200,15 @@ words per idea.
 Library queries also include word beginnings on the shortest stem of alphabetic
 words of 5–32 characters. These use [Solr's query modifiers](https://solr.apache.org/guide/solr/latest/query-guide/standard-query-parser.html#term-modifiers).
 The typed word outweighs its forms, which outweigh related wording and
-expansions. An additional score rewards coverage of every idea even when the
-words are far apart; phrase and title boosts still favour precise matches, and
-adjacent pairs are also rewarded through another form or related word. A mild
-recency weight (up to +30% for something dated today, fading over years)
-orders otherwise comparable matches. Under a strict Newest order only the typed
-words and their forms may admit a document. The same bounded query drives every
-page. Filters and source scope remain applied.
+expansions. An additional score rewards containing every idea, and a
+related-passage penalty demotes documents whose ideas appear only in unrelated
+places (for example a word in a glossary and another in a different chapter).
+Phrase and title boosts still favour precise matches, and adjacent pairs are
+also rewarded through another form or related word. A mild recency weight (up
+to +10% for something dated today, fading over years) orders otherwise
+comparable matches. Under a strict Newest order only the typed words and their
+forms may admit a document. The same bounded query drives every page. Filters
+and source scope remain applied.
 
 When nothing in the library contains every idea, the query is repeated
 requiring the rarest idea the library knows plus about half of the others, and
@@ -2499,7 +2501,9 @@ Notes:
   async search/snippet subprocesses are killed on cancellation. A source that
   exceeds the overall live budget returns a timeout warning.
 * Query handling. Queries are parsed by Solr's `edismax` with phrase boosts
-  (`pf`/`ps`) so adjacent-term matches rank above scattered ones. If Solr
+  (`pf`/`ps`) so adjacent-term matches rank above scattered ones. A
+  related-passage check demotes documents that contain the query ideas only in
+  unrelated places, without excluding them. If Solr
   rejects a query for containing Lucene syntax characters (`:`, `[`, an
   unbalanced quote, ...), the UI retries once with those characters escaped so
   a literal search still returns results instead of a 502. The result page size

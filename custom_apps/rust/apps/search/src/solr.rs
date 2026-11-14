@@ -806,6 +806,34 @@ impl SolrClient {
             .clone()
             .or_else(|| literal_reference_query(query))
             .unwrap_or_else(|| query.to_string());
+        // A document that mentions each idea in a different, unrelated passage
+        // is not really about the query. A related-passage query lets a mild
+        // penalty demote those without removing them, as a strict proximity
+        // filter would when a genuinely relevant long document discusses the
+        // ideas in separate sections. A relaxed pass matches only some ideas,
+        // so there is no complete set to keep together.
+        let coherence = if precise || relaxed {
+            None
+        } else {
+            plan.and_then(coherence_query)
+        };
+        let recency = format!(
+            "sum(1,product({},recip(abs(ms(NOW/DAY,content_created)),3.16e-11,1,1)))",
+            if sort == SortOrder::Recent {
+                "4"
+            } else {
+                "0.1"
+            }
+        );
+        let boost = coherence
+            .as_ref()
+            .map(|_| {
+                format!(
+                    "product(if(query($coherence),1,{}),{recency})",
+                    INCOHERENT_SCORE_FACTOR
+                )
+            })
+            .unwrap_or(recency);
         let mut params: Vec<(&str, String)> = vec![
             ("q", main_query.clone()),
             // Stored fields only; the body is index-only and is enriched from
@@ -825,17 +853,13 @@ impl SolrClient {
             ("qs", "0".to_string()),
             ("tie", "0.1".to_string()),
             // Between otherwise comparable matches, prefer the more recent:
-            // up to +30% for something dated today, half of that after a
+            // up to +10% for something dated today, half of that after a
             // year, fading to nothing. Undated documents are unaffected.
             // "latest …" raises that to +400%, so recency dominates among
-            // relevant matches without admitting irrelevant ones.
-            (
-                "boost",
-                format!(
-                    "sum(1,product({},recip(abs(ms(NOW/DAY,content_created)),3.16e-11,1,1)))",
-                    if sort == SortOrder::Recent { "4" } else { "0.3" }
-                ),
-            ),
+            // relevant matches without admitting irrelevant ones. A related
+            // passage keeps its full score; a document whose ideas are only
+            // scattered is demoted rather than excluded.
+            ("boost", boost),
             ("rows", rows.to_string()),
             ("start", offset.to_string()),
             // Identical copies share a content signature; show the best one
@@ -857,6 +881,9 @@ impl SolrClient {
             ("facet.limit", "50".to_string()),
             ("wt", "json".to_string()),
         ];
+        if let Some(coherence) = coherence {
+            params.push(("coherence", coherence));
+        }
         if !filters.wiki_full_text {
             // Extracted fallback articles must follow the same title-only
             // scope as native archive searches. Keep other kinds unrestricted.
@@ -876,8 +903,9 @@ impl SolrClient {
                     "0".to_string()
                 },
             ));
-            // Reward coverage of the whole topic even when its words are far
-            // apart. This boost never admits a document by itself.
+            // Reward containing every idea. This boost never admits a document
+            // by itself; the related-passage penalty decides whether those
+            // ideas look like one subject or scattered mentions.
             let coverage = plan
                 .iter()
                 .map(|concept| {
@@ -1120,6 +1148,62 @@ fn broad_query(plan: &[PlannedConcept], relaxed: bool, precise: bool) -> String 
         })
         .collect();
     clauses.join(if relaxed { " " } else { " AND " })
+}
+
+/// How many tokens apart two ideas may be and still read as one passage. This
+/// spans a few sentences, so a book that discusses the subject in a paragraph
+/// stays coherent, while a word in an unrelated chapter or glossary does not.
+const COHERENCE_SLOP: usize = 50;
+
+/// Score kept by a document whose query ideas are only scattered. It remains
+/// visible so a long document that discusses the ideas in separate sections is
+/// not lost, but it ranks behind documents that discuss them together.
+const INCOHERENT_SCORE_FACTOR: f32 = 0.3;
+
+/// Matches documents that discuss adjacent query ideas near each other. Used
+/// only by the score penalty, never to admit a document. Adjacent pairs and
+/// their two strongest forms are enough for a strong signal without turning a
+/// long conversational query into an unbounded span expression.
+fn coherence_query(plan: &[PlannedConcept]) -> Option<String> {
+    if plan.len() < 2 {
+        return None;
+    }
+    let mut clauses = Vec::new();
+    for pair in plan.windows(2).take(3) {
+        let left = std::iter::once(pair[0].word.as_str())
+            .chain(pair[0].forms.iter().take(1).map(String::as_str))
+            .collect::<Vec<_>>();
+        let right = std::iter::once(pair[1].word.as_str())
+            .chain(pair[1].forms.iter().take(1).map(String::as_str))
+            .collect::<Vec<_>>();
+        for left in &left {
+            for right in &right {
+                // Word order is not evidence of meaning: "grow potatoes" and
+                // "potatoes grow" both describe the subject.
+                clauses.push(format!(
+                    "body:{}~{}",
+                    solr_string_term(&format!("{left} {right}")),
+                    COHERENCE_SLOP
+                ));
+                clauses.push(format!(
+                    "body:{}~{}",
+                    solr_string_term(&format!("{right} {left}")),
+                    COHERENCE_SLOP
+                ));
+            }
+        }
+        // A title that names both ideas is coherent even though it is much
+        // shorter than the body window.
+        clauses.push(format!(
+            "title:{}~2",
+            solr_string_term(&format!("{} {}", pair[0].word, pair[1].word))
+        ));
+        clauses.push(format!(
+            "title:{}~2",
+            solr_string_term(&format!("{} {}", pair[1].word, pair[0].word))
+        ));
+    }
+    Some(format!("({})", clauses.join(" OR ")))
 }
 
 /// A plain formatted reference must not become an OR between its numeric

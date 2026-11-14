@@ -182,6 +182,11 @@ fn singular_forms(word: &str) -> Vec<String> {
         push_unique(&mut forms, word, stem(2));
         // "houses", "sizes", "caches": the singular keeps its final e.
         push_unique(&mut forms, word, stem(1));
+    } else if length > 4 && word.ends_with("oes") {
+        // "potatoes"/"tomatoes" drop "es", while "shoes"/"canoes" keep the e.
+        // Offer both; the indexed path keeps only the form the library has.
+        push_unique(&mut forms, word, stem(2));
+        push_unique(&mut forms, word, stem(1));
     } else if length > 3
         && word.ends_with('s')
         && !word.ends_with("ss")
