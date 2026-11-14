@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches --bg in src/client/styles.css (dark). -->
+    <color name="app_background">#FF171112</color>
+    <color name="app_accent">#FFF87171</color>
+</resources>

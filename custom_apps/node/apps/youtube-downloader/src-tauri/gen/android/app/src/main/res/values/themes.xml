@@ -1,6 +1,8 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
+    <!-- Base application theme. Background and accent follow the web UI palette. -->
     <style name="Theme.youtube_downloader" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+        <item name="colorPrimary">@color/app_accent</item>
+        <item name="colorSecondary">@color/app_accent</item>
+        <item name="android:windowBackground">@color/app_background</item>
     </style>
 </resources>

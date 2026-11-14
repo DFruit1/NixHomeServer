@@ -1,4 +1,4 @@
-import { $, component$, Slot, useSignal, useVisibleTask$ } from '@builder.io/qwik';
+import { $, component$, useSignal, useVisibleTask$ } from '@builder.io/qwik';
 import { apiUrl, apiFetch } from './api.js';
 import { tauriInvoke } from './tauri.js';
 import { installedAppVersion, installedVersionLabel, isNewerVersion } from './app-version.js';
@@ -34,7 +34,23 @@ export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, sign
       menuRef.value.open = false;
     }
   });
+  // Clearing history cannot be undone, so the first tap only arms it.
+  const confirmingClear = useSignal(false);
+  const clearTimer = useSignal<number | undefined>();
+  const requestClear = $(() => {
+    confirmingClear.value = true;
+    window.clearTimeout(clearTimer.value);
+    clearTimer.value = window.setTimeout(() => {
+      confirmingClear.value = false;
+    }, 5000);
+  });
+  const cancelClear = $(() => {
+    window.clearTimeout(clearTimer.value);
+    confirmingClear.value = false;
+  });
   const clearAndClose = $(async () => {
+    window.clearTimeout(clearTimer.value);
+    confirmingClear.value = false;
     await onClearHistory();
     closeMenu();
   });
@@ -85,6 +101,7 @@ export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, sign
       const menu = menuRef.value;
       if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) {
         menu.open = false;
+        confirmingClear.value = false;
       }
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -142,12 +159,8 @@ export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, sign
           </div>
           <div>
             <h2>{username}</h2>
-            <p>Youtube Downloader</p>
+            <p>YouTube Downloader</p>
           </div>
-        </div>
-        <div class="profile-options">
-          <h3>Options</h3>
-          <Slot />
         </div>
         {appDownloadUrl && (
           <a class="profile-action" href={appDownloadUrl} download onClick$={closeMenu}>
@@ -196,9 +209,20 @@ export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, sign
           </div>
         )}
         <p class="profile-version">{installedVersionLabel}</p>
-        <button class="profile-action" type="button" onClick$={clearAndClose}>
-          Clear history
-        </button>
+        {confirmingClear.value ? (
+          <div class="profile-confirm" role="group" aria-label="Confirm clearing history">
+            <button class="profile-action profile-action--danger" type="button" onClick$={clearAndClose}>
+              Clear all history
+            </button>
+            <button class="profile-action" type="button" onClick$={cancelClear}>
+              Keep
+            </button>
+          </div>
+        ) : (
+          <button class="profile-action" type="button" onClick$={requestClear}>
+            Clear history
+          </button>
+        )}
         {onSignIn && signedIn === false ? (
           <button class="profile-signout" type="button" onClick$={signInAndClose}>
             Sign in

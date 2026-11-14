@@ -4,6 +4,10 @@ import { buildMediaManagerUrl } from './media-manager-url.js';
 import { buildMediaTargetPath } from './media-target.js';
 import { apiFetch, apiUrl, isTauriRuntime } from './api.js';
 import { tauriInvoke } from './tauri.js';
+import { IN_PROGRESS_STATUSES, TERMINAL_FAILURE_STATUSES, jobDetails, readableError, statusLabel } from './job-format.js';
+
+const HISTORY_PAGE_SIZE = 20;
+const LONG_ERROR_LENGTH = 140;
 
 type JobListProps = {
   title: string;
@@ -56,15 +60,17 @@ export const JobList = component$<JobListProps>(({ title, jobs, refresh }) => {
     event.stopPropagation();
   });
   const isHistory = title === 'History';
+  const visibleCount = useSignal(HISTORY_PAGE_SIZE);
+  const shownJobs = isHistory ? jobs.slice(0, visibleCount.value) : jobs;
 
   return (
     <section class="jobs">
       <h2>{title}</h2>
       {jobs.length === 0 ? (
-        <p class="empty">No jobs</p>
+        <p class="empty">{isHistory ? 'Finished downloads appear here.' : 'Nothing running'}</p>
       ) : (
         <div class="job-stack">
-          {jobs.map((job) => (
+          {shownJobs.map((job) => (
             <JobCard
               key={job.id}
               job={job}
@@ -77,6 +83,11 @@ export const JobList = component$<JobListProps>(({ title, jobs, refresh }) => {
             />
           ))}
         </div>
+      )}
+      {isHistory && jobs.length > shownJobs.length && (
+        <button type="button" class="show-more" onClick$={() => (visibleCount.value += HISTORY_PAGE_SIZE)}>
+          Show more ({jobs.length - shownJobs.length})
+        </button>
       )}
     </section>
   );
@@ -105,8 +116,12 @@ const JobCard = component$<JobCardProps>(({ job, isHistory, canSwipeClear, actio
     ? undefined
     : apiUrl(`/api/jobs/${encodeURIComponent(job.id)}/files/${coverIndex}`);
   const artUrl = coverUrl ?? youtubeThumbnailUrl(job.request.url);
-  const terminalMessage = ['failed', 'cancelled'].includes(job.status) ? singleLine(job.error) : undefined;
-  const meta = isHistory ? jobMetaLine(job) : undefined;
+  const failureMessage = TERMINAL_FAILURE_STATUSES.includes(job.status) ? readableError(job.error) : undefined;
+  const inProgress = IN_PROGRESS_STATUSES.includes(job.status);
+  const awaitingTitle = !job.source?.title && (job.status === 'queued' || job.status === 'probing');
+  const title = job.source?.title || (awaitingTitle ? 'Fetching title…' : job.request.url);
+  const details = [awaitingTitle ? job.request.url : undefined, jobDetails(job)].filter(Boolean).join(' · ');
+  const label = job.source?.title || job.request.url;
 
   const endDrag = $(async () => {
     if (!isDragging.value) {
@@ -133,10 +148,9 @@ const JobCard = component$<JobCardProps>(({ job, isHistory, canSwipeClear, actio
         'job-swipeable': canSwipeClear,
         dragging: isDragging.value,
       }}
-      title={terminalMessage}
       style={{ transform: dragOffset.value > 0 ? `translateX(${dragOffset.value}px)` : undefined }}
       onPointerDown$={(event, target) => {
-        if (!canSwipeClear || event.button !== 0 || (event.target instanceof Element && event.target.closest('button,a,input,select'))) {
+        if (!canSwipeClear || event.button !== 0 || (event.target instanceof Element && event.target.closest('button,a,input,select,summary,details'))) {
           return;
         }
         dragStartX.value = event.clientX;
@@ -171,17 +185,24 @@ const JobCard = component$<JobCardProps>(({ job, isHistory, canSwipeClear, actio
         openInBrowser(event, job);
       }}
     >
-      {artUrl && <div class="job-art" style={{ backgroundImage: `url("${artUrl}")` }} aria-hidden="true" />}
+      <div class={{ 'job-thumb': true, [job.request.mediaType]: true }} aria-hidden="true">
+        {artUrl && <img src={artUrl} alt="" loading="lazy" decoding="async" width={160} height={90} />}
+      </div>
       <div class="job-content">
-        <div class="job-head">
-          <div>
-            <strong>{job.source?.title || job.request.url}</strong>
-            {!job.outputFolder && !['failed', 'cancelled'].includes(job.status) && <p>{job.request.mediaType}</p>}
-          </div>
-        </div>
-        {meta && <p class="job-meta">{meta}</p>}
+        <strong class={{ 'job-title': true, pending: awaitingTitle }}>{title}</strong>
+        <p class="job-meta">{details}</p>
+        {failureMessage && (
+          failureMessage.length > LONG_ERROR_LENGTH ? (
+            <details class="job-error" stoppropagation:click>
+              <summary>{failureMessage.slice(0, LONG_ERROR_LENGTH).trimEnd()}…</summary>
+              <p>{failureMessage}</p>
+            </details>
+          ) : (
+            <p class="job-error">{failureMessage}</p>
+          )
+        )}
         {job.status === 'alert' && <p class="alert-message">{job.alert?.message || job.error || 'Confirmation is required before this download can continue.'}</p>}
-        {['queued', 'probing', 'running', 'postprocessing'].includes(job.status) && (
+        {inProgress && (
           <div class="progress-block">
             <div class={{ progress: true, indeterminate: job.progress?.percent == null }}>
               <div style={{ width: `${Math.max(0, Math.min(100, job.progress?.percent ?? 0))}%` }} />
@@ -189,9 +210,9 @@ const JobCard = component$<JobCardProps>(({ job, isHistory, canSwipeClear, actio
             <p class="progress-label">{progressLabel(job)}</p>
           </div>
         )}
-        {job.error && !['failed', 'cancelled'].includes(job.status) && <p class="error">{job.error}</p>}
+        {job.error && !TERMINAL_FAILURE_STATUSES.includes(job.status) && <p class="error">{readableError(job.error)}</p>}
         <div class="job-footer">
-          <span class={`status-badge ${job.status}`} title={job.status}>{job.status}</span>
+          <span class={`status-badge ${job.status}`}>{statusLabel(job.status)}</span>
           <div class="job-actions">
           {job.status === 'alert' && job.alert?.kind === 'duplicate' && (
             <>
@@ -247,7 +268,7 @@ const JobCard = component$<JobCardProps>(({ job, isHistory, canSwipeClear, actio
               </button>
             </>
           )}
-          {['queued', 'probing', 'running', 'postprocessing'].includes(job.status) && (
+          {inProgress && (
             <button type="button" onClick$={(event) => {
               stopPropagation(event);
               action(job, 'cancel');
@@ -255,7 +276,7 @@ const JobCard = component$<JobCardProps>(({ job, isHistory, canSwipeClear, actio
               Cancel
             </button>
           )}
-          {['failed', 'cancelled'].includes(job.status) && (
+          {TERMINAL_FAILURE_STATUSES.includes(job.status) && (
             <button type="button" onClick$={(event) => {
               stopPropagation(event);
               action(job, 'retry');
@@ -264,21 +285,21 @@ const JobCard = component$<JobCardProps>(({ job, isHistory, canSwipeClear, actio
             </button>
           )}
           </div>
+          {isHistory && canSwipeClear && (
+            <button
+              type="button"
+              class="job-clear"
+              aria-label={`Clear ${label} from history`}
+              onClick$={(event) => {
+                stopPropagation(event);
+                action(job, 'delete');
+              }}
+            >
+              Clear
+            </button>
+          )}
         </div>
       </div>
-      {isHistory && canSwipeClear && (
-        <button
-          type="button"
-          class="job-clear"
-          aria-label={`Clear ${job.source?.title || job.request.url} from history`}
-          onClick$={(event) => {
-            stopPropagation(event);
-            action(job, 'delete');
-          }}
-        >
-          Clear
-        </button>
-      )}
     </article>
   );
 });
@@ -306,21 +327,10 @@ const progressLabel = (job: Job): string => {
   return 'Starting download';
 };
 
-const jobMetaLine = (job: Job): string => {
-  const format = job.request.mediaType === 'video'
-    ? job.request.videoContainer?.toUpperCase()
-    : job.request.audioFormat?.toUpperCase();
-  return [job.request.mediaType, job.request.destination, job.source?.channel, format]
-    .filter((part): part is string => Boolean(part?.trim()))
-    .join(', ');
-};
-
 const coverFileIndex = (job: Job): number | undefined => {
   const index = job.files.findIndex((file) => /\.(?:jpe?g|png|webp)$/i.test(file));
   return index >= 0 ? index : undefined;
 };
-
-const singleLine = (value: string | undefined): string | undefined => value?.replace(/\s+/g, ' ').trim() || undefined;
 
 const youtubeThumbnailUrl = (rawUrl: string): string | undefined => {
   try {
