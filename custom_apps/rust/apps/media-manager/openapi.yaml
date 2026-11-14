@@ -144,6 +144,32 @@ paths:
           content:
             image/jpeg:
               schema: { type: string, format: binary }
+  /provider-lookups/immich/images/{id}/original:
+    get:
+      operationId: downloadImmichOriginal
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Original photo attachment streamed with current per-user Immich access. No-store.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+  /provider-lookups/immich/images/download:
+    get:
+      operationId: downloadImmichPhotos
+      parameters:
+        - in: query
+          name: assetIds
+          required: true
+          description: Comma-separated Immich photo UUIDs (1–200). Each photo's current visibility and download permission is checked. No public share links are created.
+          schema: { type: string, minLength: 36, maxLength: 7399 }
+      responses:
+        "200":
+          description: Original photos streamed as one ZIP attachment. No-store; memory does not grow with archive size.
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
   /provider-lookups/immich/images/{id}/analysis:
     post:
       operationId: analyzeImmichImage

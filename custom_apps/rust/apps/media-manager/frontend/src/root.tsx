@@ -474,6 +474,7 @@ export default component$((props: RootProps) => {
     if (typeof document === "undefined" || typeof window === "undefined")
       return;
     let revision = 0;
+    let routeUrl = window.location.href;
     const navigate = async (url: URL, push: boolean) => {
       if (!allowMetadataDraftDiscard(state.metadataDraftDirty)) return;
       const current = ++revision;
@@ -516,6 +517,7 @@ export default component$((props: RootProps) => {
         next,
       );
       view.value = next.initialView ?? "library";
+      routeUrl = url.href;
       if (push) window.history.pushState({}, "", url);
       window.scrollTo(0, 0);
     };
@@ -550,10 +552,12 @@ export default component$((props: RootProps) => {
       });
     };
     const onPopState = () => {
-      // The library owns its within-page folder/item history.
+      // These views own their within-page selection history and scroll position.
       if (
-        view.value === "library" &&
-        viewFromSearch(window.location.search) === "library"
+        viewFromSearch(window.location.search) === view.value &&
+        (view.value === "library" ||
+          (["player", "images"].includes(view.value) &&
+            window.location.href === routeUrl))
       )
         return;
       void navigate(new URL(window.location.href), false).catch((error) => {

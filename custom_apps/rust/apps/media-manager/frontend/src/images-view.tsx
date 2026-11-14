@@ -1,6 +1,8 @@
 import {
   $,
   component$,
+  noSerialize,
+  type NoSerialize,
   useOnWindow,
   useSignal,
   useStore,
@@ -26,6 +28,8 @@ import {
   thumbnailSrc,
   thumbnailSrcset,
 } from "./thumbnail";
+import { installPhotoSelection } from "./photo-selection";
+import { preparePhotoFiles } from "./photo-sharing";
 import { LoadingState } from "./view-states";
 
 const photoPath = (id: string) =>
@@ -38,12 +42,23 @@ export const ImagesView = component$<{
   userSubject?: string;
 }>((props) => {
   const layout = useCollectionView(props, "images", "tiles-3");
+  const grid = useSignal<HTMLElement>();
+  const selection = useStore({
+    active: false,
+    ids: [] as string[],
+    preparing: false,
+    error: "",
+  });
+  const shareSupported = useSignal(false);
+  const shareFiles = useSignal<NoSerialize<File[]>>();
+  const shareController = useSignal<NoSerialize<AbortController>>();
   const detail = useSignal<HTMLElement>();
   const rulesOpen = useSignal(false);
   const rulesButton = useSignal<HTMLButtonElement>();
   const filtersOpen = useSignal(false);
   const semanticSearch = useSignal(true);
   const moreOpen = useSignal(false);
+  const returnToPhoto = useSignal<{ id: string; top: number }>();
   const pushedImageId = useSignal<string | null>(null);
   const state = useStore({
     items: [] as ImmichImage[],
@@ -94,6 +109,10 @@ export const ImagesView = component$<{
         (state.loading || (!state.nextPage && state.nextCursor === null)))
     )
       return;
+    if (!more) {
+      selection.ids = [];
+      selection.active = false;
+    }
     const listing = ++state.listing;
     if (more) state.loadingMore = true;
     else state.loading = true;
@@ -179,6 +198,94 @@ export const ImagesView = component$<{
     await load();
   });
 
+  useVisibleTask$(
+    ({ track, cleanup }) => {
+      const element = track(() => grid.value);
+      shareSupported.value =
+        typeof navigator.share === "function" &&
+        typeof navigator.canShare === "function";
+      if (!element) return;
+      cleanup(
+        installPhotoSelection(element, {
+          get: () => selection.ids,
+          set: (ids) => {
+            selection.ids = ids.slice(0, 200);
+            selection.error =
+              ids.length > 200 ? "Select up to 200 photos at a time." : "";
+          },
+          start: () => {
+            selection.active = true;
+          },
+          loadMore: () => {
+            if (state.nextPage || state.nextCursor !== null) void load(true);
+          },
+        }),
+      );
+    },
+    { strategy: "document-ready" },
+  );
+
+  useVisibleTask$(({ track, cleanup }) => {
+    track(() => selection.ids.join(","));
+    shareController.value?.abort();
+    shareController.value = undefined;
+    shareFiles.value = undefined;
+    selection.preparing = false;
+    cleanup(() => shareController.value?.abort());
+  });
+
+  const togglePhoto = $((id: string) => {
+    selection.error = "";
+    if (selection.ids.includes(id))
+      selection.ids = selection.ids.filter((value) => value !== id);
+    else if (selection.ids.length < 200) selection.ids = [...selection.ids, id];
+    else selection.error = "Select up to 200 photos at a time.";
+  });
+
+  const prepareShare = $(async () => {
+    if (!selection.ids.length || selection.preparing) return;
+    const ids = [...selection.ids];
+    const controller = new AbortController();
+    shareController.value = noSerialize(controller);
+    selection.preparing = true;
+    selection.error = "";
+    const timeout = window.setTimeout(() => controller.abort(), 120_000);
+    try {
+      const photos = ids.map(
+        (id) => state.items.find((photo) => photo.id === id)!,
+      );
+      const files = await preparePhotoFiles(photos, controller.signal);
+      if (controller.signal.aborted) return;
+      if (!navigator.canShare({ files }))
+        throw new Error(
+          "This browser cannot share these files. Download the selected photos instead.",
+        );
+      shareFiles.value = noSerialize(files);
+    } catch (error) {
+      if (shareController.value === controller)
+        selection.error = controller.signal.aborted
+          ? "Sharing preparation timed out. Try fewer photos."
+          : readableError(error);
+    } finally {
+      window.clearTimeout(timeout);
+      if (shareController.value === controller) selection.preparing = false;
+    }
+  });
+
+  // File preparation can outlast transient activation. A separate ready button
+  // opens the native share sheet directly from the next user gesture (MDN share()).
+  const sharePhotos = $(async () => {
+    const files = shareFiles.value;
+    if (!files?.length) return;
+    selection.error = "";
+    try {
+      await navigator.share({ files });
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError"))
+        selection.error = readableError(error);
+    }
+  });
+
   const choose = $(async (image: ImmichImage | string, pushHistory = true) => {
     if (state.analyzing && pushHistory) return;
     const imageId = typeof image === "string" ? image : image.id;
@@ -196,21 +303,25 @@ export const ImagesView = component$<{
     if (
       typeof window !== "undefined" &&
       pushHistory &&
-      pushedImageId.value !== imageId
+      window.innerWidth <= 920
     ) {
+      const tile = document.querySelector<HTMLElement>(
+        `[data-photo-id="${CSS.escape(imageId)}"]`,
+      );
+      if (tile)
+        returnToPhoto.value = {
+          id: imageId,
+          top: tile.getBoundingClientRect().top,
+        };
       const historyState = { ...window.history.state, imageId };
       if (pushedImageId.value) {
         window.history.replaceState(historyState, "", window.location.href);
       } else {
         window.history.pushState(historyState, "", window.location.href);
       }
-    }
-    pushedImageId.value = imageId;
-    if (typeof window !== "undefined" && window.innerWidth <= 920) {
-      await new Promise<void>((resolve) =>
-        requestAnimationFrame(() => resolve()),
-      );
-      detail.value?.scrollIntoView({ block: "start" });
+      pushedImageId.value = imageId;
+    } else if (!pushHistory) {
+      pushedImageId.value = imageId;
     }
     try {
       const response = await api<ImmichImageResponse>(photoPath(imageId));
@@ -224,6 +335,33 @@ export const ImagesView = component$<{
     } finally {
       if (selection === state.selection) state.selecting = false;
     }
+  });
+
+  // Run after Qwik commits the selected pane, including the first selection.
+  useVisibleTask$(({ track, cleanup }) => {
+    const imageId = track(() => state.selected?.id);
+    track(() => state.selection);
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        if (imageId) {
+          if (detail.value) detail.value.scrollTop = 0;
+          if (window.innerWidth <= 920)
+            window.scrollTo({ top: 0, behavior: "instant" });
+        } else if (returnToPhoto.value && window.innerWidth <= 920) {
+          const { id, top } = returnToPhoto.value;
+          const tile = document.querySelector<HTMLElement>(
+            `[data-photo-id="${CSS.escape(id)}"]`,
+          );
+          if (tile)
+            window.scrollBy({
+              top: tile.getBoundingClientRect().top - top,
+              behavior: "instant",
+            });
+          returnToPhoto.value = undefined;
+        }
+      });
+    });
+    cleanup(() => cancelAnimationFrame(frame));
   });
 
   const analyze = $(async () => {
@@ -308,6 +446,10 @@ export const ImagesView = component$<{
   useOnWindow(
     "popstate",
     $((event: PopStateEvent) => {
+      if (new URLSearchParams(window.location.search).get("view") !== "images")
+        return;
+      selection.active = false;
+      selection.ids = [];
       const imageId =
         (event.state as { imageId?: string } | null)?.imageId ?? null;
       if (imageId) {
@@ -342,7 +484,11 @@ export const ImagesView = component$<{
   useOnWindow(
     "keydown",
     $((event: KeyboardEvent) => {
-      if (event.key === "Escape" && moreOpen.value) moreOpen.value = false;
+      if (event.key === "Escape") {
+        moreOpen.value = false;
+        selection.active = false;
+        selection.ids = [];
+      }
     }),
   );
   useOnWindow(
@@ -591,6 +737,18 @@ export const ImagesView = component$<{
             <h2>Photos</h2>
             <div class="images-header-actions">
               <button
+                type="button"
+                class="text-button"
+                aria-pressed={selection.active}
+                onClick$={() => {
+                  selection.active = !selection.active;
+                  selection.ids = [];
+                  selection.error = "";
+                }}
+              >
+                {selection.active ? "Done" : "Select"}
+              </button>
+              <button
                 ref={rulesButton}
                 type="button"
                 class="text-button images-rules-button"
@@ -609,6 +767,68 @@ export const ImagesView = component$<{
             </div>
           </header>
           <div class="images-browser-body">
+            {selection.active && (
+              <div
+                class="images-selection-actions"
+                role="region"
+                aria-label="Selected photos"
+              >
+                <span role="status">{selection.ids.length} selected</span>
+                {selection.ids.length ? (
+                  <a
+                    class="secondary-button"
+                    download={
+                      selection.ids.length === 1
+                        ? state.items.find(
+                            (photo) => photo.id === selection.ids[0],
+                          )?.filename
+                        : "photos.zip"
+                    }
+                    href={
+                      selection.ids.length === 1
+                        ? `/api/v1${photoPath(selection.ids[0])}/original`
+                        : `/api/v1/provider-lookups/immich/images/download?${new URLSearchParams({ assetIds: selection.ids.join(",") })}`
+                    }
+                  >
+                    Download
+                  </a>
+                ) : (
+                  <button class="secondary-button" disabled>
+                    Download
+                  </button>
+                )}
+                {shareSupported.value && (
+                  <button
+                    type="button"
+                    class="secondary-button"
+                    disabled={!selection.ids.length || selection.preparing}
+                    onClick$={shareFiles.value ? sharePhotos : prepareShare}
+                  >
+                    {selection.preparing
+                      ? "Preparing…"
+                      : shareFiles.value
+                        ? "Share now"
+                        : "Share"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  class="text-button"
+                  onClick$={() => {
+                    selection.active = false;
+                    selection.ids = [];
+                    selection.error = "";
+                  }}
+                >
+                  Cancel
+                </button>
+                {selection.error && (
+                  <p class="message error" role="alert">
+                    {selection.error}
+                  </p>
+                )}
+              </div>
+            )}
             <form
               class="images-search"
               preventdefault:submit
@@ -965,21 +1185,33 @@ export const ImagesView = component$<{
                   </div>
                 )}
                 <div
+                  ref={grid}
                   class="images-grid collection-layout"
+                  data-selecting={selection.active ? "true" : undefined}
                   data-view={layout.view.value}
                 >
                   {state.items.map((image) => (
                     <button
                       key={image.id}
+                      data-photo-id={image.id}
+                      aria-label={image.filename}
                       type="button"
                       class={{
                         "image-tile": true,
-                        selected: state.selected?.id === image.id,
+                        selected: selection.active
+                          ? selection.ids.includes(image.id)
+                          : state.selected?.id === image.id,
                       }}
-                      aria-pressed={state.selected?.id === image.id}
+                      aria-pressed={
+                        selection.active
+                          ? selection.ids.includes(image.id)
+                          : state.selected?.id === image.id
+                      }
                       title={tiles ? image.filename : undefined}
                       disabled={busy}
-                      onClick$={() => choose(image)}
+                      onClick$={() =>
+                        selection.active ? togglePhoto(image.id) : choose(image)
+                      }
                     >
                       {layout.view.value !== "simple-list" &&
                         (state.failedPreviews.includes(image.id) ? (
@@ -1008,7 +1240,7 @@ export const ImagesView = component$<{
                             }}
                           />
                         ))}
-                      <span class="image-item-copy">
+                      <span class={tiles ? "sr-only" : "image-item-copy"}>
                         <span class="image-item-name">{image.filename}</span>
                         {layout.view.value === "detailed-list" && (
                           <>

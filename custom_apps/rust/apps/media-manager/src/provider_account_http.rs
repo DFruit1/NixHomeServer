@@ -690,6 +690,14 @@ pub fn provider_account_router(state: ProviderBrokerState) -> Router {
             get(immich::details),
         )
         .route(
+            "/api/v1/provider-lookups/immich/images/download",
+            get(immich::downloads::download),
+        )
+        .route(
+            "/api/v1/provider-lookups/immich/images/{id}/original",
+            get(immich::downloads::original),
+        )
+        .route(
             "/api/v1/provider-lookups/immich/images/{id}/preview",
             get(immich::preview),
         )

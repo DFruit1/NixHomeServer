@@ -8,6 +8,7 @@ use zeroize::Zeroizing;
 
 use crate::image_index::{probability, valid_tag, Analysis, Index, Search, MODEL, PAGE_SIZE};
 pub(super) mod decisions;
+pub(super) mod downloads;
 mod indexing;
 pub(super) use indexing::{indexed, run_indexer};
 const MAX_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
@@ -163,7 +164,11 @@ impl Account {
             && path.strip_prefix("assets/").is_some_and(valid_mbid)
             && body.as_ref() == Some(&json!({"visibility": "archive"}));
         if method != Method::GET
-            && !(method == Method::POST && matches!(path, "search/metadata" | "search/smart"))
+            && !(method == Method::POST
+                && matches!(
+                    path,
+                    "search/metadata" | "search/smart" | "download/archive"
+                ))
             && !archive
         {
             return Err(error(
@@ -177,6 +182,9 @@ impl Account {
         let mut key = HeaderValue::from_str(&self.key).map_err(|_| upstream_error(id))?;
         key.set_sensitive(true);
         let mut request = state.client.request(method, url).header("x-api-key", key);
+        if path == "download/archive" || path.ends_with("/original") {
+            request = request.timeout(Duration::from_secs(120));
+        }
         if let Some(body) = body {
             request = request.json(&body);
         }

@@ -169,7 +169,9 @@ async fn asset(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    assert_eq!(headers["x-api-key"], "fixture-alice");
+    if headers["x-api-key"] != "fixture-alice" {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     state.calls.lock().unwrap().push("asset".into());
     let found = state
         .semantic_pages
@@ -274,6 +276,16 @@ async fn redirect(State(state): State<Fixture>) -> Response {
     )
         .into_response()
 }
+async fn download_archive(headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    assert_eq!(headers["x-api-key"], "fixture-alice");
+    assert_eq!(body, json!({"assetIds":[PHOTO], "edited":false}));
+    (
+        [("content-type", "application/zip")],
+        b"PK-fixture".to_vec(),
+    )
+        .into_response()
+}
+
 async fn test_app(
     temp: &tempfile::TempDir,
     state: Fixture,
@@ -283,6 +295,8 @@ async fn test_app(
         .route("/api/search/smart", post(smart_search))
         .route("/api/assets/{id}", get(asset))
         .route(&format!("/api/assets/{PHOTO}/thumbnail"), get(redirect))
+        .route(&format!("/api/assets/{PHOTO}/original"), get(redirect))
+        .route("/api/download/archive", post(download_archive))
         .route("/api/tags", put(upsert))
         .route("/api/tags/assets", put(attach))
         .route("/api/albums", get(list_albums).post(create_album))
@@ -1488,4 +1502,100 @@ async fn category_questions_add_only_the_assessed_photo_to_the_matching_album() 
     eye.await.unwrap();
     d1.await.unwrap();
     upstream.abort();
+}
+
+// Original exports cross the private-photo boundary too: exercise the new
+// streaming paths so another user's key, revoked access or an upstream redirect
+// cannot expose private originals or forward credentials outside Immich.
+#[tokio::test]
+async fn original_downloads_keep_current_access_and_redirect_boundaries() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = Fixture {
+        preview_bytes: true,
+        ..Fixture::default()
+    };
+    let (app, task) = test_app(&temp, fixture.clone()).await;
+    for path in [
+        format!("{ROOT}/{PHOTO}/original"),
+        format!("{ROOT}/download?assetIds={PHOTO}"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request("GET", &path, "alice", false, Value::Null))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("no-store"));
+        assert!(response.headers()["content-disposition"]
+            .to_str()
+            .unwrap()
+            .starts_with("attachment;"));
+        let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert!(bytes.starts_with(b"PK-") || bytes.starts_with(b"\x89PNG"));
+        let response = app
+            .clone()
+            .oneshot(request("GET", &path, "bob", false, Value::Null))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    fixture.revoked.lock().unwrap().push(PHOTO.into());
+    for path in [
+        format!("{ROOT}/{PHOTO}/original"),
+        format!("{ROOT}/download?assetIds={PHOTO}"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request("GET", &path, "alice", false, Value::Null))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+    task.abort();
+    let (app, task) = test_app(&temp, Fixture::default()).await;
+    let response = app
+        .oneshot(request(
+            "GET",
+            &format!("{ROOT}/{PHOTO}/original"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = json_response(response).await.to_string();
+    assert!(!body.contains("fixture-alice") && !body.contains("outside.invalid"));
+    task.abort();
+}
+
+#[tokio::test]
+async fn photo_download_batches_reject_invalid_ids_before_upstream_access() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = Fixture::default();
+    let (app, task) = test_app(&temp, fixture.clone()).await;
+    for ids in [
+        String::new(),
+        "../private".into(),
+        vec![PHOTO; 201].join(","),
+    ] {
+        let path = format!("{ROOT}/download?assetIds={ids}");
+        let response = app
+            .clone()
+            .oneshot(request("GET", &path, "alice", false, Value::Null))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    assert!(fixture.calls.lock().unwrap().is_empty());
+    task.abort();
 }

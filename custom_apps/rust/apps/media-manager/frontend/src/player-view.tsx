@@ -1,6 +1,7 @@
 import {
   $,
   component$,
+  useOnWindow,
   useSignal,
   useStore,
   useTask$,
@@ -112,6 +113,29 @@ export const PlayerView = component$<{
     albumView: true,
     selectedAlbumDir: "",
   });
+  // Album browsing gets one history entry; playback and track changes do not.
+  const openAlbum = $((albumDir: string) => {
+    playerState.albumView = false;
+    playerState.selectedAlbumDir = albumDir;
+    if (typeof window === "undefined" || props.active === false) return;
+    const next = { ...window.history.state, musicAlbum: albumDir };
+    if (Object.hasOwn(window.history.state ?? {}, "musicAlbum"))
+      window.history.replaceState(next, "", window.location.href);
+    else window.history.pushState(next, "", window.location.href);
+  });
+  useOnWindow(
+    "popstate",
+    $((event: PopStateEvent) => {
+      if (new URLSearchParams(window.location.search).get("view") !== "player")
+        return;
+      navigationGeneration.value++;
+      const album = (event.state as { musicAlbum?: string } | null)?.musicAlbum;
+      playerState.albumView = album === undefined;
+      playerState.selectedAlbumDir = album ?? "";
+      search.value = "";
+    }),
+  );
+
   const musicRoots = props.state.roots.filter(
     (root) => root.category === "music" || root.category === "audiobooks",
   );
@@ -447,8 +471,7 @@ export const PlayerView = component$<{
       const target = playerState.tracks[index];
       const albumDir = target.relativePath.split("/").slice(0, -1).join("/");
       if (albumDir) {
-        playerState.albumView = false;
-        playerState.selectedAlbumDir = albumDir;
+        await openAlbum(albumDir);
       }
       playTrack(index);
       if (requestId) props.state.miniPlayerItemId = "";
@@ -523,8 +546,7 @@ export const PlayerView = component$<{
 
   const playAllTracks = $(() => {
     if (playerState.tracks.length === 0) return;
-    playerState.albumView = false;
-    playerState.selectedAlbumDir = "";
+    void openAlbum("");
     if (playerState.shuffle === "off") {
       playTrack(0);
       return;
@@ -539,8 +561,7 @@ export const PlayerView = component$<{
   });
 
   const playAlbum = $((albumDir: string) => {
-    playerState.selectedAlbumDir = albumDir;
-    playerState.albumView = false;
+    void openAlbum(albumDir);
     const albumIndexes = playerState.tracks.reduce<number[]>(
       (indexes, track, index) => {
         if (track.relativePath.startsWith(albumDir + "/")) indexes.push(index);
@@ -1307,8 +1328,13 @@ export const PlayerView = component$<{
                 aria-label="Back to albums"
                 onClick$={() => {
                   navigationGeneration.value++;
-                  playerState.albumView = true;
-                  playerState.selectedAlbumDir = "";
+                  if (Object.hasOwn(window.history.state ?? {}, "musicAlbum")) {
+                    window.history.back();
+                  } else {
+                    playerState.albumView = true;
+                    playerState.selectedAlbumDir = "";
+                    search.value = "";
+                  }
                 }}
               >
                 <Icon name="chevron-down" size={16} />

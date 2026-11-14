@@ -579,12 +579,6 @@
 .image-item-name {
   overflow-wrap: anywhere;
 }
-/* Tiles: one truncated line; the tile's title and text keep the full name. */
-.images-grid[data-view^="tiles-"] .image-item-name {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
 .image-item-meta {
   color: var(--ink-soft);
   font-size: var(--text-xs);
@@ -938,6 +932,7 @@
   .image-detail:not(.image-detail--selected) .image-focus--empty {
     display: none;
   }
+  .images-browser,
   .images-browser-body {
     overflow: visible;
   }
@@ -984,5 +979,41 @@
   .decision-questions summary::before,
   .decision-check-box {
     transition: none;
+  }
+}
+
+/* Selection stays beside the photos while dragging through a long library. */
+.images-selection-actions {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  margin-bottom: 12px;
+  background: var(--card);
+}
+.images-selection-actions > span {
+  flex: 1 1 100%;
+  font-size: var(--text-sm);
+}
+.images-selection-actions > .message {
+  flex-basis: 100%;
+}
+.image-tile {
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+.image-tile img {
+  -webkit-user-drag: none;
+}
+@media (max-width: 920px) {
+  .images-selection-actions {
+    top: 8px;
+  }
+  .images-grid[data-view^="tiles-"] {
+    gap: 6px;
   }
 }

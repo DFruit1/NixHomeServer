@@ -63,6 +63,30 @@ and another device/browser profile can use a different layout. Clearing site dat
 resets these preferences. If browser storage is blocked, the chosen view still
 works for the current visit. Both pages default to three tiles per row.
 
+Photo tiles omit filenames; list views, tooltips and accessible names retain them.
+Tap a photo once to show its preview and saved scores. On phones, Back returns to
+the tapped photo at its previous viewport position. Desktop selection stays in
+its detail pane and resets that pane to its top.
+
+Use **Select**, or hold a photo for 400ms on a phone, to select multiple photos.
+After holding, drag over more photos to select a contiguous range; dragging near
+the screen edge scrolls through the gallery. Holding a selected photo removes a
+range from the selection. Swiping before the hold scrolls normally. **Done** or
+**Cancel** exits selection. Batches are limited to 200 photos.
+
+**Download** saves the original file for one photo, or streams a ZIP for several.
+On browsers supporting file sharing, **Share** prepares the originals and
+**Share now** opens the operating system's share sheet from a fresh tap. Preparation
+is limited to 100 MB and is canceled when the selection changes; use Download
+for larger collections. Canceling the share sheet retains the selection.
+These explicit export paths recheck each photo's current upstream access, retain
+no-store responses and never create public links. They require Immich's
+`asset.download` permission in addition to the existing read/view permissions.
+The managed-key provisioner includes this permission in source; applying it to
+live keys requires owner authorization for that credential permission change
+and an authorized deployment. Manually connected keys need the same permission.
+Analysis and search continue to use previews only.
+
 Scores are relative model judgments, not personal-value decisions. The app never
 deletes a photo or changes Immich tags or originals based on a prediction. The
 only Immich mutation is adding the assessed photo to an album named by an
