@@ -13,7 +13,7 @@ abstract class ShareActivity : Activity() {
   protected open fun mediaType(): String = "audio"
   protected open fun saveAudioToAudiobooks(): Boolean = false
   protected open fun queueShared(url: String) = ShareTarget.queue(this, url, mediaType(), saveAudioToAudiobooks())
-  protected open fun queuedMessage(): String = "Queued ${mediaType()} for download"
+  protected open fun queuedMessage(): String = if (mediaType() == "video") "Queued video download" else "Queued music download"
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)

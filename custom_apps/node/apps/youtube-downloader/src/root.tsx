@@ -6,6 +6,8 @@ import { ProfileMenu } from './client/profile-menu.js';
 import { OptionsPanel, OPTION_KEYS, type OptionKey, type BooleanOptionKey } from './client/options-panel.js';
 import { JobList } from './client/job-list.js';
 import { shouldQueueLocally } from './client/queue-fallback.js';
+import { ACTIVE_STATUSES, optionLabel, optionSummary } from './client/job-format.js';
+import { canReadClipboard, readClipboardText } from './client/clipboard.js';
 import { apiFetch, isTauriRuntime, normaliseServerBaseUrl, serverBaseUrl } from './client/api.js';
 import {
   addPendingJob,
@@ -78,6 +80,8 @@ export default component$(() => {
   const pendingJobs = useSignal<PendingJob[]>([]);
   const pendingNotice = useSignal('');
   const urlInput = useSignal<HTMLInputElement>();
+  const optionsOpen = useSignal(false);
+  const pasteAvailable = useSignal(false);
   // Set when the form was prefilled by the "Choose options" share target, so
   // queueing returns to the app the link came from.
   const returnAfterQueue = useSignal(false);
@@ -209,6 +213,7 @@ export default component$(() => {
       pinnedOptions.value = [];
     }
     serverUrlInput.value = serverBaseUrl();
+    pasteAvailable.value = canReadClipboard();
 
     const begin = $(async () => {
       connectionState.value = 'ready';
@@ -435,29 +440,57 @@ export default component$(() => {
     }
   });
 
+  const pasteFromClipboard = $(async () => {
+    error.value = '';
+    const text = await readClipboardText();
+    const pastedUrl = text ? extractYouTubeUrlFromClipboard(text) : undefined;
+    if (!pastedUrl) {
+      error.value = text ? 'The clipboard does not contain a YouTube link.' : 'Nothing to paste. Copy a YouTube link first.';
+      urlInput.value?.focus();
+      return;
+    }
+    url.value = pastedUrl;
+    if (autoQueueOnPaste.value) {
+      await submit(pastedUrl);
+    }
+  });
+
   const activeJobs = jobs.value
-    .filter((job) => ['queued', 'alert', 'probing', 'running', 'postprocessing'].includes(job.status))
+    .filter((job) => ACTIVE_STATUSES.includes(job.status))
     .sort((left, right) => activeJobRank(left) - activeJobRank(right) || left.createdAt.localeCompare(right.createdAt));
-  const historyJobs = jobs.value.filter((job) => !['queued', 'alert', 'probing', 'running', 'postprocessing'].includes(job.status));
+  const historyJobs = jobs.value.filter((job) => !ACTIVE_STATUSES.includes(job.status));
+  const optionState = {
+    mediaType: mediaType.value,
+    splitChapters: splitChapters.value,
+    includeChannel: includeChannel.value,
+    includeDate: includeDate.value,
+    embedAudioCoverArt: embedAudioCoverArt.value,
+    saveAudioToAudiobooks: saveAudioToAudiobooks.value,
+    downloadTranscript: downloadTranscript.value,
+    autoQueueOnPaste: autoQueueOnPaste.value,
+  };
 
   if (connectionState.value !== 'ready') {
     return (
       <main class="shell">
         <section class="toolbar">
           <div>
-            <h1><span>Youtube</span> Downloader</h1>
+            <h1><span>YouTube</span> Downloader</h1>
           </div>
         </section>
-        <section class="download-form">
-          <p class="destination-note">
+        <form class="download-form signin-form" preventdefault:submit onSubmit$={() => connect()}>
+          <p class="notice" role="status">
             {connectionState.value === 'checking'
               ? 'Checking sign-in…'
               : 'Connect this app to your server, then sign in with Kanidm.'}
           </p>
-          <label class="url-field">
+          <label class="field">
+            <span>Server</span>
             <input
               type="url"
-              aria-label="Server URL"
+              inputMode="url"
+              enterKeyHint="go"
+              autoComplete="url"
               value={serverUrlInput.value}
               onInput$={(_, target) => (serverUrlInput.value = target.value)}
               onBlur$={() => {
@@ -469,18 +502,15 @@ export default component$(() => {
               placeholder="https://ytdownload-app.sydneybasiniot.org"
             />
           </label>
-          {connectError.value && <p class="error">{connectError.value}</p>}
-          <div class="submit-actions">
-            <button
-              class="primary"
-              type="button"
-              disabled={connecting.value || connectionState.value === 'checking' || !serverUrlInput.value.trim()}
-              onClick$={() => connect()}
-            >
-              {connecting.value ? 'Signing in' : 'Sign in'}
-            </button>
-          </div>
-        </section>
+          {connectError.value && <p class="error" role="alert">{connectError.value}</p>}
+          <button
+            class="primary"
+            type="submit"
+            disabled={connecting.value || connectionState.value === 'checking' || !serverUrlInput.value.trim()}
+          >
+            {connecting.value ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
       </main>
     );
   }
@@ -489,7 +519,7 @@ export default component$(() => {
     <main class="shell">
       <section class="toolbar">
         <div>
-          <h1><span>Youtube</span> Downloader</h1>
+          <h1><span>YouTube</span> Downloader</h1>
         </div>
         <ProfileMenu
           image={profileImage.value}
@@ -501,24 +531,7 @@ export default component$(() => {
           onSignIn={isTauriRuntime() ? signInFromMain : undefined}
           onSignOut={isTauriRuntime() ? disconnect : undefined}
           appDownloadUrl={isTauriRuntime() ? undefined : me.value?.appDownloadUrl}
-        >
-          <OptionsPanel
-            location="profile"
-            pinned={pinnedOptions.value}
-            mediaType={mediaType.value}
-            splitChapters={splitChapters.value}
-            includeChannel={includeChannel.value}
-            includeDate={includeDate.value}
-            embedAudioCoverArt={embedAudioCoverArt.value}
-            saveAudioToAudiobooks={saveAudioToAudiobooks.value}
-            downloadTranscript={downloadTranscript.value}
-            autoQueueOnPaste={autoQueueOnPaste.value}
-            ytDlpVersion={ytDlpVersion.value}
-            onBooleanChange={updateBooleanOption}
-            onVersionChange={updateYtDlpVersion}
-            onPin={toggleOptionPin}
-          />
-        </ProfileMenu>
+        />
       </section>
 
       {isTauriRuntime() && signedIn.value === false && (
@@ -536,14 +549,22 @@ export default component$(() => {
         </section>
       )}
 
-      <section class="download-form">
-        <label class="url-field">
+      <form class="download-form" preventdefault:submit onSubmit$={() => submit()}>
+        <div class={{ 'url-field': true, 'has-paste': pasteAvailable.value }}>
           <input
             ref={urlInput}
             type="url"
-            aria-label="URL"
+            inputMode="url"
+            enterKeyHint="go"
+            autoComplete="off"
+            aria-label="YouTube link"
             value={url.value}
-            onInput$={(_, target) => (url.value = target.value)}
+            onInput$={(_, target) => {
+              url.value = target.value;
+              if (error.value) {
+                error.value = '';
+              }
+            }}
             onPaste$={async (event) => {
               if (!autoQueueOnPaste.value || submitting.value) {
                 return;
@@ -557,104 +578,127 @@ export default component$(() => {
               await submit(pastedUrl);
             }}
             onBlur$={() => (url.value = normalizeDownloadUrl(url.value))}
-            placeholder="https://..."
+            placeholder="Paste a YouTube link"
           />
-        </label>
+          {pasteAvailable.value && !url.value && (
+            <button type="button" class="paste-button" onClick$={pasteFromClipboard}>
+              Paste
+            </button>
+          )}
+        </div>
+
+        <button
+          class="primary queue-button"
+          type="submit"
+          disabled={!url.value.trim() || submitting.value}
+        >
+          {submitting.value ? 'Queueing…' : 'Queue'}
+        </button>
+
+        {error.value && <p class="error form-error" role="alert">{error.value}</p>}
 
         <div class="control-grid">
-          <fieldset>
+          <fieldset class="segmented">
             <legend>Type</legend>
-            <label class="segment-option">
-              <input
-                type="radio"
-                name="media-type"
-                value="audio"
-                checked={mediaType.value === 'audio'}
-                onChange$={() => (mediaType.value = 'audio')}
-              />
-              <span>Audio</span>
-            </label>
-            <label class="segment-option">
-              <input
-                type="radio"
-                name="media-type"
-                value="video"
-                checked={mediaType.value === 'video'}
-                onChange$={() => (mediaType.value = 'video')}
-              />
-              <span>Video</span>
-            </label>
+            <div class="segmented-options">
+              <label class="segment-option">
+                <input
+                  type="radio"
+                  name="media-type"
+                  value="audio"
+                  checked={mediaType.value === 'audio'}
+                  onChange$={() => (mediaType.value = 'audio')}
+                />
+                <span>Audio</span>
+              </label>
+              <label class="segment-option">
+                <input
+                  type="radio"
+                  name="media-type"
+                  value="video"
+                  checked={mediaType.value === 'video'}
+                  onChange$={() => (mediaType.value = 'video')}
+                />
+                <span>Video</span>
+              </label>
+            </div>
           </fieldset>
 
-          <fieldset>
+          <fieldset class="segmented">
             <legend>Destination</legend>
-            <button
-              type="button"
-              class={{ selected: destination.value === 'personal' }}
-              aria-pressed={destination.value === 'personal'}
-              onClick$={() => (destination.value = 'personal')}
-            >
-              Personal
-            </button>
-            {me.value?.canWriteShared && (
-              <button
-                type="button"
-                class={{ selected: destination.value === 'shared' }}
-                aria-pressed={destination.value === 'shared'}
-                onClick$={() => (destination.value = 'shared')}
-              >
-                Shared
-              </button>
-            )}
+            <div class="segmented-options">
+              <label class="segment-option">
+                <input
+                  type="radio"
+                  name="destination"
+                  value="personal"
+                  checked={destination.value === 'personal'}
+                  onChange$={() => (destination.value = 'personal')}
+                />
+                <span>Personal</span>
+              </label>
+              {me.value?.canWriteShared && (
+                <label class="segment-option">
+                  <input
+                    type="radio"
+                    name="destination"
+                    value="shared"
+                    checked={destination.value === 'shared'}
+                    onChange$={() => (destination.value = 'shared')}
+                  />
+                  <span>Shared</span>
+                </label>
+              )}
+            </div>
           </fieldset>
 
           <div class="format-controls" hidden={mediaType.value !== 'audio'}>
-              <label>
-                <span>Format</span>
-                <select value={audioFormat.value} onChange$={(_, target) => (audioFormat.value = target.value as typeof audioFormat.value)}>
-                  {AUDIO_FORMATS.map((format) => (
-                    <option key={format} value={format}>
-                      {format.toUpperCase()}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Quality</span>
-                <select value={audioQuality.value} onChange$={(_, target) => (audioQuality.value = target.value as typeof audioQuality.value)}>
-                  {AUDIO_QUALITIES.map((quality) => (
-                    <option key={quality} value={quality}>
-                      {quality}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            <label>
+              <span>Format</span>
+              <select value={audioFormat.value} onChange$={(_, target) => (audioFormat.value = target.value as typeof audioFormat.value)}>
+                {AUDIO_FORMATS.map((format) => (
+                  <option key={format} value={format}>
+                    {format.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Quality</span>
+              <select value={audioQuality.value} onChange$={(_, target) => (audioQuality.value = target.value as typeof audioQuality.value)}>
+                {AUDIO_QUALITIES.map((quality) => (
+                  <option key={quality} value={quality}>
+                    {optionLabel(quality)}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           <div class="format-controls" hidden={mediaType.value !== 'video'}>
-              <label>
-                <span>Container</span>
-                <select value={videoContainer.value} onChange$={(_, target) => (videoContainer.value = target.value as typeof videoContainer.value)}>
-                  {VIDEO_CONTAINERS.map((container) => (
-                    <option key={container} value={container}>
-                      {container.toUpperCase()}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Quality</span>
-                <select value={videoQuality.value} onChange$={(_, target) => (videoQuality.value = target.value as typeof videoQuality.value)}>
-                  {VIDEO_QUALITIES.map((quality) => (
-                    <option key={quality} value={quality}>
-                      {quality}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            <label>
+              <span>Container</span>
+              <select value={videoContainer.value} onChange$={(_, target) => (videoContainer.value = target.value as typeof videoContainer.value)}>
+                {VIDEO_CONTAINERS.map((container) => (
+                  <option key={container} value={container}>
+                    {container.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Quality</span>
+              <select value={videoQuality.value} onChange$={(_, target) => (videoQuality.value = target.value as typeof videoQuality.value)}>
+                {VIDEO_QUALITIES.map((quality) => (
+                  <option key={quality} value={quality}>
+                    {optionLabel(quality)}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
         </div>
 
-        {pinnedOptions.value.length > 0 && (
+        {pinnedOptions.value.length > 0 && !optionsOpen.value && (
           <OptionsPanel
             location="pinned"
             pinned={pinnedOptions.value}
@@ -673,46 +717,60 @@ export default component$(() => {
           />
         )}
 
-        {error.value && <p class="error">{error.value}</p>}
-        <div class="submit-actions">
-          <button
-            class="primary"
-            type="button"
-            disabled={!url.value.trim() || submitting.value}
-            onClick$={() => submit()}
-          >
-            {submitting.value ? 'Queueing' : 'Queue'}
-          </button>
-        </div>
-      </section>
+        <details
+          class="more-options"
+          open={optionsOpen.value}
+          onToggle$={(_, target) => (optionsOpen.value = target.open)}
+        >
+          <summary>
+            <span class="more-options__label">More options</span>
+            <span class="more-options__summary">{optionSummary(optionState)}</span>
+          </summary>
+          <OptionsPanel
+            location="form"
+            pinned={pinnedOptions.value}
+            mediaType={mediaType.value}
+            splitChapters={splitChapters.value}
+            includeChannel={includeChannel.value}
+            includeDate={includeDate.value}
+            embedAudioCoverArt={embedAudioCoverArt.value}
+            saveAudioToAudiobooks={saveAudioToAudiobooks.value}
+            downloadTranscript={downloadTranscript.value}
+            autoQueueOnPaste={autoQueueOnPaste.value}
+            ytDlpVersion={ytDlpVersion.value}
+            onBooleanChange={updateBooleanOption}
+            onVersionChange={updateYtDlpVersion}
+            onPin={toggleOptionPin}
+          />
+        </details>
+      </form>
 
       {isTauriRuntime() && (pendingJobs.value.length > 0 || pendingNotice.value) && (
         <section class="jobs">
-          <h2>Pending on this device</h2>
-          {pendingNotice.value && <p class="destination-note">{pendingNotice.value}</p>}
-          {pendingJobs.value.length === 0 ? (
-            <p class="empty">Nothing queued</p>
-          ) : (
+          <div class="section-head">
+            <h2>Pending on this device</h2>
+            {pendingJobs.value.length > 0 && (
+              <button type="button" class="section-action" onClick$={flushNow}>
+                Send all now
+              </button>
+            )}
+          </div>
+          {pendingNotice.value && <p class="notice" role="status">{pendingNotice.value}</p>}
+          {pendingJobs.value.length > 0 && (
             <div class="job-stack">
               {pendingJobs.value.map((job) => (
-                <article class="job" key={job.id}>
+                <article class="job pending-job" key={job.id}>
                   <div class="job-content">
-                    <div class="job-head">
-                      <div>
-                        <strong>{job.url}</strong>
-                        {job.lastError && <p>{job.lastError}</p>}
+                    <strong class="job-title">{job.url}</strong>
+                    <p class="job-meta">{job.mediaType === 'video' ? 'Video' : 'Audio'} · waiting to send</p>
+                    {job.lastError && <p class="job-error">{job.lastError}</p>}
+                    <div class="job-footer">
+                      <span class="status-badge queued">Pending</span>
+                      <div class="job-actions">
+                        <button type="button" onClick$={() => removePending(job.id)}>
+                          Remove
+                        </button>
                       </div>
-                      <span class="status-badge queued">
-                        pending · {job.mediaType === 'video' ? 'video' : 'audio'}
-                      </span>
-                    </div>
-                    <div class="job-actions">
-                      <button type="button" onClick$={flushNow}>
-                        Send now
-                      </button>
-                      <button type="button" onClick$={() => removePending(job.id)}>
-                        Remove
-                      </button>
                     </div>
                   </div>
                 </article>
@@ -721,7 +779,6 @@ export default component$(() => {
           )}
         </section>
       )}
-
       {activeJobs.length > 0 && <JobList title="Active" jobs={activeJobs} refresh={refresh} currentUser={me.value} />}
       <JobList title="History" jobs={historyJobs} refresh={refresh} currentUser={me.value} />
     </main>

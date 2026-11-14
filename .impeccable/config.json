@@ -25,6 +25,15 @@
         ],
         "createdAt": "2026-09-09T08:49:30.465Z",
         "reason": "Deliberate homepage status-accent treatment"
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "custom_apps/node/apps/youtube-downloader/src/client/styles.css"
+        ],
+        "createdAt": "2026-11-14T00:00:00.000Z",
+        "reason": "Deliberate YouTube Downloader job-status stripe, kept in the 2026-11-14 polish pass"
       }
     ]
   }

@@ -6,7 +6,7 @@ export type OptionKey = (typeof OPTION_KEYS)[number];
 export type BooleanOptionKey = Exclude<OptionKey, 'ytDlpVersion'>;
 
 type OptionsPanelProps = {
-  location: 'profile' | 'pinned';
+  location: 'form' | 'pinned';
   pinned: OptionKey[];
   mediaType: 'audio' | 'video';
   splitChapters: boolean;
@@ -23,7 +23,7 @@ type OptionsPanelProps = {
 };
 
 export const OptionsPanel = component$<OptionsPanelProps>((props) => {
-  const visible = (key: OptionKey): boolean => props.location === 'profile' || props.pinned.includes(key);
+  const visible = (key: OptionKey): boolean => props.location === 'form' || props.pinned.includes(key);
   const pinButton = (key: OptionKey) => (
     <button
       type="button"
