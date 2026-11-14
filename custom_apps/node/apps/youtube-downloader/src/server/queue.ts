@@ -18,6 +18,7 @@ import {
 } from './request-validation.js';
 import { childHasExited, delay, killChildGroup, waitForChildExit } from './process-utils.js';
 import { copyDirectoryContents, copySubtitleSidecars } from './output-move.js';
+import { writeMediaIndexHint } from './media-index-hint.js';
 
 export {
   chapterGateFor,
@@ -402,13 +403,22 @@ export class JobQueue {
     // Cover art is embedded into each media file. Loose thumbnail sidecars are
     // deliberately left in the temp directory so the synced library contains
     // only media and metadata, keeping per-track artwork authoritative.
-    await copyDirectoryContents(sourceDir, outputFolder, { skipArtworkSidecars: true });
+    const written = await copyDirectoryContents(sourceDir, outputFolder, { skipArtworkSidecars: true });
     if (sourceDir !== tempDir) {
       // Chapter splitting moved the media into the chapter subdirectory but
       // left subtitle sidecars in the temp root, so bring those across too.
-      await copySubtitleSidecars(tempDir, outputFolder);
+      written.push(...(await copySubtitleSidecars(tempDir, outputFolder)));
     }
     await this.recordFiles(job.id, outputFolder);
+    if (this.config.mediaIndexHintDir) {
+      try {
+        await writeMediaIndexHint(this.config.mediaIndexHintDir, job.id, written);
+      } catch (error) {
+        // The library's periodic scan still finds the files; only the
+        // immediate catalog update is lost.
+        console.error(`failed to announce job ${job.id} files to the media catalog`, error);
+      }
+    }
     await rm(tempDir, { recursive: true, force: true });
     await this.db.setProgress(job.id, null);
     await this.db.setStatus(job.id, 'completed');

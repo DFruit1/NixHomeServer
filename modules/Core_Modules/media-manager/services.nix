@@ -311,6 +311,63 @@ in
     };
   };
 
+  # Producers (e.g. the YouTube downloader) atomically drop `*.json` hints
+  # naming the files they just wrote. Cataloging only those paths makes new
+  # media visible within seconds without walking whole libraries.
+  systemd.paths.media-manager-index-hints = {
+    description = "Watch for newly written media announced to Media Manager";
+    wantedBy = [ "paths.target" ];
+    pathConfig = {
+      PathExistsGlob = "${cfg.indexHintDir}/*.json";
+      Unit = "media-manager-index-hints.service";
+    };
+  };
+
+  systemd.services.media-manager-index-hints = {
+    description = "Catalog media paths announced by other applications";
+    requires = [ "data-pool-layout.service" "media-manager-storage-access.service" ];
+    after = [ "data-pool-layout.service" "media-manager-storage-access.service" ];
+    environment = commonEnvironment // {
+      MEDIA_MANAGER_INDEX_HINT_DIR = cfg.indexHintDir;
+    };
+    serviceConfig = {
+      Type = "oneshot";
+      User = "media-manager";
+      Group = "media-manager";
+      ExecStart = "${lib.getExe' cfg.package "media-manager-scanner"} index-hints";
+      UMask = "0007";
+      Nice = 5;
+      CPUWeight = 40;
+      IOWeight = 40;
+      MemoryHigh = "256M";
+      MemoryMax = "512M";
+      NoNewPrivileges = true;
+      PrivateTmp = true;
+      PrivateDevices = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectKernelLogs = true;
+      ProtectControlGroups = true;
+      ProtectProc = "invisible";
+      ProcSubset = "pid";
+      ProtectClock = true;
+      ProtectHostname = true;
+      RestrictAddressFamilies = [ ];
+      RestrictNamespaces = true;
+      RestrictRealtime = true;
+      LockPersonality = true;
+      MemoryDenyWriteExecute = true;
+      CapabilityBoundingSet = [ ];
+      AmbientCapabilities = [ ];
+      ReadOnlyPaths = [ "-${vars.sharedRoot}" "-${vars.usersRoot}" ];
+      ReadWritePaths = [ cfg.stateDir cfg.indexHintDir ];
+      SystemCallArchitectures = "native";
+      SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
+    };
+  };
+
   systemd.services.media-manager-broker = {
     description = "Apply one queued Media Manager mutation plan";
     requires = [ "data-pool-layout.service" "media-manager-storage-access.service" ];

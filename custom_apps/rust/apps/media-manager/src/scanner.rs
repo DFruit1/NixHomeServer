@@ -173,9 +173,121 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
 
     let mut result = ScanResult::default();
     let mut scanned = Vec::new();
-    let mut pending = vec![root.path.clone()];
     let mut entries_seen = 0usize;
+    walk_directory(
+        root,
+        root.path.clone(),
+        &mut result,
+        &mut scanned,
+        &mut entries_seen,
+    )?;
 
+    result.items_indexed = scanned.len();
+    let outcome = if result.entries_skipped == 0 {
+        catalog.reconcile_root(&root.id, root.owner_username.as_deref(), &scanned)
+    } else {
+        catalog.reconcile_partial_root(&root.id, root.owner_username.as_deref(), &scanned)
+    }
+    .map_err(|error| format!("reconcile catalog: {error}"))?;
+    result.items_changed = outcome.changed;
+    result.items_removed = outcome.removed;
+    Ok(result)
+}
+
+/// Indexes only the named files or directories beneath one root instead of
+/// walking the whole library. Producers such as the downloader announce what
+/// they wrote; anything missing, outside the root, or reached through a
+/// symlink is ignored and left to the periodic full reconcile. Nothing is
+/// removed and the root's scan state is untouched.
+pub fn index_root_paths(
+    catalog_handle: &CatalogHandle,
+    root: &ScanRoot,
+    paths: &[PathBuf],
+) -> Result<ScanResult, String> {
+    with_root_scan_lock(root, || {
+        if !root.path.is_dir() {
+            return Err(format!(
+                "scan root {} is unavailable: {}",
+                root.id,
+                root.path.display()
+            ));
+        }
+        let mut result = ScanResult::default();
+        let mut scanned = Vec::new();
+        let mut entries_seen = 0usize;
+        for path in paths {
+            let Some(metadata) = contained_metadata(&root.path, path) else {
+                record_skip(&mut result, path);
+                continue;
+            };
+            if metadata.is_dir() {
+                walk_directory(
+                    root,
+                    path.clone(),
+                    &mut result,
+                    &mut scanned,
+                    &mut entries_seen,
+                )?;
+            } else if metadata.is_file() {
+                entries_seen += 1;
+                result.files_seen += 1;
+                match scanned_item(root, path, &metadata) {
+                    Ok(Some(item)) => scanned.push(item),
+                    Ok(None) => {}
+                    Err(()) => record_skip(&mut result, path),
+                }
+            }
+        }
+        // A directory and a file inside it may both be announced.
+        let mut unique = std::collections::HashSet::new();
+        scanned.retain(|item| unique.insert(item.id.clone()));
+        result.items_indexed = scanned.len();
+        if scanned.is_empty() {
+            return Ok(result);
+        }
+        let mut catalog = catalog_handle
+            .open()
+            .map_err(|error| format!("open catalog: {error}"))?;
+        let outcome = catalog
+            .merge_root_items(&root.id, root.owner_username.as_deref(), &scanned)
+            .map_err(|error| format!("merge catalog items: {error}"))?;
+        result.items_changed = outcome.changed;
+        Ok(result)
+    })
+}
+
+/// Returns metadata for `path` only when it is the root or a descendant whose
+/// every component below the root is a real (non-symlink) directory entry
+/// outside the tombstone folder.
+fn contained_metadata(root: &Path, path: &Path) -> Option<fs::Metadata> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut current = root.to_path_buf();
+    let mut metadata = None;
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return None;
+        };
+        if name.to_str() == Some(TOMBSTONE_FOLDER) {
+            return None;
+        }
+        current.push(name);
+        let entry = fs::symlink_metadata(&current).ok()?;
+        if entry.file_type().is_symlink() {
+            return None;
+        }
+        metadata = Some(entry);
+    }
+    metadata
+}
+
+fn walk_directory(
+    root: &ScanRoot,
+    start: PathBuf,
+    result: &mut ScanResult,
+    scanned: &mut Vec<ScannedItem>,
+    entries_seen: &mut usize,
+) -> Result<(), String> {
+    let mut pending = vec![start];
     while let Some(directory) = pending.pop() {
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
@@ -183,7 +295,7 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
                 if directory == root.path {
                     return Err(format!("read {}: {error}", directory.display()));
                 }
-                record_skip(&mut result, &directory);
+                record_skip(result, &directory);
                 continue;
             }
         };
@@ -191,12 +303,12 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(_) => {
-                    record_skip(&mut result, &directory);
+                    record_skip(result, &directory);
                     continue;
                 }
             };
-            entries_seen += 1;
-            if entries_seen > MAX_SCAN_ENTRIES {
+            *entries_seen += 1;
+            if *entries_seen > MAX_SCAN_ENTRIES {
                 return Err(format!(
                     "root {} exceeded the {MAX_SCAN_ENTRIES} entry scan limit",
                     root.id
@@ -206,7 +318,7 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
             let metadata = match fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(_) => {
-                    record_skip(&mut result, &path);
+                    record_skip(result, &path);
                     continue;
                 }
             };
@@ -225,58 +337,49 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
                 continue;
             }
             result.files_seen += 1;
-            let extension = path
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            let media_kind = match classify(root.category, &extension) {
-                Some(media_kind) => media_kind,
-                None => continue,
-            };
-            let relative = match path.strip_prefix(&root.path) {
-                Ok(relative) => relative,
-                Err(_) => {
-                    record_skip(&mut result, &path);
-                    continue;
-                }
-            };
-            let relative_path = match normalized_relative_path(relative) {
-                Ok(relative_path) => relative_path,
-                Err(_) => {
-                    record_skip(&mut result, &path);
-                    continue;
-                }
-            };
-            let modified_ns = metadata
-                .modified()
-                .ok()
-                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-                .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
-                .unwrap_or(0);
-            let fingerprint = format!("{}:{modified_ns}", metadata.len());
-            let id = stable_item_id(&root.id, root.owner_username.as_deref(), &relative_path);
-            scanned.push(ScannedItem {
-                id,
-                relative_path,
-                media_kind,
-                size_bytes: metadata.len().min(i64::MAX as u64) as i64,
-                modified_ns,
-                fingerprint,
-            });
+            match scanned_item(root, &path, &metadata) {
+                Ok(Some(item)) => scanned.push(item),
+                Ok(None) => {}
+                Err(()) => record_skip(result, &path),
+            }
         }
     }
+    Ok(())
+}
 
-    result.items_indexed = scanned.len();
-    let outcome = if result.entries_skipped == 0 {
-        catalog.reconcile_root(&root.id, root.owner_username.as_deref(), &scanned)
-    } else {
-        catalog.reconcile_partial_root(&root.id, root.owner_username.as_deref(), &scanned)
-    }
-    .map_err(|error| format!("reconcile catalog: {error}"))?;
-    result.items_changed = outcome.changed;
-    result.items_removed = outcome.removed;
-    Ok(result)
+/// Builds the catalog row for one regular file, or `None` when its extension
+/// is not media for this root's category. `Err` marks an unindexable path.
+fn scanned_item(
+    root: &ScanRoot,
+    path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<Option<ScannedItem>, ()> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let Some(media_kind) = classify(root.category, &extension) else {
+        return Ok(None);
+    };
+    let relative = path.strip_prefix(&root.path).map_err(|_| ())?;
+    let relative_path = normalized_relative_path(relative).map_err(|_| ())?;
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0);
+    let fingerprint = format!("{}:{modified_ns}", metadata.len());
+    let id = stable_item_id(&root.id, root.owner_username.as_deref(), &relative_path);
+    Ok(Some(ScannedItem {
+        id,
+        relative_path,
+        media_kind,
+        size_bytes: metadata.len().min(i64::MAX as u64) as i64,
+        modified_ns,
+        fingerprint,
+    }))
 }
 
 fn record_skip(result: &mut ScanResult, path: &Path) {

@@ -23,9 +23,13 @@ const SUBTITLE_SIDECAR_EXTENSIONS = new Set(['.srt', '.vtt', '.ass', '.ssa', '.l
 export const isSubtitleSidecar = (name: string): boolean =>
   SUBTITLE_SIDECAR_EXTENSIONS.has(path.extname(name).toLowerCase());
 
-/** Copy only subtitle sidecars, leaving every other temp-directory file behind. */
-export const copySubtitleSidecars = async (sourceDir: string, destinationDir: string): Promise<void> => {
+/**
+ * Copy only subtitle sidecars, leaving every other temp-directory file behind.
+ * Returns the destination path of every copied sidecar.
+ */
+export const copySubtitleSidecars = async (sourceDir: string, destinationDir: string): Promise<string[]> => {
   const entries = await readdir(sourceDir, { withFileTypes: true });
+  const copied: string[] = [];
   for (const entry of entries) {
     if (!entry.isFile() || !isSubtitleSidecar(entry.name)) {
       continue;
@@ -35,7 +39,9 @@ export const copySubtitleSidecars = async (sourceDir: string, destinationDir: st
       force: false,
       errorOnExist: true,
     });
+    copied.push(destination);
   }
+  return copied;
 };
 
 export type CopyDirectoryOptions = {
@@ -43,12 +49,14 @@ export type CopyDirectoryOptions = {
   skipArtworkSidecars?: boolean;
 };
 
+/** Returns the destination path of every copied top-level entry. */
 export const copyDirectoryContents = async (
   sourceDir: string,
   destinationDir: string,
   options: CopyDirectoryOptions = {},
-): Promise<void> => {
+): Promise<string[]> => {
   const entries = await readdir(sourceDir, { withFileTypes: true });
+  const copied: string[] = [];
   for (const entry of entries) {
     if (options.skipArtworkSidecars && entry.isFile() && isArtworkSidecar(entry.name)) {
       continue;
@@ -59,7 +67,9 @@ export const copyDirectoryContents = async (
       force: false,
       errorOnExist: true,
     });
+    copied.push(destination);
   }
+  return copied;
 };
 
 export const allocateUniqueDestination = async (directory: string, name: string): Promise<string> => {

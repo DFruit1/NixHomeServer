@@ -798,12 +798,35 @@ impl Catalog {
         self.reconcile_root_snapshot(root_id, owner_username, items, false)
     }
 
+    /// Upsert individually announced files without deleting unseen items or
+    /// marking the root as scanned, so a never-scanned root still receives its
+    /// initial full discovery.
+    pub fn merge_root_items(
+        &mut self,
+        root_id: &str,
+        owner_username: Option<&str>,
+        items: &[ScannedItem],
+    ) -> rusqlite::Result<ReconcileOutcome> {
+        self.write_root_items(root_id, owner_username, items, false, false)
+    }
+
     fn reconcile_root_snapshot(
         &mut self,
         root_id: &str,
         owner_username: Option<&str>,
         items: &[ScannedItem],
         complete: bool,
+    ) -> rusqlite::Result<ReconcileOutcome> {
+        self.write_root_items(root_id, owner_username, items, complete, true)
+    }
+
+    fn write_root_items(
+        &mut self,
+        root_id: &str,
+        owner_username: Option<&str>,
+        items: &[ScannedItem],
+        complete: bool,
+        record_scan: bool,
     ) -> rusqlite::Result<ReconcileOutcome> {
         // Acquire the write reservation before reading the existing rows. A
         // deferred transaction can read alongside another writer in WAL mode,
@@ -887,13 +910,15 @@ impl Catalog {
             delete.execute([id.as_str()])?;
         }
         drop(delete);
-        transaction.execute(
-            "INSERT INTO catalog_scans (root_id, owner_username, scanned_at)
-             VALUES (?1, ?2, CURRENT_TIMESTAMP)
-             ON CONFLICT(root_id, owner_username) DO UPDATE SET
-               scanned_at = CURRENT_TIMESTAMP",
-            rusqlite::params![root_id, owner_username.unwrap_or_default()],
-        )?;
+        if record_scan {
+            transaction.execute(
+                "INSERT INTO catalog_scans (root_id, owner_username, scanned_at)
+                 VALUES (?1, ?2, CURRENT_TIMESTAMP)
+                 ON CONFLICT(root_id, owner_username) DO UPDATE SET
+                   scanned_at = CURRENT_TIMESTAMP",
+                rusqlite::params![root_id, owner_username.unwrap_or_default()],
+            )?;
+        }
         transaction.commit()?;
         Ok(ReconcileOutcome {
             changed,

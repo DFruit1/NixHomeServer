@@ -7,6 +7,7 @@ in
   users.groups.media-manager = { };
   users.groups.media-manager-broker = { };
   users.groups.media-manager-provider = { };
+  users.groups.${cfg.indexHintGroup} = { };
   users.users.media-manager = {
     isSystemUser = true;
     group = "media-manager";

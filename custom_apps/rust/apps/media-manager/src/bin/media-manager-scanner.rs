@@ -1,6 +1,7 @@
 use media_manager::{
     catalog::{Catalog, CatalogHandle},
     config::AppConfig,
+    index_hints::drain_hint_directory,
     scanner::{scan_root_if_due, ScanRoot},
 };
 use serde_json::json;
@@ -20,6 +21,11 @@ fn run() -> Result<(), String> {
     Catalog::initialize(&config.database_path())
         .map_err(|error| format!("open catalog: {error}"))?;
     let handle = CatalogHandle::new(config.database_path());
+    match std::env::args().nth(1).as_deref() {
+        None => {}
+        Some("index-hints") => return run_index_hints(&config, &handle),
+        Some(other) => return Err(format!("unknown mode: {other}")),
+    }
     let now = unix_timestamp();
 
     let mut roots_scanned = 0usize;
@@ -80,6 +86,59 @@ fn run() -> Result<(), String> {
         "scan_complete",
         json!({ "rootsScanned": roots_scanned }),
     );
+    Ok(())
+}
+
+/// Indexes only the files producers announced in the hint directory, so new
+/// downloads appear without a full library walk.
+fn run_index_hints(config: &AppConfig, handle: &CatalogHandle) -> Result<(), String> {
+    let hint_dir = std::env::var_os("MEDIA_MANAGER_INDEX_HINT_DIR")
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| "MEDIA_MANAGER_INDEX_HINT_DIR is not set".to_string())?;
+    let run = drain_hint_directory(config, handle, &hint_dir)?;
+    let mut roots_failed = 0usize;
+    for outcome in &run.roots {
+        match &outcome.result {
+            Ok(result) => log(
+                "info",
+                "hinted_paths_indexed",
+                json!({
+                    "rootId": outcome.root_id,
+                    "ownerUsername": outcome.owner_username,
+                    "result": result,
+                }),
+            ),
+            Err(error) => {
+                roots_failed += 1;
+                log(
+                    "error",
+                    "hinted_paths_index_failed",
+                    json!({
+                        "rootId": outcome.root_id,
+                        "ownerUsername": outcome.owner_username,
+                        "error": error,
+                    }),
+                );
+            }
+        }
+    }
+    log(
+        if run.hints_invalid > 0 || run.paths_unmatched > 0 {
+            "warn"
+        } else {
+            "info"
+        },
+        "index_hints_complete",
+        json!({
+            "hintsRead": run.hints_read,
+            "hintsInvalid": run.hints_invalid,
+            "pathsUnmatched": run.paths_unmatched,
+            "rootsIndexed": run.roots.len() - roots_failed,
+        }),
+    );
+    if roots_failed > 0 {
+        return Err(format!("{roots_failed} hinted root updates failed"));
+    }
     Ok(())
 }
 

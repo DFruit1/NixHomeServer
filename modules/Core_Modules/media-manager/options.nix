@@ -89,6 +89,21 @@ in
       readOnly = true;
       description = "Broker-only encrypted provider account state.";
     };
+    indexHintDir = lib.mkOption {
+      type = lib.types.str;
+      default = "/run/media-manager-index-hints";
+      readOnly = true;
+      description = ''
+        Drop directory where producers announce newly written library paths so
+        only those files are cataloged. Writers join `indexHintGroup`.
+      '';
+    };
+    indexHintGroup = lib.mkOption {
+      type = lib.types.str;
+      default = "media-manager-index-hints";
+      readOnly = true;
+      description = "Group allowed to create (but not list or read) index hints.";
+    };
     editorGroup = lib.mkOption {
       type = lib.types.str;
       default = "media-manager-editors";

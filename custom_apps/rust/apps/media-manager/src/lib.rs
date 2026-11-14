@@ -14,6 +14,7 @@ mod decision_index;
 pub mod http;
 mod image_index;
 mod image_search;
+pub mod index_hints;
 mod lookup_cache;
 pub mod media;
 pub mod metadata;

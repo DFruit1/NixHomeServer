@@ -360,6 +360,37 @@ impl AppConfig {
         specs
     }
 
+    /// Finds the shared or personal library root that contains an absolute
+    /// path, using only path components (no filesystem access).
+    pub fn scan_spec_for_path(&self, path: &std::path::Path) -> Option<RootScanSpec> {
+        let category_for = |folder: std::path::Component<'_>| {
+            LibraryCategory::ALL
+                .into_iter()
+                .find(|category| folder.as_os_str() == category.folder_name())
+        };
+        if let Some(category) = path
+            .strip_prefix(&self.shared_root)
+            .ok()
+            .and_then(|relative| relative.components().next())
+            .and_then(category_for)
+        {
+            return self
+                .shared_scan_specs()
+                .into_iter()
+                .find(|spec| spec.category == category);
+        }
+        let relative = path.strip_prefix(&self.users_root).ok()?;
+        let mut components = relative.components();
+        let username = components.next()?.as_os_str().to_str()?;
+        if !is_valid_username(username) {
+            return None;
+        }
+        let category = category_for(components.next()?)?;
+        self.personal_scan_specs(username)
+            .into_iter()
+            .find(|spec| spec.category == category)
+    }
+
     pub fn resolve_visible_root(&self, identity: &Identity, root_id: &str) -> Option<VisibleRoot> {
         if !valid_root_id(root_id) {
             return None;

@@ -212,6 +212,7 @@ rec {
     { module = ./Integrations/grant_files_access_to_kiwix_library.nix; allApps = [ "files" "kiwix" ]; anyApps = [ ]; }
     { module = ./Integrations/grant_mail_archive_access_to_paperless_consume_subdirectory.nix; allApps = [ "mail-archive-ui" "paperless" ]; anyApps = [ ]; }
     { module = ./Integrations/send_mail_archive_documents_to_paperless.nix; allApps = [ "mail-archive-ui" "paperless" ]; anyApps = [ ]; }
+    { module = ./Integrations/announce_youtube_downloads_to_media_manager.nix; allApps = [ "youtube-downloader" ]; anyApps = [ ]; }
     { module = ./Integrations/wait_for_audiobookshelf_storage_before_youtube_downloader.nix; allApps = [ "audiobookshelf" "youtube-downloader" ]; anyApps = [ ]; }
     { module = ./Integrations/wait_for_jellyfin_storage_before_youtube_downloader.nix; allApps = [ "jellyfin" "youtube-downloader" ]; anyApps = [ ]; }
     { module = ./Integrations/wire_media_automation_stack.nix; allApps = [ ]; anyApps = [ "chaptarr" "sonarr" "radarr" "prowlarr" "qbittorrent" ]; }

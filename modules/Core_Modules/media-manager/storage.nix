@@ -88,6 +88,10 @@ in
     "d ${cfg.stateDir} 0770 media-manager media-manager -"
     "d ${cfg.stateDir}/refresh-requests 0750 media-manager media-manager -"
     "d ${cfg.stateDir}/refresh-results 0750 media-manager media-manager -"
+    # Sticky, write-only for producers: they can drop hints but cannot list,
+    # read or remove anyone else's. Transient by design; the periodic scan
+    # covers anything lost across a reboot.
+    "d ${cfg.indexHintDir} 1730 media-manager ${cfg.indexHintGroup} -"
     # SQLite WAL mode is three-file state. Repair legacy modes before either
     # writer starts: https://www.freedesktop.org/software/systemd/man/latest/tmpfiles.d.html#z
     "z ${cfg.stateDir}/control.sqlite3 0660 media-manager media-manager -"
