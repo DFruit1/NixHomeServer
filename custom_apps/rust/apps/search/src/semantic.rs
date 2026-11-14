@@ -278,7 +278,7 @@ pub(crate) async fn run_index() -> Result<(), String> {
             "--batch-size",
             "2048",
             "--ubatch-size",
-            "512",
+            "2048",
             "--parallel",
             "1",
             "--threads",
