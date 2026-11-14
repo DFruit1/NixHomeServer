@@ -178,7 +178,11 @@ describe("Media Manager navigation", () => {
     await vi.waitFor(() =>
       expect(screen.textContent).toContain("Conflicting title"),
     );
-    expect(screen.textContent).toContain("Arrival (2016).mkv");
+    // The banner names the item once, by its folder title rather than its file.
+    expect(
+      screen.querySelector(".health-result-heading")?.textContent ??
+        screen.textContent,
+    ).toContain("Arrival (2016)");
     expect(screen.textContent).toContain("1 issue across 1 inspected item");
     expect(
       screen.querySelector("a.health-review-link")?.getAttribute("href"),

@@ -333,7 +333,7 @@ export const VideosView = component$<{
           )}
           <span>
             {visibleItems.length === state.items.length
-              ? state.items.length
+              ? `${state.items.length} ${state.items.length === 1 ? "video" : "videos"}`
               : `${visibleItems.length} of ${state.items.length}`}
           </span>
         </div>

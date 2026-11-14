@@ -1983,6 +1983,8 @@ const LibraryDetailPane = component$<{
   // as lifted above the editor rather than overlapping it. It is stuck when
   // the gap to the breadcrumb above it grows beyond the pane's normal gap.
   useVisibleTask$(({ cleanup }) => {
+    if (typeof document === "undefined" || typeof window === "undefined")
+      return;
     let frame = 0;
     const measure = () => {
       frame = 0;
