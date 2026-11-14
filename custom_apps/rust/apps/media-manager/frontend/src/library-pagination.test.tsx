@@ -154,7 +154,7 @@ describe("Media Manager library pagination", () => {
     );
     await userEvent(
       Array.from(screen.querySelectorAll("button")).find(
-        (button) => button.textContent?.trim() === "Create draft",
+        (button) => button.textContent?.trim() === "Edit",
       ) ?? null,
       "click",
     );

@@ -1524,13 +1524,13 @@ describe("Media Manager library browser", () => {
     );
     await userEvent(
       Array.from(screen.querySelectorAll("button")).find(
-        (button) => button.textContent?.trim() === "Create draft",
+        (button) => button.textContent?.trim() === "Edit",
       ) ?? null,
       "click",
     );
     const previewClick = userEvent(
       Array.from(screen.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Preview metadata sidecar"),
+        button.textContent?.includes("Preview changes"),
       ) ?? null,
       "click",
     );
@@ -1862,9 +1862,11 @@ describe("Media Manager library browser", () => {
     expect(screen.textContent).not.toContain(
       "Sources, differences, and write targets",
     );
-    expect(screen.querySelector(".metadata-toolbar")?.textContent).toContain(
-      "Create draft",
-    );
+    expect(
+      screen
+        .querySelector(".editor-heading-actions .primary-button")
+        ?.textContent?.trim(),
+    ).toBe("Edit");
     expect(screen.querySelector(".metadata-inspector")).toBeFalsy();
     await userEvent(
       Array.from(screen.querySelectorAll(".metadata-section-tab")).find(
@@ -1894,7 +1896,7 @@ describe("Media Manager library browser", () => {
       "click",
     );
     const draftButton = Array.from(screen.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Create draft",
+      (button) => button.textContent?.trim() === "Edit",
     );
     await userEvent(draftButton ?? null, "click");
     expect(
@@ -2005,7 +2007,7 @@ describe("Media Manager library browser", () => {
       ).toBe("Arrival"),
     );
     const draftButton = Array.from(screen.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Create draft",
+      (button) => button.textContent?.trim() === "Edit",
     );
     await userEvent(draftButton ?? null, "click");
     const title = screen.querySelector<HTMLInputElement>(
@@ -2018,12 +2020,12 @@ describe("Media Manager library browser", () => {
     await userEvent(title, "input");
     expect(screen.textContent).not.toContain("Discard changes");
     const inspectButton = Array.from(screen.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Inspect current",
+      (button) => button.textContent?.trim() === "Stop editing",
     );
     await userEvent(inspectButton ?? null, "click");
     await vi.waitFor(() => expect(title.value).toBe("Arrival"));
     const nextDraftButton = Array.from(screen.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Create draft",
+      (button) => button.textContent?.trim() === "Edit",
     );
     await userEvent(nextDraftButton ?? null, "click");
     title.value = "Arrival — Director's Cut";
@@ -2139,10 +2141,14 @@ describe("Media Manager library browser", () => {
     await render(<Root initialView="library" initialRootId="shared-videos" />);
     await userEvent(screen.querySelector(".tree-row.file"), "click");
     await vi.waitFor(() =>
-      expect(screen.textContent).toContain("Create draft"),
+      expect(
+        screen
+          .querySelector(".editor-heading-actions .primary-button")
+          ?.textContent?.trim(),
+      ).toBe("Edit"),
     );
     const draftButton = Array.from(screen.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Create draft",
+      (button) => button.textContent?.trim() === "Edit",
     );
     await userEvent(draftButton ?? null, "click");
     const title = screen.querySelector<HTMLInputElement>(
@@ -2152,7 +2158,7 @@ describe("Media Manager library browser", () => {
     title.value = "Arrival — Director's Cut";
     await userEvent(title, "input");
     const previewButton = Array.from(screen.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Preview metadata sidecar",
+      (button) => button.textContent?.trim() === "Preview changes",
     );
     await userEvent(previewButton ?? null, "click");
 
@@ -2421,7 +2427,7 @@ describe("Media Manager library browser", () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
     const draftButton = Array.from(screen.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Create draft",
+      (button) => button.textContent?.trim() === "Edit",
     );
     await userEvent(draftButton ?? null, "click");
     const title = screen.querySelector<HTMLInputElement>(
@@ -2597,9 +2603,9 @@ describe("Media Manager library browser", () => {
           ?.getAttribute("value"),
       ).toBe("Nevermind"),
     );
-    expect(screen.querySelector(".metadata-toolbar")?.textContent).toContain(
-      "Discard draft",
-    );
+    expect(
+      screen.querySelector(".editor-heading-actions")?.textContent,
+    ).toContain("Discard changes");
     const mainForm = screen.querySelector(".editor-metadata-form");
     expect(mainForm).toBeDefined();
     const fieldValue = (labelText: string): string | null => {
@@ -3287,7 +3293,7 @@ describe("Media Manager library browser", () => {
     ).toBe(false);
     expect(
       Array.from(screen.querySelectorAll("button")).some(
-        (button) => button.textContent?.trim() === "Create draft",
+        (button) => button.textContent?.trim() === "Edit",
       ),
     ).toBe(false);
   });

@@ -656,6 +656,14 @@ export const ItemEditor = component$<{
     const revision = track(() => props.command?.revision ?? 0);
     const action = track(() => props.command?.action);
     if (!revision || action !== "metadata") return;
+    // Keep the editor heading (and its Edit button) below the sticky
+    // library identity header when the card scrolls into view.
+    const card = cardRef.value;
+    const stickyHeader = card?.parentElement?.querySelector<HTMLElement>(
+      ":scope > .library-selection-hero",
+    );
+    if (card && stickyHeader)
+      card.style.scrollMarginTop = `${stickyHeader.offsetHeight + 12}px`;
     revealWhenMounted(() => cardRef.value);
   });
 
@@ -667,20 +675,6 @@ export const ItemEditor = component$<{
       props.state.metadataDraftRevision += 1;
       return;
     }
-    if (!allowMetadataDraftDiscard(metadata.isDirty)) return;
-    metadata.isDraft = false;
-    metadata.draftRevision += 1;
-    metadata.draftSessionRevision += 1;
-    props.state.metadataDraftRevision += 1;
-    metadata.isDirty = false;
-    props.state.metadataDraftDirty = false;
-    metadata.preview = undefined;
-    metadata.previewChanges = [];
-    metadata.reloadKey += 1;
-  });
-
-  const discardMetadataDraft = $(() => {
-    if (metadata.confirming) return;
     if (!allowMetadataDraftDiscard(metadata.isDirty)) return;
     metadata.isDraft = false;
     metadata.draftRevision += 1;
@@ -1401,7 +1395,7 @@ export const ItemEditor = component$<{
   const sidecarChoiceLabel =
     portableTarget?.id === "portable-embedded"
       ? "Write the new metadata inside the book file"
-      : "Write the new metadata to a sidecar file";
+      : "Save a metadata file beside the media";
   const normalizedDraftValues = normalizedMetadataValues(metadata);
   const openLibraryFallbackQuery = [
     metadata.title.trim(),
@@ -1422,6 +1416,13 @@ export const ItemEditor = component$<{
   const sourceChoices = metadata.isDraft
     ? metadataSourceChoices(metadata.observations, normalizedDraftValues)
     : [];
+  const canRefreshAndVerify = Boolean(
+    metadata.pendingPlanId &&
+      metadata.pendingConsumers.some(
+        (consumer) =>
+          consumer.available && consumer.effect !== "native-podcast-metadata",
+      ),
+  );
   const metadataSources = (
     <>
       {["movie", "series", "season", "episode"].includes(
@@ -1572,6 +1573,24 @@ export const ItemEditor = component$<{
           )}
         </div>
         <div class="editor-heading-actions">
+          {props.state.session?.canEdit && canEditPortableMetadata && (
+            <button
+              class={metadata.isDraft ? "secondary-button" : "primary-button"}
+              type="button"
+              disabled={
+                !portableWriteAvailable ||
+                metadata.loadingDetails ||
+                metadata.confirming
+              }
+              onClick$={toggleMetadataDraft}
+            >
+              {metadata.isDraft
+                ? metadata.isDirty
+                  ? "Discard changes"
+                  : "Stop editing"
+                : "Edit"}
+            </button>
+          )}
           <button
             class="close-button"
             type="button"
@@ -1584,184 +1603,27 @@ export const ItemEditor = component$<{
       </div>
 
       <div class="metadata-view">
-        {!props.folder && canLookupMetadata && (
-          <div class="metadata-sources">{metadataSources}</div>
-        )}
-        {!props.folder &&
-          supportsMediaAction(
-            props.state.status,
-            selectedItem?.mediaKind,
-            "manage-subtitles",
-          ) && (
-            <section class="source-accordion subtitles-accordion">
-              <button
-                class="source-accordion-summary"
-                type="button"
-                aria-expanded={subtitlesOpen.value}
-                onClick$={() => (subtitlesOpen.value = !subtitlesOpen.value)}
-              >
-                <span class="source-accordion-title">Subtitles</span>
-                <span class="source-accordion-chevron">
-                  <Icon name="chevron-down" size={16} />
-                </span>
-              </button>
-              {subtitlesOpen.value && (
-                <div class="source-accordion-body">
-                  <SubtitleView
-                    key={props.state.selectedItemId}
-                    item={selectedCatalogItem(props.state)}
-                    roots={props.state.roots}
-                    session={props.state.session}
-                    status={props.state.status}
-                  />
-                  <SubdlPanel
-                    itemId={props.state.selectedItemId}
-                    title={metadata.title}
-                    mediaType={metadata.mediaType}
-                    providerIds={metadata.providerIds}
-                    season={
-                      metadata.season === ""
-                        ? undefined
-                        : Number(metadata.season)
-                    }
-                    episode={
-                      metadata.episode === ""
-                        ? undefined
-                        : Number(metadata.episode)
-                    }
-                    canEdit={props.state.session?.canEdit ?? false}
-                    mutationMode={
-                      props.state.status?.mutationMode ?? "read-only"
-                    }
-                  />
-                </div>
-              )}
-            </section>
-          )}
-        {metadata.matchCandidate && matchRows.length > 0 && (
-          <MetadataMatchWorkspace
-            candidate={metadata.matchCandidate}
-            rows={matchRows}
-            selectedFields={metadata.matchSelection}
-            canEdit={props.state.session?.canEdit ?? false}
-            onToggle$={toggleMetadataMatchField}
-            onApply$={applyMetadataMatch}
-            onCancel$={cancelMetadataMatch}
-          />
-        )}
-        <div class="metadata-toolbar">
-          <div
-            class="metadata-section-tabs"
-            role="tablist"
-            aria-label="Metadata fields"
-          >
-            {METADATA_SECTIONS.map((item) => (
-              <button
-                type="button"
-                role="tab"
-                key={item.id}
-                aria-selected={section.value === item.id}
-                class={{
-                  "metadata-section-tab": true,
-                  active: section.value === item.id,
-                }}
-                onClick$={() => (section.value = item.id)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-          <div class="metadata-draft-actions">
-            {" "}
-            {props.state.session?.canEdit && canEditPortableMetadata && (
-              <button
-                class="secondary-button"
-                type="button"
-                disabled={
-                  !portableWriteAvailable ||
-                  metadata.loadingDetails ||
-                  metadata.confirming
-                }
-                onClick$={toggleMetadataDraft}
-              >
-                <Icon name={metadata.isDraft ? "check" : "tag"} size={17} />
-                {metadata.isDraft
-                  ? metadata.isDirty
-                    ? "Discard draft"
-                    : "Inspect current"
-                  : "Create draft"}
-              </button>
-            )}
-          </div>
+        <div
+          class="metadata-section-tabs"
+          role="tablist"
+          aria-label="Metadata fields"
+        >
+          {METADATA_SECTIONS.map((item) => (
+            <button
+              type="button"
+              role="tab"
+              key={item.id}
+              aria-selected={section.value === item.id}
+              class={{
+                "metadata-section-tab": true,
+                active: section.value === item.id,
+              }}
+              onClick$={() => (section.value = item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
         </div>
-        {metadata.isDraft && sourceChoices.length > 0 && (
-          <section
-            class="metadata-source-choices"
-            aria-labelledby="metadata-source-choices-title"
-          >
-            <div class="metadata-source-choices-heading">
-              <div>
-                <span class="eyebrow">Compare and merge</span>
-                <h3 id="metadata-source-choices-title">Choose source values</h3>
-                <p>
-                  Review each field independently. Nothing is written until you
-                  preview and confirm the metadata sidecar.
-                </p>
-              </div>
-              <span class="pane-count">{sourceChoices.length}</span>
-            </div>
-            <div class="metadata-source-choice-list">
-              {sourceChoices.map((choice) => (
-                <article key={choice.field}>
-                  <strong>{choice.label}</strong>
-                  <div
-                    class="metadata-source-choice-options"
-                    role="group"
-                    aria-label={`${choice.label} source values`}
-                  >
-                    {choice.options.map((option) => {
-                      const isCurrent =
-                        normalizedDraftValues[choice.field] === option.value;
-                      return (
-                        <button
-                          key={`${choice.field}-${option.source}`}
-                          type="button"
-                          class={{
-                            "metadata-source-choice": true,
-                            current: isCurrent,
-                          }}
-                          disabled={isCurrent}
-                          aria-pressed={isCurrent}
-                          onClick$={() =>
-                            updateMetadataDraftField(
-                              metadata,
-                              props.state,
-                              choice.field,
-                              option.value,
-                            )
-                          }
-                        >
-                          <span class="metadata-source-choice-label">
-                            {option.label}
-                          </span>
-                          <span
-                            class="metadata-source-choice-value"
-                            title={option.value}
-                          >
-                            {option.value}
-                          </span>
-                          <span class="metadata-source-choice-action">
-                            {isCurrent ? "In draft" : "Use value"}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </article>
-              ))}
-            </div>
-          </section>
-        )}
         <fieldset
           class="metadata-form editor-metadata-form"
           disabled={!metadata.isDraft}
@@ -1809,9 +1671,7 @@ export const ItemEditor = component$<{
                 />
               </label>
               <label>
-                <span>
-                  Year <small>omit when unknown</small>
-                </span>
+                <span>Year</span>
                 <input
                   value={metadata.year}
                   inputMode="numeric"
@@ -1892,10 +1752,9 @@ export const ItemEditor = component$<{
                 />
               </label>
               <label>
-                <span>
-                  Genres <small>comma-separated</small>
-                </span>
+                <span>Genres</span>
                 <input
+                  placeholder="Comma-separated"
                   value={metadata.genres}
                   onInput$={(_, input) =>
                     updateMetadataDraftField(
@@ -1911,12 +1770,11 @@ export const ItemEditor = component$<{
           )}
           {section.value === "advanced" && (
             <>
-              <span class="metadata-group-heading">People</span>
+              <h4 class="metadata-group-heading">People</h4>
               <label>
-                <span>
-                  Authors / artists <small>comma-separated</small>
-                </span>
+                <span>Authors / artists</span>
                 <input
+                  placeholder="Comma-separated"
                   value={metadata.authors}
                   onInput$={(_, input) =>
                     updateMetadataDraftField(
@@ -1929,10 +1787,9 @@ export const ItemEditor = component$<{
                 />
               </label>
               <label>
-                <span>
-                  Narrators <small>comma-separated</small>
-                </span>
+                <span>Narrators</span>
                 <input
+                  placeholder="Comma-separated"
                   value={metadata.narrators}
                   onInput$={(_, input) =>
                     updateMetadataDraftField(
@@ -1945,10 +1802,9 @@ export const ItemEditor = component$<{
                 />
               </label>
               <label class="title-input">
-                <span>
-                  Writers <small>comma-separated</small>
-                </span>
+                <span>Writers</span>
                 <input
+                  placeholder="Comma-separated"
                   value={metadata.writers}
                   onInput$={(_, input) =>
                     updateMetadataDraftField(
@@ -1960,7 +1816,7 @@ export const ItemEditor = component$<{
                   }
                 />
               </label>
-              <span class="metadata-group-heading">Series</span>
+              <h4 class="metadata-group-heading">Series</h4>
               <label>
                 <span>Series</span>
                 <input
@@ -1989,7 +1845,7 @@ export const ItemEditor = component$<{
                   }
                 />
               </label>
-              <span class="metadata-group-heading">Release &amp; ratings</span>
+              <h4 class="metadata-group-heading">Release &amp; ratings</h4>
               <label>
                 <span>Publisher / studio</span>
                 <input
@@ -2020,10 +1876,9 @@ export const ItemEditor = component$<{
                 />
               </label>
               <label>
-                <span>
-                  Runtime <small>minutes</small>
-                </span>
+                <span>Runtime</span>
                 <input
+                  placeholder="Minutes"
                   value={metadata.runtimeMinutes}
                   inputMode="numeric"
                   onInput$={(_, input) =>
@@ -2052,10 +1907,9 @@ export const ItemEditor = component$<{
                 />
               </label>
               <label>
-                <span>
-                  Community rating <small>0–10</small>
-                </span>
+                <span>Community rating</span>
                 <input
+                  placeholder="0–10"
                   value={metadata.communityRating}
                   inputMode="decimal"
                   onInput$={(_, input) =>
@@ -2068,7 +1922,6 @@ export const ItemEditor = component$<{
                   }
                 />
               </label>
-              <span class="metadata-group-heading">Publication</span>
               <label>
                 <span>ISBN</span>
                 <input
@@ -2083,7 +1936,6 @@ export const ItemEditor = component$<{
                   }
                 />
               </label>
-              <span class="metadata-group-heading">Description</span>
               <label class="description-input">
                 <span>Description</span>
                 <textarea
@@ -2103,96 +1955,136 @@ export const ItemEditor = component$<{
             </>
           )}
         </fieldset>
-        <div class="metadata-actions metadata-actions--editor">
-          {metadata.isDraft && (
-            <div class="metadata-preview-block">
-              <label class="sidecar-choice">
-                <input
-                  type="checkbox"
-                  checked={writePortable.value}
-                  onChange$={(_, input) =>
-                    (writePortable.value = input.checked)
-                  }
-                />
-                <span class="sidecar-choice-control" aria-hidden="true">
-                  <Icon name="check" size={14} />
-                </span>
-                <span class="sidecar-choice-label">{sidecarChoiceLabel}</span>
-                <span
-                  class="info-tip"
-                  tabIndex={0}
-                  role="note"
-                  aria-label="Where each app reads metadata from"
-                >
-                  ?
-                  <span class="info-tip-panel" role="tooltip">
-                    <strong>
-                      {portableTarget?.id === "portable-embedded"
-                        ? "Embedded metadata"
-                        : "Sidecar formats"}
-                    </strong>
-                    <p>
-                      {portableTarget?.id === "portable-embedded"
-                        ? "Book metadata is written inside the EPUB or CBZ container; PDF XMP and CBR stay inspection-only. Each app reads it in this order:"
-                        : "Metadata is written beside the media as an NFO for video and music, or an OPF for audiobooks, leaving the media file untouched. Each app reads it in this order:"}
-                    </p>
-                    <ul>
-                      {metadata.consumers.map((consumer) => (
-                        <li key={consumer.id}>
-                          <strong>{consumer.label}:</strong>{" "}
-                          {consumer.sourcePriority}
-                        </li>
-                      ))}
-                    </ul>
-                  </span>
-                </span>
-              </label>
-              <button
-                class="primary-button metadata-preview-button"
-                type="button"
-                disabled={
-                  !props.state.session?.canEdit ||
-                  !metadata.itemId ||
-                  metadata.mediaType === "collection" ||
-                  !portableWriteAvailable ||
-                  !writePortable.value ||
-                  !metadata.title.trim() ||
-                  metadata.planning
-                }
-                onClick$={previewMetadata}
-              >
-                <Icon name="scan" size={18} />
-                {metadata.mediaType === "collection"
-                  ? "Grouping folder"
-                  : metadata.mediaType === "book"
-                    ? metadata.planning
-                      ? "Rebuilding container…"
-                      : "Preview embedded metadata update"
-                    : metadata.planning
-                      ? "Preparing…"
-                      : metadata.sidecar?.exists
-                        ? "Preview safe sidecar update"
-                        : "Preview metadata sidecar"}
-              </button>
+        {metadata.isDraft && sourceChoices.length > 0 && (
+          <section
+            class="metadata-source-choices"
+            aria-labelledby="metadata-source-choices-title"
+          >
+            <h4 id="metadata-source-choices-title">Choose source values</h4>
+            <div class="metadata-source-choice-list">
+              {sourceChoices.map((choice) => (
+                <article key={choice.field}>
+                  <strong>{choice.label}</strong>
+                  <div
+                    class="metadata-source-choice-options"
+                    role="group"
+                    aria-label={`${choice.label} source values`}
+                  >
+                    {choice.options.map((option) => {
+                      const isCurrent =
+                        normalizedDraftValues[choice.field] === option.value;
+                      return (
+                        <button
+                          key={`${choice.field}-${option.source}`}
+                          type="button"
+                          class={{
+                            "metadata-source-choice": true,
+                            current: isCurrent,
+                          }}
+                          disabled={isCurrent}
+                          aria-pressed={isCurrent}
+                          onClick$={() =>
+                            updateMetadataDraftField(
+                              metadata,
+                              props.state,
+                              choice.field,
+                              option.value,
+                            )
+                          }
+                        >
+                          <span class="metadata-source-choice-label">
+                            {option.label}
+                          </span>
+                          <span
+                            class="metadata-source-choice-value"
+                            title={option.value}
+                          >
+                            {option.value}
+                          </span>
+                          <span class="metadata-source-choice-action">
+                            {isCurrent ? "In draft" : "Use value"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </article>
+              ))}
             </div>
-          )}
-          <div class="metadata-action-buttons">
-            {metadata.isDirty && (
-              <button
-                class="text-button"
-                type="button"
-                disabled={metadata.confirming}
-                onClick$={discardMetadataDraft}
-              >
-                Discard changes
-              </button>
+          </section>
+        )}
+        {(metadata.isDraft || canRefreshAndVerify) && (
+          <div class="metadata-actions metadata-actions--editor">
+            {metadata.isDraft && (
+              <div class="metadata-preview-block">
+                <label class="sidecar-choice">
+                  <input
+                    type="checkbox"
+                    checked={writePortable.value}
+                    onChange$={(_, input) =>
+                      (writePortable.value = input.checked)
+                    }
+                  />
+                  <span class="sidecar-choice-control" aria-hidden="true">
+                    <Icon name="check" size={14} />
+                  </span>
+                  <span class="sidecar-choice-label">{sidecarChoiceLabel}</span>
+                  <span
+                    class="info-tip"
+                    tabIndex={0}
+                    role="note"
+                    aria-label="Where each app reads metadata from"
+                  >
+                    ?
+                    <span class="info-tip-panel" role="tooltip">
+                      <strong>
+                        {portableTarget?.id === "portable-embedded"
+                          ? "Embedded metadata"
+                          : "Metadata file formats"}
+                      </strong>
+                      <p>
+                        {portableTarget?.id === "portable-embedded"
+                          ? "Book metadata is written inside the EPUB or CBZ container; PDF XMP and CBR stay inspection-only. Each app reads it in this order:"
+                          : "Metadata is written beside the media as an NFO for video and music, or an OPF for audiobooks, leaving the media file untouched. Each app reads it in this order:"}
+                      </p>
+                      <ul>
+                        {metadata.consumers.map((consumer) => (
+                          <li key={consumer.id}>
+                            <strong>{consumer.label}:</strong>{" "}
+                            {consumer.sourcePriority}
+                          </li>
+                        ))}
+                      </ul>
+                    </span>
+                  </span>
+                </label>
+                <button
+                  class="primary-button metadata-preview-button"
+                  type="button"
+                  disabled={
+                    !props.state.session?.canEdit ||
+                    !metadata.itemId ||
+                    metadata.mediaType === "collection" ||
+                    !portableWriteAvailable ||
+                    !writePortable.value ||
+                    !metadata.title.trim() ||
+                    metadata.planning
+                  }
+                  onClick$={previewMetadata}
+                >
+                  <Icon name="scan" size={18} />
+                  {metadata.mediaType === "collection"
+                    ? "Grouping folder"
+                    : metadata.planning
+                      ? metadata.mediaType === "book"
+                        ? "Rebuilding container…"
+                        : "Preparing…"
+                      : "Preview changes"}
+                </button>
+              </div>
             )}
-            {metadata.pendingPlanId &&
-              metadata.pendingConsumers.some(
-                (consumer) =>
-                  consumer.available &&
-                  consumer.effect !== "native-podcast-metadata",
-              ) && (
+            {canRefreshAndVerify && (
+              <div class="metadata-action-buttons">
                 <button
                   class="secondary-button"
                   type="button"
@@ -2204,9 +2096,71 @@ export const ItemEditor = component$<{
                     ? "Refreshing and verifying…"
                     : "Refresh and verify"}
                 </button>
-              )}
+              </div>
+            )}
           </div>
-        </div>
+        )}
+        {metadata.preview && (
+          <div class="plan-preview">
+            <div class="destination-card">
+              <Icon name="tag" size={21} />
+              <span>
+                <small>Metadata file</small>
+                <strong>
+                  {metadata.preview.actions[0]?.destinationRelativePath}
+                  {metadata.preview.actions[0]?.replacementRelativePath}
+                </strong>
+              </span>
+            </div>
+            <section
+              class="metadata-change-review"
+              aria-label="Metadata field changes"
+            >
+              <div class="metadata-change-review-heading">
+                <strong>Review field changes</strong>
+                <span>{metadata.previewChanges.length} changed</span>
+              </div>
+              {metadata.previewChanges.length > 0 ? (
+                <dl>
+                  {metadata.previewChanges.map((change) => (
+                    <div key={change.field}>
+                      <dt>{change.label}</dt>
+                      <dd>
+                        <span>{change.before}</span>
+                        <Icon name="arrow" size={15} />
+                        <strong>{change.after}</strong>
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : (
+                <p>
+                  No field values differ; this saves the current values to a
+                  metadata file.
+                </p>
+              )}
+            </section>
+            {metadata.preview.warnings.map((warning) => (
+              <p class="plan-warning" key={warning}>
+                <Icon name="shield" size={16} /> {warning}
+              </p>
+            ))}
+            <div class="plan-actions">
+              <button
+                class="primary-button"
+                type="button"
+                disabled={
+                  props.state.status?.mutationMode !== "enabled" ||
+                  metadata.confirming
+                }
+                onClick$={confirmMetadata}
+              >
+                <Icon name="check" size={18} />
+                {metadata.confirming ? "Queuing…" : "Confirm metadata"}
+              </button>
+            </div>
+          </div>
+        )}
         {(metadata.videoStreams.length > 0 ||
           metadata.audioStreams.length > 0 ||
           metadata.subtitleStreams.length > 0 ||
@@ -2339,10 +2293,7 @@ export const ItemEditor = component$<{
               metadata.inspectionWarnings.length > 0) && (
               <section class="metadata-health" aria-label="Metadata health">
                 <div class="metadata-subheading">
-                  <div>
-                    <span class="eyebrow">Metadata health</span>
-                    <h4>Checks worth reviewing</h4>
-                  </div>
+                  <h4>Metadata health</h4>
                   <span class="pane-count">
                     {metadata.health.length +
                       metadata.inspectionWarnings.length}
@@ -2402,10 +2353,7 @@ export const ItemEditor = component$<{
             {metadata.trackOrder && metadata.trackOrder.fileCount > 0 && (
               <section class="metadata-health" aria-label="Track order">
                 <div class="metadata-subheading">
-                  <div>
-                    <span class="eyebrow">Play order</span>
-                    <h4>Track order</h4>
-                  </div>
+                  <h4>Track order</h4>
                   <span class="pane-count">
                     {metadata.trackOrder.fileCount}
                   </span>
@@ -2482,15 +2430,83 @@ export const ItemEditor = component$<{
             )}
           </details>
         )}
+        {!props.folder && canLookupMetadata && (
+          <section
+            class="metadata-lookups"
+            aria-labelledby="metadata-lookups-title"
+          >
+            <h4 id="metadata-lookups-title">Look up online</h4>
+            {metadata.matchCandidate && matchRows.length > 0 && (
+              <MetadataMatchWorkspace
+                candidate={metadata.matchCandidate}
+                rows={matchRows}
+                selectedFields={metadata.matchSelection}
+                canEdit={props.state.session?.canEdit ?? false}
+                onToggle$={toggleMetadataMatchField}
+                onApply$={applyMetadataMatch}
+                onCancel$={cancelMetadataMatch}
+              />
+            )}
+            <div class="metadata-sources">{metadataSources}</div>
+          </section>
+        )}
+        {!props.folder &&
+          supportsMediaAction(
+            props.state.status,
+            selectedItem?.mediaKind,
+            "manage-subtitles",
+          ) && (
+            <section class="source-accordion subtitles-accordion">
+              <button
+                class="source-accordion-summary"
+                type="button"
+                aria-expanded={subtitlesOpen.value}
+                onClick$={() => (subtitlesOpen.value = !subtitlesOpen.value)}
+              >
+                <span class="source-accordion-title">Subtitles</span>
+                <span class="source-accordion-chevron">
+                  <Icon name="chevron-down" size={16} />
+                </span>
+              </button>
+              {subtitlesOpen.value && (
+                <div class="source-accordion-body">
+                  <SubtitleView
+                    key={props.state.selectedItemId}
+                    item={selectedCatalogItem(props.state)}
+                    roots={props.state.roots}
+                    session={props.state.session}
+                    status={props.state.status}
+                  />
+                  <SubdlPanel
+                    itemId={props.state.selectedItemId}
+                    title={metadata.title}
+                    mediaType={metadata.mediaType}
+                    providerIds={metadata.providerIds}
+                    season={
+                      metadata.season === ""
+                        ? undefined
+                        : Number(metadata.season)
+                    }
+                    episode={
+                      metadata.episode === ""
+                        ? undefined
+                        : Number(metadata.episode)
+                    }
+                    canEdit={props.state.session?.canEdit ?? false}
+                    mutationMode={
+                      props.state.status?.mutationMode ?? "read-only"
+                    }
+                  />
+                </div>
+              )}
+            </section>
+          )}
         {canGuidedRename && !props.folder && (
           <section
             class="file-organization"
             aria-labelledby="file-organization-title"
           >
-            <div class="file-organization-heading">
-              <span class="eyebrow">File organization</span>
-              <h4 id="file-organization-title">Rename this file</h4>
-            </div>
+            <h4 id="file-organization-title">Rename this file</h4>
             <div class="rename-fields">
               <label class="profile-field">
                 <span>Media profile</span>
@@ -2519,9 +2535,7 @@ export const ItemEditor = component$<{
                 />
               </label>
               <label class="year-field">
-                <span>
-                  Release year <small>optional</small>
-                </span>
+                <span>Release year</span>
                 <input
                   inputMode="numeric"
                   maxLength={4}
@@ -2561,9 +2575,7 @@ export const ItemEditor = component$<{
                     />
                   </label>
                   <label class="detail-field">
-                    <span>
-                      Episode title <small>optional</small>
-                    </span>
+                    <span>Episode title</span>
                     <input
                       value={props.state.editEpisodeTitle}
                       onInput$={(_, input) =>
@@ -2608,9 +2620,7 @@ export const ItemEditor = component$<{
                     />
                   </label>
                   <label class="number-field">
-                    <span>
-                      Disc <small>optional</small>
-                    </span>
+                    <span>Disc</span>
                     <input
                       inputMode="numeric"
                       maxLength={2}
@@ -2635,9 +2645,7 @@ export const ItemEditor = component$<{
                     />
                   </label>
                   <label>
-                    <span>
-                      Series <small>optional</small>
-                    </span>
+                    <span>Series</span>
                     <input
                       value={props.state.editCollection}
                       onInput$={(_, input) =>
@@ -2648,10 +2656,6 @@ export const ItemEditor = component$<{
                   </label>
                 </>
               )}
-              <p class="organization-note">
-                Folder names are constructed from these fields. Unknown years
-                stay omitted; no destination path is accepted from the browser.
-              </p>
               <button
                 class="secondary-button rename-preview-button"
                 type="button"
@@ -2679,10 +2683,7 @@ export const ItemEditor = component$<{
                   </p>
                 ))}
                 <div class="plan-actions">
-                  <span>
-                    Preview expires in 30 minutes and is bound to the current
-                    file fingerprint.
-                  </span>
+                  <span>Preview expires in 30 minutes.</span>
                   <button
                     class="primary-button"
                     type="button"
@@ -2702,82 +2703,8 @@ export const ItemEditor = component$<{
         )}
       </div>
 
-      {metadata.preview && (
-        <div class="plan-preview">
-          <div class="destination-card">
-            <Icon name="tag" size={21} />
-            <span>
-              <small>Metadata sidecar</small>
-              <strong>
-                {metadata.preview.actions[0]?.destinationRelativePath}
-                {metadata.preview.actions[0]?.replacementRelativePath}
-              </strong>
-            </span>
-          </div>
-          <section
-            class="metadata-change-review"
-            aria-label="Metadata field changes"
-          >
-            <div class="metadata-change-review-heading">
-              <strong>Review field changes</strong>
-              <span>{metadata.previewChanges.length} changed</span>
-            </div>
-            {metadata.previewChanges.length > 0 ? (
-              <dl>
-                {metadata.previewChanges.map((change) => (
-                  <div key={change.field}>
-                    <dt>{change.label}</dt>
-                    <dd>
-                      <span>{change.before}</span>
-                      <Icon name="arrow" size={15} />
-                      <strong>{change.after}</strong>
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            ) : (
-              <p>
-                No field values differ. This creates a portable metadata copy
-                from the currently inspected values.
-              </p>
-            )}
-          </section>
-          {metadata.preview.warnings.map((warning) => (
-            <p class="plan-warning" key={warning}>
-              <Icon name="shield" size={16} /> {warning}
-            </p>
-          ))}
-          <div class="plan-actions">
-            <span>
-              Review the destination above. Confirmation installs only the
-              staged sidecar represented by this digest.
-            </span>
-            <button
-              class="primary-button"
-              type="button"
-              disabled={
-                props.state.status?.mutationMode !== "enabled" ||
-                metadata.confirming
-              }
-              onClick$={confirmMetadata}
-            >
-              <Icon name="check" size={18} />
-              {metadata.confirming ? "Queuing…" : "Confirm metadata"}
-            </button>
-          </div>
-        </div>
-      )}
-
       {!props.folder && (
         <div class="editor-remove">
-          <div class="editor-remove-copy">
-            <Icon name="alert" size={16} />
-            <span>
-              Move this file into the library tombstone (<code>_Tombstone</code>
-              ) to remove it from the library without deleting it. It leaves the
-              library on the next refresh.
-            </span>
-          </div>
           {removeAction.preview ? (
             <div class="editor-remove-confirm">
               <p>
@@ -2801,15 +2728,22 @@ export const ItemEditor = component$<{
               </button>
             </div>
           ) : (
-            <button
-              class="secondary-button danger"
-              type="button"
-              disabled={!props.state.session?.canEdit || removeAction.planning}
-              onClick$={previewRemove}
-            >
-              <Icon name="alert" size={18} />
-              {removeAction.planning ? "Preparing…" : "Remove from library"}
-            </button>
+            <>
+              <button
+                class="text-button editor-remove-button"
+                type="button"
+                disabled={
+                  !props.state.session?.canEdit || removeAction.planning
+                }
+                onClick$={previewRemove}
+              >
+                {removeAction.planning ? "Preparing…" : "Remove from library"}
+              </button>
+              <p>
+                Moves this file to the library&apos;s <code>_Tombstone</code>{" "}
+                folder; nothing is deleted.
+              </p>
+            </>
           )}
         </div>
       )}
