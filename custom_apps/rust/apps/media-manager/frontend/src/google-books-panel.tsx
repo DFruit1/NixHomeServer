@@ -4,6 +4,7 @@ import { api, readableError } from "./api";
 import { Icon } from "./icon";
 import type { GoogleBooksCandidate } from "./metadata-provider-candidates";
 import { RemoteArtwork } from "./remote-artwork";
+import { SourceSetupLink } from "./source-setup";
 
 export const GoogleBooksPanel = component$<{
   itemId: string;
@@ -74,24 +75,17 @@ export const GoogleBooksPanel = component$<{
   });
 
   return (
-    <details class="panel musicbrainz-panel google-books-panel source-accordion">
+    <details class="musicbrainz-panel google-books-panel source-accordion">
       <summary class="source-accordion-summary">
         <span class="source-accordion-title">Google Books</span>
-        <span class="status-badge access-key">API key</span>
+        <SourceSetupLink providerId="google-books" />
         <span class="source-accordion-chevron">
           <Icon name="chevron-down" size={16} />
         </span>
       </summary>
       <div class="source-accordion-body">
-        <p class="quiet-copy">
-          A second edition source.{" "}
-          <a class="metadata-source-setup-link" href="?view=accounts">
-            Configure the key
-          </a>
-        </p>
-        <ProviderUsageGuide providerId="google-books" />
-        <div class="metadata-form">
-          <label class="source-query-input">
+        <div class="source-search">
+          <label>
             <span>Title, author, or ISBN</span>
             <input
               value={state.query}
@@ -107,28 +101,23 @@ export const GoogleBooksPanel = component$<{
               }}
             />
           </label>
-          <div class="metadata-actions">
-            <button
-              class="primary-button"
-              type="button"
-              disabled={
-                !props.canEdit ||
-                state.loading ||
-                !(state.query.trim() || props.fallbackQuery.trim())
-              }
-              onClick$={search}
-            >
-              {state.loading ? "Looking up…" : "Find Google Books"}
-            </button>
-          </div>
+          <button
+            class="primary-button"
+            type="button"
+            disabled={
+              !props.canEdit ||
+              state.loading ||
+              !(state.query.trim() || props.fallbackQuery.trim())
+            }
+            onClick$={search}
+          >
+            {state.loading ? "Searching…" : "Search"}
+          </button>
         </div>
         {state.error && <p class="error-copy">{state.error}</p>}
-        <div class="subtitle-results">
+        <div class="source-results">
           {state.candidates.map((candidate) => (
-            <article
-              class="subtitle-result open-library-result"
-              key={candidate.volumeId}
-            >
+            <article class="source-result" key={candidate.volumeId}>
               <div>
                 <strong>
                   {candidate.title}
@@ -144,7 +133,7 @@ export const GoogleBooksPanel = component$<{
                 </span>
                 {candidate.description && <p>{candidate.description}</p>}
               </div>
-              <div class="open-library-result-actions">
+              <div class="source-result-actions">
                 <button
                   class="secondary-button"
                   type="button"
@@ -164,12 +153,6 @@ export const GoogleBooksPanel = component$<{
               </div>
             </article>
           ))}
-          {state.candidates.length === 0 && (
-            <p class="quiet-copy">
-              Google Books candidates will appear here with edition, ISBN,
-              publisher, and cover details.
-            </p>
-          )}
         </div>
         {state.selected && (
           <RemoteArtwork
@@ -181,6 +164,7 @@ export const GoogleBooksPanel = component$<{
             mutationMode={props.mutationMode}
           />
         )}
+        <ProviderUsageGuide providerId="google-books" />
       </div>
     </details>
   );

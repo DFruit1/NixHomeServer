@@ -144,25 +144,21 @@ export const MetadataMatchWorkspace = component$<{
       aria-labelledby="metadata-match-title"
     >
       <div class="metadata-match-heading">
-        <div>
-          <span class="eyebrow">Online match</span>
-          <h3 id="metadata-match-title">
-            Review {props.candidate.providerLabel} match
-          </h3>
-          <p>
-            <strong>{props.candidate.title}</strong>
-            <span>{props.candidate.provenance}</span>
-          </p>
-        </div>
-        <span class="status-badge">Nothing applied yet</span>
+        <h3 id="metadata-match-title">
+          Review {props.candidate.providerLabel} match
+        </h3>
+        <p>
+          <strong>{props.candidate.title}</strong>
+          <span>{props.candidate.provenance}</span>
+        </p>
       </div>
       <div class="metadata-match-table-scroll">
         <table class="metadata-match-table">
           <thead>
             <tr>
               <th>Field</th>
-              <th>Current metadata</th>
-              <th>{props.candidate.providerLabel} candidate</th>
+              <th>Current</th>
+              <th>{props.candidate.providerLabel}</th>
             </tr>
           </thead>
           <tbody>
@@ -180,8 +176,10 @@ export const MetadataMatchWorkspace = component$<{
                     <span>{row.label}</span>
                   </label>
                 </th>
-                <td>{row.currentValue}</td>
-                <td>{row.candidateValue}</td>
+                <td data-label="Current">{row.currentValue}</td>
+                <td data-label={props.candidate.providerLabel}>
+                  {row.candidateValue}
+                </td>
               </tr>
             ))}
           </tbody>

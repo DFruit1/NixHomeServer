@@ -6,6 +6,7 @@ import type {
   TmdbDetails,
 } from "./metadata-provider-candidates";
 import { RemoteArtwork } from "./remote-artwork";
+import { SourceSetupLink } from "./source-setup";
 import tmdbLogo from "./tmdb-logo.svg";
 
 export const TmdbPanel = component$<{
@@ -45,21 +46,15 @@ export const TmdbPanel = component$<{
       artwork.value = { path, title: details?.title ?? candidate.title };
   });
   return (
-    <details class="panel musicbrainz-panel tmdb-panel source-accordion">
+    <details class="musicbrainz-panel tmdb-panel source-accordion">
       <summary class="source-accordion-summary">
         <span class="source-accordion-title">The Movie Database</span>
-        <span class="status-badge access-key">Account</span>
+        <SourceSetupLink providerId="tmdb" />
         <span class="source-accordion-chevron">
           <Icon name="chevron-down" size={16} />
         </span>
       </summary>
       <div class="source-accordion-body">
-        <p class="quiet-copy">
-          Compare movie, series, season, or episode fields.{" "}
-          <a class="metadata-source-setup-link" href="?view=accounts">
-            Configure TMDB
-          </a>
-        </p>
         {(["season", "episode"].includes(props.itemMediaType) &&
           props.season == null) ||
         (props.itemMediaType === "episode" && props.episode == null) ? (
@@ -67,9 +62,8 @@ export const TmdbPanel = component$<{
             Enter season and episode numbers before comparing an episode.
           </p>
         ) : null}
-        <ProviderUsageGuide providerId="tmdb" />
-        <div class="metadata-form">
-          <label class="tmdb-query-input">
+        <div class="source-search">
+          <label>
             <span>Title</span>
             <input
               value={props.query || props.fallbackQuery}
@@ -91,31 +85,29 @@ export const TmdbPanel = component$<{
                 props.onKind$(select.value as "movie" | "tv" | "auto")
               }
             >
-              <option value="auto">Movies and television</option>
+              <option value="auto">Movies and TV</option>
               <option value="movie">Movies</option>
               <option value="tv">Television</option>
             </select>
           </label>
-          <div class="metadata-actions">
-            <button
-              class="primary-button"
-              type="button"
-              disabled={
-                !props.canEdit ||
-                props.loading ||
-                !(props.query.trim() || props.fallbackQuery.trim())
-              }
-              onClick$={props.onSearch$}
-            >
-              {props.loading ? "Looking up…" : "Find matches"}
-            </button>
-          </div>
+          <button
+            class="primary-button"
+            type="button"
+            disabled={
+              !props.canEdit ||
+              props.loading ||
+              !(props.query.trim() || props.fallbackQuery.trim())
+            }
+            onClick$={props.onSearch$}
+          >
+            {props.loading ? "Searching…" : "Search"}
+          </button>
         </div>
         {props.error && <p class="error-copy">{props.error}</p>}
-        <div class="subtitle-results">
+        <div class="source-results">
           {props.candidates.map((candidate) => (
             <article
-              class="subtitle-result"
+              class="source-result"
               key={`${candidate.mediaType}-${candidate.tmdbId}`}
             >
               <div>
@@ -134,7 +126,7 @@ export const TmdbPanel = component$<{
                 </span>
                 {candidate.overview && <p>{candidate.overview}</p>}
               </div>
-              <div class="open-library-result-actions">
+              <div class="source-result-actions">
                 <button
                   class="secondary-button"
                   type="button"
@@ -167,12 +159,6 @@ export const TmdbPanel = component$<{
               </div>
             </article>
           ))}
-          {props.candidates.length === 0 && (
-            <p class="quiet-copy">
-              Candidate titles will appear here with year, popularity, and
-              summary.
-            </p>
-          )}
         </div>
         {artwork.value && (
           <RemoteArtwork
@@ -184,7 +170,8 @@ export const TmdbPanel = component$<{
             mutationMode={props.mutationMode}
           />
         )}
-        <div class="tmdb-attribution metadata-compatibility-note">
+        <ProviderUsageGuide providerId="tmdb" />
+        <p class="source-attribution">
           <a
             href="https://www.themoviedb.org"
             target="_blank"
@@ -193,11 +180,9 @@ export const TmdbPanel = component$<{
           >
             <img src={tmdbLogo} alt="TMDB" />
           </a>
-          <p>
-            This product uses the TMDB API but is not endorsed or certified by
-            TMDB.
-          </p>
-        </div>
+          This product uses the TMDB API but is not endorsed or certified by
+          TMDB.
+        </p>
       </div>
     </details>
   );

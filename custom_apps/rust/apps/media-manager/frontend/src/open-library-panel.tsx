@@ -148,30 +148,16 @@ export const OpenLibraryPanel = component$<{
   });
 
   return (
-    <details class="panel musicbrainz-panel open-library-panel source-accordion">
+    <details class="musicbrainz-panel open-library-panel source-accordion">
       <summary class="source-accordion-summary">
         <span class="source-accordion-title">Open Library</span>
-        <span class="status-badge access-free">Free access</span>
         <span class="source-accordion-chevron">
           <Icon name="chevron-down" size={16} />
         </span>
       </summary>
       <div class="source-accordion-body">
-        <p class="quiet-copy">
-          Search public book records by title, author, or ISBN, then add fields
-          to the draft.{" "}
-          <a
-            class="metadata-source-setup-link"
-            href="https://openlibrary.org/"
-            target="_blank"
-            rel="noreferrer"
-          >
-            About Open Library
-          </a>
-        </p>
-        <ProviderUsageGuide providerId="open-library" />
-        <div class="metadata-form">
-          <label class="source-query-input">
+        <div class="source-search">
+          <label>
             <span>Title, author, or ISBN</span>
             <input
               value={state.query}
@@ -188,26 +174,24 @@ export const OpenLibraryPanel = component$<{
               }}
             />
           </label>
-          <div class="metadata-actions">
-            <button
-              class="primary-button"
-              type="button"
-              disabled={
-                !props.canEdit ||
-                props.loading ||
-                !(props.query.trim() || props.fallbackQuery.trim())
-              }
-              onClick$={props.onSearch$}
-            >
-              {props.loading ? "Looking up…" : "Find books"}
-            </button>
-          </div>
+          <button
+            class="primary-button"
+            type="button"
+            disabled={
+              !props.canEdit ||
+              props.loading ||
+              !(props.query.trim() || props.fallbackQuery.trim())
+            }
+            onClick$={props.onSearch$}
+          >
+            {props.loading ? "Searching…" : "Search"}
+          </button>
         </div>
         {props.error && <p class="error-copy">{props.error}</p>}
-        <div class="subtitle-results">
+        <div class="source-results">
           {props.candidates.map((candidate) => (
             <article
-              class="subtitle-result open-library-result"
+              class="source-result"
               key={`${candidate.workId}-${candidate.editionId ?? "work"}`}
             >
               <div>
@@ -226,7 +210,7 @@ export const OpenLibraryPanel = component$<{
                       ? ` · ISBN ${candidate.isbn10}`
                       : ""}
                 </span>
-                <span class="open-library-result-facts">
+                <span class="source-result-facts">
                   {candidate.editionCount != null
                     ? `${candidate.editionCount.toLocaleString()} editions`
                     : "Edition count unavailable"}
@@ -243,7 +227,7 @@ export const OpenLibraryPanel = component$<{
                   <p>{candidate.subjects.slice(0, 5).join(" · ")}</p>
                 )}
               </div>
-              <div class="open-library-result-actions">
+              <div class="source-result-actions">
                 <button
                   class="secondary-button"
                   type="button"
@@ -279,7 +263,7 @@ export const OpenLibraryPanel = component$<{
               </div>
               {state.expandedWorkId === candidate.workId && (
                 <div class="open-library-editions">
-                  <p class="quiet-copy">
+                  <p class="source-editions-count">
                     {state.editionTotals[candidate.workId] ??
                       candidate.editionCount ??
                       0}{" "}
@@ -308,7 +292,7 @@ export const OpenLibraryPanel = component$<{
                               : ""}
                         </span>
                       </div>
-                      <div class="open-library-result-actions">
+                      <div class="source-result-actions">
                         <button
                           class="secondary-button"
                           type="button"
@@ -351,12 +335,6 @@ export const OpenLibraryPanel = component$<{
               )}
             </article>
           ))}
-          {props.candidates.length === 0 && (
-            <p class="quiet-copy">
-              Candidate books will appear here with author, publisher, ISBN, and
-              edition details so you can disambiguate before filling fields.
-            </p>
-          )}
         </div>
         {state.selectedCoverId > 0 && (
           <RemoteArtwork
@@ -369,6 +347,7 @@ export const OpenLibraryPanel = component$<{
             mutationMode={props.mutationMode}
           />
         )}
+        <ProviderUsageGuide providerId="open-library" />
       </div>
     </details>
   );

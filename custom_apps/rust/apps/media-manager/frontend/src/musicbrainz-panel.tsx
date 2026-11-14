@@ -36,47 +36,33 @@ export const MusicBrainzPanel = component$<{
     selected.value = undefined;
   });
   return (
-    <details class="panel musicbrainz-panel source-accordion">
+    <details class="musicbrainz-panel source-accordion">
       <summary class="source-accordion-summary">
         <span class="source-accordion-title">MusicBrainz</span>
-        <span class={{ "status-badge": true, live: props.available }}>
-          {props.available
-            ? props.fingerprintAvailable
-              ? "Fingerprint ready"
-              : "Search only"
-            : "Unavailable"}
-        </span>
         <span class="source-accordion-chevron">
           <Icon name="chevron-down" size={16} />
         </span>
       </summary>
       <div class="source-accordion-body">
-        <p class="quiet-copy">
-          Match a release and stage its Cover Art Archive front image.{" "}
-          <a class="metadata-source-setup-link" href="?view=accounts">
-            Configure sources
-          </a>
-        </p>
-        <ProviderUsageGuide providerId="musicbrainz" />
-        <div class="metadata-form">
-          <label>
-            <span>Lookup mode</span>
-            <select
-              value={props.mode}
-              onChange$={(_, select) =>
-                props.onMode$(select.value as MusicLookupMode)
-              }
-            >
-              <option value="auto">Auto — fingerprint, then search</option>
-              <option
-                value="fingerprint"
-                disabled={!props.fingerprintAvailable}
-              >
-                Fingerprint — match the audio
-              </option>
-              <option value="search">Search — artist and title</option>
-            </select>
-          </label>
+        {!props.available && (
+          <p class="error-copy">MusicBrainz is unavailable on this server.</p>
+        )}
+        <label class="source-search-option">
+          <span>Lookup mode</span>
+          <select
+            value={props.mode}
+            onChange$={(_, select) =>
+              props.onMode$(select.value as MusicLookupMode)
+            }
+          >
+            <option value="auto">Auto — fingerprint, then search</option>
+            <option value="fingerprint" disabled={!props.fingerprintAvailable}>
+              Fingerprint — match the audio
+            </option>
+            <option value="search">Search — artist and title</option>
+          </select>
+        </label>
+        <div class="source-search">
           <label>
             <span>Artist</span>
             <input
@@ -86,7 +72,7 @@ export const MusicBrainzPanel = component$<{
               onInput$={(_, input) => props.onArtist$(input.value)}
             />
           </label>
-          <label class="source-query-input">
+          <label>
             <span>Title</span>
             <input
               value={props.title}
@@ -95,28 +81,26 @@ export const MusicBrainzPanel = component$<{
               onInput$={(_, input) => props.onTitle$(input.value)}
             />
           </label>
-          <div class="metadata-actions">
-            <button
-              class="primary-button"
-              type="button"
-              disabled={
-                !props.available ||
-                !props.canEdit ||
-                !props.itemId ||
-                props.loading ||
-                (props.mode === "fingerprint" && !props.fingerprintAvailable)
-              }
-              onClick$={props.onSearch$}
-            >
-              {props.loading ? "Looking up…" : "Look up release"}
-            </button>
-          </div>
+          <button
+            class="primary-button"
+            type="button"
+            disabled={
+              !props.available ||
+              !props.canEdit ||
+              !props.itemId ||
+              props.loading ||
+              (props.mode === "fingerprint" && !props.fingerprintAvailable)
+            }
+            onClick$={props.onSearch$}
+          >
+            {props.loading ? "Searching…" : "Search"}
+          </button>
         </div>
         {props.error && <p class="error-copy">{props.error}</p>}
-        <div class="subtitle-results">
+        <div class="source-results">
           {props.candidates.map((candidate) => (
             <article
-              class="subtitle-result"
+              class="source-result"
               key={candidate.releaseId ?? candidate.releaseGroupId}
             >
               <div>
@@ -139,7 +123,7 @@ export const MusicBrainzPanel = component$<{
                 </span>
                 {candidate.disambiguation && <p>{candidate.disambiguation}</p>}
               </div>
-              <div class="open-library-result-actions">
+              <div class="source-result-actions">
                 <button
                   class="secondary-button"
                   type="button"
@@ -159,12 +143,6 @@ export const MusicBrainzPanel = component$<{
               </div>
             </article>
           ))}
-          {props.candidates.length === 0 && (
-            <p class="quiet-copy">
-              Exact releases will appear here with date, country, barcode,
-              label, catalog number, packaging, and track count.
-            </p>
-          )}
         </div>
         {selected.value?.releaseId && (
           <RemoteArtwork
@@ -176,6 +154,7 @@ export const MusicBrainzPanel = component$<{
             mutationMode={props.mutationMode}
           />
         )}
+        <ProviderUsageGuide providerId="musicbrainz" />
       </div>
     </details>
   );

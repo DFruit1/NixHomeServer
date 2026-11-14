@@ -2,6 +2,7 @@ import { $, component$, type QRL, useStore, useTask$ } from "@builder.io/qwik";
 import { api, readableError } from "./api";
 import { Icon } from "./icon";
 import { RemoteArtwork } from "./remote-artwork";
+import { SourceSetupLink } from "./source-setup";
 import {
   PROVIDER_USAGE_GUIDES,
   ProviderUsageGuide,
@@ -127,27 +128,41 @@ export const AdditionalProviderPanel = component$<{
     },
   );
   return (
-    <details class="panel source-accordion">
+    <details class="source-accordion">
       <summary class="source-accordion-summary">
         <span class="source-accordion-title">{props.name}</span>
-        <span
-          class={`status-badge ${props.publicSource ? "access-free" : "access-key"}`}
-        >
-          {props.publicSource ? "No setup" : "API key"}
-        </span>
+        {!props.publicSource && <SourceSetupLink providerId={props.provider} />}
         <span class="source-accordion-chevron">
           <Icon name="chevron-down" size={16} />
         </span>
       </summary>
       <div class="source-accordion-body">
-        {!props.publicSource && (
-          <p class="quiet-copy">
-            <a href="?view=accounts">Configure {props.name} in Accounts</a>
-          </p>
+        {props.provider === "tvdb" && (
+          <div class="source-search-options">
+            <label>
+              <span>Episode order</span>
+              <select
+                value={state.order}
+                onChange$={(_, el) => (state.order = el.value)}
+              >
+                <option value="official">Aired / official</option>
+                <option value="dvd">DVD</option>
+                <option value="absolute">Absolute</option>
+              </select>
+            </label>
+            <label class="source-search-short">
+              <span>Language</span>
+              <input
+                value={state.language}
+                maxLength={3}
+                placeholder="eng"
+                onInput$={(_, el) => (state.language = el.value)}
+              />
+            </label>
+          </div>
         )}
-        <ProviderUsageGuide providerId={props.provider} />
-        <div class="metadata-form">
-          <label class="source-query-input">
+        <div class="source-search">
+          <label>
             <span>
               {PROVIDER_USAGE_GUIDES[props.provider]?.queryLabel ??
                 "Search title"}
@@ -164,31 +179,8 @@ export const AdditionalProviderPanel = component$<{
               }}
             />
           </label>
-          {props.provider === "tvdb" && (
-            <>
-              <label>
-                <span>Episode order</span>
-                <select
-                  value={state.order}
-                  onChange$={(_, el) => (state.order = el.value)}
-                >
-                  <option value="official">Aired / official</option>
-                  <option value="dvd">DVD</option>
-                  <option value="absolute">Absolute</option>
-                </select>
-              </label>
-              <label>
-                <span>Language</span>
-                <input
-                  value={state.language}
-                  maxLength={3}
-                  onInput$={(_, el) => (state.language = el.value)}
-                />
-              </label>
-            </>
-          )}
           {props.provider === "audnexus" && (
-            <label>
+            <label class="source-search-short">
               <span>Region</span>
               <select
                 value={state.region}
@@ -232,7 +224,7 @@ export const AdditionalProviderPanel = component$<{
             disabled={state.loading || !props.canEdit || !state.query.trim()}
             onClick$={() => lookup()}
           >
-            {state.loading ? "Looking up…" : `Find ${props.name}`}
+            {state.loading ? "Searching…" : "Search"}
           </button>
         </div>
         {state.error && (
@@ -243,10 +235,10 @@ export const AdditionalProviderPanel = component$<{
         {state.searched && !state.loading && !state.results.length && (
           <p class="quiet-copy">No matching records.</p>
         )}
-        <div class="subtitle-results">
+        <div class="source-results">
           {state.results.map((candidate) => (
             <article
-              class="subtitle-result open-library-result provider-lookup-result"
+              class="source-result provider-lookup-result"
               key={`${candidate.provider}:${candidate.id}`}
             >
               <div>
@@ -265,7 +257,7 @@ export const AdditionalProviderPanel = component$<{
                   </dl>
                 )}
               </div>
-              <div class="open-library-result-actions">
+              <div class="source-result-actions">
                 {candidate.next ? (
                   <button
                     class="secondary-button"
@@ -334,7 +326,7 @@ export const AdditionalProviderPanel = component$<{
           </p>
         )}
         {state.selected && (
-          <div class="metadata-actions">
+          <div class="source-artwork-choices">
             {state.selected.artwork.map((image, index) => (
               <button
                 class="secondary-button"
@@ -359,8 +351,64 @@ export const AdditionalProviderPanel = component$<{
             mutationMode={props.mutationMode}
           />
         )}
+        {(state.lastRequest?.id ||
+          ([
+            "omdb",
+            "tvdb",
+            "wikidata",
+            "discogs",
+            "comic-vine",
+            "isbndb",
+          ].includes(props.provider) &&
+            state.searched &&
+            state.results.length > 0 &&
+            (state.page > 1 || state.results.length >= 10))) && (
+          <div class="source-pagination">
+            {state.lastRequest?.id ? (
+              <button
+                class="secondary-button"
+                type="button"
+                disabled={state.loading}
+                onClick$={() => lookup()}
+              >
+                Back to search
+              </button>
+            ) : (
+              <>
+                <button
+                  class="secondary-button"
+                  type="button"
+                  disabled={state.page <= 1 || state.loading}
+                  onClick$={() => {
+                    state.page--;
+                    lookup(undefined, true);
+                  }}
+                >
+                  Previous page
+                </button>
+                <span>Page {state.page}</span>
+                <button
+                  class="secondary-button"
+                  type="button"
+                  disabled={
+                    state.page >= 100 ||
+                    state.loading ||
+                    state.results.length < 10
+                  }
+                  onClick$={() => {
+                    state.page++;
+                    lookup(undefined, true);
+                  }}
+                >
+                  Next page
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        <ProviderUsageGuide providerId={props.provider} />
         {props.provider === "tvdb" && (
-          <p class="quiet-copy">
+          <p class="source-attribution">
             Metadata provided by{" "}
             <a href="https://thetvdb.com/" target="_blank" rel="noreferrer">
               TheTVDB
@@ -368,55 +416,6 @@ export const AdditionalProviderPanel = component$<{
             .
           </p>
         )}
-        {state.lastRequest?.id && (
-          <button
-            class="secondary-button"
-            type="button"
-            disabled={state.loading}
-            onClick$={() => lookup()}
-          >
-            Back to search
-          </button>
-        )}
-        {[
-          "omdb",
-          "tvdb",
-          "wikidata",
-          "discogs",
-          "comic-vine",
-          "isbndb",
-        ].includes(props.provider) &&
-          !(props.provider === "tvdb" && state.lastRequest?.id) && (
-            <div class="metadata-actions">
-              <button
-                class="secondary-button"
-                type="button"
-                disabled={state.page <= 1 || state.loading}
-                onClick$={() => {
-                  state.page--;
-                  lookup(undefined, true);
-                }}
-              >
-                Previous page
-              </button>
-              <span>Page {state.page}</span>
-              <button
-                class="secondary-button"
-                type="button"
-                disabled={
-                  state.page >= 100 ||
-                  state.loading ||
-                  state.results.length < 10
-                }
-                onClick$={() => {
-                  state.page++;
-                  lookup(undefined, true);
-                }}
-              >
-                Next page
-              </button>
-            </div>
-          )}
       </div>
     </details>
   );
