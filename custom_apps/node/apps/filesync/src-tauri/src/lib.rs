@@ -14,6 +14,11 @@ use url::Url;
 
 const CALLBACK_URI: &str = "filesync://oauth/callback";
 const APP_USER_AGENT: &str = "NixHomeServer-FileSync/0.1";
+/// How long a fresh Kanidm sign-in unlocks sync settings on this device.
+const SETTINGS_UNLOCK_SECONDS: u64 = 24 * 60 * 60;
+/// Device keys never expire; this keeps the native and Kotlin expiry checks
+/// from ever trying to refresh one. It fits a Kotlin `Long`.
+const DEVICE_KEY_EXPIRES_AT: u64 = i64::MAX as u64;
 
 #[derive(Serialize, Deserialize)]
 struct PendingAuth {
@@ -161,6 +166,21 @@ struct StoredSession {
     client_id: String,
     issuer: String,
     api_base: String,
+    /// True when `access_token` is a long-lived File Sync device key rather
+    /// than a Kanidm access token. Device keys keep syncing permanently; only
+    /// sync settings need a fresh Kanidm sign-in.
+    #[serde(default)]
+    device_key: bool,
+    /// The account a device key belongs to.
+    #[serde(default)]
+    username: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceKeyResponse {
+    username: String,
+    token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -422,23 +442,43 @@ async fn finish_login<R: Runtime>(
         client_id: pending.client_id,
         issuer: pending.issuer,
         api_base: pending.api_base,
+        device_key: false,
+        username: None,
     };
+    let claimed = claims.preferred_username.filter(|value| !value.is_empty());
+    let existing = load_session(&app).ok().flatten();
+
+    // A sign-in on a device that already holds this account's sync key only
+    // unlocks settings: keep the key and drop the new Kanidm session.
+    if let (Some(existing), Some(username)) = (existing.as_ref(), claimed.as_deref()) {
+        if existing.device_key
+            && existing.api_base == session.api_base
+            && existing.username.as_deref() == Some(username)
+        {
+            unlock_settings(&app)?;
+            revoke_kanidm_session(&client, &session).await;
+            return Ok(username.to_owned());
+        }
+    }
+
+    // Exchange the Kanidm token for this device's permanent sync key. If the
+    // private sync API is unreachable right after Android returns from the
+    // browser, keep the Kanidm session instead; the app upgrades it to a
+    // device key the next time it starts with the API reachable.
+    let device = register_device(&client, &session).await.ok();
+    let (stored, username) = match device {
+        Some(device) => {
+            let username = device.username.clone();
+            (device_session(&session, device), Some(username))
+        }
+        None => (session.clone(), claimed),
+    };
+
     #[cfg(target_os = "android")]
     app.mobile_files()
         .acquire_session_lock()
         .map_err(|_| "Android could not coordinate the new sign-in session.".to_owned())?;
-    let store_result = (|| {
-        store_session(&app, &session)?;
-        app.mobile_files()
-            .store_secret(
-                "settings-auth-until".into(),
-                now_seconds().saturating_add(24 * 60 * 60).to_string(),
-            )
-            .map_err(|_| {
-                "The sign-in worked, but the settings access window could not be saved securely."
-                    .to_owned()
-            })
-    })();
+    let store_result = store_session(&app, &stored).and_then(|_| unlock_settings(&app));
     #[cfg(target_os = "android")]
     if let Err(error) = app.mobile_files().release_session_lock() {
         if store_result.is_ok() {
@@ -448,14 +488,162 @@ async fn finish_login<R: Runtime>(
         }
     }
     store_result?;
+    if stored.device_key {
+        revoke_kanidm_session(&client, &session).await;
+        // A replaced key (another account or server) is no longer reachable
+        // from this device; release it on the server.
+        if let Some(previous) = existing.filter(|previous| previous.device_key) {
+            revoke_device_key(&client, &previous).await;
+        }
+    }
     // Browser authentication is complete once the ID token is verified. Do not
     // discard its refresh token because the private sync API is temporarily
     // unreachable after Android returns from the browser. API requests still
     // authorize the bearer token independently on the server.
-    match claims.preferred_username.filter(|value| !value.is_empty()) {
+    match username {
         Some(username) => Ok(username),
-        None => fetch_current_user(&client, &session).await,
+        None => fetch_current_user(&client, &stored).await,
     }
+}
+
+fn unlock_settings<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    app.mobile_files()
+        .store_secret(
+            "settings-auth-until".into(),
+            now_seconds()
+                .saturating_add(SETTINGS_UNLOCK_SECONDS)
+                .to_string(),
+        )
+        .map_err(|_| {
+            "The sign-in worked, but the settings access window could not be saved securely."
+                .to_owned()
+        })
+}
+
+fn device_session(template: &StoredSession, device: DeviceKeyResponse) -> StoredSession {
+    StoredSession {
+        access_token: device.token,
+        refresh_token: String::new(),
+        expires_at: DEVICE_KEY_EXPIRES_AT,
+        token_endpoint: template.token_endpoint.clone(),
+        revocation_endpoint: template.revocation_endpoint.clone(),
+        client_id: template.client_id.clone(),
+        issuer: template.issuer.clone(),
+        api_base: template.api_base.clone(),
+        device_key: true,
+        username: Some(device.username),
+    }
+}
+
+/// Mint this device's sync key with a Kanidm access token.
+async fn register_device(
+    client: &reqwest::Client,
+    session: &StoredSession,
+) -> Result<DeviceKeyResponse, String> {
+    let label = if cfg!(target_os = "android") {
+        "Android"
+    } else {
+        "Linux"
+    };
+    let device: DeviceKeyResponse = client
+        .post(format!("{}/api/v1/devices", session.api_base))
+        .bearer_auth(&session.access_token)
+        .json(&serde_json::json!({ "label": label }))
+        .send()
+        .await
+        .map_err(network_error)?
+        .error_for_status()
+        .map_err(network_error)?
+        .json()
+        .await
+        .map_err(network_error)?;
+    if !device.token.starts_with("fsd1_") || device.username.is_empty() {
+        return Err("The sync server returned an invalid device key.".into());
+    }
+    Ok(device)
+}
+
+/// Best effort: end a Kanidm OAuth2 session that is no longer needed.
+async fn revoke_kanidm_session(client: &reqwest::Client, session: &StoredSession) {
+    if session.device_key || session.refresh_token.is_empty() {
+        return;
+    }
+    let Some(endpoint) = session.revocation_endpoint.as_deref() else {
+        return;
+    };
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client
+            .post(endpoint)
+            .form(&[
+                ("client_id", session.client_id.as_str()),
+                ("token", session.refresh_token.as_str()),
+                ("token_type_hint", "refresh_token"),
+            ])
+            .send(),
+    )
+    .await;
+}
+
+/// Best effort: revoke a device key on the sync server.
+async fn revoke_device_key(client: &reqwest::Client, session: &StoredSession) {
+    if !session.device_key {
+        return;
+    }
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client
+            .delete(format!("{}/api/v1/devices/current", session.api_base))
+            .bearer_auth(&session.access_token)
+            .send(),
+    )
+    .await;
+}
+
+/// Replace a pre-device-key Kanidm session with a device key while Kanidm
+/// still accepts it. Network failures keep the Kanidm session for a later try.
+async fn upgrade_to_device_key<R: Runtime>(
+    client: &reqwest::Client,
+    app: &AppHandle<R>,
+    session: StoredSession,
+) -> Result<StoredSession, String> {
+    if session.device_key {
+        return Ok(session);
+    }
+    let session = refresh_if_needed(client, app, session).await?;
+    let Ok(device) = register_device(client, &session).await else {
+        return Ok(session);
+    };
+    let upgraded = device_session(&session, device);
+    #[cfg(target_os = "android")]
+    app.mobile_files()
+        .acquire_session_lock()
+        .map_err(|_| "Android could not coordinate the session upgrade.".to_owned())?;
+    // A sign-in may have replaced the session while the key was issued.
+    let current = load_session(app);
+    let replaced = !matches!(
+        &current,
+        Ok(Some(current)) if !current.device_key && current.client_id == session.client_id
+            && current.api_base == session.api_base
+    );
+    let store_result = if replaced {
+        Ok(())
+    } else {
+        store_session(app, &upgraded)
+    };
+    #[cfg(target_os = "android")]
+    let _ = app.mobile_files().release_session_lock();
+    if replaced {
+        revoke_device_key(client, &upgraded).await;
+        return load_session(app)?.ok_or_else(|| "Sign in with Kanidm before syncing.".into());
+    }
+    store_result?;
+    // Revoke the refresh token now held in storage before the upgrade: a
+    // background refresh may have rotated it while the key was issued.
+    if let Ok(Some(previous)) = current {
+        revoke_kanidm_session(client, &previous).await;
+    }
+    Ok(upgraded)
 }
 
 #[tauri::command]
@@ -475,8 +663,17 @@ async fn current_user<R: Runtime>(app: AppHandle<R>) -> Result<Option<String>, S
         return Ok(None);
     };
     let client = http_client()?;
-    let session = refresh_if_needed(&client, &app, session).await?;
-    fetch_current_user(&client, &session).await.map(Some)
+    let session = upgrade_to_device_key(&client, &app, session).await?;
+    match fetch_current_user(&client, &session).await {
+        Err(error) if session.device_key && error.contains("HTTP 401") => {
+            // The server no longer knows this device's key (signed out
+            // elsewhere or revoked by the operator).
+            let _ = app.mobile_files().clear_session();
+            let _ = app.mobile_files().schedule_background_sync(false);
+            Err("This device's sync key was revoked. Sign in again to reconnect File Sync.".into())
+        }
+        result => result.map(Some),
+    }
 }
 
 #[tauri::command]
@@ -486,21 +683,9 @@ async fn logout<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let _ = app.mobile_files().schedule_background_sync(false);
     let logout_result = async {
         if let Some(session) = load_session(&app)? {
-            if let Some(endpoint) = session.revocation_endpoint.as_deref() {
-                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                    http_client()?
-                        .post(endpoint)
-                        .form(&[
-                            ("client_id", session.client_id.as_str()),
-                            ("token", session.refresh_token.as_str()),
-                            ("token_type_hint", "refresh_token"),
-                        ])
-                        .send()
-                        .await
-                        .map_err(network_error)
-                })
-                .await;
-            }
+            let client = http_client()?;
+            revoke_device_key(&client, &session).await;
+            revoke_kanidm_session(&client, &session).await;
         }
         app.mobile_files()
             .clear_session()
@@ -1706,7 +1891,7 @@ async fn refresh_if_needed<R: Runtime>(
     app: &AppHandle<R>,
     mut session: StoredSession,
 ) -> Result<StoredSession, String> {
-    if session.expires_at > now_seconds().saturating_add(60) {
+    if session.device_key || session.expires_at > now_seconds().saturating_add(60) {
         return Ok(session);
     }
     #[cfg(target_os = "android")]
@@ -1854,15 +2039,11 @@ fn restore_session_backup<R: Runtime>(app: AppHandle<R>, backup: String) -> Resu
     if load_session(&app)?.is_some() {
         return Ok(());
     }
+    // A restored session resumes syncing only; changing sync settings still
+    // needs a fresh Kanidm sign-in.
     let session: StoredSession = serde_json::from_str(&backup)
         .map_err(|_| "The stored session backup is invalid.".to_owned())?;
-    store_session(&app, &session)?;
-    app.mobile_files()
-        .store_secret(
-            "settings-auth-until".into(),
-            now_seconds().saturating_add(24 * 60 * 60).to_string(),
-        )
-        .map_err(|_| "The restored session could not be saved securely.".to_owned())
+    store_session(&app, &session)
 }
 
 fn ensure_https_url(value: &str) -> Result<(), String> {

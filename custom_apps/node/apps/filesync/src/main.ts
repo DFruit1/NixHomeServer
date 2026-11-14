@@ -1225,16 +1225,24 @@ async function start(): Promise<void> {
     try {
       await onOpenUrl((urls) => { for (const url of urls) void finishCallback(url); });
     } catch { /* The browser preview does not provide native deep links. */ }
+    let sessionRevoked = false;
     try {
       state.user = await invoke<string | null>('current_user') ?? undefined;
-    } catch { state.user = undefined; }
+    } catch (error) {
+      state.user = undefined;
+      // A revoked device key must not be resurrected from the backup below.
+      if (String(error instanceof Error ? error.message : error).includes('Sign in again to reconnect File Sync')) {
+        sessionRevoked = true;
+        showError(error);
+      }
+    }
     if (state.user) {
       cacheSignedInUser(state.user);
       // Token refresh may have rotated the session just now; keep the
       // browser backup identical so a later restore never replays a dead
       // refresh token over the live one.
       await saveSessionBackup();
-    } else if (await restoreSessionBackup()) {
+    } else if (!sessionRevoked && await restoreSessionBackup()) {
       state.notice = 'Signed in from the saved session.';
       await saveSessionBackup();
     } else {
@@ -1243,7 +1251,7 @@ async function start(): Promise<void> {
       // the cached name instead of bouncing to "Sign in to sync": the next
       // sync attempt revalidates and surfaces the real error if the session
       // is actually dead.
-      const cached = localStorage.getItem(USER_KEY);
+      const cached = sessionRevoked ? null : localStorage.getItem(USER_KEY);
       if (cached && (await hasStoredSession())) {
         state.user = cached;
         state.offline = true;

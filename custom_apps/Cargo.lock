@@ -1409,14 +1409,17 @@ name = "filesync-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "cap-std",
  "futures-util",
  "http",
  "jsonwebtoken",
+ "rand 0.8.7",
  "reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "tokio",
  "tokio-util",
  "uuid",

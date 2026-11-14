@@ -6,10 +6,12 @@ publish = false
 
 [dependencies]
 axum = { workspace = true, features = ["http1", "json", "query", "tokio"] }
+base64.workspace = true
 cap-std.workspace = true
 futures-util.workspace = true
 http.workspace = true
 jsonwebtoken.workspace = true
+rand.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -17,3 +19,6 @@ sha2.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time", "fs", "io-util"] }
 tokio-util = { workspace = true, features = ["io"] }
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

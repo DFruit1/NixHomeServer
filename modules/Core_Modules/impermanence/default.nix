@@ -45,6 +45,7 @@ let
     "/var/lib/cool"
     "/var/lib/filestash"
     "/var/lib/fdroidserver"
+    "/var/lib/filesync-api"
     "/var/lib/freshrss"
     "/var/lib/forgejo"
     "/var/lib/groundwater-logger"

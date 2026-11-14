@@ -1,9 +1,20 @@
 # File Sync prototype
 
-File Sync uses Kanidm OpenID Connect with authorization code + PKCE. The app
-stores the refresh token in Android Keystore-backed encrypted preferences on
-Android and the desktop keyring on Linux. It sends bearer access tokens to the
-per-user HTTPS API; this app does not use SFTP or SFTP keys.
+File Sync uses Kanidm OpenID Connect with authorization code + PKCE to sign
+in, then exchanges the Kanidm access token for a permanent per-device sync key
+issued by the per-user HTTPS API. The app stores that key in Android
+Keystore-backed encrypted preferences on Android and the desktop keyring on
+Linux, and sends it as the bearer token for syncing, manual resyncs and
+browsing. The Kanidm session is revoked as soon as the key is issued. This app
+does not use SFTP or SFTP keys.
+
+Kanidm cannot keep a native client signed in indefinitely: every OAuth2 refresh
+session belongs to the browser login that created it and ends with the account
+policy's auth-session expiry. The device key removes that limit for syncing.
+Changing sync settings (adding or enabling folders, the server address) still
+needs a fresh Kanidm sign-in, which unlocks settings on that device for 24 hours
+and keeps the existing device key when the account matches. Removing a folder
+does not need a sign-in.
 
 The current prototype supports one-way copies between an Android SAF tree or
 Linux folder and the signed-in user's enabled server libraries. Android runs
@@ -44,10 +55,16 @@ the selected SAF provider to support safe rename when replacing an existing
 file. Folder selection is recorded in native secure storage; removing the pair
 forgets that authorization and releases Android's persisted URI grant.
 Pairs are tied to the Kanidm username that created them; switching accounts
-requires separate pairs. Older unbound prototype pairs must be recreated. The
-24-hour settings authorization is separate from the saved sync session. Background
-sync continues while Kanidm accepts the refresh token, but Kanidm's token/session
-expiry and revocation still apply; this does not create a permanent credential.
+requires separate pairs. Older unbound prototype pairs must be recreated.
+Installs signed in before device keys existed upgrade their Kanidm session to a
+device key the next time the app opens with the sync API reachable.
+
+Device keys never expire. **Sign out** revokes the device's key on the server.
+The server stores only SHA-256 digests of keys in
+`/var/lib/filesync-api/devices.json` (kept 16 per account, oldest dropped).
+Disabling a Kanidm account does not revoke its device keys: to revoke a lost
+device, remove its entries from that file and restart `filesync-api`. A revoked
+key stops background sync and asks the user to sign in again.
 
 The server API runs as a dedicated unprivileged account. While it is running,
 systemd grants that account ACL access to the enabled personal library trees; the

@@ -3,7 +3,7 @@ use axum::{
     extract::{DefaultBodyLimit, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use cap_std::{ambient_authority, fs::Dir};
@@ -31,8 +31,10 @@ use tokio::{
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
+mod devices;
 mod manifest;
 
+use devices::DeviceStore;
 use manifest::{CachedManifest, LocalFile, ManifestKey};
 
 const SERVICE: &str = "filesync-api";
@@ -58,6 +60,7 @@ struct Settings {
     client_id: String,
     redirect_uri: String,
     roots: Vec<SyncRoot>,
+    device_store: PathBuf,
 }
 
 impl Settings {
@@ -74,6 +77,7 @@ impl Settings {
                 .unwrap_or_else(|_| "filesync://oauth/callback".into()),
             roots: serde_json::from_str(&required_env("FILESYNC_ROOTS_JSON")?)
                 .map_err(|error| format!("FILESYNC_ROOTS_JSON is invalid: {error}"))?,
+            device_store: PathBuf::from(required_env("FILESYNC_DEVICE_STORE")?),
         })
     }
 }
@@ -98,6 +102,7 @@ struct AppState {
     /// Holds the recursive walk and any hashes it produced so a repeated
     /// estimate costs one directory walk instead of one hashed read per file.
     manifests: RwLock<HashMap<ManifestKey, CachedManifest>>,
+    devices: DeviceStore,
 }
 
 #[derive(Clone)]
@@ -237,6 +242,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if userinfo_url.scheme() != "https" || userinfo_url.host_str().is_none() {
         return Err(io::Error::other("Kanidm userinfo URL must use HTTPS").into());
     }
+    let devices = DeviceStore::load(settings.device_store.clone())?;
     let state = Arc::new(AppState {
         settings,
         http,
@@ -247,12 +253,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         jwks_refreshed_at: RwLock::new(Instant::now()),
         identities: RwLock::new(HashMap::new()),
         manifests: RwLock::new(HashMap::new()),
+        devices,
     });
 
     let app = Router::new()
         .route("/healthz", get(health))
         .route("/api/v1/config", get(config))
         .route("/api/v1/me", get(me))
+        .route("/api/v1/devices", post(register_device))
+        .route("/api/v1/devices/current", delete(revoke_device))
         .route("/api/v1/presets", get(presets))
         .route("/api/v1/library-sizes", get(library_sizes))
         .route(
@@ -338,7 +347,23 @@ async fn jwk_for(state: &AppState, kid: &str) -> Result<Option<Jwk>, ()> {
     }
 }
 
+/// Accept a device sync key or a Kanidm access token.
 async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<String, Response> {
+    let token = bearer_token(headers)?;
+    if token.starts_with(devices::TOKEN_PREFIX) {
+        return match state.devices.lookup(token).await {
+            Some(record) if valid_username(&record.username) => Ok(record.username),
+            _ => Err(api_error(
+                StatusCode::UNAUTHORIZED,
+                "INVALID_TOKEN",
+                "This device's sync key was revoked. Sign in again.",
+            )),
+        };
+    }
+    authenticate_kanidm(state, headers).await
+}
+
+fn bearer_token(headers: &HeaderMap) -> Result<&str, Response> {
     let Some(raw) = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -356,6 +381,13 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<String, R
             "A bearer access token is required.",
         ));
     };
+    Ok(token)
+}
+
+/// Accept only a Kanidm access token. Issuing a device key needs a fresh
+/// Kanidm sign-in; an existing device key must never mint another one.
+async fn authenticate_kanidm(state: &AppState, headers: &HeaderMap) -> Result<String, Response> {
+    let token = bearer_token(headers)?;
     let header = decode_header(token).map_err(|_| {
         api_error(
             StatusCode::UNAUTHORIZED,
@@ -547,6 +579,79 @@ async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response 
     match authenticate(&state, &headers).await {
         Ok(username) => Json(Identity { username }).into_response(),
         Err(response) => response,
+    }
+}
+
+#[derive(Deserialize)]
+struct DeviceRequest {
+    label: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceKey {
+    id: String,
+    username: String,
+    token: String,
+}
+
+async fn register_device(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<DeviceRequest>,
+) -> Response {
+    let username = match authenticate_kanidm(&state, &headers).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let label: String = request
+        .label
+        .unwrap_or_default()
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(64)
+        .collect();
+    match state
+        .devices
+        .issue(&username, label.trim(), unix_now())
+        .await
+    {
+        Ok((record, token)) => (
+            StatusCode::CREATED,
+            Json(DeviceKey {
+                id: record.id,
+                username,
+                token,
+            }),
+        )
+            .into_response(),
+        Err(error) => {
+            eprintln!("{SERVICE}: could not save a device key: {error}");
+            api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "DEVICE_STORE_UNAVAILABLE",
+                "The sync server could not save this device's key.",
+            )
+        }
+    }
+}
+
+async fn revoke_device(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let token = match bearer_token(&headers) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    // Revoking an unknown key is not an error: sign-out stays idempotent.
+    match state.devices.revoke(token).await {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => {
+            eprintln!("{SERVICE}: could not revoke a device key: {error}");
+            api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "DEVICE_STORE_UNAVAILABLE",
+                "The sync server could not revoke this device's key.",
+            )
+        }
     }
 }
 

@@ -75,12 +75,16 @@ in
       FILESYNC_OIDC_REDIRECT_URI = "filesync://oauth/callback";
       FILESYNC_USERS_ROOT = usersRoot;
       FILESYNC_ROOTS_JSON = builtins.toJSON roots;
+      # Hashed per-device sync keys; losing it signs every phone out of sync.
+      FILESYNC_DEVICE_STORE = "/var/lib/filesync-api/devices.json";
     };
     serviceConfig = {
       ExecStart = "${appPackages.filesync-api}/bin/filesync-api";
       ExecStartPre = "+${grantSyncAccess}";
       User = "filesync-api";
       Group = "filesync-api";
+      StateDirectory = "filesync-api";
+      StateDirectoryMode = "0700";
       Restart = "on-failure";
       RestartSec = "5s";
       # The first grant recursively visits personal files. Keep it from being

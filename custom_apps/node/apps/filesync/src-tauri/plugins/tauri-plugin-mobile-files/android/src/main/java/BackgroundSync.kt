@@ -347,6 +347,12 @@ internal object SyncEngine {
       val session = JSONObject(raw)
       val fresh = session.optLong("expiresAt") > epochSeconds() + 60
       val refused = rejectedToken != null && session.optString("accessToken") == rejectedToken
+      if (session.optBoolean("deviceKey")) {
+        // Device keys never expire; a rejection means the key was revoked.
+        if (!refused) return session
+        SecureSecrets.clear(context, SESSION_SLOT)
+        throw SyncFailure("This device's sync key was revoked. Sign in again to resume sync.", false, needsSignIn = true)
+      }
       if (fresh && !refused) return session
       val form = mapOf(
         "grant_type" to "refresh_token",
