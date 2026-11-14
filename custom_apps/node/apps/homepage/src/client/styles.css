@@ -23,6 +23,8 @@
   --surface-warning-subtle: #fff8eb;
   --surface: #f5f7fa;
   --surface-bright: #fff;
+  --surface-accent-soft: #e7f0fa;
+  --accent-strong: #1a4a86;
 }
 
 :root {
@@ -553,11 +555,6 @@ h4 {
   font-weight: 800;
 }
 
-.getting-started-toc a.selected {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--surface-bright);
-}
 
 .notice {
   margin: 0 auto 18px;
@@ -631,9 +628,9 @@ h4 {
 
 .getting-started-guide {
   display: grid;
-  grid-template-columns: minmax(250px, 0.36fr) minmax(0, 1fr);
-  gap: 38px;
-  padding: 30px;
+  grid-template-columns: minmax(230px, 0.3fr) minmax(0, 1fr);
+  gap: 36px;
+  padding: 28px 30px 30px;
 }
 
 .getting-started-path {
@@ -644,9 +641,9 @@ h4 {
 
 .getting-started-path-header {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   border-bottom: 1px solid var(--border-strong);
-  padding: 2px 2px 16px;
+  padding: 2px 2px 14px;
 }
 
 .getting-started-path-header p {
@@ -726,42 +723,44 @@ h4 {
 }
 
 .getting-started-toc {
-  margin-top: 14px;
+  margin-top: 10px;
 }
 
 .getting-started-toc ol {
   display: grid;
-  gap: 8px;
+  gap: 2px;
 }
 
 .getting-started-toc a {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 24px;
+  grid-template-columns: 22px minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
-  min-height: 52px;
-  border: 1px solid var(--border);
+  gap: 10px;
+  min-height: 44px;
   border-radius: 6px;
-  background: var(--surface-bright);
-  color: var(--text-strong);
-  padding: 10px 12px 10px 14px;
+  color: var(--text-secondary-slate);
+  padding: 8px 10px;
   text-decoration: none;
-  transition-property: border-color, background-color, box-shadow;
-  transition-duration: 150ms;
-  transition-timing-function: ease-out;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .getting-started-toc a:hover:not(.selected) {
-  border-color: #aebed1;
-  background: var(--surface-subtle);
+  background: #eef4f8;
+  color: var(--text-strong);
 }
 
 .getting-started-toc a.selected {
-  box-shadow: 0 5px 16px rgba(36, 91, 159, 0.16);
+  background: var(--surface-accent-soft);
+  color: var(--accent-strong);
+}
+
+.getting-started-toc a.selected > strong {
+  font-weight: 800;
 }
 
 .getting-started-toc a > strong {
   font-size: 14px;
+  font-weight: 600;
   line-height: 1.3;
   text-wrap: pretty;
 }
@@ -772,10 +771,42 @@ h4 {
   padding-left: 34px;
 }
 
+.step-count {
+  margin: 0 0 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.getting-started-step .step-count {
+  max-width: none;
+  line-height: 1.3;
+}
+
+/* Only useful on phones, where the step list sits below the step itself. */
+.step-count__all {
+  display: none;
+  margin-left: 12px;
+  color: var(--accent);
+}
+
 .getting-started-step h1 {
-  margin: 5px 0 10px;
+  margin: 0 0 10px;
   font-size: 30px;
+  line-height: 1.15;
   text-wrap: balance;
+}
+
+.getting-started-step h2 {
+  margin: 0 0 8px;
+  font-size: 19px;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.getting-started-step .step-subhead {
+  margin: 28px 0 0;
+  font-size: 17px;
 }
 
 .getting-started-step p {
@@ -789,47 +820,61 @@ h4 {
   margin-top: 22px;
 }
 
-.getting-started-step .command-snippet {
+.getting-started-step .command-snippet-wrap {
   max-width: 680px;
-  margin-top: 8px;
 }
 
 .setup-list {
-  display: grid;
-  gap: 8px;
   max-width: 680px;
   margin: 18px 0 0;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-bright);
   padding: 0;
   list-style: none;
 }
 
 .setup-item {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  background: var(--surface-subtle);
-  padding: 10px 12px;
+  gap: 0 10px;
+  border-top: 1px solid var(--border-strong);
+  padding: 10px 14px;
 }
 
-.setup-item.pending {
-  border-color: #d5dfeb;
+.setup-item:first-child {
+  border-top: 0;
 }
+
 
 .setup-item.manual {
-  grid-template-columns: minmax(0, 1fr);
-  padding: 0;
+  padding: 0 14px 0 0;
 }
 
 .setup-item.manual:has(input:checked) {
-  border-color: #b8d9cb;
-  background: #f0f8f4;
+  background: #f3f9f6;
+}
+
+.setup-item.manual:has(input:checked) .manual-check span {
+  color: var(--text-muted);
+}
+
+.setup-item__action {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 700;
+  padding: 8px 2px;
+  text-underline-offset: 3px;
+  white-space: nowrap;
 }
 
 .setup-status {
   display: grid;
+  flex: 0 0 auto;
   width: 28px;
   height: 28px;
   place-items: center;
@@ -841,15 +886,10 @@ h4 {
   font-weight: 900;
 }
 
-.getting-started-toc a.selected .setup-status {
-  border-color: rgba(255, 255, 255, 0.34);
-  background: rgba(255, 255, 255, 0.18);
-  color: var(--surface-bright);
-}
 
 .getting-started-toc .setup-status {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   font-size: 12px;
 }
 
@@ -877,14 +917,16 @@ h4 {
 
 .manual-check {
   display: flex;
+  flex: 1 1 200px;
   align-items: flex-start;
   gap: 12px;
+  min-width: 0;
   min-height: 44px;
   color: var(--text-strong);
   cursor: pointer;
-  font-weight: 800;
+  font-weight: 600;
   line-height: 1.4;
-  padding: 12px 14px;
+  padding: 11px 0 11px 14px;
   text-wrap: pretty;
 }
 
@@ -911,10 +953,18 @@ h4 {
   line-height: 1.5;
 }
 
+.guide-callout > p:last-child {
+  margin-bottom: 0;
+}
+
+/* Notes are quieter than warnings: a rule and plain text, no filled box. */
 .guide-callout.neutral {
-  border-left-color: #6e8daf;
-  background: #f4f7fb;
+  border-left: 2px solid var(--border-strong-muted);
+  border-radius: 0;
+  background: transparent;
   color: var(--text-secondary);
+  font-size: 15px;
+  padding: 1px 0 1px 14px;
 }
 
 .credential-backup-guide {
@@ -963,99 +1013,175 @@ h4 {
   overflow-wrap: anywhere;
 }
 
-.available-service-list {
+.option-list,
+.login-list {
+  max-width: 680px;
+  margin: 12px 0 0;
+  border-top: 1px solid var(--border-strong);
+  padding: 0;
+  list-style: none;
+}
+
+.option-list li {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 18px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 18px;
+  border-bottom: 1px solid var(--border-strong);
+  padding: 12px 0;
 }
 
-.available-service-list a {
-  border: 1px solid var(--border-strong-muted);
-  border-radius: 999px;
-  background: var(--surface-subtle);
-  color: var(--accent);
-  font-size: 13px;
-  font-weight: 800;
-  padding: 7px 11px;
-  text-decoration: none;
-}
-
-.choice-grid,
-.device-setup-list {
+.option-list li > div {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 22px;
+  gap: 3px;
+  min-width: 0;
 }
 
-.choice-grid article,
-.device-setup-list article,
-.finish-next-steps {
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--surface-subtle);
-  padding: 16px;
-}
-
-.choice-grid article {
-  display: grid;
-  gap: 7px;
-}
-
-.choice-grid strong,
-.device-setup-list h3 {
+.option-list strong,
+.login-list dt {
   color: #15212f;
 }
 
-.choice-grid span {
+.option-list span {
   color: var(--text-muted);
   font-size: 14px;
   line-height: 1.45;
 }
 
-.device-setup-list article {
-  display: flex;
-  align-items: flex-start;
-  flex-direction: column;
+.option-list a {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
-.device-setup-list h3,
-.device-setup-list p {
-  margin-top: 4px;
+.login-list {
+  display: block;
 }
 
-.device-setup-list .secondary-link {
-  margin-top: auto;
+.login-list > div {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.36fr) minmax(0, 1fr);
+  gap: 4px 18px;
+  border-bottom: 1px solid var(--border-strong);
+  padding: 11px 0;
 }
 
-.device-setup-list .getting-started-actions {
-  margin-top: auto;
-  padding-top: 18px;
+.login-list dt {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.5;
 }
 
+.login-list dd {
+  margin: 0;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.step-help {
+  max-width: 680px;
+  margin-top: 20px;
+}
+
+.step-help > summary {
+  width: fit-content;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.step-help > ul {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding-left: 20px;
+}
+
+.step-help li,
+.step-help > p {
+  color: var(--text-secondary);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.step-help > p {
+  margin: 10px 0 0;
+}
+
+.app-setup,
 .finish-next-steps {
   max-width: 680px;
-  margin-top: 22px;
+  margin-top: 28px;
+  border-top: 1px solid var(--border-strong);
+  padding-top: 22px;
 }
 
-.finish-next-steps h3,
-.finish-next-steps p {
+.app-setup .setup-list {
+  margin-top: 14px;
+}
+
+.finish-next-steps p:last-child {
+  margin-bottom: 0;
+}
+
+.finish-next-steps a {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.copy-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
   margin: 0;
 }
 
-.finish-next-steps p {
-  margin-top: 7px;
+.copy-value__label {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.copy-value button {
+  min-height: 32px;
+  border: 1px solid var(--border-strong-muted);
+  border-radius: 6px;
+  background: var(--surface-bright);
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 4px 10px;
+}
+
+.copy-value button:hover {
+  background: var(--surface-accent-subtle);
 }
 
 .step-pagination {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   max-width: 680px;
-  margin-top: 34px;
+  margin-top: 18px;
   border-top: 1px solid var(--border-strong);
-  padding-top: 20px;
+  padding-top: 18px;
+}
+
+.previous-step-link {
+  color: var(--text-secondary);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.previous-step-link:hover,
+.previous-step-link:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 .explain-more {
@@ -1210,6 +1336,7 @@ h4 {
   display: grid;
   gap: 6px;
   width: min(620px, 100%);
+  margin: 16px 0 12px;
   color: var(--text-secondary);
   font-size: 14px;
   font-weight: 800;
@@ -1598,6 +1725,26 @@ h4 {
   margin-top: 8px;
 }
 
+.guide-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.guide-title {
+  margin-bottom: 12px;
+}
+
+.guide-title h2 {
+  margin-bottom: 0;
+}
+
+.guide-title .detail-actions {
+  margin-top: 0;
+}
+
 .primary-link,
 .secondary-link {
   border: 1px solid var(--accent);
@@ -1615,14 +1762,18 @@ h4 {
 }
 
 .next-step-link {
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--surface-bright);
   color: var(--accent);
   font-weight: 800;
+  padding: 10px 14px;
   text-decoration: none;
 }
 
 .next-step-link:hover,
 .next-step-link:focus-visible {
-  text-decoration: underline;
+  background: var(--surface-accent-subtle);
 }
 
 .service-preview-bar {
@@ -1735,6 +1886,23 @@ h4 {
   gap: 8px;
 }
 
+/* Sentences, not paths: the default dd is monospace for addresses and commands. */
+.info-list--prose {
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.info-list--prose dt {
+  color: var(--text-strong);
+}
+
+.info-list--prose dd {
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
 .empty-state p {
   color: var(--text-muted);
 }
@@ -1795,16 +1963,12 @@ dd {
 }
 
 .detailed-guide-heading {
-  max-width: 780px;
-  margin-bottom: 22px;
+  margin: 0 0 20px;
+  font-size: 30px;
+  line-height: 1.15;
 }
 
-.detailed-guide-heading h1 {
-  margin-bottom: 0;
-  text-wrap: balance;
-}
 
-.detailed-guide-heading p,
 .detailed-guide-content p,
 .detailed-guide-content li {
   text-wrap: pretty;
@@ -1812,8 +1976,8 @@ dd {
 
 .detailed-guide-layout {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr);
-  gap: 24px;
+  grid-template-columns: minmax(220px, 0.42fr) minmax(0, 1fr);
+  gap: 28px;
 }
 
 .detailed-guide-toc {
@@ -1824,8 +1988,8 @@ dd {
 }
 
 .detailed-guide-toc h2 {
-  margin: 0 0 14px;
-  font-size: 18px;
+  margin: 0 0 12px;
+  font-size: 16px;
 }
 
 .detailed-guide-toc section + section {
@@ -1851,11 +2015,11 @@ dd {
 
 .detailed-guide-toc a {
   display: flex;
-  min-height: 40px;
+  min-height: 36px;
   align-items: center;
   border-radius: 5px;
   color: var(--text-secondary-slate);
-  padding: 7px 10px;
+  padding: 6px 10px;
   text-decoration: none;
   transition: background-color 120ms ease, color 120ms ease;
 }
@@ -1868,13 +2032,48 @@ dd {
 }
 
 .detailed-guide-toc a.selected {
-  background: var(--accent);
-  color: var(--surface-bright);
+  background: var(--surface-accent-soft);
+  color: var(--accent-strong);
   font-weight: 800;
+}
+
+.detailed-guide-toc__unused {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 20px;
+  border-top: 1px solid var(--border-strong);
+  color: var(--text-muted-strong);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.4;
+  padding-top: 14px;
+}
+
+.detailed-guide-toc__unused input {
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
 }
 
 .detailed-guide-content {
   min-width: 0;
+  max-width: 720px;
+}
+
+.detailed-guide-content p,
+.detailed-guide-content li {
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+/* Phones only: the contents sit above the topic, so offer the way back. */
+.detailed-guide-back {
+  display: none;
+  margin-top: 28px;
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
 }
 
 .detailed-guide-content .guide-panel {
@@ -1888,8 +2087,9 @@ dd {
 }
 
 .detailed-guide-content .guide-panel h2 {
-  margin-top: 4px;
-  font-size: 30px;
+  margin-top: 0;
+  font-size: 26px;
+  line-height: 1.15;
   text-wrap: balance;
 }
 
@@ -1899,9 +2099,29 @@ dd {
 }
 
 .guide-lead {
-  color: var(--text-secondary);
+  margin-top: 10px;
   font-size: 17px;
-  line-height: 1.6;
+}
+
+.guide-disclosure {
+  margin-top: 28px;
+  border-top: 1px solid var(--border-strong);
+  padding-top: 16px;
+}
+
+.guide-disclosure > summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.guide-disclosure > summary h3 {
+  display: inline;
+  margin: 0;
+  color: var(--text);
+}
+
+.guide-disclosure > .guide-checklist {
+  margin-top: 12px;
 }
 
 .guide-checklist,
@@ -1922,10 +2142,6 @@ dd {
   font-weight: 800;
 }
 
-.filetypes {
-  color: var(--text-secondary);
-  font-weight: 700;
-}
 
 code {
   display: block;
@@ -1936,6 +2152,29 @@ code {
   color: #f7fafc;
   padding: 10px;
   font-size: 13px;
+}
+
+/* Code inside running text reads as a term, not as a command block. */
+.getting-started-step :is(p, li, dd, aside, summary) > code,
+.guide-panel :is(p, li, dd, aside) > code,
+.vault-card p > code,
+.explain-more__prose p > code,
+.copy-value > code {
+  display: inline;
+  overflow-x: visible;
+  overflow-wrap: anywhere;
+  border-radius: 4px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 0.9em;
+  padding: 2px 5px;
+}
+
+.command-snippet-wrap {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  margin: 8px 0 14px;
 }
 
 .command-snippet {
@@ -1949,11 +2188,32 @@ code {
   padding: 0;
 }
 
+.command-snippet__copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: 1px solid #3a4a5c;
+  border-radius: 5px;
+  background: #1b2733;
+  color: #dbe6ee;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 9px;
+}
+
+.command-snippet__copy:hover,
+.command-snippet__copy:focus-visible {
+  border-color: #8fd6ff;
+  color: #fff;
+}
+
 .command-snippet code {
   white-space: pre;
   background: transparent;
   color: #eef5f8;
   line-height: 1.65;
+  padding-right: 68px;
 }
 
 .syntax-command {
@@ -2087,12 +2347,78 @@ code {
   color: var(--surface-bright);
 }
 
+.sftp-setup-card {
+  max-width: 680px;
+  margin-top: 32px;
+  border-top: 1px solid var(--border-strong);
+  padding-top: 24px;
+}
+
+.sftp-setup-card .sftp-facts {
+  margin-bottom: 4px;
+}
+
+.sftp-setup-card .os-picker {
+  margin-top: 22px;
+}
+
 .sftp-step-list {
-  display: grid;
-  gap: 16px;
+  counter-reset: sftp-step;
   min-width: 0;
   padding-left: 0;
   list-style: none;
+}
+
+.getting-started-step .sftp-step-list {
+  max-width: none;
+}
+
+.sftp-step-list > li {
+  position: relative;
+  counter-increment: sftp-step;
+  border-top: 1px solid var(--border-strong);
+  padding: 18px 0 14px 44px;
+}
+
+.sftp-step-list > li::before {
+  position: absolute;
+  top: 15px;
+  left: 0;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--text-strong);
+  content: counter(sftp-step);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.sftp-step-list .step-help {
+  margin-top: 10px;
+}
+
+.package-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.package-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+}
+
+.package-list span {
+  min-width: 150px;
+  color: var(--text-muted);
+  font-size: 14px;
 }
 
 .sftp-step-list li {
@@ -2398,6 +2724,33 @@ textarea {
     padding-bottom: 20px;
   }
 
+  /* Topics wrap as chips so the whole index fits above the first topic. */
+  .detailed-guide-toc ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    border-left: 0;
+    padding-left: 0;
+  }
+
+  .detailed-guide-toc a {
+    min-height: 40px;
+    border: 1px solid var(--border);
+    padding: 7px 12px;
+  }
+
+  .detailed-guide-toc a.selected {
+    border-color: var(--surface-accent-soft);
+  }
+
+  .detailed-guide-back {
+    display: inline-block;
+  }
+
+  .detailed-guide-heading {
+    font-size: 26px;
+  }
+
   .getting-started-guide,
   .admin-page {
     padding: 22px 18px;
@@ -2408,13 +2761,83 @@ textarea {
     min-width: 0;
   }
 
-  .getting-started-path {
-    position: static;
+  /* Progress, then the step, then the list of steps: the task comes first. */
+  .getting-started-guide {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
   }
 
-  .choice-grid,
-  .device-setup-list {
-    grid-template-columns: 1fr;
+  .getting-started-path {
+    display: contents;
+  }
+
+  .getting-started-path-header {
+    order: 1;
+  }
+
+  .getting-started-toc {
+    order: 3;
+    margin-top: 28px;
+    border-top: 1px solid var(--border-strong);
+    padding-top: 16px;
+  }
+
+  .getting-started-toc::before {
+    display: block;
+    margin: 0 0 8px 2px;
+    content: 'All steps';
+    font-size: 16px;
+    font-weight: 800;
+  }
+
+  .step-count__all {
+    display: inline;
+  }
+
+  .getting-started-step h1 {
+    font-size: 26px;
+  }
+
+  .option-list li {
+    flex-wrap: wrap;
+  }
+
+  /* A narrow command block has no room for an overlaid button, so Copy sits under it. */
+  .command-snippet__copy {
+    position: static;
+    display: block;
+    margin: 6px 0 0 auto;
+    border-color: var(--border-strong-muted);
+    background: var(--surface-bright);
+    color: var(--accent);
+    font-size: 13px;
+    padding: 6px 12px;
+  }
+
+  .command-snippet__copy:hover,
+  .command-snippet__copy:focus-visible {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .command-snippet code {
+    padding-right: 10px;
+  }
+
+  /* Next leads on phones; the way back sits quietly underneath. */
+  .step-pagination {
+    align-items: stretch;
+    flex-direction: column-reverse;
+    text-align: center;
+  }
+
+  .login-list > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sftp-step-list > li {
+    padding-left: 38px;
   }
 
   .admin-task__main {
@@ -2451,9 +2874,9 @@ textarea {
   }
 
   .getting-started-step {
+    order: 2;
     border-left: 0;
-    border-top: 1px solid var(--border-strong);
-    padding-top: 24px;
+    padding-top: 20px;
     padding-left: 0;
   }
 
@@ -2547,6 +2970,7 @@ textarea {
 .vault-unlock p {
   margin: 0;
   color: var(--text-secondary);
+  line-height: 1.5;
 }
 
 .vault-unlock__hint {
@@ -2558,7 +2982,14 @@ textarea {
   font-size: 14px;
 }
 
+.vault-unlock__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .vault-unlock input {
+  flex: 1 1 220px;
   max-width: 340px;
   padding: 9px 12px;
   border: 1px solid var(--border-strong-muted);
@@ -2566,22 +2997,45 @@ textarea {
   font-size: 15px;
 }
 
-.vault-unlock button,
-.vault-unlock--open button {
-  justify-self: start;
+.vault-unlock button[type='submit'] {
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--surface-bright);
+  cursor: pointer;
+  font-weight: 800;
+  padding: 9px 18px;
 }
 
-.vault-unlock--open {
+.vault-unlock button[type='submit']:disabled {
+  cursor: progress;
+  opacity: 0.72;
+}
+
+
+/* Unlocked: one status row, so the credentials below lead the page. */
+.vault-gate--open {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  max-width: none;
+  background: var(--surface-subtle);
+  padding: 10px 14px;
 }
 
-.vault-unlock--open p {
-  margin: 0;
+.vault-gate--open .vault-gate__logo {
+  width: 32px;
+  height: 32px;
 }
+
+.vault-gate--open p {
+  flex: 1 1 240px;
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
 
 .vault-countdown {
   color: var(--text-muted);
@@ -2649,6 +3103,23 @@ textarea {
 .vault-card__head p {
   margin: 0;
   color: var(--text-muted);
+}
+
+.vault-page .section-heading h1 {
+  font-size: 30px;
+  line-height: 1.15;
+}
+
+.vault-page .section-heading p {
+  max-width: 70ch;
+}
+
+.vault-page p {
+  line-height: 1.5;
+}
+
+.vault-card .explain-more {
+  margin-top: 16px;
 }
 
 .vault-keys-list ul,
@@ -2722,7 +3193,10 @@ textarea {
 .vault-secret__actions button,
 .vault-once__fields button,
 .vault-confirm button,
-.vault-inline-form button {
+.vault-inline-form button,
+.vault-manual-key > button,
+.vault-key-row button,
+.vault-button {
   padding: 8px 14px;
   border: 1px solid var(--accent);
   border-radius: 6px;
@@ -2735,7 +3209,10 @@ textarea {
 .vault-secret__actions button:hover,
 .vault-once__fields button:hover,
 .vault-confirm button:hover,
-.vault-inline-form button:hover {
+.vault-inline-form button:hover,
+.vault-manual-key > button:hover,
+.vault-key-row button:hover,
+.vault-button:hover {
   background: var(--surface-accent-subtle);
 }
 
@@ -2846,6 +3323,11 @@ textarea {
   font-size: 15px;
 }
 
+.vault-key-form .hint,
+.vault-admin-key-target .hint {
+  margin: 0;
+}
+
 .vault-key-form {
   margin-top: 14px;
   border-top: 1px solid var(--border-strong);
@@ -2942,11 +3424,6 @@ textarea {
 }
 
 @media (max-width: 760px) {
-  .vault-unlock--open {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
   .vault-once__fields dd {
     flex-wrap: wrap;
   }

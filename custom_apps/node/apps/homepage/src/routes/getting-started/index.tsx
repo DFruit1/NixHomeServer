@@ -123,8 +123,8 @@ export default component$(() => {
     setManualCheck,
   });
 
-  const activeStepIndex = steps.findIndex((step) => step.id === activeStepId);
-  const activeStep = steps[activeStepIndex] ?? steps[0];
+  const activeStepIndex = Math.max(0, steps.findIndex((step) => step.id === activeStepId));
+  const activeStep = steps[activeStepIndex];
   const relevantItems = model.setupItems.filter((item) => item.status !== 'unavailable' && !item.id.endsWith('-unavailable'));
   const completeItems = relevantItems.filter((item) => item.status === 'verified' || item.status === 'manual');
   const progress = relevantItems.length === 0 ? 0 : Math.round((completeItems.length / relevantItems.length) * 100);
@@ -135,14 +135,13 @@ export default component$(() => {
     <section id="guide" class="getting-started-guide">
       <aside class="getting-started-path">
         <div class="getting-started-path-header">
-          <span class="eyebrow">Setup checklist</span>
           <div class="setup-progress" aria-label={`${progress}% of setup complete`}>
             <div><strong>{completeItems.length} of {relevantItems.length}</strong><span>tasks done</span></div>
             <progress max={100} value={progress}>{progress}%</progress>
           </div>
           <p>Checklist progress is saved only in this browser profile.</p>
         </div>
-        <nav class="getting-started-toc" aria-label="Getting started steps">
+        <nav id="steps" class="getting-started-toc" aria-label="Getting started steps">
           <ol>
             {steps.map((step) => (
               <li key={step.id}>
@@ -151,8 +150,8 @@ export default component$(() => {
                   class={{ selected: activeStepId === step.id }}
                   aria-current={activeStepId === step.id ? 'step' : undefined}
                 >
-                  <strong>{step.label}</strong>
                   <StatusMark status={step.status} decorative />
+                  <strong>{step.label}</strong>
                 </Link>
               </li>
             ))}
@@ -161,11 +160,19 @@ export default component$(() => {
       </aside>
 
       <article class="getting-started-step">
+        <header class="step-header">
+          <p class="step-count">
+            Step {activeStepIndex + 1} of {steps.length}
+            {activeStep.optional && <span> · Optional</span>}
+            <a class="step-count__all" href="#steps">All steps</a>
+          </p>
+          <h1>{activeStep.label}</h1>
+        </header>
         {activeStep.content}
         <ExplainMore title={activeStep.label} plain={activeStep.explain.plain} technical={activeStep.explain.technical} />
         <nav class="step-pagination" aria-label="Guide pagination">
-          {previousStep ? <Link class="secondary-link" href={`/getting-started?step=${previousStep.id}#guide`}>&larr; {previousStep.label}</Link> : <span />}
-          {nextStep && <Link class="next-step-link" href={`/getting-started?step=${nextStep.id}#guide`}>Next Step: {nextStep.label} &rarr;</Link>}
+          {previousStep ? <Link class="previous-step-link" href={`/getting-started?step=${previousStep.id}#guide`}>&larr; {previousStep.label}</Link> : <span />}
+          {nextStep && <Link class="next-step-link" href={`/getting-started?step=${nextStep.id}#guide`}>Next: {nextStep.label} &rarr;</Link>}
         </nav>
       </article>
     </section>

@@ -1,6 +1,6 @@
 import type { JSXOutput } from '@builder.io/qwik';
-import { $ } from '@builder.io/qwik';
 import { Link } from '@builder.io/qwik-city';
+import { CopyValue } from '../../components/CopyValue.js';
 import { CredentialBackupGuide } from '../../components/CredentialBackupGuide.js';
 import { SftpSetup } from '../../components/SftpSetup.js';
 import type { ServiceCard } from '../../shared/types.js';
@@ -45,6 +45,8 @@ export type StepsContext = {
 export type GettingStartedStep = {
   id: GettingStartedStepId;
   label: string;
+  /** Steps a person can skip without losing access to anything they already use. */
+  optional?: boolean;
   status: SetupStatus;
   content: JSXOutput;
   explain: { plain: JSXOutput; technical: JSXOutput };
@@ -100,7 +102,7 @@ export const buildSteps = (ctx: StepsContext): GettingStartedStep[] => {
     setManualCheck,
   } = ctx;
 
-  const renderSetupItem = (id: string) => {
+  const renderSetupItem = (id: string, action?: JSXOutput) => {
     const item = setupItems.find((candidate) => candidate.id === id);
     if (!item) return null;
     return (
@@ -108,9 +110,31 @@ export const buildSteps = (ctx: StepsContext): GettingStartedStep[] => {
         {item.manual && item.status !== 'unavailable'
           ? <ManualCheck id={item.id} label={item.label} checked={Boolean(manualChecks[item.id])} setManualCheck={setManualCheck} />
           : <><StatusMark status={item.status} /><span>{item.label}</span></>}
+        {action}
       </li>
     );
   };
+  const renderSetupItems = (ids: string[]) => ids.map((id) => renderSetupItem(id));
+  const troubleshooting = [
+    (documentsStatus === 'available' || booksStatus === 'available') && (
+      <li key="first-sign-in">
+        <strong>Some app accounts are created on first sign-in.</strong> {documentsStatus === 'available' && 'Documents'}{documentsStatus === 'available' && booksStatus === 'available' && ' and '}{booksStatus === 'available' && 'Books'} may need a moment to create a local profile. Try once more before reporting an issue.
+      </li>
+    ),
+    backupsStatus === 'available' && (
+      <li key="backups-gates">
+        <strong>Local Backups has two sign-in gates.</strong> Kanidm checks your group, then Kopia asks for a credential. If the first fails, ask an admin to check your group. If the second fails, ask them to verify the Kopia credential.
+      </li>
+    ),
+    monitorStatus === 'available' && (
+      <li key="monitor-gates">
+        <strong>Monitor has two sign-in gates.</strong> Kanidm checks access, then Beszel asks for its own login. A second-prompt failure won't be fixed by resetting Kanidm.
+      </li>
+    ),
+    <li key="refresh-sign-in">
+      <strong>If access was just changed, refresh your sign-in first.</strong> Sign out and back in to refresh account groups. If the service is still missing, ask an admin to verify membership.
+    </li>,
+  ].filter(Boolean);
 
   return [
     {
@@ -119,15 +143,25 @@ export const buildSteps = (ctx: StepsContext): GettingStartedStep[] => {
       status: stepStatus(setupItems, ['manager-installed', 'manager-vault-created']),
       content: (
         <>
-          <span class="eyebrow">Essential setup</span>
-          <h1>Install a password manager</h1>
           <p class="step-lead">Start here so every password, recovery code, and app-specific login created later has a safe place to go.</p>
-          <ul class="setup-list">{['manager-installed', 'manager-vault-created'].map(renderSetupItem)}</ul>
-          <div class="getting-started-actions compact">
-            <a class="primary-link" href="https://bitwarden.com/download/" target="_blank" rel="noreferrer">Download Bitwarden</a>
-            <a class="secondary-link" href="https://keepassxc.org/download/" target="_blank" rel="noreferrer">Download KeePassXC</a>
-          </div>
-          <aside class="guide-callout neutral"><strong>Choose one.</strong> Bitwarden works across phones and computers and can connect to the server's Passwords service. KeePassXC keeps a local encrypted vault that you back up yourself.</aside>
+          <ul class="setup-list">{renderSetupItems(['manager-installed', 'manager-vault-created'])}</ul>
+          <h2 class="step-subhead">Choose one</h2>
+          <ul class="option-list">
+            <li>
+              <div>
+                <strong>Bitwarden</strong>
+                <span>Works across phones and computers and can connect to the server's Passwords service.</span>
+              </div>
+              <a class="secondary-link" href="https://bitwarden.com/download/" target="_blank" rel="noreferrer">Download Bitwarden</a>
+            </li>
+            <li>
+              <div>
+                <strong>KeePassXC</strong>
+                <span>Keeps a local encrypted vault that you back up yourself.</span>
+              </div>
+              <a class="secondary-link" href="https://keepassxc.org/download/" target="_blank" rel="noreferrer">Download KeePassXC</a>
+            </li>
+          </ul>
         </>
       ),
       explain: {
@@ -152,14 +186,12 @@ export const buildSteps = (ctx: StepsContext): GettingStartedStep[] => {
       status: stepStatus(setupItems, ['account-profile-confirmed', 'account-password-set', 'account-second-factor', 'account-login-tested']),
       content: (
         <>
-          <span class="eyebrow">Essential setup</span>
-          <h1>Activate your account</h1>
           <p class="step-lead">Kanidm manages your account for Homepage and most services. You are currently signed in as <strong>{username}</strong>.</p>
-          <ul class="setup-list">{['account-profile-confirmed', 'account-password-set', 'account-second-factor', 'account-login-tested'].map(renderSetupItem)}</ul>
+          <ul class="setup-list">{renderSetupItems(['account-profile-confirmed', 'account-password-set', 'account-second-factor', 'account-login-tested'])}</ul>
           <div class="getting-started-actions compact">
             <a class="primary-link" href={kanidmUrl} target="_blank" rel="noreferrer">Open Kanidm</a>
           </div>
-          <aside class="guide-callout"><strong>One-time account links are short-lived.</strong> It works once and expires after one hour. If it expires, ask for a new link. Never send an admin your password, one-time link, passkey, authenticator code, or recovery code.</aside>
+          <aside class="guide-callout"><strong>Your one-time account link is short-lived.</strong> It works once and expires after one hour. If it expires, ask for a new link. Never send an admin your password, one-time link, passkey, authenticator code, or recovery code.</aside>
           <aside class="guide-callout neutral"><strong>Use a trusted network path.</strong> Open private services only on your home network or through NetBird. {serverLanHost ? <>If a service doesn't work at home, tell the admin you're reaching the server at <strong>{serverLanHost}</strong>.</> : "If a service doesn't work, tell the admin which network you're using."} Never bypass certificate warnings.</aside>
         </>
       ),
@@ -186,50 +218,46 @@ export const buildSteps = (ctx: StepsContext): GettingStartedStep[] => {
       status: stepStatus(setupItems, ['recovery-login-saved', 'recovery-methods-saved', 'recovery-backup-saved']),
       content: (
         <>
-          <span class="eyebrow">Essential setup</span>
-          <h1>Save recovery details</h1>
           <p class="step-lead">Keep enough information outside this server to regain access if the server or one of your devices is unavailable.</p>
-          <ul class="setup-list">{['recovery-login-saved', 'recovery-methods-saved', 'recovery-backup-saved'].map(renderSetupItem)}</ul>
-          <div class="choice-grid" aria-label="Account types">
-            <article>
-              <strong>Kanidm sign-in</strong>
-              <span>Used by Homepage and most apps. Add a second sign-in method.</span>
-            </article>
+          <ul class="setup-list">{renderSetupItems(['recovery-login-saved', 'recovery-methods-saved', 'recovery-backup-saved'])}</ul>
+          <h2 class="step-subhead">Logins to keep track of</h2>
+          <dl class="login-list" aria-label="Account types">
+            <div>
+              <dt>Kanidm sign-in</dt>
+              <dd>Used by Homepage and most apps. Add a second sign-in method.</dd>
+            </div>
             {passwordsStatus === 'available' && (
-              <article>
-                <strong>Passwords master password</strong>
-                <span>Separate from Kanidm. The server cannot recover it, so save the master password and a recovery backup immediately.</span>
-              </article>
+              <div>
+                <dt>Passwords master password</dt>
+                <dd>Separate from Kanidm. The server cannot recover it, so save the master password and a recovery backup immediately.</dd>
+              </div>
             )}
             {backupsStatus === 'available' && (
-              <article>
-                <strong>Local Backups password</strong>
-                <span>After Kanidm, Kopia asks for the <code>kopia-admin</code> credential. Get it from an admin—don't use your Kanidm password.</span>
-              </article>
+              <div>
+                <dt>Local Backups password</dt>
+                <dd>After Kanidm, Kopia asks for the <code>kopia-admin</code> credential. Get it from an admin—don't use your Kanidm password.</dd>
+              </div>
             )}
             {monitorStatus === 'available' && (
-              <article>
-                <strong>Monitor login</strong>
-                <span>After Kanidm, Beszel uses its own login. A Kanidm reset doesn't affect it.</span>
-              </article>
+              <div>
+                <dt>Monitor login</dt>
+                <dd>After Kanidm, Beszel uses its own login. A Kanidm reset doesn't affect it.</dd>
+              </div>
             )}
-          </div>
+          </dl>
+          <aside class="guide-callout neutral">Store recovery codes in a second secure location that does not depend on this server. Save app-specific passwords separately from your Kanidm password.</aside>
           {passwordsStatus === 'available' ? (
-            <div class="getting-started-actions compact">
-              <a class="primary-link" href={passwordsUrl} target="_blank" rel="noreferrer">Open Passwords</a>
-            </div>
+            <>
+              <h2 class="step-subhead">Back up your Passwords vault</h2>
+              <p>On your first visit, register with your local account email. If that email is already registered, sign in with your existing Vaultwarden master password instead—don't create a second vault.</p>
+              <div class="getting-started-actions compact">
+                <a class="primary-link" href={passwordsUrl} target="_blank" rel="noreferrer">Open Passwords</a>
+              </div>
+              <CredentialBackupGuide />
+            </>
           ) : (
             <aside class="guide-callout neutral">The Passwords app is not available to you. Use another password manager, or ask an admin whether you should have access.</aside>
           )}
-          {passwordsStatus === 'available' && (
-            <>
-              <aside class="guide-callout neutral">
-                <strong>If email is already registered, don't create a second vault.</strong> Use your Vaultwarden master password at login. An admin can't recover a lost master password.
-              </aside>
-              <CredentialBackupGuide />
-            </>
-          )}
-          <aside class="guide-callout neutral">Store recovery codes in a second secure location that does not depend on this server. Save app-specific passwords separately from your Kanidm password.</aside>
         </>
       ),
       explain: {
@@ -255,47 +283,34 @@ export const buildSteps = (ctx: StepsContext): GettingStartedStep[] => {
       status: ctx.serviceSetupIds.length > 0 ? stepStatus(setupItems, ctx.serviceSetupIds) : 'unavailable',
       content: (
         <>
-          <span class="eyebrow">Core services</span>
-          <h1>Open your services</h1>
-          <p class="step-lead">The Services page lists {enabledServices.length} app{enabledServices.length === 1 ? '' : 's'} assigned to your account. Open each service once and tick it off below. Most use the Kanidm sign-in you just set up; Passwords and the other separately noted apps have their own login.</p>
-          {enabledServices.length > 0 && (
-            <div class="available-service-list" aria-label="Available services">
-              {enabledServices.map((service) => (
-                <a key={service.id} href={service.url} target={service.url.startsWith('/') ? undefined : '_blank'} rel="noreferrer">{service.name}</a>
-              ))}
-            </div>
-          )}
+          <p class="step-lead">The Services page lists {enabledServices.length} app{enabledServices.length === 1 ? '' : 's'} assigned to your account. Open each one once and tick it off. Most use the Kanidm sign-in you just set up.</p>
           {enabledServices.length > 0 ? (
-            <ul class="setup-list">{ctx.serviceSetupIds.map(renderSetupItem)}</ul>
+            <ul class="setup-list" aria-label="Available services">
+              {enabledServices.map((service) => renderSetupItem(
+                `service-opened-${service.id}`,
+                <a
+                  class="setup-item__action"
+                  href={service.url}
+                  target={service.url.startsWith('/') ? undefined : '_blank'}
+                  rel="noreferrer"
+                  aria-label={`Go to ${service.name}`}
+                >
+                  Open
+                </a>,
+              ))}
+            </ul>
           ) : (
-            <><ul class="setup-list">{['services-unavailable'].map(renderSetupItem)}</ul><aside class="guide-callout neutral">No enabled apps are currently assigned to this account, so there is nothing to check here. If you expected an app, sign out and back in once, then ask an admin to verify your access.</aside></>
-          )}
-          {(documentsStatus === 'available' || booksStatus === 'available') && (
-            <aside class="guide-callout neutral">
-              <strong>Some app accounts are created on first sign-in.</strong> {documentsStatus === 'available' && 'Documents'}{documentsStatus === 'available' && booksStatus === 'available' && ' and '}{booksStatus === 'available' && 'Books'} may need a moment to create a local profile. Try once before reporting issues.
-            </aside>
+            <><ul class="setup-list">{renderSetupItems(['services-unavailable'])}</ul><aside class="guide-callout neutral">No enabled apps are currently assigned to this account, so there is nothing to check here. If you expected an app, sign out and back in once, then ask an admin to verify your access.</aside></>
           )}
           {passwordsStatus === 'available' && (
             <aside class="guide-callout">
-              <strong>Passwords is separate from Kanidm.</strong> It uses its own vault and master password, not your Kanidm password. On the first visit, register with your local account email. If that email is already registered, sign in with the Vaultwarden master password instead — don't create a second vault. An admin can't recover a lost master password.
+              <strong>Passwords is separate from Kanidm.</strong> It uses its own vault and master password, not your Kanidm password. An admin can't recover a lost master password.
             </aside>
           )}
-          {backupsStatus === 'available' && (
-            <aside class="guide-callout neutral">
-              <strong>Local Backups has two sign-in gates.</strong> Kanidm checks your group, then Kopia asks for a credential. If the first fails, ask an admin to check your group. If the second fails, ask them to verify the Kopia credential.
-            </aside>
-          )}
-          {monitorStatus === 'available' && (
-            <aside class="guide-callout neutral">
-              <strong>Monitor has two sign-in gates.</strong> Kanidm checks access, then Beszel asks for its own login. A second-prompt failure won't be fixed by resetting Kanidm.
-            </aside>
-          )}
-          <aside class="guide-callout neutral">
-            <strong>If access was just changed, refresh your sign-in first.</strong> Sign out and back in to refresh account groups. If the service is still missing, ask an admin to verify membership.
-          </aside>
-          <div class="getting-started-actions compact">
-            <Link class="primary-link" href="/">Open Services</Link>
-          </div>
+          <details class="step-help">
+            <summary>If an app doesn't open</summary>
+            <ul>{troubleshooting}</ul>
+          </details>
         </>
       ),
       explain: {
@@ -321,21 +336,38 @@ export const buildSteps = (ctx: StepsContext): GettingStartedStep[] => {
       status: stepStatus(setupItems, ['file-destinations-reviewed', 'file-transferred', 'file-verified']),
       content: (
         <>
-          <span class="eyebrow">Files</span>
-          <h1>Add your files</h1>
           <p class="step-lead">{filesWebAvailable ? 'Use the Files web app for small uploads.' : 'Browser file uploads are not available.'} {sftpAvailable ? 'For regular or large transfers, connect via SSHFS.' : 'SFTP/SSHFS is not enabled for your account.'}</p>
-          <ul class="setup-list">{['file-destinations-reviewed', 'file-transferred', 'file-verified'].map(renderSetupItem)}</ul>
+          <ul class="setup-list">
+            {renderSetupItem(
+              'file-destinations-reviewed',
+              fileTransferAvailable ? <Link class="setup-item__action" href="/uploads">Find the folder</Link> : undefined,
+            )}
+            {renderSetupItems(['file-transferred', 'file-verified'])}
+          </ul>
           {fileTransferAvailable ? (
             <>
-              <div class="choice-grid">
-                {filesWebAvailable && <article><strong>Upload in browser</strong><span>Open Files, choose the folder, and drag files in.</span></article>}
-                {sftpAvailable && <article><strong>Connect via SSHFS</strong><span>Mount the server as a folder. Follow the home-network-only guide for your OS.</span></article>}
-              </div>
+              <h2 class="step-subhead">Ways to transfer</h2>
+              <ul class="option-list">
+                {filesWebAvailable && (
+                  <li>
+                    <div>
+                      <strong>Upload in browser</strong>
+                      <span>Open Files, choose the folder, and drag files in.</span>
+                    </div>
+                    <a class="primary-link" href={filesUrl} target="_blank" rel="noreferrer">Open Files</a>
+                  </li>
+                )}
+                {sftpAvailable && (
+                  <li>
+                    <div>
+                      <strong>Connect via SSHFS</strong>
+                      <span>Mount the server as a folder on a computer. Home network only.</span>
+                    </div>
+                    <a class="secondary-link" href="#sshfs-setup">Set up below</a>
+                  </li>
+                )}
+              </ul>
               <aside class="guide-callout neutral"><strong>Browser Files and SFTP/SSHFS are separate permissions.</strong> SFTP uses a device key and is only available on the home network. Do not upload the same file to multiple folders because that creates duplicates.</aside>
-              <div class="getting-started-actions compact">
-                {filesWebAvailable && <a class="primary-link" href={filesUrl} target="_blank" rel="noreferrer">Open Files</a>}
-                <Link class="secondary-link" href="/uploads">Browse file placement in Detailed Guide</Link>
-              </div>
               {sftpAvailable && (
                 <SftpSetup
                   username={username}
@@ -370,13 +402,12 @@ export const buildSteps = (ctx: StepsContext): GettingStartedStep[] => {
     {
       id: 'devices',
       label: 'Set up access away from home',
+      optional: true,
       status: stepStatus(setupItems, ['netbird-installed', 'netbird-enrolled', 'netbird-tested']),
       content: (
         <>
-          <span class="eyebrow">Optional access</span>
-          <h1>Set up access away from home</h1>
           <p class="step-lead">Skip this step if you only use the server at home. Otherwise, use NetBird for private access from another network.</p>
-          <ul class="setup-list">{['netbird-installed', 'netbird-enrolled', 'netbird-tested'].map(renderSetupItem)}</ul>
+          <ul class="setup-list">{renderSetupItems(['netbird-installed', 'netbird-enrolled', 'netbird-tested'])}</ul>
           <div class="getting-started-actions compact">
             <a class="primary-link" href="https://docs.netbird.io/get-started/install" target="_blank" rel="noreferrer">Download NetBird</a>
           </div>
@@ -402,77 +433,76 @@ export const buildSteps = (ctx: StepsContext): GettingStartedStep[] => {
     {
       id: 'finish',
       label: 'Connect optional apps',
+      optional: true,
       status: ctx.optionalSetupIds.length > 0 ? stepStatus(setupItems, ctx.optionalSetupIds) : 'unavailable',
       content: (
         <>
-          <span class="eyebrow">Optional apps · final step</span>
-          <h1>Connect optional apps</h1>
           <p class="step-lead">Set up only the phone and media clients for services assigned to you. This final step covers Immich, Jellyfin, Inkita, Lissen, and Audiobookshelf.</p>
-          <ul class="setup-list">{(ctx.optionalSetupIds.length > 0 ? ctx.optionalSetupIds : ['optional-unavailable']).map(renderSetupItem)}</ul>
-          <div class="device-setup-list">
-            {photosStatus === 'available' && (
-              <article>
-                <div><span class="eyebrow">Photos</span><h3>Back up phone photos with Immich</h3></div>
-                <p>Install Immich, enter <strong>{photosUrl}</strong>, select albums to back up, and allow photo and background permissions. Do not use a public photo-share link or the public share hostname as the server address.</p>
-                <div class="getting-started-actions compact">
-                  <a class="secondary-link" href="https://docs.immich.app/overview/quick-start/#download-the-mobile-app" target="_blank" rel="noreferrer">Download Immich</a>
-                  <a class="secondary-link" href={photosUrl} target="_blank" rel="noreferrer">Open Photos</a>
-                </div>
-              </article>
-            )}
-            {videosStatus === 'available' && (
-              <article>
-                <div><span class="eyebrow">Videos</span><h3>Watch with Jellyfin</h3></div>
-                <p>Install the client for your phone, TV, or computer and connect it to <strong>{videosUrl}</strong>. Use Quick Connect, or ask an admin for the initial Jellyfin password, change it on first sign-in, and save the new one.</p>
-                <div class="getting-started-actions compact">
-                  <a class="secondary-link" href="https://jellyfin.org/downloads/" target="_blank" rel="noreferrer">Download Jellyfin</a>
-                  <a class="secondary-link" href={videosUrl} target="_blank" rel="noreferrer">Open Videos</a>
-                </div>
-              </article>
-            )}
-            {booksStatus === 'available' && (
-              <article>
-                <div><span class="eyebrow">Books</span><h3>Read with Inkita on Android</h3></div>
-                <p>Install Inkita, connect it to <strong>{booksUrl}</strong>, and open a test book before downloading anything for offline reading.</p>
-                <div class="getting-started-actions compact">
-                  <a class="secondary-link" href="https://github.com/dom-53/Inkita" target="_blank" rel="noreferrer">Download Inkita</a>
-                  <a class="secondary-link" href={booksUrl} target="_blank" rel="noreferrer">Open Books</a>
-                </div>
-              </article>
-            )}
-            {audiobooksStatus === 'available' && (
-              <article>
-                <div><span class="eyebrow">Audiobooks</span><h3>Listen with Lissen or Audiobookshelf</h3></div>
-                <p>Install one Android client, connect it to <strong>{audiobooksUrl}</strong>, and play a test chapter before downloading books.</p>
-                <div class="getting-started-actions compact">
-                  <a class="secondary-link" href="https://f-droid.org/en/packages/org.grakovne.lissen/" target="_blank" rel="noreferrer">Download Lissen</a>
-                  <a class="secondary-link" href="https://github.com/advplyr/audiobookshelf-app" target="_blank" rel="noreferrer">Download Audiobookshelf</a>
-                  <a class="secondary-link" href={audiobooksUrl} target="_blank" rel="noreferrer">Open Audiobooks</a>
-                </div>
-              </article>
-            )}
-            {offlineMediaStatus === 'available' && (
-              <article>
-                <div><span class="eyebrow">Offline Media</span><h3>Sync media with File Sync</h3></div>
-                <p>Install File Sync on Android from this server’s app repository, sign in with Kanidm, then set up the suggested music or video folders. Your account needs Files access.</p>
-                <div class="getting-started-actions compact">
-                  <Link class="secondary-link" href="/services/offline-media">Set up Offline Media</Link>
-                </div>
-              </article>
-            )}
-          </div>
-          <div class="finish-next-steps">
-            <h3>Where to go next</h3>
-            <p>Use <strong>Services</strong> to open apps. {fileTransferAvailable && <><strong>Detailed Guide</strong> covers app features and file destinations. </>}Return to this checklist whenever you add a device.</p>
-          </div>
-          <aside class="guide-callout neutral">
-            <strong>When asking for help</strong>
-            <p>Include your username, app name, time, network, and exact error. Never share passwords, links, codes, or tokens.</p>
-          </aside>
-          <div class="getting-started-actions compact">
-            <Link class="primary-link" href="/">Go to Services</Link>
-            {fileTransferAvailable && <Link class="secondary-link" href="/uploads">Open Detailed Guide</Link>}
-          </div>
+          {ctx.optionalSetupIds.length === 0 && <ul class="setup-list">{renderSetupItems(['optional-unavailable'])}</ul>}
+          {photosStatus === 'available' && (
+            <section class="app-setup">
+              <h2>Back up phone photos with Immich</h2>
+              <p>Install Immich, enter the server address, select albums to back up, and allow photo and background permissions. Do not use a public photo-share link or the public share hostname as the server address.</p>
+              <CopyValue label="Server address" value={photosUrl} />
+              <ul class="setup-list">{renderSetupItems(['photos-app-installed', 'photos-connected', 'photos-ready'])}</ul>
+              <div class="getting-started-actions compact">
+                <a class="secondary-link" href="https://docs.immich.app/overview/quick-start/#download-the-mobile-app" target="_blank" rel="noreferrer">Download Immich</a>
+                <a class="secondary-link" href={photosUrl} target="_blank" rel="noreferrer">Open Photos</a>
+              </div>
+            </section>
+          )}
+          {videosStatus === 'available' && (
+            <section class="app-setup">
+              <h2>Watch with Jellyfin</h2>
+              <p>Install the client for your phone, TV, or computer and connect it to the server address. Use Quick Connect, or ask an admin for the initial Jellyfin password, change it on first sign-in, and save the new one.</p>
+              <CopyValue label="Server address" value={videosUrl} />
+              <ul class="setup-list">{renderSetupItems(['jellyfin-installed', 'jellyfin-connected'])}</ul>
+              <div class="getting-started-actions compact">
+                <a class="secondary-link" href="https://jellyfin.org/downloads/" target="_blank" rel="noreferrer">Download Jellyfin</a>
+                <a class="secondary-link" href={videosUrl} target="_blank" rel="noreferrer">Open Videos</a>
+              </div>
+            </section>
+          )}
+          {booksStatus === 'available' && (
+            <section class="app-setup">
+              <h2>Read with Inkita on Android</h2>
+              <p>Install Inkita, connect it to the server address, and open a test book before downloading anything for offline reading.</p>
+              <CopyValue label="Server address" value={booksUrl} />
+              <ul class="setup-list">{renderSetupItems(['inkita-installed', 'inkita-connected'])}</ul>
+              <div class="getting-started-actions compact">
+                <a class="secondary-link" href="https://github.com/dom-53/Inkita" target="_blank" rel="noreferrer">Download Inkita</a>
+                <a class="secondary-link" href={booksUrl} target="_blank" rel="noreferrer">Open Books</a>
+              </div>
+            </section>
+          )}
+          {audiobooksStatus === 'available' && (
+            <section class="app-setup">
+              <h2>Listen with Lissen or Audiobookshelf</h2>
+              <p>Install one Android client, connect it to the server address, and play a test chapter before downloading books.</p>
+              <CopyValue label="Server address" value={audiobooksUrl} />
+              <ul class="setup-list">{renderSetupItems(['audiobooks-app-installed', 'audiobooks-connected'])}</ul>
+              <div class="getting-started-actions compact">
+                <a class="secondary-link" href="https://f-droid.org/en/packages/org.grakovne.lissen/" target="_blank" rel="noreferrer">Download Lissen</a>
+                <a class="secondary-link" href="https://github.com/advplyr/audiobookshelf-app" target="_blank" rel="noreferrer">Download Audiobookshelf</a>
+                <a class="secondary-link" href={audiobooksUrl} target="_blank" rel="noreferrer">Open Audiobooks</a>
+              </div>
+            </section>
+          )}
+          {offlineMediaStatus === 'available' && (
+            <section class="app-setup">
+              <h2>Sync media with File Sync</h2>
+              <p>Install File Sync on Android from this server’s app repository, sign in with Kanidm, then set up the suggested music or video folders. Your account needs Files access.</p>
+              <ul class="setup-list">{renderSetupItems(['filesync-installed', 'offline-ready'])}</ul>
+              <div class="getting-started-actions compact">
+                <Link class="secondary-link" href="/services/offline-media">Set up Offline Media</Link>
+              </div>
+            </section>
+          )}
+          <section class="finish-next-steps">
+            <h2>Where to go next</h2>
+            <p>Use <Link href="/">Services</Link> to open apps. {fileTransferAvailable && <>The <Link href="/uploads">Detailed Guide</Link> covers app features and file destinations. </>}Return to this checklist whenever you add a device.</p>
+            <p><strong>When asking for help,</strong> include your username, app name, time, network, and exact error. Never share passwords, links, codes, or tokens.</p>
+          </section>
         </>
       ),
       explain: {

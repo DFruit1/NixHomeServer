@@ -40,11 +40,19 @@ export const ProfileMenu = component$(
         }
       };
 
+      // The Detailed Guide has its own copy of this preference beside its contents.
+      const onShowUnusedGuideChange = (event: Event) => {
+        const detail = (event as CustomEvent<{ show?: boolean }>).detail;
+        showUnusedAppsInDetailedGuide.value = Boolean(detail?.show);
+      };
+
       document.addEventListener('pointerdown', onPointerDown);
       document.addEventListener('keydown', onKeyDown);
+      document.addEventListener('homepage-show-unused-detailed-guide-change', onShowUnusedGuideChange);
       cleanup(() => {
         document.removeEventListener('pointerdown', onPointerDown);
         document.removeEventListener('keydown', onKeyDown);
+        document.removeEventListener('homepage-show-unused-detailed-guide-change', onShowUnusedGuideChange);
       });
     });
 

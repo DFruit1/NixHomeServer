@@ -10,8 +10,14 @@ export const SshfsGuide = component$(({
   filesWebAvailable: boolean;
 }) => (
   <article id="guide-detail" class="guide-panel detailed-service-guide">
-    <span class="eyebrow">File access guide</span>
-    <h2>SSHFS Mount</h2>
+    <header class="guide-title">
+      <h2>SSHFS Mount</h2>
+      {sftp.allowed && (
+        <div class="detail-actions">
+          <Link class="primary-link" href="/getting-started?step=uploads#sshfs-setup">Set up SSHFS in Getting Started</Link>
+        </div>
+      )}
+    </header>
     {!sftp.allowed && (
       <aside class="guide-callout neutral">
         Your account does not currently have SSHFS access. This topic is shown because “Show unused apps in Detailed Guide” is on.
@@ -32,10 +38,10 @@ export const SshfsGuide = component$(({
     <section>
       <h3>Connection and security</h3>
       {sftp.allowed ? (
-        <dl class="info-list">
+        <dl class="info-list info-list--prose">
           <div>
             <dt>Server</dt>
-            <dd>{sftp.host}:{sftp.port}</dd>
+            <dd><code>{sftp.host}:{sftp.port}</code></dd>
           </div>
           <div>
             <dt>Network</dt>
@@ -68,11 +74,5 @@ export const SshfsGuide = component$(({
         <li>If a folder is missing or read-only, check the role-specific notes above; browser, personal, shared, USB, and backup views are separately authorised.</li>
       </ul>
     </section>
-
-    {sftp.allowed && (
-      <div class="detail-actions">
-        <Link class="primary-link" href="/getting-started?step=uploads#sshfs-setup">Set up SSHFS in Getting Started</Link>
-      </div>
-    )}
   </article>
 ));

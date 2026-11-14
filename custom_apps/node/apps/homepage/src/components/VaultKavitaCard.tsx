@@ -4,7 +4,7 @@ import { copyVaultSecret, vaultRequest } from '../shared/vault-client.js';
 import { ExplainMore } from './ExplainMore.js';
 
 const keyLine = (key: KavitaAuthKey): string =>
-  [key.name, key.createdAtUtc ? `created ${key.createdAtUtc.slice(0, 10)}` : '', key.lastAccessedAtUtc ? `used ${key.lastAccessedAtUtc.slice(0, 10)}` : '']
+  [key.createdAtUtc ? `Created ${key.createdAtUtc.slice(0, 10)}` : '', key.lastAccessedAtUtc ? `last used ${key.lastAccessedAtUtc.slice(0, 10)}` : '']
     .filter(Boolean)
     .join(' · ');
 

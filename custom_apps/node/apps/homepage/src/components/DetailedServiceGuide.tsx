@@ -3,14 +3,6 @@ import { Link } from '@builder.io/qwik-city';
 import type { FolderGuide, ServiceCard } from '../shared/types.js';
 import { detailedServiceTips } from '../shared/ui-constants.js';
 
-const categoryLabels: Record<ServiceCard['category'], string> = {
-  media: 'Media',
-  files: 'Files and documents',
-  knowledge: 'Knowledge',
-  identity: 'Accounts and identity',
-  operations: 'Operations',
-};
-
 export const DetailedServiceGuide = component$(({
   service,
   folderGuides,
@@ -24,11 +16,19 @@ export const DetailedServiceGuide = component$(({
     'Save any app-specific password in your password manager rather than assuming it matches Kanidm.',
   ];
   const relatedFolders = folderGuides.filter((guide) => guide.serviceIds.includes(service.id));
+  const external = service.url.startsWith('http');
 
   return (
     <article id="guide-detail" class="guide-panel detailed-service-guide">
-      <span class="eyebrow">{categoryLabels[service.category]} guide</span>
-      <h2>{service.name}</h2>
+      <header class="guide-title">
+        <h2>{service.name}</h2>
+        {service.enabled && (
+          <div class="detail-actions">
+            <a class="primary-link" href={service.url} target={external ? '_blank' : undefined} rel={external ? 'noreferrer' : undefined}>Open {service.name}</a>
+            {service.projectUrl && <a class="secondary-link" href={service.projectUrl} target="_blank" rel="noreferrer">Project documentation</a>}
+          </div>
+        )}
+      </header>
       {!service.enabled && (
         <aside class="guide-callout neutral">
           This app is not currently enabled. Its guidance is shown because “Show unused apps in Detailed Guide” is on.
@@ -38,7 +38,7 @@ export const DetailedServiceGuide = component$(({
       <section>
         <h3>What it is for</h3>
         <p>{service.description}</p>
-        <dl class="info-list">
+        <dl class="info-list info-list--prose">
           <div>
             <dt>Sign in and access</dt>
             <dd>{service.loginNotes}</dd>
@@ -61,8 +61,7 @@ export const DetailedServiceGuide = component$(({
 
       {relatedFolders.length > 0 && (
         <section>
-          <h3>Related file guidance</h3>
-          <p>Use these placement guides when this app reads files from the server:</p>
+          <h3>Where its files go</h3>
           <ul class="related-guide-links">
             {relatedFolders.map((guide) => (
               <li key={guide.id}>
@@ -73,22 +72,15 @@ export const DetailedServiceGuide = component$(({
         </section>
       )}
 
-      <section>
-        <h3>If something goes wrong</h3>
+      <details class="guide-disclosure">
+        <summary><h3>If something goes wrong</h3></summary>
         <ul class="guide-checklist">
           <li>Confirm you are on the home network or NetBird, then refresh the page without bypassing certificate warnings.</li>
           <li>Sign out of Homepage and the app, then sign back in once if your access was recently changed.</li>
           <li>Check whether the failure is at the Kanidm gateway or at a second app-specific login before resetting a password.</li>
           <li>When asking for help, include the app name, approximate time, network path, and exact error text—but never a password, token, recovery code, or one-time link.</li>
         </ul>
-      </section>
-
-      {service.enabled && (
-        <div class="detail-actions">
-          <a class="primary-link" href={service.url} target={service.url.startsWith('http') ? '_blank' : undefined} rel={service.url.startsWith('http') ? 'noreferrer' : undefined}>Open {service.name}</a>
-          {service.projectUrl && <a class="secondary-link" href={service.projectUrl} target="_blank" rel="noreferrer">Project documentation</a>}
-        </div>
-      )}
+      </details>
     </article>
   );
 });

@@ -17,7 +17,7 @@ export const SftpAccessInstructions = component$(({ username, serverHost, port }
 
   return (
     <div class="sftp-access-panel sftp-os-card sftp-access-card">
-      <input class="os-radio" id={osRadio.windows} name="sftp-access-os" type="radio" defaultChecked />
+      <input class="os-radio" id={osRadio.windows} name="sftp-access-os" type="radio" checked />
       <input class="os-radio" id={osRadio.macos} name="sftp-access-os" type="radio" />
       <input class="os-radio" id={osRadio.linux} name="sftp-access-os" type="radio" />
       <div class="os-picker" role="tablist" aria-label="Operating system">

@@ -1,4 +1,4 @@
-import { component$, useContext, useSignal, useVisibleTask$ } from '@builder.io/qwik';
+import { $, component$, useContext, useSignal, useVisibleTask$ } from '@builder.io/qwik';
 import { Link, useLocation } from '@builder.io/qwik-city';
 import { DetailedGuideOverview } from '../../components/DetailedGuideOverview.js';
 import { DetailedServiceGuide } from '../../components/DetailedServiceGuide.js';
@@ -63,16 +63,18 @@ export default component$(() => {
     cleanup(() => document.removeEventListener('homepage-show-unused-detailed-guide-change', onShowUnusedChange));
   });
 
+  const updateShowUnused = $((_event: Event, target: HTMLInputElement) => {
+    showUnused.value = target.checked;
+    window.localStorage.setItem('homepage.showUnusedAppsInDetailedGuide', String(target.checked));
+    document.dispatchEvent(new CustomEvent('homepage-show-unused-detailed-guide-change', { detail: { show: target.checked } }));
+  });
+
   return (
     <section class="section detailed-guide-page">
-      <header class="section-heading stacked detailed-guide-heading">
-        <span class="eyebrow">Apps, features, files, and troubleshooting</span>
-        <h1>Detailed Guide</h1>
-        <p>Choose a topic from the contents. Disabled apps and file workflows stay hidden unless you turn on “Show unused apps in Detailed Guide” in your profile.</p>
-      </header>
+      <h1 class="detailed-guide-heading">Detailed Guide</h1>
 
       <div class="detailed-guide-layout">
-        <nav class="detailed-guide-toc" aria-label="Detailed guide contents">
+        <nav id="guide-contents" class="detailed-guide-toc" aria-label="Detailed guide contents">
           <h2>Contents</h2>
           <section>
             <h3>Start here</h3>
@@ -117,6 +119,11 @@ export default component$(() => {
               </ul>
             </section>
           )}
+
+          <label class="detailed-guide-toc__unused">
+            <input type="checkbox" checked={showUnused.value} onChange$={updateShowUnused} />
+            <span>Include apps that are not enabled</span>
+          </label>
         </nav>
 
         <div class="detailed-guide-content">
@@ -125,11 +132,12 @@ export default component$(() => {
             <DetailedServiceGuide service={requestedService} folderGuides={allFolderGuides} />
           )}
           {requestedFolder && activeGuide === `folder-${requestedFolder.id}` && (
-            <GuidePanel guide={requestedFolder} username={data?.user.username ?? '{username}'} />
+            <GuidePanel guide={requestedFolder} username={data?.user.username ?? '{username}'} services={services} />
           )}
           {activeGuide === 'sshfs' && data?.sftp && (
             <SshfsGuide sftp={data.sftp} filesWebAvailable={filesWebAvailable} />
           )}
+          <a class="detailed-guide-back" href="#guide-contents">&uarr; Contents</a>
         </div>
       </div>
     </section>

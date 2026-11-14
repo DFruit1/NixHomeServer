@@ -165,10 +165,12 @@ export const VaultSshKeysCard = component$(({ feature, username, isAdmin }: { fe
               />
               <button type="button" onClick$={loadKeys}>Load keys</button>
             </div>
-            <p class="hint">
-              Currently showing {loadedUsername.value === username ? 'your keys' : `${loadedUsername.value}'s keys`}.
-              {(targetUsername.value.trim() || username) !== loadedUsername.value && ' Load the requested user before revoking a key.'}
-            </p>
+            {(loadedUsername.value !== username || (targetUsername.value.trim() || username) !== loadedUsername.value) && (
+              <p class="hint">
+                Showing {loadedUsername.value === username ? 'your keys' : `${loadedUsername.value}'s keys`}.
+                {(targetUsername.value.trim() || username) !== loadedUsername.value && ' Load the requested user before revoking a key.'}
+              </p>
+            )}
           </div>
         )}
         {loading.value && <p class="hint">Loading registered keys…</p>}

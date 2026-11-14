@@ -67,12 +67,21 @@ export const SftpSetup = component$(({
   return (
     <article id="sshfs-setup" class="sftp-os-card sftp-setup-card">
       <h2>SSHFS Mount Setup</h2>
-      <p>Use these steps on the computer you want to connect. For permissions, folder behavior, security, and troubleshooting, <Link href="/uploads?guide=sshfs#guide-detail">read the detailed SSHFS guide</Link>.</p>
-      <aside class="guide-callout neutral"><strong>Network:</strong> {sftp.networkNote} Connect to <code>{sftp.host}:{sftp.port}</code>.</aside>
+      <p>Follow these steps on the computer you want to connect. For permissions, folder behavior, security, and troubleshooting, <Link href="/uploads?guide=sshfs#guide-detail">read the detailed SSHFS guide</Link>.</p>
+      <dl class="info-list info-list--prose sftp-facts">
+        <div>
+          <dt>Server</dt>
+          <dd><code>{sftp.host}:{sftp.port}</code></dd>
+        </div>
+        <div>
+          <dt>Network</dt>
+          <dd>{sftp.networkNote}</dd>
+        </div>
+      </dl>
       {sftp.accessNotes.map((note) => (
         <aside class="guide-callout neutral" key={note}>{note}</aside>
       ))}
-      <input class="os-radio" id={osRadio.windows} name="sftp-setup-os" type="radio" defaultChecked />
+      <input class="os-radio" id={osRadio.windows} name="sftp-setup-os" type="radio" checked />
       <input class="os-radio" id={osRadio.macos} name="sftp-setup-os" type="radio" />
       <input class="os-radio" id={osRadio.linux} name="sftp-setup-os" type="radio" />
       <div class="os-picker" role="tablist" aria-label="Operating system">
@@ -89,27 +98,39 @@ export const SftpSetup = component$(({
       <ol class="steps sftp-step-list">
         <li>
           <h3>Install SSHFS</h3>
-          <p>Choose your OS above and install the SSHFS client for that device.</p>
-          <p class="os-panel windows">Install WinFsp and SSHFS-Win before mounting the server.</p>
-          <p class="os-panel macos">Install macFUSE and sshfs before mounting the server.</p>
-          <p class="os-panel linux">Install the sshfs package from your Linux distribution.</p>
+          <p class="os-panel windows">Install <a href="https://winfsp.dev/rel/" target="_blank" rel="noreferrer">WinFsp</a> and <a href="https://github.com/winfsp/sshfs-win/releases" target="_blank" rel="noreferrer">SSHFS-Win</a> before mounting the server.</p>
+          <p class="os-panel macos">Install <a href="https://macfuse.github.io/" target="_blank" rel="noreferrer">macFUSE and sshfs</a> before mounting the server.</p>
+          <div class="os-panel linux">
+            <p>Install the sshfs package from your Linux distribution:</p>
+            <ul class="package-list">
+              <li><span>Debian, Ubuntu, Mint</span><code>sudo apt install sshfs</code></li>
+              <li><span>Fedora</span><code>sudo dnf install fuse-sshfs</code></li>
+              <li><span>Arch</span><code>sudo pacman -S sshfs</code></li>
+              <li><span>Void</span><code>sudo xbps-install -S fuse-sshfs</code></li>
+            </ul>
+          </div>
         </li>
         <li>
           <h3>Generate an SSH key pair</h3>
-          <p>Choose your OS above and run the matching command on your device. Press Enter to leave the passphrase empty when it asks: this keeps automatic mounts simple, because a passphrase-protected key cannot unlock without an interactive prompt. If you want to prevent someone with access to your device from using the key without permission, keep it in an SSH keyring instead of as a plain file on disk — KeePassXC's SSH Agent or an alternative SSH keyring, such as your operating system's built-in SSH agent or keychain.</p>
+          <p>Run this command on your device. When it asks for a passphrase, press Enter to leave it empty.</p>
           <p class="os-panel windows">SSHFS-Win key mode uses <code>~/.ssh/id_rsa</code>. If that file already exists, stop rather than overwrite it and ask an administrator for help choosing a compatible dedicated key.</p>
           <CommandSnippet class="os-panel windows" command={sftpKeygenCommands.windows} />
           <CommandSnippet class="os-panel macos" command={sftpKeygenCommands.macos} />
           <CommandSnippet class="os-panel linux" command={sftpKeygenCommands.linux} />
+          <details class="step-help">
+            <summary>Why leave the passphrase empty?</summary>
+            <p>It keeps automatic mounts simple, because a passphrase-protected key cannot unlock without an interactive prompt. If you want to prevent someone with access to your device from using the key without permission, keep it in an SSH keyring instead of as a plain file on disk — KeePassXC's SSH Agent or an alternative SSH keyring, such as your operating system's built-in SSH agent or keychain.</p>
+          </details>
         </li>
         <li>
           <h3>Upload SSHFS Public Key</h3>
-          <p>Paste one OpenSSH public key after generating it with the selector above. Saving adds this device without removing keys already registered for your other devices.</p>
+          <p>Paste the public key that the command printed: the line starting with <code>ssh-</code>. Saving adds this device without removing keys already registered for your other devices.</p>
           <div class="sftp-key-form">
             <textarea
               id="sftp-public-key"
+              aria-label="OpenSSH public key"
               placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... laptop"
-              rows={5}
+              rows={4}
               value={keyValue.value}
               onInput$={(_, target) => {
                 keyValue.value = target.value;
@@ -138,7 +159,6 @@ export const SftpSetup = component$(({
           <div class="os-panel linux">
             <SftpAccessDetails os="linux" username={username} serverHost={sftp.host} port={sftp.port} radioIdPrefix="sftp-setup" />
           </div>
-          <p class="hint">Make the manual mount work first. Automatic mounts need a device key that can be unlocked without an interactive prompt, normally through the operating system's SSH agent or keychain; keep using the manual command if that is not configured.</p>
         </li>
       </ol>
       {filesWebAvailable ? (
