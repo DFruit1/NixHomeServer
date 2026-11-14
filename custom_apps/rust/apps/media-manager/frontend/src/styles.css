@@ -2080,6 +2080,13 @@ a:focus-visible {
   justify-self: start;
   padding-left: 0;
 }
+.side-item-reason {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
 
 @media (max-width: 860px) {
   .conv-main {
@@ -2144,7 +2151,26 @@ a:focus-visible {
 }
 .dialog-iso-name {
   margin: 0 0 12px;
+  color: var(--ink-soft);
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.failure-summary {
+  margin: 0 0 6px;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+.failure-hint {
+  margin: 0 0 16px;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.failure-details summary {
+  margin-bottom: 8px;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  cursor: pointer;
 }
 .log-content {
   margin: 0;

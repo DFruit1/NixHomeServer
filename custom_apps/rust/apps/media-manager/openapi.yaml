@@ -2516,7 +2516,19 @@ components:
         sizeBytes: { type: integer, minimum: 0 }
         modifiedNs: { type: integer, minimum: 0 }
         hasErrorLog: { type: boolean }
-        outputDir: { type: string }
+        outputDir:
+          type: string
+          description: Shared-storage path of the output; the exact movie or season folder when the worker recorded it, else the library root.
+        finishedNs:
+          type: integer
+          minimum: 0
+          description: When the ISO finished or failed, from the worker's manifest or error report.
+        failureSummary:
+          type: string
+          description: Plain-language reason a failed ISO stopped.
+        failureHint:
+          type: string
+          description: What the owner can do before retrying the failed ISO.
     IntegrationRefresh:
       type: object
       required: [integrationId, state]

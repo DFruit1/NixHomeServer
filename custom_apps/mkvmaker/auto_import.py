@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import difflib
 import fcntl
 import hashlib
@@ -16,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -45,6 +47,121 @@ class InvalidQueueState(RuntimeError):
 
 class SourceChanged(RuntimeError):
     """The claimed ISO pathname no longer identifies the same file."""
+
+
+class ConverterFailed(RuntimeError):
+    """disc-to-jellyfin exited unsuccessfully; carries its own error lines."""
+
+    def __init__(self, return_code: int, errors: list[str], output_tail: list[str]) -> None:
+        self.return_code = return_code
+        self.errors = errors
+        self.output_tail = output_tail
+        super().__init__(errors[0] if errors else f"converter exited with status {return_code}")
+
+
+RETRY_HINT = "then move the ISO from _ISO/_DVDs/_Failed back into _ISO/_DVDs to try again."
+# Converter and planner messages, matched against the first reported error,
+# translated into what went wrong and what the owner can do about it.
+FAILURE_EXPLANATIONS: list[tuple[re.Pattern[str], str, str]] = [
+    (
+        re.compile(r"output belongs to a different source or encode configuration: (?P<path>.+)"),
+        "The destination already holds a different conversion.",
+        "{path} was made from another ISO or with other encode settings. Rename this ISO "
+        "so it gets its own title, or move the existing folder away, " + RETRY_HINT,
+    ),
+    (
+        re.compile(r"existing output failed validation; move or delete it: (?P<path>.+)"),
+        "An unfinished earlier attempt is in the way.",
+        "Move or delete {path}, " + RETRY_HINT,
+    ),
+    (
+        re.compile(r"output exists without a readable matching manifest: (?P<path>.+)"),
+        "A file the converter did not create already exists at the destination.",
+        "Move or rename {path}, " + RETRY_HINT,
+    ),
+    (
+        re.compile(r"another process is working on (?P<path>.+)"),
+        "Another conversion was writing the same file at the same time.",
+        "Wait for the other conversion to finish, " + RETRY_HINT,
+    ),
+    (
+        re.compile(r"not enough free space"),
+        "There is not enough free disk space for this conversion.",
+        "Free up space on the media drive, " + RETRY_HINT,
+    ),
+    (
+        re.compile(r"HandBrake failed|HandBrake scan failed|HandBrake produced no title-set|HandBrake title-set JSON"),
+        "HandBrake could not read or encode this disc.",
+        "The disc image may be damaged or copy-protected. Re-rip the disc, " + RETRY_HINT,
+    ),
+    (
+        re.compile(r"output validation failed"),
+        "The finished video failed its playback check.",
+        "The disc image may be damaged. Re-rip the disc, " + RETRY_HINT,
+    ),
+    (
+        re.compile(r"deadline"),
+        "The conversion stalled and was stopped.",
+        "The disc image may be damaged or unusually long. Check the details below, " + RETRY_HINT,
+    ),
+    (
+        re.compile(r"no titles at least|No DVD titles selected|declares \d+ episodes"),
+        "No suitable videos were found on the disc.",
+        "Check that the ISO is a complete video DVD, or rename it to say how many "
+        "episodes it holds, " + RETRY_HINT,
+    ),
+    (
+        re.compile(r"Duplicate check unavailable"),
+        "Could not check whether this disc was already converted.",
+        "Check that _ISO/_DVDs/_Processed is readable, " + RETRY_HINT,
+    ),
+]
+
+
+def display_path(root: Path, path: str) -> str:
+    """Show a shared-storage path relative to the share, as the file browser does."""
+    try:
+        shared = Path(os.path.commonpath([str(root), path]))
+        relative = Path(path).relative_to(shared)
+    except ValueError:
+        return path
+    return str(relative) if str(relative) != "." else path
+
+
+def explain_failure(error: BaseException, shared_root: Path) -> dict[str, str]:
+    """Return the owner-facing summary, next step, and technical details."""
+    reason = str(error).strip() or type(error).__name__
+    if isinstance(error, ConverterFailed):
+        details = "\n".join(error.output_tail).strip() or reason
+    else:
+        details = reason
+    for pattern, summary, hint in FAILURE_EXPLANATIONS:
+        match = pattern.search(reason)
+        if match:
+            path = match.groupdict().get("path")
+            if path:
+                hint = hint.format(path=display_path(shared_root, path.strip()))
+            return {"summary": summary, "hint": hint[0].upper() + hint[1:], "details": details}
+    first = reason.splitlines()[0][:300]
+    return {
+        "summary": first[0].upper() + first[1:] if first else "The conversion failed.",
+        "hint": "Check the details below, " + RETRY_HINT,
+        "details": details,
+    }
+
+
+def write_failure_report(
+    archived: Path, error: BaseException, attempts: int, shared_root: Path
+) -> None:
+    report = explain_failure(error, shared_root)
+    archived.with_suffix(".iso.error.txt").write_text(
+        f"{report['summary']}\n{report['hint']}\n\nDetails:\n{report['details']}\n",
+        encoding="utf-8",
+    )
+    atomic_json(
+        archived.with_suffix(".iso.error.json"),
+        {**report, "attempts": attempts, "failedAt": int(time.time())},
+    )
 
 
 def request_shutdown(signum: int, _frame: Any) -> None:
@@ -1215,6 +1332,8 @@ def archive_source(source: Path, directory: Path, plan: dict[str, Any] | None = 
                 "outputDir": plan.get("output", ""),
                 "title": plan.get("name", ""),
                 "kind": plan.get("kind", ""),
+                "mediaDir": plan.get("media_dir", ""),
+                "finishedAt": int(time.time()),
             }),
             encoding="utf-8",
         )
@@ -1245,7 +1364,12 @@ def process_source(
         command,
         env={**os.environ, "MKVMAKER_WORKER_ID": args.worker_id},
         start_new_session=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
+    output = ConverterOutput()
+    reader = threading.Thread(target=output.pump, args=(process.stdout,), daemon=True)
+    reader.start()
     renew_after = time.monotonic() + max(1.0, args.lease_seconds / 3)
     deadline = time.monotonic() + 24 * 3600
     try:
@@ -1265,11 +1389,66 @@ def process_source(
                 continue
     except BaseException:
         stop_process_tree(process)
+        reader.join(timeout=5)
         raise
+    reader.join(timeout=30)
     if return_code in (130, -signal.SIGINT, -signal.SIGTERM):
         raise ShutdownRequested(f"converter stopped with status {return_code}")
     if return_code != 0:
-        raise subprocess.CalledProcessError(return_code, command)
+        raise ConverterFailed(return_code, output.errors, list(output.tail))
+    if output.planned:
+        folder = os.path.commonpath(output.planned)
+        if folder in output.planned:
+            folder = os.path.dirname(folder)
+        plan["media_dir"] = folder
+
+
+class ConverterOutput:
+    """Forward converter output to the journal while keeping what a report needs."""
+
+    def __init__(self) -> None:
+        self.tail: collections.deque[str] = collections.deque(maxlen=60)
+        self.errors: list[str] = []
+        self.planned: list[str] = []
+        self._in_plan = False
+
+    def pump(self, stream: Any) -> None:
+        pending = b""
+        for chunk in iter(lambda: stream.read1(65536), b""):
+            try:
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.flush()
+            except (OSError, ValueError):
+                pass  # Keep draining so the converter never blocks on a full pipe.
+            pending += chunk
+            *lines, pending = re.split(rb"[\r\n]", pending)
+            for line in lines:
+                self.record(line.decode("utf-8", "replace"))
+            if len(pending) > 65536:
+                pending = pending[-4096:]
+        if pending:
+            self.record(pending.decode("utf-8", "replace"))
+
+    def record(self, line: str) -> None:
+        line = line.rstrip()
+        if not line.strip():
+            self._in_plan = False
+            return
+        if line.startswith("Planned outputs"):
+            self._in_plan = True
+            self.planned = []
+        elif self._in_plan and line.startswith("  /"):
+            self.planned.append(line.strip())
+        else:
+            self._in_plan = False
+        for prefix in ("ERROR: ", "Error: "):
+            if line.startswith(prefix):
+                message = line.removeprefix(prefix).strip()
+                if message != "batch completed with failures" and message not in self.errors:
+                    self.errors.append(message)
+        # HandBrake progress redraws are noise in a failure report.
+        if not line.lstrip().startswith(("Encoding:", "Muxing:", "Scanning title")):
+            self.tail.append(line[:500])
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1469,8 +1648,12 @@ def run(args: argparse.Namespace) -> int:
                     )
                     if entry["attempts"] >= args.max_attempts and source.exists():
                         archived = archive_source(source, failed_dir)
-                        error_path = archived.with_suffix(".iso.error.txt")
-                        error_path.write_text(entry["last_error"] + "\n", encoding="utf-8")
+                        write_failure_report(
+                            archived,
+                            RuntimeError(entry["last_error"]),
+                            entry["attempts"],
+                            args.input_dir,
+                        )
                         print(f"Moved unverifiable ISO to {archived}", file=sys.stderr)
                         del state["sources"][source.name]
                     atomic_json(state_path, state)
@@ -1596,8 +1779,9 @@ def run(args: argparse.Namespace) -> int:
                         )
                         if entry["attempts"] >= args.max_attempts and source.exists():
                             archived = archive_source(source, failed_dir)
-                            error_path = archived.with_suffix(".iso.error.txt")
-                            error_path.write_text(entry["last_error"] + "\n", encoding="utf-8")
+                            write_failure_report(
+                                archived, error, entry["attempts"], args.input_dir
+                            )
                             print(f"Moved repeatedly failing ISO to {archived}", file=sys.stderr)
                             del state["sources"][source.name]
                         atomic_json(state_path, state)

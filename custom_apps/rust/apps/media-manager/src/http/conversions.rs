@@ -146,18 +146,36 @@ async fn list_iso_directory(
                 if let Ok(content) = tokio::fs::read_to_string(&manifest_path).await
                     && let Ok(manifest) = serde_json::from_str::<Value>(&content)
                 {
-                    let output_dir = manifest["outputDir"].as_str().unwrap_or_default();
+                    // Newer manifests name the exact movie or season folder;
+                    // older ones only record the library root.
+                    let output_dir = manifest["mediaDir"]
+                        .as_str()
+                        .filter(|dir| !dir.is_empty())
+                        .or_else(|| manifest["outputDir"].as_str())
+                        .unwrap_or_default();
                     let relative = output_dir
                         .strip_prefix(shared_root.to_string_lossy().as_ref())
                         .unwrap_or(output_dir)
                         .trim_start_matches('/');
                     iso_entry["outputDir"] = json!(relative);
+                    if let Some(finished) = file_modified_ns(&manifest_path).await {
+                        iso_entry["finishedNs"] = json!(finished);
+                    }
                 }
             }
             "failed" => {
                 let error_path = entry.path().with_extension("iso.error.txt");
                 if error_path.exists() {
                     iso_entry["hasErrorLog"] = json!(true);
+                    if let Some(finished) = file_modified_ns(&error_path).await {
+                        iso_entry["finishedNs"] = json!(finished);
+                    }
+                }
+                if let Some(report) = failure_report(&entry.path()).await {
+                    iso_entry["failureSummary"] = json!(report.summary);
+                    if let Some(hint) = report.hint {
+                        iso_entry["failureHint"] = json!(hint);
+                    }
                 }
             }
             _ => {}
@@ -167,13 +185,81 @@ async fn list_iso_directory(
             break;
         }
     }
-    entries.sort_by(|left, right| {
-        left["name"]
-            .as_str()
-            .unwrap_or_default()
-            .cmp(right["name"].as_str().unwrap_or_default())
-    });
+    if context == "pending" {
+        entries.sort_by(|left, right| {
+            left["name"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(right["name"].as_str().unwrap_or_default())
+        });
+    } else {
+        // Finished work reads newest first so the latest result is at the top.
+        let finished = |entry: &Value| {
+            entry["finishedNs"]
+                .as_i64()
+                .unwrap_or_else(|| entry["modifiedNs"].as_i64().unwrap_or(0))
+        };
+        entries.sort_by_key(|entry| std::cmp::Reverse(finished(entry)));
+    }
     Ok(entries)
+}
+
+async fn file_modified_ns(path: &FilePath) -> Option<i64> {
+    let modified = tokio::fs::metadata(path).await.ok()?.modified().ok()?;
+    let duration = modified.duration_since(UNIX_EPOCH).ok()?;
+    Some(duration.as_nanos().min(i64::MAX as u128) as i64)
+}
+
+struct FailureReport {
+    summary: String,
+    hint: Option<String>,
+    details: Option<String>,
+}
+
+/// The worker's structured report, or a best-effort reading of older text logs.
+async fn failure_report(iso_path: &FilePath) -> Option<FailureReport> {
+    let structured = iso_path.with_extension("iso.error.json");
+    if let Ok(content) = tokio::fs::read_to_string(&structured).await
+        && let Ok(report) = serde_json::from_str::<Value>(&content)
+        && let Some(summary) = report["summary"].as_str().filter(|s| !s.is_empty())
+    {
+        return Some(FailureReport {
+            summary: summary.to_owned(),
+            hint: report["hint"].as_str().map(str::to_owned),
+            details: report["details"].as_str().map(str::to_owned),
+        });
+    }
+    let log = tokio::fs::read_to_string(iso_path.with_extension("iso.error.txt"))
+        .await
+        .ok()?;
+    Some(legacy_failure_report(&log))
+}
+
+fn legacy_failure_report(log: &str) -> FailureReport {
+    let first = log.lines().map(str::trim).find(|line| !line.is_empty());
+    match first {
+        Some(line) if line.starts_with("Command '") && line.contains("returned non-zero exit") => {
+            FailureReport {
+                summary: "The converter stopped with an error.".to_owned(),
+                hint: Some(
+                    "This older failure did not save the converter's reason. Move the ISO \
+                     from _ISO/_DVDs/_Failed back into _ISO/_DVDs to retry and record it."
+                        .to_owned(),
+                ),
+                details: None,
+            }
+        }
+        Some(line) => FailureReport {
+            summary: line.chars().take(300).collect(),
+            hint: None,
+            details: None,
+        },
+        None => FailureReport {
+            summary: "The conversion failed without a recorded reason.".to_owned(),
+            hint: None,
+            details: None,
+        },
+    }
 }
 
 #[derive(Deserialize)]
@@ -200,12 +286,12 @@ pub(super) async fn conversions_inbox_error(
         )
         .into_response();
     }
-    let error_path = state
+    let iso_path = state
         .config
         .dvd_inbox_path()
         .join("_Failed")
-        .join(&query.name)
-        .with_extension("iso.error.txt");
+        .join(&query.name);
+    let error_path = iso_path.with_extension("iso.error.txt");
     if !error_path.exists() {
         return ApiError::new(
             StatusCode::NOT_FOUND,
@@ -216,7 +302,15 @@ pub(super) async fn conversions_inbox_error(
         .into_response();
     }
     match tokio::fs::read_to_string(&error_path).await {
-        Ok(content) => Json(json!({ "content": content, "requestId": request_id })).into_response(),
+        Ok(content) => {
+            // The list already shows the summary and next step; the dialog
+            // needs only the converter's own output beneath them.
+            let content = failure_report(&iso_path)
+                .await
+                .and_then(|report| report.details)
+                .unwrap_or(content);
+            Json(json!({ "content": content, "requestId": request_id })).into_response()
+        }
         Err(_) => ApiError::internal(request_id).into_response(),
     }
 }

@@ -102,9 +102,30 @@ const ConversionList = component$<{
   );
 });
 
+/** Authoring-tool defaults that say nothing about which disc this is. */
+const GENERIC_VOLUME_LABELS = new Set([
+  "CDROM",
+  "DVD",
+  "DVDVOLUME",
+  "DVD_VIDEO",
+  "VIDEO_TS",
+  "UNDEFINED",
+]);
+
 /** One readable name per disc: the volume label, else the file name without `.iso`. */
 function isoTitle(iso: InboxIso): string {
-  return iso.volumeId || iso.name.replace(/\.iso$/i, "");
+  const label = iso.volumeId?.trim();
+  return label && !GENERIC_VOLUME_LABELS.has(label.toUpperCase())
+    ? label
+    : iso.name.replace(/\.iso$/i, "");
+}
+
+function finishedAt(iso: InboxIso): string {
+  if (!iso.finishedNs) return "";
+  return new Date(iso.finishedNs / 1e6).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }
 
 interface QueuedConversion {
@@ -113,7 +134,7 @@ interface QueuedConversion {
 }
 
 const LogDialog = component$<{
-  isoName: string;
+  iso: InboxIso;
   onClose$: QRL<() => void>;
 }>((props) => {
   const log = useSignal<string>("");
@@ -125,7 +146,7 @@ const LogDialog = component$<{
       try {
         log.value = (
           await api<{ content: string }>(
-            `/conversions/inbox/error?name=${encodeURIComponent(props.isoName)}`,
+            `/conversions/inbox/error?name=${encodeURIComponent(props.iso.name)}`,
           )
         ).content;
       } catch (e) {
@@ -142,11 +163,11 @@ const LogDialog = component$<{
       <div
         class="dialog"
         role="dialog"
-        aria-label={`Error log for ${props.isoName}`}
+        aria-labelledby="failure-dialog-heading"
         onClick$={(e) => e.stopPropagation()}
       >
         <div class="dialog-header">
-          <h3>Conversion Error Log</h3>
+          <h3 id="failure-dialog-heading">Why {isoTitle(props.iso)} failed</h3>
           <button
             type="button"
             class="dialog-close"
@@ -157,17 +178,24 @@ const LogDialog = component$<{
           </button>
         </div>
         <div class="dialog-body">
-          <p class="dialog-iso-name">
-            <strong>{props.isoName}</strong>
-          </p>
+          <p class="dialog-iso-name">{props.iso.name}</p>
+          {props.iso.failureSummary && (
+            <p class="failure-summary">{props.iso.failureSummary}</p>
+          )}
+          {props.iso.failureHint && (
+            <p class="failure-hint">{props.iso.failureHint}</p>
+          )}
           {loading.value ? (
-            <p class="quiet-copy">Loading log…</p>
+            <p class="quiet-copy">Loading details…</p>
           ) : error.value ? (
             <p class="message error" role="alert">
               {error.value}
             </p>
           ) : (
-            <pre class="log-content">{log.value}</pre>
+            <details class="failure-details" open={!props.iso.failureSummary}>
+              <summary>Converter output</summary>
+              <pre class="log-content">{log.value}</pre>
+            </details>
           )}
         </div>
       </div>
@@ -308,12 +336,16 @@ export const ConversionsView = component$<{
   const dvdLink = filesBaseUrl
     ? `${filesBaseUrl}/files/_Shared/_ISO/_DVDs/`
     : "";
+  const failedIso = logDialog.value
+    ? inboxFailed.find((iso) => iso.name === logDialog.value)
+    : undefined;
 
   return (
     <section class="conversions-layout">
-      {logDialog.value && (
+      {failedIso && (
         <LogDialog
-          isoName={logDialog.value}
+          key={failedIso.name}
+          iso={failedIso}
           onClose$={() => (logDialog.value = "")}
         />
       )}
@@ -525,6 +557,9 @@ const ProcessedCard = component$<{
             <li key={iso.name}>
               <span class="side-item-name" title={iso.name}>
                 <strong>{isoTitle(iso)}</strong>
+                {iso.finishedNs ? (
+                  <small>Finished {finishedAt(iso)}</small>
+                ) : null}
               </span>
               {iso.outputDir && props.filesBaseUrl ? (
                 <a
@@ -586,15 +621,21 @@ const FailedCard = component$<{
             <li key={iso.name}>
               <span class="side-item-name" title={iso.name}>
                 <strong>{isoTitle(iso)}</strong>
+                {iso.finishedNs ? (
+                  <small>Failed {finishedAt(iso)}</small>
+                ) : null}
               </span>
+              {iso.failureSummary && (
+                <p class="side-item-reason">{iso.failureSummary}</p>
+              )}
               {iso.hasErrorLog && (
                 <button
                   type="button"
                   class="text-button danger side-item-log-btn"
-                  aria-label={`Show error log for ${isoTitle(iso)}`}
+                  aria-label={`${iso.failureHint ? "How to fix" : "Show details for"} ${isoTitle(iso)}`}
                   onClick$={() => props.onShowLog$(iso.name)}
                 >
-                  Show log
+                  {iso.failureHint ? "How to fix" : "Show details"}
                 </button>
               )}
             </li>
