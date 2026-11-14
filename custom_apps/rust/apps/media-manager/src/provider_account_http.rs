@@ -339,7 +339,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "immich",
         name: "Immich",
-        logo_url: None,
+        logo_url: Some("/assets/logos/immich.svg"),
         media_domains: &["images"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Active,

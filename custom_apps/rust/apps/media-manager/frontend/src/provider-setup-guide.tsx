@@ -28,8 +28,7 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
       },
     ],
     credentialHelp: {
-      apiKey:
-        "Your Immich API key, without a Bearer prefix. Its permissions determine which photos and tag actions are available.",
+      apiKey: "From Immich → User settings → API keys.",
     },
     troubleshooting:
       "If browsing works but archive, album or tag actions fail, check asset.update, album.read, album.create, albumAsset.create, tag.create and tag.asset in Immich and your Media Manager editor access. Replacing a key does not change any photos, existing tags or albums.",
@@ -82,7 +81,7 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
     ],
     credentialHelp: {
       apiKey:
-        "Paste the complete API Read Access Token from Settings → API, without quotation marks or the word Bearer. Your TMDB password and the shorter API Key (v3 auth) will not work in this field.",
+        "The long Read Access Token from Settings → API, not the short v3 API Key.",
     },
     troubleshooting:
       "If the registration form is awkward on a phone, use your browser's desktop-site option or a desktop browser. A required Application URL needs the full Media Manager address. This is an application description, not a callback URL; you do not need to make your private library public.",
@@ -108,14 +107,10 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
       },
     ],
     credentialHelp: {
-      apiKey:
-        "Paste the API key shown for the consumer you created on OpenSubtitles.com → API Consumers.",
-      username:
-        "Enter your OpenSubtitles.com account username, as used to sign in there.",
-      password:
-        "Enter that account's password. If you normally use a linked login, make sure you have a working OpenSubtitles.com password first.",
-      userAgent:
-        "Optional: your registered application name. Leave blank to use Media Manager's default.",
+      apiKey: "From OpenSubtitles.com → API Consumers.",
+      username: "Your OpenSubtitles.com sign-in.",
+      password: "Your OpenSubtitles.com password.",
+      userAgent: "Leave blank to use the default.",
     },
     troubleshooting:
       "If login is rejected, first confirm the same username and password work on OpenSubtitles.com and that email verification is complete. Download limits depend on your account; a quota error calls for waiting for the reset or reviewing your plan, rather than creating another key.",
@@ -141,8 +136,7 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
       },
     ],
     credentialHelp: {
-      apiKey:
-        "Paste the application/client API key from your registered AcoustID application. Use your own key rather than a temporary key from documentation examples.",
+      apiKey: "Your application's key, not the personal user key.",
     },
     troubleshooting:
       "Test connection checks the application key with a built-in synthetic fingerprint; it does not read your music. Then try Fingerprint mode on a cataloged track. If the key is rejected, copy the application key rather than the personal submission key. No matches means the recording may be absent from AcoustID; try artist and album-title search in MusicBrainz.",
@@ -175,8 +169,7 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
       },
     ],
     credentialHelp: {
-      apiKey:
-        "Paste the API key from your Google Cloud project's Credentials page. Do not paste an OAuth client ID, client secret or service-account JSON.",
+      apiKey: "From your Google Cloud project's Credentials page.",
     },
     troubleshooting:
       "Save and test sends a small book-search request. If access is rejected, check the selected project, Books API enablement and key restrictions. A quota limit can occur with a valid key; check the project's Books API quota and wait for its reset. A connected account does not guarantee a matching edition or cover.",
@@ -202,8 +195,8 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
       },
     ],
     credentialHelp: {
-      apiKey: "Use the project API key issued by TheTVDB.",
-      pin: "Use your subscriber PIN only when the project's access model requires it.",
+      apiKey: "Your TheTVDB project API key.",
+      pin: "Only if your TheTVDB plan uses one.",
     },
     troubleshooting:
       "The project API key is required; a subscriber PIN supplements it only for projects using subscription access. Test connection checks login. If login works but an episode differs from your files, check the selected episode order and language before changing credentials.",
@@ -225,7 +218,7 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
       },
     ],
     credentialHelp: {
-      apiKey: "Use the API key sent by OMDb after completing email activation.",
+      apiKey: "The key emailed to you by OMDb.",
     },
     troubleshooting:
       "If no email arrives, check spam and the delivery notice on OMDb's request page. An inactive-key error usually needs email activation; a daily-limit error needs the quota to reset.",
@@ -251,10 +244,8 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
       },
     ],
     credentialHelp: {
-      apiKey:
-        "Paste the key from Project API Keys. Leave empty if you are using only a Personal API key; at least one of the two fields must be filled.",
-      clientKey:
-        "Paste the key from Personal API Keys. This can be used alone or with the Project API key. Leave empty if you are using only a project key.",
+      apiKey: "Fill in this, the personal key, or both.",
+      clientKey: "Fill in this, the project key, or both.",
     },
     troubleshooting:
       "A successful test confirms access to a known movie's artwork. Your chosen movie, series or music ID may still have no images. Recently added artwork can be delayed by the key's access tier; check the provider's current tier rules before changing keys or buying access.",
@@ -276,8 +267,7 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
       },
     ],
     credentialHelp: {
-      apiKey:
-        "Use the personal access token from Settings → Developers, without an authorization-header prefix.",
+      apiKey: "From Discogs Settings → Developers.",
     },
     troubleshooting:
       "If you revoke or regenerate the token in Discogs, any application using the old value must be updated. Keep your Discogs account password separate from the access token.",
@@ -303,8 +293,7 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
       },
     ],
     credentialHelp: {
-      apiKey:
-        "Paste the current free v1 test key from the official guide, or your own key with v1 API access. Do not include the API URL or header name.",
+      apiKey: "The free test key from TheAudioDB's guide, or your own key.",
     },
     troubleshooting:
       "Test connection checks an album lookup through v1. If other lookups fail, check whether those endpoints are included in your key's access tier. Artist biographies are shown as reference material; they are not automatically used as album descriptions.",
@@ -326,7 +315,7 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
       },
     ],
     credentialHelp: {
-      apiKey: "Use the Comic Vine API key from its API page while signed in.",
+      apiKey: "From the Comic Vine API page.",
     },
     troubleshooting:
       "If the key is hidden, check that you are signed in on Comic Vine itself. Rate limits may temporarily block requests even with a valid key.",
@@ -348,7 +337,7 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
       },
     ],
     credentialHelp: {
-      apiKey: "Use the API key issued for your ISBNdb account's API access.",
+      apiKey: "From your ISBNdb account.",
     },
     troubleshooting:
       "This provider requires ISBNdb API access. Test connection uses a known ISBN and consumes an API request. Check that the key belongs to an active API plan and that its request allowance remains available. For a specific edition, copy its ISBN rather than searching by title alone.",
@@ -374,9 +363,8 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
       },
     ],
     credentialHelp: {
-      apiKey: "Use the API key issued by Podcast Index.",
-      apiSecret:
-        "Use the matching original API secret, rather than a generated authorization hash.",
+      apiKey: "From your Podcast Index account.",
+      apiSecret: "The secret shown with your key.",
     },
     troubleshooting:
       "If activation fails, check spam and the provider's support information. If both original values are correct but authentication fails, the server's clock may need checking because requests are signed with a timestamp. Podcast results are for inspection here; feed and episode changes belong in Audiobookshelf.",
@@ -402,7 +390,7 @@ export const PROVIDER_SETUP_GUIDES: Record<string, SetupGuide> = {
       },
     ],
     credentialHelp: {
-      apiKey: "Use the API key from your SubDL account panel's API section.",
+      apiKey: "From SubDL → Panel → API.",
     },
     troubleshooting:
       "Media Manager uses SubDL's v1 search API. Test connection checks API access, not subtitle timing or remaining download allowance. If downloads are limited, check the account and outgoing server IP allowances in the provider's current documentation. Preview the selected file before preparing an installation.",

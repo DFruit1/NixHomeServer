@@ -316,10 +316,10 @@ describe("Media Manager navigation", () => {
       screen.querySelector(".provider-credential-editor")?.textContent,
     ).toContain("Vaultwarden");
     expect(
-      screen.querySelector(".provider-access-details")?.textContent,
-    ).toContain("Get access");
-    expect(screen.querySelector(".provider-save-help")?.textContent).toContain(
-      "provider quota",
+      screen.querySelector(".provider-access-details summary")?.textContent,
+    ).toContain("Step-by-step instructions");
+    expect(screen.querySelector(".provider-setup-link")?.textContent).toContain(
+      "Open The Movie Database (TMDB)",
     );
     expect(
       screen.querySelector(".provider-credential-footer button[type=submit]")
@@ -364,7 +364,7 @@ describe("Media Manager navigation", () => {
     expect(
       screen.querySelector(".provider-credential-footer button[type=submit]")
         ?.textContent,
-    ).toContain("Encrypt and save");
+    ).toBe("Save");
     const replacementKey = screen.querySelector<HTMLInputElement>(
       ".credential-field-grid input",
     );

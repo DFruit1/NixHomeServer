@@ -950,95 +950,92 @@ const ProviderAccountsView = component$(() => {
     );
   const showPlanned = accounts.filter === "all" && plannedProviders.length > 0;
 
-  const renderEditor = (provider: ProviderDefinition) => (
-    <section
-      class="provider-credential-editor"
-      aria-labelledby={`provider-editor-${provider.id}`}
-    >
-      <div class="provider-credential-heading">
-        <h4 id={`provider-editor-${provider.id}`}>
-          {provider.account.state === "configured"
-            ? "Replace credentials"
-            : "Set up credentials"}
-        </h4>
-        <button
-          class="close-button"
-          type="button"
-          aria-label="Close credential editor"
-          disabled={accounts.saving}
-          onClick$={closeProvider}
-        >
-          ×
-        </button>
-      </div>
-      <p class="credential-guidance" role="note">
-        <Icon name="shield" size={18} />
-        <span>
-          {accounts.recoveryAdvice} Existing values are never loaded here, and
-          saving replaces the complete set.
-        </span>
-      </p>
-      <details class="provider-access-details">
-        <summary>Get access for {provider.name}</summary>
-        <div class="provider-access-scroll">
-          {PROVIDER_SETUP_GUIDES[provider.id] ? (
-            <ProviderSetupGuide providerId={provider.id} />
-          ) : (
-            <p>
-              Create the requested credentials in your provider account.{" "}
-              <a href={provider.setupUrl} target="_blank" rel="noreferrer">
-                Open provider setup
+  const renderEditor = (provider: ProviderDefinition) => {
+    const guide = PROVIDER_SETUP_GUIDES[provider.id];
+    const replacing = provider.account.state === "configured";
+    const testing = provider.canTest && accounts.testAfterSave;
+    return (
+      <section
+        class="provider-credential-editor"
+        aria-label={`${replacing ? "Replace" : "Set up"} ${provider.name}`}
+      >
+        <ol class="provider-setup-flow">
+          <li class="provider-setup-step">
+            <h4>Get your key</h4>
+            <div class="provider-setup-step-actions">
+              <a
+                class="secondary-button provider-setup-link"
+                href={provider.setupUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open {provider.name} <span aria-hidden="true">↗</span>
               </a>
-            </p>
-          )}
-        </div>
-      </details>
-      <form preventdefault:submit onSubmit$={saveProvider} autocomplete="off">
-        <div class="credential-field-grid">
-          {provider.credentialFields.map((field) => (
-            <label key={field.id}>
-              <span>
-                {field.label}
-                {field.isRequired ? " *" : ""}
-              </span>
+            </div>
+            {guide && (
+              <details class="provider-access-details">
+                <summary>
+                  <Icon name="chevron-right" size={14} />
+                  Step-by-step instructions
+                </summary>
+                <ProviderSetupGuide providerId={provider.id} />
+              </details>
+            )}
+          </li>
+          <li class="provider-setup-step">
+            <h4>Paste it here</h4>
+            <form
+              id={`provider-form-${provider.id}`}
+              preventdefault:submit
+              onSubmit$={saveProvider}
+              autocomplete="off"
+            >
+              <div class="credential-field-grid">
+                {provider.credentialFields.map((field) => (
+                  <label key={field.id}>
+                    <span>
+                      {field.label}
+                      {!field.isRequired && (
+                        <span class="credential-optional"> (optional)</span>
+                      )}
+                    </span>
+                    <input
+                      type={field.inputType}
+                      name={`provider-${provider.id}-${field.id}`}
+                      value={accounts.credentialValues[field.id] ?? ""}
+                      required={field.isRequired}
+                      disabled={accounts.saving}
+                      autocomplete={
+                        field.inputType === "password" ? "new-password" : "off"
+                      }
+                      spellcheck={false}
+                      onInput$={(_, input) =>
+                        (accounts.credentialValues[field.id] = input.value)
+                      }
+                    />
+                    <small>
+                      {guide?.credentialHelp[field.id] ?? field.help}
+                    </small>
+                  </label>
+                ))}
+              </div>
+            </form>
+          </li>
+        </ol>
+        <div class="provider-credential-footer">
+          {provider.canTest && (
+            <label class="provider-test-choice">
               <input
-                type={field.inputType}
-                name={`provider-${provider.id}-${field.id}`}
-                value={accounts.credentialValues[field.id] ?? ""}
-                required={field.isRequired}
+                type="checkbox"
+                checked={accounts.testAfterSave}
                 disabled={accounts.saving}
-                autocomplete={
-                  field.inputType === "password" ? "new-password" : "off"
-                }
-                spellcheck={false}
-                onInput$={(_, input) =>
-                  (accounts.credentialValues[field.id] = input.value)
+                onChange$={(_, input) =>
+                  (accounts.testAfterSave = input.checked)
                 }
               />
-              <small>
-                {PROVIDER_SETUP_GUIDES[provider.id]?.credentialHelp[field.id] ??
-                  field.help}
-              </small>
+              <span>Test after saving</span>
             </label>
-          ))}
-        </div>
-        {provider.canTest && (
-          <label class="provider-test-choice">
-            <input
-              type="checkbox"
-              checked={accounts.testAfterSave}
-              disabled={accounts.saving}
-              onChange$={(_, input) => (accounts.testAfterSave = input.checked)}
-            />
-            <span>Test the connection after saving</span>
-          </label>
-        )}
-        <p class="provider-save-help">
-          {provider.canTest && accounts.testAfterSave
-            ? "Testing checks account access and may count against your provider quota. Try the source on an item to verify matching or downloads."
-            : "Saving replaces these credentials without testing account access. Your media files are unchanged."}
-        </p>
-        <div class="provider-credential-footer">
+          )}
           <button
             class="secondary-button"
             type="button"
@@ -1050,18 +1047,22 @@ const ProviderAccountsView = component$(() => {
           <button
             class="primary-button"
             type="submit"
+            form={`provider-form-${provider.id}`}
             disabled={accounts.saving}
           >
-            {accounts.saving
-              ? "Encrypting…"
-              : provider.canTest && accounts.testAfterSave
-                ? "Save and test"
-                : "Encrypt and save"}
+            {accounts.saving ? "Saving…" : testing ? "Save and test" : "Save"}
           </button>
         </div>
-      </form>
-    </section>
-  );
+        <p class="credential-guidance">
+          <Icon name="shield" size={14} />
+          <span>
+            {replacing ? "Saving replaces the current credentials. " : ""}
+            {accounts.recoveryAdvice}
+          </span>
+        </p>
+      </section>
+    );
+  };
 
   const renderRow = (provider: ProviderDefinition) => {
     const status = providerAccountStatus(provider);
@@ -1101,6 +1102,21 @@ const ProviderAccountsView = component$(() => {
                 name={expanded ? "chevron-down" : "chevron-right"}
                 size={16}
               />
+              {provider.logoUrl ? (
+                <img
+                  class="provider-logo"
+                  src={provider.logoUrl}
+                  alt=""
+                  width={44}
+                  height={36}
+                  loading="lazy"
+                  decoding="async"
+                />
+              ) : (
+                <span class="provider-logo fallback" aria-hidden="true">
+                  {provider.name.charAt(0)}
+                </span>
+              )}
               <span class="provider-row-name">{provider.name}</span>
               <span class="provider-row-types">
                 {provider.mediaDomains.join(" · ")}
@@ -1141,7 +1157,7 @@ const ProviderAccountsView = component$(() => {
         </div>
         {expanded && (
           <div class="provider-row-details" id={detailsId}>
-            <p>{provider.notes}</p>
+            {!editing && <p>{provider.notes}</p>}
             {provider.account.lastTestMessage && (
               <p
                 class={{
