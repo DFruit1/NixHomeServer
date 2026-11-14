@@ -854,12 +854,15 @@ impl<'f, F: Read + Seek> PdfDocument<'f, F> {
             return Ok(false);
         };
         let Object::Dictionary(acro_form) = self.dereference(&acro_form)? else {
+            return Err("PDF AcroForm cannot be interpreted safely".to_string());
+        };
+        // The field tree is present, so every piece of it must be readable:
+        // an uninterpretable tree could hide a signature. Arrays themselves
+        // may be indirect objects, so dereference each one.
+        let Some(fields) = get(&acro_form, b"Fields").cloned() else {
             return Ok(false);
         };
-        let Some(Object::Array(fields)) = get(&acro_form, b"Fields").cloned() else {
-            return Ok(false);
-        };
-        let mut pending = fields;
+        let mut pending = self.form_array(&fields, "form field list")?;
         let mut visited = 0usize;
         while let Some(field) = pending.pop() {
             visited += 1;
@@ -885,11 +888,20 @@ impl<'f, F: Read + Seek> PdfDocument<'f, F> {
             if kind_is_signature || value_is_signature {
                 return Ok(true);
             }
-            if let Some(Object::Array(kids)) = get(&field, b"Kids").cloned() {
-                pending.extend(kids);
+            if let Some(kids) = get(&field, b"Kids").cloned() {
+                let mut kids = self.form_array(&kids, "form field kids")?;
+                pending.append(&mut kids);
             }
         }
         Ok(false)
+    }
+
+    /// Resolve an array that a PDF may store directly or as an indirect object.
+    fn form_array(&mut self, value: &Object, what: &str) -> Result<Vec<Object>, String> {
+        match self.dereference(value)? {
+            Object::Array(items) => Ok(items),
+            _ => Err(format!("PDF {what} is not an array")),
+        }
     }
 
     fn next_object_number(&self) -> Result<u32, String> {
@@ -1602,15 +1614,18 @@ mod tests {
     }
 
     /// A minimal signed file: either a signature field or a certification
-    /// signature in the catalog's `/Perms`.
-    fn signed_pdf(certified: bool) -> Vec<u8> {
+    /// signature in the catalog's `/Perms`. The field list may be an indirect
+    /// array, which PDF allows.
+    fn signed_pdf(certified: bool, indirect_fields: bool) -> Vec<u8> {
         let mut pdf = b"%PDF-1.4\n".to_vec();
         let catalog = if certified {
             b"<< /Type /Catalog /Pages 2 0 R /Perms << /DocMDP 5 0 R >> >>".to_vec()
+        } else if indirect_fields {
+            b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields 7 0 R >> >>".to_vec()
         } else {
             b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R] >> >>".to_vec()
         };
-        let objects: Vec<Vec<u8>> = vec![
+        let mut objects: Vec<Vec<u8>> = vec![
             catalog,
             b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".to_vec(),
@@ -1618,6 +1633,9 @@ mod tests {
             b"<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 0 0 0] /Contents <00> >>".to_vec(),
             b"<< /FT /Sig /T (Signature1) /V 5 0 R >>".to_vec(),
         ];
+        if indirect_fields {
+            objects.push(b"[6 0 R]".to_vec());
+        }
         let mut offsets = Vec::new();
         for (index, body) in objects.iter().enumerate() {
             offsets.push(pdf.len());
@@ -1626,25 +1644,28 @@ mod tests {
             pdf.extend_from_slice(b"\nendobj\n");
         }
         let xref = pdf.len();
-        pdf.extend_from_slice(b"xref\n0 7\n0000000000 65535 f\r\n");
+        let size = objects.len() + 1;
+        pdf.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f\r\n").as_bytes());
         for offset in offsets {
             pdf.extend_from_slice(format!("{offset:010} 00000 n\r\n").as_bytes());
         }
         pdf.extend_from_slice(
-            format!("trailer\n<< /Size 7 /Root 1 0 R /Info 4 0 R >>\nstartxref\n{xref}\n%%EOF")
-                .as_bytes(),
+            format!(
+                "trailer\n<< /Size {size} /Root 1 0 R /Info 4 0 R >>\nstartxref\n{xref}\n%%EOF"
+            )
+            .as_bytes(),
         );
         pdf
     }
 
     #[test]
     fn refuses_signed_and_certified_documents() {
-        for certified in [false, true] {
-            let mut file = Cursor::new(signed_pdf(certified));
+        for (certified, indirect) in [(false, false), (false, true), (true, false)] {
+            let mut file = Cursor::new(signed_pdf(certified, indirect));
             let metadata = read_document_metadata(&mut file).expect("read signed PDF");
-            assert!(metadata.signed, "certified={certified}");
+            assert!(metadata.signed, "certified={certified} indirect={indirect}");
             let error = append_metadata_update(
-                &mut Cursor::new(signed_pdf(certified)),
+                &mut Cursor::new(signed_pdf(certified, indirect)),
                 &mut Cursor::new(Vec::new()),
                 XMP,
                 &PdfInfoUpdate {
