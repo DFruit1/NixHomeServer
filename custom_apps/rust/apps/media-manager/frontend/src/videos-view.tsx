@@ -59,6 +59,9 @@ export const VideosView = component$<{
   const pipSupported = useSignal(false);
   const pipActive = useSignal(false);
   const theatre = useSignal(false);
+  // Position to restore when the converted copy replaces the original, so a
+  // long conversion does not send the viewer back to the start.
+  const resumeAt = useSignal(0);
   const state = useStore({
     items: [] as CatalogItem[],
     selectedId: "",
@@ -148,6 +151,7 @@ export const VideosView = component$<{
     state.transcodeLoading = false;
     state.audioChecked = false;
     state.error = "";
+    resumeAt.value = 0;
   });
 
   // Browsers render a video whose audio codec they cannot decode without
@@ -160,7 +164,11 @@ export const VideosView = component$<{
       generation === preparationGeneration.value && state.selectedId === id;
     state.transcodeLoading = true;
     try {
-      if (await prepareBrowserPlayback(id, current)) state.transcode = true;
+      const started = videoRef.value?.currentTime ?? 0;
+      if (await prepareBrowserPlayback(id, current)) {
+        resumeAt.value = started;
+        state.transcode = true;
+      }
     } catch (error) {
       if (current()) state.error = readableError(error);
     } finally {
@@ -370,6 +378,11 @@ export const VideosView = component$<{
               await prepareBrowserCopy(state.selectedId);
             }}
             onCanPlay$={() => (state.transcodeLoading = false)}
+            onLoadedMetadata$={(_, element) => {
+              if (resumeAt.value <= 0) return;
+              element.currentTime = resumeAt.value;
+              resumeAt.value = 0;
+            }}
             onTimeUpdate$={checkDecodedAudio}
           />
         ) : (
