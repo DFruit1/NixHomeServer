@@ -820,6 +820,18 @@ type ApplyHealthValue = QRL<
   ) => Promise<boolean>
 >;
 
+// Provider lookups search with these fields, so they are settled first.
+const LOOKUP_FIELD_ORDER = ["title", "authors", "year"];
+
+function lookupRank(issue: MetadataHealthIssue): number {
+  const rank = LOOKUP_FIELD_ORDER.indexOf(issue.field ?? "");
+  return rank === -1 ? LOOKUP_FIELD_ORDER.length : rank;
+}
+
+function isLookupIssue(issue: MetadataHealthIssue): boolean {
+  return lookupRank(issue) < LOOKUP_FIELD_ORDER.length;
+}
+
 function groupIssues(results: MetadataHealthResult[]): GroupedIssue[] {
   const grouped = new Map<string, GroupedIssue>();
   for (const target of results) {
@@ -836,7 +848,9 @@ function groupIssues(results: MetadataHealthResult[]): GroupedIssue[] {
       group.entries.push({ issue, target });
     }
   }
-  return [...grouped.values()];
+  return [...grouped.values()].sort(
+    (left, right) => lookupRank(left.issue) - lookupRank(right.issue),
+  );
 }
 
 function distinctValues(entries: HealthIssueEntry[], proposed: boolean) {
@@ -1187,6 +1201,9 @@ const HealthIssueReview = component$<{
     <section class="health-result-issue">
       <header class="health-issue-header">
         <h4>{issueTitle}</h4>
+        {isLookupIssue(issue) && (
+          <span class="health-issue-lookup">Used to search providers</span>
+        )}
       </header>
       <div class="health-comparison">
         {!compares && <p>{issue.message}</p>}
@@ -1496,6 +1513,7 @@ const HealthResult = component$<{ group: HealthGroup; canEdit: boolean }>(
           </div>
         </header>
         <div class="health-result-issues" ref={issuesElement}>
+          <Slot name="lookup" />
           {props.group.results.some((result) =>
             result.health.some((issue) =>
               [
@@ -1919,6 +1937,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
           >
             {groupIssues(group.results).map((grouped) => (
               <HealthIssueReview
+                q:slot={isLookupIssue(grouped.issue) ? "lookup" : undefined}
                 getSession$={getLookupSession$}
                 key={`${group.key}-${grouped.key}`}
                 group={group}

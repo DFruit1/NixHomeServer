@@ -12,6 +12,15 @@ type EditableMetadataField = MetadataMatchField;
 
 export type MetadataSection = "basics" | "advanced";
 
+/** Label for the creator field providers search with, when the media type
+ * identifies items by creator as well as title. */
+export function lookupCreatorLabel(mediaType: string): string | undefined {
+  if (mediaType === "music") return "Artist";
+  if (mediaType === "book" || mediaType === "audiobook") return "Author";
+  if (mediaType === "podcast") return "Creator";
+  return undefined;
+}
+
 export const METADATA_SECTIONS: Array<{ id: MetadataSection; label: string }> =
   [
     { id: "basics", label: "Basics" },

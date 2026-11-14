@@ -3113,6 +3113,37 @@ a:focus-visible {
 .metadata-group-heading:first-child {
   margin-top: 0;
 }
+.metadata-group-heading small {
+  margin-left: 8px;
+  color: var(--ink-faint);
+  font-size: var(--text-sm);
+  font-weight: 400;
+}
+/* Fields that provider lookups search with lead the form and stay at full
+   ink contrast while it is read-only, so they are the first thing checked. */
+.metadata-form .metadata-lookup-field > span {
+  color: var(--ink);
+  font-weight: 600;
+}
+.metadata-form:disabled .metadata-lookup-field input,
+.metadata-form:disabled .metadata-lookup-field select,
+.metadata-form .metadata-lookup-field select:disabled {
+  color: var(--ink);
+  -webkit-text-fill-color: var(--ink);
+}
+.metadata-form .metadata-lookup-title input {
+  min-height: 48px;
+  font-family: var(--font-serif);
+  font-size: var(--title-sm);
+}
+.metadata-form .metadata-lookup-field.is-missing input {
+  border-color: var(--warning-line);
+  background: var(--warning-wash);
+}
+.metadata-form .metadata-lookup-field.is-missing small {
+  color: var(--warning);
+  font-weight: 600;
+}
 .metadata-actions {
   min-height: 72px;
   padding: 14px 20px;
@@ -5276,7 +5307,15 @@ a:focus-visible {
   flex-shrink: 1;
 }
 .health-issue-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
   padding: 6px 0;
+}
+.health-issue-lookup {
+  color: var(--ink-faint);
+  font-size: var(--text-sm);
 }
 .health-issue-footer {
   position: relative;

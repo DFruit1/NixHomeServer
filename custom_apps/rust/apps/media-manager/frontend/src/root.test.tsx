@@ -2739,6 +2739,7 @@ describe("Media Manager library browser", () => {
         (element) => element.textContent?.trim() === label,
       ) ?? null;
     expect(fieldValue("Year")).toBe("1991");
+    expect(fieldValue("Artist")).toBe("Nirvana");
     expect(fieldValue("Genres")).toBe("");
     await userEvent(sectionTab("Advanced"), "click");
     await vi.waitFor(() =>
@@ -2746,7 +2747,7 @@ describe("Media Manager library browser", () => {
         screen.querySelector(".metadata-section-tab.active")?.textContent,
       ).toBe("Advanced"),
     );
-    expect(fieldValue("Authors / artists")).toBe("Nirvana");
+    expect(fieldValue("Authors / artists")).toBeNull();
     expect(fieldValue("Publisher / studio")).toBe("DGC");
     expect(screen.textContent).toContain("People");
     expect(screen.textContent).toContain("Release & ratings");

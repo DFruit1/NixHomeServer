@@ -22,6 +22,7 @@ import {
   metadataFieldValue,
   metadataSourceChoices,
   METADATA_SECTIONS,
+  lookupCreatorLabel,
   type MetadataFieldChange,
   type MetadataSection,
   numericValue,
@@ -1554,6 +1555,8 @@ export const ItemEditor = component$<{
     </>
   );
 
+  const creatorLabel = lookupCreatorLabel(metadata.mediaType);
+
   return (
     <section
       class="panel editor-card"
@@ -1630,7 +1633,10 @@ export const ItemEditor = component$<{
         >
           {section.value === "basics" && (
             <>
-              <label>
+              <h4 class="metadata-group-heading">
+                Identity <small>Used to search providers</small>
+              </h4>
+              <label class="metadata-lookup-field">
                 <span>Media type</span>
                 <select
                   value={metadata.mediaType}
@@ -1655,11 +1661,22 @@ export const ItemEditor = component$<{
                   <option value="book">Book</option>
                 </select>
               </label>
-              <label class="title-input">
-                <span>Title</span>
+              <label
+                class={{
+                  "metadata-lookup-field": true,
+                  "metadata-lookup-title": true,
+                  "title-input": true,
+                  "is-missing": !metadata.title.trim(),
+                }}
+              >
+                <span>
+                  Title
+                  {!metadata.title.trim() && <small>Required for search</small>}
+                </span>
                 <input
                   value={metadata.title}
                   maxLength={500}
+                  aria-invalid={!metadata.title.trim() || undefined}
                   onInput$={(_, input) =>
                     updateMetadataDraftField(
                       metadata,
@@ -1670,7 +1687,24 @@ export const ItemEditor = component$<{
                   }
                 />
               </label>
-              <label>
+              {creatorLabel && (
+                <label class="metadata-lookup-field title-input">
+                  <span>{creatorLabel}</span>
+                  <input
+                    placeholder="Comma-separated"
+                    value={metadata.authors}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "authors",
+                        input.value,
+                      )
+                    }
+                  />
+                </label>
+              )}
+              <label class="metadata-lookup-field">
                 <span>Year</span>
                 <input
                   value={metadata.year}
@@ -1689,7 +1723,7 @@ export const ItemEditor = component$<{
               </label>
               {metadata.mediaType === "episode" && (
                 <>
-                  <label>
+                  <label class="metadata-lookup-field">
                     <span>Season</span>
                     <input
                       value={metadata.season}
@@ -1704,7 +1738,7 @@ export const ItemEditor = component$<{
                       }
                     />
                   </label>
-                  <label>
+                  <label class="metadata-lookup-field">
                     <span>Episode</span>
                     <input
                       value={metadata.episode}
@@ -1736,6 +1770,7 @@ export const ItemEditor = component$<{
                   </label>
                 </>
               )}
+              <h4 class="metadata-group-heading">Details</h4>
               <label>
                 <span>Language code</span>
                 <input
@@ -1751,7 +1786,7 @@ export const ItemEditor = component$<{
                   }
                 />
               </label>
-              <label>
+              <label class="title-input">
                 <span>Genres</span>
                 <input
                   placeholder="Comma-separated"
@@ -1771,21 +1806,23 @@ export const ItemEditor = component$<{
           {section.value === "advanced" && (
             <>
               <h4 class="metadata-group-heading">People</h4>
-              <label>
-                <span>Authors / artists</span>
-                <input
-                  placeholder="Comma-separated"
-                  value={metadata.authors}
-                  onInput$={(_, input) =>
-                    updateMetadataDraftField(
-                      metadata,
-                      props.state,
-                      "authors",
-                      input.value,
-                    )
-                  }
-                />
-              </label>
+              {!creatorLabel && (
+                <label>
+                  <span>Authors / artists</span>
+                  <input
+                    placeholder="Comma-separated"
+                    value={metadata.authors}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "authors",
+                        input.value,
+                      )
+                    }
+                  />
+                </label>
+              )}
               <label>
                 <span>Narrators</span>
                 <input
