@@ -4,7 +4,7 @@
   flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
-  font-size: 14px;
+  font-size: var(--text-md);
 }
 .collection-view-choice select {
   min-height: 44px;
