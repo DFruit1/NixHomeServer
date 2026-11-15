@@ -161,12 +161,13 @@ pub(in crate::provider_account_http) async fn run_tag_review(state: ProviderBrok
                 json!({"service":"media-manager-provider-broker","event":"image_accounts_unavailable"})
             ),
         }
-        // A short pause between photos lets queued interactive Bonsai
-        // requests take the single slot before the next review.
+        // The gate admits waiting requests in arrival order, so anything that
+        // queued during a review runs before the next one; a long pause here
+        // only idled Bonsai (it was a third of each photo's time live).
         let pause = if busy {
             120
         } else if reviewed {
-            5
+            1
         } else {
             300
         };
