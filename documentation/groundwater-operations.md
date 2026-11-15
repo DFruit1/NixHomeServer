@@ -22,28 +22,33 @@ last logger that sent a reading.
 3. Rebuild the firmware for the right broker endpoint and provision the
    existing `groundwater-logger` account through the secret-management path.
    On-site units can use plain MQTT on port 1883, which stays LAN/NetBird-only.
-   Cellular field units (Quectel EC21) connect over the internet to
-   `mqtt.sydneybasiniot.org:8883` with TLS 1.2 or later:
-   - The GL.iNet Flint 2 router keeps a DDNS name for the home's public IPv4.
-     Its port forward sends public TCP 8883 to the server at
-     `192.168.8.12:8883`. `mqtt.sydneybasiniot.org` is a DNS-only (not proxied)
-     CNAME to that DDNS name. The owner manages both by hand; they
-     are not in this repository.
+   Cellular field units (Quectel EC21) connect over the internet to the
+   GL.iNet Flint 2 router's DDNS name (`<id>.glddns.com`) on port 8883 with
+   TLS 1.2 or later:
+   - The router keeps that DDNS name pointed at the home's public IPv4, and
+     its port forward sends public TCP 8883 to the server at
+     `192.168.8.12:8883`. The owner manages both by hand; they are not in this
+     repository. `mqtt.sydneybasiniot.org` is reserved as a stable alias
+     (a DNS-only CNAME to the DDNS name, or later a VPS relay), so a future
+     move needs a DNS change rather than a firmware change.
    - The server opens 8883 only on the LAN interface. That listener accepts
      only the `groundwater-logger` account and its logger ACL. The
      `groundwater-app` account is rejected there and stays loopback/LAN/NetBird
      only. The listener does not use client certificates.
    - The server certificate (`modules/groundwater-logger/mqtt-tls/server.pem`,
-     RSA-2048, CN/SAN `mqtt.sydneybasiniot.org`) is signed by a private CA. The
+     RSA-2048, SANs `mqtt.sydneybasiniot.org` and `*.glddns.com`) is signed by
+     a private CA, so it matches whichever DDNS name the router gets. Only
+     loggers holding that CA trust it. The
      firmware trusts that CA certificate, not a public CA. The private key is
      the agenix secret `groundwaterMqttTlsKey`, owned by `mosquitto`, mode
      0400. Ciphers stay at OpenSSL defaults, because the EC21 needs ECDHE-RSA
      with AES-CBC/GCM.
-   - To rotate the server certificate, run `tools/mqtt-pki.sh
-     mqtt.sydneybasiniot.org` in the firmware repository. It reuses the
-     existing CA, so devices need no new trust anchor. Then copy the new
-     `server.pem` over the committed one and replace the key without
-     printing it:
+   - To reissue the server certificate (for example to add a name), run
+     `tools/mqtt-pki.sh mqtt.sydneybasiniot.org '*.glddns.com'` in the
+     firmware repository and copy the new `server.pem` over the committed one.
+     It reuses the CA and the broker key, so neither the loggers nor the
+     agenix secret change. To rotate the key as well, add `--new-key` and
+     replace the secret without printing it:
 
      ```bash
      install -d -m 0700 secrets/unencrypted

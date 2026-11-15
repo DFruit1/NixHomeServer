@@ -252,7 +252,8 @@ exposed to the public internet. No public plaintext listener. Firmware TLS
 
 **Amendment (2026-11-15):** for cellular field units the owner chose a public
 TLS listener instead of NetBird. The router port-forwards TCP 8883 to the
-server's LAN address, and `mqtt.sydneybasiniot.org` points at it. Only the
+server's LAN address; loggers use the router's DDNS name, with
+`mqtt.sydneybasiniot.org` reserved as a stable alias. Only the
 logger account is accepted there. Plain 1883 stays LAN/NetBird only. See
 [Commission a logger](groundwater-operations.md#commission-a-logger).
 
