@@ -14,7 +14,9 @@ let
   # card. A quant change alters every stored vector, so `semantic.rs` carries
   # the file hash in its VERSION and the next backfill re-embeds the library.
   embeddingModel = "${cfg.paths.models}/Qwen3-Embedding-4B-Q8_0.gguf";
-  rerankerModel = "${cfg.paths.models}/Qwen3-Reranker-0.6B.F16.gguf";
+  # Q8_0 reranker: half the F16 weights with near-identical relevance scores,
+  # which the ADMIT/REJECT cut-offs in `semantic.rs` sit well clear of.
+  rerankerModel = "${cfg.paths.models}/Qwen3-Reranker-0.6B.Q8_0.gguf";
   inferenceEnvironment = {
     SEARCH_EMBED_QUERY_URL = "http://${loopback}:${toString ports.searchEmbeddingQuery}";
     SEARCH_RERANK_URL = "http://${loopback}:${toString ports.searchReranker}";
@@ -141,7 +143,7 @@ in {
       };
     };
     systemd.services.search-reranker = lib.recursiveUpdate inferenceService {
-      description = "Qwen3 0.6B passage reranker resident on GPU";
+      description = "Qwen3 0.6B Q8 passage reranker resident on GPU";
       serviceConfig = {
         # A 4096-token batch sized the output buffer for the full 151k
         # vocabulary and held 4.1 GiB of the card. A search request reranks at

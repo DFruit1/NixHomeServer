@@ -2375,7 +2375,7 @@ embedded again by `search-embed`.
 
 Search combines the keyword index with a separate `search-passages-v1` Solr
 core. Qwen3-Embedding-4B Q8_0 produces normalized 2,560-dimensional vectors;
-Qwen3-Reranker-0.6B F16 reorders the leading candidate documents. Text stays
+Qwen3-Reranker-0.6B Q8_0 reorders the leading candidate documents. Text stays
 in PostgreSQL; the vector core stores offsets, vectors and filter metadata.
 Passages overlap, respect paragraph boundaries where possible, and cover the
 whole document. Input byte limits leave room for titles and the model's
@@ -2449,7 +2449,7 @@ conversion must contain `cls.output.weight`, rank pooling, `[yes, no]` labels
 and a reranking template; an ordinary causal-language-model GGUF is not enough.
 Upstream contracts: [Qwen embedding](https://huggingface.co/Qwen/Qwen3-Embedding-4B),
 [Qwen reranker](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B),
-[F16 conversion](https://huggingface.co/Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp),
+[reranker conversion](https://huggingface.co/Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp),
 [Solr vectors](https://solr.apache.org/guide/solr/9_10/query-guide/dense-vector-search.html).
 
 After guarded activation:
@@ -2464,7 +2464,7 @@ After guarded activation:
   query took 69 seconds against 1.3 without it, and a 300-token passage 78
   seconds against 9. The GPU-resident Q8 embedder no longer depends on that
   path, but the build remains shared with the backfill.
-- `search-reranker` keeps the 0.6B model on GPU, loopback port 18095. Its batch
+- `search-reranker` keeps the 0.6B Q8_0 model on GPU, loopback port 18095. Its batch
   is 1024 with a 512-token micro-batch: a 4096-token batch sized the output
   buffer for the full vocabulary and held about 4.1 GiB, while a search request
   reranks at most three passages of about 200 tokens.
