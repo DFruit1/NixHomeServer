@@ -1707,7 +1707,7 @@ def archive_source(source: Path, directory: Path, plan: dict[str, Any] | None = 
         except OSError as error:
             print(f"Could not move {sidecar.name} with its ISO: {error}", file=sys.stderr)
     if plan:
-        manifest = destination.with_suffix(".iso.output.json")
+        manifest = destination.with_name(destination.name + ".output.json")
         manifest.write_text(
             json.dumps({
                 "sourceIso": source.name,
@@ -1860,6 +1860,9 @@ def park_for_identification(args: argparse.Namespace, source: Path,
         "files": record.get("heldFiles", []),
         "titles": record.get("titles", []),
         "heldDir": record.get("heldDir", ""),
+        # Renaming keeps the modification time; a different ISO that later
+        # reuses the inode number does not, so it never publishes these videos.
+        "mtimeNs": archived.stat().st_mtime_ns,
     }
     return archived
 
@@ -1928,6 +1931,8 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
             live.add(key)
             record = records.get(key)
             if not isinstance(record, dict):
+                continue
+            if isinstance(record.get("mtimeNs"), int) and iso.stat().st_mtime_ns != record["mtimeNs"]:
                 continue
             try:
                 hints = source_hints(iso)

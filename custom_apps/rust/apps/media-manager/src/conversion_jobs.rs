@@ -334,8 +334,8 @@ pub fn check_dvd_name(
     }
     Ok(())
 }
-/// The archived ISO whose output manifest names `source` as its original,
-/// for discs the converter renamed after identifying their episodes. Only
+/// The archived ISO whose output manifest names `source` as its original;
+/// identified discs are archived under their episode name. Only
 /// manifests finished after the job was created count, newest first, so an
 /// older disc that once had the same name is never taken for this job's.
 fn renamed_archive(
@@ -508,19 +508,13 @@ fn advance(config: &AppConfig, job: &mut Job) -> Result<(), String> {
             return Err("The DVD was converted, but its episodes need identifying. Rename it as described under Process, needs identifying.".into());
         }
         let processed = dir.child("_Processed")?;
-        // Require the output manifest as well as the archived ISO. Identified
-        // TV discs are archived under their episode name, so fall back to the
-        // manifest that records this job's ISO as its source.
-        let archived = if processed
-            .read(&format!("{}.output.json", job.inbox_name), 65536)
-            .is_ok()
-        {
-            job.inbox_name.clone()
-        } else {
-            match renamed_archive(&processed, &job.inbox_name, job.created_at)? {
-                Some(name) => name,
-                None => return Ok(()),
-            }
+        // Require the output manifest as well as the archived ISO. The
+        // importer records each manifest's source name and finish time.
+        // Identified TV discs are archived under their episode name, and
+        // "Convert again" leaves an older manifest of the same name behind,
+        // so only a manifest finished after this job was created counts.
+        let Some(archived) = renamed_archive(&processed, &job.inbox_name, job.created_at)? else {
+            return Ok(());
         };
         processed.file(&archived)?
     } else {
@@ -613,6 +607,8 @@ mod safety_tests {
         manifest("Show (1978) S01E01-E02.iso", "DISC.iso", 50);
         manifest("Show (1978) S01E05-E06.iso", "DISC.iso", 200);
         manifest("Other.iso", "OTHER.iso", 300);
+        // "Convert again" leaves the earlier same-name manifest behind.
+        manifest("DISC.iso", "DISC.iso", 40);
         assert_eq!(
             renamed_archive(&processed, "DISC.iso", 100)
                 .unwrap()
