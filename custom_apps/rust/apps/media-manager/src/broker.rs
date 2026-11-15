@@ -1962,30 +1962,60 @@ fn apply_convert_video(
     let parent_fd = open_directory_chain(root_fd.as_raw_fd(), &paths.source_parent, false)?;
     // Provisioned per user with that user's access; never created here.
     let originals_fd = open_root(&paths.originals_path)?;
-    let archive_parent_fd =
-        open_directory_chain(originals_fd.as_raw_fd(), &paths.archive_parent, true)?;
+    // Opened without creating anything until the space check has passed.
+    let existing_archive_parent =
+        open_directory_chain(originals_fd.as_raw_fd(), &paths.archive_parent, false).ok();
     let parent = parent_fd.as_raw_fd();
     let source = fingerprint_optional_at(parent, paths.source_leaf)?;
-    let archived = fingerprint_optional_at(archive_parent_fd.as_raw_fd(), paths.archive_leaf)?;
+    let archived = match &existing_archive_parent {
+        Some(fd) => fingerprint_optional_at(fd.as_raw_fd(), paths.archive_leaf)?,
+        None => None,
+    };
     let replacement = if in_place {
         source.clone()
     } else {
         fingerprint_optional_at(parent, paths.replacement_leaf)?
     };
     let source_unchanged = source.as_deref() == Some(action.expected_source.as_str());
+    let installed = replacement.as_deref() == Some(action.expected_replacement.as_str());
     let changed = || {
         BrokerError::new("the video changed after its conversion was queued; nothing was replaced")
     };
 
+    // 0. Room for both copies still to be made, leaving the shared pool its
+    // reserve; nothing is written otherwise.
+    ensure_conversion_space(
+        config,
+        &paths,
+        if archived.is_none() {
+            fingerprint_size(&action.expected_source)
+        } else {
+            0
+        },
+        if installed {
+            0
+        } else {
+            fingerprint_size(&action.expected_replacement)
+        },
+    )?;
+
     // 1. A verified copy of the original exists before the library changes.
     match archived.as_deref() {
-        None if source_unchanged => copy_verified(
-            parent,
-            paths.source_leaf,
-            archive_parent_fd.as_raw_fd(),
-            paths.archive_leaf,
-            &action.expected_source,
-        )?,
+        None if source_unchanged => {
+            let archive_parent_fd = match existing_archive_parent {
+                Some(fd) => fd,
+                None => {
+                    open_directory_chain(originals_fd.as_raw_fd(), &paths.archive_parent, true)?
+                }
+            };
+            copy_verified(
+                parent,
+                paths.source_leaf,
+                archive_parent_fd.as_raw_fd(),
+                paths.archive_leaf,
+                &action.expected_source,
+            )?
+        }
         None => return Err(changed()),
         Some(found) if found == action.expected_source => {}
         Some(_) => {
@@ -1997,9 +2027,9 @@ fn apply_convert_video(
         }
     }
 
-    // 2. Install the conversion.
-    if replacement.as_deref() != Some(action.expected_replacement.as_str()) {
-        if in_place && !source_unchanged {
+    // 2. Install the conversion, only over the original that was archived.
+    if !installed {
+        if !source_unchanged {
             return Err(changed());
         }
         if !in_place && replacement.is_some() {
@@ -2103,7 +2133,11 @@ fn recover_converted_video(
 }
 
 /// Copy one regular file to a new name in another directory (possibly another
-/// filesystem), keeping its timestamps, and verify the result.
+/// filesystem), keeping its timestamps. Every write and the final fsync must
+/// succeed; the result is then checked for the source's size and timestamp,
+/// which confirms the complete copy was renamed into place. Content is not
+/// re-read and hashed: that would double the I/O of multi-gigabyte files, and
+/// the ZFS data pool already checksums every block it stores.
 #[cfg(target_os = "linux")]
 fn copy_verified(
     source_parent_fd: RawFd,
@@ -2136,7 +2170,7 @@ fn copy_verified(
     sync_directory(destination_parent_fd)?;
     if fingerprint_at(destination_parent_fd, destination_leaf)? != expected {
         return Err(BrokerError::new(
-            "the archived original does not match the library file",
+            "the archived original's size or timestamp does not match the library file",
         ));
     }
     Ok(())
@@ -2161,6 +2195,42 @@ fn rename_exchange(parent_fd: RawFd, left: &str, right: &str) -> Result<(), Brok
             "swap in converted video: {}",
             std::io::Error::last_os_error()
         )));
+    }
+    Ok(())
+}
+
+/// Byte size recorded in a `size:mtime` fingerprint.
+fn fingerprint_size(fingerprint: &str) -> u64 {
+    fingerprint
+        .split_once(':')
+        .and_then(|(size, _)| size.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The archive copy lands under the owner's originals folder and the library
+/// copy beside the source. Sibling ZFS datasets report different devices yet
+/// share one pool's free space, so each location must hold both copies.
+#[cfg(target_os = "linux")]
+fn ensure_conversion_space(
+    config: &AppConfig,
+    paths: &VideoConversionPaths<'_>,
+    archive_bytes: u64,
+    install_bytes: u64,
+) -> Result<(), BrokerError> {
+    use crate::video_conversion::{available_space, not_enough_space};
+    let bytes = archive_bytes.saturating_add(install_bytes);
+    if bytes == 0 {
+        return Ok(());
+    }
+    let reserve = config.free_space_reserve_bytes;
+    let needed = bytes.saturating_add(reserve);
+    for path in [paths.originals_path.as_path(), Path::new(&paths.root_path)] {
+        let available = available_space(path).map_err(BrokerError::new)?;
+        if available < needed {
+            return Err(BrokerError::new(not_enough_space(
+                needed, reserve, available,
+            )));
+        }
     }
     Ok(())
 }

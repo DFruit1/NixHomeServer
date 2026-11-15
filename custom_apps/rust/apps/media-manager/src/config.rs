@@ -66,6 +66,8 @@ pub struct AppConfig {
     pub mkvmaker_progress_file: PathBuf,
     pub transcribe_state_dir: Option<PathBuf>,
     pub conversion_staging_dir: Option<PathBuf>,
+    /// Free space video conversions leave on the shared data pool.
+    pub free_space_reserve_bytes: u64,
     pub open_subtitles_credentials_file: Option<PathBuf>,
     pub provider_broker_base_url: Option<String>,
     pub jellyfin_metadata_cache_file: Option<PathBuf>,
@@ -196,6 +198,12 @@ impl AppConfig {
             )),
             conversion_staging_dir: env::var_os("MEDIA_MANAGER_CONVERSION_STAGING_DIR")
                 .map(PathBuf::from),
+            free_space_reserve_bytes: match optional_env("MEDIA_MANAGER_FREE_SPACE_RESERVE_BYTES") {
+                Some(value) => value.parse::<u64>().map_err(|error| {
+                    format!("invalid MEDIA_MANAGER_FREE_SPACE_RESERVE_BYTES: {error}")
+                })?,
+                None => crate::video_conversion::DEFAULT_FREE_SPACE_RESERVE,
+            },
             transcribe_state_dir: env::var_os("MEDIA_MANAGER_TRANSCRIBE_STATE").map(PathBuf::from),
             open_subtitles_credentials_file: env::var_os(
                 "MEDIA_MANAGER_OPENSUBTITLES_CREDENTIALS_FILE",
@@ -252,6 +260,7 @@ impl AppConfig {
             mkvmaker_progress_file: PathBuf::from("progress.json"),
             transcribe_state_dir: None,
             conversion_staging_dir: None,
+            free_space_reserve_bytes: 0,
             open_subtitles_credentials_file: None,
             provider_broker_base_url: None,
             jellyfin_metadata_cache_file: None,

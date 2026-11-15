@@ -12,8 +12,9 @@ use crate::{
     scanner::{scan_root_now, ScanRoot},
     transcription::fs::Dir,
     video_conversion::{
-        all_jobs, cancel_marker, cancel_requested, now, output_relative_path, owner_dir, plan,
-        prune_history, verify_output, EncodePlan, Format, Job, SourceProbe, STAGING_DIRECTORY,
+        all_jobs, available_space, cancel_marker, cancel_requested, not_enough_space, now,
+        output_relative_path, owner_dir, plan, prune_history, verify_output, EncodePlan, Format,
+        Job, SourceProbe, STAGING_DIRECTORY,
     },
 };
 use serde_json::json;
@@ -74,6 +75,7 @@ pub fn run(config: &AppConfig) -> Result<(), String> {
         job.progress = None;
         job.save(config)?;
     }
+    sweep_staging(config);
     loop {
         let jobs = all_jobs(config)?;
         let mut installing = false;
@@ -84,16 +86,17 @@ pub fn run(config: &AppConfig) -> Result<(), String> {
             }
             installing |= job.state == "installing";
         }
-        if let Some(job) = jobs.into_iter().find(|job| job.state == "queued") {
-            let mut job = job;
+        // One conversion at a time, through installation, so a large batch
+        // never holds more than one encode, archive copy and library copy.
+        if !installing {
+            let Some(mut job) = jobs.into_iter().find(|job| job.state == "queued") else {
+                log("info", "video_convert_idle", json!({}));
+                return Ok(());
+            };
             if let Err(error) = convert(config, &ffmpeg, &ffprobe, &mut job) {
                 fail(config, &mut job, error);
             }
             continue;
-        }
-        if !installing {
-            log("info", "video_convert_idle", json!({}));
-            return Ok(());
         }
         std::thread::sleep(INSTALL_POLL);
     }
@@ -192,6 +195,16 @@ fn convert(config: &AppConfig, ffmpeg: &Path, ffprobe: &Path, job: &mut Job) -> 
                 output_path.rsplit('/').next().unwrap_or(&output_path)
             ));
         }
+    }
+
+    // Peak use: the encode, the archived original and the library copy of the
+    // conversion, each estimated at the source's size. The broker re-checks
+    // its share with exact sizes before copying anything.
+    let reserve = config.free_space_reserve_bytes;
+    let needed = job.source_bytes.saturating_mul(3).saturating_add(reserve);
+    let available = available_space(&crate::conversion_jobs::staging_root(config))?;
+    if available < needed {
+        return Err(not_enough_space(needed, reserve, available));
     }
 
     job.state = "encoding".into();
@@ -352,9 +365,21 @@ fn encode(
         }
         if last_save.elapsed() >= PROGRESS_SAVE_INTERVAL {
             last_save = Instant::now();
+            // An encode larger than estimated stops before it eats the reserve.
+            match available_space(partial) {
+                Ok(available) if available < config.free_space_reserve_bytes => {
+                    let reserve = config.free_space_reserve_bytes;
+                    break Err(not_enough_space(reserve, reserve, available));
+                }
+                Err(error) => break Err(error),
+                Ok(_) => {}
+            }
             if let Some(duration) = duration_us.filter(|duration| *duration > 0) {
                 job.progress = Some((position as f64 / duration as f64).clamp(0.0, 0.99));
-                job.save(config)?;
+                // Stop ffmpeg rather than leave it running unattended.
+                if let Err(error) = job.save(config) {
+                    break Err(error);
+                }
             }
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -460,9 +485,48 @@ fn check_installation(config: &AppConfig, job: &mut Job) -> Result<(), String> {
             Ok(())
         }
         "queued" | "running" => Ok(()),
-        _ => Err(status
-            .error
-            .unwrap_or_else(|| format!("Installing the conversion {}.", status.state))),
+        _ => {
+            // The plan will not run again on its own; drop its staged encode.
+            if let (Some(filename), Ok((staging, _))) =
+                (job.staging_filename.as_deref(), staging_dir(config))
+            {
+                let _ = staging.remove(filename);
+            }
+            Err(status
+                .error
+                .unwrap_or_else(|| format!("Installing the conversion {}.", status.state)))
+        }
+    }
+}
+
+/// Remove encodes left by a crash: partial files (no encode runs while the
+/// worker lock is held here) and finished encodes no installing job owns.
+fn sweep_staging(config: &AppConfig) {
+    let Ok((staging, _)) = staging_dir(config) else {
+        return;
+    };
+    // Without the job list nothing can be judged orphaned.
+    let Ok(jobs) = all_jobs(config) else {
+        return;
+    };
+    let installing = jobs
+        .into_iter()
+        .filter(|job| job.state == "installing")
+        .filter_map(|job| job.staging_filename)
+        .collect::<std::collections::BTreeSet<_>>();
+    for name in staging.names().unwrap_or_default() {
+        let orphan = if name.starts_with('.') {
+            name.ends_with(".partial")
+        } else {
+            !installing.contains(&name)
+        };
+        if orphan && staging.remove(&name).is_ok() {
+            log(
+                "info",
+                "video_conversion_orphan_removed",
+                json!({ "file": name }),
+            );
+        }
     }
 }
 
