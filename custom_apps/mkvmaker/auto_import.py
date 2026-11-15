@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import collections
 import difflib
+import errno
 import fcntl
 import hashlib
 import json
@@ -1193,6 +1194,35 @@ def prune_empty_dirs(path: Path, stop: Path) -> None:
         current = current.parent
 
 
+def place_episode(file: Path, target: Path) -> bool:
+    """Move a held episode into the library without overwriting; True if copied.
+
+    The worker's sandbox mounts the holding folder and the library as
+    separate bind mounts of one dataset, so rename() fails with EXDEV there.
+    Like disc-to-jellyfin, fall back to copying through a hidden temporary
+    file beside the target and linking it into place, so Jellyfin only ever
+    sees a complete file and an existing one is never replaced.
+    """
+    try:
+        if target.exists():
+            raise FileExistsError(errno.EEXIST, "library already has this file", str(target))
+        os.rename(file, target)
+        return False
+    except OSError as error:
+        if error.errno != errno.EXDEV:
+            raise
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.{time.time_ns()}.publish.tmp")
+    try:
+        with file.open("rb") as source, open(temporary, "xb") as copy:
+            shutil.copyfileobj(source, copy, 16 * 1024 * 1024)
+            copy.flush()
+            os.fsync(copy.fileno())
+        os.link(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
+
+
 def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, year: int | None,
                      provider: str | None, season: int, first: int, names: list[str]) -> Path:
     """Move held episode files into the TV library, all or nothing."""
@@ -1210,17 +1240,24 @@ def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, yea
     if taken:
         raise RuntimeError(f"library already has: {', '.join(taken)}")
     make_media_dirs(season_dir)
-    moved: list[tuple[Path, Path]] = []
+    # (source, target, copied): renamed files are already gone from the held
+    # folder; copied ones are removed only after every episode is in place.
+    placed: list[tuple[Path, Path, bool]] = []
     try:
         for file, target in zip(files, targets):
-            os.rename(file, target)
-            moved.append((file, target))
+            placed.append((file, target, place_episode(file, target)))
     except OSError:
-        # All or nothing: put back what already moved so the held record
-        # still describes where every file is.
-        for file, target in reversed(moved):
-            os.rename(target, file)
+        # All or nothing: undo what was placed so the held record still
+        # describes where every file is.
+        for file, target, copied in reversed(placed):
+            if copied:
+                target.unlink(missing_ok=True)
+            else:
+                os.rename(target, file)
         raise
+    for file, _, copied in placed:
+        if copied:
+            file.unlink()
     for target in targets:
         print(f"  published {target}")
     if getattr(args, "held_dir", None) is not None:
