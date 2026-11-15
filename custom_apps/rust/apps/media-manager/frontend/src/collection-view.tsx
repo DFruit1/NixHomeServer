@@ -1,6 +1,7 @@
 import { $, component$, useSignal, useTask$ } from "@builder.io/qwik";
 import type { QRL } from "@builder.io/qwik";
 import "./collection-view.css";
+import { Icon } from "./icon";
 
 export const collectionViews = [
   ["detailed-list", "Detailed list"],
@@ -60,9 +61,10 @@ export const CollectionViewControl = component$<{
   onChange$: QRL<(value: CollectionView) => void>;
   /** Hide the visible "View" caption where space is tight; the select keeps its accessible name. */
   hideCaption?: boolean;
-}>((props) => (
-  <label class="collection-view-choice">
-    {props.hideCaption ? <span class="sr-only">View</span> : "View"}
+  /** Show the current view as an icon (plus tile count) over the native picker. */
+  compact?: boolean;
+}>((props) => {
+  const select = (
     <select
       aria-label={props.label}
       value={props.value}
@@ -76,5 +78,26 @@ export const CollectionViewControl = component$<{
         </option>
       ))}
     </select>
-  </label>
-));
+  );
+  if (props.compact) {
+    const tiles = props.value.startsWith("tiles-");
+    const current = collectionViews.find(([value]) => value === props.value);
+    return (
+      <label class="collection-view-compact" title={current?.[1]}>
+        <Icon name={tiles ? "grid" : "list"} size={20} />
+        {tiles && (
+          <span class="collection-view-count" aria-hidden="true">
+            {props.value.slice("tiles-".length)}
+          </span>
+        )}
+        {select}
+      </label>
+    );
+  }
+  return (
+    <label class="collection-view-choice">
+      {props.hideCaption ? <span class="sr-only">View</span> : "View"}
+      {select}
+    </label>
+  );
+});

@@ -172,6 +172,8 @@ export type IconName =
   | "file"
   | "upload"
   | "check"
+  | "select"
+  | "close"
   | "alert"
   | "scan"
   | "arrow"

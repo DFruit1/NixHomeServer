@@ -289,6 +289,7 @@
 
 /* Photo browser */
 .images-browser {
+  --images-bar-bg: var(--card);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -302,8 +303,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px 12px;
-  padding: 12px 16px;
+  padding: 8px 8px 8px 16px;
   border-bottom: 1px solid var(--line);
+  background: var(--images-bar-bg);
 }
 .images-browser-header h2 {
   font-family: var(--font-serif);
@@ -312,15 +314,56 @@
 }
 .images-header-actions {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 4px 12px;
+  gap: 2px;
   min-width: 0;
 }
-.images-rules-button.text-button {
-  min-height: var(--control-height);
+/* Quiet icon actions: Select, View and More stay one tap away without
+   competing with the photos. */
+.images-header-icon,
+.collection-view-compact {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: var(--control-height);
+  height: var(--control-height);
   padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-control);
+  color: var(--ink-soft);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 120ms ease-out,
+    background-color 120ms ease-out;
+}
+.images-header-icon:hover:not(:disabled),
+.collection-view-compact:hover,
+.images-header-icon[aria-expanded="true"] {
+  color: var(--accent);
+  background: var(--paper-recess);
+}
+.images-header-icon:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.images-header-menu {
+  position: relative;
+}
+.images-header-menu-list button:disabled {
+  color: var(--ink-faint);
+  cursor: default;
+}
+.images-header-menu-note {
+  padding: 8px 12px 6px;
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-faint);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
 }
 .images-browser-body {
   min-height: 0;
@@ -333,6 +376,16 @@
   display: grid;
   gap: 12px;
   margin-bottom: 12px;
+}
+/* With filters closed the toolbar stays reachable while scrolling photos. */
+.images-search--sticky {
+  position: sticky;
+  /* Stick at the pane edge, above the browser body's 16px padding. */
+  top: -16px;
+  z-index: 3;
+  padding: 8px 0;
+  margin: -8px 0 4px;
+  background: var(--images-bar-bg);
 }
 .images-toolbar {
   display: flex;
@@ -367,18 +420,68 @@
 }
 .images-sort {
   display: flex;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   gap: 8px;
   min-width: 0;
 }
-.images-sort select {
-  flex: 1 1 auto;
-  padding-right: 8px;
-  width: auto;
+/* The visible chip names the sort; the transparent native select above it
+   keeps the platform picker, keyboard access and full option names. */
+.images-sort-chip {
+  position: relative;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  height: var(--control-height);
+  padding: 0 8px 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  color: var(--ink);
+  background: var(--card);
+  font-size: var(--text-md);
+  white-space: nowrap;
+}
+.images-search label.images-sort-chip {
+  display: inline-flex;
+  gap: 4px;
+  color: var(--ink);
+  font-size: var(--text-md);
+  font-weight: 500;
+}
+.images-sort-chip .icon {
+  color: var(--ink-soft);
+}
+.images-sort-chip--joined {
+  border-right: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.images-sort-chip--joined + .images-direction {
+  margin-left: -8px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.images-search .images-sort-chip select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  min-height: 0;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.images-sort-chip:has(select:disabled) {
+  color: var(--ink-soft);
+  background: var(--paper-recess);
+}
+.images-sort-chip:has(select:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .images-icon-button.secondary-button {
   flex: 0 0 auto;
   width: var(--control-height);
+  height: var(--control-height);
   padding: 0;
 }
 .images-direction .icon {
@@ -450,11 +553,10 @@
 }
 .images-index-line {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 0 12px;
-  margin: 0 0 8px;
+  gap: 0 8px;
+  margin: -4px 0 8px;
   color: var(--ink-faint);
   font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
@@ -463,10 +565,9 @@
   flex: 1 1 0;
   min-width: 0;
 }
-.images-index-line .text-button {
-  min-height: var(--control-height);
-  padding: 0 4px;
-  font-size: var(--text-xs);
+.images-index-line .images-index-refresh {
+  flex: 0 0 auto;
+  margin: -10px -8px -10px 0;
 }
 .images-browser-body > .message {
   margin-bottom: 12px;
@@ -936,6 +1037,31 @@
   .images-browser-body {
     overflow: visible;
   }
+  /* Phones: the browser sits flush on the page instead of inside a card. */
+  .images-browser {
+    --images-bar-bg: var(--paper);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  .images-browser-header {
+    padding: 0 0 4px;
+    border-bottom: 0;
+  }
+  .images-browser-body {
+    padding: 0;
+  }
+  .images-search--sticky {
+    top: 0;
+  }
+  /* While selecting, the selection bar replaces the title and follows the
+     scroll so actions stay beside long drag selections. */
+  .images-browser-header--selecting {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    padding-block: 8px;
+  }
   /* Phones scroll the page: an inner scroll container has no range here and
      its overscroll containment would swallow the touch gesture. */
   .decision-questions.panel {
@@ -954,9 +1080,6 @@
 @media (max-width: 640px) {
   .images-filter-tags {
     grid-template-columns: minmax(0, 1fr);
-  }
-  .images-sort {
-    flex: 1 1 100%;
   }
   .decision-questions.panel {
     padding: 16px;
@@ -982,22 +1105,20 @@
   }
 }
 
-/* Selection stays beside the photos while dragging through a long library. */
+/* Selection replaces the header title while choosing photos. */
 .images-selection-actions {
-  position: sticky;
-  top: 0;
-  z-index: 3;
   display: flex;
+  flex: 1 1 auto;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  padding: 8px 0;
-  margin-bottom: 12px;
-  background: var(--card);
+  min-width: 0;
 }
 .images-selection-actions > span {
-  flex: 1 1 100%;
-  font-size: var(--text-sm);
+  flex: 1 1 auto;
+  font-size: var(--text-md);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 .images-selection-actions > .message {
   flex-basis: 100%;
@@ -1010,9 +1131,6 @@
   -webkit-user-drag: none;
 }
 @media (max-width: 920px) {
-  .images-selection-actions {
-    top: 8px;
-  }
   .images-grid[data-view^="tiles-"] {
     gap: 6px;
   }

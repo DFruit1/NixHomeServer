@@ -54,6 +54,8 @@ export const Icon = component$<{ name: IconName; size?: number }>((props) => {
       "M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4",
     ],
     check: ["m5 12 4 4L19 6"],
+    select: ["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z", "m8.5 12 2.5 2.5 4.5-5"],
+    close: ["M6 6l12 12", "M18 6 6 18"],
     grid: ["M4 4h6v6H4z", "M14 4h6v6h-6z", "M4 14h6v6H4z", "M14 14h6v6h-6z"],
     list: [
       "M8 6h13",

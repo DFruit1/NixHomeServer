@@ -36,6 +36,15 @@ const photoPath = (id: string) =>
   `/provider-lookups/immich/images/${encodeURIComponent(id)}`;
 const previewUrl = (id: string) => `/api/v1${photoPath(id)}/preview`;
 const tagLabel = (tag: string) => tag.replaceAll("_", " ");
+// Short names for the compact sort control; the native picker keeps full names.
+const sortLabels: Record<string, string> = {
+  capturedAt: "Date",
+  aesthetic: "Aesthetic",
+  keeper: "Keeper",
+  cover: "Cover",
+  scores: "Combined",
+  tag: "Tag",
+};
 
 export const ImagesView = component$<{
   immichUrl?: string;
@@ -58,6 +67,7 @@ export const ImagesView = component$<{
   const filtersOpen = useSignal(false);
   const semanticSearch = useSignal(true);
   const moreOpen = useSignal(false);
+  const headerMenuOpen = useSignal(false);
   const returnToPhoto = useSignal<{ id: string; top: number }>();
   const pushedImageId = useSignal<string | null>(null);
   const state = useStore({
@@ -471,6 +481,7 @@ export const ImagesView = component$<{
 
   const openRules = $(() => {
     moreOpen.value = false;
+    headerMenuOpen.value = false;
     rulesOpen.value = true;
   });
   const closeRules = $(async () => {
@@ -486,6 +497,7 @@ export const ImagesView = component$<{
     $((event: KeyboardEvent) => {
       if (event.key === "Escape") {
         moreOpen.value = false;
+        headerMenuOpen.value = false;
         selection.active = false;
         selection.ids = [];
       }
@@ -494,11 +506,11 @@ export const ImagesView = component$<{
   useOnWindow(
     "click",
     $((event: MouseEvent) => {
-      if (
-        moreOpen.value &&
-        !(event.target as Element | null)?.closest?.(".image-more")
-      )
+      const target = event.target as Element | null;
+      if (moreOpen.value && !target?.closest?.(".image-more"))
         moreOpen.value = false;
+      if (headerMenuOpen.value && !target?.closest?.(".images-header-menu"))
+        headerMenuOpen.value = false;
     }),
   );
 
@@ -733,41 +745,14 @@ export const ImagesView = component$<{
           )}
         </section>
         <section class="images-browser" aria-label="Immich photos">
-          <header class="images-browser-header">
-            <h2>Photos</h2>
-            <div class="images-header-actions">
-              <button
-                type="button"
-                class="text-button"
-                aria-pressed={selection.active}
-                onClick$={() => {
-                  selection.active = !selection.active;
-                  selection.ids = [];
-                  selection.error = "";
-                }}
-              >
-                {selection.active ? "Done" : "Select"}
-              </button>
-              <button
-                ref={rulesButton}
-                type="button"
-                class="text-button images-rules-button"
-                aria-controls="decision-editor"
-                aria-expanded={rulesOpen.value}
-                onClick$={openRules}
-              >
-                Decision questions
-              </button>
-              <CollectionViewControl
-                label="View"
-                hideCaption
-                value={layout.view.value}
-                onChange$={layout.change}
-              />
-            </div>
-          </header>
-          <div class="images-browser-body">
-            {selection.active && (
+          <header
+            class={{
+              "images-browser-header": true,
+              "images-browser-header--selecting": selection.active,
+            }}
+          >
+            <h2 class={{ "sr-only": selection.active }}>Photos</h2>
+            {selection.active ? (
               <div
                 class="images-selection-actions"
                 role="region"
@@ -813,14 +798,16 @@ export const ImagesView = component$<{
                 )}
                 <button
                   type="button"
-                  class="text-button"
+                  class="images-header-icon"
+                  aria-label="Cancel selection"
+                  title="Cancel selection"
                   onClick$={() => {
                     selection.active = false;
                     selection.ids = [];
                     selection.error = "";
                   }}
                 >
-                  Cancel
+                  <Icon name="close" size={20} />
                 </button>
                 {selection.error && (
                   <p class="message error" role="alert">
@@ -828,9 +815,88 @@ export const ImagesView = component$<{
                   </p>
                 )}
               </div>
+            ) : (
+              <div class="images-header-actions">
+                <button
+                  type="button"
+                  class="images-header-icon"
+                  aria-label="Select photos"
+                  title="Select photos"
+                  onClick$={() => {
+                    selection.active = true;
+                    selection.ids = [];
+                    selection.error = "";
+                    headerMenuOpen.value = false;
+                  }}
+                >
+                  <Icon name="select" size={20} />
+                </button>
+                <CollectionViewControl
+                  label="View"
+                  compact
+                  value={layout.view.value}
+                  onChange$={layout.change}
+                />
+                <div class="images-header-menu">
+                  <button
+                    ref={rulesButton}
+                    type="button"
+                    class="images-header-icon"
+                    aria-label="More photo options"
+                    title="More"
+                    aria-expanded={headerMenuOpen.value}
+                    aria-controls="images-header-menu"
+                    onClick$={() =>
+                      (headerMenuOpen.value = !headerMenuOpen.value)
+                    }
+                  >
+                    <Icon name="more" size={20} />
+                  </button>
+                  {headerMenuOpen.value && (
+                    <ul
+                      id="images-header-menu"
+                      class="image-more-actions images-header-menu-list"
+                    >
+                      <li>
+                        <button
+                          type="button"
+                          aria-controls="decision-editor"
+                          onClick$={openRules}
+                        >
+                          Decision questions
+                        </button>
+                      </li>
+                      <li>
+                        <button
+                          type="button"
+                          disabled={state.loading || state.loadingMore}
+                          onClick$={() => {
+                            headerMenuOpen.value = false;
+                            return load();
+                          }}
+                        >
+                          Refresh photos
+                        </button>
+                      </li>
+                      {state.index && (
+                        <li class="images-header-menu-note">
+                          {state.index.analyzed.toLocaleString()} of{" "}
+                          {state.index.discovered.toLocaleString()} analyzed
+                        </li>
+                      )}
+                    </ul>
+                  )}
+                </div>
+              </div>
             )}
+          </header>
+          <div class="images-browser-body">
             <form
-              class="images-search"
+              class={{
+                "images-search": true,
+                "images-search--sticky":
+                  !filtersOpen.value && !selection.active,
+              }}
               preventdefault:submit
               onSubmit$={() => load()}
             >
@@ -857,28 +923,41 @@ export const ImagesView = component$<{
                   </button>
                 </div>
                 <div class="images-sort">
-                  <select
-                    aria-label="Sort by"
-                    value={semanticActive ? "relevance" : state.filters.sort}
-                    disabled={semanticActive}
-                    onChange$={(_, el) => {
-                      state.filters.sort = el.value;
-                      if (["tag", "scores"].includes(el.value))
-                        filtersOpen.value = true;
-                      if (el.value !== "tag" || state.filters.sortTag.trim())
-                        return load();
+                  <label
+                    class={{
+                      "images-sort-chip": true,
+                      "images-sort-chip--joined": !semanticActive,
                     }}
                   >
-                    {semanticActive && (
-                      <option value="relevance">Relevance</option>
-                    )}
-                    <option value="capturedAt">Date taken</option>
-                    <option value="aesthetic">Aesthetic</option>
-                    <option value="keeper">Keeper</option>
-                    <option value="cover">Cover</option>
-                    <option value="scores">Combined scores</option>
-                    <option value="tag">Tag confidence</option>
-                  </select>
+                    <span aria-hidden="true">
+                      {semanticActive
+                        ? "Relevance"
+                        : (sortLabels[state.filters.sort] ?? "Sort")}
+                    </span>
+                    <Icon name="chevron-down" size={16} />
+                    <select
+                      aria-label="Sort by"
+                      value={semanticActive ? "relevance" : state.filters.sort}
+                      disabled={semanticActive}
+                      onChange$={(_, el) => {
+                        state.filters.sort = el.value;
+                        if (["tag", "scores"].includes(el.value))
+                          filtersOpen.value = true;
+                        if (el.value !== "tag" || state.filters.sortTag.trim())
+                          return load();
+                      }}
+                    >
+                      {semanticActive && (
+                        <option value="relevance">Relevance</option>
+                      )}
+                      <option value="capturedAt">Date taken</option>
+                      <option value="aesthetic">Aesthetic</option>
+                      <option value="keeper">Keeper</option>
+                      <option value="cover">Cover</option>
+                      <option value="scores">Combined scores</option>
+                      <option value="tag">Tag confidence</option>
+                    </select>
+                  </label>
                   {!semanticActive && (
                     <button
                       type="button"
@@ -1099,30 +1178,34 @@ export const ImagesView = component$<{
                 <span>Indexing needs attention: {state.index.error}</span>
               </div>
             )}
-            {state.index && (
-              <p class="images-index-line">
-                <span role="status">
-                  {state.index.analyzed.toLocaleString()} of{" "}
-                  {state.index.discovered.toLocaleString()} analyzed
-                  {state.index.error
-                    ? " · retry scheduled"
-                    : state.index.scanning
-                      ? " · indexing…"
+            {state.index &&
+              (state.index.scanning ||
+                state.index.failed > 0 ||
+                !!state.index.error ||
+                state.index.analyzed < state.index.discovered) && (
+                <p class="images-index-line">
+                  <span role="status">
+                    {state.index.scanning ? "Indexing " : ""}
+                    {state.index.analyzed.toLocaleString()} of{" "}
+                    {state.index.discovered.toLocaleString()}
+                    {state.index.scanning ? "" : " analyzed"}
+                    {state.index.error ? " · retry scheduled" : ""}
+                    {state.index.failed
+                      ? ` · ${state.index.failed.toLocaleString()} to retry`
                       : ""}
-                  {state.index.failed
-                    ? ` · ${state.index.failed.toLocaleString()} awaiting retry`
-                    : ""}
-                </span>
-                <button
-                  type="button"
-                  class="text-button"
-                  disabled={state.loading || state.loadingMore}
-                  onClick$={() => load()}
-                >
-                  Refresh
-                </button>
-              </p>
-            )}
+                  </span>
+                  <button
+                    type="button"
+                    class="images-header-icon images-index-refresh"
+                    aria-label="Refresh photos"
+                    title="Refresh photos"
+                    disabled={state.loading || state.loadingMore}
+                    onClick$={() => load()}
+                  >
+                    <Icon name="refresh" size={16} />
+                  </button>
+                </p>
+              )}
             {state.error && (
               <div class="message error" role="alert">
                 <span>{state.error}</span>
