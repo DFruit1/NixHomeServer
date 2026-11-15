@@ -98,6 +98,11 @@ in {
     systemd.tmpfiles.rules = [
       "d ${vars.dataRoot}/search 0750 search search -"
       "d ${cfg.paths.models} 0750 search search -"
+      # Read-only advisory lease shared by bulk GPU jobs (Search's backfill
+      # and the Media Manager photo-tag reviewer). flock(2) works on a
+      # read-only descriptor, so both service users can open it without a
+      # shared group or a writable /run directory.
+      "f /run/ai-gpu-bulk.lease 0644 root root -"
     ];
     systemd.services.search-model-prepare = {
       description = "Download and verify pinned Search embedding and reranking weights";

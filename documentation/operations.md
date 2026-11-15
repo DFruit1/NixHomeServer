@@ -2480,7 +2480,15 @@ After guarded activation:
   model. A pass measures 0.6 seconds a passage against 9 with one layer. It
   holds about 0.1 GiB of RAM. ggml-vulkan cannot spill a failed allocation to
   host RAM: a pass that cannot load fails and is retried by the timer.
-- A pass yields the GPU. Unthrottled it halved chat generation (19 to 9
+- Two bulk jobs share the card. The backfill and the Media Manager photo-tag
+  reviewer each hold `/run/ai-gpu-bulk.lease` for a 30-second slice, then wait
+  three seconds before trying again, so neither starves the other and the
+  handover is coarse enough not to cost more than it saves. The lease is
+  advisory and opened read-only (0644); if the file is missing a job runs
+  uncoordinated rather than stopping. Interactive chat, Paperless and reranking
+  do not take the lease.
+- Within its slice, a pass still yields the GPU. Unthrottled it halved chat
+  generation (19 to 9
   tokens a second) and more than doubled reranking time, so before each
   passage it reads `repo.search.semantic.indexingGpuIdleStatus` (the xe
   `gtidle/idle_status` file: `gt-c6` idle, `gt-c0` working) and waits until

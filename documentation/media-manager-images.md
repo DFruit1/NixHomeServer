@@ -118,8 +118,9 @@ reviewed. Bonsai may remove every scene tag; on close-ups of gadgets and
 labels EYE's scene tags are often all wrong.
 
 The review runs in the provider broker, one photo at a time, through the
-loopback Bonsai concurrency gate. It pauses briefly between photos so other
-Bonsai users are served first, and waits when the gate is busy. Previews are
+loopback Bonsai concurrency gate. It shares the card with Search's passage
+backfill through a coarse bulk-GPU lease: each side keeps the GPU for about
+30 seconds, then hands over. It also waits when the gate is busy. Previews are
 reduced to fit 768 px first: on hand-labelled photos this took about 9 s a
 photo instead of 27 s at full preview size, catching 50 of 53 wrong tags and
 removing 3 of 138 correct ones. Live, a review completes about every 12 s,

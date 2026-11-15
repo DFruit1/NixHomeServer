@@ -1,5 +1,6 @@
 pub mod crypto;
 pub mod env;
+pub mod gpu_bulk;
 pub mod identity;
 pub mod logging;
 pub mod origin;

@@ -4,13 +4,14 @@
 //! A later EYE retag replaces the reviewed tags and queues a fresh review.
 use super::*;
 use base64::Engine;
+use homelab_common::gpu_bulk::{self, GpuBulkLease, LeaseAttempt};
 
 /// Changing the prompt, image size or reviewer model changes this identity.
 const REVIEW_VERSION: &str = "tag-review-v2";
 /// Previews are reduced to fit this box before review. Measured on Bonsai
-/// with hand-labelled photos: the full ~1440 px preview took 27 s a photo
-/// (vision encoding runs on the CPU); 768 px took 9 s and caught as many
-/// wrong tags, while 512 px started missing them.
+/// with hand-labelled photos while vision ran on the CPU: the full ~1440 px
+/// preview took 27 s a photo; 768 px took 9 s and caught as many wrong tags,
+/// while 512 px started missing them.
 const REVIEW_IMAGE_SIZE: u32 = 768;
 /// Listing only the wrong tags generated far fewer tokens than a verdict per
 /// tag, and removed fewer correct tags. Several photos per request saved no
@@ -137,41 +138,72 @@ pub(in crate::provider_account_http) async fn run_tag_review(state: ProviderBrok
     let Some(bonsai) = runtime.bonsai.clone() else {
         return;
     };
+    // The Search passage backfill also runs on this card. Take turns in long
+    // slices instead of reviewing one photo and yielding: per-request
+    // arbitration would still starve the backfill while this loop is busy,
+    // and switching on every photo would cost more than it saves.
+    let mut lease_warning_reported = false;
     loop {
+        let lease = match GpuBulkLease::try_acquire() {
+            LeaseAttempt::Acquired(lease) => Some(lease),
+            LeaseAttempt::Busy => {
+                tokio::time::sleep(gpu_bulk::POLL).await;
+                continue;
+            }
+            LeaseAttempt::Unavailable(error) => {
+                if !lease_warning_reported {
+                    eprintln!(
+                        "{}",
+                        json!({"service":"media-manager-provider-broker","event":"photo_tag_review_lease_unavailable","error":error.to_string()})
+                    );
+                    lease_warning_reported = true;
+                }
+                None
+            }
+        };
+        let deadline = std::time::Instant::now() + gpu_bulk::SLICE;
         let mut reviewed = false;
         let mut busy = false;
-        match state.store.image_accounts(runtime.managed) {
-            Ok(identities) => {
-                for identity in identities {
-                    match review_next(&state, &runtime, &bonsai, &identity).await {
-                        Ok(done) => reviewed |= done,
-                        Err(ReviewError::Busy) => {
-                            busy = true;
-                            break;
-                        }
-                        Err(_) => eprintln!(
-                            "{}",
-                            json!({"service":"media-manager-provider-broker","event":"photo_tag_review_retry"})
-                        ),
+        while std::time::Instant::now() < deadline {
+            let Ok(identities) = state.store.image_accounts(runtime.managed) else {
+                eprintln!(
+                    "{}",
+                    json!({"service":"media-manager-provider-broker","event":"image_accounts_unavailable"})
+                );
+                break;
+            };
+            let mut progressed = false;
+            for identity in identities {
+                match review_next(&state, &runtime, &bonsai, &identity).await {
+                    Ok(done) => {
+                        reviewed |= done;
+                        progressed |= done;
                     }
+                    Err(ReviewError::Busy) => {
+                        busy = true;
+                        break;
+                    }
+                    Err(_) => eprintln!(
+                        "{}",
+                        json!({"service":"media-manager-provider-broker","event":"photo_tag_review_retry"})
+                    ),
                 }
             }
-            Err(_) => eprintln!(
-                "{}",
-                json!({"service":"media-manager-provider-broker","event":"image_accounts_unavailable"})
-            ),
+            if busy || !progressed {
+                break;
+            }
         }
-        // The gate admits waiting requests in arrival order, so anything that
-        // queued during a review runs before the next one; a long pause here
-        // only idled Bonsai (it was a third of each photo's time live).
+        drop(lease);
+        // Busy waits out a full inference queue; a productive slice hands the
+        // card to Search, and an empty queue sleeps until new photos arrive.
         let pause = if busy {
-            120
+            Duration::from_secs(120)
         } else if reviewed {
-            1
+            gpu_bulk::HANDOFF
         } else {
-            300
+            Duration::from_secs(300)
         };
-        tokio::time::sleep(Duration::from_secs(pause)).await;
+        tokio::time::sleep(pause).await;
     }
 }
 

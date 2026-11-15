@@ -10,6 +10,7 @@ use tokio_postgres::Client;
 use crate::cache::TtlCache;
 use crate::db;
 use crate::solr::{SearchFilters, SearchHit, SearchResponse, SolrClient, SolrDocument, SortOrder};
+use homelab_common::gpu_bulk::{self, GpuBulkLease, LeaseAttempt};
 
 const DIMENSIONS: usize = 2560;
 const VERSION: &str = "qwen4b-q8-b60ae5ce-passage-v1";
@@ -370,7 +371,7 @@ pub(crate) async fn run_index() -> Result<(), String> {
         return Ok(());
     }
     // Child lifetime is exactly this pass, including errors and cancellation.
-    // The query embedder is a different process with GPU offload disabled.
+    // The query embedder is a different, permanently GPU-resident process.
     let binary =
         std::env::var("SEARCH_LLAMA_SERVER").map_err(|_| "SEARCH_LLAMA_SERVER is required")?;
     let model =
@@ -417,11 +418,46 @@ pub(crate) async fn run_index() -> Result<(), String> {
             if started.elapsed() > Duration::from_secs(180) { return Err("indexing embedder readiness timed out".into()); }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
+        // Take turns with the photo-tag reviewer on the one card. A pass holds
+        // the bulk lease for a slice, then hands over; the per-passage idle
+        // check still yields to interactive chat inside that slice.
+        let mut lease: Option<GpuBulkLease> = None;
+        let mut slice_end = Instant::now();
+        let mut have_slice = false;
+        let mut lease_warning = false;
         loop {
+            if !have_slice {
+                match GpuBulkLease::try_acquire() {
+                    LeaseAttempt::Acquired(acquired) => {
+                        lease = Some(acquired);
+                        slice_end = Instant::now() + gpu_bulk::SLICE;
+                        have_slice = true;
+                    }
+                    LeaseAttempt::Busy => {
+                        tokio::time::sleep(gpu_bulk::POLL).await;
+                        continue;
+                    }
+                    LeaseAttempt::Unavailable(error) => {
+                        if !lease_warning {
+                            eprintln!("search semantic: bulk GPU lease unavailable ({error}); running uncoordinated");
+                            lease_warning = true;
+                        }
+                        slice_end = Instant::now() + gpu_bulk::SLICE;
+                        have_slice = true;
+                    }
+                }
+            }
+            if Instant::now() >= slice_end {
+                lease.take();
+                have_slice = false;
+                tokio::time::sleep(gpu_bulk::HANDOFF).await;
+                continue;
+            }
             let rows = client.query(pending_sql, &[&selected, &VERSION]).await.map_err(|e| e.to_string())?;
             if rows.is_empty() { break; }
             let ids: Vec<String> = rows.iter().map(|r| r.get(0)).collect();
             for (id, record) in db::documents_by_ids(&client, &ids).await? {
+                if Instant::now() >= slice_end { break; }
                 let source_id = settings.sources.iter().find(|s| id == db::full_document_id(&s.id, &record.external_id)).map(|s| s.id.as_str()).ok_or("document source is not active")?;
                 let owner = record.metadata["owner"].as_str().filter(|s| !s.trim().is_empty()).unwrap_or(crate::indexer::SHARED_OWNER);
                 let projection = SolrDocument::from_record(source_id, &record, owner);
