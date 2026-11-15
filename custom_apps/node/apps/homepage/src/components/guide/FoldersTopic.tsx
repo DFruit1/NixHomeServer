@@ -8,14 +8,15 @@ export const FoldersTopic = component$(({
   folderGuides,
   services,
   username,
-  transferAvailable,
+  filesAvailable,
   sshfsAvailable,
 }: {
   folderGuides: FolderGuide[];
   /** Apps with a visible guide topic, linked from the folders they read. */
   services: ServiceCard[];
   username: string;
-  transferAvailable: boolean;
+  /** Browser Files uploads are granted separately from SFTP/SSHFS, so neither implies the other. */
+  filesAvailable: boolean;
   sshfsAvailable: boolean;
 }) => (
   <article id="guide-detail" class="guide-topic doc-prose">
@@ -29,10 +30,17 @@ export const FoldersTopic = component$(({
       <li><strong>Your folder</strong> is private to you. <strong>Shared folders</strong> are seen by everyone with shared access.</li>
       <li>Folders whose names start with <code>_</code> are created by the server. Do not rename or delete them.</li>
       <li>Put each file in one folder only. Nothing removes duplicates across folders.</li>
-      {transferAvailable && (
+      {filesAvailable && (
         <li>
-          Add files with Files in your browser{sshfsAvailable && <>, or <Link href={guideHref('sshfs')}>mount the server as a drive</Link> for large or regular transfers</>}.
+          {sshfsAvailable ? (
+            <>Add files with Files in your browser, or <Link href={guideHref('sshfs')}>mount the server as a drive</Link> for large or regular transfers.</>
+          ) : (
+            <>Add files with Files in your browser.</>
+          )}
         </li>
+      )}
+      {!filesAvailable && sshfsAvailable && (
+        <li>For large or regular transfers, <Link href={guideHref('sshfs')}>mount the server as a drive</Link>.</li>
       )}
     </ul>
 

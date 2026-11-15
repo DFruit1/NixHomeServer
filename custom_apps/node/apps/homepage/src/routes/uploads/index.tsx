@@ -171,7 +171,7 @@ export default component$(() => {
             folderGuides={folderGuides}
             services={services}
             username={username}
-            transferAvailable={Boolean(filesService) || data?.sftp?.allowed === true}
+            filesAvailable={Boolean(filesService)}
             sshfsAvailable={data?.sftp?.allowed === true}
           />
         )}

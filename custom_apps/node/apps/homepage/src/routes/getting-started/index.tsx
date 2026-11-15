@@ -10,7 +10,7 @@ export default component$(() => {
   const data = homepage.data;
   const username = data?.user.username ?? '{username}';
   const requestedStep = resolveStepId(location.url.searchParams.get('step'));
-  const state = useStore<{ open: string; done: string[] }>({ open: requestedStep ?? stepIds[0], done: [] });
+  const state = useStore<{ open: string; done: string[]; focus: string }>({ open: requestedStep ?? stepIds[0], done: [], focus: '' });
   const storageKey = `homepage.gettingStartedDone.${username}`;
 
   useVisibleTask$(() => {
@@ -48,12 +48,27 @@ export default component$(() => {
       await saveDone([...state.done, id]);
     }
     state.open = nextId;
-    if (nextId) {
-      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      window.requestAnimationFrame(() => {
-        document.getElementById(`step-${nextId}`)?.scrollIntoView({ block: 'start', behavior: reducedMotion ? 'auto' : 'smooth' });
-      });
+    // The button that was just clicked disappears with the step body, so hand
+    // focus to the step that opens now (or to this step's own toggle after the
+    // last one) before the list scrolls there.
+    state.focus = nextId || id;
+  });
+
+  useVisibleTask$(({ track }) => {
+    const target = track(() => state.focus);
+    if (!target) {
+      return;
     }
+    const toggle = document.getElementById(`step-${target}-toggle`) as HTMLButtonElement | null;
+    if (!toggle) {
+      return;
+    }
+    toggle.focus({ preventScroll: true });
+    document.getElementById(`step-${target}`)?.scrollIntoView({
+      block: 'start',
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    });
+    state.focus = '';
   });
 
   const reopen = $(async (id: string) => {
@@ -89,6 +104,7 @@ export default component$(() => {
             <li key={stepId} id={`step-${stepId}`} class={{ 'start-step': true, 'is-open': open, 'is-done': done }}>
               <h2 class="start-step__head">
                 <button
+                  id={`step-${stepId}-toggle`}
                   type="button"
                   aria-expanded={open ? 'true' : 'false'}
                   aria-controls={`step-${stepId}-body`}
