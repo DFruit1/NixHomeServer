@@ -93,6 +93,19 @@ pub struct ConvertVideoAction {
     pub expected_replacement: String,
 }
 
+/// Install a file that a YouTube item change staged: a chapter file, a joined
+/// file, a file with its cover added or removed, or the item's rewritten
+/// manifest. The destination must be free; see `crate::youtube_item`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallYoutubeItemFileAction {
+    /// In the intake's YouTube item staging folder.
+    pub staging_filename: String,
+    pub destination_root_id: String,
+    pub destination_relative_path: String,
+    pub expected: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BrokerAction {
@@ -109,6 +122,8 @@ pub enum BrokerAction {
     /// Archive a video in its owner's originals folder and install its
     /// conversion in the library.
     ConvertVideo(ConvertVideoAction),
+    /// Install a staged media file or manifest of a YouTube download.
+    InstallYoutubeItemFile(InstallYoutubeItemFileAction),
 }
 
 impl From<MoveAction> for BrokerAction {
@@ -247,6 +262,18 @@ pub fn apply_broker_action(
             apply_replace_file(config, username, action)
         }
         BrokerAction::ConvertVideo(action) => apply_convert_video(config, username, action),
+        BrokerAction::InstallYoutubeItemFile(action) => {
+            validate_youtube_item_file_action(config, username, action)?;
+            apply_staged_no_replace_in(
+                config,
+                username,
+                &crate::youtube_item::staging_root(config),
+                &action.staging_filename,
+                &action.destination_root_id,
+                &action.destination_relative_path,
+                &action.expected,
+            )
+        }
     }
 }
 
@@ -281,6 +308,18 @@ pub fn recover_broker_action(
             recover_replaced_file(config, username, action)
         }
         BrokerAction::ConvertVideo(action) => recover_converted_video(config, username, action),
+        BrokerAction::InstallYoutubeItemFile(action) => {
+            validate_youtube_item_file_action(config, username, action)?;
+            recover_staged_no_replace_in(
+                config,
+                username,
+                &crate::youtube_item::staging_root(config),
+                &action.staging_filename,
+                &action.destination_root_id,
+                &action.destination_relative_path,
+                &action.expected,
+            )
+        }
     }
 }
 
@@ -327,6 +366,11 @@ pub fn discard_staged_broker_action(
             &video_staging_root(config),
             &action.staging_filename,
             &action.expected_replacement,
+        ),
+        BrokerAction::InstallYoutubeItemFile(action) => discard_staged_file_in(
+            &crate::youtube_item::staging_root(config),
+            &action.staging_filename,
+            &action.expected,
         ),
     }
 }
@@ -601,6 +645,56 @@ fn is_order_sidecar(name: &str) -> bool {
                 "m3u" | "m3u8" | "pls" | "xspf"
             )
         })
+}
+
+/// A YouTube item install may only place playable media of the root's kind,
+/// or a manifest inside the item's hidden metadata folder.
+#[cfg(target_os = "linux")]
+fn validate_youtube_item_file_action(
+    config: &AppConfig,
+    username: &str,
+    action: &InstallYoutubeItemFileAction,
+) -> Result<(), BrokerError> {
+    if !safe_component(&action.staging_filename) {
+        return Err(BrokerError::new("staging filename is not a safe component"));
+    }
+    let identity = Identity::try_new(username, ["users"])
+        .map_err(|_| BrokerError::new("plan owner is not a safe identity component"))?;
+    let destination_root = config
+        .resolve_visible_root(&identity, &action.destination_root_id)
+        .ok_or_else(|| BrokerError::new("destination root ID is not registered"))?;
+    if !matches!(
+        destination_root.category,
+        LibraryCategory::Videos | LibraryCategory::Music | LibraryCategory::Audiobooks
+    ) {
+        return Err(BrokerError::new(
+            "YouTube items may only be installed in a video, music or audiobook root",
+        ));
+    }
+    let (parents, leaf) = safe_parent_and_leaf(&action.destination_relative_path)?;
+    if parents.first() == Some(&crate::config::TOMBSTONE_FOLDER) {
+        return Err(BrokerError::new(
+            "YouTube items may not be installed in the tombstone folder",
+        ));
+    }
+    let extension = leaf
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    let manifest = extension == "json"
+        && parents.last() == Some(&crate::config::YOUTUBE_ITEM_METADATA_FOLDER)
+        && !leaf.starts_with('.');
+    let media = destination_root
+        .category
+        .media_kinds()
+        .iter()
+        .any(|kind| kind.extensions().contains(&extension.as_str()));
+    if !manifest && !media {
+        return Err(BrokerError::new(
+            "YouTube item installs must be media of the root's kind or the item's manifest",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -1232,13 +1326,37 @@ fn apply_staged_no_replace(
     destination_relative_path: &str,
     expected: &str,
 ) -> Result<(), BrokerError> {
+    apply_staged_no_replace_in(
+        config,
+        username,
+        &config.state_dir.join("provider-staging"),
+        staging_filename,
+        destination_root_id,
+        destination_relative_path,
+        expected,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn apply_staged_no_replace_in(
+    config: &AppConfig,
+    username: &str,
+    staging_root: &Path,
+    staging_filename: &str,
+    destination_root_id: &str,
+    destination_relative_path: &str,
+    expected: &str,
+) -> Result<(), BrokerError> {
+    if !safe_component(staging_filename) {
+        return Err(BrokerError::new("staging filename is not a safe component"));
+    }
     let identity = Identity::try_new(username, ["users"])
         .map_err(|_| BrokerError::new("plan owner is not a safe identity component"))?;
     let destination_root = config
         .resolve_visible_root(&identity, destination_root_id)
         .ok_or_else(|| BrokerError::new("destination root ID is not registered"))?;
     let (destination_parent, destination_leaf) = safe_parent_and_leaf(destination_relative_path)?;
-    let staging_root_fd = open_root(&config.state_dir.join("provider-staging"))?;
+    let staging_root_fd = open_root(staging_root)?;
     let source_fd = open_regular_at(staging_root_fd.as_raw_fd(), staging_filename)?;
     let source_stat = file_stat(source_fd.as_raw_fd())?;
     if fingerprint_from_stat(&source_stat) != expected {
@@ -1342,6 +1460,27 @@ fn recover_staged_no_replace(
     destination_relative_path: &str,
     expected: &str,
 ) -> Result<bool, BrokerError> {
+    recover_staged_no_replace_in(
+        config,
+        username,
+        &config.state_dir.join("provider-staging"),
+        staging_filename,
+        destination_root_id,
+        destination_relative_path,
+        expected,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn recover_staged_no_replace_in(
+    config: &AppConfig,
+    username: &str,
+    staging_root: &Path,
+    staging_filename: &str,
+    destination_root_id: &str,
+    destination_relative_path: &str,
+    expected: &str,
+) -> Result<bool, BrokerError> {
     if !staged_destination_matches(
         config,
         username,
@@ -1351,7 +1490,7 @@ fn recover_staged_no_replace(
     )? {
         return Ok(false);
     }
-    let staging_root_fd = open_root(&config.state_dir.join("provider-staging"))?;
+    let staging_root_fd = open_root(staging_root)?;
     match fingerprint_at(staging_root_fd.as_raw_fd(), staging_filename) {
         Ok(fingerprint) if fingerprint == expected => {
             unlink_regular_at(staging_root_fd.as_raw_fd(), staging_filename)?;

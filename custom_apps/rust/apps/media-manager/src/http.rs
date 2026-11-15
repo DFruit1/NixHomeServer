@@ -48,6 +48,7 @@ mod refresh;
 mod subtitles;
 mod track_sequence;
 mod video_conversions;
+mod youtube_items;
 
 use axum::{
     body::{to_bytes, Body, Bytes},
@@ -328,6 +329,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/items/{item_id}/metadata",
             get(metadata_handlers::item_metadata),
+        )
+        .route(
+            "/api/v1/items/{item_id}/youtube",
+            get(youtube_items::details),
         )
         .route(
             "/api/v1/metadata/issues",

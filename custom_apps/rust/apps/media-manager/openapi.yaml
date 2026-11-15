@@ -1433,6 +1433,31 @@ paths:
               schema: { $ref: "#/components/schemas/ItemMetadata" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /items/{itemId}/youtube:
+    get:
+      operationId: getYoutubeItem
+      description: >-
+        What the YouTube Downloader recorded beside a downloaded item (its
+        hidden `.youtube-downloader` manifest): the source, every chapter
+        whether or not the media is split, the current arrangement, and which
+        changes (split, join, embed or remove the cover, move) are available.
+        Changes are previewed through POST /plans with operation kind
+        `youtube_item`. 404 when the item has no manifest.
+      parameters:
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The download's manifest and the changes it allows.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/YoutubeItem" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /metadata/issues:
     get:
       operationId: listMetadataIssues
@@ -3410,6 +3435,105 @@ components:
             format: { type: string, enum: [zip, rar, 7z] }
             destinationRelativePath: { type: string }
             files: { type: [integer, "null"] }
+        youtubeItem: { $ref: "#/components/schemas/YoutubeItemChange" }
+    YoutubeItemAvailability:
+      type: object
+      required: [available]
+      properties:
+        available: { type: boolean }
+        reason: { type: string }
+    YoutubeItem:
+      type: object
+      required: [itemId, rootId, rootLabel, folder, layout, mediaType, source, naming, chapters, state, lossless, files, hasThumbnail, history, changes, libraries, canEdit]
+      properties:
+        itemId: { type: string }
+        rootId: { type: string }
+        rootLabel: { type: string }
+        folder: { type: string, description: "The item folder relative to the library root." }
+        layout: { type: string, enum: [channel, own-folder, collection, library-root] }
+        collection: { type: [string, "null"] }
+        mediaType: { type: string, enum: [audio, video] }
+        source:
+          type: object
+          required: [title, url]
+          properties:
+            title: { type: string }
+            url: { type: string }
+            id: { type: [string, "null"] }
+            channel: { type: [string, "null"] }
+            uploadDate: { type: [string, "null"] }
+            durationSeconds: { type: [number, "null"] }
+        naming:
+          type: object
+          required: [title, channel]
+          properties:
+            title: { type: string }
+            channel: { type: string }
+        chapters:
+          type: array
+          items:
+            type: object
+            required: [index, title, startTime]
+            properties:
+              index: { type: integer }
+              title: { type: string }
+              startTime: { type: number }
+              endTime: { type: number }
+        state:
+          type: object
+          required: [split, coverEmbedded]
+          properties:
+            split: { type: boolean }
+            coverEmbedded: { type: boolean }
+        lossless:
+          type: boolean
+          description: The manifest records the original a split was cut from, so joining restores it exactly.
+        files:
+          type: array
+          items:
+            type: object
+            required: [path, role, present]
+            properties:
+              path: { type: string }
+              role: { type: string }
+              chapter: { type: [integer, "null"] }
+              start: { type: [number, "null"] }
+              end: { type: [number, "null"] }
+              present: { type: boolean }
+        hasThumbnail: { type: boolean }
+        downloadedAt: {}
+        downloadOptions: {}
+        history: { type: array, items: { type: object } }
+        changes:
+          type: object
+          required: [split, join, embedCover, removeCover, move]
+          properties:
+            split: { $ref: "#/components/schemas/YoutubeItemAvailability" }
+            join: { $ref: "#/components/schemas/YoutubeItemAvailability" }
+            embedCover: { $ref: "#/components/schemas/YoutubeItemAvailability" }
+            removeCover: { $ref: "#/components/schemas/YoutubeItemAvailability" }
+            move: { $ref: "#/components/schemas/YoutubeItemAvailability" }
+        libraries:
+          type: array
+          description: Libraries on the same storage the item can move to, including its own.
+          items:
+            type: object
+            required: [id, label, category]
+            properties:
+              id: { type: string }
+              label: { type: string }
+              category: { type: string }
+        canEdit: { type: boolean }
+    YoutubeItemChange:
+      type: object
+      required: [change, rootId, rootLabel, folder, removed, added]
+      properties:
+        change: { type: string, enum: [split, join, embed-cover, remove-cover, move] }
+        rootId: { type: string }
+        rootLabel: { type: string }
+        folder: { type: string, description: "Where the item is filed after the change." }
+        removed: { type: array, items: { type: string }, description: "Paths moved to the tombstone or away." }
+        added: { type: array, items: { type: string } }
     ItemsResponse:
       type: object
       required: [items]

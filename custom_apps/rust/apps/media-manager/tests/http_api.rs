@@ -4225,3 +4225,135 @@ async fn authoritative_track_sequence_is_one_guarded_plan() {
         "archived originals must not reappear as playable tracks"
     );
 }
+
+#[tokio::test]
+async fn youtube_downloads_describe_their_manifest_and_preview_a_move() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = test_app(&temp);
+    let folder = temp.path().join("shared/_Videos/Some Artist");
+    std::fs::create_dir_all(folder.join(".youtube-downloader")).unwrap();
+    std::fs::write(folder.join("Clip.mkv"), b"video").unwrap();
+    std::fs::write(folder.join("Clip.jpg"), b"thumbnail").unwrap();
+    std::fs::write(folder.join("Other.mkv"), b"another download").unwrap();
+    std::fs::write(
+        folder.join(".youtube-downloader/abcdefghijk.jpg"),
+        b"thumbnail",
+    )
+    .unwrap();
+    std::fs::write(
+        folder.join(".youtube-downloader/abcdefghijk.json"),
+        serde_json::json!({
+            "schema": "youtube-downloader.item",
+            "schemaVersion": 1,
+            "source": { "url": "https://www.youtube.com/watch?v=abcdefghijk", "id": "abcdefghijk", "title": "Clip", "channel": "Some Artist" },
+            "download": { "options": { "mediaType": "video" } },
+            "naming": { "title": "Clip", "channel": "Some Artist" },
+            "chapters": [
+                { "index": 1, "title": "Intro", "startTime": 0, "endTime": 2 },
+                { "index": 2, "title": "Main", "startTime": 2, "endTime": 4 }
+            ],
+            "state": { "split": false, "coverEmbedded": true },
+            "files": [
+                { "path": "Clip.mkv", "role": "media" },
+                { "path": "Clip.jpg", "role": "thumbnail" }
+            ],
+            "hasThumbnail": true
+        })
+        .to_string(),
+    )
+    .unwrap();
+    scan_root(&app, "shared-videos").await;
+    let response = app
+        .clone()
+        .oneshot(editor_get_request("/api/v1/items?rootId=shared-videos"))
+        .await
+        .unwrap();
+    let items: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    let id_of = |path: &str| {
+        items["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["relativePath"] == path)
+            .and_then(|item| item["id"].as_str())
+            .unwrap_or_else(|| panic!("{path} is catalogued"))
+            .to_string()
+    };
+    // The archived thumbnail inside the metadata folder is not a library item.
+    assert!(items["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| !item["relativePath"]
+            .as_str()
+            .unwrap()
+            .contains(".youtube-downloader")));
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{}/youtube",
+            id_of("Some Artist/Clip.mkv")
+        )))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let details: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    api_contract::assert_component("YoutubeItem", &details);
+    assert_eq!(details["layout"], "channel");
+    assert_eq!(details["chapters"].as_array().unwrap().len(), 2);
+    assert_eq!(details["changes"]["split"]["available"], false);
+    assert_eq!(details["changes"]["move"]["available"], true);
+    assert_eq!(details["canEdit"], false);
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{}/youtube",
+            id_of("Some Artist/Other.mkv")
+        )))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let preview = app
+        .clone()
+        .oneshot(editor_post_request(
+            "/api/v1/plans",
+            Body::from(
+                serde_json::json!({
+                    "operation": { "kind": "youtube_item", "change": "move", "layout": "own-folder" },
+                    "itemIds": [id_of("Some Artist/Clip.mkv")]
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(preview.status(), StatusCode::CREATED);
+    let plan: Value =
+        serde_json::from_slice(&to_bytes(preview.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    api_contract::assert_component("MutationPreview", &plan);
+    assert_eq!(plan["youtubeItem"]["folder"], "Clip");
+    assert_eq!(
+        plan["youtubeItem"]["added"],
+        serde_json::json!(["Clip/Clip.mkv", "Clip/Clip.jpg"])
+    );
+    let destinations = plan["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|action| {
+            action["destinationRelativePath"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert!(destinations.contains(&"Clip/.youtube-downloader/abcdefghijk.jpg".to_string()));
+    assert!(destinations.contains(&"Clip/.youtube-downloader/abcdefghijk.json".to_string()));
+    assert!(destinations
+        .contains(&"_Tombstone/Some Artist/.youtube-downloader/abcdefghijk.json".to_string()));
+}
