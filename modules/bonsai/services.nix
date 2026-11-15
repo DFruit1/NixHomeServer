@@ -41,7 +41,7 @@ let
         --host ${lib.escapeShellArg cfg.listenAddress} \
         --port ${toString cfg.port} \
         --ctx-size "$context_size" \
-        --parallel 1 \
+        --parallel ${toString cfg.parallel} \
         --n-gpu-layers ${if cfg.gpu.enable then "auto" else "0"} \
         --threads ${toString cfg.threads} \
         --threads-batch ${toString cfg.threadsBatch} \
@@ -71,10 +71,23 @@ in
       description = "Context tokens per request; zero selects PrismML's conservative physical-RAM tier automatically.";
     };
 
+    parallel = lib.mkOption {
+      type = lib.types.ints.between 1 2;
+      default = 1;
+      description = ''
+        Number of inference slots. llama.cpp splits `contextSize` across the
+        slots, so two slots with a 65536 context give each request 32768
+        tokens. The slots share the single Arc GPU, so this does not double
+        throughput; the second slot keeps an interactive request from waiting
+        behind a long background review. The default gate still admits only
+        one background request at a time, leaving the other slot free.
+      '';
+    };
+
     imageMaxTokens = lib.mkOption {
       type = lib.types.ints.unsigned;
       default = 1024;
-      description = "Maximum vision tokens per image on CPU; zero disables image downscaling.";
+      description = "Maximum vision tokens per image; zero disables image downscaling.";
     };
 
     quantizeKvCache = lib.mkOption {

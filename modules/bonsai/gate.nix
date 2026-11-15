@@ -65,7 +65,7 @@ in
     ];
 
     systemd.services.bonsai-gate = {
-      description = "Local AI concurrency gate (serializes llama-server parallel=1)";
+      description = "Local AI concurrency gate (admits one background request at a time)";
       wantedBy = [ "multi-user.target" ];
       requires = [ "bonsai-llama.service" ];
       after = [ "bonsai-llama.service" ];

@@ -43,15 +43,23 @@ in
       bonsai = {
         enable = true;
         gpu.enable = true;
-        contextSize = 32768;
+        # Two 32K slots: llama.cpp splits this total across the slots. The
+        # budget on the 23.9 GiB card is 7.10 GiB of weights, 1.13 GiB of q4_0
+        # KV for the 64K total, the 0.59 GiB projector now on the GPU, and the
+        # second slot's state and vision buffers. The Q8 query embedder
+        # (~4.3 GiB), the trimmed reranker (~2 GiB) and the search backfill
+        # (~5.2 GiB while a pass runs) share the rest, so measure before
+        # adding another resident model.
+        contextSize = 65536;
+        parallel = 2;
         quantizeKvCache = true;
-        # Keep the GPU available for transcription while idle. Medium effort
-        # and a bounded thinking phase leave room for metadata JSON answers.
+        # Medium effort and a bounded thinking phase leave room for metadata
+        # JSON answers. The gate still admits one background request at a
+        # time, which keeps the second slot free for the chat UI.
         extraArgs = [
           "--reasoning-effort" "medium"
           "--reasoning-budget" "1024"
           "--sleep-idle-seconds" "900"
-          "--no-mmproj-offload"
         ];
       };
     }

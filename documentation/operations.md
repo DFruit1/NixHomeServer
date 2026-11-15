@@ -2355,12 +2355,19 @@ embedded again by `search-embed`.
 ### Local semantic search
 
 Search combines the keyword index with a separate `search-passages-v1` Solr
-core. Qwen3-Embedding-4B F16 produces normalized 2,560-dimensional vectors;
+core. Qwen3-Embedding-4B Q8_0 produces normalized 2,560-dimensional vectors;
 Qwen3-Reranker-0.6B F16 reorders the leading candidate documents. Text stays
 in PostgreSQL; the vector core stores offsets, vectors and filter metadata.
 Passages overlap, respect paragraph boundaries where possible, and cover the
 whole document. Input byte limits leave room for titles and the model's
 query/reranking templates.
+
+The embedding weights are Q8_0 rather than F16 so the query embedder can stay
+resident on the same card as Bonsai. The file hash is part of the `VERSION`
+constant in `semantic.rs`; changing it re-embeds every document on the next
+backfill pass and prunes the old generations as new ones commit. Until a
+document is re-embedded its old vectors no longer match the expected
+generation, so it is served by keyword matches only.
 
 Plain broad queries of up to 256 characters use rank fusion over the leading
 100 keyword matches and the documents whose passages are close to the query
@@ -2428,16 +2435,20 @@ Upstream contracts: [Qwen embedding](https://huggingface.co/Qwen/Qwen3-Embedding
 
 After guarded activation:
 
-- `search-embedding-query` keeps the same 4B embedder in system RAM with
-  `--device none --n-gpu-layers 0` on loopback port 18093. Queries are embedded
-  on CPU, with a bounded one-hour in-memory vector cache.
+- `search-embedding-query` keeps the 4B Q8 embedder resident on the GPU
+  (`--n-gpu-layers all`) on loopback port 18093. Queries share the card with
+  Bonsai, with a bounded one-hour in-memory vector cache.
 - The Search inference units use a llama.cpp build without OpenBLAS
   (`useBlas = false` in `lib/llama-cpp-runtime.nix`). OpenBLAS takes over CPU
-  matrix products for inputs of 32 or more tokens and converts the half-float
-  weights on every call. Under the units' four-CPU quota a 36-token query took
-  69 seconds against 1.3 without it, and a 300-token passage 78 seconds against
-  9, which had limited the backfill to 26 of 20,534 documents.
-- `search-reranker` keeps the 0.6B model on GPU, loopback port 18095.
+  matrix products for inputs of 32 or more tokens and converts half-float
+  weights on every call; while the query embedder ran on the CPU a 36-token
+  query took 69 seconds against 1.3 without it, and a 300-token passage 78
+  seconds against 9. The GPU-resident Q8 embedder no longer depends on that
+  path, but the build remains shared with the backfill.
+- `search-reranker` keeps the 0.6B model on GPU, loopback port 18095. Its batch
+  is 1024 with a 512-token micro-batch: a 4096-token batch sized the output
+  buffer for the full vocabulary and held about 4.1 GiB, while a search request
+  reranks at most three passages of about 200 tokens.
 - `search-embed.timer` starts a background passage-indexing pass 15 minutes
   after boot, then 30 minutes after each pass finishes. It processes new or
   changed PostgreSQL documents without extracting source files again,
@@ -2449,13 +2460,14 @@ After guarded activation:
   Completed passages are published progressively while document checkpoints
   wait for the complete document.
 - The indexing embedder runs with every layer on the GPU
-  (`repo.search.semantic.indexingGpuLayers = "all"`). Measured on the deployed
-  card on 2026-11-15: 9.3 GiB of VRAM beside chat (7.8 GiB) and the reranker
-  (4.1 GiB), leaving 2.7 GiB of 23.9 GiB for transcription; 0.6 seconds a
-  passage against 9 with one layer; vectors matching the CPU query embedder
-  (cosine 0.99996). It holds about 0.1 GiB of RAM. ggml-vulkan cannot spill a
-  failed allocation to host RAM: a pass that cannot load fails and is retried
-  by the timer, and another resident GPU model needs the budget re-measured.
+  (`repo.search.semantic.indexingGpuLayers = "all"`). The Q8 weights are about
+  4.0 GiB, and the pass needs roughly 5.2 GiB of VRAM beside Bonsai (about
+  10.5 GiB with two 32K slots and the projector on the GPU), the query embedder
+  (about 4.3 GiB) and the reranker (about 2 GiB). That leaves roughly 1.5–2
+  GiB of the 23.9 GiB card, so re-measure before adding another resident GPU
+  model. A pass measures 0.6 seconds a passage against 9 with one layer. It
+  holds about 0.1 GiB of RAM. ggml-vulkan cannot spill a failed allocation to
+  host RAM: a pass that cannot load fails and is retried by the timer.
 - A pass yields the GPU. Unthrottled it halved chat generation (19 to 9
   tokens a second) and more than doubled reranking time, so before each
   passage it reads `repo.search.semantic.indexingGpuIdleStatus` (the xe

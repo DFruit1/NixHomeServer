@@ -9,7 +9,11 @@ let
   # 1.3s without it and a full passage 78s against 9s, which stalled both long
   # questions and the library backfill.
   runtime = (import ../../lib/llama-cpp-runtime.nix { inherit pkgs; useVulkan = true; useBlas = false; }).runtime;
-  embeddingModel = "${cfg.paths.models}/Qwen3-Embedding-4B-f16.gguf";
+  # Q8_0 rather than f16: the same 2,560-dimensional vectors at half the
+  # memory, which leaves room for the query embedder beside Bonsai on the one
+  # card. A quant change alters every stored vector, so `semantic.rs` carries
+  # the file hash in its VERSION and the next backfill re-embeds the library.
+  embeddingModel = "${cfg.paths.models}/Qwen3-Embedding-4B-Q8_0.gguf";
   rerankerModel = "${cfg.paths.models}/Qwen3-Reranker-0.6B.F16.gguf";
   inferenceEnvironment = {
     SEARCH_EMBED_QUERY_URL = "http://${loopback}:${toString ports.searchEmbeddingQuery}";
@@ -56,13 +60,14 @@ in {
       type = lib.types.either lib.types.ints.positive (lib.types.enum [ "all" ]);
       default = "all";
       description = ''
-        Layers of the indexing embedder held on the GPU while a backfill pass
-        runs. Measured on the 23.9 GiB Arc Pro B60: every layer takes 9.3 GiB
-        beside chat (7.8 GiB) and the reranker (4.1 GiB), leaving 2.7 GiB for
-        transcription, and embeds a passage in 0.6s against 9s with one layer.
-        Vectors match the CPU query embedder (cosine 0.99996). ggml-vulkan
-        cannot spill a failed allocation to host RAM, so re-measure before
-        adding another resident GPU model. No chat allocation is changed.
+        Layers of the Q8 indexing embedder held on the GPU while a backfill
+        pass runs. Measured on the 23.9 GiB Arc Pro B60 with the Q8_0 file:
+        every layer takes about 5.2 GiB beside Bonsai (about 10.5 GiB with two
+        32K slots and the projector on the GPU), the query embedder (about
+        4.3 GiB) and the trimmed reranker (about 2 GiB), which leaves only a
+        small margin for vision and transcription. It embeds a passage in 0.6s
+        against 9s with one layer. ggml-vulkan cannot spill a failed allocation
+        to host RAM, so re-measure before adding another resident GPU model.
       '';
     };
     indexingGpuIdleStatus = lib.mkOption {
@@ -121,9 +126,10 @@ in {
     # Pooled embeddings/reranking need a whole input in one physical batch.
     # Smaller micro-batches make llama.cpp clamp the accepted prompt length.
     systemd.services.search-embedding-query = lib.recursiveUpdate inferenceService {
-      description = "Qwen3 4B query embeddings on CPU and system RAM";
+      description = "Qwen3 4B Q8 query embeddings resident on the GPU";
       serviceConfig = {
-        ExecStart = "${runtime}/bin/llama-server --model ${lib.escapeShellArg embeddingModel} --host ${loopback} --port ${toString ports.searchEmbeddingQuery} --embedding --pooling last --n-gpu-layers 0 --device none --ctx-size 2048 --batch-size 2048 --ubatch-size 2048 --parallel 1 --threads 4";
+        ExecStart = "${runtime}/bin/llama-server --model ${lib.escapeShellArg embeddingModel} --host ${loopback} --port ${toString ports.searchEmbeddingQuery} --embedding --pooling last --n-gpu-layers all --ctx-size 2048 --batch-size 2048 --ubatch-size 2048 --parallel 1 --threads 4 --flash-attn on";
+        SupplementaryGroups = [ "render" "video" ];
         MemoryHigh = "10G";
         MemoryMax = "12G";
         CPUQuota = "400%";
@@ -132,7 +138,11 @@ in {
     systemd.services.search-reranker = lib.recursiveUpdate inferenceService {
       description = "Qwen3 0.6B passage reranker resident on GPU";
       serviceConfig = {
-        ExecStart = "${runtime}/bin/llama-server --model ${lib.escapeShellArg rerankerModel} --host ${loopback} --port ${toString ports.searchReranker} --reranking --n-gpu-layers all --ctx-size 4096 --batch-size 4096 --ubatch-size 4096 --parallel 1 --threads 2 --flash-attn on";
+        # A 4096-token batch sized the output buffer for the full 151k
+        # vocabulary and held 4.1 GiB of the card. A search request reranks at
+        # most three passages of about 200 tokens, so 1024/512 keeps the same
+        # results in about 2 GiB.
+        ExecStart = "${runtime}/bin/llama-server --model ${lib.escapeShellArg rerankerModel} --host ${loopback} --port ${toString ports.searchReranker} --reranking --n-gpu-layers all --ctx-size 4096 --batch-size 1024 --ubatch-size 512 --parallel 1 --threads 2 --flash-attn on";
         SupplementaryGroups = [ "render" "video" ];
         MemoryHigh = "2G";
         MemoryMax = "3G";

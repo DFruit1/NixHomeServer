@@ -12,7 +12,7 @@ use crate::db;
 use crate::solr::{SearchFilters, SearchHit, SearchResponse, SolrClient, SolrDocument, SortOrder};
 
 const DIMENSIONS: usize = 2560;
-const VERSION: &str = "qwen4b-f16-e8b4e85c-passage-v1";
+const VERSION: &str = "qwen4b-q8-b60ae5ce-passage-v1";
 const CANDIDATES: usize = 100;
 const PASSAGE_BYTES: usize = 1600;
 const OVERLAP_BYTES: usize = 200;
