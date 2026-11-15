@@ -1,3 +1,4 @@
+mod article_archive;
 mod bootstrap_solr;
 mod cache;
 mod cli;
@@ -32,7 +33,7 @@ fn main() -> ExitCode {
         Some(cmd) => cmd,
         None => {
             eprintln!(
-                "usage: search <query|serve|index|index-daemon|embed|reindex|reconcile|archive-pdfs|bootstrap-solr>"
+                "usage: search <query|serve|index|index-daemon|embed|reindex|reconcile|archive-pdfs|fetch-articles|bootstrap-solr>"
             );
             return ExitCode::FAILURE;
         }
@@ -58,11 +59,12 @@ fn main() -> ExitCode {
         "reindex" => runtime.block_on(indexer::run_reindex()),
         "reconcile" => runtime.block_on(indexer::run_reconcile()),
         "archive-pdfs" => runtime.block_on(pdf_archive::run()),
+        "fetch-articles" => runtime.block_on(article_archive::run()),
         "bootstrap-solr" => runtime.block_on(bootstrap_solr::run()),
         other => {
             eprintln!("unknown command: {other}");
             eprintln!(
-                "usage: search <query|serve|index|index-daemon|embed|reindex|reconcile|archive-pdfs|bootstrap-solr>"
+                "usage: search <query|serve|index|index-daemon|embed|reindex|reconcile|archive-pdfs|fetch-articles|bootstrap-solr>"
             );
             return ExitCode::FAILURE;
         }

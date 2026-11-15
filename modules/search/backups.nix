@@ -31,6 +31,15 @@
           notes = "Retained download archive on the data pool; pinned GGUF weights are reproducible and globally excluded from snapshots.";
         }
       ]
+      ++ lib.optionals config.repo.search.articleArchive.enable [
+        {
+          app = "search";
+          component = "article-archive";
+          stateRoot = config.repo.search.paths.articleArchive;
+          payloadRoots = [ ];
+          notes = "Article text fetched for summary-only feed entries; reproducible while the articles stay online.";
+        }
+      ]
       ++ lib.optionals config.repo.search.pdfArchive.enable [
         {
           app = "search";

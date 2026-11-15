@@ -230,7 +230,10 @@ pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
     // Preserve unaffected sources' revisions so a targeted improvement does
     // not repeat extraction of unrelated, potentially large archives.
     let extraction_version = match source.source_type.as_str() {
-        "freshrss" | "kiwix" => "3",
+        // 4: the full article where a feed carries only a summary.
+        "freshrss" => "4",
+        // 4: each archive's own title, description, language and topics.
+        "kiwix" => "4",
         // 4: mailing-list marking, quoted replies and tracking links dropped,
         // scanned attachments and attached pictures read.
         "mail-archive" => "4",

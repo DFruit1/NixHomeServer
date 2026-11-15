@@ -31,5 +31,15 @@
       '';
       readOnly = true;
     };
+
+    articleArchive = lib.mkOption {
+      type = lib.types.str;
+      default = "/var/lib/search/article-archive";
+      description = ''
+        Text of the articles behind feed entries whose feed carries only a
+        summary, saved by the article fetch pass and read by the indexer.
+      '';
+      readOnly = true;
+    };
   };
 }

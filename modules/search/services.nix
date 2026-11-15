@@ -184,6 +184,34 @@ in
       description = "How often Search purges sources whose integrations were removed.";
     };
 
+    articleArchive = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Whether to fetch the article behind feed entries whose feed carries
+          only a summary, so Search can match what the article says. A timer
+          walks the stored FreshRSS entries and saves each article's text; the
+          indexer only reads what was saved. Requests are slow (one a second),
+          bounded per run, and confined to public web addresses: an entry link
+          that resolves to a private, loopback or overlay address is refused,
+          as is any redirect to one.
+        '';
+      };
+
+      period = lib.mkOption {
+        type = lib.types.str;
+        default = "1d";
+        description = "How often the article fetch timer runs (systemd duration).";
+      };
+
+      maxPerRun = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 200;
+        description = "Maximum number of articles to request in a single pass.";
+      };
+    };
+
     pdfArchive = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -334,7 +362,8 @@ in
         "search-reindex"
         "search-reconcile"
       ]
-      ++ lib.optional cfg.pdfArchive.enable "search-pdf-archive";
+      ++ lib.optional cfg.pdfArchive.enable "search-pdf-archive"
+      ++ lib.optional cfg.articleArchive.enable "search-article-archive";
 
     # A local admin command shares the UI's complete merged environment,
     # including optional integrations, and drops to its existing Unix identity.
@@ -496,6 +525,42 @@ in
           # watchdog generous so it is not mistaken for a hang.
           TimeoutStartSec = "2h";
         };
+    };
+
+    systemd.services.search-article-archive = lib.mkIf cfg.articleArchive.enable {
+      description = "Fetch the articles behind summary-only feed entries";
+      wants = [ "network-online.target" ];
+      after = [ "network-online.target" ];
+      environment = commonEnvironment // {
+        SEARCH_ARTICLE_ARCHIVE_DIR = paths.articleArchive;
+        SEARCH_ARTICLE_ARCHIVE_MAX_PER_RUN = toString cfg.articleArchive.maxPerRun;
+      };
+      serviceConfig =
+        hardenedService
+        // {
+          Type = "oneshot";
+          User = "search";
+          Group = "search";
+          StateDirectory = "search/article-archive";
+          ExecStart = "${cfg.package}/bin/search fetch-articles";
+          TimeoutStartSec = "2h";
+          MemoryHigh = "256M";
+          MemoryMax = "512M";
+          Nice = 15;
+          CPUWeight = 10;
+          IOWeight = 10;
+        };
+    };
+
+    systemd.timers.search-article-archive = lib.mkIf cfg.articleArchive.enable {
+      description = "Periodically fetch the articles behind summary-only feed entries";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "45min";
+        OnUnitActiveSec = cfg.articleArchive.period;
+        Persistent = true;
+        Unit = "search-article-archive.service";
+      };
     };
 
     systemd.timers.search-pdf-archive = lib.mkIf cfg.pdfArchive.enable {

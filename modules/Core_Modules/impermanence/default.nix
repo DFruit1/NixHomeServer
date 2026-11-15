@@ -69,6 +69,7 @@ let
     "/var/lib/radarr"
     "/var/lib/redis-immich"
     "/var/lib/redis-paperless"
+    "/var/lib/search/article-archive"
     "/var/lib/search/pdf-archive"
     "/var/lib/sonarr"
     "/var/lib/solr"

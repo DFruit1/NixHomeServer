@@ -120,6 +120,16 @@ fn matches_any(file_name: &str, patterns: &[String]) -> bool {
 /// Read only a short prefix and reap the child even if the entry is a huge
 /// uncompressed Xapian index. The timeout also covers a hung tool/read.
 fn zim_prefix(zimdump: &Path, zim: &Path, args: &[&str]) -> Result<(Vec<u8>, bool), String> {
+    zim_read(zimdump, zim, args, 16)
+}
+
+/// As `zim_prefix`, reading at most `limit` bytes.
+fn zim_read(
+    zimdump: &Path,
+    zim: &Path,
+    args: &[&str],
+    limit: u64,
+) -> Result<(Vec<u8>, bool), String> {
     use std::io::Read;
     use std::process::Stdio;
     use std::sync::mpsc;
@@ -138,7 +148,7 @@ fn zim_prefix(zimdump: &Path, zim: &Path, args: &[&str]) -> Result<(Vec<u8>, boo
     let (sender, receiver) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let mut prefix = Vec::new();
-        let result = stdout.take(16).read_to_end(&mut prefix).map(|_| prefix);
+        let result = stdout.take(limit).read_to_end(&mut prefix).map(|_| prefix);
         let _ = sender.send(result);
     });
     let result = receiver.recv_timeout(Duration::from_secs(5));
@@ -176,6 +186,34 @@ pub(crate) fn probe_fulltext_index(zimdump: &Path, zim: &Path) -> Result<bool, S
         return Err("An archive index could not be read.".to_string());
     }
     Ok(false)
+}
+
+/// What an archive says about itself. Its file name is all a search could
+/// match before ("wikipedia_en_all_maxi_2024-01"), so "offline medical
+/// encyclopedia" found nothing.
+fn archive_details(zimdump: &Path, zim: &Path) -> serde_json::Map<String, serde_json::Value> {
+    let mut details = serde_json::Map::new();
+    for (entry, key) in [
+        ("Title", "title"),
+        ("Description", "description"),
+        ("LongDescription", "long_description"),
+        ("Language", "language"),
+        ("Creator", "creator"),
+        ("Publisher", "publisher"),
+        ("Date", "date"),
+        ("Tags", "tags"),
+    ] {
+        let url = format!("--url={entry}");
+        if let Ok((bytes, _)) = zim_read(zimdump, zim, &["show", "--ns=M", &url], 16_384)
+            && let Ok(text) = String::from_utf8(bytes)
+            && !text.trim().is_empty()
+            // zimdump reports a missing entry or unreadable file on stdout.
+            && !text.starts_with("Exception")
+        {
+            details.insert(key.to_string(), serde_json::json!(text.trim()));
+        }
+    }
+    details
 }
 
 pub(crate) fn has_xapian_fulltext(zimdump: &Path, zim: &Path) -> bool {
@@ -281,12 +319,52 @@ impl super::Extractor for KiwixExtractor {
             let fulltext = !has_xapian && matches_any(&file_name, &fulltext_patterns);
             let metadata = !has_xapian && (matches_any(&file_name, &metadata_patterns) || fulltext);
 
+            let details = archive_details(&self.zimdump, &zim);
+            let detail = |key: &str| details.get(key).and_then(|value| value.as_str());
+            // Tags starting with an underscore are tooling flags, not topics.
+            let topics: Vec<&str> = detail("tags")
+                .unwrap_or_default()
+                .split(';')
+                .map(str::trim)
+                .filter(|tag| !tag.is_empty() && !tag.starts_with('_'))
+                .collect();
+            let mut about = Vec::new();
+            about.extend(detail("description").map(str::to_string));
+            about.extend(detail("long_description").map(str::to_string));
+            for (label, key) in [
+                ("Language", "language"),
+                ("Created by", "creator"),
+                ("Published by", "publisher"),
+            ] {
+                about.extend(detail(key).map(|value| format!("{label}: {value}")));
+            }
+            if !topics.is_empty() {
+                about.push(format!("Topics: {}", topics.join(", ")));
+            }
+            // The file name stays searchable as the result's file name.
+            let mut archive_metadata = serde_json::json!({
+                "xapian": has_xapian.to_string(),
+                "fulltext": fulltext.to_string(),
+                "articles": metadata.to_string(),
+                "owner": "shared",
+            });
+            for (key, value) in [
+                ("publisher", detail("publisher")),
+                ("language", detail("language")),
+            ] {
+                if let Some(value) = value {
+                    archive_metadata[key] = serde_json::json!(value);
+                }
+            }
+            if !topics.is_empty() {
+                archive_metadata["tags"] = serde_json::json!(topics);
+            }
             emit(ExtractedDocument {
                 incidental_text: String::new(),
                 external_id: crate::timeutil::sha256_hex(&[&file_name]),
                 kind: "zim-archive".to_string(),
-                title: zim_stem.clone(),
-                body_text: String::new(),
+                title: detail("title").unwrap_or(&zim_stem).to_string(),
+                body_text: about.join("\n"),
                 content_type: "application/x-zim".to_string(),
                 origin_url: entry_origin(&app_base, &zim_stem, ""),
                 app_url: app_base.clone(),
@@ -294,14 +372,9 @@ impl super::Extractor for KiwixExtractor {
                 size_bytes: std::fs::metadata(&zim)
                     .map(|meta| meta.len() as i64)
                     .unwrap_or(0),
-                content_created_at: None,
+                content_created_at: detail("date").and_then(crate::timeutil::parse_date),
                 content_modified_at: None,
-                metadata: serde_json::json!({
-                    "xapian": has_xapian.to_string(),
-                    "fulltext": fulltext.to_string(),
-                    "articles": metadata.to_string(),
-                    "owner": "shared",
-                }),
+                metadata: archive_metadata,
             });
 
             if !metadata {

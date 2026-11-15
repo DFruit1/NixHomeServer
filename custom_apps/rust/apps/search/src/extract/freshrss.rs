@@ -74,6 +74,9 @@ pub(crate) fn source_fingerprint(source: &SourceConfig) -> Option<String> {
                 .into_values(),
         );
     }
+    if let Some(root) = source.setting_str("articleArchiveRoot") {
+        databases.extend(crate::article_archive::saved_files(Path::new(root)));
+    }
     super::file_inventory_fingerprint(source, databases)
 }
 
@@ -117,6 +120,7 @@ impl super::Extractor for FreshRssExtractor {
             .map(|root| pdf_archive::archived_files(Path::new(root)))
             .transpose()?
             .unwrap_or_default();
+        let articles = source.setting_str("articleArchiveRoot").map(PathBuf::from);
         let mut seen_pdfs = HashSet::new();
         let mut pdf_failure = None;
 
@@ -193,7 +197,19 @@ impl super::Extractor for FreshRssExtractor {
                     } else {
                         entry.title.clone()
                     },
-                    body_text: html_to_text(&entry.content),
+                    body_text: {
+                        let summary = html_to_text(&entry.content);
+                        // A feed that publishes only a summary: use the
+                        // article a fetch pass saved, when there is one.
+                        match articles
+                            .as_deref()
+                            .filter(|_| summary.len() < crate::article_archive::SUMMARY_BYTES)
+                            .and_then(|root| crate::article_archive::saved_text(root, &entry.link))
+                        {
+                            Some(article) if article.len() > summary.len() => article,
+                            _ => summary,
+                        }
+                    },
                     content_type: "text/html".to_string(),
                     origin_url: entry.link.clone(),
                     app_url: app_base.clone(),
