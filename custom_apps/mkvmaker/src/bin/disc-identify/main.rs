@@ -881,7 +881,11 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             .first()
             .copied()
             .filter(|&top| scores[top] > 0.0)
-            .filter(|&top| order.get(1).is_none_or(|&second| scores[top] > scores[second]));
+            .filter(|&top| {
+                order
+                    .get(1)
+                    .is_none_or(|&second| scores[top] > scores[second])
+            });
         // Bonsai sees the shortlist in broadcast order, not keyword order, so
         // a model that favours the first option cannot simply echo the
         // keyword ranking and pass as a second, independent signal.

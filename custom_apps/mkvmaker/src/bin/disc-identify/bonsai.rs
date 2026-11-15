@@ -62,19 +62,24 @@ impl Bonsai {
             "messages": [{"role": "user", "content": content}],
         });
         let url = format!("{}/chat/completions", self.base);
-        // The local gate admits one request and queues two; a busy or
-        // restarting model is retried a few times before giving up.
+        // The local gate admits one request, queues two (429 beyond that)
+        // and answers 504 when a queued request waits over a minute, which a
+        // single vision request from another app can take. A busy or
+        // restarting model is retried with growing pauses (about ten
+        // minutes in all) before giving up; the caller's deadline still holds.
+        const ATTEMPTS: u64 = 8;
         let mut attempt = 0;
         let response = loop {
             attempt += 1;
             match self.client.post(&url).json(&body).send() {
                 Ok(response)
-                    if matches!(response.status().as_u16(), 429 | 502 | 503) && attempt < 4 => {}
+                    if matches!(response.status().as_u16(), 429 | 502 | 503 | 504)
+                        && attempt < ATTEMPTS => {}
                 Ok(response) => break response,
-                Err(error) if attempt < 4 && (error.is_connect() || error.is_request()) => {}
+                Err(error) if attempt < ATTEMPTS && (error.is_connect() || error.is_request()) => {}
                 Err(error) => return Err(error).with_context(|| format!("POST {url}")),
             }
-            std::thread::sleep(Duration::from_secs(30 * attempt));
+            std::thread::sleep(Duration::from_secs((30 * attempt).min(120)));
         };
         let status = response.status();
         if !status.is_success() {
