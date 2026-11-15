@@ -1210,6 +1210,8 @@ def stage_episode(file: Path, staged: Path) -> bool:
     separate bind mounts of one dataset, so rename() fails with EXDEV there.
     Like disc-to-jellyfin, fall back to copying (fsynced) instead.
     """
+    # Only reached while the original is present (see publish_episodes), so
+    # a leftover here is a stale copy and safe to replace.
     staged.unlink(missing_ok=True)
     try:
         os.rename(file, staged)
@@ -1238,6 +1240,30 @@ def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, yea
         title = safe_name(names[offset]) if offset < len(names) and names[offset] else ""
         stem = f"{media_name} S{season:02d}E{first + offset:02d}"
         targets.append(season_dir / (f"{stem} - {title}.mkv" if title else f"{stem}.mkv"))
+    # Recover from a publish that was killed part-way. A target that is the
+    # same file as its staging name is this code's own link.
+    ours = [t.exists() and staging_name(t).exists() and os.path.samefile(t, staging_name(t))
+            for t in targets]
+    if targets and all(ours):
+        # Killed after every link was made: only clean-up was left.
+        for file, target in zip(files, targets):
+            staging_name(target).unlink()
+            if file.exists():
+                file.unlink()  # the copied original; the library copy is complete
+            print(f"  published {target}")
+        if getattr(args, "held_dir", None) is not None:
+            for file in files:
+                prune_empty_dirs(file.parent, args.held_dir)
+        return season_dir
+    for file, target, own in zip(files, targets, ours):
+        if own:
+            target.unlink()  # killed while linking: undo this disc's links
+        staging = staging_name(target)
+        if staging.exists():
+            if file.exists():
+                staging.unlink()  # a stale copy; the original is intact
+            else:
+                os.rename(staging, file)  # the original itself, moved by rename
     missing = [str(f) for f in files if not f.is_file()]
     if missing:
         raise RuntimeError(f"held episode files are missing: {', '.join(missing)}")
