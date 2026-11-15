@@ -215,11 +215,26 @@ pub fn item_sidecar_path(item: &CatalogItem) -> Option<(String, SidecarFormat)> 
     }
 }
 
+/// Folder sidecars the YouTube Downloader writes so a channel folder and a
+/// single video's folder (a chapter-split download) keep their own identity
+/// instead of reading as a movie. Jellyfin ignores both names, so they only
+/// describe the folder to Media Manager.
+pub const YOUTUBE_CHANNEL_SIDECAR: &str = "channel.nfo";
+pub const YOUTUBE_VIDEO_SIDECAR: &str = "video.nfo";
+
 pub fn folder_sidecar_path(relative_path: &str, media_type: &str) -> (String, SidecarFormat) {
     match media_type {
         "series" => (format!("{relative_path}/tvshow.nfo"), SidecarFormat::Nfo),
         "season" => (format!("{relative_path}/season.nfo"), SidecarFormat::Nfo),
         "music" => (format!("{relative_path}/album.nfo"), SidecarFormat::Nfo),
+        "youtube-channel" => (
+            format!("{relative_path}/{YOUTUBE_CHANNEL_SIDECAR}"),
+            SidecarFormat::Nfo,
+        ),
+        "youtube-video" => (
+            format!("{relative_path}/{YOUTUBE_VIDEO_SIDECAR}"),
+            SidecarFormat::Nfo,
+        ),
         "audiobook" | "podcast" | "book" => {
             (format!("{relative_path}/metadata.opf"), SidecarFormat::Opf)
         }
@@ -1523,6 +1538,8 @@ fn parse_sidecar_fields(text: &str) -> Result<Value, String> {
         "season" => "season",
         "album" => "music",
         "package" => "book",
+        "youtubechannel" => "youtube-channel",
+        "youtubevideo" => "youtube-video",
         _ => "movie",
     };
     let title = first_text(root, &["title", "localtitle"]);

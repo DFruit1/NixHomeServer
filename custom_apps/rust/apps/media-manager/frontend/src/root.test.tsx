@@ -1406,9 +1406,11 @@ describe("Media Manager library browser", () => {
       ),
       expect.objectContaining({ credentials: "same-origin" }),
     );
+    // The folder's own cover.jpg represents the folder, ahead of the
+    // artwork of the first file inside it.
     expect(
       screen.querySelector<HTMLImageElement>(".media-image img")?.src,
-    ).toContain("/items/movie-1/image");
+    ).toContain("/items/cover-1/image");
   });
 
   it("replaces the opposite library pane with details and focuses the selected folder", async () => {

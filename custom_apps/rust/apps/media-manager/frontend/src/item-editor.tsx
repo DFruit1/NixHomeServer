@@ -1717,6 +1717,12 @@ export const ItemEditor = component$<{
                   <option value="audiobook">Audiobook</option>
                   <option value="podcast">Podcast</option>
                   <option value="book">Book</option>
+                  {props.folder && (
+                    <>
+                      <option value="youtube-channel">YouTube channel</option>
+                      <option value="youtube-video">YouTube video</option>
+                    </>
+                  )}
                 </select>
               </label>
               <label

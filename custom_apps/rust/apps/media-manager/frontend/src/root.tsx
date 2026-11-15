@@ -1542,6 +1542,8 @@ function folderDisplayName(folder: string): string {
   return folder.replace(/^_+/, "") || folder;
 }
 
+const FOLDER_COVER_NAME = /^(?:poster|folder|cover)\.(?:jpe?g|png|webp)$/i;
+
 function artworkCandidateId(
   status: Status | undefined,
   items: CatalogItem[],
@@ -1552,7 +1554,16 @@ function artworkCandidateId(
   if (!selectedFolder) return "";
   const prefix = `${selectedFolder}/`;
   const inside = items.filter((item) => item.relativePath.startsWith(prefix));
+  // A folder's own poster (a YouTube channel's avatar, a show's poster)
+  // describes the folder better than the artwork of whichever file sorts
+  // first inside it.
+  const folderCover = inside.find(
+    (item) =>
+      item.mediaKind === "artwork" &&
+      FOLDER_COVER_NAME.test(item.relativePath.slice(prefix.length)),
+  );
   return (
+    folderCover?.id ??
     inside.find((item) => isLibraryKind(status, item.mediaKind))?.id ??
     inside.find((item) => item.mediaKind === "artwork")?.id ??
     inside[0]?.id ??

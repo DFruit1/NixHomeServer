@@ -47,6 +47,8 @@ export function mediaKindForMediaType(
     case "series":
     case "season":
     case "episode":
+    case "youtube-channel":
+    case "youtube-video":
       return "video";
     case "music":
       return "music";

@@ -2840,6 +2840,8 @@ components:
                 audiobook,
                 podcast,
                 book,
+                youtube-channel,
+                youtube-video,
               ],
           }
         mediaKind:

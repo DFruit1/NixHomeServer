@@ -1,6 +1,7 @@
 use super::*;
 use crate::capabilities::MediaAction;
 use crate::media::{classify, LibraryCategory, MediaKind, SidecarFormat};
+use crate::metadata::{YOUTUBE_CHANNEL_SIDECAR, YOUTUBE_VIDEO_SIDECAR};
 
 struct VisibleMediaFolder {
     root_id: String,
@@ -8,6 +9,20 @@ struct VisibleMediaFolder {
     category: LibraryCategory,
     has_direct_media: bool,
     has_season_directory: bool,
+    youtube: Option<YoutubeFolder>,
+}
+
+/// What a YouTube Downloader folder sidecar says the folder holds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum YoutubeFolder {
+    Channel,
+    Video,
+}
+
+struct FolderInspection {
+    has_direct_media: bool,
+    has_season_directory: bool,
+    youtube: Option<YoutubeFolder>,
 }
 
 fn visible_media_folder(
@@ -41,29 +56,30 @@ fn visible_media_folder(
                 )
             },
         )?;
-    let (has_direct_media, has_season_directory) = inspect_media_folder(&directory, root.category)
-        .map_err(|_| {
-            ApiError::without_request_id(
-                StatusCode::CONFLICT,
-                "folder_missing",
-                "The selected folder is no longer present in the media library.",
-            )
-        })?;
+    let inspection = inspect_media_folder(&directory, root.category).map_err(|_| {
+        ApiError::without_request_id(
+            StatusCode::CONFLICT,
+            "folder_missing",
+            "The selected folder is no longer present in the media library.",
+        )
+    })?;
     Ok(VisibleMediaFolder {
         root_id: root.id,
         relative_path: query.relative_path.clone(),
         category: root.category,
-        has_direct_media,
-        has_season_directory,
+        has_direct_media: inspection.has_direct_media,
+        has_season_directory: inspection.has_season_directory,
+        youtube: inspection.youtube,
     })
 }
 
 fn inspect_media_folder(
     directory: &std::fs::File,
     category: LibraryCategory,
-) -> std::io::Result<(bool, bool)> {
+) -> std::io::Result<FolderInspection> {
     let mut has_direct_media = false;
     let mut has_season_directory = false;
+    let mut youtube = None;
     let directory_path = format!("/proc/self/fd/{}", directory.as_raw_fd());
     for (index, entry) in std::fs::read_dir(directory_path)?.enumerate() {
         if index >= 10_000 {
@@ -84,6 +100,12 @@ fn inspect_media_folder(
         if !file_type.is_file() {
             continue;
         }
+        let name = entry.file_name();
+        if name == YOUTUBE_CHANNEL_SIDECAR {
+            youtube = Some(YoutubeFolder::Channel);
+        } else if name == YOUTUBE_VIDEO_SIDECAR && youtube.is_none() {
+            youtube = Some(YoutubeFolder::Video);
+        }
         let extension = entry
             .path()
             .extension()
@@ -94,10 +116,24 @@ fn inspect_media_folder(
             has_direct_media = true;
         }
     }
-    Ok((has_direct_media, has_season_directory))
+    Ok(FolderInspection {
+        has_direct_media,
+        has_season_directory,
+        youtube,
+    })
 }
 
 fn folder_media_type(folder: &VisibleMediaFolder) -> &'static str {
+    // The downloader's own sidecar is explicit about the folder, so it wins
+    // over shape guesses: a channel folder of chapter-split videos has no
+    // direct media and would otherwise read as a plain collection.
+    if folder.category == LibraryCategory::Videos {
+        match folder.youtube {
+            Some(YoutubeFolder::Channel) => return "youtube-channel",
+            Some(YoutubeFolder::Video) => return "youtube-video",
+            None => {}
+        }
+    }
     if season_number_from_folder(&folder.relative_path).is_some() {
         return "season";
     }
@@ -153,6 +189,8 @@ fn validate_metadata_request(request: &MetadataSidecarRequest) -> Result<(), Api
             "music",
             "audiobook",
             "book",
+            "youtube-channel",
+            "youtube-video",
         ]
         .contains(&media_type)
     }) {
@@ -618,17 +656,14 @@ fn folder_metadata_sidecar(
         .media_type
         .as_deref()
         .unwrap_or_else(|| folder_media_type(folder));
-    if matches!(media_type, "series" | "season") {
-        let root_tag = if media_type == "series" {
-            "tvshow"
-        } else {
-            "season"
-        };
-        let filename = if media_type == "series" {
-            "tvshow.nfo"
-        } else {
-            "season.nfo"
-        };
+    let folder_nfo = match media_type {
+        "series" => Some(("tvshow", "tvshow.nfo")),
+        "season" => Some(("season", "season.nfo")),
+        "youtube-channel" => Some(("youtubechannel", YOUTUBE_CHANNEL_SIDECAR)),
+        "youtube-video" => Some(("youtubevideo", YOUTUBE_VIDEO_SIDECAR)),
+        _ => None,
+    };
+    if let Some((root_tag, filename)) = folder_nfo {
         let mut xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<{root_tag}>\n");
         xml.push_str(&xml_element("title", Some(&request.title)));
         xml.push_str(&xml_element("sorttitle", request.sort_title.as_deref()));
@@ -1687,9 +1722,9 @@ async fn video_health_issues(
     }
     // A container fault already explains why FFprobe failed.
     let probe_failed = file_is_sound
-        && cache.as_ref().is_some_and(|cache| {
-            cache.probe_failed(&item.relative_path, &item.fingerprint)
-        });
+        && cache
+            .as_ref()
+            .is_some_and(|cache| cache.probe_failed(&item.relative_path, &item.fingerprint));
     issues.extend(file_health::video_probe_issues(
         probe.as_ref(),
         probe_failed,
@@ -1998,20 +2033,14 @@ pub(super) async fn metadata_issues(
         let permit_wait = probe_deadline
             .saturating_duration_since(std::time::Instant::now())
             .min(std::time::Duration::from_secs(8));
-        let permit = tokio::time::timeout(
-            permit_wait,
-            crate::video_probe::PROBE_LIMIT.acquire(),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok);
+        let permit = tokio::time::timeout(permit_wait, crate::video_probe::PROBE_LIMIT.acquire())
+            .await
+            .ok()
+            .and_then(Result::ok);
         application_caches.video_probes = {
             let probe_work = tokio::task::spawn_blocking(move || {
-                let mut cache = VideoProbeCache::open_for_root(
-                    &state_dir,
-                    &root_id,
-                    FilePath::new(&root_path),
-                );
+                let mut cache =
+                    VideoProbeCache::open_for_root(&state_dir, &root_id, FilePath::new(&root_path));
                 // Held until the closure returns, so the probes run in the slot.
                 if let (Some(ffprobe), Some(_slot)) = (ffprobe, permit)
                     && page_videos
