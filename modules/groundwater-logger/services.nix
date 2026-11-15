@@ -9,6 +9,7 @@ let
   netbirdAddress = vars.networking.netbird.ip;
   netbirdIface = vars.networking.interfaces.netbird;
   mqttPort = vars.networking.ports.groundwaterMqtt;
+  mqttTlsPort = vars.networking.ports.groundwaterMqttTls;
   appPort = vars.networking.ports.groundwaterLogger;
   appAcl = [
     "readwrite gwl/v1/#"
@@ -41,14 +42,16 @@ let
     "write cfg/desired/applied"
     "write cfg/danger_ack"
   ];
-  listenerUsers = {
-    groundwater-app = {
-      passwordFile = config.age.secrets.groundwaterAppMqttPassword.path;
-      acl = appAcl;
-    };
+  loggerUser = {
     groundwater-logger = {
       passwordFile = config.age.secrets.groundwaterLoggerMqttPassword.path;
       acl = loggerAcl;
+    };
+  };
+  listenerUsers = loggerUser // {
+    groundwater-app = {
+      passwordFile = config.age.secrets.groundwaterAppMqttPassword.path;
+      acl = appAcl;
     };
   };
 in
@@ -96,17 +99,41 @@ in
           port = mqttPort;
           users = listenerUsers;
         }
+        # Internet-facing TLS endpoint for field loggers: the router forwards
+        # public TCP 8883 to this LAN address. Only the logger account exists
+        # here, so the web app's broad ACL is never reachable from outside.
+        # Ciphers stay at OpenSSL defaults; the Quectel EC21 needs RSA
+        # certificates with ECDHE-RSA AES-CBC/GCM suites.
+        {
+          address = lanAddress;
+          port = mqttTlsPort;
+          users = loggerUser;
+          settings = {
+            certfile = "${./mqtt-tls/server.pem}";
+            keyfile = config.age.secrets.groundwaterMqttTlsKey.path;
+            tls_version = "tlsv1.2";
+            require_certificate = false;
+          };
+        }
       ];
     };
 
-    networking.firewall.interfaces.${lanIface}.allowedTCPPorts = [ mqttPort ];
+    networking.firewall.interfaces.${lanIface}.allowedTCPPorts = [ mqttPort mqttTlsPort ];
     networking.firewall.interfaces.${netbirdIface}.allowedTCPPorts = [ mqttPort ];
 
     # The overlay address must exist before Mosquitto binds it. The NetBird
     # client belongs to Core_Modules and remains present when this app is off.
+    #
+    # agenix installs the TLS key during activation, before units start.
+    # Restart on key rotation, since /run/agenix/... never changes. Hash the
+    # ciphertext: its store path embeds the whole flake source, which would
+    # bounce the broker and every connected logger on each deploy.
     systemd.services.mosquitto = {
       wants = [ "netbird-address-verify.service" ];
       after = [ "netbird-address-verify.service" ];
+      restartTriggers = [
+        (builtins.hashFile "sha256" config.age.secrets.groundwaterMqttTlsKey.file)
+      ];
     };
 
     systemd.services.groundwater-server = {

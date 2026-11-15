@@ -128,6 +128,9 @@ in
   // lib.optionalAttrs groundwaterEnabled {
     groundwaterAppMqttPassword = { file = secretFile "groundwaterAppMqttPassword"; owner = "groundwater-logger"; group = "groundwater-logger"; mode = "0400"; };
     groundwaterLoggerMqttPassword = { file = secretFile "groundwaterLoggerMqttPassword"; owner = "root"; mode = "0400"; };
+    # Mosquitto runs with PrivateUsers=true and opens the key itself, so the
+    # file must belong to its own (mapped) user rather than root.
+    groundwaterMqttTlsKey = { file = secretFile "groundwaterMqttTlsKey"; owner = "mosquitto"; group = "mosquitto"; mode = "0400"; };
   }
   // lib.optionalAttrs (builtins.pathExists failureAlertWebhookFile) {
     failureAlertWebhookUrl = { file = failureAlertWebhookFile; owner = "root"; mode = "0400"; };

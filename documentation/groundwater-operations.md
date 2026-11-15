@@ -19,13 +19,53 @@ last logger that sent a reading.
    when the deployed firmware actually writes UTC; `unknown` preserves the
    timestamp without pretending that its timezone is known. A timezone carried
    in the payload takes precedence over this policy.
-3. Rebuild the firmware to use the existing private Mosquitto endpoint and
-   provision the existing device account through the secret-management path.
-   For field units, provide LAN reachability through the existing NetBird mesh
-   (for example, a site router running NetBird). The STM32 modem does not become
-   a NetBird client merely by changing its broker hostname. If a site cannot
-   provide that path, leave it uncommissioned until a private transport is
-   available; a public listener or HiveMQ bridge requires a separate decision.
+3. Rebuild the firmware for the right broker endpoint and provision the
+   existing `groundwater-logger` account through the secret-management path.
+   On-site units can use plain MQTT on port 1883, which stays LAN/NetBird-only.
+   Cellular field units (Quectel EC21) connect over the internet to the
+   GL.iNet Flint 2 router's DDNS name (`<id>.glddns.com`) on port 8883 with
+   TLS 1.2 or later:
+   - The router keeps that DDNS name pointed at the home's public IPv4, and
+     its port forward sends public TCP 8883 to the server at
+     `192.168.8.12:8883`. The owner manages both by hand; they are not in this
+     repository. `mqtt.sydneybasiniot.org` is reserved as a stable alias
+     (a DNS-only CNAME to the DDNS name, or later a VPS relay), so a future
+     move needs a DNS change rather than a firmware change.
+   - The server opens 8883 only on the LAN interface. That listener accepts
+     only the `groundwater-logger` account and its logger ACL. The
+     `groundwater-app` account is rejected there and stays loopback/LAN/NetBird
+     only. The listener does not use client certificates.
+   - The server certificate (`modules/groundwater-logger/mqtt-tls/server.pem`,
+     RSA-2048, SANs `mqtt.sydneybasiniot.org` and `*.glddns.com`) is signed by
+     a private CA, so it matches whichever DDNS name the router gets. Only
+     loggers holding that CA trust it. The
+     firmware trusts that CA certificate, not a public CA. The private key is
+     the agenix secret `groundwaterMqttTlsKey`, owned by `mosquitto`, mode
+     0400. Ciphers stay at OpenSSL defaults, because the EC21 needs ECDHE-RSA
+     with AES-CBC/GCM.
+   - To reissue the server certificate (for example to add a name), run
+     `tools/mqtt-pki.sh mqtt.sydneybasiniot.org '*.glddns.com'` in the
+     firmware repository and copy the new `server.pem` over the committed one.
+     It reuses the CA and the broker key, so neither the loggers nor the
+     agenix secret change. To rotate the key as well, add `--new-key` and
+     replace the secret without printing it:
+
+     ```bash
+     install -d -m 0700 secrets/unencrypted
+     install -m 0600 ~/.local/share/gwl-mqtt-pki/server.key \
+       secrets/unencrypted/groundwaterMqttTlsKey
+     nix run .#generate-secrets -- \
+       --replace-external groundwaterMqttTlsKey \
+       --identity /path/to/current/age.key
+     rm -f secrets/unencrypted/groundwaterMqttTlsKey
+     rmdir secrets/unencrypted 2>/dev/null || true
+     git add modules/groundwater-logger/mqtt-tls/server.pem \
+       secrets/groundwaterMqttTlsKey.age
+     ```
+
+     Deploy both files together. Mosquitto restarts when either changes.
+     Never copy the CA private key into this repository. Rotating the CA
+     itself means reflashing every logger.
 4. Enroll the unit and its exact trusted topics using the template below.
 5. Add viewer permission rows for each account that should see this device.
    `app-admin` has global access. Membership of `groundwater-user` alone grants
@@ -210,6 +250,6 @@ It exercises disposable PostgreSQL and Mosquitto instances without contacting
 hardware or the deployed server. Run only the affected module checks for Nix integration. These checks
 do not authorize a deployment or a full repository test suite.
 
-Hardware commissioning remains a separate firsthand check: verify the private
-network path, clock policy, sensor datum, wake window and full-settings behavior
+Hardware commissioning remains a separate firsthand check: verify the network
+path (LAN, NetBird or the 8883 TLS endpoint), clock policy, sensor datum, wake window and full-settings behavior
 on the actual unit. Firmware changes listed in the design remain out of scope.

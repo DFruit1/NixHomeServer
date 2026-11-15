@@ -212,6 +212,7 @@ validator_function() {
     acoustid-credentials-json) printf '%s\n' validate_acoustid_credentials ;;
     https-url) printf '%s\n' validate_https_url ;;
     nonempty) printf '%s\n' validate_nonempty_secret ;;
+    pem-private-key) printf '%s\n' validate_pem_private_key ;;
     langfuse-project-credentials) printf '%s\n' validate_langfuse_project_credentials ;;
     *)
       echo "❌ Unknown external-secret validator '$1' in secrets/manifest.nix" >&2
@@ -299,6 +300,12 @@ validate_nonempty_secret() {
 
   value="$(tr -d '\r\n' <"$1")"
   [[ -n "$value" ]] && [[ "$value" != REPLACE_ME* ]]
+}
+
+validate_pem_private_key() {
+  grep -Eq '^-----BEGIN ([A-Z]+ )?PRIVATE KEY-----$' "$1" \
+    && grep -Eq '^-----END ([A-Z]+ )?PRIVATE KEY-----$' "$1" \
+    && ! grep -Eq '^(-----BEGIN ENCRYPTED |Proc-Type: 4,ENCRYPTED)' "$1"
 }
 
 validate_https_url() {
