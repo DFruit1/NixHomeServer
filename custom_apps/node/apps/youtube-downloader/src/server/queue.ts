@@ -39,6 +39,14 @@ import {
   readChannelDescription,
   writeFileIfMissing,
 } from './youtube-folders.js';
+import {
+  ITEM_METADATA_FOLDER,
+  archiveThumbnail,
+  buildItemManifest,
+  manifestStem,
+  prepareItemMetadataFolder,
+  writeItemManifest,
+} from './item-manifest.js';
 
 export {
   chapterGateFor,
@@ -434,6 +442,12 @@ export class JobQueue {
     }
     if (isVideo) {
       written.push(...(await this.writeVideoFolderMetadata(job.id, request, source, tempDir, outputFolder)));
+    }
+    // Everything written so far belongs to this one item; the channel
+    // folder's own metadata below is shared with the channel's other
+    // downloads and stays out of the item's manifest.
+    await this.writeItemManifest(job, request, source, tempDir, safeRoot, outputFolder, [...written]);
+    if (isVideo) {
       if (request.includeChannel) {
         const channelFolder = path.join(safeRoot, folders[0]);
         written.push(...(await this.writeChannelFolderMetadata(job.id, ytDlpPath, source, tempDir, channelFolder)));
@@ -486,6 +500,51 @@ export class JobQueue {
       await this.db.addEvent(jobId, 'metadata', `could not write the video folder metadata: ${errorMessage(error)}`);
     }
     return written;
+  }
+
+  /**
+   * Record the download in the item folder's hidden metadata folder: the
+   * manifest, and the original thumbnail even where the options left it out
+   * of the library. A failure here is logged on the job and never fails the
+   * download, which is already in the library.
+   */
+  private async writeItemManifest(
+    job: Job,
+    request: CreateJobRequest,
+    source: ProbeResponse,
+    tempDir: string,
+    libraryRoot: string,
+    itemFolder: string,
+    itemFiles: string[],
+  ): Promise<void> {
+    if (source.isPlaylist) {
+      // A playlist job is probed flat: there is no per-video record to keep.
+      await this.db.addEvent(job.id, 'metadata', 'playlist downloads do not get an item manifest');
+      return;
+    }
+    let reserved: { folder: string; stem: string } | undefined;
+    try {
+      reserved = await prepareItemMetadataFolder(itemFolder, manifestStem(source));
+      const thumbnail = await findThumbnail(tempDir);
+      const archived = thumbnail ? await archiveThumbnail(thumbnail, reserved.folder, reserved.stem) : undefined;
+      const manifest = buildItemManifest({
+        jobId: job.id,
+        downloadedBy: job.createdBy,
+        downloadedAt: new Date().toISOString(),
+        request,
+        source,
+        libraryRoot,
+        itemFolder,
+        files: itemFiles,
+        thumbnail: archived,
+      });
+      await writeItemManifest(reserved.folder, reserved.stem, manifest);
+    } catch (error) {
+      if (reserved) {
+        await rm(path.join(reserved.folder, `${reserved.stem}.json`), { force: true }).catch(() => undefined);
+      }
+      await this.db.addEvent(job.id, 'metadata', `could not write the item manifest: ${errorMessage(error)}`);
+    }
   }
 
   /**
@@ -618,6 +677,9 @@ export class JobQueue {
   private async recordFiles(jobId: string, folder: string): Promise<void> {
     const entries = await collectFiles(folder);
     for (const entry of entries) {
+      if (path.relative(folder, entry).split(path.sep).includes(ITEM_METADATA_FOLDER)) {
+        continue;
+      }
       const fullPath = entry;
       const relative = path.relative(folder, fullPath);
       const extension = path.extname(entry).toLowerCase();

@@ -1,6 +1,6 @@
 use crate::{
     catalog::{Catalog, CatalogHandle, ScannedItem},
-    config::TOMBSTONE_FOLDER,
+    config::is_unscanned_folder,
     media::{classify, LibraryCategory},
 };
 use serde::Serialize;
@@ -258,7 +258,7 @@ pub fn index_root_paths(
 
 /// Returns metadata for `path` only when it is the root or a descendant whose
 /// every component below the root is a real (non-symlink) directory entry
-/// outside the tombstone folder.
+/// outside the tombstone and downloader metadata folders.
 fn contained_metadata(root: &Path, path: &Path) -> Option<fs::Metadata> {
     let relative = path.strip_prefix(root).ok()?;
     let mut current = root.to_path_buf();
@@ -267,7 +267,7 @@ fn contained_metadata(root: &Path, path: &Path) -> Option<fs::Metadata> {
         let std::path::Component::Normal(name) = component else {
             return None;
         };
-        if name.to_str() == Some(TOMBSTONE_FOLDER) {
+        if name.to_str().is_some_and(is_unscanned_folder) {
             return None;
         }
         current.push(name);
@@ -327,7 +327,11 @@ fn walk_directory(
                 continue;
             }
             if file_type.is_dir() {
-                if path.file_name().and_then(|value| value.to_str()) == Some(TOMBSTONE_FOLDER) {
+                if path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(is_unscanned_folder)
+                {
                     continue;
                 }
                 pending.push(path);

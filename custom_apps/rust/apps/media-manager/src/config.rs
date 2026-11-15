@@ -6,6 +6,17 @@ pub const DEFAULT_EDITOR_GROUP: &str = "media-manager-editors";
 
 pub const TOMBSTONE_FOLDER: &str = "_Tombstone";
 
+/// Hidden folder the YouTube Downloader keeps beside each download, holding a
+/// per-video manifest and the original thumbnail (`ITEM_METADATA_FOLDER` in
+/// the downloader's `item-manifest.ts`). It is bookkeeping, not library
+/// content, so the scanner never catalogs what is inside it.
+pub const YOUTUBE_ITEM_METADATA_FOLDER: &str = ".youtube-downloader";
+
+/// Folders the scanner never descends into.
+pub fn is_unscanned_folder(name: &str) -> bool {
+    name == TOMBSTONE_FOLDER || name == YOUTUBE_ITEM_METADATA_FOLDER
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MutationMode {

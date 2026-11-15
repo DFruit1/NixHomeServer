@@ -327,13 +327,19 @@ fn scanner_skips_entries_with_non_utf8_paths_instead_of_failing() {
 }
 
 #[test]
-fn scanner_skips_the_tombstone_folder() {
+fn scanner_skips_the_tombstone_and_downloader_metadata_folders() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let library = dir.path().join("library");
     std::fs::create_dir_all(&library).expect("library");
     std::fs::write(library.join("Keep.mkv"), b"video").expect("media");
     std::fs::create_dir_all(library.join("_Tombstone")).expect("tombstone");
     std::fs::write(library.join("_Tombstone/Gone.mp4"), b"video").expect("tombstoned media");
+    std::fs::create_dir_all(library.join("Channel/.youtube-downloader")).expect("metadata folder");
+    std::fs::write(
+        library.join("Channel/.youtube-downloader/abc123.jpg"),
+        b"jpeg",
+    )
+    .expect("archived thumbnail");
 
     let mut catalog = Catalog::initialize(&dir.path().join("control.sqlite3")).expect("catalog");
     let result = scan_root(

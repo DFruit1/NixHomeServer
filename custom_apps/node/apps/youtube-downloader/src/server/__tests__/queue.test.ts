@@ -486,8 +486,25 @@ process.stdout.write('[download] 100% of 1MiB\\n');
       const outputFolder = job.outputFolder ?? '';
       expect(path.relative(path.dirname(path.dirname(outputFolder)), outputFolder)).toBe(path.join('Test Channel', 'Test Song'));
       const names = (await readdir(outputFolder)).sort();
-      expect(names).toEqual(['01 - Intro.flac', '02 - Main.flac', 'Test Song.info.json']);
-      expect([...job.files].sort()).toEqual(names);
+      expect(names).toEqual(['.youtube-downloader', '01 - Intro.flac', '02 - Main.flac', 'Test Song.info.json']);
+      expect([...job.files].sort()).toEqual(names.slice(1));
+
+      // The thumbnail the library leaves out is archived with a manifest that
+      // ties each chapter file to its chapter, so the split can be undone.
+      const metadata = path.join(outputFolder, '.youtube-downloader');
+      expect((await readdir(metadata)).sort()).toEqual(['.nomedia', 'abc123.jpg', 'abc123.json']);
+      const manifest = JSON.parse(await readFile(path.join(metadata, 'abc123.json'), 'utf8'));
+      expect(manifest.chapters).toEqual([
+        { index: 1, title: 'Intro', startTime: 0, endTime: 30 },
+        { index: 2, title: 'Main', startTime: 30, endTime: 60 },
+      ]);
+      expect(manifest.files).toEqual([
+        { path: 'Test Song.info.json', role: 'info-json' },
+        { path: '01 - Intro.flac', role: 'chapter', chapter: 1 },
+        { path: '02 - Main.flac', role: 'chapter', chapter: 2 },
+      ]);
+      expect(manifest.state).toMatchObject({ folder: 'Test Channel/Test Song', layout: 'channel-video', split: true, coverEmbedded: true });
+      expect(manifest.thumbnail).toBe('.youtube-downloader/abc123.jpg');
     } finally {
       process.env.PATH = originalPath;
       await queue.stop(0);
@@ -555,8 +572,8 @@ process.stdout.write('[download] 100% of 1MiB\\n');
 
       const outputFolder = job.outputFolder ?? '';
       const names = (await readdir(outputFolder)).sort();
-      expect(names).toEqual(['01 - Intro.flac', '02 - Main.flac', 'Test Song.en-orig.srt', 'Test Song.en.srt']);
-      expect([...job.files].sort()).toEqual(names);
+      expect(names).toEqual(['.youtube-downloader', '01 - Intro.flac', '02 - Main.flac', 'Test Song.en-orig.srt', 'Test Song.en.srt']);
+      expect([...job.files].sort()).toEqual(names.slice(1));
     } finally {
       process.env.PATH = originalPath;
       await queue.stop(0);
