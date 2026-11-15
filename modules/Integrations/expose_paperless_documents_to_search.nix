@@ -12,14 +12,18 @@ in
       && lib.hasAttrByPath [ "repo" "paperless" ] options
     )
     (lib.mkIf (config.repo.search.enable && config.services.paperless.enable) {
-      # Paperless is runtime-federated: Search queries Paperless's own Tantivy
-      # index at request time and never copies document bodies into the index.
+      # Search reads each document's text and details through the Paperless
+      # API and indexes them, so documents take part in the same ranking,
+      # related passages and reranking as every other source. Paperless has
+      # already read the scans; nothing is recognised a second time. This
+      # replaced querying Paperless's own index at request time
+      # (`paperless-api`), which kept its documents out of that ranking.
       repo.search.sources.paperless = {
         displayName = "Documents";
-        sourceType = "paperless-api";
+        sourceType = "paperless-documents";
         appBase = "https://paperless.${vars.domain}";
         settings = {
-          # Loopback so no TLS/DNS round trip is needed for each query.
+          # Loopback so no TLS/DNS round trip is needed.
           baseUrl = "http://${loopback}:${toString paperlessPort}";
         };
       };
@@ -28,14 +32,14 @@ in
       # so allow its loopback listener for the internal Search client.
       repo.paperless.additionalAllowedHosts = [ loopback ];
 
-      systemd.services.search-ui = {
+      systemd.services.search-index = {
         environment.SEARCH_PAPERLESS_TOKEN_FILE = tokenFile;
         wants = [ "paperless-search-api-token.service" ];
         after = [ "paperless-search-api-token.service" ];
       };
 
       # Mints an idempotent DRF token for a dedicated, view-only service user
-      # and leaves it where the Search UI reads it. The token itself lives in
+      # and leaves it where the Search indexer reads it. The token itself lives in
       # the Paperless database; only its derived copy is written to /run, so it
       # is never backed up and is regenerated on every boot.
       systemd.services.paperless-search-api-token = {

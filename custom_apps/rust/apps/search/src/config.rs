@@ -5,9 +5,10 @@ use serde::Deserialize;
 
 use homelab_common::env_required;
 
-const KNOWN_SOURCE_TYPES: [&str; 8] = [
+const KNOWN_SOURCE_TYPES: [&str; 9] = [
     "paperless",
     "paperless-api",
+    "paperless-documents",
     "kiwix",
     "browsertrix",
     "mail-archive",

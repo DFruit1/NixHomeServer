@@ -120,7 +120,7 @@ async fn load_names(
     Ok(out)
 }
 
-fn taxonomy_page_url(first: &url::Url, next: &str) -> Result<url::Url, String> {
+pub(crate) fn taxonomy_page_url(first: &url::Url, next: &str) -> Result<url::Url, String> {
     let url = first
         .join(next)
         .map_err(|_| "Document metadata pagination URL is invalid.")?;
@@ -456,7 +456,11 @@ async fn request_json(
     response.json().await.map_err(|_| 0u16)
 }
 
-async fn fetch_json(client: &reqwest::Client, token: &str, url: &str) -> Result<Value, u16> {
+pub(crate) async fn fetch_json(
+    client: &reqwest::Client,
+    token: &str,
+    url: &str,
+) -> Result<Value, u16> {
     let response = client
         .get(url)
         .header(reqwest::header::AUTHORIZATION, format!("Token {token}"))

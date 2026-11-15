@@ -315,6 +315,7 @@ in
               type = lib.types.enum [
                 "paperless"
                 "paperless-api"
+                "paperless-documents"
                 "kiwix"
                 "browsertrix"
                 "mail-archive"

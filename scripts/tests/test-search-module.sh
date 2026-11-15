@@ -43,8 +43,8 @@ require_fixed modules/search/services.nix 'solr start -f' \
   "The packaged Solr must run in the foreground under systemd."
 require_fixed modules/Integrations/expose_mail_archive_emails_to_search.nix 'emailsRoots' \
   "The mail Search integration must populate the emailsRoots setting the extractor reads."
-require_fixed modules/Integrations/expose_paperless_documents_to_search.nix 'sourceType = "paperless-api"' \
-  "Paperless must be runtime-federated through its own API, not copied into the index."
+require_fixed modules/Integrations/expose_paperless_documents_to_search.nix 'sourceType = "paperless-documents"' \
+  "Paperless documents must be read through its API and indexed, so they share ranking with other sources."
 require_fixed modules/Integrations/expose_paperless_documents_to_search.nix 'paperless-search-api-token' \
   "The Paperless Search integration must provision the API token service."
 require_fixed modules/Integrations/expose_media_manager_libraries_to_search.nix 'sourceType = "media-snapshot"' \

@@ -8,6 +8,7 @@ pub mod mail;
 pub mod media_snapshot;
 pub mod ocr;
 pub mod paperless;
+pub mod paperless_api;
 pub mod sections;
 
 use std::path::{Path, PathBuf};
@@ -335,6 +336,9 @@ pub fn run(
     let extractor: Box<dyn Extractor> = match source.source_type.as_str() {
         "paperless" => Box::new(paperless::PaperlessExtractor {
             pdftotext: settings.pdftotext.clone(),
+        }),
+        "paperless-documents" => Box::new(paperless_api::PaperlessApiExtractor {
+            token_file: settings.paperless_token_file.clone(),
         }),
         "kiwix" => Box::new(kiwix::KiwixExtractor {
             zimdump: settings
