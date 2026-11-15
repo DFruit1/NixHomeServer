@@ -126,6 +126,12 @@ in {
     systemd.services.search-solr-core-bootstrap.environment.SEARCH_PASSAGE_CORE = "search-passages-v1";
     systemd.services.search-embed = {
       description = "Embed pending library passages with limited GPU offload";
+      # A pass can run for hours, and activation would otherwise restart a
+      # running pass and wait for the whole oneshot (TimeoutStartSec=infinity):
+      # a guarded deploy then times out, and so does its rollback. Passes
+      # commit to Solr before checkpointing, so the next timer run simply picks
+      # up the new definition.
+      restartIfChanged = false;
       requires = [ "search-model-prepare.service" "search-solr-core-bootstrap.service" "postgresql.service" ];
       after = [ "search-model-prepare.service" "search-solr-core-bootstrap.service" "postgresql.service" ];
       unitConfig.RequiresMountsFor = [ cfg.paths.models ];
