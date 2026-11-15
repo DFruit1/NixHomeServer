@@ -8,6 +8,7 @@ import {
   type QRL,
 } from "@builder.io/qwik";
 import { api, readableError } from "./api";
+import { useBackLayer } from "./back-layers";
 import type {
   ConversionInputs,
   ConversionInputAccepted,
@@ -104,6 +105,17 @@ const ServerFileDialog = component$<{
   const listing = useSignal<ConversionFiles>();
   const firstControl = useSignal<HTMLSelectElement>();
   const copy = taskCopy[props.task];
+  // Back climbs to the parent folder, then closes the browser.
+  const mounted = useSignal(true);
+  useBackLayer(
+    "server-file-browser",
+    mounted,
+    $(async () => {
+      if (!view.folder) return props.onClose$();
+      view.folder = view.folder.split("/").slice(0, -1).join("/");
+      return false;
+    }),
+  );
   useVisibleTask$(() => {
     firstControl.value?.focus();
   });

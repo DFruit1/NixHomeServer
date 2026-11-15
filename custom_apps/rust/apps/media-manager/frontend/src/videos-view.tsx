@@ -1,12 +1,14 @@
 import {
   $,
   component$,
+  useComputed$,
   useSignal,
   useStore,
   useTask$,
   useVisibleTask$,
 } from "@builder.io/qwik";
 import { api, catalogItems, readableError } from "./api";
+import { useBackLayer } from "./back-layers";
 import type { ImmichAlbumList, VideoClip } from "./api-contract.generated";
 import { Icon } from "./icon";
 import { findTargetIndex, prepareBrowserPlayback } from "./playback-target";
@@ -386,6 +388,9 @@ export const VideosView = component$<{
     clip.open = false;
     clip.error = "";
   });
+
+  const clipDialogOpen = useComputed$(() => clip.open);
+  useBackLayer("gif-dialog", clipDialogOpen, closeClipDialog);
 
   const chooseClipAlbum = $((value: string) => {
     clip.albumId = value;

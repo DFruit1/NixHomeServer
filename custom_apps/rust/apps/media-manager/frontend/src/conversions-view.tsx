@@ -2,11 +2,13 @@ import {
   $,
   component$,
   type QRL,
+  useComputed$,
   useSignal,
   useStore,
   useTask$,
 } from "@builder.io/qwik";
 import { api, ApiError, readableError } from "./api";
+import { useBackLayer } from "./back-layers";
 import type {
   TranscriptionEnvelope,
   TranscriptionJob,
@@ -322,6 +324,12 @@ export const ConversionsView = component$<{
     inputError: "",
   });
   const logDialog = useSignal<string>("");
+  const logDialogOpen = useComputed$(() => logDialog.value !== "");
+  useBackLayer(
+    "failure-log",
+    logDialogOpen,
+    $(() => (logDialog.value = "")),
+  );
   const task = useSignal<ConversionsTask | "">(
     props.initialItemId ? "videos" : "",
   );

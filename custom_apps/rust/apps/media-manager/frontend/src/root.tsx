@@ -5,11 +5,13 @@ import {
   useOnDocument,
   useSignal,
   useStore,
+  useComputed$,
   useTask$,
   useVisibleTask$,
   useOnWindow,
 } from "@builder.io/qwik";
 import { api, errorDetail, readableError } from "./api";
+import { pushRoute, useBackLayer } from "./back-layers";
 import type { ProviderTestResult } from "./api-contract.generated";
 import { ActivityView } from "./activity-view";
 import { ConversionsView } from "./conversions-view";
@@ -518,7 +520,7 @@ export default component$((props: RootProps) => {
       );
       view.value = next.initialView ?? "library";
       routeUrl = url.href;
-      if (push) window.history.pushState({}, "", url);
+      if (push) pushRoute({}, url.href);
       window.scrollTo(0, 0);
     };
     const onClick = (event: MouseEvent) => {
@@ -552,14 +554,19 @@ export default component$((props: RootProps) => {
       });
     };
     const onPopState = () => {
-      // These views own their within-page selection history and scroll position.
+      // Views own their within-page history (library selection, photos,
+      // albums) and open layers own same-URL entries (see back-layers.ts).
       if (
         viewFromSearch(window.location.search) === view.value &&
-        (view.value === "library" ||
-          (["player", "images"].includes(view.value) &&
-            window.location.href === routeUrl))
+        (view.value === "library" || window.location.href === routeUrl)
       )
         return;
+      if (!allowMetadataDraftDiscard(state.metadataDraftDirty)) {
+        // The URL already changed; restore it so it matches the kept draft.
+        window.history.pushState({}, "", routeUrl);
+        return;
+      }
+      state.metadataDraftDirty = false;
       void navigate(new URL(window.location.href), false).catch((error) => {
         state.error = readableError(error);
       });
@@ -823,6 +830,12 @@ const ProviderAccountsView = component$(() => {
     accounts.credentialValues = {};
     accounts.selectedProviderId = "";
   });
+
+  // Back closes the credential editor instead of leaving the page.
+  const editingProvider = useComputed$(() =>
+    Boolean(accounts.selectedProviderId),
+  );
+  useBackLayer("provider-credentials", editingProvider, closeProvider);
 
   const openProvider = $((provider: ProviderDefinition) => {
     if (!provider.canConfigure || accounts.saving) return;
@@ -2102,6 +2115,11 @@ const LibraryDetailPane = component$<{
     revision: number;
   }>({ action: "", revision: 0 });
   const coverEditing = useSignal(false);
+  useBackLayer(
+    "cover-editor",
+    coverEditing,
+    $(() => (coverEditing.value = false)),
+  );
   const palette = useSignal({ imageId: "", colors: [] as string[] });
   const crumbRef = useSignal<HTMLElement>();
   const heroRef = useSignal<HTMLElement>();
@@ -2310,6 +2328,24 @@ const LibraryDetailPane = component$<{
     </div>
   );
 });
+
+function librarySelectionUrl(
+  state: DashboardState,
+  folder: string,
+  folderRootId: string | undefined,
+): string {
+  const itemId = state.selectedItemId;
+  const selectedItem = itemId
+    ? state.items.find((item) => item.id === itemId)
+    : undefined;
+  const params = new URLSearchParams();
+  params.set("view", "library");
+  const rootId = (selectedItem?.rootId ?? folderRootId) || state.selectedRootId;
+  if (rootId) params.set("root", rootId);
+  if (itemId) params.set("item", itemId);
+  else if (folder) params.set("path", folder);
+  return `${window.location.pathname}?${params.toString()}`;
+}
 
 function scrollLibraryDetailToTop() {
   if (typeof window === "undefined") return;
@@ -2554,34 +2590,40 @@ const LibraryView = component$<{
     const firstRun = pushedSelection.value === null;
     pushedSelection.value = selectionKey;
     if (firstRun) return;
-    const selectedItem = itemId
-      ? props.state.items.find((item) => item.id === itemId)
-      : undefined;
-    const itemRootId = selectedItem?.rootId ?? activeFolderRootId;
-    const params = new URLSearchParams();
-    params.set("view", "library");
-    const rootId = itemRootId || props.state.selectedRootId;
-    if (rootId) params.set("root", rootId);
-    if (itemId) params.set("item", itemId);
-    else if (folder) params.set("path", folder);
-    window.history.pushState(
-      {},
-      "",
-      `${window.location.pathname}?${params.toString()}`,
-    );
+    pushRoute({}, librarySelectionUrl(props.state, folder, activeFolderRootId));
   });
   const historyRevision = useSignal(0);
   useOnWindow(
     "popstate",
     $(async () => {
       if (typeof window === "undefined") return;
-      if (!allowMetadataDraftDiscard(props.state.metadataDraftDirty)) return;
-      const revision = ++historyRevision.value;
       const search = window.location.search;
       if (viewFromSearch(search) !== "library") return;
       const itemId = itemFromSearch(search);
       const folderPath = pathFromSearch(search);
       const rootId = rootFromSearch(search);
+      // An entry for the current selection belongs to an editor layer
+      // (back-layers.ts); re-selecting would reset the open editor.
+      const currentFolder = personal.selectedFolder || shared.selectedFolder;
+      const unchanged = itemId
+        ? itemId === props.state.selectedItemId
+        : folderPath
+          ? !props.state.selectedItemId && folderPath === currentFolder
+          : !props.state.selectedItemId &&
+            !currentFolder &&
+            (!rootId || rootId === props.state.selectedRootId);
+      if (unchanged) return;
+      if (!allowMetadataDraftDiscard(props.state.metadataDraftDirty)) {
+        // The URL already moved; put the kept selection back on top.
+        window.history.pushState(
+          {},
+          "",
+          librarySelectionUrl(props.state, currentFolder, activeFolderRootId),
+        );
+        return;
+      }
+      props.state.metadataDraftDirty = false;
+      const revision = ++historyRevision.value;
       const root = props.state.roots.find(
         (candidate) => candidate.id === rootId,
       );

@@ -13,6 +13,7 @@ import {
   Slot,
   type QRL,
   type Signal,
+  useComputed$,
   useConstant,
   useSignal,
   noSerialize,
@@ -23,6 +24,7 @@ import {
   useVisibleTask$,
 } from "@builder.io/qwik";
 import { api, readableError } from "./api";
+import { useBackLayer } from "./back-layers";
 import { metadataFieldLabel } from "./item-editor-helpers";
 import { revealWhenMounted } from "./reveal";
 import { Icon } from "./icon";
@@ -2613,6 +2615,14 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
     }
   });
 
+  const providersDialogOpen = useComputed$(
+    () => providersDialogFor.value !== null,
+  );
+  useBackLayer(
+    "provider-lookup",
+    providersDialogOpen,
+    $(() => (providersDialogFor.value = null)),
+  );
   const dialog = providersDialogFor.value;
   const visibleResults = visibleHealthResults(inbox.results, hidden.value);
   // Reuse unchanged groups so hiding one issue re-renders only its item.

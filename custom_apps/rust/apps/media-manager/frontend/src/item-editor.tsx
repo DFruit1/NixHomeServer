@@ -3,12 +3,14 @@ import {
   $,
   component$,
   type QRL,
+  useComputed$,
   useSignal,
   useStore,
   useTask$,
   useVisibleTask$,
 } from "@builder.io/qwik";
 import { api, errorDetail, readableError } from "./api";
+import { useBackLayer } from "./back-layers";
 import { Icon } from "./icon";
 import {
   allowMetadataDraftDiscard,
@@ -668,15 +670,11 @@ export const ItemEditor = component$<{
     revealWhenMounted(() => cardRef.value);
   });
 
-  const toggleMetadataDraft = $(() => {
-    if (metadata.confirming) return;
-    if (!metadata.isDraft) {
-      metadata.isDraft = true;
-      metadata.draftSessionRevision += 1;
-      props.state.metadataDraftRevision += 1;
-      return;
-    }
-    if (!allowMetadataDraftDiscard(metadata.isDirty)) return;
+  // Returns false when the draft stays open (queued, or the user kept it).
+  const stopMetadataDraft = $(() => {
+    if (!metadata.isDraft) return true;
+    if (metadata.confirming) return false;
+    if (!allowMetadataDraftDiscard(metadata.isDirty)) return false;
     metadata.isDraft = false;
     metadata.draftRevision += 1;
     metadata.draftSessionRevision += 1;
@@ -686,7 +684,52 @@ export const ItemEditor = component$<{
     metadata.preview = undefined;
     metadata.previewChanges = [];
     metadata.reloadKey += 1;
+    return true;
   });
+
+  const toggleMetadataDraft = $(async () => {
+    if (metadata.confirming) return;
+    if (metadata.isDraft) {
+      await stopMetadataDraft();
+      return;
+    }
+    metadata.isDraft = true;
+    metadata.draftSessionRevision += 1;
+    props.state.metadataDraftRevision += 1;
+  });
+
+  // Back first dismisses a pending review (field changes, rename, removal or
+  // a provider comparison), then leaves edit mode, before leaving the item.
+  const editing = useComputed$(() => metadata.isDraft);
+  useBackLayer("metadata-draft", editing, stopMetadataDraft);
+  const reviewing = useComputed$(() =>
+    Boolean(
+      metadata.preview ||
+        metadata.matchCandidate ||
+        removeAction.preview ||
+        props.state.preview,
+    ),
+  );
+  useBackLayer(
+    "metadata-review",
+    reviewing,
+    $(() => {
+      if (
+        metadata.confirming ||
+        removeAction.confirming ||
+        props.state.confirming
+      )
+        return false;
+      metadata.preview = undefined;
+      metadata.previewSelectionKey = "";
+      metadata.previewChanges = [];
+      metadata.matchCandidate = undefined;
+      metadata.matchSelection = [];
+      removeAction.preview = undefined;
+      props.state.preview = undefined;
+      return true;
+    }),
+  );
 
   const previewMetadata = $(async () => {
     if (!metadata.itemId || !metadata.title.trim() || metadata.planning) return;

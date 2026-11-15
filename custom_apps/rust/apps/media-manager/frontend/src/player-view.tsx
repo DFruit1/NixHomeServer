@@ -1,6 +1,7 @@
 import {
   $,
   component$,
+  useComputed$,
   useOnWindow,
   useSignal,
   useStore,
@@ -8,6 +9,7 @@ import {
   useVisibleTask$,
 } from "@builder.io/qwik";
 import { api, catalogItems, readableError } from "./api";
+import { pushRoute, useBackLayer } from "./back-layers";
 import { Icon } from "./icon";
 import { collectionViews, useCollectionView } from "./collection-view";
 import "./music-collection.css";
@@ -118,22 +120,48 @@ export const PlayerView = component$<{
     playerState.albumView = false;
     playerState.selectedAlbumDir = albumDir;
     if (typeof window === "undefined" || props.active === false) return;
-    const next = { ...window.history.state, musicAlbum: albumDir };
-    if (Object.hasOwn(window.history.state ?? {}, "musicAlbum"))
-      window.history.replaceState(next, "", window.location.href);
-    else window.history.pushState(next, "", window.location.href);
+    pushRoute(
+      { ...window.history.state, musicAlbum: albumDir },
+      window.location.href,
+      { replace: Object.hasOwn(window.history.state ?? {}, "musicAlbum") },
+    );
   });
   useOnWindow(
     "popstate",
     $((event: PopStateEvent) => {
       if (new URLSearchParams(window.location.search).get("view") !== "player")
         return;
-      navigationGeneration.value++;
       const album = (event.state as { musicAlbum?: string } | null)?.musicAlbum;
+      // Same album: the entry belonged to an open layer (back-layers.ts).
+      if (
+        album ===
+        (playerState.albumView ? undefined : playerState.selectedAlbumDir)
+      )
+        return;
+      navigationGeneration.value++;
       playerState.albumView = album === undefined;
       playerState.selectedAlbumDir = album ?? "";
       search.value = "";
     }),
+  );
+
+  // Back closes the playback options sheet or a library menu first. The
+  // player stays mounted on other pages, so only the visible one listens.
+  const settingsShown = useComputed$(
+    () => props.active !== false && playerState.settingsOpen,
+  );
+  useBackLayer(
+    "playback-options",
+    settingsShown,
+    $(() => (playerState.settingsOpen = false)),
+  );
+  const libraryMenuShown = useComputed$(
+    () => props.active !== false && libraryMenu.value !== "",
+  );
+  useBackLayer(
+    "music-library-menu",
+    libraryMenuShown,
+    $(() => (libraryMenu.value = "")),
   );
 
   const musicRoots = props.state.roots.filter(

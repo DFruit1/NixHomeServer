@@ -5,6 +5,7 @@ import {
   useSignal,
   useVisibleTask$,
 } from "@builder.io/qwik";
+import { useBackLayer } from "./back-layers";
 import { Icon } from "./icon";
 import { NAV_ITEMS, type View } from "./root-types";
 import "./app-navigation.css";
@@ -29,6 +30,15 @@ const orderedItems = navigationOrder.flatMap((id) =>
 
 export const AppNavigation = component$<{ view: View }>((props) => {
   const more = useSignal<HTMLDetailsElement>();
+  // Back closes the phone "More" sheet before leaving the page.
+  const moreOpen = useSignal(false);
+  useBackLayer(
+    "more-sections",
+    moreOpen,
+    $(() => {
+      if (more.value) more.value.open = false;
+    }),
+  );
   useVisibleTask$(({ track }) => {
     track(() => props.view);
     if (more.value?.open) {
@@ -77,6 +87,7 @@ export const AppNavigation = component$<{ view: View }>((props) => {
       ))}
       <details
         ref={more}
+        onToggle$={(_, details) => (moreOpen.value = details.open)}
         class={{
           "mobile-more": true,
           active: !primaryViews.includes(props.view),

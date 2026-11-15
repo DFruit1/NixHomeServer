@@ -3,6 +3,7 @@ import {
   component$,
   noSerialize,
   type NoSerialize,
+  useComputed$,
   useOnWindow,
   useSignal,
   useStore,
@@ -10,6 +11,7 @@ import {
   useVisibleTask$,
 } from "@builder.io/qwik";
 import { api, ApiError, readableError } from "./api";
+import { pushRoute, useBackLayer } from "./back-layers";
 import type {
   EyeAnalysis,
   ImmichAnalysisResponse,
@@ -323,12 +325,9 @@ export const ImagesView = component$<{
           id: imageId,
           top: tile.getBoundingClientRect().top,
         };
-      const historyState = { ...window.history.state, imageId };
-      if (pushedImageId.value) {
-        window.history.replaceState(historyState, "", window.location.href);
-      } else {
-        window.history.pushState(historyState, "", window.location.href);
-      }
+      pushRoute({ ...window.history.state, imageId }, window.location.href, {
+        replace: Boolean(pushedImageId.value),
+      });
       pushedImageId.value = imageId;
     } else if (!pushHistory) {
       pushedImageId.value = imageId;
@@ -458,10 +457,12 @@ export const ImagesView = component$<{
     $((event: PopStateEvent) => {
       if (new URLSearchParams(window.location.search).get("view") !== "images")
         return;
-      selection.active = false;
-      selection.ids = [];
       const imageId =
         (event.state as { imageId?: string } | null)?.imageId ?? null;
+      // Same photo: the entry belonged to an open layer (back-layers.ts).
+      if (imageId === pushedImageId.value) return;
+      selection.active = false;
+      selection.ids = [];
       if (imageId) {
         void choose(imageId, false);
         return;
@@ -491,6 +492,18 @@ export const ImagesView = component$<{
     );
     rulesButton.value?.focus();
   });
+
+  // Back closes the decision editor, then leaves photo selection mode.
+  useBackLayer("decision-questions", rulesOpen, closeRules);
+  const selecting = useComputed$(() => selection.active);
+  useBackLayer(
+    "photo-selection",
+    selecting,
+    $(() => {
+      selection.active = false;
+      selection.ids = [];
+    }),
+  );
 
   useOnWindow(
     "keydown",
