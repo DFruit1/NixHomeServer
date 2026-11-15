@@ -1324,18 +1324,21 @@ certainty. An ISO name that already carries a season and episode range, such as
 
 Identification is complete only when every title maps to consecutive episodes
 of one season. Identified episodes are published to `_Shows` with TVmaze
-episode titles, and the ISO is archived as
-`Series (Year) [tvdbid-N] S01E05-E06.iso` in `_Processed` with its sidecar.
-Each step's reasoning is logged in the worker journal.
+episode titles, and the ISO is archived in `_Processed` with its sidecar under
+the name it arrived with. Each step's reasoning is logged in the worker journal.
 
 Anything less is held. The ISO moves to `_Shared/_ISO/_DVDs/_NeedsIdentification`
 with an `X.iso.identify.json` evidence file, and Media Manager's Conversions
 page lists it under **Process, needs identifying** with the best guess. To
 confirm, rename the ISO in `_NeedsIdentification` to a Jellyfin TV name with
 the full episode range, for example
-`All Creatures Great and Small (1978) [tvdbid-78289] S01E05-E06.iso`. Within a
+`All Creatures Great and Small (1978) S01E05-E06.iso`. Within a
 minute when idle, or after the disc it is converting, the worker moves the held
 videos into `_Shows` without re-encoding and archives the ISO in `_Processed`.
+The series folder keeps the provider identifier
+(`All Creatures Great and Small (1978) [tvdbid-78289]`) that tells Jellyfin which
+show to match; the evidence file supplies it, so the ISO name and episode files
+stay readable.
 A range that does not match the number of held videos is refused and the
 reason appears on the Conversions page. Deleting
 an ISO from `_NeedsIdentification` leaves its held videos in `_Unidentified`

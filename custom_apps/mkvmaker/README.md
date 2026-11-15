@@ -66,11 +66,17 @@ the other titles go into `extras/`.
 TV series:
 
 ```text
-Series Name (1976)/
+Series Name (1976) [tvdbid-1234]/
 └── Season 01/
     ├── Series Name (1976) S01E01 - Pilot.mkv
     └── Series Name (1976) S01E02.mkv
 ```
+
+The provider tag belongs to the series folder, where Jellyfin reads it to pick
+the right show. Episode files name the series and numbers only; repeating the
+tag in every file changes no Jellyfin match and only makes the library harder to
+read. Movies keep the tag in both the folder and the file because Jellyfin
+matches multi-version prefixes against the folder name.
 
 HandBrake cannot retain interactive DVD menus. “All titles” means all video
 titles you select after the scan.

@@ -1295,7 +1295,10 @@ fn plan_tv(
                 .output_root
                 .join(name)
                 .join(format!("Season {season:02}"))
-                .join(format!("{name} S{season:02}E{ep:02}{suffix}.mkv"));
+                .join(format!(
+                    "{} S{season:02}E{ep:02}{suffix}.mkv",
+                    episode_series_name(name)
+                ));
             jobs.push(make_job(source, output, config));
             episode_name_index += 1;
         }
@@ -2143,6 +2146,33 @@ fn validate_provider_id(id: &str) -> Result<String> {
     Ok(format!("{}-{value}", provider.to_ascii_lowercase()))
 }
 
+/// Episode files name the series and numbers only. Jellyfin reads the provider
+/// identifier from the series folder, so repeating `[tmdbid-…]` in every file
+/// adds noise without changing the match.
+fn episode_series_name(name: &str) -> &str {
+    let trimmed = name.trim_end();
+    let Some(open) = trimmed.rfind(" [") else {
+        return trimmed;
+    };
+    let Some(tag) = trimmed
+        .strip_suffix(']')
+        .map(|without_close| &without_close[open + 2..])
+    else {
+        return trimmed;
+    };
+    let Some((provider, value)) = tag.split_once('-') else {
+        return trimmed;
+    };
+    let provider = provider.to_ascii_lowercase();
+    if matches!(provider.as_str(), "tmdbid" | "tvdbid" | "imdbid")
+        && !value.is_empty()
+        && value.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        return trimmed[..open].trim_end();
+    }
+    trimmed
+}
+
 fn jellyfin_name(name: &str, year: Option<u16>, provider: Option<&str>) -> String {
     let mut out = safe_name(name.trim());
     if let Some(y) = year {
@@ -2319,12 +2349,25 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(jobs[0]
-            .output
-            .ends_with("A Show (2001) [tvdbid-42] S02E05 - The Beginning.mkv"));
-        assert!(jobs[1]
-            .output
-            .ends_with("A Show (2001) [tvdbid-42] S02E06 - A_B_ Story.mkv"));
+        // The series folder keeps the Jellyfin provider tag; episode files do
+        // not repeat it.
+        assert!(jobs[0].output.ends_with(
+            "A Show (2001) [tvdbid-42]/Season 02/A Show (2001) S02E05 - The Beginning.mkv"
+        ));
+        assert!(jobs[1].output.ends_with(
+            "A Show (2001) [tvdbid-42]/Season 02/A Show (2001) S02E06 - A_B_ Story.mkv"
+        ));
+    }
+
+    #[test]
+    fn episode_files_drop_the_folder_provider_tag() {
+        assert_eq!(
+            episode_series_name("A Show (2001) [tvdbid-42]"),
+            "A Show (2001)"
+        );
+        assert_eq!(episode_series_name("A Show (2001)"), "A Show (2001)");
+        // A bracket that is part of the title is left alone.
+        assert_eq!(episode_series_name("A Show [Deluxe]"), "A Show [Deluxe]");
     }
 
     #[test]

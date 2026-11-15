@@ -1236,11 +1236,14 @@ def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, yea
                      provider: str | None, season: int, first: int, names: list[str]) -> Path:
     """Move held episode files into the TV library, all or nothing."""
     media_name = safe_name(jellyfin_name(name, year, provider))
+    # Jellyfin reads the series identifier from the folder; repeating it in
+    # every episode file only makes the library harder to read.
+    episode_series = safe_name(jellyfin_name(name, year, None))
     season_dir = args.shows_dir / media_name / f"Season {season:02d}"
     targets = []
     for offset, _ in enumerate(files):
         title = safe_name(names[offset]) if offset < len(names) and names[offset] else ""
-        stem = f"{media_name} S{season:02d}E{first + offset:02d}"
+        stem = f"{episode_series} S{season:02d}E{first + offset:02d}"
         targets.append(season_dir / (f"{stem} - {title}.mkv" if title else f"{stem}.mkv"))
     # Recover from a publish of this disc that was killed part-way. A target
     # that is the same file as this disc's staging name is its own link; a
@@ -1351,7 +1354,9 @@ def iso_suggestion(series: dict[str, Any] | None, assignments: list[dict[str, An
         "season": season,
         "firstEpisode": first,
         "lastEpisode": last,
-        "isoName": safe_name(f"{jellyfin_name(str(series.get('name') or ''), year, provider)} {episodes}") + ".iso",
+        # The provider tag belongs to the series folder, not the ISO the person
+        # renames; held_provider() carries it into the library from this record.
+        "isoName": safe_name(f"{jellyfin_name(str(series.get('name') or ''), year, None)} {episodes}") + ".iso",
     }
 
 
@@ -1967,6 +1972,25 @@ def park_for_identification(args: argparse.Namespace, source: Path,
     return archived
 
 
+def held_provider(identify_path: Path) -> str | None:
+    """The provider the importer identified for this disc, if it recorded one.
+
+    The suggested ISO name no longer repeats the provider tag, so this keeps
+    the series folder's Jellyfin identifier when a person renames the held ISO.
+    """
+    try:
+        evidence = json.loads(identify_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    suggestion = evidence.get("suggestion") if isinstance(evidence, dict) else None
+    if not isinstance(suggestion, dict):
+        return None
+    provider = suggestion.get("provider")
+    if not isinstance(provider, str) or parse_provider(f"[{provider}]") != provider:
+        return None
+    return provider
+
+
 def note_identification_problem(identify_path: Path, message: str) -> None:
     # The folder is writable by people; never follow a link placed there.
     evidence: Any = {"schemaVersion": 1}
@@ -2054,6 +2078,11 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
                 continue
             existing = find_existing_for_hints(args.shows_dir, hints, hints.name)
             name, year, provider = existing or (hints.name, hints.year, hints.provider)
+            if provider is None:
+                # The suggested ISO name leaves the provider tag out so the
+                # person's name stays readable; the disc's own evidence still
+                # carries it into the series folder Jellyfin matches on.
+                provider = held_provider(identify_path)
             names = episode_names_for(args, hints, hints.season, hints.episode, count)
             try:
                 season_dir = publish_episodes(args, files, name, year, provider,
@@ -2519,8 +2548,8 @@ def self_test() -> None:
     assert iso_suggestion(
         {"name": "All Creatures Great and Small", "year": 1978, "provider": "tvdbid-78289"},
         [{"season": 1, "episode": 5}, {"season": 1, "episode": 6}], 2,
-    )["isoName"] == "All Creatures Great and Small (1978) [tvdbid-78289] S01E05-E06.iso"
-    renamed = source_hints(Path("All Creatures Great and Small (1978) [tvdbid-78289] S01E05-E06.iso"))
+    )["isoName"] == "All Creatures Great and Small (1978) S01E05-E06.iso"
+    renamed = source_hints(Path("All Creatures Great and Small (1978) S01E05-E06.iso"))
     assert (renamed.season, renamed.episode, renamed.last_episode) == (1, 5, 6)
     show = source_hints(Path("The_Wire_S03_Disc_2.iso"))
     assert show.name == "The Wire" and show.season == 3 and show.disc == 2
@@ -2691,6 +2720,43 @@ def self_test() -> None:
     assert strip_jellyfin_suffix("Rumpole (1978)") == "Rumpole"
     base, year, provider = parse_jellyfin_folder("The Wire (2002) [tvdbid-12345]")
     assert base == "The Wire" and year == 2002 and provider == "tvdbid-12345"
+
+    # The series folder keeps the Jellyfin provider tag; each episode file
+    # names the series and numbers only, and the held evidence still supplies
+    # the provider after the suggested ISO name dropped it.
+    with tempfile.TemporaryDirectory() as publish_dir:
+        root = Path(publish_dir)
+        held = root / "_Held"
+        held.mkdir()
+        files = []
+        for name in ("episode-1.mkv", "episode-2.mkv"):
+            path = held / name
+            path.write_bytes(b"video")
+            files.append(path)
+        library = root / "Shows"
+        library.mkdir()
+        season_dir = publish_episodes(
+            argparse.Namespace(shows_dir=library, held_dir=held), files,
+            "All Creatures Great and Small", 1978, "tvdbid-78289", 1, 5,
+            ["Pilot", "Second"],
+        )
+        assert season_dir == (library / "All Creatures Great and Small (1978) [tvdbid-78289]"
+                              / "Season 01")
+        published = sorted(path.name for path in season_dir.glob("*.mkv"))
+        assert published == [
+            "All Creatures Great and Small (1978) S01E05 - Pilot.mkv",
+            "All Creatures Great and Small (1978) S01E06 - Second.mkv",
+        ], published
+        evidence = root / "held.iso.identify.json"
+        evidence.write_text(json.dumps({
+            "suggestion": {"provider": "tvdbid-78289", "isoName": "x.iso"},
+        }), encoding="utf-8")
+        assert held_provider(evidence) == "tvdbid-78289"
+        evidence.write_text(json.dumps({"suggestion": {"provider": "not-a-provider"}}),
+                            encoding="utf-8")
+        assert held_provider(evidence) is None
+        evidence.write_text("not json", encoding="utf-8")
+        assert held_provider(evidence) is None
 
     # M2: the queue-grouping fallback remembers an existing library folder so
     # two Rumpole discs (named differently per series) chain into one series
