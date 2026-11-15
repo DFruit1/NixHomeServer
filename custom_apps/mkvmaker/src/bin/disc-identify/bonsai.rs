@@ -64,19 +64,26 @@ impl Bonsai {
         let url = format!("{}/chat/completions", self.base);
         // The local gate admits one request, queues two (429 beyond that)
         // and answers 504 when a queued request waits over a minute, which a
-        // single vision request from another app can take. A busy or
-        // restarting model is retried with growing pauses (about ten
-        // minutes in all) before giving up; the caller's deadline still holds.
-        const ATTEMPTS: u64 = 8;
+        // single vision request from another app can take. Those mean "busy"
+        // and are retried with growing pauses (about 11 minutes of waiting
+        // in all). A 502 can be the gate cutting off a slow generation, which
+        // would only repeat, so it and transport errors keep the shorter
+        // budget. The caller's deadline still bounds the whole run.
+        const BUSY_ATTEMPTS: u64 = 8;
+        const FAILURE_ATTEMPTS: u64 = 4;
         let mut attempt = 0;
         let response = loop {
             attempt += 1;
             match self.client.post(&url).json(&body).send() {
                 Ok(response)
-                    if matches!(response.status().as_u16(), 429 | 502 | 503 | 504)
-                        && attempt < ATTEMPTS => {}
+                    if matches!(response.status().as_u16(), 429 | 503 | 504)
+                        && attempt < BUSY_ATTEMPTS => {}
+                Ok(response) if response.status().as_u16() == 502 && attempt < FAILURE_ATTEMPTS => {
+                }
                 Ok(response) => break response,
-                Err(error) if attempt < ATTEMPTS && (error.is_connect() || error.is_request()) => {}
+                Err(error)
+                    if attempt < FAILURE_ATTEMPTS && (error.is_connect() || error.is_request()) => {
+                }
                 Err(error) => return Err(error).with_context(|| format!("POST {url}")),
             }
             std::thread::sleep(Duration::from_secs((30 * attempt).min(120)));

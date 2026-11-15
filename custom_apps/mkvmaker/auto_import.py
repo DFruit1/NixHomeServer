@@ -1194,32 +1194,37 @@ def prune_empty_dirs(path: Path, stop: Path) -> None:
         current = current.parent
 
 
-def place_episode(file: Path, target: Path) -> bool:
-    """Move a held episode into the library without overwriting; True if copied.
+def staging_name(target: Path) -> Path:
+    """Hidden, deterministic staging file beside a library target.
+
+    Scanners ignore dot files, and a retry after a crash reuses (and so
+    replaces) a leftover from the earlier attempt instead of leaking it.
+    """
+    return target.with_name(f".{target.name}.publish.tmp")
+
+
+def stage_episode(file: Path, staged: Path) -> bool:
+    """Put a held episode at its hidden staging name; True if it was copied.
 
     The worker's sandbox mounts the holding folder and the library as
     separate bind mounts of one dataset, so rename() fails with EXDEV there.
-    Like disc-to-jellyfin, fall back to copying through a hidden temporary
-    file beside the target and linking it into place, so Jellyfin only ever
-    sees a complete file and an existing one is never replaced.
+    Like disc-to-jellyfin, fall back to copying (fsynced) instead.
     """
+    staged.unlink(missing_ok=True)
     try:
-        if target.exists():
-            raise FileExistsError(errno.EEXIST, "library already has this file", str(target))
-        os.rename(file, target)
+        os.rename(file, staged)
         return False
     except OSError as error:
         if error.errno != errno.EXDEV:
             raise
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.{time.time_ns()}.publish.tmp")
     try:
-        with file.open("rb") as source, open(temporary, "xb") as copy:
+        with file.open("rb") as source, open(staged, "xb") as copy:
             shutil.copyfileobj(source, copy, 16 * 1024 * 1024)
             copy.flush()
             os.fsync(copy.fileno())
-        os.link(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
     return True
 
 
@@ -1240,24 +1245,42 @@ def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, yea
     if taken:
         raise RuntimeError(f"library already has: {', '.join(taken)}")
     make_media_dirs(season_dir)
-    # (source, target, copied): renamed files are already gone from the held
-    # folder; copied ones are removed only after every episode is in place.
-    placed: list[tuple[Path, Path, bool]] = []
+    # Phase 1 (slow, invisible): every episode reaches a hidden staging file
+    # beside its target. Phase 2 (fast): each is linked to its final name,
+    # which never replaces an existing file. A failure or shutdown before
+    # phase 2 finishes undoes everything, so the library gets all of a disc
+    # or none of it and the held record stays accurate.
+    staged: list[tuple[Path, Path, Path, bool]] = []  # source, staging, target, copied
+    linked: list[Path] = []
+
+    def undo() -> None:
+        for target in reversed(linked):
+            target.unlink(missing_ok=True)
+        for file, staging, _, copied in reversed(staged):
+            if copied:
+                staging.unlink(missing_ok=True)
+            else:
+                os.rename(staging, file)
+
     try:
         for file, target in zip(files, targets):
-            placed.append((file, target, place_episode(file, target)))
-    except OSError:
-        # All or nothing: undo what was placed so the held record still
-        # describes where every file is.
-        for file, target, copied in reversed(placed):
-            if copied:
-                target.unlink(missing_ok=True)
-            else:
-                os.rename(target, file)
+            if shutdown_signal is not None:
+                raise ShutdownRequested("shutdown while publishing held episodes")
+            staging = staging_name(target)
+            staged.append((file, staging, target, stage_episode(file, staging)))
+        for _, staging, target, _ in staged:
+            os.link(staging, target)
+            linked.append(target)
+    except BaseException:
+        undo()
         raise
-    for file, _, copied in placed:
-        if copied:
-            file.unlink()
+    # Published. Clean-up failures from here on are only worth a warning.
+    for file, staging, _, copied in staged:
+        for leftover in ([staging, file] if copied else [staging]):
+            try:
+                leftover.unlink()
+            except OSError as error:
+                print(f"Could not remove {leftover} after publishing: {error}", file=sys.stderr)
     for target in targets:
         print(f"  published {target}")
     if getattr(args, "held_dir", None) is not None:
@@ -2009,6 +2032,10 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
             if record.get("sidecar") and original_sidecar.is_file():
                 os.replace(original_sidecar, ripper_sidecar(archived))
             del records[key]
+            # Save at once: a later disc's slow copy must not leave this one
+            # recorded as still held if the worker is stopped mid-way.
+            state["held"] = records
+            atomic_json(state_path, state)
             print(f"Published held episodes of {iso.name} to {season_dir}")
         # Forget holds whose ISO is gone and whose held videos are gone too.
         # While the videos exist the record is the only map from ISO to
