@@ -23,6 +23,10 @@ const JOBS_DIRECTORY: &str = "video-conversions";
 /// The worker's systemd path unit watches this directory for new work.
 pub const WAKE_DIRECTORY: &str = "video-conversion-requests";
 const MAX_JOB_BYTES: u64 = 64 * 1024;
+/// Free space a conversion must leave on the data pool, which it shares with
+/// backups, photos and documents (review R8-1, 2026-11-15). Overridable with
+/// `MEDIA_MANAGER_FREE_SPACE_RESERVE_BYTES`.
+pub const DEFAULT_FREE_SPACE_RESERVE: u64 = 20 * 1024 * 1024 * 1024;
 /// Finished jobs shown in history; older ones are pruned.
 const HISTORY_LIMIT: usize = 30;
 
@@ -660,6 +664,27 @@ pub fn formats_view() -> Value {
         .iter()
         .map(|format| json!({ "id": format.id(), "extension": format.extension() }))
         .collect::<Vec<_>>())
+}
+
+/// Bytes available below `path` (or its nearest existing ancestor).
+pub fn available_space(path: &std::path::Path) -> Result<u64, String> {
+    let existing = path
+        .ancestors()
+        .find(|candidate| candidate.exists())
+        .unwrap_or(path);
+    fs2::available_space(existing)
+        .map_err(|error| format!("check free space on {}: {error}", existing.display()))
+}
+
+/// The refusal shared by the worker and the broker.
+pub fn not_enough_space(needed: u64, reserve: u64, available: u64) -> String {
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    format!(
+        "Not enough free space: this conversion needs {:.1} GiB including a {:.0} GiB reserve for the server, but only {:.1} GiB is free. Free up space, then convert again.",
+        needed as f64 / GIB,
+        reserve as f64 / GIB,
+        available as f64 / GIB
+    )
 }
 
 #[cfg(test)]

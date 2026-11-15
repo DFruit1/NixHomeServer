@@ -734,3 +734,18 @@ fn video_conversion_refuses_a_changed_source_or_foreign_archive_path() {
     .is_err());
     assert!(fixture.library.join("Old.avi").exists());
 }
+
+#[test]
+fn video_conversion_writes_nothing_without_free_space_for_both_copies() {
+    let mut fixture = video_fixture("Old.avi");
+    let action = video_action(&fixture, "Old.avi", "Old.mkv");
+    fixture.config.free_space_reserve_bytes = 1 << 60;
+    let error = apply_broker_action(&fixture.config, "editor", &action)
+        .expect_err("refused for space")
+        .to_string();
+    assert!(error.contains("Not enough free space"), "{error}");
+    assert!(fixture.library.join("Old.avi").exists());
+    assert!(!fixture.library.join("Old.mkv").exists());
+    assert!(!fixture.originals.join("Videos").exists());
+    assert!(fixture.staging.join("job.mkv").exists());
+}

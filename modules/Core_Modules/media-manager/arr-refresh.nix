@@ -33,8 +33,9 @@ in
     wants = [ "${id}.service" ];
     serviceConfig = {
       Type = "oneshot";
-      User = "root";
-      Group = "root";
+      # The app's own account reads its config.xml; no root or capabilities.
+      User = id;
+      Group = id;
       ExecStart = lib.getExe script;
       TimeoutStartSec = "75m";
       NoNewPrivileges = true;
