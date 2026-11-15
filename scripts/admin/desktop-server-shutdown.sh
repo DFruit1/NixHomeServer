@@ -52,7 +52,8 @@ Options:
   --local-grace MIN     Minutes before this PC powers off after the server is
                         down. Default 5.
   --poll SEC            Seconds between server status polls. Default 30.
-  --poll-timeout MIN    Give up polling after this many minutes. Default 90.
+  --poll-timeout MIN    Poll budget after the pending server grace window.
+                        Default 90; valid guard extensions move this budget too.
   --dry-run             Print the plan without touching the server or PC.
   --no-local-shutdown   Manage the server only; never power off this PC.
   --check               Print desktop work state (idle/busy) and exit.
@@ -561,6 +562,22 @@ while :; do
     message="$(printf '%s\n' "$status" | sed -n 's/^message=//p')"
     printf '[%s] server: %s (%s)\n' "$(date +%H:%M:%S)" "${message:-status unavailable}" "${state:-unknown}"
     [[ "$state" != cancelled ]] || die "server shutdown was cancelled"
+    # Critical work can extend the server wait indefinitely. Keep the desktop
+    # relay alive through that persisted wait instead of cancelling a valid
+    # shutdown when the original, fixed polling budget expires.
+    case "$state" in
+      scheduled | waiting | extended)
+        guard_deadline="$(printf '%s\n' "$status" | sed -n 's/^deadline=//p')"
+        guard_grace="$(printf '%s\n' "$status" | sed -n 's/^grace_deadline=//p')"
+        if [[ "$guard_deadline" =~ ^[0-9]{1,12}$ && "$guard_grace" =~ ^[0-9]{1,12}$ ]] &&
+           (( 10#$guard_grace >= 10#$guard_deadline )); then
+          guard_poll_deadline=$(( 10#$guard_grace + POLL_TIMEOUT_MIN * 60 ))
+          if (( guard_poll_deadline > poll_deadline )); then
+            poll_deadline="$guard_poll_deadline"
+          fi
+        fi
+        ;;
+    esac
     if desktop_work_active; then
       remote sudo "$GUARD" mark-activity >/dev/null 2>&1 || true
     fi

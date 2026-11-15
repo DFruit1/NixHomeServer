@@ -667,7 +667,11 @@ From the desktop session, the orchestrator requests the server shutdown, polls
 until three consecutive SSH probes fail, then schedules a local poweroff after
 `--local-grace` minutes (default 5) and opens a visible countdown terminal. SSH
 unreachability is not physical power-state confirmation. Flapping connectivity
-remains subject to `--poll-timeout`; a cancelled server guard stops the runner. Cancel
+remains subject to `--poll-timeout`; valid pending server deadlines move the
+polling limit to at least the end of the grace window plus that budget. This
+prevents a long conversion or explicit extension from cancelling the desktop
+relay after its original 90-minute budget. A cancelled server guard stops the
+runner. Cancel
 the local poweroff with Ctrl-C in that window or `loginctl -c`.
 
 ```bash

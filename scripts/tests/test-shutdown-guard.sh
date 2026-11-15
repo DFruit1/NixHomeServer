@@ -135,7 +135,15 @@ cat >"$mock_bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${MOCK_FLAGS}/ssh.log"
 [[ "$*" != *'sudo bash -s'* || ! -e "${MOCK_FLAGS}/hold_fail" ]] || exit 1
-[[ "$*" == *' true' ]] && exit 1
+if [[ "$*" == *' true' ]]; then
+  if [[ -e "${MOCK_FLAGS}/ssh_down_at" ]] && (( $(cat "${MOCK_FLAGS}/now") < $(cat "${MOCK_FLAGS}/ssh_down_at") )); then
+    exit 0
+  fi
+  exit 1
+fi
+if [[ "$*" == *'sudo cat /run/nixhomeserver-shutdown-guard/status'* && -e "${MOCK_FLAGS}/remote_status" ]]; then
+  cat "${MOCK_FLAGS}/remote_status"
+fi
 exit 0
 EOF
 
@@ -445,5 +453,24 @@ rm "$flags/terminal_fail"
 # Exercise the generated countdown with a state path containing spaces.
 MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh --timeout 0 --local-grace 0 >"$tmpdir/countdown.out"
 require_fixed "$flags/countdown.log" 'This PC will power off in 0 minutes.' 'Countdown should receive its arguments intact.'
+
+# Long real conversions have now outlasted the desktop polling budget. A
+# persisted server extension must retain the runner and eventual local poweroff;
+# cancelling that valid guard here would abandon unattended shutdown.
+printf '1000\n' >"$flags/now"
+printf '1120\n' >"$flags/ssh_down_at"
+printf 'state=extended\ndeadline=1100\ngrace_deadline=1400\n' >"$flags/remote_status"
+touch "$flags/pgrep_busy"
+MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh --timeout 0 --poll 60 --poll-timeout 1 --no-local-shutdown >"$tmpdir/extended.out"
+require_fixed "$tmpdir/extended.out" 'Local shutdown disabled' 'A valid extension must survive the original polling budget.'
+# Unreadable status cannot grant an unlimited polling extension.
+printf '1000\n' >"$flags/now"
+rm "$flags/remote_status"
+if MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh --timeout 0 --poll 60 --poll-timeout 1 --no-local-shutdown >"$tmpdir/missing-status.out" 2>&1; then
+  echo "❌ Missing server status must retain the bounded polling failure." >&2
+  exit 1
+fi
+require_fixed "$tmpdir/missing-status.out" 'giving up' 'Missing deadlines must not extend polling.'
+rm "$flags/now" "$flags/ssh_down_at" "$flags/pgrep_busy"
 
 echo "✅ Shutdown guard schedules, detects critical tasks, and enforces the grace window."

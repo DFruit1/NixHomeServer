@@ -87,7 +87,10 @@ do not ask again. A request to implement the skill alone does not.
    After a detector fix, verify an otherwise idle desktop (including a runner
    terminal writing status) reports idle and real build/test work remains busy.
    Restart a running Bash runner to load the fix, only within existing shutdown
-   authorization; editing its file does not update its loaded functions.
+   authorization; editing its file does not update its loaded functions. Preserve
+   the remaining server timeout on restart rather than resetting it to an hour.
+   The polling limit follows valid pending server grace deadlines plus the
+   configured polling budget; long work must not cancel the desktop relay.
    Report the actual state and earliest attempt time, plus the desktop countdown
    timing. The timeout is not a guaranteed poweroff deadline: desktop activity
    markers expire after five minutes, then the server requires five quiet minutes.
