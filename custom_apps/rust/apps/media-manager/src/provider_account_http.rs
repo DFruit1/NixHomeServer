@@ -138,6 +138,19 @@ impl ProviderBrokerState {
         immich::run_indexer(self).await;
     }
 
+    /// Review EYE photo tags with Bonsai in the background.
+    pub async fn run_photo_tag_review(self) {
+        immich::run_tag_review(self).await;
+    }
+
+    /// Configure the loopback Bonsai gate after enabling image access.
+    pub fn with_bonsai(mut self, url: &str, model: &str) -> Result<Self, String> {
+        if let Some(runtime) = &mut self.images {
+            Arc::make_mut(runtime).bonsai = Some(immich::Bonsai::new(url, model)?);
+        }
+        Ok(self)
+    }
+
     /// Deployment-owned endpoints only; callers cannot choose an Immich host.
     pub fn with_managed_immich(mut self) -> Self {
         if let Some(runtime) = &mut self.images {

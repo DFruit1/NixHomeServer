@@ -46,6 +46,12 @@ pub(crate) fn initialize(db: &Connection) -> rusqlite::Result<()> {
            FOREIGN KEY(scope, asset_id) REFERENCES image_assets(scope, asset_id) ON DELETE CASCADE
          );
          CREATE INDEX IF NOT EXISTS image_tags_search ON image_tags(scope, tag, confidence, asset_id);
+         CREATE TABLE IF NOT EXISTS image_tag_reviews (
+           scope TEXT NOT NULL, asset_id TEXT NOT NULL,
+           reviewer TEXT, removed TEXT, retry_at INTEGER NOT NULL DEFAULT 0,
+           PRIMARY KEY(scope, asset_id),
+           FOREIGN KEY(scope, asset_id) REFERENCES image_assets(scope, asset_id) ON DELETE CASCADE
+         );
          CREATE TABLE IF NOT EXISTS image_scans (
            scope TEXT PRIMARY KEY, page INTEGER NOT NULL DEFAULT 1,
            generation INTEGER NOT NULL DEFAULT 1, next_scan INTEGER NOT NULL DEFAULT 0,
@@ -219,6 +225,11 @@ impl Index<'_> {
             "DELETE FROM image_tags WHERE scope=?1 AND asset_id=?2",
             params![self.scope, id],
         )?;
+        // Fresh EYE tags need a fresh review.
+        tx.execute(
+            "DELETE FROM image_tag_reviews WHERE scope=?1 AND asset_id=?2",
+            params![self.scope, id],
+        )?;
         for tag in &analysis.suggestions {
             tx.execute(
                 "INSERT INTO image_tags(scope,asset_id,tag,confidence) VALUES (?1,?2,?3,?4)
@@ -239,6 +250,62 @@ impl Index<'_> {
             )
             .optional()?
             .unwrap_or(false))
+    }
+    /// Newest tagged photo whose EYE tags have not been reviewed, with the
+    /// stored analysis text that a review must still match when it is saved.
+    pub fn next_tag_review(&self, now: i64) -> rusqlite::Result<Option<(String, String)>> {
+        self.store
+            .index_connection()?
+            .query_row(
+                "SELECT a.asset_id, a.analysis FROM image_assets a
+                 LEFT JOIN image_tag_reviews r ON r.scope=a.scope AND r.asset_id=a.asset_id
+                 WHERE a.scope=?1 AND a.tagged=1 AND a.analysis IS NOT NULL
+                   AND (r.asset_id IS NULL OR (r.reviewer IS NULL AND r.retry_at<=?2))
+                 ORDER BY a.captured_at DESC, a.asset_id LIMIT 1",
+                params![self.scope, now],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+    }
+    /// Replace the reviewed analysis with its kept tags. Returns false, saving
+    /// nothing, when EYE replaced or reset the analysis during the review.
+    pub fn save_tag_review(
+        &self,
+        id: &str,
+        reviewed: &str,
+        kept: &Analysis,
+        removed: &[String],
+        reviewer: &str,
+    ) -> rusqlite::Result<bool> {
+        let mut db = self.store.index_connection()?;
+        let tx = db.transaction()?;
+        let removed = serde_json::to_string(removed).expect("serializable tags");
+        if tx.execute(
+            "UPDATE image_assets SET analysis=?4 WHERE scope=?1 AND asset_id=?2 AND analysis=?3 AND tagged=1",
+            params![self.scope, id, reviewed, serde_json::to_string(kept).expect("validated analysis")],
+        )? == 0
+        {
+            return Ok(false);
+        }
+        tx.execute(
+            "DELETE FROM image_tags WHERE scope=?1 AND asset_id=?2 AND tag IN (SELECT value FROM json_each(?3))",
+            params![self.scope, id, removed],
+        )?;
+        tx.execute(
+            "INSERT INTO image_tag_reviews(scope,asset_id,reviewer,removed,retry_at) VALUES (?1,?2,?3,?4,0)
+             ON CONFLICT(scope,asset_id) DO UPDATE SET reviewer=excluded.reviewer,removed=excluded.removed,retry_at=0",
+            params![self.scope, id, reviewer, removed],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+    pub fn retry_tag_review(&self, id: &str, at: i64) -> rusqlite::Result<()> {
+        self.store.index_connection()?.execute(
+            "INSERT INTO image_tag_reviews(scope,asset_id,retry_at) VALUES (?1,?2,?3)
+             ON CONFLICT(scope,asset_id) DO UPDATE SET reviewer=NULL,removed=NULL,retry_at=excluded.retry_at",
+            params![self.scope, id, at],
+        )?;
+        Ok(())
     }
     /// Retain useful previous analysis until a replacement has been saved.
     pub fn mark_for_retagging(&self, id: &str) -> rusqlite::Result<()> {

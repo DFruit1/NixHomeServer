@@ -106,6 +106,29 @@ is checked before attaching private analysis. If Smart Search is unavailable,
 the app reports the failure and offers **Saved tags**, rather than silently
 changing the meaning of the search.
 
+## Bonsai tag review
+
+When the `bonsai` app is enabled, Media Manager also asks Bonsai to check each
+photo's EYE tags against the photo preview, newest photos first. Bonsai answers
+keep or remove for each proposed tag; it cannot add or rename tags. Removed tags
+disappear from the photo and from saved-tag search; kept tags keep EYE's
+confidence. A tag that Bonsai finds plausible but uncertain is kept. If Bonsai
+rejects every tag on a photo with four or more, the answer is treated as a failed
+reading and EYE's tags are left unchanged.
+
+The review runs in the provider broker, one photo at a time, through the
+loopback Bonsai concurrency gate. It pauses briefly between photos so other
+Bonsai users are served first, and waits when the gate is busy. Each review
+uses vision processing on the CPU, so the first pass over a large library can
+take days. Photos that fail are retried after six hours or a day.
+
+Reviews are stored only in Media Manager's index (`image_tag_reviews`, with
+the removed tags). Retagging a photo replaces its tags with a fresh EYE result
+and queues a new review. Disabling Bonsai stops further reviews; already
+removed tags stay removed until the photo is retagged. Journal events
+`photo_tags_reviewed` (kept and removed counts), `photo_tag_review_failed` and
+`photo_tag_review_rejected_all` record progress without tag names.
+
 ## Saved decision questions
 
 Open **Images → Decision questions** to add and save up to 16 personal

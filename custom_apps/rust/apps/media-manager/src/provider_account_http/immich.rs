@@ -11,7 +11,9 @@ use crate::image_index::{probability, valid_tag, Analysis, Index, Search, MODEL,
 pub(super) mod decisions;
 pub(super) mod downloads;
 mod indexing;
+mod tag_review;
 pub(super) use indexing::{indexed, run_indexer};
+pub(super) use tag_review::{run_tag_review, Bonsai};
 const MAX_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone)]
@@ -20,6 +22,8 @@ pub(super) struct Runtime {
     pub(super) base: reqwest::Url,
     pub(super) eye: reqwest::Client,
     pub(super) decision: reqwest::Client,
+    /// Optional: reviews EYE tags against the photo when Bonsai is enabled.
+    pub(super) bonsai: Option<Bonsai>,
     /// Original and ZIP exports stream for as long as data keeps arriving; a
     /// total timeout would cut off large exports on slow phone links.
     download: reqwest::Client,
@@ -49,6 +53,7 @@ impl Runtime {
             base,
             eye,
             decision: decision_client(FilePath::new("/run/media-manager-decision/d1.sock"))?,
+            bonsai: None,
             download: reqwest::Client::builder()
                 .user_agent("NixHomeServer Media Manager/0.1.0")
                 .redirect(reqwest::redirect::Policy::none())

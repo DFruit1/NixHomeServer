@@ -187,6 +187,7 @@ rec {
     { module = ./Integrations/connect_paperless_gpt_to_bonsai.nix; allApps = [ "paperless-gpt" "paperless" "bonsai" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_immich_images_to_media_manager.nix; allApps = [ "immich" ]; anyApps = [ ]; }
     { module = ./Integrations/assess_media_manager_files_with_d1.nix; allApps = [ "immich" ]; anyApps = [ ]; }
+    { module = ./Integrations/refine_immich_photo_tags_with_bonsai.nix; allApps = [ "immich" "bonsai" ]; anyApps = [ ]; }
     { module = ./Integrations/publish_fdroid_to_ipfs.nix; allApps = [ "fdroid" "ipfs" ]; anyApps = [ ]; }
     { module = ./Integrations/publish_filesync_to_fdroid.nix; allApps = [ "fdroid" "filesync" "ipfs" ]; anyApps = [ ]; }
     { module = ./Integrations/publish_youtube_downloader_to_fdroid.nix; allApps = [ "fdroid" "youtube-downloader" ]; anyApps = [ ]; }

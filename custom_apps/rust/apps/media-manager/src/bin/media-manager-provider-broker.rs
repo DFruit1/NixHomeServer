@@ -60,11 +60,18 @@ async fn run() -> Result<(), String> {
         if let Ok(socket) = std::env::var("MEDIA_MANAGER_DECISION_SOCKET") {
             state = state.with_decision_socket(std::path::Path::new(&socket))?;
         }
+        if let Ok(url) = std::env::var("MEDIA_MANAGER_BONSAI_URL") {
+            state = state.with_bonsai(
+                &url,
+                &env_string("MEDIA_MANAGER_BONSAI_MODEL", "bonsai-ternary-27b"),
+            )?;
+        }
         if env_string("MEDIA_MANAGER_IMMICH_MANAGED", "false") == "true" {
             state = state.with_managed_immich();
         }
     }
     tokio::spawn(state.clone().run_image_indexer());
+    tokio::spawn(state.clone().run_photo_tag_review());
     // Host system jobs reach a separate router over a Unix socket whose
     // directory group grants access; they never use forwarded identities.
     let system = match std::env::var("MEDIA_MANAGER_PROVIDER_SYSTEM_SOCKET") {
