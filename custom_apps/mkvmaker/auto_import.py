@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import json
 import os
+import pwd
 import re
 import secrets
 import signal
@@ -174,6 +175,8 @@ class Title:
     index: int
     seconds: int
     main_feature: bool
+    # Display aspect ratio (1.33 for 4:3, 1.78 for 16:9) when HandBrake reports it.
+    aspect: float | None = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +234,10 @@ _DISC_RE = re.compile(
     r"(?i)(?:^|[^a-z0-9])(?:disc|disk|dvd)[ ._-]*0*(\d{1,2})(?:[^a-z0-9]|$)"
 )
 _TRAILING_NUMERAL_RE = re.compile(r"(?i)\s(?P<token>[ivxlcdm]+|\d{1,2})$")
+# The desktop ripper names repeat captures of one volume label
+# ``LABEL_20261114-155933`` or ``LABEL_20261114-162720_1TbgkU``. The stamp
+# says when the disc was read; it is never part of the programme's name.
+_RIPPER_SUFFIX_RE = re.compile(r"_\d{8}-\d{6}(?:_[A-Za-z0-9]{6})?$")
 
 
 def parse_provider(text: str) -> str | None:
@@ -314,6 +321,22 @@ def parse_args() -> argparse.Namespace:
         default=120,
         help="Seconds a worker owns an ISO before it must renew its lease.",
     )
+    identify = parser.add_argument_group(
+        "episode identification",
+        "Without --identifier, TV discs keep the older filename/TVmaze numbering.",
+    )
+    identify.add_argument("--identifier", help="disc-identify executable")
+    identify.add_argument("--held-dir", type=Path,
+                          help="Holding folder outside the Jellyfin libraries for unidentified episodes.")
+    identify.add_argument("--needs-dir", type=Path,
+                          help="Where ISOs awaiting identification are kept (default: INPUT/_NeedsIdentification).")
+    identify.add_argument("--bonsai-url")
+    identify.add_argument("--parakeet")
+    identify.add_argument("--parakeet-model")
+    identify.add_argument("--subtitle-socket")
+    identify.add_argument("--sevenzip", default="7zz")
+    identify.add_argument("--ffmpeg", default="ffmpeg")
+    identify.add_argument("--identify-threads", type=int, default=4)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", args.worker_id) is None:
@@ -526,8 +549,26 @@ def scan_titles(handbrake: str, source: Path, renew_lease: Any | None = None,
         )
         index = int(raw.get("Index") or 0)
         if index > 0:
-            titles.append(Title(index=index, seconds=seconds, main_feature=index == main))
+            titles.append(Title(index=index, seconds=seconds, main_feature=index == main,
+                                aspect=display_aspect(raw.get("Geometry"))))
     return sorted(titles, key=lambda title: title.index)
+
+
+def display_aspect(geometry: Any) -> float | None:
+    """Display aspect ratio from a HandBrake scan title's Geometry block."""
+    if not isinstance(geometry, dict):
+        return None
+    try:
+        width = int(geometry.get("Width") or 0)
+        height = int(geometry.get("Height") or 0)
+        par = geometry.get("PAR") or {}
+        num = int(par.get("Num") or 1)
+        den = int(par.get("Den") or 1)
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0 or num <= 0 or den <= 0:
+        return None
+    return round(width * num / (height * den), 2)
 
 
 def select_titles(titles: list[Title], minimum: int, dominant_ratio: float) -> tuple[list[Title], bool, float]:
@@ -652,7 +693,9 @@ def prepare_titles(
 
 
 def looks_like_episode_set(titles: list[Title]) -> bool:
-    if len(titles) < 3:
+    # Two similar episode-length titles are already a TV disc (many box sets
+    # hold two 50-minute episodes per disc); a film is longer than 75 minutes.
+    if len(titles) < 2:
         return False
     durations = [title.seconds for title in titles]
     shortest = min(durations)
@@ -661,7 +704,7 @@ def looks_like_episode_set(titles: list[Title]) -> bool:
 
 
 def source_hints(path: Path) -> SourceHints:
-    stem = path.stem
+    stem = _RIPPER_SUFFIX_RE.sub("", path.stem)
     parens_year = _PARENS_YEAR_RE.search(stem)
     bare_year = _BARE_YEAR_RE.search(stem)
     year = int(parens_year.group("year")) if parens_year else (
@@ -949,6 +992,266 @@ def provider_id(show: dict[str, Any]) -> str | None:
     return None
 
 
+IDENTIFY_DEADLINE_SECONDS = 2 * 3600
+
+
+def identification_enabled(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "identifier", None)) and getattr(args, "held_dir", None) is not None
+
+
+def needs_dir(args: argparse.Namespace) -> Path:
+    return getattr(args, "needs_dir", None) or args.input_dir / "_NeedsIdentification"
+
+
+def ripper_sidecar(source: Path) -> Path:
+    """The desktop ripper's TheDiscDB evidence uploaded beside the ISO."""
+    return source.with_name(source.stem + ".jellyfin.json")
+
+
+def iso_owner(source: Path) -> str | None:
+    """Username of whoever uploaded the ISO; their provider accounts are used."""
+    try:
+        return pwd.getpwuid(source.stat().st_uid).pw_name
+    except (KeyError, OSError):
+        return None
+
+
+def uncertain(summary: str, reason: str) -> dict[str, Any]:
+    return {"status": "uncertain", "summary": summary, "reasons": [reason],
+            "assignments": [], "candidates": [], "series": None}
+
+
+def run_identifier(
+    args: argparse.Namespace,
+    arguments: list[str],
+    renew_lease: Any | None,
+    stage_label: str,
+) -> dict[str, Any]:
+    """Run disc-identify, renewing the queue lease while it works.
+
+    Identification never fails a conversion: any error becomes an uncertain
+    result, which holds the disc for a person instead of guessing.
+    """
+    common = []
+    if getattr(args, "bonsai_url", None):
+        common += ["--bonsai-url", args.bonsai_url]
+    cache = args.state_dir / "identify-cache"
+    common += ["--cache-dir", str(cache)]
+    work = (args.staging_dir or args.state_dir) / f".identify-{os.getpid()}"
+    common += ["--work-dir", str(work)]
+    command = [args.identifier, *arguments, *common]
+    print(f"Identifying episodes ({stage_label})")
+    try:
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            encoding="utf-8", errors="replace", start_new_session=True,
+        )
+    except OSError as error:
+        return uncertain("Episode identification is unavailable.", f"could not start the identifier: {error}")
+    deadline = time.monotonic() + IDENTIFY_DEADLINE_SECONDS
+    renew_after = time.monotonic() + max(1.0, args.lease_seconds / 3)
+    try:
+        while True:
+            if shutdown_signal is not None:
+                raise ShutdownRequested("shutdown during episode identification")
+            if time.monotonic() >= deadline:
+                stop_process_tree(process)
+                return uncertain("Episode identification took too long.", "the identifier exceeded its deadline")
+            if renew_lease is not None and time.monotonic() >= renew_after:
+                if not renew_lease():
+                    raise LeaseLost("queue lease was lost during episode identification")
+                renew_after = time.monotonic() + max(1.0, args.lease_seconds / 3)
+            try:
+                stdout, stderr = process.communicate(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    except BaseException:
+        stop_process_tree(process)
+        raise
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    if process.returncode != 0:
+        detail = (stderr or "").strip()[-500:]
+        return uncertain("Episode identification failed.", f"identifier error: {detail or process.returncode}")
+    try:
+        result = json.loads(stdout)
+    except json.JSONDecodeError:
+        return uncertain("Episode identification failed.", "the identifier printed invalid JSON")
+    if not isinstance(result, dict):
+        return uncertain("Episode identification failed.", "the identifier printed invalid JSON")
+    for line in result.get("reasons") or []:
+        print(f"  identification: {line}")
+    print(f"  identification: {result.get('summary', '')}")
+    return result
+
+
+def identify_disc(args: argparse.Namespace, source: Path, selected: list[Title],
+                  hints: SourceHints, renew_lease: Any | None) -> dict[str, Any]:
+    arguments = ["disc", "--iso", str(source), "--name-hint", hints.name,
+                 "--sevenzip", args.sevenzip, "--ffmpeg", args.ffmpeg]
+    for title in selected:
+        arguments += ["--title", f"{title.index}:{title.seconds}"]
+    if hints.season is not None:
+        arguments += ["--season-hint", str(hints.season)]
+    aspects = [title.aspect for title in selected if title.aspect]
+    if aspects:
+        arguments += ["--display-aspect", f"{sorted(aspects)[len(aspects) // 2]:.2f}"]
+    sidecar = ripper_sidecar(source)
+    if sidecar.is_file():
+        arguments += ["--sidecar", str(sidecar)]
+    return run_identifier(args, arguments, renew_lease, "disc menus")
+
+
+def identify_content(args: argparse.Namespace, source: Path, plan: dict[str, Any],
+                     videos: list[str], renew_lease: Any | None) -> dict[str, Any]:
+    if not (getattr(args, "parakeet", None) and getattr(args, "parakeet_model", None)):
+        return uncertain(plan.get("identification", {}).get("summary") or "Episodes need confirming.",
+                         "speech transcription is not configured")
+    context = args.state_dir / f".identify-context-{os.getpid()}.json"
+    atomic_json(context, plan.get("identification") or {})
+    arguments = ["content", "--context", str(context), "--ffmpeg", args.ffmpeg,
+                 "--parakeet", args.parakeet, "--parakeet-model", args.parakeet_model,
+                 "--threads", str(args.identify_threads)]
+    for video, title in zip(videos, plan["titles"]):
+        arguments += ["--video", video, "--title", str(title)]
+    owner = iso_owner(source)
+    if owner and getattr(args, "subtitle_socket", None):
+        arguments += ["--owner", owner, "--subtitle-socket", args.subtitle_socket]
+    try:
+        return run_identifier(args, arguments, renew_lease, "dialogue")
+    finally:
+        context.unlink(missing_ok=True)
+
+
+def identified_assignments(result: dict[str, Any], titles: list[int]) -> list[dict[str, Any]] | None:
+    """Validated assignments, in title order, or None when not usable."""
+    if result.get("status") != "identified" or not isinstance(result.get("series"), dict):
+        return None
+    assignments = result.get("assignments") or []
+    if [a.get("title") for a in assignments] != list(titles):
+        return None
+    numbers = [(a.get("season"), a.get("episode")) for a in assignments]
+    if not all(isinstance(s, int) and isinstance(e, int) for s, e in numbers):
+        return None
+    if any(n[0] != numbers[0][0] or n[1] != numbers[0][1] + i for i, n in enumerate(numbers)):
+        return None
+    return assignments
+
+
+def library_identity(shows_root: Path, series: dict[str, Any]) -> tuple[str, int | None, str | None]:
+    """Reuse an existing library folder for the series, else its provider name."""
+    name = str(series.get("name") or "").strip()
+    year = series.get("year") if isinstance(series.get("year"), int) else None
+    provider = series.get("provider") if isinstance(series.get("provider"), str) else None
+    if shows_root.is_dir():
+        wanted = normalized_name(name)
+        matches = []
+        for entry in shows_root.iterdir():
+            if not entry.is_dir():
+                continue
+            candidate_name, candidate_year, candidate_provider = parse_jellyfin_folder(entry.name)
+            if normalized_name(candidate_name) != wanted:
+                continue
+            if year is not None and candidate_year not in (None, year):
+                continue
+            if provider and candidate_provider and candidate_provider != provider:
+                continue
+            matches.append((candidate_name, candidate_year, candidate_provider))
+        if len(matches) == 1:
+            return matches[0]
+    return name, year, provider
+
+
+def safe_name(value: str) -> str:
+    """Match disc-to-jellyfin's filename cleaning."""
+    cleaned = "".join("_" if ch in '<>:"/\\|?*' or ord(ch) < 32 else ch for ch in value)
+    return cleaned.strip(" .")
+
+
+def make_media_dirs(path: Path) -> None:
+    """Create library folders group-writable; setgid is inherited, never set.
+
+    The worker's RestrictSUIDSGID sandbox refuses an explicit setgid mode.
+    """
+    missing = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    for directory in reversed(missing):
+        os.mkdir(directory, 0o770)
+
+
+def prune_empty_dirs(path: Path, stop: Path) -> None:
+    current = path
+    while current != stop and stop in current.parents:
+        try:
+            current.rmdir()
+        except OSError:
+            return
+        current = current.parent
+
+
+def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, year: int | None,
+                     provider: str | None, season: int, first: int, names: list[str]) -> Path:
+    """Move held episode files into the TV library, all or nothing."""
+    media_name = safe_name(jellyfin_name(name, year, provider))
+    season_dir = args.shows_dir / media_name / f"Season {season:02d}"
+    targets = []
+    for offset, _ in enumerate(files):
+        title = safe_name(names[offset]) if offset < len(names) and names[offset] else ""
+        stem = f"{media_name} S{season:02d}E{first + offset:02d}"
+        targets.append(season_dir / (f"{stem} - {title}.mkv" if title else f"{stem}.mkv"))
+    missing = [str(f) for f in files if not f.is_file()]
+    if missing:
+        raise RuntimeError(f"held episode files are missing: {', '.join(missing)}")
+    taken = [str(t) for t in targets if t.exists()]
+    if taken:
+        raise RuntimeError(f"library already has: {', '.join(taken)}")
+    make_media_dirs(season_dir)
+    for file, target in zip(files, targets):
+        os.rename(file, target)
+        print(f"  published {target}")
+    if getattr(args, "held_dir", None) is not None:
+        for file in files:
+            prune_empty_dirs(file.parent, args.held_dir)
+    return season_dir
+
+
+def iso_suggestion(series: dict[str, Any] | None, assignments: list[dict[str, Any]],
+                   count: int) -> dict[str, Any] | None:
+    """The Jellyfin ISO name that would publish the held episodes as guessed."""
+    if not isinstance(series, dict) or len(assignments) != count or not assignments:
+        return None
+    numbers = [(a.get("season"), a.get("episode")) for a in assignments]
+    if not all(isinstance(s, int) and isinstance(e, int) for s, e in numbers):
+        return None
+    if any(n[0] != numbers[0][0] or n[1] != numbers[0][1] + i for i, n in enumerate(numbers)):
+        return None
+    season, first = numbers[0]
+    last = numbers[-1][1]
+    year = series.get("year") if isinstance(series.get("year"), int) else None
+    provider = series.get("provider") if isinstance(series.get("provider"), str) else None
+    episodes = f"S{season:02d}E{first:02d}" + (f"-E{last:02d}" if last != first else "")
+    return {
+        "series": series.get("name"),
+        "year": year,
+        "provider": provider,
+        "season": season,
+        "firstEpisode": first,
+        "lastEpisode": last,
+        "isoName": safe_name(f"{jellyfin_name(str(series.get('name') or ''), year, provider)} {episodes}") + ".iso",
+    }
+
+
+def held_record_key(path: Path) -> str:
+    """Survives the person renaming the ISO (same inode and size)."""
+    info = path.stat()
+    return f"{info.st_dev}:{info.st_ino}:{info.st_size}"
+
+
+
 def build_plan(args: argparse.Namespace, source: Path,
                renew_lease: Any | None = None) -> dict[str, Any]:
     titles = scan_titles(args.handbrake, source, renew_lease,
@@ -1012,6 +1315,50 @@ def build_plan(args: argparse.Namespace, source: Path,
         else:
             name, year, provider = tv_name, hints.year, hints.provider
         season = season or 1
+        # A person who wrote explicit episode numbers into the ISO name has
+        # already identified the disc. Everything else is identified from the
+        # disc itself, and held out of the library when that is not certain.
+        curated_episodes = hints.is_jellyfin_named and hints.episode is not None
+        if identification_enabled(args) and not curated_episodes:
+            identification = identify_disc(args, source, selected, hints, renew_lease)
+            titles = [title.index for title in selected]
+            assignments = identified_assignments(identification, titles)
+            if assignments is not None:
+                name, year, provider = library_identity(args.shows_dir, identification["series"])
+                return {
+                    "kind": "tv",
+                    "name": name,
+                    "year": year,
+                    "provider": provider,
+                    "season": assignments[0]["season"],
+                    "first_episode": assignments[0]["episode"],
+                    "last_episode": assignments[-1]["episode"],
+                    "episode_names": [
+                        str(a.get("name") or f"DVD Title {title.index:02d}")
+                        for a, title in zip(assignments, selected)
+                    ],
+                    "titles": titles,
+                    "dominant_ratio": ratio,
+                    "output": str(args.shows_dir),
+                    "identification": identification,
+                }
+            # Encode into the holding folder under the ISO's own (unique)
+            # name; the dialogue is compared once the episodes exist.
+            return {
+                "kind": "tv",
+                "name": safe_name(source.stem),
+                "year": None,
+                "provider": None,
+                "season": 1,
+                "first_episode": 1,
+                "last_episode": None,
+                "episode_names": [f"DVD Title {title.index:02d}" for title in selected],
+                "titles": titles,
+                "dominant_ratio": ratio,
+                "output": str(args.held_dir),
+                "held": True,
+                "identification": identification,
+            }
         media_name = jellyfin_name(name, year, provider)
         first = hints.episode or existing_next_episode(args.shows_dir, media_name, season)
         if first is None:
@@ -1320,10 +1667,31 @@ def unique_destination(directory: Path, name: str) -> Path:
     return candidate
 
 
-def archive_source(source: Path, directory: Path, plan: dict[str, Any] | None = None) -> Path:
+def identified_iso_name(plan: dict[str, Any]) -> str | None:
+    """Jellyfin-style archive name for a disc whose episodes were identified."""
+    if plan.get("kind") != "tv" or (plan.get("identification") or {}).get("status") != "identified":
+        return None
+    first = plan.get("first_episode")
+    count = len(plan.get("titles") or [])
+    if not isinstance(first, int) or not isinstance(plan.get("season"), int) or count == 0:
+        return None
+    last = first + count - 1
+    episodes = f"S{plan['season']:02d}E{first:02d}" + (f"-E{last:02d}" if last != first else "")
+    media = jellyfin_name(str(plan.get("name") or ""), plan.get("year"), plan.get("provider"))
+    return safe_name(f"{media} {episodes}") + ".iso"
+
+
+def archive_source(source: Path, directory: Path, plan: dict[str, Any] | None = None,
+                   name: str | None = None) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
-    destination = unique_destination(directory, source.name)
+    destination = unique_destination(directory, name or source.name)
     os.replace(source, destination)
+    sidecar = ripper_sidecar(source)
+    if sidecar.is_file():
+        try:
+            os.replace(sidecar, ripper_sidecar(destination))
+        except OSError as error:
+            print(f"Could not move {sidecar.name} with its ISO: {error}", file=sys.stderr)
     if plan:
         manifest = destination.with_suffix(".iso.output.json")
         manifest.write_text(
@@ -1352,6 +1720,10 @@ def process_source(
         plan = build_plan(args, source, renew_lease)
         entry["plan"] = plan
         entry["status"] = "planned"
+    if plan.get("published") or plan.get("needs_identification"):
+        # A retry after the held episodes were published or parked: the
+        # encode is done and its outputs have moved; only archiving remains.
+        return
     print(
         f"Selected DVD titles {plan['titles']} as {plan['kind']} "
         f"(largest/runtime={plan['dominant_ratio']:.1%})"
@@ -1401,6 +1773,174 @@ def process_source(
         if folder in output.planned:
             folder = os.path.dirname(folder)
         plan["media_dir"] = folder
+    if plan.get("held"):
+        finish_held(args, source, plan, list(output.planned), renew_lease)
+
+
+def finish_held(args: argparse.Namespace, source: Path, plan: dict[str, Any],
+                videos: list[str], renew_lease: Any | None) -> None:
+    """Compare a held disc's dialogue, then publish it or park it for a person."""
+    if len(videos) != len(plan["titles"]):
+        result = dict(plan.get("identification") or {})
+        result.setdefault("reasons", []).append("the converter's outputs could not be matched to the titles")
+    else:
+        result = identify_content(args, source, plan, videos, renew_lease)
+        # Keep what the menus showed alongside what the dialogue showed.
+        earlier = (plan.get("identification") or {}).get("reasons") or []
+        result["reasons"] = list(dict.fromkeys([*earlier, *(result.get("reasons") or [])]))
+        assignments = identified_assignments(result, plan["titles"])
+        if assignments is not None:
+            name, year, provider = library_identity(args.shows_dir, result["series"])
+            season_dir = publish_episodes(
+                args, [Path(video) for video in videos], name, year, provider,
+                assignments[0]["season"], assignments[0]["episode"],
+                [str(a.get("name") or "") for a in assignments],
+            )
+            plan.update(
+                name=name, year=year, provider=provider, season=assignments[0]["season"],
+                first_episode=assignments[0]["episode"], output=str(args.shows_dir),
+                media_dir=str(season_dir.parent), held=False, published=True,
+                identification=result,
+            )
+            if renew_lease is not None:
+                renew_lease()  # persist "published" before the ISO is archived
+            return
+    shared_root = args.held_dir.parent.parent
+    held_folder = Path(videos[0]).parent.parent if videos else args.held_dir / plan["name"]
+    plan["needs_identification"] = {
+        "schemaVersion": 1,
+        "sourceIso": source.name,
+        "heldDir": os.path.relpath(held_folder, shared_root),
+        "heldFiles": videos,
+        "titles": plan["titles"],
+        "summary": str(result.get("summary") or "The episodes could not be identified."),
+        "reasons": [str(reason) for reason in (result.get("reasons") or [])][:12],
+        "suggestion": iso_suggestion(result.get("series"), result.get("assignments") or [],
+                                     len(plan["titles"])),
+    }
+    if renew_lease is not None:
+        renew_lease()
+
+
+def park_for_identification(args: argparse.Namespace, source: Path,
+                            record: dict[str, Any], state: dict[str, Any]) -> Path:
+    """Move the ISO to _NeedsIdentification with its evidence for the UI."""
+    archived = archive_source(source, needs_dir(args))
+    evidence = dict(record, finishedAt=int(time.time()))
+    identify_path = archived.with_name(archived.name + ".identify.json")
+    atomic_json(identify_path, evidence)
+    state.setdefault("held", {})[held_record_key(archived)] = {
+        "identify": identify_path.name,
+        "sidecar": ripper_sidecar(archived).name,
+        "files": record.get("heldFiles", []),
+        "titles": record.get("titles", []),
+        "heldDir": record.get("heldDir", ""),
+    }
+    return archived
+
+
+def note_identification_problem(identify_path: Path, message: str) -> None:
+    try:
+        evidence = json.loads(identify_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        evidence = {"schemaVersion": 1}
+    if evidence.get("summary") == message:
+        return
+    evidence["summary"] = message
+    try:
+        atomic_json(identify_path, evidence)
+    except OSError:
+        pass
+
+
+def episode_names_for(args: argparse.Namespace, hints: SourceHints, season: int,
+                      first: int, count: int) -> list[str]:
+    """Best-effort TVmaze titles for episodes a person has numbered."""
+    try:
+        metadata = tvmaze_match(hints, count, args.metadata_timeout)
+    except Exception:  # noqa: BLE001 - names are optional
+        metadata = None
+    if not metadata:
+        return [""] * count
+    premiered = str(metadata["show"].get("premiered") or "")[:4]
+    if hints.year is not None and premiered.isdigit() and int(premiered) != hints.year:
+        return [""] * count
+    by_number = {
+        (episode.get("season"), episode.get("number")): str(episode.get("name") or "")
+        for episode in metadata.get("episodes", [])
+    }
+    return [by_number.get((season, first + offset), "") for offset in range(count)]
+
+
+def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path: Path,
+                          processed_dir: Path) -> None:
+    """Publish held episodes once a person renames their ISO with episode numbers.
+
+    In _NeedsIdentification, renaming ``X.iso`` to ``Show (1978) S01E05-E06.iso``
+    moves the held videos into the library without re-encoding them.
+    """
+    directory = needs_dir(args)
+    if not directory.is_dir():
+        return
+    with locked_queue(lock_path):
+        state = load_state(state_path)
+        records = state.get("held")
+        if not isinstance(records, dict) or not records:
+            return
+        live: set[str] = set()
+        for iso in sorted(directory.glob("*.iso"), key=lambda path: natural_key(path.name)):
+            try:
+                key = held_record_key(iso)
+            except OSError:
+                continue
+            live.add(key)
+            record = records.get(key)
+            if not isinstance(record, dict):
+                continue
+            try:
+                hints = source_hints(iso)
+            except ValueError:
+                continue
+            if hints.season is None or hints.episode is None:
+                continue
+            identify_path = directory / str(record.get("identify") or f"{iso.name}.identify.json")
+            files = [Path(item) for item in record.get("files", [])]
+            count = len(files)
+            last = hints.last_episode if hints.last_episode is not None else hints.episode + count - 1
+            if count == 0 or last - hints.episode + 1 != count:
+                note_identification_problem(
+                    identify_path,
+                    f"The new name covers {last - hints.episode + 1} episode(s), "
+                    f"but this disc holds {count}. Name the full range, e.g. "
+                    f"S{hints.season:02d}E{hints.episode:02d}-E{hints.episode + count - 1:02d}.",
+                )
+                continue
+            existing = find_existing_for_hints(args.shows_dir, hints, hints.name)
+            name, year, provider = existing or (hints.name, hints.year, hints.provider)
+            names = episode_names_for(args, hints, hints.season, hints.episode, count)
+            try:
+                season_dir = publish_episodes(args, files, name, year, provider,
+                                              hints.season, hints.episode, names)
+            except (OSError, RuntimeError) as error:
+                note_identification_problem(identify_path, f"Could not publish the episodes: {error}")
+                continue
+            archived = archive_source(iso, processed_dir, {
+                "kind": "tv", "name": name, "output": str(args.shows_dir),
+                "media_dir": str(season_dir.parent),
+            })
+            if identify_path.is_file():
+                os.replace(identify_path, archived.with_name(archived.name + ".identify.json"))
+            # The ripper's evidence keeps the ISO's original name.
+            original_sidecar = directory / str(record.get("sidecar") or "")
+            if record.get("sidecar") and original_sidecar.is_file():
+                os.replace(original_sidecar, ripper_sidecar(archived))
+            del records[key]
+            print(f"Published held episodes of {iso.name} to {season_dir}")
+        # Forget holds whose ISO was deleted or moved elsewhere by a person.
+        for stale in set(records) - live:
+            del records[stale]
+        state["held"] = records
+        atomic_json(state_path, state)
 
 
 class ConverterOutput:
@@ -1576,6 +2116,11 @@ def run(args: argparse.Namespace) -> int:
             atomic_json(state_path, state)
             return True
 
+    if identification_enabled(args):
+        try:
+            resolve_renamed_holds(args, lock_path, state_path, processed_dir)
+        except Exception as error:  # noqa: BLE001 - never block new conversions
+            print(f"Could not process renamed ISOs awaiting identification: {error}", file=sys.stderr)
     public_status(args, "idle", queued=pending_titles())
     failures = 0
     while True:
@@ -1725,9 +2270,17 @@ def run(args: argparse.Namespace) -> int:
                 if not isinstance(entry, dict) or not lease_owned(entry, args.worker_id, lease_id):
                     raise LeaseLost(f"queue lease for {source.name} was lost before completion")
                 ensure_source_unchanged(source, local_entry["signature"])
-                archived = archive_source(source, processed_dir, local_entry.get("plan"))
-                print(f"Completed {source.name}; preserved the ISO at {archived}")
-                state.setdefault("processed_hashes", {})[archived.name] = digest
+                finished_plan = local_entry.get("plan") or {}
+                if finished_plan.get("needs_identification"):
+                    archived = park_for_identification(
+                        args, source, finished_plan["needs_identification"], state
+                    )
+                    print(f"Held {source.name} for identification; its ISO is at {archived}")
+                else:
+                    archived = archive_source(source, processed_dir, finished_plan,
+                                              identified_iso_name(finished_plan))
+                    print(f"Completed {source.name}; preserved the ISO at {archived}")
+                    state.setdefault("processed_hashes", {})[archived.name] = digest
                 del state["sources"][source.name]
                 atomic_json(state_path, state)
         except ShutdownRequested as error:
@@ -1796,6 +2349,26 @@ def self_test() -> None:
     assert movie.name == "The Matrix"
     assert movie.year == 1999 and movie.disc == 2 and movie.season is None
     assert movie.provider is None and not movie.is_jellyfin_named
+    # Regression (All Creatures Great and Small, 2026-11-14): the desktop
+    # ripper's capture stamp leaked into names and merged two discs' folders,
+    # and two-episode discs were filed as films.
+    stamped = source_hints(Path("ALLCREATURESGREATANDSMALL_20261114-162720_1TbgkU.iso"))
+    assert stamped.name == "Allcreaturesgreatandsmall" and stamped.year is None
+    assert source_hints(Path("ALLCREATURESGREATANDSMALL_20261114-155933.iso")).name == stamped.name
+    assert looks_like_episode_set([Title(3, 3047, True), Title(4, 2952, False)])
+    assert not looks_like_episode_set([Title(1, 6100, True), Title(2, 2952, False)])
+    assert display_aspect({"Width": 720, "Height": 576, "PAR": {"Num": 16, "Den": 15}}) == 1.33
+    assert identified_assignments(
+        {"status": "identified", "series": {"name": "X"},
+         "assignments": [{"title": 3, "season": 1, "episode": 5}, {"title": 4, "season": 1, "episode": 7}]},
+        [3, 4],
+    ) is None
+    assert iso_suggestion(
+        {"name": "All Creatures Great and Small", "year": 1978, "provider": "tvdbid-78289"},
+        [{"season": 1, "episode": 5}, {"season": 1, "episode": 6}], 2,
+    )["isoName"] == "All Creatures Great and Small (1978) [tvdbid-78289] S01E05-E06.iso"
+    renamed = source_hints(Path("All Creatures Great and Small (1978) [tvdbid-78289] S01E05-E06.iso"))
+    assert (renamed.season, renamed.episode, renamed.last_episode) == (1, 5, 6)
     show = source_hints(Path("The_Wire_S03_Disc_2.iso"))
     assert show.name == "The Wire" and show.season == 3 and show.disc == 2
     assert show.is_jellyfin_named and show.provider is None

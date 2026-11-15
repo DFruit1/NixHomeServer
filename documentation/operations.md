@@ -1280,20 +1280,61 @@ minute and converted serially into the shared Jellyfin `_Movies` or `_Shows`
 library with the balanced H.264/AAC-plus-original-audio profile.
 
 The converter treats a descriptive ISO filename as authoritative over the
-disc's embedded volume label and performs a conservative TVmaze lookup only
-when the filename does not already carry Jellyfin-style season, episode, year,
-or provider signals. A uniform set of at least three episode-length titles is
-treated as TV even when TVmaze has no listing. If metadata is unavailable or
-the match is weak, conversion continues with safe names derived from the ISO
-filename and DVD title numbers. Name TV images descriptively, for example
-`The_Wire_S03_Disc_2.iso` or `Rumpole_of_the_Bailey_S02E04-E06.iso`, to improve
-automatic season, disc, and metadata matching. On explicitly TV-named ISOs, a
-systematic sequence of adjacent title pairs with identical runtimes is collapsed
-so DVDs that expose every episode twice do not create duplicate Jellyfin
-episodes. An episode range also fails closed if the filtered DVD title count
-does not match the range, rather than inventing episode numbers past its end.
-Ambiguous bare trailing numbers such as `Title_2_DISC_1.iso` remain part of the
-title unless an existing series folder confirms that the number is a season.
+disc's embedded volume label. The desktop ripper's capture stamp
+(`LABEL_20261114-155933` or `LABEL_20261114-162720_1TbgkU`) is ignored when
+naming. Two or more similar episode-length titles (8–75 minutes) are treated
+as TV.
+
+#### Identifying TV episodes
+
+A TV disc reaches Jellyfin only when its episodes are identified with
+certainty. An ISO name that already carries a season and episode range, such as
+`Rumpole_of_the_Bailey_S02E04-E06.iso`, is trusted as written. Otherwise
+`disc-identify` (part of the mkvmaker package) works through these in order:
+
+1. **Exact disc** – the ripper's `<name>.jellyfin.json` sidecar, when
+   TheDiscDB knows that exact pressing.
+2. **Disc menus** – still menu pages are read by Bonsai (through the
+   concurrency gate) and every episode title it reports must match TVmaze's
+   episode list. A run-together label such as `ALLCREATURESGREATANDSMALL` is
+   split into words by Bonsai, accepted only if the letters are unchanged.
+   Same-name series (a 1978 original and a 2020 remake) are separated by the
+   menu's episode titles and by picture shape (4:3 discs of post-2010 shows,
+   and 16:9 discs of pre-1995 shows, are unlikely).
+3. **Dialogue** – when the menus are not conclusive, the episodes are encoded
+   into `_Shared/_Videos/_Unidentified` (outside the Jellyfin libraries). Six
+   minutes of each are transcribed on the CPU with the transcribe app's
+   Parakeet model and compared with TVmaze summaries (ranked by Bonsai) and,
+   for the best candidates, with OpenSubtitles subtitle text fetched through
+   the provider broker with the **uploading user's** OpenSubtitles account. At
+   most six subtitle downloads are spent per disc, and results are cached. If
+   the uploader has no OpenSubtitles account the comparison is skipped.
+
+Identification is complete only when every title maps to consecutive episodes
+of one season. Identified episodes are published to `_Shows` with TVmaze
+episode titles, and the ISO is archived as
+`Series (Year) [tvdbid-N] S01E05-E06.iso` in `_Processed` with its sidecar.
+Each step's reasoning is logged in the worker journal.
+
+Anything less is held. The ISO moves to `_Shared/_ISO/_DVDs/_NeedsIdentification`
+with an `X.iso.identify.json` evidence file, and Media Manager's Conversions
+page lists it under **Process, needs identifying** with the best guess. To
+confirm, rename the ISO in `_NeedsIdentification` to a Jellyfin TV name with
+the full episode range, for example
+`All Creatures Great and Small (1978) [tvdbid-78289] S01E05-E06.iso`. Within a
+minute the worker moves the held videos into `_Shows` without re-encoding and
+archives the ISO in `_Processed`. A range that does not match the number of
+held videos is refused and the reason appears on the Conversions page. Deleting
+an ISO from `_NeedsIdentification` leaves its held videos in `_Unidentified`
+for manual handling.
+
+Without the Bonsai app the menu step is skipped; without the transcribe app the
+dialogue step is skipped. Discs are then held more often, never guessed.
+Movies are unaffected by identification. Ambiguous bare trailing numbers such
+as `Title_2_DISC_1.iso` remain part of the title unless an existing series
+folder confirms that the number is a season.
+
+#### Encoding, archives and duplicates
 
 The final MKV does not retain HandBrake's encode timestamp as a media release
 date. Jellyfin can still use a year returned by its metadata providers or a
@@ -1303,7 +1344,8 @@ a release year instead of being labelled with the conversion year.
 If one title accounts for at least 85% of the substantial runtime, only that
 feature is converted. Otherwise every title of at least five minutes is
 converted, excluding an obvious play-all duplicate. Completed source ISOs are
-preserved in `_Shared/_ISO/_DVDs/_Processed`. Before HandBrake starts, the
+preserved in `_Shared/_ISO/_DVDs/_Processed` (TV discs awaiting confirmation in
+`_NeedsIdentification`). Before HandBrake starts, the
 importer size-filters and SHA-256 checks the ISO against every processed image;
 an identical upload is preserved in `_Duplicate` and never encoded. This also
 catches a repeated upload with the same filename. Duplicate detection fails
@@ -1322,8 +1364,12 @@ beside an `.error.txt` file after three attempts.
 While an encode runs, the partially written MKV is staged in
 `_Shared/.mkvmaker-staging` outside the Jellyfin library so the library never
 scans an incomplete file; the finished MKV is published into
-`_Shared/_Videos/_Movies` or `_Shared/_Videos/_Shows` with a single atomic
-rename once it passes validation. ISOs added to the inbox during an active
+`_Shared/_Videos/_Movies`, `_Shared/_Videos/_Shows` or (held TV)
+`_Shared/_Videos/_Unidentified` with a single atomic rename once it passes
+validation. New library folders inherit the setgid `media-automation` group from
+their parent; the worker never requests setgid itself, because its
+`RestrictSUIDSGID` sandbox refuses that (which used to fail the first attempt
+at every new folder). ISOs added to the inbox during an active
 encode are re-read from the inbox for each public progress update and appear in
 natural order under the active conversion queue.
 
@@ -1631,6 +1677,13 @@ cannot read media roots, mutation staging, or the main control database. Its
 state is persisted and included in encrypted backups. The database and
 `master.key` must be restored together; losing the key fails closed and users
 must re-enter their accounts from their password managers.
+
+Accounts belong to the Kanidm login that saved them. Accounts saved while signed
+in as another login (for example an admin account) are not visible, and are not
+used, when signed in as yourself; set them up again under the login you use.
+Background jobs listed in `repo.mediaManager.providerSystemClients` (the DVD
+importer) reach the broker's system socket and act with the account of the user
+who uploaded the item, falling back to no provider when that user has none.
 
 Successful metadata-provider searches and detail lookups are cached per
 signed-in user and provider for one week in

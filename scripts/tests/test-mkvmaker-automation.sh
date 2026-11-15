@@ -88,6 +88,7 @@ jq -e '
     "/mnt/data/shared/_ISO/_DVDs",
     "/mnt/data/shared/_Videos/_Movies",
     "/mnt/data/shared/_Videos/_Shows",
+    "/mnt/data/shared/_Videos/_Unidentified",
     "/mnt/data/shared/.mkvmaker-staging"
   ])
   and (.workerUnit.StartLimitBurst > 60)
