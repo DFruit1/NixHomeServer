@@ -123,8 +123,8 @@ Bonsai users are served first, and waits when the gate is busy. Previews are
 reduced to fit 768 px first: on hand-labelled photos this took about 9 s a
 photo instead of 27 s at full preview size, catching 50 of 53 wrong tags and
 removing 3 of 138 correct ones. Vision encoding runs on the CPU; live, a
-review completes about every 10 to 11 s, so the first pass over a library of
-about 24,000 photos takes about three days. Photos that fail are retried
+review completes about every 12 s, so the first pass over a library of about
+24,000 photos takes three to four days. Photos that fail are retried
 after six hours or a day.
 
 Reviews are stored only in Media Manager's index (`image_tag_reviews`, with
