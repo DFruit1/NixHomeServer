@@ -250,22 +250,13 @@ async fn review(
             .flatten()
             .ok_or(ReviewError::Photo(30 * DAY))?;
         let wrong = ask(bonsai, &jpeg, &tags).await?;
-        let removed: Vec<String> = tags
-            .iter()
+        // Bonsai may reject every scene tag: on close-ups of gadgets and labels
+        // EYE's scene tags are often all wrong (a cable on carpet tagged lake,
+        // lamp and houseplant), and checked live, those rejections were right.
+        tags.iter()
             .filter(|t| wrong.contains(*t))
             .cloned()
-            .collect();
-        // Rejecting every scene tag of a well-tagged photo is more likely a
-        // failed reading than a photo EYE got entirely wrong; keep EYE's tags.
-        if removed.len() == tags.len() && tags.len() >= 4 {
-            eprintln!(
-                "{}",
-                json!({"service":"media-manager-provider-broker","event":"photo_tag_review_rejected_all","requestId":id})
-            );
-            Vec::new()
-        } else {
-            removed
-        }
+            .collect()
     };
     let mut kept = analysis.clone();
     kept.suggestions.retain(|s| !removed.contains(&s.tag));

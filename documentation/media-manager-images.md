@@ -114,24 +114,25 @@ newest photos first. Bonsai lists the proposed tags that are clearly wrong; it
 cannot add or rename tags. Removed tags disappear from the photo and from
 saved-tag search; kept tags keep EYE's confidence. EYE's photo type,
 keep/reject, sensitive-content, rotation, quality and face tags are not
-reviewed. If Bonsai rejects every scene tag on a photo with four or more, the
-answer is treated as a failed reading and EYE's tags are left unchanged.
+reviewed. Bonsai may remove every scene tag; on close-ups of gadgets and
+labels EYE's scene tags are often all wrong.
 
 The review runs in the provider broker, one photo at a time, through the
 loopback Bonsai concurrency gate. It pauses briefly between photos so other
 Bonsai users are served first, and waits when the gate is busy. Previews are
 reduced to fit 768 px first: on hand-labelled photos this took about 9 s a
-photo instead of 27 s at full preview size, with the same wrong tags caught
-(50 of 53, removing 3 of 138 correct tags). Vision encoding runs on the CPU,
-so the first pass over a library of about 24,000 photos takes two to three
-days. Photos that fail are retried after six hours or a day.
+photo instead of 27 s at full preview size, catching 50 of 53 wrong tags and
+removing 3 of 138 correct ones. Vision encoding runs on the CPU; live, a
+review completes about every 10 to 11 s, so the first pass over a library of
+about 24,000 photos takes about three days. Photos that fail are retried
+after six hours or a day.
 
 Reviews are stored only in Media Manager's index (`image_tag_reviews`, with
 the removed tags). Retagging a photo replaces its tags with a fresh EYE result
 and queues a new review. Disabling Bonsai stops further reviews; already
 removed tags stay removed until the photo is retagged. Journal events
-`photo_tags_reviewed` (kept and removed counts), `photo_tag_review_failed` and
-`photo_tag_review_rejected_all` record progress without tag names.
+`photo_tags_reviewed` (kept and removed counts) and `photo_tag_review_failed`
+record progress without tag names.
 
 ## Saved decision questions
 
