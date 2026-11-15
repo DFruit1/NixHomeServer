@@ -20,9 +20,11 @@ The current prototype supports one-way copies between an Android SAF tree or
 Linux folder and the signed-in user's enabled server libraries. Android runs
 saved pairs in the background with WorkManager; Linux sync remains manual. After
 Kanidm sign-in, the server supplies only presets for enabled services whose
-personal folder exists for that account. Service cards lead to preset choices;
-**Enable and sync** opens the native folder picker, saves a pair, and starts its
-first copy. If the copy fails, the pair stays available for a manual retry. The personal music
+personal folder exists for that account. They are grouped under **Sync to your
+device** and **Sync to the server**. **Sync Entire Folder** opens the native
+folder picker, saves a pair, and starts its first copy. **Sync Selected** lets
+you tick subfolders of the suggestion instead, and saves one pair per folder at
+the same place inside the suggestion's device folder. If the copy fails, the pair stays available for a manual retry. The personal music
 preset copies `_Music` into `_My Music` within the chosen local folder. Manual
 pairs can browse the same server libraries and choose a different folder or
 direction.

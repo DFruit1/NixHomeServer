@@ -78,6 +78,8 @@ const ICONS = {
   chevronUp: '<path d="m6 15 6-6 6 6"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   server: '<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6"/>',
+  film: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 8h4M3 12h18M3 16h4M17 8h4M17 16h4"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
 } as const;
 
 function icon(name: keyof typeof ICONS, className = ''): string {
@@ -191,7 +193,7 @@ function overviewContent(): string {
     }
   } else if (!total) {
     title = 'What would you like on this device?';
-    copy = 'Choose a folder below. The first copy starts as soon as you set it up.';
+    copy = 'Choose a folder below. The first copy starts as soon as you pick it.';
     symbol = 'folder';
   } else if (active) {
     title = 'Syncing your files';
@@ -305,7 +307,8 @@ function syncIsActive(): boolean {
 function pairMark(pair: SyncPair): string {
   const rootPreset = state.presets.find((item) => item.id === (pair.serverRoot ?? 'files'));
   const folder = pair.serverRoot === HOME_ROOT ? pair.serverPath.split('/')[0] : pair.serverFolder ?? rootPreset?.folder;
-  if (folder === '_Music') return icon('music');
+  const mark = libraryMark(libraryKind(serverLocation(pair)));
+  if (mark) return mark;
   // Prefer the media app when multiple presets expose the same home library.
   const preset = pair.serverRoot === HOME_ROOT
     ? state.presets.find((item) => item.folder === folder && item.service !== 'offline-media')
@@ -329,20 +332,50 @@ function localLocation(pair: SyncPair): string {
   return `${pair.local.displayName}${pair.localSubpath ? ` / ${pair.localSubpath}` : ''}`;
 }
 
-// One inline rendering of a route, shared by the suggested list and the paired
-// list so a folder path never changes appearance between the two. Icons stand
-// in for the "Server" / "This device" labels to keep it on one line; the
-// labels stay available to screen readers.
+// One rendering of a route, shared by the suggested list and the paired list
+// so a folder path never changes appearance between the two. Icons stand in
+// for the "Server" / "This device" labels; the labels stay available to screen
+// readers. Each path stays on one line: when source and target do not fit side
+// by side, `layoutRoutes` stacks them and the arrow turns to point down at the
+// target.
 function routeLine(direction: SyncDirection, localValue: string, serverValue: string): string {
   type Place = { label: string; symbol: keyof typeof ICONS; value: string };
   const local: Place = { label: 'this device', symbol: 'device', value: localValue };
   const server: Place = { label: 'server', symbol: 'server', value: serverValue };
   const [source, target] = direction === 'server-to-phone' ? [server, local] : [local, server];
-  // The arrow belongs to the destination so a wrapped line starts with it.
   const arrow = `<span class="route-arrow" aria-hidden="true">${icon(direction === 'two-way' ? 'sync' : 'arrowRight')}</span>`;
-  const end = (place: Place, role: string, lead = '') => `<span class="route-end">${lead}${icon(place.symbol)}<span class="visually-hidden">${role} ${place.label}:</span><strong>${escapeHtml(place.value)}</strong></span>`;
-  return `<p class="route-line">${end(source, 'From')}${end(target, 'to', arrow)}</p>`;
+  const end = (place: Place, role: string, kind: string) => `<span class="route-end route-${kind}">${icon(place.symbol)}<span class="visually-hidden">${role} ${place.label}:</span><strong>${breakablePath(place.value)}</strong></span>`;
+  return `<p class="route-line">${end(source, 'From', 'source')}${arrow}${end(target, 'to', 'target')}</p>`;
 }
+
+/// A path that, if it must wrap at all, wraps after a slash rather than inside
+/// a folder name. Inline routes never wrap (`white-space: nowrap` ignores
+/// `<wbr>`); only a stacked path too long for the whole row does.
+function breakablePath(value: string): string {
+  return value.split('/').map(escapeHtml).join('/<wbr>');
+}
+
+/// Stacks each route whose two paths do not fit on one line.
+///
+/// Measured rather than guessed from a breakpoint: whether a route fits
+/// depends on how long its paths are, not only on the screen width.
+function layoutRoutes(): void {
+  for (const line of document.querySelectorAll<HTMLElement>('.route-line')) {
+    line.classList.remove('is-stacked');
+    const source = line.querySelector<HTMLElement>('.route-source');
+    const target = line.querySelector<HTMLElement>('.route-target');
+    if (!source || !target) continue;
+    if (target.offsetTop > source.offsetTop + 2 || line.scrollWidth > line.clientWidth + 1) line.classList.add('is-stacked');
+  }
+}
+
+let routeLayoutFrame = 0;
+function scheduleRouteLayout(): void {
+  cancelAnimationFrame(routeLayoutFrame);
+  routeLayoutFrame = requestAnimationFrame(layoutRoutes);
+}
+window.addEventListener('resize', scheduleRouteLayout);
+void document.fonts?.ready.then(scheduleRouteLayout);
 
 function presetServerLocation(preset: SyncPreset): string {
   return `/${preset.folder}${preset.serverPath ? `/${preset.serverPath}` : ''}`;
@@ -363,10 +396,52 @@ function pairForPreset(preset: SyncPreset): SyncPair | undefined {
 /// Suggestion titles are sentences ("Keep your files on this device"), which
 /// read badly as a folder's name on its card and in sync notifications.
 function presetShortName(preset: SyncPreset): string {
+  // The whole video library sits beside its YouTube and Other subfolders.
+  if (preset.service === 'jellyfin' && !preset.serverPath) return 'All Videos';
   if (preset.service !== 'offline-media') return preset.serviceTitle || preset.title;
   const label = (part: string) => part.replace(/^_+/, '').replace(/_/g, ' ').trim();
   const sub = (preset.serverPath ?? '').split('/').filter(Boolean).pop();
   return [sub, preset.folder].filter((part): part is string => Boolean(part)).map(label).filter(Boolean).join(' ') || preset.title;
+}
+
+/// What kind of library a server path holds, judged by the library folders
+/// the server provisions. Both the suggested list and the paired list use it,
+/// so a folder keeps the same symbol after it is set up.
+type LibraryKind = 'youtube' | 'other-videos' | 'videos' | 'music' | 'files' | 'audiobooks' | 'books';
+function libraryKind(serverPath: string): LibraryKind | undefined {
+  const [top, sub] = serverPath.split('/').filter(Boolean);
+  if (top === '_Videos') return sub === '_YouTube' ? 'youtube' : sub === '_Other' ? 'other-videos' : 'videos';
+  return ({ _Music: 'music', _Files: 'files', _Audiobooks: 'audiobooks', _Books: 'books' } as Record<string, LibraryKind>)[top ?? ''];
+}
+
+function libraryMark(kind: LibraryKind | undefined): string | undefined {
+  switch (kind) {
+    case 'youtube': return '<img src="/logos/youtube.svg" alt="" loading="lazy" onerror="this.remove()" />';
+    case 'other-videos': return icon('film');
+    case 'music': return icon('music');
+    default: return undefined;
+  }
+}
+
+function presetMark(preset: SyncPreset): string {
+  return libraryMark(libraryKind(presetServerLocation(preset))) ?? serviceMark(preset.service, preset.serviceTitle);
+}
+
+/// One or two lines on what a suggested folder holds. The server's own
+/// descriptions describe the copy ("Copy this personal media folder…"), which
+/// the route line below already shows.
+function presetDescription(preset: SyncPreset): string {
+  const copy: Record<LibraryKind, string> = {
+    youtube: 'Videos you saved from YouTube, ready to watch offline.',
+    'other-videos': 'Your other saved videos, ready to watch offline.',
+    videos: 'Your whole video library, including YouTube and other videos.',
+    music: 'Your music library, ready to play without a connection.',
+    files: 'Your personal documents and files from the server.',
+    audiobooks: 'Your audiobook library, ready to listen offline.',
+    books: 'Your ebooks, comics and manga, ready to read offline.',
+  };
+  const kind = libraryKind(presetServerLocation(preset));
+  return kind ? copy[kind] : preset.description;
 }
 
 function serviceInitials(title: string): string {
@@ -380,42 +455,66 @@ function serviceMark(service: string, serviceTitle: string): string {
     : `<span class="service-symbol">${escapeHtml(serviceInitials(serviceTitle))}</span>`;
 }
 
-function presetActions(preset: SyncPreset, hasPairs: boolean): string {
-  return `<div class="suggest-actions" data-preset-actions="${escapeHtml(preset.id)}">
-    <button class="${hasPairs ? 'secondary-button' : 'primary-button'} compact-button" type="button" data-enable-preset="${escapeHtml(preset.id)}" aria-label="Set up ${escapeHtml(presetShortName(preset))}" ${state.syncingPairId ? 'disabled' : ''}>${icon('plus')}<span>Set up</span></button>
+function presetActions(preset: SyncPreset): string {
+  const id = escapeHtml(preset.id);
+  const name = escapeHtml(presetShortName(preset));
+  const disabled = state.syncingPairId ? 'disabled' : '';
+  return `<div class="suggest-actions" data-preset-actions="${id}">
+    <button class="primary-button compact-button" type="button" data-enable-preset="${id}" aria-label="Sync entire ${name} folder" ${disabled}>Sync Entire Folder</button>
+    <button class="secondary-button compact-button" type="button" data-select-preset="${id}" aria-label="Choose ${name} folders to sync" ${disabled}>Sync Selected</button>
   </div>`;
+}
+
+function presetRow(preset: SyncPreset): string {
+  return `<li class="suggest-row" data-preset-row="${escapeHtml(preset.id)}">
+    <span class="service-logo" aria-hidden="true">${presetMark(preset)}</span>
+    <div class="suggest-copy">
+      <h3>${escapeHtml(presetShortName(preset))}</h3>
+      <p class="suggest-description">${escapeHtml(presetDescription(preset))}</p>
+    </div>
+    <div class="suggest-detail">
+      ${routeLine(preset.direction, `/${preset.localSubpath}`, presetServerLocation(preset))}
+      ${presetSizeLine(preset)}
+    </div>
+    ${presetActions(preset)}
+  </li>`;
 }
 
 function render(): void {
   const hasPairs = state.pairs.length > 0;
   const openPresets = state.presets.filter((preset) => !pairForPreset(preset));
-  const suggestBody = state.presetsFailed
+  const toDevice = openPresets.filter((preset) => preset.direction !== 'phone-to-server');
+  const toServer = openPresets.filter((preset) => preset.direction === 'phone-to-server');
+  const deviceBody = state.presetsFailed
     ? `<div class="services-empty"><p>${state.offline ? 'Suggested folders can’t load while you’re offline.' : 'Couldn’t load suggested folders.'}</p><button class="secondary-button compact-button" type="button" data-retry-presets>${icon('sync')}<span>Try again</span></button></div>`
     : !state.presets.length
       ? '<p class="services-empty">No suggested folders are available for this account yet. You can still pair your own folders below.</p>'
-      : openPresets.length
-        ? `<ul class="suggest-list">${openPresets.map((preset) => `<li class="suggest-row" data-preset-row="${escapeHtml(preset.id)}">
-            <span class="service-logo" aria-hidden="true">${serviceMark(preset.service, preset.serviceTitle)}</span>
-            <div class="suggest-copy">
-              <h3>${escapeHtml(preset.title)}</h3>
-              <p class="suggest-description">${escapeHtml(preset.description)}</p>
-              ${routeLine(preset.direction, `/${preset.localSubpath}`, presetServerLocation(preset))}
-              ${presetSizeLine(preset)}
-            </div>
-            ${presetActions(preset, hasPairs)}
-          </li>`).join('')}</ul>`
-        : '';
+      : toDevice.length ? `<ul class="suggest-list">${toDevice.map(presetRow).join('')}</ul>` : '';
+  // Uploading has no server-suggested folders yet, so the section always
+  // offers a folder of the user's own choosing.
+  const ownUpload = `<li class="suggest-row">
+      <span class="service-logo" aria-hidden="true">${icon('image')}</span>
+      <div class="suggest-copy">
+        <h3>A Folder on This Device</h3>
+        <p class="suggest-description">Back up photos, documents or any other folder to your server.</p>
+      </div>
+      <div class="suggest-actions"><button class="primary-button compact-button" type="button" data-open-pair-form="phone-to-server">Choose Folder</button></div>
+    </li>`;
   const suggestSection = state.user ? `
-    <section class="suggest-section" id="suggestions" aria-labelledby="suggest-heading">
-      <div class="section-heading">
-        <h2 id="suggest-heading">${hasPairs ? (openPresets.length || state.presetsFailed ? 'Add a folder' : 'More') : 'Suggested for you'}</h2>
-      </div>
-      ${suggestBody}
-      <div class="section-actions">
-        <button class="secondary-button" type="button" id="open-files">${icon('folder')}Browse server files</button>
-        <button class="text-button" type="button" id="open-pair-form">${icon('plus')}Pair your own folders</button>
-      </div>
-    </section>` : '';
+    <div id="suggestions">
+      <section class="suggest-section" aria-labelledby="to-device-heading">
+        <div class="section-heading"><h2 id="to-device-heading">Sync to your device</h2></div>
+        ${deviceBody}
+        <div class="section-actions">
+          <button class="secondary-button" type="button" id="open-files">${icon('folder')}Browse server files</button>
+          <button class="text-button" type="button" data-open-pair-form="server-to-phone">${icon('plus')}Pair your own folders</button>
+        </div>
+      </section>
+      <section class="suggest-section" aria-labelledby="to-server-heading">
+        <div class="section-heading"><h2 id="to-server-heading">Sync to the server</h2></div>
+        <ul class="suggest-list">${toServer.map(presetRow).join('')}${ownUpload}</ul>
+      </section>
+    </div>` : '';
   const pairRows = state.pairs.map((pair) => {
     const estimate = state.estimates[pair.id];
     const blocked = spaceStatus(pair, estimate) === 'blocked';
@@ -490,6 +589,14 @@ function render(): void {
       <div class="dialog-actions"><button class="secondary-button" type="button" id="server-browser-up">${icon('chevronUp')}Up one level</button><button class="primary-button" type="button" id="choose-server-folder">Use this folder</button></div>
     </dialog>
 
+    <dialog id="select-dialog" class="pair-dialog files-dialog" aria-labelledby="select-heading">
+      <div class="dialog-heading"><div><h2 id="select-heading">Choose folders</h2><p id="select-subtitle"></p></div><button class="close-button" type="button" id="close-select" aria-label="Close dialog">${icon('close')}</button></div>
+      <p class="browser-location" id="select-location">/</p>
+      <div class="browser-list" id="select-list"></div>
+      <p class="files-status" id="select-count" role="status" aria-live="polite"></p>
+      <div class="dialog-actions"><button class="secondary-button" type="button" id="select-up">${icon('chevronUp')}Up one level</button><button class="primary-button" type="button" id="confirm-select" disabled>Sync selected</button></div>
+    </dialog>
+
     <dialog id="files-dialog" class="pair-dialog files-dialog" aria-labelledby="files-heading">
       <div class="dialog-heading"><div><h2 id="files-heading">Server files</h2><p>Browse, download, or share without creating a sync pair.</p></div><button class="close-button" type="button" id="close-files" aria-label="Close files">${icon('close')}</button></div>
       <p class="browser-location" id="files-location">/</p>
@@ -549,6 +656,7 @@ function render(): void {
 
   bindEvents();
   scheduleNoticeDismiss();
+  scheduleRouteLayout();
 }
 
 // Confirmations fade on their own; errors stay until dismissed because they
@@ -584,6 +692,7 @@ let pendingRemoveId: string | undefined;
 let progressTimer: number | undefined;
 
 function bindEvents(): void {
+  bindFolderSelection();
   const dialog = document.querySelector<HTMLDialogElement>('#pair-dialog')!;
   const browser = document.querySelector<HTMLDialogElement>('#server-browser')!;
   const settingsDialog = document.querySelector<HTMLDialogElement>('#settings-dialog')!;
@@ -599,8 +708,13 @@ function bindEvents(): void {
     selectedServerRoot = HOME_ROOT;
     hasSelectedServerFolder = false;
   });
-  const openPairForm = async () => { if (await ensureSettingsAuthorized()) dialog.showModal(); };
-  document.querySelector('#open-pair-form')?.addEventListener('click', () => void openPairForm());
+  const openPairForm = async (direction: SyncDirection) => {
+    if (!(await ensureSettingsAuthorized())) return;
+    const choice = dialog.querySelector<HTMLInputElement>(`input[name="direction"][value="${direction}"]`);
+    if (choice) choice.checked = true;
+    dialog.showModal();
+  };
+  document.querySelectorAll<HTMLButtonElement>('[data-open-pair-form]').forEach((button) => button.addEventListener('click', () => void openPairForm(button.dataset.openPairForm as SyncDirection)));
   document.querySelector('[data-dismiss-error]')?.addEventListener('click', () => {
     state.error = '';
     const toast = document.querySelector<HTMLElement>('#error-toast');
@@ -616,6 +730,8 @@ function bindEvents(): void {
     if (calc && !calc.disabled) { void calculatePresetSize(calc.dataset.calcSize!); return; }
     const enable = target.closest<HTMLButtonElement>('[data-enable-preset]');
     if (enable && !enable.disabled) { void enablePreset(enable); return; }
+    const select = target.closest<HTMLButtonElement>('[data-select-preset]');
+    if (select && !select.disabled) { void openFolderSelection(select.dataset.selectPreset!); return; }
     if (target.closest('[data-retry-presets]')) void retryPresets();
   });
   document.querySelector('#save-server')?.addEventListener('click', async () => {
@@ -931,35 +1047,180 @@ async function enablePreset(button: HTMLButtonElement): Promise<void> {
   try {
     const folder = await obtainPresetFolder(preset);
     if (!folder) { button.disabled = false; return; }
-    const name = presetShortName(preset);
-    const pair: SyncPair = { id: crypto.randomUUID(), name, local: folder, serverRoot: preset.id, serverFolder: preset.folder, serverPath: preset.serverPath, localSubpath: preset.localSubpath, direction: preset.direction, server: state.server, account: state.user };
     if (pairForPreset(preset)) {
       if (!state.pairs.some((item) => item.local.uri === folder.uri)) await invoke<void>('forget_local_folder', { folderUri: folder.uri });
       state.error = 'That server folder already has a sync pair.';
     } else {
-      state.pairs = [...state.pairs, pair];
-      await persistPairs();
-      state.notice = `${name} added. Copying files now.`;
-      state.error = '';
-      state.syncingPairId = pair.id;
-      render();
-      startProgressPolling();
-      try {
-        const result = await invoke<{ transferred: number; skipped: number }>('sync_pair', { pair });
-        state.notice = syncDoneNotice(pair, result);
-        state.offline = false;
-        await saveSessionBackup();
-      } catch (error) {
-        showError(error);
-        state.notice = 'Folder saved. Use Sync now to retry.';
-      }
-      state.syncingPairId = undefined;
-      state.progress = undefined;
-      stopProgressPolling();
+      await addAndSyncPairs([presetPair(preset, folder, '')]);
     }
   } catch (error) { showError(error); }
   render();
   void refreshEstimates(true);
+}
+
+/// A pair for a suggested folder, or for `subpath` inside it. A subfolder is
+/// mirrored at the same relative place on the device, so choosing more
+/// subfolders later, or the whole folder, fills in one tree.
+function presetPair(preset: SyncPreset, folder: Folder, subpath: string): SyncPair {
+  const name = subpath ? subpath.split('/').pop()! : presetShortName(preset);
+  return {
+    id: crypto.randomUUID(),
+    name,
+    local: folder,
+    serverRoot: preset.id,
+    serverFolder: preset.folder,
+    serverPath: joinParts(preset.serverPath, subpath),
+    localSubpath: joinParts(preset.localSubpath, subpath),
+    direction: preset.direction,
+    server: state.server,
+    account: state.user,
+  };
+}
+
+/// Saves new pairs, then copies each in turn. A failed copy leaves its pair
+/// saved for a manual retry, as the Sync now button would.
+async function addAndSyncPairs(pairs: SyncPair[]): Promise<void> {
+  if (!invoke || !pairs.length) return;
+  state.pairs = [...state.pairs, ...pairs];
+  await persistPairs();
+  const label = pairs.length === 1 ? pairs[0]!.name : `${pairs.length} folders`;
+  state.notice = `${label} added. Copying files now.`;
+  state.error = '';
+  startProgressPolling();
+  let failed = 0;
+  let last: { pair: SyncPair; result: { transferred: number; skipped: number } } | undefined;
+  for (const pair of pairs) {
+    state.syncingPairId = pair.id;
+    render();
+    try {
+      const result = await invoke<{ transferred: number; skipped: number }>('sync_pair', { pair });
+      last = { pair, result };
+      state.offline = false;
+    } catch (error) {
+      failed += 1;
+      showError(error);
+    }
+  }
+  state.syncingPairId = undefined;
+  state.progress = undefined;
+  stopProgressPolling();
+  if (failed) state.notice = failed === pairs.length ? 'Folder saved. Use Sync now to retry.' : `${pairs.length - failed} of ${pairs.length} folders copied. Use Sync now to retry the rest.`;
+  else if (pairs.length === 1 && last) state.notice = syncDoneNotice(last.pair, last.result);
+  else state.notice = `${pairs.length} folders copied.`;
+  if (!failed || last) await saveSessionBackup().catch(() => undefined);
+}
+
+function joinParts(...parts: (string | undefined)[]): string {
+  return parts.filter(Boolean).join('/');
+}
+
+// "Sync Selected": choose subfolders of one suggested folder. The choice
+// survives navigation, so folders from different levels can be picked at once.
+let selectPreset: SyncPreset | undefined;
+let selectPath = '';
+const selectedFolders = new Set<string>();
+let selectLoad = 0;
+
+async function openFolderSelection(presetId: string): Promise<void> {
+  const preset = state.presets.find((item) => item.id === presetId);
+  if (!invoke || !preset || syncIsActive()) return;
+  if (!(await ensureSettingsAuthorized())) return;
+  selectPreset = preset;
+  selectPath = '';
+  selectedFolders.clear();
+  const dialog = document.querySelector<HTMLDialogElement>('#select-dialog')!;
+  document.querySelector<HTMLElement>('#select-heading')!.textContent = `Choose ${presetShortName(preset)} folders`;
+  document.querySelector<HTMLElement>('#select-subtitle')!.textContent = `Each folder you tick syncs to /${preset.localSubpath} on this device.`;
+  updateFolderSelection();
+  dialog.showModal();
+  await renderFolderSelection();
+}
+
+function updateFolderSelection(): void {
+  const count = selectedFolders.size;
+  const status = document.querySelector<HTMLElement>('#select-count');
+  if (status) status.textContent = count ? `${count} ${count === 1 ? 'folder' : 'folders'} selected` : '';
+  const confirm = document.querySelector<HTMLButtonElement>('#confirm-select');
+  if (confirm) {
+    confirm.disabled = !count;
+    confirm.textContent = count > 1 ? `Sync ${count} folders` : 'Sync folder';
+  }
+  document.querySelectorAll<HTMLInputElement>('#select-list [data-pick]').forEach((box) => { box.checked = selectedFolders.has(box.dataset.pick!); });
+}
+
+async function renderFolderSelection(): Promise<void> {
+  const preset = selectPreset;
+  const list = document.querySelector<HTMLElement>('#select-list');
+  const location = document.querySelector<HTMLElement>('#select-location');
+  const up = document.querySelector<HTMLButtonElement>('#select-up');
+  if (!preset || !list || !invoke) return;
+  const load = ++selectLoad;
+  if (location) location.textContent = `${presetServerLocation(preset)}${selectPath ? `/${selectPath}` : ''}`;
+  if (up) up.disabled = !selectPath;
+  list.textContent = 'Loading folders…';
+  try {
+    const entries = await invoke<ServerEntry[]>('server_tree', { path: joinParts(preset.serverPath, selectPath), root: preset.id });
+    if (load !== selectLoad) return;
+    const folders = directoriesOnly(entries);
+    list.innerHTML = folders.length
+      ? `<ul class="file-list">${folders.map((entry) => {
+          const path = escapeHtml(joinPath(selectPath, entry.name));
+          const name = escapeHtml(entry.name);
+          return `<li class="file-row">
+            <input class="file-select" type="checkbox" data-pick="${path}" aria-label="Sync ${name}" />
+            <button class="file-entry" type="button" data-enter-folder="${name}" aria-label="Open ${name}"><span class="file-icon" aria-hidden="true">${icon('folder')}</span><span class="file-details"><span class="file-name">${name}</span></span>${icon('arrowRight')}</button>
+          </li>`;
+        }).join('')}</ul>`
+      : '<p class="browser-empty">No folders here.</p>';
+  } catch (error) {
+    if (load !== selectLoad) return;
+    list.innerHTML = `<p class="browser-empty">${escapeHtml(error instanceof Error ? error.message : String(error))}</p>`;
+  }
+  updateFolderSelection();
+}
+
+function bindFolderSelection(): void {
+  const dialog = document.querySelector<HTMLDialogElement>('#select-dialog')!;
+  const list = document.querySelector<HTMLElement>('#select-list')!;
+  document.querySelector('#close-select')?.addEventListener('click', () => dialog.close());
+  document.querySelector('#select-up')?.addEventListener('click', () => {
+    selectPath = parentPath(selectPath);
+    void renderFolderSelection();
+  });
+  list.addEventListener('change', (event) => {
+    const box = (event.target as HTMLElement).closest<HTMLInputElement>('[data-pick]');
+    if (!box) return;
+    if (box.checked) selectedFolders.add(box.dataset.pick!);
+    else selectedFolders.delete(box.dataset.pick!);
+    updateFolderSelection();
+  });
+  list.addEventListener('click', (event) => {
+    const enter = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-enter-folder]');
+    if (!enter) return;
+    selectPath = joinPath(selectPath, enter.dataset.enterFolder!);
+    void renderFolderSelection();
+  });
+  document.querySelector('#confirm-select')?.addEventListener('click', async () => {
+    const preset = selectPreset;
+    if (!invoke || !preset || !selectedFolders.size || syncIsActive()) return;
+    // A ticked folder inside another ticked folder is already covered.
+    const chosen = [...selectedFolders].sort().filter((path, _index, all) => !all.some((other) => other !== path && path.startsWith(`${other}/`)));
+    const existing = new Set(state.pairs.filter((pair) => pair.account === state.user && pair.serverRoot === preset.id).map((pair) => pair.serverPath));
+    const fresh = chosen.filter((path) => !existing.has(joinParts(preset.serverPath, path)));
+    dialog.close();
+    if (!fresh.length) {
+      state.error = 'Those folders already have sync pairs.';
+      render();
+      return;
+    }
+    try {
+      const folder = await obtainPresetFolder(preset);
+      if (!folder) return;
+      await addAndSyncPairs(fresh.map((path) => presetPair(preset, folder, path)));
+    } catch (error) { showError(error); }
+    render();
+    void refreshEstimates(true);
+  });
 }
 
 function startProgressPolling(): void {
@@ -1140,7 +1401,7 @@ function updatePresetSize(preset: SyncPreset): void {
   const line = document.querySelector(`[data-preset-size-for="${CSS.escape(preset.id)}"]`);
   if (line) line.outerHTML = presetSizeLine(preset);
   const actions = document.querySelector(`[data-preset-actions="${CSS.escape(preset.id)}"]`);
-  if (actions) actions.outerHTML = presetActions(preset, state.pairs.length > 0);
+  if (actions) actions.outerHTML = presetActions(preset);
 }
 
 function parseProgress(raw: string | null): SyncProgress | undefined {  if (!raw) return undefined;

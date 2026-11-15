@@ -190,11 +190,17 @@ button, a { touch-action: manipulation; }
 .status-danger { background: var(--danger-soft); color: var(--danger); }
 .status-neutral { background: var(--surface-muted); color: var(--text-secondary); }
 .route-line { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: .25rem .5rem; margin: .8rem 0 0; color: var(--text-secondary); font-size: .84rem; line-height: 1.35; }
-.route-end { display: inline-flex; min-width: 0; align-items: center; gap: .35rem; overflow-wrap: anywhere; }
-.route-end > .icon { width: .95rem; height: .95rem; }
-.route-end strong { min-width: 0; color: var(--text-primary); font-weight: 650; }
-.route-arrow { display: inline-flex; margin-right: .15rem; color: var(--action); }
+.route-end { display: inline-flex; min-width: 0; align-items: center; gap: .35rem; }
+.route-end > .icon { width: .95rem; height: .95rem; flex: 0 0 auto; }
+.route-end strong { min-width: 0; color: var(--text-primary); font-weight: 650; white-space: nowrap; }
+.route-arrow { display: inline-flex; color: var(--action); }
 .route-arrow .icon { width: .95rem; height: .95rem; }
+/* Source over target, with the arrow in a gutter pointing down at the target. */
+.route-line.is-stacked { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .2rem .35rem; }
+.is-stacked .route-source { grid-column: 2; grid-row: 1; }
+.is-stacked .route-target { grid-column: 2; grid-row: 2; }
+.is-stacked .route-arrow { grid-column: 1; grid-row: 1 / span 2; align-self: center; transform: rotate(90deg); }
+.is-stacked .route-end strong { white-space: normal; overflow-wrap: break-word; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 .pair-space { margin: .45rem 0 0; color: var(--text-secondary); font-size: .84rem; overflow-wrap: anywhere; }
 .space-warn { color: var(--warning); font-weight: 650; }
@@ -204,15 +210,17 @@ button, a { touch-action: manipulation; }
 .pair-actions .danger-text { margin-left: auto; }
 
 .suggest-list { margin: 0; padding: 0; border-top: 1px solid var(--border); list-style: none; }
-.suggest-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: .85rem; padding: 1rem 0; border-bottom: 1px solid var(--border); }
-.suggest-row .service-logo { display: grid; width: 2.6rem; height: 2.6rem; place-items: center; border: 1px solid var(--border); border-radius: .8rem; padding: .5rem; background: var(--surface); }
+.suggest-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0 .85rem; padding: 1rem 0; border-bottom: 1px solid var(--border); }
+.suggest-row .service-logo { display: grid; width: 2.6rem; height: 2.6rem; place-items: center; border: 1px solid var(--border); border-radius: .8rem; padding: .5rem; background: var(--surface); color: var(--action); }
 .service-logo img { width: 100%; height: 100%; object-fit: contain; }
+.service-logo .icon { width: 1.3rem; height: 1.3rem; }
 .suggest-copy { min-width: 0; }
+.suggest-detail, .suggest-row > .suggest-actions { grid-column: 2; min-width: 0; }
 .suggest-copy h3 { margin: 0; overflow-wrap: anywhere; font-size: 1rem; font-weight: 720; line-height: 1.35; letter-spacing: -.015em; }
 .suggest-description { margin: .2rem 0 0; color: var(--text-secondary); font-size: .85rem; }
 .suggest-copy .route-line { margin-top: .45rem; font-size: .8rem; }
 .suggest-size { margin: .3rem 0 0; color: var(--text-secondary); font-size: .8rem; }
-.suggest-actions { display: flex; }
+.suggest-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
 .compact-button { min-height: 2.5rem; padding: .5rem .85rem; }
 .compact-button .icon { width: 1rem; height: 1rem; }
 .link-button { margin: -.55rem 0; border: 0; padding: .55rem 0; background: transparent; color: var(--action); font-size: .8rem; font-weight: 720; text-decoration: underline; text-underline-offset: .18em; }
@@ -324,7 +332,11 @@ input::placeholder { color: var(--text-secondary); opacity: .8; }
   .overview-meta { align-items: flex-start; flex-direction: column; }
   .overview-action { width: 100%; }
   .pairs-section, .suggest-section { padding-top: 2rem; }
-  .suggest-row { gap: .75rem; }
+  .suggest-row { column-gap: .75rem; }
+  /* The paths and buttons take the row's full width instead of the column
+     beside the logo, so paths wrap far less often. */
+  .suggest-detail, .suggest-row > .suggest-actions { grid-column: 1 / -1; }
+  .suggest-actions > button { flex: 1 1 0; }
   .pair-row { padding: 1rem; border-radius: 1.1rem; }
   .pair-heading { grid-template-columns: auto minmax(0, 1fr); align-items: start; }
   .pair-folder-icon { grid-row: 1 / 3; width: 2.35rem; height: 2.35rem; }
