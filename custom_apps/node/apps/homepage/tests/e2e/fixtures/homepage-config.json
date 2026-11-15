@@ -177,77 +177,114 @@
     {
       "title": "Validate config & prerequisites",
       "command": "nix run .#validate-config-readiness -- --identity /path/to/age.key",
-      "detail": "Check decryptability and deploy prerequisites. Replace the identity path."
+      "detail": "Check decryptability and deploy prerequisites. Replace the identity path.",
+      "section": "deploy",
+      "runsOn": "Repository folder"
     },
     {
       "title": "Test deploy",
       "command": "./scripts/deploy.sh --action test",
-      "detail": "Test-activate the repo on the live server. Services may restart; the boot default is unchanged."
+      "detail": "Test-activate the repo on the live server. Services may restart; the boot default is unchanged.",
+      "section": "deploy",
+      "runsOn": "Repository folder"
     },
     {
       "title": "Make permanent",
       "command": "./scripts/deploy.sh --action switch",
-      "detail": "Persist the tested generation as the next boot default."
+      "detail": "Persist the tested generation as the next boot default.",
+      "section": "deploy",
+      "runsOn": "Repository folder"
     },
     {
       "title": "Failed services",
       "command": "sudo systemctl --failed --no-pager",
-      "detail": "List failed units after deploys or incidents."
+      "detail": "List failed units after deploys or incidents.",
+      "section": "health",
+      "runsOn": "Server terminal"
     },
     {
       "title": "Verify user exists",
       "command": "kanidm person get USERNAME",
-      "detail": "Check a Kanidm user before creating or changing access."
+      "detail": "Check a Kanidm user before creating or changing access.",
+      "section": "people",
+      "runsOn": "Server terminal"
     },
     {
       "title": "Create user",
       "command": "kanidm person create USERNAME 'Display Name'\nkanidm person update USERNAME --mail EMAIL",
-      "detail": "Create a Kanidm person and set their email for OIDC apps."
+      "detail": "Create a Kanidm person and set their email for OIDC apps.",
+      "section": "people",
+      "runsOn": "Server terminal"
     },
     {
       "title": "Grant app access",
       "command": "kanidm group add-members APP-GROUP USERNAME",
-      "detail": "Grant a specific app, file, or admin group."
+      "detail": "Grant a specific app, file, or admin group.",
+      "section": "people",
+      "runsOn": "Server terminal"
     },
     {
       "title": "Revoke access",
       "command": "kanidm group remove-members APP-GROUP USERNAME",
-      "detail": "Remove a specific group membership."
+      "detail": "Remove a specific group membership.",
+      "section": "people",
+      "runsOn": "Server terminal"
     },
     {
       "title": "Generate sign-in link",
       "command": "kanidm person credential create-reset-token USERNAME --name canary-admin",
-      "detail": "One-hour, single-use link. Send through a trusted channel."
+      "detail": "One-hour, single-use link. Send through a trusted channel.",
+      "section": "people",
+      "runsOn": "Server terminal"
     },
     {
       "title": "Sync Immich accounts",
       "command": "sudo systemctl start immich-oidc-reconcile.service immich-admin-reconcile.service",
-      "detail": "Reconcile Immich users and admins from Kanidm groups."
+      "detail": "Reconcile Immich users and admins from Kanidm groups.",
+      "section": "apps",
+      "runsOn": "Server terminal"
     },
     {
       "title": "Jellyfin initial password",
       "command": "sudo jellyfin-initial-credential USERNAME",
-      "detail": "Retrieve the stored initial credential for a native client."
+      "detail": "Retrieve the stored initial credential for a native client.",
+      "section": "apps",
+      "runsOn": "Server terminal"
     },
     {
       "title": "Check space & disks",
       "command": "df -hT\nlsblk -f",
-      "detail": "Mounted filesystems, free space, block devices."
+      "detail": "Mounted filesystems, free space, block devices.",
+      "section": "storage",
+      "runsOn": "Server terminal"
     },
     {
       "title": "Backup schedule",
       "command": "systemctl list-timers 'kopia*' --all --no-pager",
-      "detail": "Verify Kopia snapshot timers are scheduled."
+      "detail": "Verify Kopia snapshot timers are scheduled.",
+      "section": "storage",
+      "runsOn": "Server terminal"
     },
     {
       "title": "Trigger snapshot now",
       "command": "sudo systemctl start kopia-persist-snapshot.service",
-      "detail": "Start an immediate persist snapshot."
+      "detail": "Start an immediate persist snapshot.",
+      "section": "storage",
+      "runsOn": "Server terminal"
     },
     {
       "title": "Reverse proxy health",
       "command": "systemctl status caddy.service --no-pager",
-      "detail": "Check the edge reverse proxy."
+      "detail": "Check the edge reverse proxy.",
+      "section": "network",
+      "runsOn": "Server terminal"
+    },
+    {
+      "title": "Allow Jellyfin discovery replies on Windows",
+      "command": "New-NetFirewallRule -DisplayName \"Jellyfin discovery replies\" -Direction Inbound -Action Allow -Protocol UDP -RemoteAddress 192.0.2.10 -RemotePort 7359 -Profile Private",
+      "detail": "Run in Administrator PowerShell on a Windows client whose LAN network profile is Private.",
+      "section": "jellyfin-discovery",
+      "runsOn": "Windows client (Administrator PowerShell)"
     }
   ],
   "offlineMedia": {

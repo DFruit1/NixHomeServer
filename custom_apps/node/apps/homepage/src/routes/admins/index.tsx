@@ -1,42 +1,80 @@
-import { $, Slot, component$, useContext, useSignal } from '@builder.io/qwik';
-import { HomepageContext } from '../../shared/homepage-context.js';
-import type { AdminStep } from '../../shared/types.js';
+import { $, component$, useContext, useSignal } from '@builder.io/qwik';
+import { Link } from '@builder.io/qwik-city';
 import { BuildModeCard } from '../../components/BuildModeCard.js';
 import { CanaryPanel } from '../../components/CanaryPanel.js';
 import { PowerScheduleCard } from '../../components/PowerScheduleCard.js';
+import { HomepageContext } from '../../shared/homepage-context.js';
+import type { AdminStep } from '../../shared/types.js';
 
-const adminStepMetadata: Record<string, { category: 'network'; executionContext: string }> = {
-  'Allow Jellyfin discovery replies with nftables': { category: 'network', executionContext: 'Linux client' },
-  'Allow Jellyfin discovery replies with UFW': { category: 'network', executionContext: 'Linux client' },
-  'Allow Jellyfin discovery replies with firewalld': { category: 'network', executionContext: 'Linux client' },
-  'Allow Jellyfin discovery replies on Windows': { category: 'network', executionContext: 'Windows client (Administrator PowerShell)' },
-  'Allow Jellyfin discovery on Apple devices': { category: 'network', executionContext: 'Apple client' },
+/**
+ * The runbooks the page is organised around. Commands arrive from the server
+ * configuration already tagged with one of these ids and with where they run;
+ * `ordered` sections are procedures whose commands are meant to be run in order.
+ */
+const adminSections: Array<{ id: string; title: string; intro: string; ordered?: boolean }> = [
+  {
+    id: 'deploy',
+    title: 'Deploy a change',
+    ordered: true,
+    intro: 'Run these in order. A test deploy activates the change on the live server without making it the boot default, so a reboot returns to the previous generation. Make it permanent only after checking that nothing failed.',
+  },
+  {
+    id: 'recover',
+    title: 'Undo a bad deploy',
+    intro: 'For when the server is running a generation you need to leave. Both are run at the server itself, not over SSH.',
+  },
+  {
+    id: 'health',
+    title: 'Find and fix a failing service',
+    ordered: true,
+    intro: 'Start with what failed, read its log, then restart that one service. Restarting the whole host is rarely the fix.',
+  },
+  {
+    id: 'people',
+    title: 'Add a person or change their access',
+    ordered: true,
+    intro: 'Accounts live in Kanidm and access is granted by group. The person must sign out and back in before a change shows up for them.',
+  },
+  {
+    id: 'apps',
+    title: 'Sync an app with Kanidm or its library',
+    intro: 'Run one of these when an app has not picked up an access change or new files by itself.',
+  },
+  {
+    id: 'jellyfin-discovery',
+    title: 'Jellyfin apps cannot find the server',
+    intro: 'Discovery replies leave the server from UDP port 7359 and are often dropped by the client’s own firewall. These are run on the client device, not on the server.',
+  },
+  {
+    id: 'storage',
+    title: 'Storage and backups',
+    intro: 'Backup freshness and dump verification are on the Dashboard. Use these to look closer or to start a run by hand.',
+  },
+  {
+    id: 'network',
+    title: 'Network and reverse proxy',
+    intro: 'Check these when a service is running but cannot be reached.',
+  },
+];
+
+const otherSection: (typeof adminSections)[number] = { id: 'other', title: 'Other commands', intro: '' };
+
+const placeholderPattern = /(\bUSERNAME\b|\bSERVICE\b|\bAPP-GROUP\b|\bEMAIL\b|<[A-Z_]+>|'Display Name'|\/path\/to\/age\.key)/;
+
+const matchesSearch = (query: string, step: AdminStep): boolean => {
+  const needle = query.trim().toLocaleLowerCase();
+  return [step.title, step.detail, step.command].some((value) => value?.toLocaleLowerCase().includes(needle));
 };
 
-const executionContext = (step: AdminStep): string => {
-  const command = step.command;
-  const metadata = adminStepMetadata[step.title];
-  if (metadata) return metadata.executionContext;
-  if (!command) return 'Guided steps';
-  if (/^(?:sudo )?\.\//.test(command) || /^(?:git |nix (?:run|flake|eval)|DEPLOY_|\$EDITOR |find secrets)/.test(command)) {
-    return 'Repository folder';
-  }
-  return 'Server terminal';
-};
-
-const matchesSearch = (query: string, values: (string | undefined)[]): boolean => {
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  return normalizedQuery.length > 0 && values.some((value) => value?.toLocaleLowerCase().includes(normalizedQuery));
-};
-
-const AdminCommand = component$(({ command }: { command: string }) => {
+const AdminCommand = component$(({ command, runsOn }: { command: string; runsOn?: string }) => {
   const copied = useSignal(false);
 
   const copyCommand = $(async () => {
-    if (!navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(command);
+    } catch {
       return;
     }
-    await navigator.clipboard.writeText(command);
     copied.value = true;
     window.setTimeout(() => {
       copied.value = false;
@@ -44,52 +82,28 @@ const AdminCommand = component$(({ command }: { command: string }) => {
   });
 
   return (
-    <div class="admin-code-card">
-      <code>{command}</code>
-      <button type="button" class="admin-code-card__copy" aria-label={copied.value ? 'Copied command' : 'Copy command'} onClick$={copyCommand}>
-        {copied.value ? (
-          <svg aria-hidden="true" viewBox="0 0 24 24">
-            <path d="M20 6 9 17l-5-5" />
-          </svg>
-        ) : (
-          <svg aria-hidden="true" viewBox="0 0 24 24">
-            <rect x="9" y="9" width="10" height="10" rx="2" />
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-          </svg>
-        )}
-      </button>
+    <div class="ops-code">
+      <div class="ops-code__bar">
+        <span>{runsOn ?? 'Server terminal'}</span>
+        <button type="button" aria-label={copied.value ? 'Copied command' : 'Copy command'} onClick$={copyCommand}>
+          {copied.value ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre><code>
+        {command.split(placeholderPattern).map((part, index) => (
+          index % 2 === 1 ? <mark key={index}>{part}</mark> : part
+        ))}
+      </code></pre>
     </div>
   );
 });
 
-const AdminTask = component$(
-  ({
-    title,
-    description,
-    context,
-  }: {
-    title: string;
-    description: string;
-    context: string;
-  }) => (
-    <details class="admin-task">
-      <summary class="admin-task__summary">
-        <span class="admin-task__main">
-          <span class="admin-task__title">{title}</span>
-          <span class="admin-task__context">{context}</span>
-        </span>
-      </summary>
-      <div class="admin-task__content">
-        <p>{description}</p>
-        <Slot />
-      </div>
-    </details>
-  ),
-);
-
 export default component$(() => {
   const homepage = useContext(HomepageContext);
-  if (!homepage.data?.isAdmin) {
+  const searchQuery = useSignal('');
+  const data = homepage.data;
+
+  if (!data?.isAdmin) {
     return (
       <section class="section">
         <div class="empty-state">
@@ -99,58 +113,126 @@ export default component$(() => {
       </section>
     );
   }
-  const adminGuide = homepage.data?.adminGuide ?? [];
-  const searchQuery = useSignal('');
 
-  const setSearchQuery = $((event: Event) => {
-    const input = event.target as HTMLInputElement;
-    searchQuery.value = input.value;
-  });
+  const adminGuide = data.adminGuide ?? [];
+  const searching = searchQuery.value.trim().length > 0;
+  const visibleSteps = searching ? adminGuide.filter((step) => matchesSearch(searchQuery.value, step)) : adminGuide;
+  const knownIds = new Set(adminSections.map((section) => section.id));
+  const sections = [...adminSections, otherSection]
+    .map((section) => ({
+      ...section,
+      steps: visibleSteps.filter((step) => (
+        section.id === 'other' ? !step.section || !knownIds.has(step.section) : step.section === section.id
+      )),
+    }))
+    .filter((section) => section.steps.length > 0);
 
-  const filteredSteps = searchQuery.value.trim().length > 0
-    ? adminGuide.filter((step: AdminStep) => matchesSearch(searchQuery.value, [step.title, step.detail, step.command]))
-    : adminGuide;
+  const showCanary = data.user.username === data.canaryAdminUser;
+  const hasControls = showCanary || data.powerScheduleAvailable || data.buildModeAvailable;
+  const groups = data.kanidmGroups ?? [];
 
   return (
-    <>
-      {homepage.data?.user?.username === homepage.data?.canaryAdminUser && <CanaryPanel />}
-      {homepage.data?.powerScheduleAvailable && <PowerScheduleCard />}
-      {homepage.data?.buildModeAvailable && <BuildModeCard />}
-      <section class="section admin-page">
-        <header class="admin-page-header">
-          <h1>Admin tools</h1>
-        </header>
-        <div class="guide-callout">
-          <p><strong>These commands can change the live server.</strong> Replace placeholders like SERVICE, USERNAME, and APP-GROUP before copying.</p>
-        </div>
-        <label class="admin-search">
-          <input
-            type="search"
-            aria-label="Search commands"
-            value={searchQuery.value}
-            onInput$={setSearchQuery}
-            placeholder="Search…"
-          />
-        </label>
-        {filteredSteps.length > 0 ? (
-          <div class="admin-task-list">
-            {filteredSteps.map((step: AdminStep) => (
-              <AdminTask
-                title={step.title}
-                description={step.detail}
-                context={executionContext(step)}
-                key={step.title}
-              >
-                {step.command && <AdminCommand command={step.command} />}
-              </AdminTask>
+    <section class="doc ops">
+      <header class="doc-head">
+        <h1>For admins</h1>
+        <p class="doc-lead">
+          Runbooks for the jobs that come up, with the commands for each.{' '}
+          {data.adminDashboardAvailable && <>Live health is on the <Link href="/admin-dashboard">Dashboard</Link>.</>}
+        </p>
+      </header>
+
+      <div class="ops-layout">
+        <nav class="ops-nav" aria-label="Admin sections">
+          <ul>
+            {hasControls && !searching && <li><a href="#ops-controls">Server controls</a></li>}
+            {sections.map((section) => (
+              <li key={section.id}><a href={`#ops-${section.id}`}>{section.title}</a></li>
             ))}
+          </ul>
+        </nav>
+
+        <div class="ops-body">
+          <div class="ops-search">
+            <input
+              type="search"
+              aria-label="Search commands"
+              value={searchQuery.value}
+              onInput$={(_, target) => {
+                searchQuery.value = target.value;
+              }}
+              placeholder="Search commands, for example “snapshot” or “kanidm”"
+            />
+            <p class="doc-warn">
+              <strong>These commands can change the live server.</strong> Replace highlighted placeholders such as <mark>USERNAME</mark> before running one.
+            </p>
           </div>
-        ) : (
-          <p class="admin-search-empty">
-            {searchQuery.value.trim().length > 0 ? 'No commands match your search.' : 'No admin commands are available in the current configuration.'}
-          </p>
-        )}
-      </section>
-    </>
+
+          {hasControls && !searching && (
+            <section id="ops-controls" class="ops-section" aria-labelledby="ops-controls-heading">
+              <h2 id="ops-controls-heading">Server controls</h2>
+              {showCanary && <CanaryPanel />}
+              {data.powerScheduleAvailable && <PowerScheduleCard />}
+              {data.buildModeAvailable && <BuildModeCard />}
+            </section>
+          )}
+
+          {sections.map((section) => (
+            <section key={section.id} id={`ops-${section.id}`} class="ops-section" aria-labelledby={`ops-${section.id}-heading`}>
+              <h2 id={`ops-${section.id}-heading`}>{section.title}</h2>
+              {section.intro && !searching && <p class="ops-section__intro">{section.intro}</p>}
+              <ol class={{ 'ops-cmds': true, 'ops-cmds--ordered': Boolean(section.ordered) && !searching }}>
+                {section.steps.map((step) => (
+                  <li key={step.title} class="ops-cmd">
+                    <div class="ops-cmd__text">
+                      <h3>{step.title}</h3>
+                      <p>{step.detail}</p>
+                    </div>
+                    {step.command && <AdminCommand command={step.command} runsOn={step.runsOn} />}
+                  </li>
+                ))}
+              </ol>
+
+              {section.id === 'people' && !searching && groups.length > 0 && (
+                <details class="doc-more ops-groups">
+                  <summary>Groups you can grant ({groups.length})</summary>
+                  <div class="ops-groups__scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th scope="col">Group</th>
+                          <th scope="col">Grants</th>
+                          <th scope="col">Membership is set</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {groups.map((group) => (
+                          <tr key={group}>
+                            <th scope="row"><code>{group}</code></th>
+                            <td>{data.kanidmGroupDescriptions?.[group]}</td>
+                            <td>
+                              {data.kanidmGroupManagement?.[group] === 'identity.appUsers'
+                                ? <>In <code>vars.nix</code>, then deployed. A manual grant is overwritten.</>
+                                : data.kanidmGroupManagement?.[group] === 'manual'
+                                  ? 'With the commands above. A deploy keeps it.'
+                                  : 'Unknown'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              )}
+            </section>
+          ))}
+
+          {sections.length === 0 && (
+            <p class="ops-empty">
+              {searching ? 'No commands match your search.' : 'No admin commands are available in the current configuration.'}
+            </p>
+          )}
+        </div>
+      </div>
+    </section>
   );
 });

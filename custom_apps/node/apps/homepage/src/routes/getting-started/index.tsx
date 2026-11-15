@@ -1,180 +1,150 @@
 import { $, component$, useContext, useStore, useVisibleTask$ } from '@builder.io/qwik';
 import { Link, useLocation } from '@builder.io/qwik-city';
-import { ExplainMore } from '../../components/ExplainMore.js';
 import { HomepageContext } from '../../shared/homepage-context.js';
-import { buildSetupModel, isStepId, serviceStatus } from './setup-model.js';
-import { buildSteps, StatusMark } from './steps.js';
+import { guideHref } from '../../shared/guide-data.js';
+import { buildSteps, resolveStepId, stepIds } from './steps.js';
 
 export default component$(() => {
   const homepage = useContext(HomepageContext);
   const location = useLocation();
-  const manualChecks = useStore<Record<string, boolean>>({});
   const data = homepage.data;
-  const domain = data?.domain ?? 'example.test';
   const username = data?.user.username ?? '{username}';
-  const serverLanHost = data?.serverLanHost;
-  const manualCheckStorageKey = `homepage.gettingStartedChecks.${username}`;
-  const services = data?.services ?? [];
-  const enabledServices = services.filter((service) => service.enabled);
-  const serviceById = (id: string) => services.find((service) => service.id === id);
-  const serviceUrl = (id: string, fallback: string) => serviceById(id)?.url ?? fallback;
-  const kanidmUrl = `https://id.${domain}`;
-  const filesUrl = serviceUrl('files', `https://files.${domain}`);
-  const passwordsUrl = serviceUrl('passwords', `https://passwords.${domain}`);
-  const photosUrl = serviceUrl('photos', `https://photos.${domain}`);
-  const videosUrl = serviceUrl('videos', `https://videos.${domain}`);
-  const booksUrl = serviceUrl('books', `https://books.${domain}`);
-  const audiobooksUrl = serviceUrl('audiobooks', `https://audiobooks.${domain}/audiobookshelf/`);
-  const filesStatus = serviceStatus(serviceById('files'));
-  const passwordsStatus = serviceStatus(serviceById('passwords'));
-  const photosStatus = serviceStatus(serviceById('photos'));
-  const videosStatus = serviceStatus(serviceById('videos'));
-  const documentsStatus = serviceStatus(serviceById('documents'));
-  const booksStatus = serviceStatus(serviceById('books'));
-  const audiobooksStatus = serviceStatus(serviceById('audiobooks'));
-  const backupsStatus = serviceStatus(serviceById('backups'));
-  const monitorStatus = serviceStatus(serviceById('monitor'));
-  const offlineMediaStatus = serviceStatus(serviceById('offline-media'));
-  const filesWebAvailable = filesStatus === 'available';
-  const sftpAvailable = data?.sftp?.allowed === true;
-  const fileTransferAvailable = filesWebAvailable || sftpAvailable;
-  const requestedStep = location.url.searchParams.get('step');
-  const activeStepId = isStepId(requestedStep) ? requestedStep : 'welcome';
+  const requestedStep = resolveStepId(location.url.searchParams.get('step'));
+  const state = useStore<{ open: string; done: string[] }>({ open: requestedStep ?? stepIds[0], done: [] });
+  const storageKey = `homepage.gettingStartedDone.${username}`;
 
   useVisibleTask$(() => {
-    const saved = window.localStorage.getItem(manualCheckStorageKey);
-    if (!saved) {
-      return;
-    }
+    // The per-task checklist this page used to keep is no longer read.
+    window.localStorage.removeItem(`homepage.gettingStartedChecks.${username}`);
     try {
-      const parsed = JSON.parse(saved) as unknown;
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('invalid saved setup progress');
-      }
-      for (const [key, value] of Object.entries(parsed)) {
-        if (typeof value === 'boolean') {
-          manualChecks[key] = value;
-        }
+      const saved = JSON.parse(window.localStorage.getItem(storageKey) ?? '[]') as unknown;
+      if (Array.isArray(saved)) {
+        state.done = saved.filter((id): id is string => typeof id === 'string' && (stepIds as readonly string[]).includes(id));
       }
     } catch {
-      window.localStorage.removeItem(manualCheckStorageKey);
+      window.localStorage.removeItem(storageKey);
+    }
+    // A link to a particular step wins; otherwise resume at the first step still to do.
+    if (!requestedStep) {
+      state.open = stepIds.find((id) => !state.done.includes(id)) ?? '';
     }
   });
 
-  const setManualCheck = $((id: string, checked: boolean) => {
-    manualChecks[id] = checked;
+  const saveDone = $((done: string[]) => {
+    state.done = done;
     try {
-      window.localStorage.setItem(manualCheckStorageKey, JSON.stringify(manualChecks));
+      window.localStorage.setItem(storageKey, JSON.stringify(done));
     } catch {
-      // Progress remains usable for this page even if browser storage is unavailable.
+      // Progress still works for this visit when browser storage is unavailable.
     }
   });
 
-  const model = buildSetupModel({
-    enabledServices,
-    statuses: {
-      passwords: passwordsStatus,
-      files: filesStatus,
-      photos: photosStatus,
-      videos: videosStatus,
-      documents: documentsStatus,
-      books: booksStatus,
-      audiobooks: audiobooksStatus,
-      backups: backupsStatus,
-      monitor: monitorStatus,
-      offlineMedia: offlineMediaStatus,
-    },
-    fileTransferAvailable,
-    manualChecks,
+  const toggle = $((id: string) => {
+    state.open = state.open === id ? '' : id;
+  });
+
+  const complete = $(async (id: string, nextId: string) => {
+    if (!state.done.includes(id)) {
+      await saveDone([...state.done, id]);
+    }
+    state.open = nextId;
+    if (nextId) {
+      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      window.requestAnimationFrame(() => {
+        document.getElementById(`step-${nextId}`)?.scrollIntoView({ block: 'start', behavior: reducedMotion ? 'auto' : 'smooth' });
+      });
+    }
+  });
+
+  const reopen = $(async (id: string) => {
+    await saveDone(state.done.filter((doneId) => doneId !== id));
   });
 
   const steps = buildSteps({
     username,
-    domain,
-    serverLanHost,
-    kanidmUrl,
-    filesUrl,
-    passwordsUrl,
-    photosUrl,
-    videosUrl,
-    booksUrl,
-    audiobooksUrl,
-    statuses: {
-      passwords: passwordsStatus,
-      files: filesStatus,
-      photos: photosStatus,
-      videos: videosStatus,
-      documents: documentsStatus,
-      books: booksStatus,
-      audiobooks: audiobooksStatus,
-      backups: backupsStatus,
-      monitor: monitorStatus,
-      offlineMedia: offlineMediaStatus,
-    },
-    filesWebAvailable,
-    sftpAvailable,
-    fileTransferAvailable,
-    sftp: data!.sftp!,
-    enabledServices,
-    setupItems: model.setupItems,
-    serviceSetupIds: model.serviceSetupIds,
-    optionalSetupIds: model.optionalSetupIds,
-    manualChecks,
-    setManualCheck,
+    kanidmUrl: `https://id.${data?.domain ?? 'example.test'}`,
+    serverLanHost: data?.serverLanHost,
+    services: (data?.services ?? []).filter((service) => service.enabled),
+    folderGuides: data?.folderGuides ?? [],
+    sftp: data?.sftp,
   });
 
-  const activeStepIndex = Math.max(0, steps.findIndex((step) => step.id === activeStepId));
-  const activeStep = steps[activeStepIndex];
-  const relevantItems = model.setupItems.filter((item) => item.status !== 'unavailable' && !item.id.endsWith('-unavailable'));
-  const completeItems = relevantItems.filter((item) => item.status === 'verified' || item.status === 'manual');
-  const progress = relevantItems.length === 0 ? 0 : Math.round((completeItems.length / relevantItems.length) * 100);
-  const previousStep = activeStepIndex > 0 ? steps[activeStepIndex - 1] : undefined;
-  const nextStep = activeStepIndex < steps.length - 1 ? steps[activeStepIndex + 1] : undefined;
-
   return (
-    <section id="guide" class="getting-started-guide">
-      <aside class="getting-started-path">
-        <div class="getting-started-path-header">
-          <div class="setup-progress" aria-label={`${progress}% of setup complete`}>
-            <div><strong>{completeItems.length} of {relevantItems.length}</strong><span>tasks done</span></div>
-            <progress max={100} value={progress}>{progress}%</progress>
-          </div>
-          <p>Checklist progress is saved only in this browser profile.</p>
-        </div>
-        <nav id="steps" class="getting-started-toc" aria-label="Getting started steps">
-          <ol>
-            {steps.map((step) => (
-              <li key={step.id}>
-                <Link
-                  href={`/getting-started?step=${step.id}#guide`}
-                  class={{ selected: activeStepId === step.id }}
-                  aria-current={activeStepId === step.id ? 'step' : undefined}
-                >
-                  <StatusMark status={step.status} decorative />
-                  <strong>{step.label}</strong>
-                </Link>
-              </li>
-            ))}
-          </ol>
-        </nav>
-      </aside>
+    <section class="doc doc--narrow start">
+      <header class="doc-head">
+        <h1>Getting started</h1>
+        <p class="doc-lead">
+          {steps.length} steps to set up your account and devices. Do them in order the first time; step progress is saved only in this browser profile.
+        </p>
+      </header>
 
-      <article class="getting-started-step">
-        <header class="step-header">
-          <p class="step-count">
-            Step {activeStepIndex + 1} of {steps.length}
-            {activeStep.optional && <span> · Optional</span>}
-            <a class="step-count__all" href="#steps">All steps</a>
-          </p>
-          <h1>{activeStep.label}</h1>
-        </header>
-        {activeStep.content}
-        <ExplainMore title={activeStep.label} plain={activeStep.explain.plain} technical={activeStep.explain.technical} />
-        <nav class="step-pagination" aria-label="Guide pagination">
-          {previousStep ? <Link class="previous-step-link" href={`/getting-started?step=${previousStep.id}#guide`}>&larr; {previousStep.label}</Link> : <span />}
-          {nextStep && <Link class="next-step-link" href={`/getting-started?step=${nextStep.id}#guide`}>Next: {nextStep.label} &rarr;</Link>}
-        </nav>
-      </article>
+      <ol class="start-steps">
+        {steps.map((step, index) => {
+          const stepId = step.id;
+          const next = steps[index + 1];
+          const nextId = next?.id ?? '';
+          const open = state.open === stepId;
+          const done = state.done.includes(stepId);
+          return (
+            <li key={stepId} id={`step-${stepId}`} class={{ 'start-step': true, 'is-open': open, 'is-done': done }}>
+              <h2 class="start-step__head">
+                <button
+                  type="button"
+                  aria-expanded={open ? 'true' : 'false'}
+                  aria-controls={`step-${stepId}-body`}
+                  onClick$={() => toggle(stepId)}
+                >
+                  <span class="start-step__mark" aria-hidden="true">
+                    {done ? (
+                      <svg viewBox="0 0 24 24" width="16" height="16"><path d="M20 6 9 17l-5-5" /></svg>
+                    ) : index + 1}
+                  </span>
+                  <span class="start-step__title">{step.label}</span>
+                  {step.optional && <span class="doc-tag">Optional</span>}
+                  {done && <span class="doc-sr">Done</span>}
+                  <svg class="start-step__chevron" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+                </button>
+              </h2>
+              <div class="start-step__body doc-prose" id={`step-${stepId}-body`} hidden={!open}>
+                {step.content}
+                <div class="start-step__foot">
+                  {done ? (
+                    <button type="button" class="doc-btn doc-btn--quiet" onClick$={() => reopen(stepId)}>Mark as not done</button>
+                  ) : (
+                    <button type="button" class="doc-btn doc-btn--primary" onClick$={() => complete(stepId, nextId)}>
+                      {next ? `Done, next: ${next.label}` : 'Done'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+
+      <footer class="start-after doc-prose">
+        <h2>After setup</h2>
+        <ul class="doc-rows">
+          <li>
+            <div>
+              <strong>Detailed Guide</strong>
+              <span>What each app does, where its files go, and what to check when something fails.</span>
+            </div>
+            <Link class="doc-btn" href="/uploads">Open the guide</Link>
+          </li>
+          <li>
+            <div>
+              <strong>Keys &amp; Secrets</strong>
+              <span>Passwords and keys for reader apps and devices that cannot use your normal sign-in.</span>
+            </div>
+            <Link class="doc-btn" href="/keys">Open Keys &amp; Secrets</Link>
+          </li>
+        </ul>
+        <p class="doc-note">
+          <strong>Asking for help?</strong> Say which app, when, which network you were on and the exact error. Never include a password, link or code.{' '}
+          <Link href={guideHref('help')}>Troubleshooting</Link>
+        </p>
+      </footer>
     </section>
   );
 });

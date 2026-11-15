@@ -2,7 +2,8 @@ import { $, component$, useSignal, useVisibleTask$ } from '@builder.io/qwik';
 import type { VaultFeature, VaultSshKeyList } from '../shared/types.js';
 import { copyVaultSecret, vaultRequest } from '../shared/vault-client.js';
 import { generateEd25519SshKey, type GeneratedSshKey } from '../shared/ssh-keygen.js';
-import { ExplainMore } from './ExplainMore.js';
+import { Link } from '@builder.io/qwik-city';
+import { guideHref } from '../shared/guide-data.js';
 
 const fileNameFor = (comment: string): string => {
   const sanitised = comment.trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -163,7 +164,7 @@ export const VaultSshKeysCard = component$(({ feature, username, isAdmin }: { fe
                 autocomplete="off"
                 onInput$={(_, target) => { targetUsername.value = target.value; }}
               />
-              <button type="button" onClick$={loadKeys}>Load keys</button>
+              <button type="button" class="doc-btn" onClick$={loadKeys}>Load keys</button>
             </div>
             {(loadedUsername.value !== username || (targetUsername.value.trim() || username) !== loadedUsername.value) && (
               <p class="hint">
@@ -186,7 +187,7 @@ export const VaultSshKeysCard = component$(({ feature, username, isAdmin }: { fe
               <li key={line} class="vault-key-row">
                 <code>{line}</code>
                 <button
-                  class="vault-danger-button"
+                  class="doc-btn doc-btn--small doc-btn--danger"
                   type="button"
                   disabled={loading.value || (targetUsername.value.trim() || username) !== loadedUsername.value}
                   onClick$={() => revoke(line)}
@@ -201,10 +202,6 @@ export const VaultSshKeysCard = component$(({ feature, username, isAdmin }: { fe
 
       <div class="vault-key-form">
         <h4>Add a key for this device</h4>
-        <p class="hint">
-          A key is like a password your device supplies automatically, so you never type it. The server only receives
-          the public half; the private half stays on your device.
-        </p>
         <label for="vault-ssh-device-name">Device name (optional)</label>
         <div class="vault-inline-form">
           <input
@@ -217,7 +214,7 @@ export const VaultSshKeysCard = component$(({ feature, username, isAdmin }: { fe
               deviceName.value = target.value;
             }}
           />
-          <button type="button" disabled={generating.value} onClick$={generate}>
+          <button type="button" class="doc-btn doc-btn--primary" disabled={generating.value} onClick$={generate}>
             {generating.value ? 'Generating…' : 'Generate a key pair'}
           </button>
         </div>
@@ -234,7 +231,7 @@ export const VaultSshKeysCard = component$(({ feature, username, isAdmin }: { fe
                 <dt>Private key file</dt>
                 <dd>
                   <code>{generatedFileName.value}</code>
-                  <button type="button" onClick$={() => downloadPrivateKey(generatedKey.value!)}>
+                  <button type="button" class="doc-btn doc-btn--small doc-btn--primary" onClick$={() => downloadPrivateKey(generatedKey.value!)}>
                     Download
                   </button>
                 </dd>
@@ -243,7 +240,7 @@ export const VaultSshKeysCard = component$(({ feature, username, isAdmin }: { fe
                 <dt>Public key (already added)</dt>
                 <dd>
                   <code>{generatedKey.value.publicKey}</code>
-                  <button type="button" onClick$={() => copyPublicKey(generatedKey.value!)}>
+                  <button type="button" class="doc-btn doc-btn--small" onClick$={() => copyPublicKey(generatedKey.value!)}>
                     {copiedPublic.value ? 'Copied' : 'Copy'}
                   </button>
                 </dd>
@@ -256,13 +253,12 @@ export const VaultSshKeysCard = component$(({ feature, username, isAdmin }: { fe
               </div>
             </dl>
             <p class="hint">
-              Protect this file like a password. If it is lost, generate a new key pair; an administrator can retire the
-              old key.
+              Protect this file like a password. If it is lost, generate a new key pair and revoke the old one above.
             </p>
           </div>
         )}
 
-        <details class="vault-manual-key">
+        <details class="doc-more vault-manual-key">
           <summary>I already have a key to paste</summary>
           <label for="vault-ssh-public-key">OpenSSH public key</label>
           <p class="hint">
@@ -279,37 +275,26 @@ export const VaultSshKeysCard = component$(({ feature, username, isAdmin }: { fe
               keyValue.value = target.value;
             }}
           />
-          <button type="button" disabled={saving.value} onClick$={save}>
+          <button type="button" class="doc-btn" disabled={saving.value} onClick$={save}>
             {saving.value ? 'Saving…' : 'Save Public Key'}
           </button>
           {saveStatus.value && <p class={{ 'key-status': true, error: saveStatusKind.value === 'error' }}>{saveStatus.value}</p>}
         </details>
       </div>
 
-      <ExplainMore
-        title="SFTP and SSHFS keys"
-        plain={
-          <p>
-            A key pair is two matched files: a public key you can share and a private key you keep. The server only
-            needs the public key, and your device proves who it is with the private key. Nothing secret is ever sent to
-            the server or typed in.
-          </p>
-        }
-        technical={
-          <div>
-            <p>
-              This page generates an Ed25519 key pair in your browser using the Web Crypto API. Only the public line
-              (<code>ssh-ed25519 AAAA…</code>) is sent to the server and appended to your authorized-keys file. The
-              private key never leaves the device.
-            </p>
-            <p>
-              Each device should use its own key with a descriptive comment so the fingerprints above stay
-              distinguishable. Up to 10 keys can be registered. To replace a lost device, generate a new key, then ask
-              an administrator to retire the old one.
-            </p>
-          </div>
-        }
-      />
+      <details class="doc-more">
+        <summary>How it works</summary>
+        <p>
+          A key pair is two matched halves. Your browser creates both on this device, sends only the public half to
+          the server, and gives you the private half as a file to keep. The device then proves who it is with that
+          file, so there is no password to type. Use a separate key for each device, up to 10, so a lost device can
+          be revoked on its own.
+        </p>
+        <p>
+          To use your files as a folder on a computer, follow{' '}
+          <Link href={guideHref('sshfs')}>Mount your files as a drive</Link>. It creates its own key on that computer.
+        </p>
+      </details>
     </article>
   );
 });

@@ -1,7 +1,6 @@
 import { $, component$, useSignal } from '@builder.io/qwik';
 import type { VaultFeature, VaultFreshrssPassword } from '../shared/types.js';
 import { copyVaultSecret, vaultRequest } from '../shared/vault-client.js';
-import { ExplainMore } from './ExplainMore.js';
 
 export const VaultFreshrssCard = component$(({ feature, username }: { feature: VaultFeature; username: string }) => {
   const confirmGenerate = useSignal(false);
@@ -43,7 +42,7 @@ export const VaultFreshrssCard = component$(({ feature, username }: { feature: V
         <p>{feature.description}</p>
       </header>
       {!confirmGenerate.value ? (
-        <button type="button" class="vault-button" onClick$={() => {
+        <button type="button" class="doc-btn" onClick$={() => {
           confirmGenerate.value = true;
         }}>
           {result.value ? 'Replace app password' : 'Create app password'}
@@ -51,14 +50,16 @@ export const VaultFreshrssCard = component$(({ feature, username }: { feature: V
       ) : (
         <div class="vault-confirm">
           <p>Generate a new FreshRSS app password for <strong>{username}</strong>? Any earlier password stops working straight away.</p>
-          <button type="button" class="vault-danger-button" disabled={generating.value} onClick$={generate}>
-            {generating.value ? 'Generating…' : 'Yes, generate'}
-          </button>
-          <button type="button" onClick$={() => {
-            confirmGenerate.value = false;
-          }}>
-            Cancel
-          </button>
+          <div class="doc-actions">
+            <button type="button" class="doc-btn doc-btn--danger" disabled={generating.value} onClick$={generate}>
+              {generating.value ? 'Generating…' : 'Yes, generate'}
+            </button>
+            <button type="button" class="doc-btn doc-btn--quiet" onClick$={() => {
+              confirmGenerate.value = false;
+            }}>
+              Cancel
+            </button>
+          </div>
         </div>
       )}
       {error.value && <p class="key-status error">{error.value}</p>}
@@ -77,7 +78,7 @@ export const VaultFreshrssCard = component$(({ feature, username }: { feature: V
               <dt>API password</dt>
               <dd>
                 <code>{result.value.password}</code>
-                <button type="button" onClick$={() => copy('password', result.value?.password ?? '')}>
+                <button type="button" class="doc-btn doc-btn--small" onClick$={() => copy('password', result.value?.password ?? '')}>
                   {copiedField.value === 'password' ? 'Copied' : 'Copy'}
                 </button>
               </dd>
@@ -86,7 +87,7 @@ export const VaultFreshrssCard = component$(({ feature, username }: { feature: V
               <dt>Feed reader address</dt>
               <dd>
                 <code>{result.value.greaderUrl}</code>
-                <button type="button" onClick$={() => copy('url', result.value?.greaderUrl ?? '')}>
+                <button type="button" class="doc-btn doc-btn--small" onClick$={() => copy('url', result.value?.greaderUrl ?? '')}>
                   {copiedField.value === 'url' ? 'Copied' : 'Copy'}
                 </button>
               </dd>
@@ -97,22 +98,14 @@ export const VaultFreshrssCard = component$(({ feature, username }: { feature: V
           )}
         </div>
       )}
-      <ExplainMore
-        title="FreshRSS app password"
-        plain={
-          <p>
-            Feed reader apps usually cannot use your normal login, so they sign in with your username and this separate
-            password instead. The old password stops working the moment you replace it.
-          </p>
-        }
-        technical={
-          <p>
-            The server generates the password and stores only its hash, so an existing password can never be shown
-            again, only replaced. Reader apps connect through the Google Reader API at the address above; generating a
-            new password makes any reader still holding the old one ask you to sign in again.
-          </p>
-        }
-      />
+      <details class="doc-more">
+        <summary>How it works</summary>
+        <p>
+          Feed reader apps cannot use your normal sign-in, so they sign in with your username and this separate
+          password. The server keeps only a hash of it, so a password can never be shown again, only replaced, and
+          replacing it signs out every reader still using the old one.
+        </p>
+      </details>
     </article>
   );
 });

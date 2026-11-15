@@ -1,20 +1,16 @@
 import { $, component$, useSignal, useVisibleTask$ } from '@builder.io/qwik';
-import { Link } from '@builder.io/qwik-city';
 import { detectClientOs, sftpKeygenCommands, sftpOsLabels } from '../shared/ui-constants.js';
 import type { SftpAccess, SftpKeyResponse } from '../shared/types.js';
 import { CommandSnippet } from './CommandSnippet.js';
 import { SftpAccessDetails } from './SftpAccessDetails.js';
 
+/** The numbered SSHFS setup: pick an operating system, then one command per step. */
 export const SftpSetup = component$(({
   username,
-  domain,
   sftp,
-  filesWebAvailable,
 }: {
   username: string;
-  domain: string;
   sftp: SftpAccess;
-  filesWebAvailable: boolean;
 }) => {
   const keyStatus = useSignal('');
   const keyStatusKind = useSignal<'success' | 'error'>('success');
@@ -65,22 +61,7 @@ export const SftpSetup = component$(({
   });
 
   return (
-    <article id="sshfs-setup" class="sftp-os-card sftp-setup-card">
-      <h2>SSHFS Mount Setup</h2>
-      <p>Follow these steps on the computer you want to connect. For permissions, folder behavior, security, and troubleshooting, <Link href="/uploads?guide=sshfs#guide-detail">read the detailed SSHFS guide</Link>.</p>
-      <dl class="info-list info-list--prose sftp-facts">
-        <div>
-          <dt>Server</dt>
-          <dd><code>{sftp.host}:{sftp.port}</code></dd>
-        </div>
-        <div>
-          <dt>Network</dt>
-          <dd>{sftp.networkNote}</dd>
-        </div>
-      </dl>
-      {sftp.accessNotes.map((note) => (
-        <aside class="guide-callout neutral" key={note}>{note}</aside>
-      ))}
+    <div id="sshfs-setup" class="sftp-setup-card sshfs-setup">
       <input class="os-radio" id={osRadio.windows} name="sftp-setup-os" type="radio" checked />
       <input class="os-radio" id={osRadio.macos} name="sftp-setup-os" type="radio" />
       <input class="os-radio" id={osRadio.linux} name="sftp-setup-os" type="radio" />
@@ -95,7 +76,7 @@ export const SftpSetup = component$(({
           Linux
         </label>
       </div>
-      <ol class="steps sftp-step-list">
+      <ol class="sftp-step-list">
         <li>
           <h3>Install SSHFS</h3>
           <p class="os-panel windows">Install <a href="https://winfsp.dev/rel/" target="_blank" rel="noreferrer">WinFsp</a> and <a href="https://github.com/winfsp/sshfs-win/releases" target="_blank" rel="noreferrer">SSHFS-Win</a> before mounting the server.</p>
@@ -117,7 +98,7 @@ export const SftpSetup = component$(({
           <CommandSnippet class="os-panel windows" command={sftpKeygenCommands.windows} />
           <CommandSnippet class="os-panel macos" command={sftpKeygenCommands.macos} />
           <CommandSnippet class="os-panel linux" command={sftpKeygenCommands.linux} />
-          <details class="step-help">
+          <details class="doc-more">
             <summary>Why leave the passphrase empty?</summary>
             <p>It keeps automatic mounts simple, because a passphrase-protected key cannot unlock without an interactive prompt. If you want to prevent someone with access to your device from using the key without permission, keep it in an SSH keyring instead of as a plain file on disk — KeePassXC's SSH Agent or an alternative SSH keyring, such as your operating system's built-in SSH agent or keychain.</p>
           </details>
@@ -136,7 +117,7 @@ export const SftpSetup = component$(({
                 keyValue.value = target.value;
               }}
             />
-            <button id="save-sftp-key" type="button" disabled={keySubmitting.value} onClick$={savePublicKey}>
+            <button id="save-sftp-key" type="button" class="doc-btn doc-btn--primary" disabled={keySubmitting.value} onClick$={savePublicKey}>
               {keySubmitting.value ? 'Saving...' : 'Save Public Key'}
             </button>
             {keyStatus.value && <p class={{ 'key-status': true, error: keyStatusKind.value === 'error' }}>{keyStatus.value}</p>}
@@ -161,11 +142,6 @@ export const SftpSetup = component$(({
           </div>
         </li>
       </ol>
-      {filesWebAvailable ? (
-        <p class="hint">Your account can also upload through https://files.{domain}; SSHFS is better for larger or repeated transfers.</p>
-      ) : (
-        <p class="hint">SFTP/SSHFS and browser Files access use separate permissions. Browser uploads are not currently available to your account.</p>
-      )}
-    </article>
+    </div>
   );
 });

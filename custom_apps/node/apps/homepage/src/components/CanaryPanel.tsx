@@ -60,11 +60,11 @@ export const CanaryPanel = component$(() => {
   const failedCount = results?.filter(r => r.status === 'failed').length ?? 0;
 
   return (
-    <section class="canary-panel" aria-labelledby="canary-heading">
-      <div class="canary-panel__header">
+    <section class="ops-tool" aria-labelledby="canary-heading">
+      <div class="ops-tool__head">
         <div>
-          <h2 id="canary-heading">Service Access Canary</h2>
-          <p>Checks unauthenticated blocking, Kanidm sign-in, application rendering, and blank 200 responses.</p>
+          <h3 id="canary-heading">Service access canary</h3>
+          <p>Signs in to every app as a test user and checks that signed-out visitors are blocked, Kanidm sign-in works, and each app renders a real page.</p>
         </div>
         <span class={{ 'canary-state': true, [`is-${current?.state ?? 'never-run'}`]: true }}>{stateLabel(current?.state ?? 'never-run')}</span>
       </div>
@@ -72,21 +72,21 @@ export const CanaryPanel = component$(() => {
         <div class="notice">The automatic Kanidm canary credential check failed. Inspect <code>kanidm-canary-bootstrap.service</code>; no manual account enrollment should be required.</div>
       )}
       {error.value && <p class="notice">{error.value}</p>}
-      <div class="canary-panel__actions">
-        <button type="button" onClick$={start} disabled={starting.value || current?.state === 'running'}>
+      <div class="doc-actions">
+        <button type="button" class="doc-btn doc-btn--primary" onClick$={start} disabled={starting.value || current?.state === 'running'}>
           {current?.state === 'running' ? 'Checks running…' : starting.value ? 'Starting…' : 'Run service checks'}
         </button>
         {hasResults && (
-          <button type="button" class="canary-view-results" onClick$={openResults}>
-            View Results ({results?.length ?? 0}{failedCount > 0 ? `, ${failedCount} failed` : ''})
+          <button type="button" class="doc-btn" onClick$={openResults}>
+            View results ({results?.length ?? 0}{failedCount > 0 ? `, ${failedCount} failed` : ''})
           </button>
         )}
-        {current?.finishedAt && <span>Last completed {new Date(current.finishedAt).toLocaleString()}</span>}
+        {current?.finishedAt && <span class="ops-tool__meta">Last completed {new Date(current.finishedAt).toLocaleString()}</span>}
       </div>
       <dialog ref={dialogRef} class="canary-dialog" aria-label="Canary service results">
         <div class="canary-dialog__header">
-          <h3>Service Access Canary Results</h3>
-          <button type="button" class="canary-dialog__close" onClick$={() => dialogRef.value?.close()}>×</button>
+          <h3>Service access canary results</h3>
+          <button type="button" class="canary-dialog__close" aria-label="Close results" onClick$={() => dialogRef.value?.close()}>×</button>
         </div>
         <div class="canary-dialog__content">
           {hasResults && (

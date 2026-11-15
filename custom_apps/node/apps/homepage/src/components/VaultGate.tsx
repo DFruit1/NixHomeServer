@@ -143,13 +143,10 @@ export const VaultGate = component$(({
     // One row once unlocked: the page below is the task, the gate is only its status.
     return (
       <section class="vault-gate vault-gate--open" aria-label="Keys and secrets unlock">
-        <img class="vault-gate__logo" src="/logos/kanidm.svg" alt="" width={32} height={32} />
+        <img class="vault-gate__logo" src="/logos/kanidm.svg" alt="" width={28} height={28} />
         {statusPill}
-        <p>
-          Changes you make here apply immediately.{' '}
-          <span class="vault-countdown">{lockLabel(remainingSeconds.value)}</span>
-        </p>
-        <button type="button" class="vault-lock-button" onClick$={lock}>
+        <span class="vault-countdown">{lockLabel(remainingSeconds.value)}</span>
+        <button type="button" class="doc-btn doc-btn--small" onClick$={lock}>
           Lock now
         </button>
       </section>
@@ -159,11 +156,8 @@ export const VaultGate = component$(({
   return (
     <section class="vault-gate" aria-label="Keys and secrets unlock">
       <header class="vault-gate__brand">
-        <img class="vault-gate__logo" src="/logos/kanidm.svg" alt="" width={44} height={44} />
-        <div class="vault-gate__brand-text">
-          <span class="vault-gate__provider">Kanidm account</span>
-          <h2>Unlock keys and secrets</h2>
-        </div>
+        <img class="vault-gate__logo" src="/logos/kanidm.svg" alt="" width={40} height={40} />
+        <h2>Unlock keys and secrets</h2>
         {statusPill}
       </header>
 
@@ -173,9 +167,9 @@ export const VaultGate = component$(({
         onSubmit$={submit}
       >
         <p>
-          Confirm it is really you with a second sign-in. The unlock lasts{' '}
+          Confirm it is you with a second sign-in. It stays unlocked for{' '}
           {Math.round((sessionTtlSeconds ?? 900) / 60)} minutes, or {Math.round((idleTtlSeconds ?? 300) / 60)} minutes
-          after your last action, and ends when you close the browser.
+          after your last action, and locks when you close the browser.
         </p>
         {!totpRequired.value ? (
           <label class="vault-field" for="vault-password">
@@ -213,7 +207,7 @@ export const VaultGate = component$(({
               }}
             />
           )}
-          <button id="vault-unlock-submit" type="submit" disabled={busy.value}>
+          <button id="vault-unlock-submit" type="submit" class="doc-btn doc-btn--primary" disabled={busy.value}>
             {busy.value ? 'Checking…' : totpRequired.value ? 'Finish unlock' : 'Unlock'}
           </button>
         </div>

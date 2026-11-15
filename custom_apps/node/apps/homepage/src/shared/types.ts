@@ -73,6 +73,10 @@ export type AdminStep = {
   title: string;
   command?: string;
   detail: string;
+  /** For Admins section this command belongs to; see `adminSections` in the admins route. */
+  section?: string;
+  /** Where the command is run, shown verbatim: "Repository folder", "Linux client", … */
+  runsOn?: string;
 };
 
 export type OfflineMediaSetup = {

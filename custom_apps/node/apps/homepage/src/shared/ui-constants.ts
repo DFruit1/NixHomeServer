@@ -109,8 +109,8 @@ export const detailedServiceTips: Record<string, string[]> = {
     'Check the scanner result after moving or renaming a library folder.',
   ],
   videos: [
-    ...serviceTips.videos!,
-    'Use the browser’s Kanidm button when available; TV and native clients can use Jellyfin Quick Connect.',
+    'In a browser, choose “Sign in with Kanidm”. TV and phone apps sign in with Quick Connect.',
+    ...serviceTips.videos!.slice(1),
     'Name folders and files consistently so movies and episodes receive the right metadata.',
   ],
   requests: [

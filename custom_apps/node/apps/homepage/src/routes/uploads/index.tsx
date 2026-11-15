@@ -1,57 +1,59 @@
 import { $, component$, useContext, useSignal, useVisibleTask$ } from '@builder.io/qwik';
 import { Link, useLocation } from '@builder.io/qwik-city';
-import { DetailedGuideOverview } from '../../components/DetailedGuideOverview.js';
-import { DetailedServiceGuide } from '../../components/DetailedServiceGuide.js';
-import { GuidePanel } from '../../components/GuidePanel.js';
-import { SshfsGuide } from '../../components/SshfsGuide.js';
+import { CredentialBackupGuide } from '../../components/CredentialBackupGuide.js';
+import { ServiceLogo } from '../../components/ServiceLogo.js';
+import { AccessTopic } from '../../components/guide/AccessTopic.js';
+import { AppTopic } from '../../components/guide/AppTopic.js';
+import { FoldersTopic } from '../../components/guide/FoldersTopic.js';
+import { HelpTopic } from '../../components/guide/HelpTopic.js';
+import { SshfsTopic } from '../../components/guide/SshfsTopic.js';
+import { categoryLabels, categoryOrder, guideHref } from '../../shared/guide-data.js';
 import { HomepageContext } from '../../shared/homepage-context.js';
-import type { ServiceCard, ServiceCategory } from '../../shared/types.js';
+import type { ServiceCard } from '../../shared/types.js';
 
-const categoryOrder: ServiceCategory[] = ['files', 'media', 'knowledge', 'identity', 'operations'];
-const categoryLabels: Record<ServiceCategory, string> = {
-  files: 'Files and documents',
-  media: 'Media',
-  knowledge: 'Knowledge',
-  identity: 'Accounts and identity',
-  operations: 'Operations',
-};
-
-const guideHref = (guide: string) => `/uploads?guide=${encodeURIComponent(guide)}#guide-detail`;
+type HowTo = { id: string; title: string; summary: string };
 
 export default component$(() => {
   const homepage = useContext(HomepageContext);
   const location = useLocation();
   const showUnused = useSignal(false);
   const data = homepage.data;
+  const username = data?.user.username ?? '{username}';
   const allServices = data?.services ?? [];
   const allFolderGuides = data?.folderGuides ?? [];
   const services = allServices.filter((service) => service.enabled || showUnused.value);
   const folderGuides = allFolderGuides.filter((guide) => guide.enabled || showUnused.value);
-  const filesWebAvailable = allServices.some((service) => service.id === 'files' && service.enabled);
+  const filesService = allServices.find((service) => service.id === 'files' && service.enabled);
+  const passwords = services.find((service) => service.id === 'passwords');
   const showSshfs = Boolean(data?.sftp && (data.sftp.allowed || (showUnused.value && data.sftp.enabled)));
-  const requestedGuide = location.url.searchParams.get('guide') ?? 'overview';
-  const legacyFolderGuide = allFolderGuides.find((guide) => guide.id === requestedGuide);
-  const normalizedGuide = legacyFolderGuide ? `folder-${legacyFolderGuide.id}` : requestedGuide;
-  const requestedService = normalizedGuide.startsWith('service-')
-    ? services.find((service) => service.id === normalizedGuide.slice('service-'.length))
-    : undefined;
-  const requestedFolder = normalizedGuide.startsWith('folder-')
-    ? folderGuides.find((guide) => guide.id === normalizedGuide.slice('folder-'.length))
-    : undefined;
-  const activeGuide = requestedService
-    ? `service-${requestedService.id}`
-    : requestedFolder
-      ? `folder-${requestedFolder.id}`
-      : normalizedGuide === 'sshfs' && showSshfs
-        ? 'sshfs'
-        : 'overview';
-  const enabledServiceCount = allServices.filter((service) => service.enabled).length;
+
+  const howTos: HowTo[] = [
+    { id: 'access', title: 'How sign-in works', summary: 'One account, the groups that decide what you can open, and the few apps with their own login.' },
+    ...(folderGuides.length > 0
+      ? [{ id: 'folders', title: 'Where files go', summary: 'The folder each app reads, the file types it accepts, and personal versus shared folders.' }]
+      : []),
+    ...(showSshfs
+      ? [{ id: 'sshfs', title: 'Mount your files as a drive', summary: 'Set up SSHFS on Windows, macOS or Linux for large or regular transfers.' }]
+      : []),
+    ...(passwords
+      ? [{ id: 'vault-backup', title: 'Back up your password vault', summary: 'Keep an encrypted copy of your Passwords vault that does not depend on this server.' }]
+      : []),
+    { id: 'help', title: 'When something does not work', summary: 'The checks that fix most problems, and what to send an admin.' },
+  ];
+
   const serviceGroups = categoryOrder
-    .map((category) => ({
-      category,
-      services: services.filter((service) => service.category === category),
-    }))
+    .map((category) => ({ category, services: services.filter((service) => service.category === category) }))
     .filter((group) => group.services.length > 0);
+
+  // Folder topics used to be separate pages; their links now open the folder map.
+  const requested = location.url.searchParams.get('guide') ?? '';
+  const legacyFolder = requested.startsWith('folder-') || allFolderGuides.some((guide) => guide.id === requested);
+  const requestedId = legacyFolder ? 'folders' : requested;
+  const activeService = requestedId.startsWith('service-')
+    ? services.find((service) => service.id === requestedId.slice('service-'.length))
+    : undefined;
+  const activeHowTo = howTos.find((topic) => topic.id === requestedId);
+  const activeId = activeService ? `service-${activeService.id}` : activeHowTo?.id ?? '';
 
   useVisibleTask$(({ cleanup }) => {
     showUnused.value = window.localStorage.getItem('homepage.showUnusedAppsInDetailedGuide') === 'true';
@@ -69,76 +71,113 @@ export default component$(() => {
     document.dispatchEvent(new CustomEvent('homepage-show-unused-detailed-guide-change', { detail: { show: target.checked } }));
   });
 
-  return (
-    <section class="section detailed-guide-page">
-      <h1 class="detailed-guide-heading">Detailed Guide</h1>
+  if (!activeId) {
+    return (
+      <section class="doc guide">
+        <header class="doc-head">
+          <h1>Detailed Guide</h1>
+          <p class="doc-lead">How the server works, and a page for every app you can use.</p>
+        </header>
 
-      <div class="detailed-guide-layout">
-        <nav id="guide-contents" class="detailed-guide-toc" aria-label="Detailed guide contents">
-          <h2>Contents</h2>
+        <nav class="guide-index" aria-label="Detailed guide contents">
           <section>
-            <h3>Start here</h3>
-            <ul>
-              <li><Link class={{ selected: activeGuide === 'overview' }} href="/uploads#guide-detail">Overview</Link></li>
-              {showSshfs && <li><Link class={{ selected: activeGuide === 'sshfs' }} href={guideHref('sshfs')}>SSHFS Mount</Link></li>}
+            <h2>How things work</h2>
+            <ul class="guide-links">
+              {howTos.map((topic) => (
+                <li key={topic.id}>
+                  <Link href={guideHref(topic.id)}>
+                    <span>
+                      <strong>{topic.title}</strong>
+                      <span>{topic.summary}</span>
+                    </span>
+                  </Link>
+                </li>
+              ))}
             </ul>
           </section>
 
           {serviceGroups.map((group) => (
             <section key={group.category}>
-              <h3>{categoryLabels[group.category]}</h3>
-              <ul>
+              <h2>{categoryLabels[group.category]}</h2>
+              <ul class="guide-links guide-links--apps">
                 {group.services.map((service: ServiceCard) => (
                   <li key={service.id}>
-                    <Link
-                      class={{ selected: activeGuide === `service-${service.id}` }}
-                      href={guideHref(`service-${service.id}`)}
-                    >
-                      {service.name}
+                    <Link href={guideHref(`service-${service.id}`)} class={{ 'is-off': !service.enabled }}>
+                      <ServiceLogo service={service} large />
+                      <span>
+                        <strong>{service.name}</strong>
+                        <span>{service.description}</span>
+                      </span>
                     </Link>
                   </li>
                 ))}
               </ul>
             </section>
           ))}
-
-          {folderGuides.length > 0 && (
-            <section>
-              <h3>File placement</h3>
-              <ul>
-                {folderGuides.map((guide) => (
-                  <li key={guide.id}>
-                    <Link
-                      class={{ selected: activeGuide === `folder-${guide.id}` }}
-                      href={guideHref(`folder-${guide.id}`)}
-                    >
-                      {guide.title}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          <label class="detailed-guide-toc__unused">
-            <input type="checkbox" checked={showUnused.value} onChange$={updateShowUnused} />
-            <span>Include apps that are not enabled</span>
-          </label>
         </nav>
 
-        <div class="detailed-guide-content">
-          {activeGuide === 'overview' && <DetailedGuideOverview enabledServiceCount={enabledServiceCount} />}
-          {requestedService && activeGuide === `service-${requestedService.id}` && (
-            <DetailedServiceGuide service={requestedService} folderGuides={allFolderGuides} />
-          )}
-          {requestedFolder && activeGuide === `folder-${requestedFolder.id}` && (
-            <GuidePanel guide={requestedFolder} username={data?.user.username ?? '{username}'} services={services} />
-          )}
-          {activeGuide === 'sshfs' && data?.sftp && (
-            <SshfsGuide sftp={data.sftp} filesWebAvailable={filesWebAvailable} />
-          )}
-          <a class="detailed-guide-back" href="#guide-contents">&uarr; Contents</a>
-        </div>
+        <label class="guide-unused">
+          <input type="checkbox" checked={showUnused.value} onChange$={updateShowUnused} />
+          <span>Include apps that are not enabled</span>
+        </label>
+      </section>
+    );
+  }
+
+  return (
+    <section class="doc guide">
+      <div class="guide-layout">
+        <nav class="guide-nav" aria-label="Detailed guide contents">
+          <Link class="guide-nav__home" href="/uploads">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
+            All topics
+          </Link>
+          <div class="guide-nav__lists">
+            <h2>How things work</h2>
+            <ul>
+              {howTos.map((topic) => (
+                <li key={topic.id}>
+                  <Link href={guideHref(topic.id)} class={{ selected: activeId === topic.id }} aria-current={activeId === topic.id ? 'page' : undefined}>
+                    {topic.title}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+            {serviceGroups.map((group) => (
+              <div key={group.category}>
+                <h2>{categoryLabels[group.category]}</h2>
+                <ul>
+                  {group.services.map((service: ServiceCard) => (
+                    <li key={service.id}>
+                      <Link
+                        href={guideHref(`service-${service.id}`)}
+                        class={{ selected: activeId === `service-${service.id}` }}
+                        aria-current={activeId === `service-${service.id}` ? 'page' : undefined}
+                      >
+                        {service.name}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </nav>
+
+        {activeService && <AppTopic service={activeService} folderGuides={folderGuides} username={username} />}
+        {activeId === 'access' && <AccessTopic services={services} kanidmUrl={`https://id.${data?.domain ?? 'example.test'}`} />}
+        {activeId === 'folders' && (
+          <FoldersTopic
+            folderGuides={folderGuides}
+            services={services}
+            username={username}
+            transferAvailable={Boolean(filesService) || data?.sftp?.allowed === true}
+            sshfsAvailable={data?.sftp?.allowed === true}
+          />
+        )}
+        {activeId === 'sshfs' && data?.sftp && <SshfsTopic sftp={data.sftp} username={username} filesUrl={filesService?.url} />}
+        {activeId === 'vault-backup' && passwords && <CredentialBackupGuide passwordsUrl={passwords.url} enabled={passwords.enabled} />}
+        {activeId === 'help' && <HelpTopic serverLanHost={data?.serverLanHost} />}
       </div>
     </section>
   );

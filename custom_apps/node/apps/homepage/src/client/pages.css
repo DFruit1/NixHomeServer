@@ -1,0 +1,1624 @@
+/*
+ * Getting Started, Detailed Guide, Keys & Secrets and For Admins.
+ *
+ * These four pages share one document frame (`.doc`) and one set of text
+ * primitives (`.doc-*`). Structure comes from headings, rules and spacing;
+ * the only boxed elements are things a person acts on or must not miss:
+ * the unlock form, a warning, a secret shown once, a command to copy.
+ * The Services page keeps its own rules in styles.css and uses none of these.
+ */
+
+/* ---- Document frame ---------------------------------------------------- */
+
+.doc {
+  max-width: 1180px;
+  margin: 0 auto 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-bright);
+  padding: 30px 36px 36px;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.doc--narrow {
+  max-width: 840px;
+}
+
+.doc-head {
+  margin-bottom: 26px;
+}
+
+.doc-head h1,
+.guide-topic h1 {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+
+.doc-lead {
+  max-width: 64ch;
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+  font-size: 17px;
+  line-height: 1.55;
+}
+
+.doc :where(a:not(.doc-btn)) {
+  color: var(--accent);
+}
+
+.doc :is(a, button, summary, input, textarea, select):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- Text primitives --------------------------------------------------- */
+
+.doc-prose > p,
+.doc-prose > ul:not([class]),
+.doc-prose > ol {
+  max-width: 68ch;
+}
+
+.doc-prose p {
+  margin: 0 0 14px;
+}
+
+.doc-prose h2 {
+  margin: 32px 0 10px;
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.doc-prose h3 {
+  margin: 26px 0 10px;
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.doc-prose ul:not([class]),
+.doc-more ul {
+  margin: 0 0 14px;
+  padding-left: 22px;
+}
+
+.doc-prose li + li {
+  margin-top: 6px;
+}
+
+/* Code inside running text reads as a term; dark blocks are commands to run. */
+.doc :is(p, li, dd, dt, td, th, summary, span) > code {
+  display: inline;
+  overflow-x: visible;
+  overflow-wrap: anywhere;
+  border-radius: 4px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 0.875em;
+  padding: 2px 5px;
+}
+
+.doc-steps {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+  counter-reset: doc-step;
+}
+
+.doc-steps > li {
+  position: relative;
+  margin: 0;
+  padding-left: 36px;
+  counter-increment: doc-step;
+}
+
+.doc-steps > li::before {
+  position: absolute;
+  top: 1px;
+  left: 0;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid var(--border-strong-muted);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  content: counter(doc-step);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* A choice or destination per row: what it is on the left, its action on the right. */
+.doc-rows {
+  margin: 0 0 18px;
+  padding: 0;
+  border-top: 1px solid var(--border-strong);
+  list-style: none;
+}
+
+.doc-rows > li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 20px;
+  margin: 0;
+  border-bottom: 1px solid var(--border-strong);
+  padding: 12px 0;
+}
+
+.doc-rows > li > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.doc-rows span {
+  color: var(--text-secondary);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.doc-rows .doc-btn {
+  flex: 0 0 auto;
+}
+
+/* Label and value pairs. The global dd is monospace for addresses; these are sentences. */
+.doc-facts,
+.folder-map {
+  display: grid;
+  gap: 0;
+  max-width: none;
+  margin: 0 0 18px;
+  border-top: 1px solid var(--border-strong);
+}
+
+.doc-facts > div,
+.folder-map > div {
+  display: grid;
+  grid-template-columns: minmax(120px, 190px) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 2px 20px;
+  border-bottom: 1px solid var(--border-strong);
+  padding: 10px 0;
+}
+
+.doc-facts dt,
+.folder-map dt {
+  color: var(--text-strong);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.doc-facts dd,
+.folder-map dd {
+  margin: 0;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.folder-map dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.doc-note {
+  max-width: 68ch;
+  margin: 0 0 14px;
+  border-left: 3px solid var(--border-strong-muted);
+  padding: 2px 0 2px 14px;
+  color: var(--text-secondary);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.doc-warn {
+  max-width: 68ch;
+  margin: 0 0 14px;
+  border: 1px solid #efd9a8;
+  border-radius: 6px;
+  background: var(--surface-warning-subtle);
+  color: var(--warning-strong);
+  font-size: 15px;
+  line-height: 1.55;
+  padding: 11px 14px;
+}
+
+.doc .doc-warn a:not(.doc-btn) {
+  color: inherit;
+}
+
+.doc-more {
+  margin: 0 0 14px;
+}
+
+.doc-more > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  border-radius: 4px;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 700;
+  list-style: none;
+}
+
+.doc-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.doc-more > summary::before {
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  content: "";
+  transform: translateY(-1px) rotate(-45deg);
+  transition: transform 140ms ease;
+}
+
+.doc-more[open] > summary::before {
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.doc-more > :not(summary) {
+  max-width: 68ch;
+  color: var(--text-secondary);
+  font-size: 15px;
+}
+
+.doc-more > p {
+  margin: 6px 0 10px;
+}
+
+.doc-more > ul {
+  margin-top: 8px;
+}
+
+/* State that is already shown by a symbol, kept for screen readers. */
+.doc-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.doc-tag {
+  flex: 0 0 auto;
+  border: 1px solid var(--border-strong-muted);
+  border-radius: 999px;
+  color: var(--text-muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  padding: 1px 8px;
+}
+
+.doc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  max-width: none;
+  margin: 0 0 16px;
+}
+
+.doc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 38px;
+  border: 1px solid var(--border-strong-muted);
+  border-radius: 6px;
+  background: var(--surface-bright);
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.2;
+  padding: 7px 14px;
+  text-decoration: none;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+.doc-btn:hover {
+  border-color: var(--accent);
+  background: var(--surface-accent-subtle);
+}
+
+.doc-btn--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--surface-bright);
+}
+
+.doc-btn--primary:hover {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+}
+
+.doc-btn--quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.doc-btn--quiet:hover {
+  border-color: var(--border-strong-muted);
+  background: var(--surface-subtle);
+}
+
+.doc-btn--danger {
+  border-color: #e0b4b4;
+  color: var(--danger-strong);
+}
+
+.doc-btn--danger:hover {
+  border-color: var(--danger-strong);
+  background: var(--surface-danger-subtle);
+}
+
+.doc-btn--small {
+  min-height: 32px;
+  font-size: 13px;
+  padding: 4px 10px;
+}
+
+.doc-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.doc :is(input[type="text"], input[type="password"], input[type="search"], textarea) {
+  min-height: 38px;
+  border: 1px solid var(--border-strong-soft);
+  border-radius: 6px;
+  background: var(--surface-bright);
+  color: var(--text);
+  padding: 7px 10px;
+}
+
+.doc .hint {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 15px;
+}
+
+.copy-stack {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.doc-prose > .copy-value {
+  margin-bottom: 16px;
+}
+
+/* ---- Getting Started --------------------------------------------------- */
+
+.start-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.start-step {
+  position: relative;
+  scroll-margin-top: 16px;
+}
+
+/* The line joining one step's marker to the next. */
+.start-step::before {
+  position: absolute;
+  top: 48px;
+  bottom: -4px;
+  left: 17px;
+  width: 2px;
+  background: var(--border-strong);
+  content: "";
+}
+
+.start-step:last-child::before {
+  content: none;
+}
+
+.start-step__head {
+  margin: 0;
+  font-size: inherit;
+}
+
+.start-step__head button {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  min-height: 52px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-strong);
+  cursor: pointer;
+  padding: 8px 8px 8px 0;
+  text-align: left;
+}
+
+.start-step__mark {
+  position: relative;
+  display: grid;
+  flex: 0 0 36px;
+  height: 36px;
+  place-items: center;
+  border: 2px solid var(--border-strong-muted);
+  border-radius: 999px;
+  background: var(--surface-bright);
+  color: var(--text-secondary);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.start-step__mark svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.start-step.is-open .start-step__mark {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.start-step.is-done .start-step__mark {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--surface-bright);
+}
+
+.start-step__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.start-step:not(.is-open) .start-step__title {
+  color: var(--text-secondary);
+}
+
+.start-step__head button:hover .start-step__title {
+  color: var(--accent);
+}
+
+.start-step__chevron {
+  flex: 0 0 auto;
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  transition: transform 140ms ease;
+}
+
+.start-step.is-open .start-step__chevron {
+  transform: rotate(180deg);
+}
+
+.start-step__body {
+  padding: 2px 0 22px 52px;
+}
+
+.start-step__foot {
+  margin-top: 22px;
+}
+
+.start-after {
+  margin-top: 20px;
+  border-top: 1px solid var(--border-strong);
+}
+
+.start-after h2 {
+  margin-top: 24px;
+}
+
+.app-rows {
+  max-width: none;
+  margin: 0 0 18px;
+  padding: 0;
+  border-top: 1px solid var(--border-strong);
+  list-style: none;
+}
+
+.app-rows > li {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 14px;
+  margin: 0;
+  border-bottom: 1px solid var(--border-strong);
+  padding: 11px 0;
+}
+
+/* The logo component carries grid placement for the Services tiles. */
+.doc .app-symbol.large {
+  grid-row: auto;
+  grid-column: auto;
+  align-self: center;
+  justify-self: start;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+}
+
+.app-row__body {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.app-row__body span {
+  color: var(--text-secondary);
+  font-size: 14.5px;
+  line-height: 1.45;
+}
+
+.app-row__body .app-row__login {
+  color: var(--warning-strong);
+}
+
+.app-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.app-row__guide {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.client-setup {
+  margin-top: 20px;
+  border-top: 1px solid var(--border-strong);
+  padding-top: 2px;
+}
+
+.client-setup h3 {
+  margin-top: 18px;
+}
+
+.client-setup .copy-value {
+  margin: 0 0 14px;
+}
+
+.client-setup .doc-actions {
+  margin-bottom: 0;
+}
+
+/* ---- Detailed Guide ---------------------------------------------------- */
+
+.guide-index {
+  display: grid;
+  gap: 30px;
+}
+
+.guide-index h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.guide-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 2px 32px;
+  margin: 0;
+  border-top: 1px solid var(--border-strong);
+  padding: 6px 0 0;
+  list-style: none;
+}
+
+.guide-links a {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  height: 100%;
+  margin: 0 -10px;
+  border-radius: 8px;
+  padding: 10px;
+  text-decoration: none;
+}
+
+.guide-links a:hover {
+  background: var(--surface-subtle);
+}
+
+.guide-links a > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.guide-links strong {
+  color: var(--text-strong);
+  font-size: 16px;
+}
+
+.guide-links a:hover strong {
+  color: var(--accent);
+}
+
+.guide-links span span {
+  color: var(--text-secondary);
+  font-size: 14.5px;
+  line-height: 1.45;
+}
+
+.guide-links a.is-off {
+  opacity: 0.6;
+}
+
+.guide-unused {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  margin-top: 26px;
+  color: var(--text-muted-strong);
+  font-size: 14px;
+}
+
+.guide-layout,
+.ops-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  align-items: start;
+  gap: 44px;
+}
+
+.guide-nav,
+.ops-nav {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  font-size: 15px;
+}
+
+.guide-nav__home {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.guide-nav__home svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.4;
+}
+
+.guide-nav h2 {
+  margin: 18px 0 4px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.guide-nav ul,
+.ops-nav ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.doc :is(.guide-nav, .ops-nav) li a {
+  display: block;
+  border-radius: 6px;
+  color: var(--text-secondary-slate);
+  line-height: 1.35;
+  padding: 6px 10px;
+  text-decoration: none;
+}
+
+.doc :is(.guide-nav, .ops-nav) li a:hover {
+  background: var(--surface-subtle);
+  color: var(--text);
+}
+
+.doc .guide-nav li a.selected {
+  background: var(--surface-accent-soft);
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.guide-topic {
+  min-width: 0;
+  max-width: 740px;
+}
+
+.guide-topic__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin-bottom: 18px;
+}
+
+.guide-topic__title {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.guide-topic__title p {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.guide-topic__head .doc-actions {
+  margin: 0;
+}
+
+.guide-topic > .doc-lead {
+  margin: 0 0 18px;
+}
+
+.guide-topic .client-setup {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.guide-topic .guide-topic__foot {
+  max-width: none;
+  margin: 30px 0 0;
+  border-top: 1px solid var(--border-strong);
+  padding-top: 14px;
+  color: var(--text-secondary);
+  font-size: 15px;
+}
+
+.folder-entry {
+  margin-top: 28px;
+  border-top: 1px solid var(--border-strong);
+  scroll-margin-top: 16px;
+}
+
+.folder-entry h2 {
+  margin-top: 22px;
+}
+
+.folder-entry .doc-facts {
+  border-top: 0;
+}
+
+.folder-entry__apps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+}
+
+.sshfs-access-notes {
+  margin: 0 0 14px;
+  padding-left: 22px;
+}
+
+/* The setup sits inside the topic now, so it needs no frame of its own. */
+.sftp-setup-card.sshfs-setup {
+  max-width: none;
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.sftp-setup-card.sshfs-setup .os-picker {
+  margin-top: 4px;
+}
+
+.sshfs-setup .sftp-step-list {
+  max-width: none;
+  margin: 0 0 8px;
+}
+
+.sshfs-setup .sftp-step-list h3 {
+  margin-top: 0;
+}
+
+.sshfs-setup .sftp-step-list > li:last-child {
+  border-bottom: 1px solid var(--border-strong);
+}
+
+/* "Mount automatically at login" is shared with the SFTP service page; here it matches the other disclosures. */
+.sshfs-setup .step-help {
+  max-width: none;
+  margin-top: 12px;
+}
+
+.sshfs-setup .step-help > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  list-style: none;
+}
+
+.sshfs-setup .step-help > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sshfs-setup .step-help > summary::before {
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  content: "";
+  transform: translateY(-1px) rotate(-45deg);
+}
+
+.sshfs-setup .step-help[open] > summary::before {
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.sftp-key-form {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+
+.sftp-key-form .key-status {
+  margin: 0;
+}
+
+/* ---- Keys & Secrets ---------------------------------------------------- */
+
+.vault-gate {
+  max-width: 480px;
+  margin: 4px auto 28px;
+  border: 1px solid var(--border-strong-muted);
+  border-radius: 10px;
+  padding: 22px 24px 24px;
+}
+
+.vault-gate__brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.vault-gate__brand h2 {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.25;
+}
+
+.vault-gate__logo {
+  flex: 0 0 auto;
+}
+
+.vault-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border-strong-muted);
+  border-radius: 999px;
+  color: var(--text-muted-strong);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 3px 10px 3px 8px;
+}
+
+.vault-status--open {
+  border-color: #9fcbb6;
+  background: var(--surface-success-subtle);
+  color: var(--success-strong);
+}
+
+.vault-unlock > p {
+  margin: 0 0 16px;
+  color: var(--text-secondary);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.vault-field,
+.vault-key-form label,
+.vault-admin-key-target label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-strong);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.vault-unlock__row {
+  display: flex;
+  gap: 8px;
+}
+
+.vault-unlock__row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Unlocked: one status row, so the credentials below lead the page. */
+.vault-gate--open {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: none;
+  margin: 0 0 4px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  padding: 10px 12px;
+}
+
+.vault-countdown {
+  flex: 1 1 auto;
+  color: var(--text-secondary);
+  font-size: 15px;
+}
+
+.vault-inside {
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.vault-inside h2 {
+  margin: 0 0 8px;
+  color: var(--text-secondary);
+  font-size: 15px;
+}
+
+.vault-group {
+  margin-top: 30px;
+}
+
+.vault-group > h2 {
+  margin: 0 0 10px;
+  font-size: 22px;
+}
+
+.vault-card {
+  border-top: 1px solid var(--border-strong);
+  padding: 18px 0 8px;
+}
+
+.vault-card__head h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.vault-card__head p {
+  margin: 2px 0 14px;
+  color: var(--text-secondary);
+  font-size: 15px;
+}
+
+.vault-card .doc-more {
+  margin-top: 14px;
+}
+
+.vault-card h4 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.vault-confirm {
+  max-width: 68ch;
+  border: 1px solid #efd9a8;
+  border-radius: 6px;
+  background: var(--surface-warning-subtle);
+  padding: 12px 14px;
+}
+
+.vault-confirm p {
+  margin: 0 0 10px;
+  color: var(--warning-strong);
+  font-size: 15px;
+}
+
+.vault-confirm .doc-actions {
+  margin: 0;
+}
+
+/* A secret that will not be shown again. */
+.vault-once {
+  margin-top: 14px;
+  border: 1px solid #b6d6c6;
+  border-radius: 6px;
+  background: var(--surface-success-subtle);
+  padding: 14px 16px;
+}
+
+.vault-once > p {
+  margin: 0;
+  font-size: 15px;
+}
+
+.vault-once__fields {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0 0;
+}
+
+.vault-once__fields dt {
+  margin-bottom: 3px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.vault-once__fields dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: inherit;
+}
+
+.doc .vault-once__fields dd > code {
+  border: 1px solid #b6d6c6;
+  background: var(--surface-bright);
+  font-size: 13px;
+  padding: 4px 8px;
+}
+
+.vault-kavita-keys {
+  margin: 14px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--border-strong);
+  list-style: none;
+}
+
+.vault-kavita-key {
+  display: grid;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-strong);
+  padding: 12px 0;
+}
+
+.vault-kavita-key__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 12px;
+}
+
+.vault-kavita-key__head small {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.doc .vault-secret__value {
+  display: block;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-size: 13px;
+  padding: 8px 10px;
+}
+
+.doc .vault-secret__value--hidden {
+  color: var(--text-muted);
+  letter-spacing: 0.2em;
+}
+
+.vault-secret__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.vault-key-form {
+  margin-top: 18px;
+}
+
+.vault-inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.vault-inline-form input {
+  flex: 1 1 220px;
+  min-width: 0;
+  max-width: 360px;
+}
+
+.vault-admin-key-target {
+  margin-bottom: 12px;
+}
+
+.vault-keys-list ul {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--border-strong);
+  list-style: none;
+}
+
+.vault-key-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border-strong);
+  padding: 8px 0;
+}
+
+.doc .vault-key-row > code {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: none;
+  font-size: 13px;
+  padding: 0;
+}
+
+.vault-manual-key {
+  margin: 16px 0 0;
+}
+
+.vault-manual-key textarea {
+  display: block;
+  margin: 8px 0 10px;
+}
+
+.vault-manual-key label {
+  margin-top: 10px;
+}
+
+.vault-card .key-status {
+  max-width: 68ch;
+}
+
+.vault-denied {
+  margin-top: 30px;
+  border-top: 1px solid var(--border-strong);
+  padding-top: 16px;
+  color: var(--text-secondary);
+  font-size: 15px;
+}
+
+.vault-denied h2 {
+  margin: 0 0 6px;
+  color: var(--text-strong);
+  font-size: 15px;
+}
+
+.vault-denied ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+/* ---- For Admins -------------------------------------------------------- */
+
+.ops-body {
+  min-width: 0;
+}
+
+.ops-search input {
+  width: 100%;
+  max-width: 560px;
+}
+
+.ops-search .doc-warn {
+  margin: 12px 0 0;
+}
+
+.doc-warn mark {
+  border-radius: 3px;
+  background: #f4e0b0;
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.875em;
+  padding: 1px 4px;
+}
+
+.ops-section {
+  margin-top: 38px;
+  scroll-margin-top: 16px;
+}
+
+.ops-section > h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+.ops-section__intro {
+  max-width: 72ch;
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.ops-cmds {
+  margin: 14px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--border-strong);
+  list-style: none;
+  counter-reset: ops-cmd;
+}
+
+.ops-cmd {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  align-items: start;
+  gap: 8px 28px;
+  border-bottom: 1px solid var(--border-strong);
+  padding: 14px 0;
+  counter-increment: ops-cmd;
+}
+
+.ops-cmd__text h3 {
+  margin: 0 0 3px;
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.ops-cmds--ordered .ops-cmd__text h3::before {
+  color: var(--text-muted);
+  content: counter(ops-cmd) ". ";
+}
+
+.ops-cmd__text p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 14.5px;
+  line-height: 1.5;
+}
+
+.ops-code {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #273443;
+  border-radius: 6px;
+  background: #101820;
+}
+
+.ops-code__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid #273443;
+  color: #a9bccd;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 5px 6px 5px 12px;
+}
+
+.ops-code__bar button {
+  flex: 0 0 auto;
+  min-height: 28px;
+  border: 1px solid #3a4a5c;
+  border-radius: 5px;
+  background: #1b2733;
+  color: #dbe6ee;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+}
+
+.ops-code__bar button:hover,
+.doc .ops-code__bar button:focus-visible {
+  border-color: #8fd6ff;
+  color: #fff;
+  outline-color: #8fd6ff;
+}
+
+.ops-code pre {
+  margin: 0;
+  overflow-x: auto;
+  padding: 10px 12px;
+}
+
+.ops-code code {
+  display: block;
+  overflow: visible;
+  border-radius: 0;
+  background: transparent;
+  color: #eef5f8;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 0;
+  white-space: pre;
+}
+
+.ops-code mark {
+  border-radius: 3px;
+  background: rgba(246, 204, 114, 0.16);
+  color: #f6cc72;
+  padding: 0 2px;
+}
+
+.ops-tool {
+  border-top: 1px solid var(--border-strong);
+  padding: 16px 0 18px;
+}
+
+.ops-section > .ops-tool:first-of-type {
+  margin-top: 10px;
+}
+
+.ops-tool__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ops-tool__head h3 {
+  margin: 0 0 2px;
+  font-size: 16px;
+}
+
+.ops-tool__head p {
+  max-width: 72ch;
+  margin: 0 0 12px;
+  color: var(--text-secondary);
+  font-size: 14.5px;
+  line-height: 1.5;
+}
+
+.ops-tool .doc-actions {
+  margin-bottom: 0;
+}
+
+.ops-tool .notice {
+  margin: 0 0 12px;
+}
+
+.ops-tool__meta,
+.ops-tool__note {
+  color: var(--text-muted-strong);
+  font-size: 14px;
+}
+
+.ops-tool__note {
+  max-width: 72ch;
+  margin: 14px 0 0;
+}
+
+.ops-tool .build-mode__form {
+  margin-top: 4px;
+}
+
+/* Two switches on the first row, the three times on the second. */
+.ops-tool .power-schedule__form {
+  display: grid;
+  grid-template-columns: repeat(3, max-content);
+  align-items: end;
+  justify-content: start;
+  gap: 14px 24px;
+  margin-top: 4px;
+}
+
+.ops-tool .power-schedule__field {
+  font-size: 14px;
+}
+
+.ops-tool .power-schedule__field--check + .power-schedule__field--check {
+  grid-column: 2 / -1;
+}
+
+.power-schedule__buttons {
+  grid-column: 1 / -1;
+}
+
+.ops-groups {
+  margin: 16px 0 0;
+}
+
+.ops-groups .ops-groups__scroll {
+  max-width: none;
+  overflow-x: auto;
+}
+
+.ops-groups table {
+  width: 100%;
+  min-width: 520px;
+  margin-top: 6px;
+  border-collapse: collapse;
+  font-size: 14.5px;
+}
+
+.ops-groups :is(th, td) {
+  border-bottom: 1px solid var(--border-strong);
+  padding: 8px 14px 8px 0;
+  text-align: left;
+  vertical-align: top;
+}
+
+.ops-groups thead th {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.ops-groups tbody th {
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.ops-empty {
+  margin: 28px 0 0;
+  color: var(--text-secondary);
+}
+
+/* ---- Small screens ----------------------------------------------------- */
+
+@media (pointer: coarse) {
+  .doc-btn {
+    min-height: 44px;
+  }
+
+  .doc-btn--small {
+    min-height: 40px;
+  }
+
+  .doc-more > summary {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 900px) {
+  .guide-layout,
+  .ops-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .guide-nav,
+  .ops-nav {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+
+  /* The index page is the contents list on a phone; a topic only needs the way back. */
+  .guide-nav__lists {
+    display: none;
+  }
+
+  .guide-topic {
+    max-width: none;
+  }
+
+  .ops-nav ul {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 6px;
+  }
+
+  .doc .ops-nav li a {
+    border: 1px solid var(--border-strong);
+    white-space: nowrap;
+  }
+
+  .ops-cmd {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ops-tool .power-schedule__form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ops-tool .power-schedule__field--check + .power-schedule__field--check {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .doc {
+    padding: 20px 16px 24px;
+    font-size: 15.5px;
+  }
+
+  .doc-head {
+    margin-bottom: 18px;
+  }
+
+  .doc-head h1,
+  .guide-topic h1 {
+    font-size: 25px;
+  }
+
+  .doc-lead {
+    font-size: 16px;
+  }
+
+  .doc-facts > div,
+  .folder-map > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .doc-rows > li {
+    flex-wrap: wrap;
+  }
+
+  .start-step::before {
+    content: none;
+  }
+
+  .start-step__head button {
+    gap: 12px;
+  }
+
+  .start-step__mark {
+    flex-basis: 30px;
+    height: 30px;
+    font-size: 14px;
+  }
+
+  .start-step__title {
+    font-size: 17px;
+  }
+
+  .start-step__body {
+    padding-left: 0;
+  }
+
+  .app-rows > li {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .app-row__actions {
+    grid-column: 2;
+    margin-top: 4px;
+  }
+
+  .guide-links {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vault-gate {
+    padding: 18px 16px 20px;
+  }
+
+  .vault-gate--open {
+    flex-wrap: wrap;
+    padding: 10px 12px;
+  }
+
+  .vault-key-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .doc-btn,
+  .doc-more > summary::before,
+  .start-step__chevron {
+    transition: none;
+  }
+}

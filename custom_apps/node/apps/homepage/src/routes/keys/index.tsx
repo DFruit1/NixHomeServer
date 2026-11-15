@@ -52,12 +52,12 @@ export default component$(() => {
   const sshKeys = featureById('sshKeys');
 
   return (
-    <section class={{ section: true, 'vault-page': true }} aria-label="Keys and secrets">
-      <header class="section-heading stacked">
+    <section class="doc doc--narrow vault-page" aria-label="Keys and secrets">
+      <header class="doc-head">
         <h1>Keys &amp; Secrets</h1>
-        <p>
-          Create passwords and keys for apps and devices that cannot use your regular username and password. Save every
-          new credential in your password manager as soon as it is shown.
+        <p class="doc-lead">
+          Passwords and keys for apps and devices that cannot use your normal sign-in. Save each one in your password
+          manager as soon as it is shown.
         </p>
       </header>
 
@@ -75,30 +75,37 @@ export default component$(() => {
             onRefresh={refresh}
           />
 
+          {!vault.status.unlocked && allowed.length > 0 && (
+            <section class="vault-inside" aria-labelledby="vault-inside-heading">
+              <h2 id="vault-inside-heading">What you can manage here</h2>
+              <dl class="doc-facts">
+                {allowed.map((feature) => (
+                  <div key={feature.id}>
+                    <dt>{feature.name}</dt>
+                    <dd>{feature.description}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          )}
+
           {vault.status.unlocked && user && (
             <>
               {appPasswords.length > 0 && (
                 <section class="vault-group" aria-labelledby="vault-app-passwords">
-                  <header class="vault-group__head">
-                    <h2 id="vault-app-passwords">App passwords</h2>
-                    <p>Passwords and keys that apps use to sign in as you instead of your normal login.</p>
-                  </header>
-                  <div class="vault-cards">
-                    {featureById('freshrssApiPassword') && (
-                      <VaultFreshrssCard feature={featureById('freshrssApiPassword')!} username={user.username} />
-                    )}
-                    {featureById('kavitaApiKeys') && (
-                      <VaultKavitaCard feature={featureById('kavitaApiKeys')!} username={user.username} />
-                    )}
-                  </div>
+                  <h2 id="vault-app-passwords">App passwords</h2>
+                  {featureById('freshrssApiPassword') && (
+                    <VaultFreshrssCard feature={featureById('freshrssApiPassword')!} username={user.username} />
+                  )}
+                  {featureById('kavitaApiKeys') && (
+                    <VaultKavitaCard feature={featureById('kavitaApiKeys')!} username={user.username} />
+                  )}
                 </section>
               )}
 
               {sshKeys && (
                 <section class="vault-group" aria-labelledby="vault-device-keys">
-                  <header class="vault-group__head">
-                    <h2 id="vault-device-keys">Device keys</h2>
-                  </header>
+                  <h2 id="vault-device-keys">Device keys</h2>
                   <VaultSshKeysCard feature={sshKeys} username={user.username} isAdmin={data?.isAdmin ?? false} />
                 </section>
               )}
@@ -106,7 +113,7 @@ export default component$(() => {
           )}
 
           {denied.length > 0 && (
-            <div class="vault-denied">
+            <section class="vault-denied">
               <h2>Not available to your account</h2>
               <ul>
                 {denied.map((feature) => (
@@ -116,7 +123,7 @@ export default component$(() => {
                   </li>
                 ))}
               </ul>
-            </div>
+            </section>
           )}
 
           {allowed.length === 0 && denied.length === 0 && vault.status.unlocked && (

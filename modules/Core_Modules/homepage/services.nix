@@ -361,200 +361,223 @@ let
     }
   ];
 
-  adminGuide = [
-    {
-      title = "Validate config & prerequisites";
-      command = "nix run .#validate-config-readiness -- --identity /path/to/age.key";
-      detail = "Check decryptability and deploy prerequisites. Replace the identity path.";
-    }
-    {
-      title = "Check git is clean";
-      command = "git status --short";
-      detail = "Confirm all new Nix files are tracked before deploying.";
-    }
-    {
-      title = "Quick repo checks";
-      command = "./scripts/validate-repo.sh";
-      detail = "Run fast policy and script tests before deploying.";
-    }
-    {
-      title = "Test deploy";
-      command = "./scripts/deploy.sh --action test";
-      detail = "Test-activate the repo on the live server. Services may restart; the boot default is unchanged.";
-    }
-    {
-      title = "Make permanent";
-      command = "./scripts/deploy.sh --action switch";
-      detail = "Persist the tested generation as the next boot default. Run only after checking failed units.";
-    }
-    {
-      title = "Emergency rollback";
-      command = "sudo nixos-rebuild switch --rollback";
-      detail = "Server-console recovery. Bypasses every guarded deploy check and changes the boot profile. Works under either vars.identity.localAdminSudo policy: under \"password-authenticated\" sudo prompts for the reconciled local-console password, so this only works from the console; SSH password login stays disabled.";
-    }
-    {
-      title = "Console deploy (restricted sudo)";
-      command = "sudo ./scripts/deploy.sh --console --action test";
-      detail = "The deploy route for a host running vars.identity.localAdminSudo = \"password-authenticated\", and the only way to transition onto that policy: --console runs the whole guarded flow as this machine's root identity with no SSH hop, so every downstream sudo is already root. Run it from the server console as the local admin; one interactive sudo prompt covers the deploy. Then run the same command with --action switch. It builds locally, because the restricted policy leaves the local admin unable to write the Nix store over SSH. See operations.md for the full transition and restore procedure.";
-    }
-    {
-      title = "Failed services";
-      command = "sudo systemctl --failed --no-pager";
-      detail = "List failed units after deploys or incidents.";
-    }
-    {
-      title = "Follow service logs";
-      command = "journalctl -fu SERVICE.service";
-      detail = "Stream one service's logs. Replace SERVICE with the real unit name.";
-    }
-    {
-      title = "Restart a service";
-      command = "sudo systemctl restart SERVICE.service";
-      detail = "Restart one service. Check logs first; prefer this over host restarts.";
-    }
-    {
-      title = "Boot warnings";
-      command = "journalctl -b -p warning..alert --no-pager";
-      detail = "Scan current-boot warnings and errors.";
-    }
-    {
-      title = "Authenticate Kanidm CLI";
-      command = "kanidm login -D ${lib.escapeShellArg vars.kanidmAdminUser} && kanidm self whoami";
-      detail = "Start or verify a CLI session before running person or group commands.";
-    }
-    {
-      title = "Verify user exists";
-      command = "kanidm person get USERNAME";
-      detail = "Check a Kanidm user before creating or changing access.";
-    }
-    {
-      title = "Create user";
-      command = "kanidm person create USERNAME 'Display Name'\nkanidm person update USERNAME --mail EMAIL";
-      detail = "Create a Kanidm person and set their email for OIDC apps.";
-    }
-    {
-      title = "Grant baseline sign-in";
-      command = "kanidm group add-members users USERNAME";
-      detail = "Add the user to the standard users group.";
-    }
-    {
-      title = "Grant app access";
-      command = "kanidm group add-members APP-GROUP USERNAME";
-      detail = "Grant a specific app, file, or admin group. Replace APP-GROUP with the real group name.";
-    }
-    {
-      title = "Revoke access";
-      command = "kanidm group remove-members APP-GROUP USERNAME";
-      detail = "Remove a specific group membership.";
-    }
-    {
-      title = "Generate sign-in link";
-      command = "kanidm person credential create-reset-token USERNAME --name ${lib.escapeShellArg vars.kanidmAdminUser}";
-      detail = "One-hour, single-use link. Send through a trusted channel after access is ready.";
-    }
-    {
-      title = "Reconcile identity";
-      command = "sudo systemctl start kanidm-identity-reconcile.service kanidm-files-posix-groups.service fileshare-user-root-sync.service";
-      detail = "Refresh Kanidm display names, emails, POSIX groups, and per-user roots.";
-    }
-  ]
-  ++ lib.optionals immichEnabled [
-    {
-      title = "Sync Immich accounts";
-      command = "sudo systemctl start immich-oidc-reconcile.service immich-admin-reconcile.service";
-      detail = "Reconcile Immich users and admins from Kanidm groups.";
-    }
-  ]
-  ++ lib.optionals paperlessEnabled [
-    {
-      title = "Sync Paperless accounts";
-      command = "sudo systemctl start paperless-oidc-reconcile.service";
-      detail = "Reconcile Paperless accounts from Kanidm after access changes.";
-    }
-  ]
-  ++ lib.optionals jellyfinEnabled [
-    {
-      title = "Jellyfin initial password";
-      command = "sudo jellyfin-initial-credential USERNAME";
-      detail = "Retrieve the stored initial credential for a native client. Treat as a secret.";
-    }
-    {
-      title = "Sync Jellyfin libraries";
-      command = "sudo systemctl start jellyfin-library-sync.service";
-      detail = "Refresh Jellyfin libraries after media changes.";
-    }
-    {
-      title = "Troubleshoot Jellyfin LAN discovery";
-      detail = "Keep the client on the same IPv4 broadcast network, disable guest-Wi-Fi or client isolation, and verify that the client accepts replies from the server's UDP source port 7359.";
-    }
-    {
-      title = "Allow Jellyfin discovery replies with nftables";
-      command = "sudo nft insert rule inet filter input iifname \"<CLIENT_LAN_INTERFACE>\" ip saddr ${vars.networking.lan.ip} udp sport 7359 counter accept comment \"Jellyfin discovery replies\"";
-      detail = "Run on the Linux client after confirming its nftables table and input-chain names; persist the equivalent rule in that client's ruleset.";
-    }
-    {
-      title = "Allow Jellyfin discovery replies with UFW";
-      command = "sudo ufw allow in on <CLIENT_LAN_INTERFACE> proto udp from ${vars.networking.lan.ip} port 7359 to any comment 'Jellyfin discovery replies'";
-      detail = "Run on a Linux client managed by UFW. Replace the interface placeholder before applying the rule.";
-    }
-    {
-      title = "Allow Jellyfin discovery replies with firewalld";
-      command = ''sudo firewall-cmd --permanent --zone=home --add-rich-rule='rule family="ipv4" source address="${vars.networking.lan.ip}/32" source-port port="7359" protocol="udp" accept' && sudo firewall-cmd --reload'';
-      detail = "Run on a Linux client managed by firewalld after confirming that its LAN interface belongs to the home zone.";
-    }
-    {
-      title = "Allow Jellyfin discovery replies on Windows";
-      command = ''New-NetFirewallRule -DisplayName "Jellyfin discovery replies" -Direction Inbound -Action Allow -Protocol UDP -RemoteAddress ${vars.networking.lan.ip} -RemotePort 7359 -Profile Private'';
-      detail = "Run in Administrator PowerShell on a Windows client whose LAN network profile is Private.";
-    }
-    {
-      title = "Allow Jellyfin discovery on Apple devices";
-      detail = "On macOS, allow Fladder under System Settings → Privacy & Security → Local Network, then ensure Block all incoming connections is off in Firewall Options. On iPhone or iPad, enable Fladder under Settings → Privacy & Security → Local Network.";
-    }
-  ]
-  ++ lib.optionals kiwixEnabled [
-    {
-      title = "Sync Kiwix library";
-      command = "sudo systemctl start kiwix-library-sync.service";
-      detail = "Publish new or repaired ZIM files.";
-    }
-  ]
-  ++ [
-    {
-      title = "Check space & disks";
-      command = "df -hT\nlsblk -f";
-      detail = "Mounted filesystems, free space, block devices, UUIDs, and mountpoints.";
-    }
-    {
-      title = "Backup schedule";
-      command = "systemctl list-timers 'kopia*' --all --no-pager";
-      detail = "Verify Kopia snapshot timers are scheduled and see next run times.";
-    }
-    {
-      title = "Trigger snapshot now";
-      command = "sudo systemctl start kopia-persist-snapshot.service";
-      detail = "Start an immediate persist snapshot. Check logs afterward.";
-    }
-  ]
-  ++ lib.optionals megaEnabled [
-    {
-      title = "Run offsite sync";
-      command = "sudo systemctl start rclone-mega-kopia-sync.service";
-      detail = "Mirror the Kopia repository offsite.";
-    }
-  ]
-  ++ [
-    {
-      title = "Reverse proxy health";
-      command = "systemctl status caddy.service --no-pager";
-      detail = "Check the edge reverse proxy before debugging app reachability.";
-    }
-    {
-      title = "Firewall rules";
-      command = "sudo nft list ruleset";
-      detail = "Inspect active nftables rules when a service runs but traffic is blocked.";
-    }
-  ];
+  # Every admin command carries the For Admins section it belongs to and where it
+  # runs, so the page can group commands into runbooks and label client-side
+  # commands instead of guessing either from the command text. An entry may
+  # override `runsOn`; list order is the order the page shows.
+  adminSection = section: runsOn: map (entry: { inherit section runsOn; } // entry);
+
+  adminGuide =
+    adminSection "deploy" "Repository folder" [
+      {
+        title = "Validate config & prerequisites";
+        command = "nix run .#validate-config-readiness -- --identity /path/to/age.key";
+        detail = "Check decryptability and deploy prerequisites. Replace the identity path.";
+      }
+      {
+        title = "Check git is clean";
+        command = "git status --short";
+        detail = "Confirm all new Nix files are tracked before deploying.";
+      }
+      {
+        title = "Quick repo checks";
+        command = "./scripts/validate-repo.sh";
+        detail = "Run fast policy and script tests before deploying.";
+      }
+      {
+        title = "Test deploy";
+        command = "./scripts/deploy.sh --action test";
+        detail = "Test-activate the repo on the live server. Services may restart; the boot default is unchanged.";
+      }
+      {
+        title = "Make permanent";
+        command = "./scripts/deploy.sh --action switch";
+        detail = "Persist the tested generation as the next boot default. Run only after checking failed units.";
+      }
+    ]
+    ++ adminSection "recover" "Server console" [
+      {
+        title = "Emergency rollback";
+        command = "sudo nixos-rebuild switch --rollback";
+        detail = "Server-console recovery. Bypasses every guarded deploy check and changes the boot profile. Works under either vars.identity.localAdminSudo policy: under \"password-authenticated\" sudo prompts for the reconciled local-console password, so this only works from the console; SSH password login stays disabled.";
+      }
+      {
+        title = "Console deploy (restricted sudo)";
+        runsOn = "Repository folder, at the server console";
+        command = "sudo ./scripts/deploy.sh --console --action test";
+        detail = "The deploy route for a host running vars.identity.localAdminSudo = \"password-authenticated\", and the only way to transition onto that policy: --console runs the whole guarded flow as this machine's root identity with no SSH hop, so every downstream sudo is already root. Run it from the server console as the local admin; one interactive sudo prompt covers the deploy. Then run the same command with --action switch. It builds locally, because the restricted policy leaves the local admin unable to write the Nix store over SSH. See operations.md for the full transition and restore procedure.";
+      }
+    ]
+    ++ adminSection "health" "Server terminal" [
+      {
+        title = "Failed services";
+        command = "sudo systemctl --failed --no-pager";
+        detail = "List failed units after deploys or incidents.";
+      }
+      {
+        title = "Follow service logs";
+        command = "journalctl -fu SERVICE.service";
+        detail = "Stream one service's logs. Replace SERVICE with the real unit name.";
+      }
+      {
+        title = "Restart a service";
+        command = "sudo systemctl restart SERVICE.service";
+        detail = "Restart one service. Check logs first; prefer this over host restarts.";
+      }
+      {
+        title = "Boot warnings";
+        command = "journalctl -b -p warning..alert --no-pager";
+        detail = "Scan current-boot warnings and errors.";
+      }
+    ]
+    ++ adminSection "people" "Server terminal" [
+      {
+        title = "Authenticate Kanidm CLI";
+        command = "kanidm login -D ${lib.escapeShellArg vars.kanidmAdminUser} && kanidm self whoami";
+        detail = "Start or verify a CLI session before running person or group commands.";
+      }
+      {
+        title = "Verify user exists";
+        command = "kanidm person get USERNAME";
+        detail = "Check a Kanidm user before creating or changing access.";
+      }
+      {
+        title = "Create user";
+        command = "kanidm person create USERNAME 'Display Name'\nkanidm person update USERNAME --mail EMAIL";
+        detail = "Create a Kanidm person and set their email for OIDC apps.";
+      }
+      {
+        title = "Grant baseline sign-in";
+        command = "kanidm group add-members users USERNAME";
+        detail = "Add the user to the standard users group.";
+      }
+      {
+        title = "Grant app access";
+        command = "kanidm group add-members APP-GROUP USERNAME";
+        detail = "Grant a specific app, file, or admin group. Replace APP-GROUP with the real group name.";
+      }
+      {
+        title = "Revoke access";
+        command = "kanidm group remove-members APP-GROUP USERNAME";
+        detail = "Remove a specific group membership.";
+      }
+      {
+        title = "Generate sign-in link";
+        command = "kanidm person credential create-reset-token USERNAME --name ${lib.escapeShellArg vars.kanidmAdminUser}";
+        detail = "One-hour, single-use link. Send through a trusted channel after access is ready.";
+      }
+      {
+        title = "Reconcile identity";
+        command = "sudo systemctl start kanidm-identity-reconcile.service kanidm-files-posix-groups.service fileshare-user-root-sync.service";
+        detail = "Refresh Kanidm display names, emails, POSIX groups, and per-user roots.";
+      }
+    ]
+    ++ adminSection "apps" "Server terminal" (
+      [ ]
+      ++ lib.optionals immichEnabled [
+        {
+          title = "Sync Immich accounts";
+          command = "sudo systemctl start immich-oidc-reconcile.service immich-admin-reconcile.service";
+          detail = "Reconcile Immich users and admins from Kanidm groups.";
+        }
+      ]
+      ++ lib.optionals paperlessEnabled [
+        {
+          title = "Sync Paperless accounts";
+          command = "sudo systemctl start paperless-oidc-reconcile.service";
+          detail = "Reconcile Paperless accounts from Kanidm after access changes.";
+        }
+      ]
+      ++ lib.optionals jellyfinEnabled [
+        {
+          title = "Jellyfin initial password";
+          command = "sudo jellyfin-initial-credential USERNAME";
+          detail = "Retrieve the stored initial credential for a native client. Treat as a secret.";
+        }
+        {
+          title = "Sync Jellyfin libraries";
+          command = "sudo systemctl start jellyfin-library-sync.service";
+          detail = "Refresh Jellyfin libraries after media changes.";
+        }
+      ]
+      ++ lib.optionals kiwixEnabled [
+        {
+          title = "Sync Kiwix library";
+          command = "sudo systemctl start kiwix-library-sync.service";
+          detail = "Publish new or repaired ZIM files.";
+        }
+      ]
+    )
+    ++ lib.optionals jellyfinEnabled (adminSection "jellyfin-discovery" "Linux client" [
+      {
+        title = "Troubleshoot Jellyfin LAN discovery";
+        detail = "Keep the client on the same IPv4 broadcast network, disable guest-Wi-Fi or client isolation, and verify that the client accepts replies from the server's UDP source port 7359.";
+      }
+      {
+        title = "Allow Jellyfin discovery replies with nftables";
+        command = "sudo nft insert rule inet filter input iifname \"<CLIENT_LAN_INTERFACE>\" ip saddr ${vars.networking.lan.ip} udp sport 7359 counter accept comment \"Jellyfin discovery replies\"";
+        detail = "Run on the Linux client after confirming its nftables table and input-chain names; persist the equivalent rule in that client's ruleset.";
+      }
+      {
+        title = "Allow Jellyfin discovery replies with UFW";
+        command = "sudo ufw allow in on <CLIENT_LAN_INTERFACE> proto udp from ${vars.networking.lan.ip} port 7359 to any comment 'Jellyfin discovery replies'";
+        detail = "Run on a Linux client managed by UFW. Replace the interface placeholder before applying the rule.";
+      }
+      {
+        title = "Allow Jellyfin discovery replies with firewalld";
+        command = ''sudo firewall-cmd --permanent --zone=home --add-rich-rule='rule family="ipv4" source address="${vars.networking.lan.ip}/32" source-port port="7359" protocol="udp" accept' && sudo firewall-cmd --reload'';
+        detail = "Run on a Linux client managed by firewalld after confirming that its LAN interface belongs to the home zone.";
+      }
+      {
+        title = "Allow Jellyfin discovery replies on Windows";
+        runsOn = "Windows client (Administrator PowerShell)";
+        command = ''New-NetFirewallRule -DisplayName "Jellyfin discovery replies" -Direction Inbound -Action Allow -Protocol UDP -RemoteAddress ${vars.networking.lan.ip} -RemotePort 7359 -Profile Private'';
+        detail = "Run in Administrator PowerShell on a Windows client whose LAN network profile is Private.";
+      }
+      {
+        title = "Allow Jellyfin discovery on Apple devices";
+        runsOn = "Apple client";
+        detail = "On macOS, allow Fladder under System Settings → Privacy & Security → Local Network, then ensure Block all incoming connections is off in Firewall Options. On iPhone or iPad, enable Fladder under Settings → Privacy & Security → Local Network.";
+      }
+    ])
+    ++ adminSection "storage" "Server terminal" (
+      [
+        {
+          title = "Check space & disks";
+          command = "df -hT\nlsblk -f";
+          detail = "Mounted filesystems, free space, block devices, UUIDs, and mountpoints.";
+        }
+        {
+          title = "Backup schedule";
+          command = "systemctl list-timers 'kopia*' --all --no-pager";
+          detail = "Verify Kopia snapshot timers are scheduled and see next run times.";
+        }
+        {
+          title = "Trigger snapshot now";
+          command = "sudo systemctl start kopia-persist-snapshot.service";
+          detail = "Start an immediate persist snapshot. Check logs afterward.";
+        }
+      ]
+      ++ lib.optionals megaEnabled [
+        {
+          title = "Run offsite sync";
+          command = "sudo systemctl start rclone-mega-kopia-sync.service";
+          detail = "Mirror the Kopia repository offsite.";
+        }
+      ]
+    )
+    ++ adminSection "network" "Server terminal" [
+      {
+        title = "Reverse proxy health";
+        command = "systemctl status caddy.service --no-pager";
+        detail = "Check the edge reverse proxy before debugging app reachability.";
+      }
+      {
+        title = "Firewall rules";
+        command = "sudo nft list ruleset";
+        detail = "Inspect active nftables rules when a service runs but traffic is blocked.";
+      }
+    ];
 
   homepageConfig = pkgs.writeText "homepage-config.json" (builtins.toJSON {
     brandName = vars.brandName;

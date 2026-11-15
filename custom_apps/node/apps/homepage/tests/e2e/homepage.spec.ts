@@ -10,6 +10,9 @@ const expectNoHorizontalOverflow = async (page: Page) => {
     .toBeLessThanOrEqual(1);
 };
 
+/** The header of a Getting Started step, which opens and closes it. */
+const stepHeader = (page: Page, name: string) => page.locator('.start-step__head').getByRole('button', { name });
+
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', (error) => {
     throw error;
@@ -94,21 +97,23 @@ test('homepage navigation and SFTP upload flow stay client-side', async ({ page 
   await page.getByRole('button', { name: 'Photos service information' }).click();
   await expect(page.locator('.service-preview-bar')).not.toHaveClass(/open/);
 
-  await page.getByRole('link', { name: 'Detailed Guide' }).click();
+  // Getting Started hands the SSHFS setup over to the Detailed Guide, which owns it.
+  await page.goto('/getting-started?step=files');
+  await page.getByRole('link', { name: 'Set up SSHFS' }).click();
+  await expect(page).toHaveURL(/\/uploads\?guide=sshfs$/);
+  await expect(page.getByRole('heading', { name: 'Mount your files as a drive' })).toBeVisible();
+
+  await page.getByRole('link', { name: 'All topics' }).click();
   await expect(page).toHaveURL(/\/uploads$/);
   await expect(page.getByRole('heading', { name: 'Detailed Guide' })).toBeVisible();
-  await page.getByRole('link', { name: 'SSHFS Mount' }).click();
-  await expect(page).toHaveURL(/\/uploads\?guide=sshfs#guide-detail$/);
-  await expect(page.getByRole('heading', { name: 'SSHFS Mount' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Upload SSHFS Public Key' })).toHaveCount(0);
-  await page.getByRole('link', { name: 'Set up SSHFS in Getting Started' }).click();
-  await expect(page).toHaveURL(/\/getting-started\?step=uploads#sshfs-setup$/);
-  await expect(page.getByRole('heading', { name: 'SSHFS Mount Setup' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Read the detailed SSHFS guide' })).toHaveAttribute('href', '/uploads?guide=sshfs#guide-detail');
+  await page.getByRole('link', { name: /^Mount your files as a drive/ }).click();
+  await expect(page).toHaveURL(/\/uploads\?guide=sshfs$/);
+  await expect(page.getByRole('heading', { name: 'Upload SSHFS Public Key' })).toBeVisible();
+  await expect(page.getByText('server.home.arpa:2022', { exact: true })).toBeVisible();
   await expect(page.getByText('Your account can also upload through https://files.example.test')).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
-  const setup = page.locator('article').filter({ has: page.getByRole('heading', { name: 'SSHFS Mount Setup' }) });
+  const setup = page.locator('#sshfs-setup');
   // The OS tabs default to the detected operating system (Linux in the test runner).
   await expect(setup.locator('pre.linux code').first()).toBeVisible();
   await expect(setup.getByText('Install sshfs, then mount the server manually')).toBeVisible();
@@ -168,7 +173,7 @@ test('SFTP-only users are not told that browser uploads are available', async ({
   });
   await page.goto('/uploads?guide=sshfs');
 
-  await expect(page.getByRole('heading', { name: 'SSHFS Mount' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Mount your files as a drive' })).toBeVisible();
   await expect(page.getByText('SFTP/SSHFS and browser Files access use separate permissions.')).toBeVisible();
   await expect(page.getByText('Browser Files is not currently available to your account.')).toBeVisible();
   await expect(page.getByText(/Your account can also upload through/)).toHaveCount(0);
@@ -186,9 +191,9 @@ for (const role of [
     });
     await page.goto('/uploads?guide=sshfs');
 
-    await expect(page.getByRole('heading', { name: 'SSHFS Mount' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Mount your files as a drive' })).toBeVisible();
     await expect(page.getByText(role.visiblePath, { exact: false })).toBeVisible();
-    await expect(page.locator('.guide-callout').filter({ hasText: 'Your SFTP root includes' })).toHaveCount(1);
+    await expect(page.locator('.sshfs-access-notes li').filter({ hasText: 'Your SFTP root includes' })).toHaveCount(1);
     await expect(page.getByText('Browser Files is not currently available to your account.')).toBeVisible();
     await expect(page.getByText(/Your account can also upload through/)).toHaveCount(0);
   });
@@ -203,123 +208,117 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await page.getByRole('link', { name: 'Getting Started' }).click();
   await expect(page).toHaveURL(/\/getting-started$/);
   await expect(page).toHaveTitle('Getting Started | Example Home Services');
-  await expect(page.locator('.getting-started-header')).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Install a password manager' })).toBeVisible();
-  const setupNavigation = page.getByRole('navigation', { name: 'Getting started steps' });
-  await expect(setupNavigation.locator('details')).toHaveCount(0);
-  await expect(setupNavigation.locator('.step-number')).toHaveCount(0);
-  await expect(setupNavigation.locator('small')).toHaveCount(0);
+  await expect(page.getByText(/progress is saved only in this browser profile/)).toBeVisible();
   for (const step of [
     'Install a password manager',
-    'Activate your account',
-    'Save recovery details',
-    'Open your services',
+    'Protect your sign-in',
+    'Open your apps',
     'Add your files',
-    'Set up access away from home',
-    'Connect optional apps',
+    'Set up your phone and TV',
+    'Use it away from home',
   ]) {
-    await expect(setupNavigation.getByRole('link', { name: step, exact: true })).toBeVisible();
+    await expect(stepHeader(page, step)).toBeVisible();
   }
-  await expect(page.getByRole('link', { name: 'Download Bitwarden' })).toHaveAttribute('href', 'https://bitwarden.com/download/');
-  await expect(page.getByRole('link', { name: 'Download KeePassXC' })).toHaveAttribute('href', 'https://keepassxc.org/download/');
-  await expect(page.getByText(/Immich|Jellyfin|Inkita|Lissen|Audiobookshelf/)).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Apps available to you' })).toHaveCount(0);
-  await expect(page.getByText('Photo and video library with private login and public share-link support.')).toHaveCount(0);
-  await expect(page.getByLabel('Install a password manager on a trusted device')).toBeVisible();
-  await page.getByLabel('Install a password manager on a trusted device').check();
-  await page.locator('.step-pagination').getByRole('link', { name: 'Activate your account' }).click();
-  await expect(page).toHaveURL(/\/getting-started\?step=account#guide$/);
-  await expect(page.getByRole('heading', { name: 'Activate your account' })).toBeVisible();
-  await expect(page.getByText('Signed in as dsaw', { exact: false })).toBeVisible();
-  await expect(page.getByText(/progress is saved only in this browser profile/)).toBeVisible();
-  await expect(page.getByText(/It works once and expires after one hour/)).toBeVisible();
-  await expect(page.getByText('Use a trusted network path.')).toBeVisible();
+
+  // One step is open at a time; the others keep their content out of the way.
+  await expect(page.locator('#step-passwords-body')).toBeVisible();
+  await expect(page.locator('#step-phone-body')).toBeHidden();
+  await expect(page.getByRole('link', { name: 'Get Bitwarden' })).toHaveAttribute('href', 'https://bitwarden.com/download/');
+  await expect(page.getByRole('link', { name: 'Get KeePassXC' })).toHaveAttribute('href', 'https://keepassxc.org/download/');
+
+  await page.getByRole('button', { name: 'Done, next: Protect your sign-in' }).click();
+  await expect(page.locator('#step-passwords')).toHaveClass(/is-done/);
+  await expect(page.locator('#step-passwords-body')).toBeHidden();
+  await expect(page.locator('#step-account-body')).toBeVisible();
+  await expect(page.getByText('You are signed in as dsaw', { exact: false })).toBeVisible();
+  await expect(page.getByText(/works once and expires after an hour/)).toBeVisible();
   await expect(page.getByText(/Never send an admin your password/)).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open Kanidm' })).toHaveAttribute('target', '_blank');
 
-  await page.getByLabel('Confirm your name and email in Kanidm').check();
-  await expect(page.getByLabel('Confirm your name and email in Kanidm')).toBeChecked();
+  // Progress survives a reload and the page resumes at the first step still to do.
+  await page.reload();
+  await expect(page.locator('#step-passwords')).toHaveClass(/is-done/);
+  await expect(page.locator('#step-account-body')).toBeVisible();
+  await stepHeader(page, 'Install a password manager').click();
+  await page.getByRole('button', { name: 'Mark as not done' }).click();
+  await expect(page.locator('#step-passwords')).not.toHaveClass(/is-done/);
 
-  await setupNavigation.getByRole('link', { name: 'Save recovery details' }).click();
-  await expect(page).toHaveURL(/\/getting-started\?step=recovery#guide$/);
-  await expect(page.getByText('The Passwords app is not available to you.')).toBeVisible();
-  await expect(page.getByLabel('Save your Kanidm username and sign-in address in your password manager')).toBeVisible();
-  await expect(page.getByText('Keep a recovery copy outside this server', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('Kanidm sign-in', { exact: true })).toBeVisible();
-  await expect(page.getByText('Videos password', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('Local Backups password', { exact: true })).toBeVisible();
-
-  await setupNavigation.getByRole('link', { name: 'Open your services' }).click();
-  await expect(page).toHaveURL(/\/getting-started\?step=services#guide$/);
-  await expect(page.getByRole('heading', { name: 'Open your services' })).toBeVisible();
-  await expect(page.getByText(/lists 5 apps assigned to your account/)).toBeVisible();
-  await expect(page.getByLabel('Available services').getByText('Local Backups')).toBeVisible();
-  await expect(page.getByLabel('Available services').getByText('Passwords')).toHaveCount(0);
-  await expect(page.getByLabel('Open Local Backups and sign in with the Kopia password from an admin')).toBeVisible();
-  await expect(page.getByLabel('Available services').getByRole('link', { name: 'Go to Photos' })).toHaveAttribute('target', '_blank');
-  await expect(page.getByText(/Jellyfin password/)).toHaveCount(0);
+  await stepHeader(page, 'Open your apps').click();
+  await expect(page.getByText(/5 apps are assigned to your account/)).toBeVisible();
+  const apps = page.getByLabel('Your apps');
+  await expect(apps.getByText('Local Backups')).toBeVisible();
+  await expect(apps.getByText('Passwords')).toHaveCount(0);
+  await expect(apps.getByText(/Asks for a second password after you sign in/)).toBeVisible();
+  await expect(apps.getByRole('link', { name: 'Open Photos' })).toHaveAttribute('target', '_blank');
+  await expect(apps.getByRole('link', { name: 'Photos guide' })).toHaveAttribute('href', '/uploads?guide=service-photos');
+  await expect(page.getByText('Use a trusted network path.')).toBeVisible();
   // Troubleshooting stays collapsed until something fails.
-  await expect(page.getByText('Local Backups has two sign-in gates.')).toBeHidden();
-  await page.getByText("If an app doesn't open").click();
-  await expect(page.getByText('Local Backups has two sign-in gates.')).toBeVisible();
-  await expect(page.getByText('If access was just changed, refresh your sign-in first.')).toBeVisible();
+  await expect(page.getByText('If access was just changed, sign out and back in.')).toBeHidden();
+  await page.getByText('If an app does not open').click();
+  await expect(page.getByText('If access was just changed, sign out and back in.')).toBeVisible();
 
-  await setupNavigation.getByRole('link', { name: 'Add your files' }).click();
-  await expect(page).toHaveURL(/\/getting-started\?step=uploads#guide$/);
-  await expect(page.getByRole('heading', { name: 'Add your files' })).toBeVisible();
+  // Links written for the old step names still open the matching step.
+  await page.goto('/getting-started?step=uploads');
+  await expect(page.locator('#step-files-body')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open Files' })).toHaveAttribute('target', '_blank');
   await expect(page.getByText(/Browser Files and SFTP\/SSHFS are separate permissions/)).toBeVisible();
+  await expect(page.locator('.folder-map').getByText('/_Audiobooks', { exact: true })).toBeVisible();
 
-  await setupNavigation.getByRole('link', { name: 'Set up access away from home' }).click();
-  await expect(page.getByRole('link', { name: 'Download NetBird' })).toHaveAttribute('href', 'https://docs.netbird.io/get-started/install');
+  await stepHeader(page, 'Use it away from home').click();
+  await expect(page.getByRole('link', { name: 'Get NetBird' })).toHaveAttribute('href', 'https://docs.netbird.io/get-started/install');
 
-  await setupNavigation.getByRole('link', { name: 'Connect optional apps' }).click();
-  await expect(page.getByRole('heading', { name: 'Connect optional apps' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Download Immich' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Download Jellyfin' })).toBeVisible();
-  await expect(page.getByText(/Inkita, Lissen, and Audiobookshelf/)).toBeVisible();
+  await stepHeader(page, 'Set up your phone and TV').click();
+  await expect(page.getByRole('link', { name: 'Get Immich' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Get Jellyfin' })).toBeVisible();
   await expect(page.getByText(/ask an admin for the initial Jellyfin password/)).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Approve a Quick Connect code' }))
+    .toHaveAttribute('href', 'https://videos.example.test/sso/OIDC/QuickConnect/kanidm');
+  await expectNoHorizontalOverflow(page);
 
   await page.getByRole('link', { name: 'For Admins' }).click();
   await expect(page).toHaveURL(/\/admins$/);
-  await expect(page.getByRole('heading', { name: 'Admin tools' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'For admins' })).toBeVisible();
   await expect(page.getByText(/These commands can change the live server/)).toBeVisible();
   await expect(page.getByPlaceholder(/^Search/)).toBeVisible();
 
-  await expect(page.getByText('Validate config & prerequisites')).toBeVisible();
-  await expect(page.getByText('Test deploy')).toBeVisible();
-  await expect(page.getByText('Failed services')).toBeVisible();
-  await expect(page.getByText('Verify user exists')).toBeVisible();
-  await expect(page.getByText('Check space & disks')).toBeVisible();
-  await expect(page.getByText('Reverse proxy health')).toBeVisible();
-
-  for (const title of ['Validate config & prerequisites', 'Test deploy', 'Reverse proxy health']) {
-    await page.locator('details.admin-task').filter({ hasText: title }).locator('summary').click();
+  // Commands are grouped into runbooks and shown without anything to expand.
+  for (const section of ['Deploy a change', 'Add a person or change their access', 'Storage and backups']) {
+    await expect(page.getByRole('heading', { name: section })).toBeVisible();
   }
   await expect(page.getByText('nix run .#validate-config-readiness')).toBeVisible();
   await expect(page.getByText('./scripts/deploy.sh --action test')).toBeVisible();
   await expect(page.getByText('systemctl status caddy.service --no-pager')).toBeVisible();
+  // A command for a client device says so instead of looking like a server command.
+  await expect(page.locator('.ops-cmd').filter({ hasText: 'Allow Jellyfin discovery replies on Windows' }))
+    .toContainText('Windows client (Administrator PowerShell)');
+  await expect(page.locator('.ops-cmd').filter({ hasText: 'Test deploy' })).toContainText('Repository folder');
+
+  await page.getByText('Groups you can grant (10)').click();
+  await expect(page.getByRole('row', { name: /photos-users/ })).toContainText('vars.nix');
+  await expect(page.getByRole('row', { name: /files-sftp-users/ })).toContainText('A deploy keeps it.');
+  await expectNoHorizontalOverflow(page);
 
   await page.getByPlaceholder(/^Search/).fill('snapshot');
-  await expect(page.getByText('Backup schedule')).toBeVisible();
-  await expect(page.getByText('Trigger snapshot now')).toBeVisible();
-  await expect(page.getByText('Test deploy')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Backup schedule' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Trigger snapshot now' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Test deploy' })).toHaveCount(0);
 
   await page.getByPlaceholder(/^Search/).fill('kanidm');
-  await expect(page.getByText('Verify user exists')).toBeVisible();
-  await expect(page.getByText('Create user', { exact: true })).toBeVisible();
-  await expect(page.getByText('Grant app access')).toBeVisible();
-  await expect(page.getByText('Revoke access')).toBeVisible();
-  await expect(page.getByText('Generate sign-in link')).toBeVisible();
+  for (const title of ['Verify user exists', 'Create user', 'Grant app access', 'Revoke access', 'Generate sign-in link']) {
+    await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
+  }
 
   await page.getByPlaceholder(/^Search/).fill('nonexistent');
   await expect(page.getByText('No commands match your search.')).toBeVisible();
 
   await page.getByRole('link', { name: 'Detailed Guide' }).click();
   await expect(page).toHaveURL(/\/uploads$/);
-  await page.getByRole('link', { name: 'Audiobooks', exact: true }).click();
-  await expect(page).toHaveURL(/\/uploads\?guide=folder-audiobooks#guide-detail$/);
+  await page.getByRole('link', { name: /^Where files go/ }).click();
+  await expect(page).toHaveURL(/\/uploads\?guide=folders$/);
   await expect(page.getByRole('heading', { name: 'Audiobooks' })).toBeVisible();
+  // Each folder used to have a page of its own; those links now open the folder map.
+  await page.goto('/uploads?guide=folder-audiobooks');
+  await expect(page.getByRole('heading', { name: 'Where files go' })).toBeVisible();
 
   await page.locator('summary.profile-trigger').click();
   await expect(page.getByRole('heading', { name: 'dsaw' })).toBeVisible();
@@ -360,52 +359,69 @@ test('getting started skips app and upload tasks that are unavailable to the acc
   });
 
   await page.goto('/getting-started?step=services');
-  await expect(page.getByText(/lists 0 apps assigned to your account/)).toBeVisible();
   await expect(page.getByText('No enabled apps are currently assigned to this account')).toBeVisible();
-  await expect(page.getByLabel(/Open .* and complete its first-time sign-in/)).toHaveCount(0);
-  await expect(page.locator('.getting-started-step').getByLabel('Skip (not available for this account)')).toBeVisible();
+  await expect(page.getByLabel('Your apps')).toHaveCount(0);
 
-  await page.getByRole('navigation', { name: 'Getting started steps' }).getByRole('link', { name: 'Connect optional apps' }).click();
-  await expect(page.getByRole('heading', { name: 'Connect optional apps' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Open Detailed Guide' })).toHaveCount(0);
-  await expect(page.locator('.finish-next-steps').getByText('Detailed Guide')).toHaveCount(0);
+  await stepHeader(page, 'Add your files').click();
+  await expect(page.getByText('Neither browser uploads nor SFTP/SSHFS are available to your account.')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open Files' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Set up SSHFS' })).toHaveCount(0);
+
+  await stepHeader(page, 'Set up your phone and TV').click();
+  await expect(page.getByText('None of the apps assigned to your account has a phone or TV app to set up.')).toBeVisible();
 });
 
-test('detailed guide provides a hierarchical index and independently reveals unused apps', async ({ page }) => {
+test('detailed guide opens on an index and independently reveals unused apps', async ({ page }) => {
   await page.setExtraHTTPHeaders({
     'x-forwarded-groups': 'users backup-admin files-personal-users files-sftp-users jellyfin-users photos-users',
   });
   await page.goto('/uploads');
 
   const contents = page.getByRole('navigation', { name: 'Detailed guide contents' });
-  await expect(contents.getByRole('heading', { name: 'Contents' })).toBeVisible();
-  for (const topic of ['Overview', 'Photos', 'Files', 'Videos', 'Offline Media', 'Local Backups', 'SSHFS Mount', 'Documents', 'Audiobooks']) {
-    await expect(contents.getByRole('link', { name: topic, exact: true })).toBeVisible();
+  for (const topic of [
+    'How sign-in works',
+    'Where files go',
+    'Mount your files as a drive',
+    'When something does not work',
+    'Photos',
+    'Files',
+    'Videos',
+    'Offline Media',
+    'Local Backups',
+  ]) {
+    await expect(contents.getByRole('link', { name: new RegExp(`^${topic}`) })).toBeVisible();
   }
-  await expect(contents.getByRole('link', { name: 'Passwords', exact: true })).toHaveCount(0);
-  await expect(contents.getByText('Enabled', { exact: true })).toHaveCount(0);
-  await expect(contents.getByText('Not enabled', { exact: true })).toHaveCount(0);
+  await expect(contents.getByRole('link', { name: /^Passwords/ })).toHaveCount(0);
+  await expect(contents.getByRole('link', { name: /^Back up your password vault/ })).toHaveCount(0);
+  await expectNoHorizontalOverflow(page);
 
-  const layout = page.locator('.detailed-guide-layout');
-  const contentsWidth = await contents.evaluate((element) => element.getBoundingClientRect().width);
-  const layoutWidth = await layout.evaluate((element) => element.getBoundingClientRect().width);
-  if ((page.viewportSize()?.width ?? 1280) <= 760) {
-    expect(contentsWidth / layoutWidth).toBeGreaterThan(0.95);
+  await contents.getByRole('link', { name: /^Photos/ }).click();
+  await expect(page).toHaveURL(/\/uploads\?guide=service-photos$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Photos' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Good to know' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Back up phone photos with Immich' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open Photos' })).toHaveAttribute('target', '_blank');
+
+  // Beside a topic the contents are a sidebar on a wide screen and a single way back on a phone.
+  const sidebarTopics = page.locator('.guide-nav__lists');
+  if ((page.viewportSize()?.width ?? 1280) <= 900) {
+    await expect(sidebarTopics).toBeHidden();
   } else {
-    expect(contentsWidth / layoutWidth).toBeGreaterThan(0.27);
-    expect(contentsWidth / layoutWidth).toBeLessThan(0.39);
+    await expect(sidebarTopics.getByRole('link', { name: 'Photos', exact: true })).toHaveAttribute('aria-current', 'page');
+    await sidebarTopics.getByRole('link', { name: 'How sign-in works', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'How sign-in works' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Apps with their own login' })).toBeVisible();
   }
-
-  await contents.getByRole('link', { name: 'Photos', exact: true }).click();
-  await expect(page).toHaveURL(/\/uploads\?guide=service-photos#guide-detail$/);
-  await expect(page.getByRole('heading', { name: 'Photos' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'What it is for' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'How to use it well' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'If something goes wrong' })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
 
   await page.locator('summary.profile-trigger').click();
   await page.getByLabel('Show unused apps in Detailed Guide').check();
-  await expect(contents.getByRole('link', { name: 'Passwords', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.getByRole('link', { name: 'All topics' }).click();
+  await expect(page).toHaveURL(/\/uploads$/);
+  await expect(page.getByLabel('Include apps that are not enabled')).toBeChecked();
+  await expect(contents.getByRole('link', { name: /^Passwords/ })).toBeVisible();
+  await expect(contents.getByRole('link', { name: /^Back up your password vault/ })).toBeVisible();
 
   await page.getByRole('link', { name: 'Services', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Passwords is not active' })).toHaveCount(0);
@@ -429,11 +445,11 @@ test('unused SSHFS guidance hides connection details from accounts without SSHFS
   // On phones the open profile menu overlaps the contents chips; close it as a tap outside would.
   await page.keyboard.press('Escape');
   await expect(page.getByLabel('Include apps that are not enabled')).toBeChecked();
-  await page.getByRole('navigation', { name: 'Detailed guide contents' }).getByRole('link', { name: 'SSHFS Mount' }).click();
+  await page.getByRole('navigation', { name: 'Detailed guide contents' }).getByRole('link', { name: /^Mount your files as a drive/ }).click();
 
   await expect(page.getByText('Your account does not currently have SSHFS access.')).toBeVisible();
   await expect(page.getByText('server.home.arpa:2022', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('link', { name: 'Set up SSHFS in Getting Started' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Upload SSHFS Public Key' })).toHaveCount(0);
 });
 
 test('shared top navigation works on all top-level pages and unknown service routes', async ({ page }) => {

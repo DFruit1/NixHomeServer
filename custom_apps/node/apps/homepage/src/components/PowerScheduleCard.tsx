@@ -69,16 +69,16 @@ export const PowerScheduleCard = component$(() => {
   });
 
   return (
-    <section class="canary-panel power-schedule" aria-labelledby="power-schedule-heading">
-      <div class="canary-panel__header">
+    <section class="ops-tool power-schedule" aria-labelledby="power-schedule-heading">
+      <div class="ops-tool__head">
         <div>
-          <h2 id="power-schedule-heading">Power schedule</h2>
+          <h3 id="power-schedule-heading">Power schedule</h3>
           <p>Nightly suspend windows and morning wake alarm; changes apply on the next 15-minute check.</p>
         </div>
       </div>
       {schedule.value?.warning && <div class="notice">{schedule.value.warning}</div>}
       {error.value && <p class="notice">{error.value}</p>}
-      {loaded && (
+      {loaded.value && (
         <form class="power-schedule__form" preventdefault:submit onSubmit$={save}>
           <label class="power-schedule__field power-schedule__field--check">
             <input
@@ -123,14 +123,14 @@ export const PowerScheduleCard = component$(() => {
               {hours.map((hour) => <option key={hour} value={`${hour}`}>{hourLabel(hour)}</option>)}
             </select>
           </label>
-          <div class="power-schedule__actions">
-            <button type="submit" disabled={saving.value}>{saving.value ? 'Saving…' : 'Save schedule'}</button>
-            <button type="button" disabled={saving.value} onClick$={useDefaults}>Use Nix defaults</button>
+          <div class="doc-actions power-schedule__buttons">
+            <button type="submit" class="doc-btn doc-btn--primary" disabled={saving.value}>{saving.value ? 'Saving…' : 'Save schedule'}</button>
+            <button type="button" class="doc-btn" disabled={saving.value} onClick$={useDefaults}>Use Nix defaults</button>
             {saved.value && <span class="power-schedule__saved">{saved.value}</span>}
           </div>
         </form>
       )}
-      <p class="power-schedule__notes">
+      <p class="ops-tool__note">
         Sleep checks between the forced cutoff and evening start are skipped. “Skip sleep for today” expires at the
         next calendar date, and a wake during an overnight window holds that window until the next evening.
       </p>

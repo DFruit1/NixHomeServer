@@ -45,16 +45,16 @@ export const BuildModeCard = component$(() => {
   });
 
   return (
-    <section class="canary-panel build-mode" aria-labelledby="build-mode-heading">
-      <div class="canary-panel__header">
+    <section class="ops-tool build-mode" aria-labelledby="build-mode-heading">
+      <div class="ops-tool__head">
         <div>
-          <h2 id="build-mode-heading">Nix build mode</h2>
+          <h3 id="build-mode-heading">Nix build mode</h3>
           <p>Default build allocation for guarded deploys. A per-deploy --build-mode flag overrides it.</p>
         </div>
       </div>
       {status.value?.warning && <div class="notice">{status.value.warning}</div>}
       {error.value && <p class="notice">{error.value}</p>}
-      {loaded && (
+      {loaded.value && (
         <form class="build-mode__form" preventdefault:submit onSubmit$={save}>
           <div class="build-mode__options" role="radiogroup" aria-label="Nix build mode">
             {status.value?.modes.map((mode) => (
@@ -75,13 +75,13 @@ export const BuildModeCard = component$(() => {
               </label>
             ))}
           </div>
-          <div class="power-schedule__actions">
-            <button type="submit" disabled={saving.value}>{saving.value ? 'Saving…' : 'Save build mode'}</button>
+          <div class="doc-actions">
+            <button type="submit" class="doc-btn doc-btn--primary" disabled={saving.value}>{saving.value ? 'Saving…' : 'Save build mode'}</button>
             {saved.value && <span class="power-schedule__saved">{saved.value}</span>}
           </div>
         </form>
       )}
-      <p class="power-schedule__notes">
+      <p class="ops-tool__note">
         Stored on the server and read by the next guarded deploy. Dry-runs ignore this and report the vars.nix
         allocation.
       </p>

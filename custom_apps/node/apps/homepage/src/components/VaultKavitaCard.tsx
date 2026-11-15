@@ -1,7 +1,7 @@
 import { $, component$, useSignal, useVisibleTask$ } from '@builder.io/qwik';
 import type { KavitaAuthKey, VaultFeature, VaultKavitaKeys } from '../shared/types.js';
 import { copyVaultSecret, vaultRequest } from '../shared/vault-client.js';
-import { ExplainMore } from './ExplainMore.js';
+import { CopyValue } from './CopyValue.js';
 
 const keyLine = (key: KavitaAuthKey): string =>
   [key.createdAtUtc ? `Created ${key.createdAtUtc.slice(0, 10)}` : '', key.lastAccessedAtUtc ? `last used ${key.lastAccessedAtUtc.slice(0, 10)}` : '']
@@ -76,12 +76,7 @@ export const VaultKavitaCard = component$(({ feature, username }: { feature: Vau
       {loadError.value && <p class="key-status error">{loadError.value}</p>}
       {!loading.value && !loadError.value && (
         <>
-          {opdsUrl.value && (
-            <div class="vault-opds">
-              <h3>OPDS catalogue address</h3>
-              <code>{opdsUrl.value}</code>
-            </div>
-          )}
+          {opdsUrl.value && <CopyValue label="OPDS catalogue address" value={opdsUrl.value} />}
           <ul class="vault-kavita-keys">
             {keys.value.map((key) => (
               <li key={key.id} class="vault-kavita-key">
@@ -93,32 +88,32 @@ export const VaultKavitaCard = component$(({ feature, username }: { feature: Vau
                   {revealedId.value === key.id ? key.key : '••••••••'}
                 </code>
                 <div class="vault-secret__actions">
-                  <button type="button" onClick$={() => {
+                  <button type="button" class="doc-btn doc-btn--small" onClick$={() => {
                     revealedId.value = revealedId.value === key.id ? 0 : key.id;
                   }}>
                     {revealedId.value === key.id ? 'Hide' : 'Reveal'}
                   </button>
-                  <button type="button" onClick$={() => copyKey(key)}>
+                  <button type="button" class="doc-btn doc-btn--small" onClick$={() => copyKey(key)}>
                     {copiedId.value === key.id ? 'Copied' : 'Copy'}
                   </button>
                   {confirmRotateId.value === key.id ? (
                     <>
                       <button
                         type="button"
-                        class="vault-danger-button"
+                        class="doc-btn doc-btn--small doc-btn--danger"
                         disabled={busy.value}
                         onClick$={() => mutate({ action: 'rotate', authKeyId: key.id }, `Key ${key.name} regenerated.`)}
                       >
                         Confirm rotate
                       </button>
-                      <button type="button" onClick$={() => {
+                      <button type="button" class="doc-btn doc-btn--small doc-btn--quiet" onClick$={() => {
                         confirmRotateId.value = 0;
                       }}>
                         Cancel
                       </button>
                     </>
                   ) : (
-                    <button type="button" disabled={busy.value} onClick$={() => {
+                    <button type="button" class="doc-btn doc-btn--small doc-btn--quiet" disabled={busy.value} onClick$={() => {
                       confirmRotateId.value = key.id;
                       confirmDeleteId.value = 0;
                     }}>
@@ -129,20 +124,20 @@ export const VaultKavitaCard = component$(({ feature, username }: { feature: Vau
                     <>
                       <button
                         type="button"
-                        class="vault-danger-button"
+                        class="doc-btn doc-btn--small doc-btn--danger"
                         disabled={busy.value}
                         onClick$={() => mutate({ action: 'delete', authKeyId: key.id }, `Key ${key.name} deleted.`)}
                       >
                         Confirm delete
                       </button>
-                      <button type="button" onClick$={() => {
+                      <button type="button" class="doc-btn doc-btn--small doc-btn--quiet" onClick$={() => {
                         confirmDeleteId.value = 0;
                       }}>
                         Cancel
                       </button>
                     </>
                   ) : (
-                    <button type="button" disabled={busy.value} onClick$={() => {
+                    <button type="button" class="doc-btn doc-btn--small doc-btn--quiet" disabled={busy.value} onClick$={() => {
                       confirmDeleteId.value = key.id;
                       confirmRotateId.value = 0;
                     }}>
@@ -155,7 +150,7 @@ export const VaultKavitaCard = component$(({ feature, username }: { feature: Vau
             {keys.value.length === 0 && <li class="hint">No API keys exist for your Kavita account yet.</li>}
           </ul>
           <div class="vault-key-form">
-            <label for="vault-kavita-name">Register a new key</label>
+            <label for="vault-kavita-name">Add a key for another device</label>
             <div class="vault-inline-form">
               <input
                 id="vault-kavita-name"
@@ -169,6 +164,7 @@ export const VaultKavitaCard = component$(({ feature, username }: { feature: Vau
               />
               <button
                 type="button"
+                class="doc-btn"
                 disabled={busy.value || !newName.value.trim()}
                 onClick$={() => mutate({ action: 'create', name: newName.value.trim() }, `Key ${newName.value.trim()} created.`)}
               >
@@ -180,21 +176,14 @@ export const VaultKavitaCard = component$(({ feature, username }: { feature: Vau
           {actionError.value && <p class="key-status error">{actionError.value}</p>}
         </>
       )}
-      <ExplainMore
-        title="Kavita keys"
-        plain={
-          <p>
-            Kavita uses these keys so reading apps can sign in as {username} without your normal password. Give each
-            device its own key so you can retire one without affecting the others.
-          </p>
-        }
-        technical={
-          <p>
-            These are per-user Kavita API keys. OPDS reading apps also need the catalogue address above. Regenerating a
-            key invalidates its previous value immediately, and deleting a key stops it working at once.
-          </p>
-        }
-      />
+      <details class="doc-more">
+        <summary>How it works</summary>
+        <p>
+          Reading apps sign in to Kavita as {username} with one of these keys instead of your password. Give each
+          device its own key so you can retire one without touching the others. Regenerating or deleting a key stops
+          the old value working straight away. OPDS reading apps also need the catalogue address.
+        </p>
+      </details>
     </article>
   );
 });

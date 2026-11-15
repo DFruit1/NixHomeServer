@@ -53,8 +53,11 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
     | (.detail | contains("same IPv4 broadcast network"))
     and (.detail | contains("client isolation"))
     and (.detail | contains("UDP source port 7359")))
+  and ([.adminGuide[] | (.section | type == "string" and length > 0) and (.runsOn | type == "string" and length > 0)] | all)
+  and (.adminGuide[] | select(.title == "Test deploy") | .section == "deploy" and .runsOn == "Repository folder")
   and (.adminGuide[] | select(.title == "Allow Jellyfin discovery replies with nftables")
-    | (.command | contains("udp sport 7359"))
+    | (.runsOn == "Linux client")
+    and (.command | contains("udp sport 7359"))
     and (.command | test("ip saddr [0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+")))
   and (.adminGuide[] | select(.title == "Allow Jellyfin discovery replies with UFW")
     | (.command | contains("proto udp"))
@@ -62,7 +65,8 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
   and (.adminGuide[] | select(.title == "Allow Jellyfin discovery replies with firewalld")
     | (.command | contains("source-port port=\"7359\"")))
   and (.adminGuide[] | select(.title == "Allow Jellyfin discovery replies on Windows")
-    | (.command | contains("New-NetFirewallRule"))
+    | (.runsOn == "Windows client (Administrator PowerShell)")
+    and (.command | contains("New-NetFirewallRule"))
     and (.command | contains("-RemotePort 7359"))
     and (.command | contains("-Profile Private")))
   and (.adminGuide[] | select(.title == "Allow Jellyfin discovery on Apple devices")
@@ -189,19 +193,22 @@ require_fixed modules/Core_Modules/homepage/services.nix '++ lib.optionals paper
   "Homepage must omit Paperless reconciliation commands when Paperless is disabled."
 require_fixed modules/Core_Modules/homepage/services.nix '++ lib.optionals jellyfinEnabled [' \
   "Homepage must omit Jellyfin synchronization commands when Jellyfin is disabled."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx \
-  "'Allow Jellyfin discovery replies with nftables': { category: 'network', executionContext: 'Linux client' }" \
+require_fixed modules/Core_Modules/homepage/services.nix \
+  'adminSection "jellyfin-discovery" "Linux client" [' \
   "Homepage must label nftables discovery changes as client-side rather than server-side commands."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx \
-  "'Allow Jellyfin discovery replies on Windows': { category: 'network', executionContext: 'Windows client (Administrator PowerShell)' }" \
+require_fixed modules/Core_Modules/homepage/services.nix \
+  'runsOn = "Windows client (Administrator PowerShell)";' \
   "Homepage must label the Windows discovery rule with its required client and shell context."
+require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx \
+  "<span>{runsOn ?? 'Server terminal'}</span>" \
+  "The admin page must show where each command runs beside the command."
 require_fixed documentation/operations.md 'UDP source port `7359` to the client' \
   "Jellyfin discovery guidance must describe the reply direction that stateful client firewalls can misclassify."
 require_fixed documentation/operations.md 'New-NetFirewallRule' \
   "Jellyfin discovery guidance must include a narrow Windows Firewall example."
 require_fixed documentation/operations.md 'System Settings → Privacy & Security → Local Network' \
   "Jellyfin discovery guidance must cover Apple local-network privacy permission."
-require_fixed custom_apps/node/apps/homepage/src/components/SftpSetup.tsx 'SFTP/SSHFS and browser Files access use separate permissions.' \
+require_fixed custom_apps/node/apps/homepage/src/components/guide/SshfsTopic.tsx 'SFTP/SSHFS and browser Files access use separate permissions.' \
   "SFTP guidance must not promise browser uploads to accounts without the separate Files permission."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Never send an admin your password' \
   "New-user guidance must clearly identify credentials that support requests must never include."
@@ -215,17 +222,19 @@ require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.ts
   "New-user guidance must link directly to the KeePassXC download page."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'https://docs.netbird.io/get-started/install' \
   "New-user guidance must link directly to NetBird installation instructions."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Immich, Jellyfin, Inkita, Lissen, and Audiobookshelf' \
-  "New-user guidance must recommend the supported Android clients in one place."
+for supported_client in 'Get Immich' 'Get Jellyfin' 'Get Inkita' 'Get Lissen' 'Get Audiobookshelf'; do
+  require_fixed custom_apps/node/apps/homepage/src/shared/guide-data.ts "label: '${supported_client}'" \
+    "New-user guidance must recommend the supported Android clients in one place."
+done
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'progress is saved only in this browser profile' \
   "New-user guidance must not imply that checklist progress is stored server-side."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Browser Files and SFTP/SSHFS are separate permissions.' \
   "New-user guidance must explain the separate browser and direct-file-transfer permissions."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Local Backups has two sign-in gates.' \
+require_fixed custom_apps/node/apps/homepage/src/shared/guide-data.ts 'Kanidm checks your access, then Kopia asks for its own password' \
   "New-user guidance must distinguish Kanidm gateway access from the native Kopia login."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Some app accounts are created on first sign-in.' \
   "New-user guidance must explain first-login provisioning for apps that keep local accounts."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Do not use a public photo-share link or the public share hostname' \
+require_fixed custom_apps/node/apps/homepage/src/shared/guide-data.ts 'Do not use a public photo-share link or the public share hostname' \
   "Mobile Photos guidance must distinguish the private app URL from public share links."
 require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'Set up File Sync' \
   "Offline Media guidance must explain File Sync setup."
