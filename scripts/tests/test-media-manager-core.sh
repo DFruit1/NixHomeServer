@@ -125,6 +125,13 @@ jq -e '
     | unique))
   and ((.app.providerSystemClients != [])
     == ((.providerEnvironment.MEDIA_MANAGER_PROVIDER_SYSTEM_SOCKET // "") != ""))
+  # Regression (2026-11-15, second attempt at this grant): systemd resets a
+  # RuntimeDirectory group and mode when the main process starts, which
+  # locked mkvmaker out of the system socket.
+  and (.providerService.RuntimeDirectory == "media-manager-provider")
+  and (if (.providerEnvironment.MEDIA_MANAGER_PROVIDER_SYSTEM_SOCKET // "") != ""
+    then ((.providerService.ExecStartPre // []) | any(test("install -d -m 2750 -o media-manager-provider -g media-manager-provider-system /run/media-manager-provider-system$")))
+    else true end)
   and (.providerService.ReadWritePaths == (["/var/lib/media-manager-provider"] +
     (if (.providerEnvironment.MEDIA_MANAGER_PROVIDER_SYSTEM_SOCKET // "") != ""
     then ["/run/media-manager-provider-system"] else [] end)))
