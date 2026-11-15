@@ -1,0 +1,96 @@
+--- a/examples/parakeet-cli/parakeet-cli.cpp
++++ b/examples/parakeet-cli/parakeet-cli.cpp
+@@ -16,6 +16,7 @@
+     int32_t gpu_device = 0;
+ 
+     bool print_segments = false;
++    bool print_progress = false;
+     bool output_txt     = false;
+     bool no_prints      = false;
+ 
+@@ -60,6 +61,7 @@
+         else if (arg == "-ng"   || arg == "--no-gpu")          { params.use_gpu           = false; }
+         else if (arg == "-dev"  || arg == "--device")          { params.gpu_device        = std::stoi(ARGV_NEXT); }
+         else if (arg == "-ps"   || arg == "--print-segments")  { params.print_segments    = true; }
++        else if (arg == "-pp"   || arg == "--print-progress")  { params.print_progress    = true; }
+         else if (arg == "-otxt" || arg == "--output-txt")      { params.output_txt        = true; }
+         else if (arg == "-of"   || arg == "--output-file")     { params.output_file       = ARGV_NEXT; }
+         else if (arg == "-np"   || arg == "--no-prints")       { params.no_prints         = true; }
+@@ -86,22 +88,42 @@
+     fprintf(stderr, "  -ng,    --no-gpu            [%-7s] disable GPU\n",                                 params.use_gpu ? "false" : "true");
+     fprintf(stderr, "  -dev N, --device N          [%-7d] GPU device to use\n",                           params.gpu_device);
+     fprintf(stderr, "  -ps,    --print-segments    [%-7s] print segment information\n",                   params.print_segments ? "true" : "false");
++    fprintf(stderr, "  -pp,    --print-progress    [%-7s] print progress\n",                             params.print_progress ? "true" : "false");
+     fprintf(stderr, "  -otxt,  --output-txt        [%-7s] output result in a text file\n",                params.output_txt ? "true" : "false");
+     fprintf(stderr, "  -of,    --output-file FILE  [%-7s] output file path (without file extension)\n",   "");
+     fprintf(stderr, "  -np,    --no-prints         [%-7s] do not print anything other than the results\n", params.no_prints ? "true" : "false");
+     fprintf(stderr, "\n");
+ }
+ 
++struct parakeet_progress {
++    bool * is_first;
++    bool print_progress;
++    int64_t total_ms;
++    int progress_prev;
++};
++
+ void token_callback(parakeet_context * ctx, parakeet_state * state, const parakeet_token_data * token_data, void * user_data) {
+-    bool * is_first = (bool *) user_data;
++    parakeet_progress * progress = (parakeet_progress *) user_data;
+ 
+     const char * token_str = parakeet_token_to_str(ctx, token_data->id);
+     char text_buf[256];
+-    parakeet_token_to_text(token_str, *is_first, text_buf, sizeof(text_buf));
++    parakeet_token_to_text(token_str, *progress->is_first, text_buf, sizeof(text_buf));
+     printf("%s", text_buf);
+     fflush(stdout);
+ 
+-    *is_first = false;
++    *progress->is_first = false;
++
++    if (progress->print_progress && progress->total_ms > 0) {
++        // t1 counts decoded 10 ms frames, so it is the real audio position.
++        int value = (int) (token_data->t1 * 1000 / progress->total_ms);
++        if (value > 100) {
++            value = 100;
++        }
++        if (value >= progress->progress_prev + 1) {
++            progress->progress_prev = value;
++            fprintf(stderr, "parakeet_print_progress_callback: progress = %3d%%\n", value);
++        }
++    }
+ }
+ 
+ static void cb_log_disable(enum ggml_log_level , const char * , void * ) { }
+@@ -165,10 +187,19 @@
+         }
+ 
+         bool is_first = true;
++        struct parakeet_progress progress = {
++            &is_first,
++            params.print_progress,
++            (int64_t) pcmf32.size() * 1000 / PARAKEET_SAMPLE_RATE,
++            0,
++        };
+         struct parakeet_full_params full_params = parakeet_full_default_params(PARAKEET_SAMPLING_GREEDY);
+         full_params.n_threads           = params.n_threads;
+         full_params.new_token_callback  = token_callback;
+-        full_params.new_token_callback_user_data = &is_first;
++        full_params.new_token_callback_user_data = &progress;
++        if (params.print_progress) {
++            fprintf(stderr, "parakeet_print_progress_callback: progress =   0%%\n");
++        }
+ 
+         const int mel_frames = (int)(pcmf32.size() / PARAKEET_HOP_LENGTH);
+         int ret = parakeet_full(pctx, full_params, pcmf32.data(), pcmf32.size());
+@@ -178,6 +209,10 @@
+             continue;
+         }
+ 
++        if (params.print_progress) {
++            fprintf(stderr, "parakeet_print_progress_callback: progress = 100%%\n");
++        }
++
+         printf("\n");
+ 
+         if (params.output_txt) {

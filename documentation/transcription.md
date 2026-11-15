@@ -64,7 +64,9 @@ speaker count, honoured settings and ignored settings. A new source/request
 fingerprint gets a distinct output directory, preserving earlier exports.
 
 Media Manager lists the 200 most recent jobs belonging to the signed-in user.
-Download artifacts from Processed on Conversions. In a video's subtitle tools,
+Completed and Failed keep the last three days visible and fold older work behind
+one disclosure; each entry can be dismissed in the browser without deleting the
+transcript or its artifacts. Download artifacts from Completed on Conversions. In a video's subtitle tools,
 choose a completed SRT/VTT transcript and **Preview transcript installation**,
 then use the existing confirmation flow. The broker, audit trail and optimistic
 concurrency checks are the same as for uploaded subtitles. Transcription itself
@@ -82,7 +84,11 @@ distinct. Request-only declarations expire after an hour.
 `transcribe-worker.service` is a single-instance, flock-protected oneshot. A
 path watcher notices the private server inbox; a one-minute timer handles settling
 and personal inboxes. Jobs report extracting, transcribing, diarising and writing
-stages. The UI uses indeterminate progress, not fabricated percentages.
+stages, with a percentage only where the tool reports its real position:
+FFmpeg's extraction progress, whisper.cpp's `-pp` line, and the same line from
+the pinned parakeet-cli, which `modules/transcribe/parakeet-progress.patch`
+teaches to print its decoded position. Speaker detection reports no position, so
+the UI shows that stage without inventing a number.
 
 Only one ASR process runs at a time. It exits and releases its model after each
 job. Backend affinity is retained while choosing jobs, but an older job from

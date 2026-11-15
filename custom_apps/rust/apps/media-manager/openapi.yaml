@@ -4023,6 +4023,11 @@ components:
         queuedAt: {type: integer}
         updatedAt: {type: integer}
         durationMs: {type: integer}
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: The engine's own decoded position in the current stage, when it reports one.
         outputDir: {type: string}
         error: {type: string}
         ignored:

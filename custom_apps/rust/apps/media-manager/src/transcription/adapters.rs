@@ -6,7 +6,13 @@ use std::{
     process::Stdio,
     time::Duration,
 };
-use tokio::{io::AsyncReadExt, process::Command};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    process::Command,
+};
+
+/// The engine's own position in the audio it is decoding, as a percentage.
+pub type Progress<'a> = &'a mut dyn FnMut(u8);
 
 pub struct Runtime {
     pub ffmpeg: PathBuf,
@@ -42,7 +48,12 @@ impl Runtime {
                 .map_err(|_| "invalid timeout")?,
         })
     }
-    pub async fn extract(&self, source: File, directory: &Path) -> Result<(PathBuf, u64), String> {
+    pub async fn extract(
+        &self,
+        source: File,
+        directory: &Path,
+        progress: Progress<'_>,
+    ) -> Result<(PathBuf, u64), String> {
         // The descriptor is opened beneath the owner root before spawning any
         // decoder. fd: permits seeking in MP4 containers. Allowing only the fd
         // protocol prevents playlists from opening other local files as root.
@@ -62,7 +73,7 @@ impl Runtime {
                 "fd:",
             ])
             .stdin(Stdio::from(probe_source));
-        let (stdout, _) = run(&mut probe, 60)
+        let (stdout, _) = run(&mut probe, 60, None)
             .await
             .map_err(|_| "audio_probe_failed")?;
         let data: Value = serde_json::from_slice(&stdout).map_err(|_| "audio_probe_invalid")?;
@@ -72,6 +83,14 @@ impl Runtime {
         {
             return Err("no_audio_stream".into());
         }
+        // The source container's declared duration is the only scale ffmpeg's
+        // extraction progress can be measured against. Without it the worker
+        // reports the stage but no percentage.
+        let source_ms = data["format"]["duration"]
+            .as_str()
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .map(|v| (v * 1000.0) as u64);
         // dup() shares the seek offset. Rewind before the extraction child.
         use std::io::{Seek, SeekFrom};
         let mut source = source;
@@ -100,11 +119,21 @@ impl Runtime {
                 "pcm_s16le",
                 "-f",
                 "wav",
+                "-progress",
+                "pipe:2",
+                "-nostats",
                 "-y",
             ])
             .arg(&wav)
             .stdin(Stdio::from(source));
-        run(&mut command, self.timeout)
+        let mut report = |line: &str| {
+            if let Some(duration) = source_ms
+                && let Some(percent) = ffmpeg_progress(line, duration)
+            {
+                progress(percent);
+            }
+        };
+        run(&mut command, self.timeout, Some(&mut report))
             .await
             .map_err(|_| "audio_extraction_failed")?;
         // WAV includes a small header. Probe the completed private file for the
@@ -120,7 +149,7 @@ impl Runtime {
                 "json",
             ])
             .arg(&wav);
-        let (stdout, _) = run(&mut probe, 60).await?;
+        let (stdout, _) = run(&mut probe, 60, None).await?;
         let data: Value = serde_json::from_slice(&stdout).map_err(|_| "audio_probe_invalid")?;
         let duration = data["format"]["duration"]
             .as_str()
@@ -135,6 +164,7 @@ impl Runtime {
         request: &Request,
         wav: &Path,
         directory: &Path,
+        progress: Progress<'_>,
     ) -> Result<Transcript, String> {
         let mut command = Command::new(match backend {
             Backend::Parakeet => &self.parakeet,
@@ -147,11 +177,19 @@ impl Runtime {
                 Backend::Whisper => "whisper.bin",
             }))
             .args(["-t", "4", "-f"])
-            .arg(wav);
+            .arg(wav)
+            // Both CLIs print their decoded position as a percentage; the
+            // patched parakeet-cli mirrors whisper.cpp's line.
+            .arg("-pp");
+        let mut report = |line: &str| {
+            if let Some(percent) = engine_progress(line) {
+                progress(percent);
+            }
+        };
         match backend {
             Backend::Parakeet => {
                 command.arg("-ps");
-                let (_, stderr) = run(&mut command, self.timeout).await?;
+                let (_, stderr) = run(&mut command, self.timeout, Some(&mut report)).await?;
                 let text = String::from_utf8_lossy(&stderr);
                 let words = parse_parakeet(&text)?;
                 let probabilities: Vec<f64> = text
@@ -193,7 +231,7 @@ impl Runtime {
                 if !prompt.is_empty() {
                     command.arg("--prompt").arg(prompt);
                 }
-                run(&mut command, self.timeout).await?;
+                run(&mut command, self.timeout, Some(&mut report)).await?;
                 let json_file = tokio::fs::File::open(directory.join("whisper.json"))
                     .await
                     .map_err(|_| "whisper_output_missing")?;
@@ -228,7 +266,7 @@ impl Runtime {
                 "--embedding.num-threads=2",
             ])
             .arg(wav);
-        let (stdout, _) = run(&mut command, self.timeout).await?;
+        let (stdout, _) = run(&mut command, self.timeout, None).await?;
         let mut turns = Vec::new();
         for line in String::from_utf8_lossy(&stdout).lines() {
             let parts: Vec<_> = line.split_whitespace().collect();
@@ -257,7 +295,11 @@ impl Runtime {
     }
 }
 
-async fn run(command: &mut Command, seconds: u64) -> Result<(Vec<u8>, Vec<u8>), String> {
+async fn run(
+    command: &mut Command,
+    seconds: u64,
+    on_stderr_line: Option<&mut dyn FnMut(&str)>,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
     command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -269,23 +311,9 @@ async fn run(command: &mut Command, seconds: u64) -> Result<(Vec<u8>, Vec<u8>), 
         let read = async {
             let mut out = Vec::new();
             let mut err = Vec::new();
-            async fn read_limited<R: tokio::io::AsyncRead + Unpin>(
-                reader: &mut R,
-                bytes: &mut Vec<u8>,
-            ) -> Result<(), &'static str> {
-                reader
-                    .take(32 * 1024 * 1024 + 1)
-                    .read_to_end(bytes)
-                    .await
-                    .map_err(|_| "backend_read_failed")?;
-                if bytes.len() > 32 * 1024 * 1024 {
-                    return Err("backend_output_limit");
-                }
-                Ok(())
-            }
             tokio::try_join!(
                 read_limited(&mut stdout, &mut out),
-                read_limited(&mut stderr, &mut err)
+                read_stderr(&mut stderr, &mut err, on_stderr_line)
             )?;
             if out.len() > 32 * 1024 * 1024 || err.len() > 32 * 1024 * 1024 {
                 return Err("backend_output_limit");
@@ -309,6 +337,153 @@ async fn run(command: &mut Command, seconds: u64) -> Result<(Vec<u8>, Vec<u8>), 
             Err("backend_failed_or_timed_out".into())
         }
     }
+}
+
+async fn read_limited<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    bytes: &mut Vec<u8>,
+) -> Result<(), &'static str> {
+    reader
+        .take(32 * 1024 * 1024 + 1)
+        .read_to_end(bytes)
+        .await
+        .map_err(|_| "backend_read_failed")?;
+    if bytes.len() > 32 * 1024 * 1024 {
+        return Err("backend_output_limit");
+    }
+    Ok(())
+}
+
+/// Read stderr to the end for the caller's parser while handing each complete
+/// line to `on_line` as it arrives, so progress is reported during the run
+/// rather than only after the child exits.
+async fn read_stderr<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    bytes: &mut Vec<u8>,
+    mut on_line: Option<&mut dyn FnMut(&str)>,
+) -> Result<(), &'static str> {
+    let mut chunk = [0u8; 8192];
+    let mut pending: Vec<u8> = Vec::new();
+    loop {
+        let read = reader
+            .read(&mut chunk)
+            .await
+            .map_err(|_| "backend_read_failed")?;
+        if read == 0 {
+            break;
+        }
+        if bytes.len() + read > 32 * 1024 * 1024 {
+            return Err("backend_output_limit");
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        let Some(handler) = on_line.as_deref_mut() else {
+            continue;
+        };
+        pending.extend_from_slice(&chunk[..read]);
+        while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = pending.drain(..=end).collect();
+            let line = String::from_utf8_lossy(&line);
+            let line = line.trim_end_matches(['\r', '\n']);
+            if !line.is_empty() {
+                handler(line);
+            }
+        }
+        // A child that never ends a line must not grow this buffer without
+        // bound; the complete stderr is still kept above for the final parse.
+        if pending.len() > 64 * 1024 {
+            pending.clear();
+        }
+    }
+    if let Some(handler) = on_line
+        && !pending.is_empty()
+    {
+        let line = String::from_utf8_lossy(&pending);
+        let line = line.trim_end_matches(['\r', '\n']);
+        if !line.is_empty() {
+            handler(line);
+        }
+    }
+    Ok(())
+}
+
+/// whisper.cpp and the patched parakeet-cli print `... print_progress_callback:
+/// progress =  45%` while decoding, which is the position the engine reached.
+fn engine_progress(line: &str) -> Option<u8> {
+    let (_, rest) = line.split_once("print_progress_callback: progress =")?;
+    let digits: String = rest
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse::<u8>().ok().filter(|value| *value <= 100)
+}
+
+/// ffmpeg's `-progress` stream reports how much output it has written. Its
+/// `out_time_ms` key carries microseconds, the same as `out_time_us`.
+fn ffmpeg_progress(line: &str, duration_ms: u64) -> Option<u8> {
+    let value = line
+        .strip_prefix("out_time_us=")
+        .or_else(|| line.strip_prefix("out_time_ms="))?;
+    let micros = value.trim().parse::<u64>().ok()?;
+    if duration_ms == 0 {
+        return None;
+    }
+    Some(
+        (micros / 1000)
+            .saturating_mul(100)
+            .checked_div(duration_ms)
+            .unwrap_or(0)
+            .min(100) as u8,
+    )
+}
+
+pub fn parse_whisper(bytes: &[u8]) -> Result<Transcript, String> {
+    let data: Value = serde_json::from_slice(bytes).map_err(|_| "whisper_output_invalid")?;
+    let segments = data["transcription"]
+        .as_array()
+        .ok_or("whisper_output_invalid")?;
+    let mut words = Vec::new();
+    let mut all_confidences = Vec::new();
+    for segment in segments {
+        let start = segment["offsets"]["from"]
+            .as_u64()
+            .ok_or("whisper_output_invalid")?;
+        let end = segment["offsets"]["to"]
+            .as_u64()
+            .ok_or("whisper_output_invalid")?;
+        let text = segment["text"]
+            .as_str()
+            .ok_or("whisper_output_invalid")?
+            .trim();
+        if text.is_empty() {
+            continue;
+        }
+        if end < start {
+            return Err("whisper_output_invalid".into());
+        }
+        let confidences: Vec<f64> = segment["tokens"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|v| !v["text"].as_str().unwrap_or("").starts_with("[_"))
+            .filter_map(|v| v["p"].as_f64())
+            .filter(|p| p.is_finite() && (0.0..=1.0).contains(p))
+            .collect();
+        all_confidences.extend_from_slice(&confidences);
+        words.push(Word {
+            start_ms: start,
+            end_ms: end.max(start + 1),
+            text: text.to_string(),
+            confidence: (!confidences.is_empty())
+                .then(|| confidences.iter().sum::<f64>() / confidences.len() as f64),
+        });
+    }
+    Ok(Transcript {
+        words,
+        language: data["result"]["language"].as_str().map(str::to_string),
+        mean_token_confidence: (!all_confidences.is_empty())
+            .then(|| all_confidences.iter().sum::<f64>() / all_confidences.len() as f64),
+    })
 }
 
 pub fn parse_parakeet(text: &str) -> Result<Vec<Word>, String> {
@@ -371,51 +546,39 @@ pub fn parse_parakeet(text: &str) -> Result<Vec<Word>, String> {
     }
     Ok(words)
 }
-pub fn parse_whisper(bytes: &[u8]) -> Result<Transcript, String> {
-    let data: Value = serde_json::from_slice(bytes).map_err(|_| "whisper_output_invalid")?;
-    let segments = data["transcription"]
-        .as_array()
-        .ok_or("whisper_output_invalid")?;
-    let mut words = Vec::new();
-    let mut all_confidences = Vec::new();
-    for segment in segments {
-        let start = segment["offsets"]["from"]
-            .as_u64()
-            .ok_or("whisper_output_invalid")?;
-        let end = segment["offsets"]["to"]
-            .as_u64()
-            .ok_or("whisper_output_invalid")?;
-        let text = segment["text"]
-            .as_str()
-            .ok_or("whisper_output_invalid")?
-            .trim();
-        if text.is_empty() {
-            continue;
-        }
-        if end < start {
-            return Err("whisper_output_invalid".into());
-        }
-        let confidences: Vec<f64> = segment["tokens"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|v| !v["text"].as_str().unwrap_or("").starts_with("[_"))
-            .filter_map(|v| v["p"].as_f64())
-            .filter(|p| p.is_finite() && (0.0..=1.0).contains(p))
-            .collect();
-        all_confidences.extend_from_slice(&confidences);
-        words.push(Word {
-            start_ms: start,
-            end_ms: end.max(start + 1),
-            text: text.to_string(),
-            confidence: (!confidences.is_empty())
-                .then(|| confidences.iter().sum::<f64>() / confidences.len() as f64),
-        });
+
+#[cfg(test)]
+mod progress_tests {
+    use super::{engine_progress, ffmpeg_progress};
+
+    #[test]
+    fn reads_the_position_both_engines_report() {
+        assert_eq!(
+            engine_progress("whisper_print_progress_callback: progress =  45%"),
+            Some(45)
+        );
+        assert_eq!(
+            engine_progress("parakeet_print_progress_callback: progress =   0%"),
+            Some(0)
+        );
+        assert_eq!(
+            engine_progress("parakeet_print_progress_callback: progress = 100%"),
+            Some(100)
+        );
+        assert_eq!(engine_progress("word_start= true t0= 100"), None);
+        assert_eq!(
+            engine_progress("whisper_print_progress_callback: progress = 140%"),
+            None
+        );
     }
-    Ok(Transcript {
-        words,
-        language: data["result"]["language"].as_str().map(str::to_string),
-        mean_token_confidence: (!all_confidences.is_empty())
-            .then(|| all_confidences.iter().sum::<f64>() / all_confidences.len() as f64),
-    })
+
+    #[test]
+    fn scales_ffmpeg_output_against_the_source_duration() {
+        assert_eq!(ffmpeg_progress("out_time_us=5000000", 10000), Some(50));
+        assert_eq!(ffmpeg_progress("out_time_ms=2500000", 10000), Some(25));
+        assert_eq!(ffmpeg_progress("out_time_us=12000000", 10000), Some(100));
+        assert_eq!(ffmpeg_progress("out_time_us=N/A", 10000), None);
+        assert_eq!(ffmpeg_progress("out_time_us=1000", 0), None);
+        assert_eq!(ffmpeg_progress("progress=continue", 10000), None);
+    }
 }

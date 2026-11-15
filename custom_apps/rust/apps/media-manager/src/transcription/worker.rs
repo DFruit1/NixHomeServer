@@ -48,6 +48,53 @@ pub struct Worker {
     pub orphan_timeout: u64,
     pub max_backend_wait: u64,
 }
+
+/// Writes the stage and the engine's measured percentage into the job record
+/// while it runs. Records are polled every five seconds, so writes are
+/// throttled to one every two seconds (the last value is always written).
+struct StageProgress<'a> {
+    worker: &'a Worker,
+    job: &'a Candidate,
+    state: &'static str,
+    extra: Value,
+    last_percent: Option<u8>,
+    last_write: std::time::Instant,
+}
+
+impl<'a> StageProgress<'a> {
+    fn new(worker: &'a Worker, job: &'a Candidate, state: &'static str, extra: Value) -> Self {
+        Self {
+            worker,
+            job,
+            state,
+            extra,
+            last_percent: None,
+            // The first measured value is written at once; later ones wait.
+            last_write: std::time::Instant::now() - std::time::Duration::from_secs(2),
+        }
+    }
+    fn report(&mut self, percent: u8) {
+        let percent = percent.min(100);
+        if self.last_percent == Some(percent) {
+            return;
+        }
+        let settle =
+            percent == 100 || self.last_write.elapsed() >= std::time::Duration::from_secs(2);
+        if !settle {
+            return;
+        }
+        self.last_percent = Some(percent);
+        self.last_write = std::time::Instant::now();
+        let mut extra = self.extra.clone();
+        if let Some(object) = extra.as_object_mut() {
+            object.insert("progress".into(), json!(percent));
+        }
+        // A dropped progress write is harmless: the next one, or the stage's
+        // completion, records the same job again.
+        let _ = self.worker.record(self.job, self.state, extra);
+    }
+}
+
 impl Worker {
     pub fn from_env() -> Result<Self, String> {
         let number = |key, default: &str| {
@@ -363,16 +410,31 @@ impl Worker {
             .tempdir_in(scratch_root)
             .map_err(|e| e.to_string())?;
         self.record(job, "extracting", json!({}))?;
+        let mut extracting = StageProgress::new(self, job, "extracting", json!({}));
         let (wav, duration) = runtime
-            .extract(file.try_clone().map_err(|e| e.to_string())?, scratch.path())
+            .extract(
+                file.try_clone().map_err(|e| e.to_string())?,
+                scratch.path(),
+                &mut |percent| extracting.report(percent),
+            )
             .await?;
+        extracting.report(100);
         if opened_file_fingerprint(&file).map_err(|e| e.to_string())? != job.fingerprint {
             return Err("source_changed".into());
         }
-        self.record(job, "transcribing", json!({"durationMs": duration}))?;
+        let stage = json!({"durationMs": duration});
+        let mut transcribing = StageProgress::new(self, job, "transcribing", stage.clone());
+        self.record(job, "transcribing", stage)?;
         let transcript = runtime
-            .transcribe(job.backend, &job.request, &wav, scratch.path())
+            .transcribe(
+                job.backend,
+                &job.request,
+                &wav,
+                scratch.path(),
+                &mut |percent| transcribing.report(percent),
+            )
             .await?;
+        transcribing.report(100);
         let super::adapters::Transcript {
             words,
             language,
@@ -380,6 +442,8 @@ impl Worker {
         } = transcript;
         let mut turns = Vec::new();
         if job.request.output.diarize {
+            // Speaker detection reports no position, so the record keeps the
+            // stage without inventing a percentage.
             self.record(job, "diarising", json!({"durationMs": duration}))?;
             turns = runtime.diarize(&wav).await?;
         }
@@ -469,6 +533,7 @@ pub fn read_jobs(state: &Path, username: &str) -> Result<Vec<Value>, String> {
                     "queuedAt",
                     "updatedAt",
                     "durationMs",
+                    "progress",
                     "outputDir",
                     "error",
                     "ignored",
@@ -482,4 +547,61 @@ pub fn read_jobs(state: &Path, username: &str) -> Result<Vec<Value>, String> {
     jobs.sort_by_key(|v| std::cmp::Reverse(v["updatedAt"].as_u64().unwrap_or_default()));
     jobs.truncate(200);
     Ok(jobs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job() -> Candidate {
+        Candidate {
+            owner: None,
+            backend: Backend::Parakeet,
+            name: "Lecture.wav".into(),
+            stem: "Lecture".into(),
+            id: "a".repeat(64),
+            request: Request::default(),
+            fingerprint: "source".into(),
+            request_fingerprint: "request".into(),
+            queued_at: 1,
+        }
+    }
+
+    fn record_state(worker: &Worker, job: &Candidate) -> Value {
+        let bytes = worker
+            .records(job.owner.as_deref())
+            .unwrap()
+            .read(&format!("{}.json", job.id), 1024 * 1024)
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn progress_is_recorded_for_the_running_stage_and_throttled() {
+        let temp = tempfile::tempdir().unwrap();
+        let worker = Worker {
+            state: temp.path().to_path_buf(),
+            users: temp.path().join("users"),
+            settle: 60,
+            orphan_timeout: 3600,
+            max_backend_wait: 300,
+        };
+        std::fs::create_dir_all(&worker.users).unwrap();
+        let job = job();
+        let mut progress =
+            StageProgress::new(&worker, &job, "transcribing", json!({"durationMs": 600000}));
+
+        progress.report(40);
+        let record = record_state(&worker, &job);
+        assert_eq!(record["state"], "transcribing");
+        assert_eq!(record["progress"], 40);
+        assert_eq!(record["durationMs"], 600000);
+
+        // Polls happen every five seconds; the runner reports far more often.
+        progress.report(41);
+        assert_eq!(record_state(&worker, &job)["progress"], 40);
+
+        progress.report(100);
+        assert_eq!(record_state(&worker, &job)["progress"], 100);
+    }
 }

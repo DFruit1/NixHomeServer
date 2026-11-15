@@ -6,6 +6,7 @@ import {
   useSignal,
   useStore,
   useTask$,
+  useVisibleTask$,
 } from "@builder.io/qwik";
 import { api, ApiError, readableError } from "./api";
 import { useBackLayer } from "./back-layers";
@@ -120,6 +121,73 @@ const ConversionList = component$<{
 });
 
 type ConversionsTask = ConversionTask | "comics" | "videos";
+
+/** What each reported transcription stage is doing, in plain language. */
+const TRANSCRIPT_STAGES: Record<TranscriptionJob["state"], string> = {
+  queued: "Waiting",
+  extracting: "Extracting audio",
+  transcribing: "Transcribing",
+  diarising: "Finding speakers",
+  writing: "Writing transcript files",
+  completed: "Finished",
+  failed: "Failed",
+};
+
+const backendLabel = (job: TranscriptionJob) =>
+  job.backend === "parakeet" ? "Parakeet" : "Whisper";
+
+/**
+ * One running transcript. The bar shows the engine's own decoded position, so
+ * a stage that reports no percentage (speaker detection) stays unmeasured
+ * rather than showing an invented number.
+ */
+const TranscriptProgress = component$<{ job: TranscriptionJob }>((props) => {
+  const percent =
+    typeof props.job.progress === "number"
+      ? Math.max(0, Math.min(100, props.job.progress))
+      : null;
+  const stage = TRANSCRIPT_STAGES[props.job.state];
+  return (
+    <article class="conversion-card transcript-card">
+      <span class="conversion-symbol" aria-hidden="true">
+        <Icon name="mic" size={28} />
+      </span>
+      <div class="conversion-copy">
+        <h3>{props.job.name}</h3>
+        <p>
+          {backendLabel(props.job)} · {stage}
+        </p>
+        {props.job.state !== "queued" && (
+          <div class="progress-row">
+            <div
+              class="progress-track"
+              role="progressbar"
+              aria-label={`${stage} ${props.job.name}`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={percent ?? undefined}
+              aria-valuetext={percent === null ? stage : `${percent}%`}
+            >
+              <span
+                class={percent === null ? "progress-track__moving" : undefined}
+                style={
+                  percent === null
+                    ? undefined
+                    : { transform: `scaleX(${percent / 100})` }
+                }
+              />
+            </div>
+            {percent !== null && (
+              <strong class="tabular" aria-hidden="true">
+                {percent}%
+              </strong>
+            )}
+          </div>
+        )}
+      </div>
+    </article>
+  );
+});
 
 const tasks: {
   id: ConversionsTask;
@@ -307,6 +375,8 @@ export const ConversionsView = component$<{
   canEdit?: boolean;
   /** A video to convert, from the player's or Library health's link. */
   initialItemId?: string;
+  /** Signed-in username, so shared browsers keep dismissals separate. */
+  viewer?: string;
 }>((props) => {
   const conv = useStore<{
     conversions?: ConversionEnvelope;
@@ -424,6 +494,38 @@ export const ConversionsView = component$<{
   }));
   const activeTranscripts = transcripts.filter(
     (j) => j.state !== "completed" && j.state !== "failed",
+  );
+  const dismissed = useSignal<string[]>([]);
+  const dismissKey = `mm-conversions-dismissed:${props.viewer ?? ""}`;
+  // eslint-disable-next-line qwik/no-use-visible-task -- dismissal is a browser preference
+  useVisibleTask$(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(dismissKey) ?? "[]");
+      if (Array.isArray(saved))
+        dismissed.value = saved
+          .filter((key): key is string => typeof key === "string")
+          .slice(-300);
+    } catch {
+      // An unreadable preference simply hides nothing.
+    }
+  });
+  const dismiss = $((key: string) => {
+    if (dismissed.value.includes(key)) return;
+    const next = [...dismissed.value, key].slice(-300);
+    dismissed.value = next;
+    try {
+      localStorage.setItem(dismissKey, JSON.stringify(next));
+    } catch {
+      // Without storage the entry stays hidden for this page only.
+    }
+  });
+  const completedItems = historyItems(
+    inboxProcessed,
+    transcripts.filter((j) => j.state === "completed"),
+  );
+  const failedItems = historyItems(
+    inboxFailed,
+    transcripts.filter((j) => j.state === "failed"),
   );
 
   const pendingMap = new Map<string, InboxIso>();
@@ -650,21 +752,11 @@ export const ConversionsView = component$<{
               {activeTranscripts.length === 0 ? (
                 <p class="quiet-copy">No transcription jobs waiting.</p>
               ) : (
-                <ul class="side-list" aria-label="Transcription jobs">
+                <div class="transcript-progress-list">
                   {activeTranscripts.map((job) => (
-                    <li key={job.id} class="transcript-job">
-                      <div class="side-item-name">
-                        <strong>{job.name}</strong>
-                        <small>
-                          {job.backend} · {job.state}
-                        </small>
-                        {job.state !== "queued" && (
-                          <progress aria-label={`${job.state}: ${job.name}`} />
-                        )}
-                      </div>
-                    </li>
+                    <TranscriptProgress key={job.id} job={job} />
                   ))}
-                </ul>
+                </div>
               )}
             </div>
             <details class="conversion-help">
@@ -690,20 +782,32 @@ export const ConversionsView = component$<{
             filesBaseUrl={filesBaseUrl}
           />
         )}
-        <ProcessedCard
-          isos={inboxProcessed}
+        <HistoryCard
+          headingId="processed-heading"
+          title="Completed"
+          empty="No completed jobs yet."
+          archive="_Processed"
+          items={completedItems}
           filesBaseUrl={filesBaseUrl}
-          transcripts={transcripts.filter((j) => j.state === "completed")}
           canRequeue={canRequeue}
           requeues={requeues}
+          dismissed={dismissed.value}
+          onDismiss$={dismiss}
+          onShowLog$={(name) => (logDialog.value = name)}
           onRequeue$={requeue}
         />
-        <FailedCard
-          isos={inboxFailed}
-          onShowLog$={(name) => (logDialog.value = name)}
-          transcripts={transcripts.filter((j) => j.state === "failed")}
+        <HistoryCard
+          headingId="failed-heading"
+          title="Failed"
+          empty="No failed jobs."
+          archive="_Failed"
+          items={failedItems}
+          filesBaseUrl={filesBaseUrl}
           canRequeue={canRequeue}
           requeues={requeues}
+          dismissed={dismissed.value}
+          onDismiss$={dismiss}
+          onShowLog$={(name) => (logDialog.value = name)}
           onRequeue$={requeue}
         />
       </aside>
@@ -798,172 +902,211 @@ const NeedsIdentificationCard = component$<{
   );
 });
 
-const ProcessedCard = component$<{
-  isos: InboxIso[];
+/** How long recently finished work stays in the main Completed and Failed lists. */
+const HISTORY_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+
+type HistoryItem =
+  | {
+      kind: "transcript";
+      key: string;
+      finishedMs: number;
+      job: TranscriptionJob;
+    }
+  | { kind: "iso"; key: string; finishedMs: number; iso: InboxIso };
+
+/** Discs and transcripts that finished, newest first, from either archive. */
+function historyItems(
+  isos: InboxIso[],
+  transcripts: TranscriptionJob[],
+): HistoryItem[] {
+  const items: HistoryItem[] = [
+    ...isos.map((iso) => {
+      const finished = iso.finishedNs ?? iso.modifiedNs;
+      return {
+        kind: "iso" as const,
+        key: `iso:${iso.name}:${finished}`,
+        finishedMs: Math.floor(finished / 1e6),
+        iso,
+      };
+    }),
+    ...transcripts.map((job) => ({
+      kind: "transcript" as const,
+      key: `transcript:${job.id}`,
+      // Job records use seconds; the list is ordered and aged in milliseconds.
+      finishedMs: job.updatedAt * 1000,
+      job,
+    })),
+  ];
+  return items.sort((left, right) => right.finishedMs - left.finishedMs);
+}
+
+/**
+ * Completed or Failed history. Work from the last three days stays visible;
+ * older work folds behind one disclosure so the panels stay a useful recent
+ * log. Each entry can be dismissed, which hides it in this browser without
+ * touching the archived ISO or the transcript files.
+ */
+const HistoryCard = component$<{
+  headingId: string;
+  title: string;
+  empty: string;
+  archive: DvdArchive;
+  items: HistoryItem[];
   filesBaseUrl: string;
-  transcripts: TranscriptionJob[];
   canRequeue: boolean;
   requeues: Requeues;
+  dismissed: string[];
+  onDismiss$: QRL<(key: string) => void>;
+  onShowLog$: QRL<(name: string) => void>;
   onRequeue$: QRL<(archive: DvdArchive, iso: InboxIso) => void>;
-}>((props) => (
-  <section class="panel side-panel">
-    <div class="panel-heading">
-      <div>
-        <h2 id="processed-heading">Completed</h2>
-      </div>
-    </div>
-    <div
-      class="side-panel-body"
-      role="region"
-      aria-labelledby="processed-heading"
-      tabIndex={0}
+}>((props) => {
+  const cutoff = Date.now() - HISTORY_WINDOW_MS;
+  const visible = props.items.filter(
+    (item) => !props.dismissed.includes(item.key),
+  );
+  const recent = visible.filter((item) => item.finishedMs >= cutoff);
+  const older = visible.filter((item) => item.finishedMs < cutoff);
+  const failed = props.archive === "_Failed";
+
+  const Dismiss = (item: HistoryItem) => (
+    <button
+      type="button"
+      class="text-button side-item-dismiss"
+      aria-label={`Dismiss ${item.kind === "iso" ? isoTitle(item.iso) : item.job.name}`}
+      onClick$={() => props.onDismiss$(item.key)}
     >
-      {props.isos.length === 0 && props.transcripts.length === 0 ? (
-        <p class="quiet-copy">No completed jobs yet.</p>
-      ) : (
-        <ul class="side-list">
-          {props.transcripts.map((job) => (
-            <li key={job.id} class="transcript-job">
-              <div class="side-item-name">
-                <strong>{job.name}</strong>
-                <small>{job.backend}</small>
+      Dismiss
+    </button>
+  );
+
+  const Rows = (items: HistoryItem[]) => (
+    <ul class="side-list">
+      {items.map((item) =>
+        item.kind === "transcript" ? (
+          <li key={item.key} class="transcript-job">
+            <div class="side-item-name">
+              <strong>{item.job.name}</strong>
+              <small>
+                {backendLabel(item.job)}
+                {failed
+                  ? ` · ${item.job.error?.replaceAll("_", " ") ?? "Transcription failed"}`
+                  : ""}
+              </small>
+              {!failed && (
                 <div class="transcript-artifacts">
-                  {job.artifacts?.map((file) => (
+                  {item.job.artifacts?.map((file) => (
                     <a
                       key={file}
-                      href={`/api/v1/transcriptions/${encodeURIComponent(job.id)}/artifacts/${encodeURIComponent(file)}`}
+                      href={`/api/v1/transcriptions/${encodeURIComponent(item.job.id)}/artifacts/${encodeURIComponent(file)}`}
                     >
                       {file}
                     </a>
                   ))}
                 </div>
-                {!!job.ignored?.length && (
-                  <details>
-                    <summary>Some options were ignored</summary>
-                    <ul>
-                      {job.ignored.map((warning) => (
-                        <li key={warning.field}>
-                          {warning.field}: {warning.reason}
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                )}
-              </div>
-            </li>
-          ))}
-          {props.isos.map((iso) => (
-            <li key={iso.name}>
-              <span class="side-item-name" title={iso.name}>
-                <strong>{isoTitle(iso)}</strong>
-                {iso.finishedNs ? (
-                  <small>Finished {finishedAt(iso)}</small>
-                ) : null}
-              </span>
-              <div class="side-item-actions">
-                {iso.outputDir && props.filesBaseUrl ? (
-                  <a
-                    class="side-item-link"
-                    href={`${props.filesBaseUrl}/files/_Shared/${sharedPath(iso.outputDir)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <Icon name="folder" size={14} />
-                    <span>{iso.outputDir}</span>
-                  </a>
-                ) : iso.outputDir ? (
-                  <span class="side-item-path">
-                    <Icon name="folder" size={14} />
-                    <span>{iso.outputDir}</span>
-                  </span>
-                ) : null}
-                {props.canRequeue && (
-                  <RequeueAction
-                    iso={iso}
-                    archive="_Processed"
-                    requeues={props.requeues}
-                    onRequeue$={props.onRequeue$}
-                  />
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  </section>
-));
-
-const FailedCard = component$<{
-  isos: InboxIso[];
-  onShowLog$: QRL<(name: string) => void>;
-  transcripts: TranscriptionJob[];
-  canRequeue: boolean;
-  requeues: Requeues;
-  onRequeue$: QRL<(archive: DvdArchive, iso: InboxIso) => void>;
-}>((props) => (
-  <section class="panel side-panel">
-    <div class="panel-heading">
-      <div>
-        <h2 id="failed-heading">Failed</h2>
-      </div>
-    </div>
-    <div
-      class="side-panel-body"
-      role="region"
-      aria-labelledby="failed-heading"
-      tabIndex={0}
-    >
-      {props.isos.length === 0 && props.transcripts.length === 0 ? (
-        <p class="quiet-copy">No failed jobs.</p>
-      ) : (
-        <ul class="side-list">
-          {props.transcripts.map((job) => (
-            <li key={job.id} class="transcript-job">
-              <span class="side-item-name">
-                <strong>{job.name}</strong>
-                <small>
-                  {job.backend} ·{" "}
-                  {job.error?.replaceAll("_", " ") ?? "Transcription failed"}
-                </small>
-              </span>
-            </li>
-          ))}
-          {props.isos.map((iso) => (
-            <li key={iso.name}>
-              <span class="side-item-name" title={iso.name}>
-                <strong>{isoTitle(iso)}</strong>
-                {iso.finishedNs ? (
-                  <small>Failed {finishedAt(iso)}</small>
-                ) : null}
-              </span>
-              {iso.failureSummary && (
-                <p class="side-item-reason">{iso.failureSummary}</p>
               )}
-              <div class="side-item-actions">
-                {iso.hasErrorLog && (
-                  <button
-                    type="button"
-                    class="text-button danger side-item-log-btn"
-                    aria-label={`${iso.failureHint ? "How to fix" : "Show details for"} ${isoTitle(iso)}`}
-                    onClick$={() => props.onShowLog$(iso.name)}
-                  >
-                    {iso.failureHint ? "How to fix" : "Show details"}
-                  </button>
-                )}
-                {props.canRequeue && (
-                  <RequeueAction
-                    iso={iso}
-                    archive="_Failed"
-                    requeues={props.requeues}
-                    onRequeue$={props.onRequeue$}
-                  />
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
+              {!failed && !!item.job.ignored?.length && (
+                <details>
+                  <summary>Some options were ignored</summary>
+                  <ul>
+                    {item.job.ignored.map((warning) => (
+                      <li key={warning.field}>
+                        {warning.field}: {warning.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+            <div class="side-item-actions">{Dismiss(item)}</div>
+          </li>
+        ) : (
+          <li key={item.key}>
+            <span class="side-item-name" title={item.iso.name}>
+              <strong>{isoTitle(item.iso)}</strong>
+              {item.iso.finishedNs ? (
+                <small>
+                  {failed ? "Failed" : "Finished"} {finishedAt(item.iso)}
+                </small>
+              ) : null}
+            </span>
+            {failed && item.iso.failureSummary && (
+              <p class="side-item-reason">{item.iso.failureSummary}</p>
+            )}
+            <div class="side-item-actions">
+              {failed ? (
+                <>
+                  {item.iso.hasErrorLog && (
+                    <button
+                      type="button"
+                      class="text-button danger side-item-log-btn"
+                      aria-label={`${item.iso.failureHint ? "How to fix" : "Show details for"} ${isoTitle(item.iso)}`}
+                      onClick$={() => props.onShowLog$(item.iso.name)}
+                    >
+                      {item.iso.failureHint ? "How to fix" : "Show details"}
+                    </button>
+                  )}
+                </>
+              ) : item.iso.outputDir && props.filesBaseUrl ? (
+                <a
+                  class="side-item-link"
+                  href={`${props.filesBaseUrl}/files/_Shared/${sharedPath(item.iso.outputDir)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Icon name="folder" size={14} />
+                  <span>{item.iso.outputDir}</span>
+                </a>
+              ) : item.iso.outputDir ? (
+                <span class="side-item-path">
+                  <Icon name="folder" size={14} />
+                  <span>{item.iso.outputDir}</span>
+                </span>
+              ) : null}
+              {props.canRequeue && (
+                <RequeueAction
+                  iso={item.iso}
+                  archive={props.archive}
+                  requeues={props.requeues}
+                  onRequeue$={props.onRequeue$}
+                />
+              )}
+              {Dismiss(item)}
+            </div>
+          </li>
+        ),
       )}
-    </div>
-  </section>
-));
+    </ul>
+  );
+
+  return (
+    <section class="panel side-panel">
+      <div class="panel-heading">
+        <div>
+          <h2 id={props.headingId}>{props.title}</h2>
+        </div>
+      </div>
+      <div
+        class="side-panel-body"
+        role="region"
+        aria-labelledby={props.headingId}
+        tabIndex={0}
+      >
+        {visible.length === 0 ? (
+          <p class="quiet-copy">
+            {props.items.length > 0 ? "All results dismissed." : props.empty}
+          </p>
+        ) : (
+          <>
+            {recent.length > 0 && Rows(recent)}
+            {older.length > 0 && (
+              <details class="history-archive">
+                <summary>Older than 3 days ({older.length})</summary>
+                {Rows(older)}
+              </details>
+            )}
+          </>
+        )}
+      </div>
+    </section>
+  );
+});

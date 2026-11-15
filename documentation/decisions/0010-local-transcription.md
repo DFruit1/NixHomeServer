@@ -408,11 +408,14 @@ transcript that looks like silence in the source.
 
 ## Progress reporting
 
-Neither CLI emits progress events, and synthesising a percentage would be a lie
-in a `.progress-track`. The worker therefore reports a typed stage —
-`extracting`, `transcribing`, `diarising`, `writing` — with a real percentage
-only where one is derivable (diarisation knows its segment count; extraction
-knows the duration), and Media Manager renders an indeterminate track otherwise.
+A synthesised percentage would be a lie in a `.progress-track`, so the worker
+reports a typed stage — `extracting`, `transcribing`, `diarising`, `writing` —
+with a percentage only where the tool reports its real position. Updated
+2026-11-16: whisper-cli's `-pp` prints its decoded position, and
+`modules/transcribe/parakeet-progress.patch` adds the same line to parakeet-cli
+from its token timings; FFmpeg reports extraction progress against the source
+duration. Diarisation reports no position, so Media Manager renders an
+indeterminate track rather than inventing one.
 
 ## Trust boundaries
 

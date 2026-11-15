@@ -145,7 +145,8 @@
   padding-top: 4px;
   color: var(--accent);
 }
-.conversion-focus .conversion-copy h3 {
+.conversion-focus .conversion-copy h3,
+.transcript-card .conversion-copy h3 {
   margin: 0 0 6px;
   overflow-wrap: anywhere;
   font-family: var(--font-serif);
@@ -153,25 +154,29 @@
   font-weight: 500;
   line-height: 1.25;
 }
-.conversion-focus :is(.conversion-copy p, .empty-state p) {
+.conversion-focus :is(.conversion-copy p, .empty-state p),
+.transcript-card .conversion-copy p {
   margin: 0;
   color: var(--ink-soft);
   font-size: var(--text-md);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
-.conversion-focus .progress-row {
+.conversion-focus .progress-row,
+.transcript-card .progress-row {
   margin-top: 16px;
   display: flex;
   align-items: center;
   gap: 12px;
 }
-.conversion-focus .progress-track {
+.conversion-focus .progress-track,
+.transcript-card .progress-track {
   flex: 1 1 auto;
   height: 6px;
   margin: 0;
 }
-.conversion-focus .progress-row strong {
+.conversion-focus .progress-row strong,
+.transcript-card .progress-row strong {
   flex: none;
   min-width: 4ch;
   font-size: var(--text-md);
@@ -226,6 +231,39 @@
   display: grid;
   gap: 16px;
   padding: 20px;
+}
+/* A running transcript reuses the DVD card so both read the same way. */
+.conversions-layout .transcript-progress-list {
+  display: grid;
+  gap: 20px;
+}
+.conversions-layout .transcript-card {
+  padding: 0;
+  grid-template-columns: 44px minmax(0, 1fr);
+}
+.conversions-layout .transcript-card + .transcript-card {
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+/* Older history folds away, so the recent list keeps the panel. */
+.conversions-layout .history-archive {
+  border-top: 1px solid var(--line);
+}
+.conversions-layout .history-archive > summary {
+  min-height: var(--control-height);
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+.conversions-layout .side-item-dismiss {
+  padding-left: 0;
+  color: var(--ink-soft);
+  font-weight: 500;
+}
+.conversions-layout .side-item-dismiss:hover {
+  color: var(--ink);
 }
 .conversions-layout .quiet-copy {
   margin: 0;
@@ -614,6 +652,11 @@
 @media (prefers-reduced-motion: reduce) {
   .conversion-task {
     transition: none;
+  }
+  .progress-track__moving {
+    width: 100%;
+    opacity: 0.45;
+    animation: none;
   }
 }
 @media (max-width: 920px) {

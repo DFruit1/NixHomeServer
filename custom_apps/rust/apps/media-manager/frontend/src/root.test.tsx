@@ -945,6 +945,152 @@ describe("Media Manager conversions inbox", () => {
         ?.textContent?.match(/Converting/g),
     ).toHaveLength(1);
   });
+
+  it("shows each running transcript's own stage and measured progress", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        const payload = path.endsWith("/status")
+          ? {
+              mutationMode: "enabled",
+              integrations: [
+                {
+                  id: "transcribe",
+                  label: "Transcription",
+                  available: true,
+                  capabilities: ["transcription"],
+                },
+              ],
+            }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: false }
+            : path.endsWith("/roots")
+              ? []
+              : path.endsWith("/transcriptions")
+                ? {
+                    available: true,
+                    jobs: [
+                      {
+                        id: "job-1",
+                        name: "Lecture.mkv",
+                        backend: "parakeet",
+                        state: "transcribing",
+                        queuedAt: 1,
+                        updatedAt: 2,
+                        durationMs: 600000,
+                        progress: 37,
+                      },
+                      {
+                        id: "job-2",
+                        name: "Interview.wav",
+                        backend: "whisper",
+                        state: "queued",
+                        queuedAt: 1,
+                        updatedAt: 2,
+                      },
+                    ],
+                    requestId: "r1",
+                  }
+                : path.endsWith("/conversions/inbox")
+                  ? {
+                      available: true,
+                      pending: [],
+                      processed: [],
+                      failed: [],
+                      needsIdentification: [],
+                    }
+                  : path.endsWith("/conversions")
+                    ? { available: true, progress: { conversions: [] } }
+                    : {};
+        return new Response(wireJson(payload));
+      }),
+    );
+
+    const { render, screen } = await createDOM();
+    await render(<Root initialView="conversions" />);
+
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("Parakeet · Transcribing"),
+    );
+    expect(screen.textContent).toContain("Whisper · Waiting");
+    const progress = screen.querySelector('[role="progressbar"]');
+    expect(progress?.getAttribute("aria-valuenow")).toBe("37");
+    expect(progress?.getAttribute("aria-valuetext")).toBe("37%");
+    expect(screen.textContent).toContain("37%");
+    // Only the running job has started, so only it has a bar.
+    expect(screen.querySelectorAll('[role="progressbar"]')).toHaveLength(1);
+  });
+
+  it("folds older results away and lets each one be dismissed", async () => {
+    const now = Date.now();
+    const iso = (name: string, finishedMs: number) => ({
+      name,
+      volumeId: null,
+      sizeBytes: 1024,
+      modifiedNs: finishedMs * 1e6,
+      finishedNs: finishedMs * 1e6,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        const payload = path.endsWith("/status")
+          ? { mutationMode: "enabled", integrations: [] }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: false }
+            : path.endsWith("/roots")
+              ? []
+              : path.endsWith("/conversions/inbox")
+                ? {
+                    available: true,
+                    pending: [],
+                    processed: [
+                      iso("RECENT_FILM.ISO", now - 60 * 60 * 1000),
+                      iso("OLD_FILM.ISO", now - 4 * 24 * 60 * 60 * 1000),
+                    ],
+                    failed: [],
+                    needsIdentification: [],
+                  }
+                : path.endsWith("/conversions")
+                  ? { available: true, progress: { conversions: [] } }
+                  : {};
+        return new Response(wireJson(payload));
+      }),
+    );
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="conversions" />);
+
+    await vi.waitFor(() => expect(screen.textContent).toContain("RECENT_FILM"));
+    const processed = screen.querySelector(
+      '[role="region"][aria-labelledby="processed-heading"]',
+    );
+    const archive = processed?.querySelector(".history-archive");
+    expect(archive?.querySelector("summary")?.textContent).toContain(
+      "Older than 3 days (1)",
+    );
+    // The old disc is behind the closed disclosure, the recent one is not.
+    expect(archive?.hasAttribute("open")).toBe(false);
+    expect(archive?.textContent).toContain("OLD_FILM");
+    // The recent list above the disclosure holds only the newer disc.
+    expect(processed?.querySelector(".side-list")?.textContent).not.toContain(
+      "OLD_FILM",
+    );
+
+    const dismiss = Array.from(
+      processed?.querySelectorAll("button") ?? [],
+    ).find(
+      (button) => button.getAttribute("aria-label") === "Dismiss RECENT_FILM",
+    );
+    expect(dismiss).toBeDefined();
+    await userEvent(dismiss ?? null, "click");
+    await vi.waitFor(() =>
+      expect(processed?.textContent).not.toContain("RECENT_FILM"),
+    );
+    // The old disc keeps its own dismiss control behind the disclosure.
+    expect(archive?.textContent).toContain("OLD_FILM");
+  });
 });
 
 describe("Media Manager library browser", () => {
