@@ -75,6 +75,7 @@ while IFS= read -r library_id; do
           explicit:(if ($metadata.explicit|type) == "boolean" then $metadata.explicit else null end),
           tags:(($media.tags // $metadata.tags // [])|names)[:64],
           chapters:(($media.chapters // [])[:512] | map({id:(.id|clean(128)),title:(.title|clean(500)),start:.start,end:.end})),
+          episodes:(($media.episodes // [])[:2000] | map({id:(.id|clean(128)),title:(.title|clean(500)),subtitle:(.subtitle|clean(500)),description:(.description|clean(8000)),season:(.season|clean(32)),episode:(.episode|clean(32)),publishedAt:(if (.publishedAt|type) == "number" then .publishedAt else null end)})),
           audioFiles:(($media.audioFiles // [])[:512] | map({index:.index,filename:(.metadata.filename|clean(500)),size:.metadata.size,duration:.duration,codec:(.codec|clean(32)),bitRate:.bitRate,channels:.channels,language:(.language|clean(32)),trackNumber:(.trackNumFromMeta // .trackNumFromFilename),discNumber:(.discNumFromMeta // .discNumFromFilename),embeddedCoverArt:(.embeddedCoverArt|clean(32)),error:(.error|clean(500))})),
           ebookFile:(if ($media.ebookFile|type) == "object" then {filename:($media.ebookFile.metadata.filename|clean(500)),size:$media.ebookFile.metadata.size,extension:($media.ebookFile.metadata.ext|clean(16))} else null end),
           providerIds:({isbn:($metadata.isbn|clean(64)),asin:($metadata.asin|clean(64)),itunes:($metadata.itunesId|tostring|clean(128)),feedUrl:($metadata.feedURL|clean(2048))}|with_entries(select(.value != null and .value != "null"))),

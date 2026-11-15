@@ -40,7 +40,7 @@ PY
           "$base_url/api/Series/all-v2?PageNumber=1&PageSize=10000")"
       work="$(mktemp -d)"
       trap 'rm -rf -- "$work"' EXIT
-      mkdir "$work/results"
+      mkdir "$work/results" "$work/volumes"
       printf 'header = "Authorization: Bearer %s"\n' "$admin_token" >"$work/curl.conf"
       chmod 0600 "$work/curl.conf"
       unset admin_token
@@ -56,7 +56,14 @@ PY
               --max-time 15 --max-filesize 1048576 --get \
               --data-urlencode "seriesId=$series_id" "$base_url/api/Series/metadata" \
               | jq -ce --argjson seriesId "$series_id" ". + {seriesId:\$seriesId}" \
-                >"$work/results/$series_id.json"
+                >"$work/results/$series_id.json" || exit 1
+            # Volume and chapter names, for Search. A series without them
+            # keeps its other metadata.
+            curl --config "$work/curl.conf" --fail --silent --show-error \
+              --max-time 15 --max-filesize 4194304 --get \
+              --data-urlencode "seriesId=$series_id" "$base_url/api/Series/volumes" \
+              | jq -ce --argjson seriesId "$series_id" "{seriesId:\$seriesId, parts:[.[]? | (.name // empty), (.chapters[]? | (.titleName // .title // empty))] | map(select(type == \"string\" and (test(\"[A-Za-z]{3}\")))) | unique | .[:400]}" \
+                >"$work/volumes/$series_id.json" || rm -f -- "$work/volumes/$series_id.json"
           ' _ "$base_url" "$work"
       result_files=("$work"/results/*.json)
       if (( ${#result_files[@]} > 0 )); then
@@ -64,12 +71,19 @@ PY
       else
         printf '[]\n' >"$work/metadata.json"
       fi
+      volume_files=("$work"/volumes/*.json)
+      if (( ${#volume_files[@]} > 0 )); then
+        jq -s '.' "${volume_files[@]}" >"$work/volumes.json"
+      else
+        printf '[]\n' >"$work/volumes.json"
+      fi
       tmp="$(mktemp "$(dirname "$output")/.metadata.XXXXXX")"
       trap 'rm -f -- "$tmp"; rm -rf -- "$work"' EXIT
       jq -e \
         --arg shared @NIX_VARS_SHAREDROOT_QUOTED@ \
         --arg users @NIX_VARS_USERSROOT_QUOTED@ \
         --slurpfile metadata "$work/metadata.json" \
+        --slurpfile volumes "$work/volumes.json" \
         --argjson observedAt "$(date +%s)" '
         def clean($n): if type == "string" then .[0:$n] else null end;
         def names: map(if type == "object" then .name else . end | clean(500)) | map(select(. != null));
@@ -83,6 +97,7 @@ PY
             else empty end;
         select(type == "array" and length <= 10000)
         | ($metadata[0] | map({key:(.seriesId|tostring),value:.}) | from_entries) as $metadataById
+        | ($volumes[0] | map({key:(.seriesId|tostring),value:.parts}) | from_entries) as $partsById
         | {schemaVersion:1,observedAt:$observedAt,entries:[.[]
             | select((.folderPath|type) == "string" and (.folderPath|length) <= 4096)
             | (.folderPath|location) as $location
@@ -97,6 +112,8 @@ PY
                 language:($details.language|clean(32)),
                 genres:(($details.genres // [])|names)[:64],
                 tags:(($details.tags // [])|names)[:64],
+                characters:(($details.characters // [])|names)[:64],
+                partTitles:(($partsById[(.id|tostring)] // []) | map(clean(500))),
                 writers:(($details.writers // [])|names)[:64],
                 authors:(($details.writers // [])|names)[:64],
                 publisher:((($details.publishers // [])[0].name)|clean(500)),

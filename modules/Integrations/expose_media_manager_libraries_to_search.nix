@@ -27,6 +27,9 @@ in
               snapshotPath = "/var/cache/media-manager-jellyfin/metadata.json";
               # Modern Jellyfin web routes identify the item directly.
               itemUrl = "/web/#/details?id={itemId}";
+              # Readable subtitle tracks the exporter saves beside the
+              # snapshot; searched as incidental text.
+              subtitlesDir = "/var/cache/media-manager-jellyfin/subtitles";
             };
           };
         })
@@ -38,6 +41,11 @@ in
             settings = {
               snapshotPath = "/var/cache/media-manager-audiobookshelf/metadata.json";
               itemUrl = "/item/{itemId}";
+              # Catalogue files beside the tracks name the author, narrator
+              # and year when Audiobookshelf itself has none. The
+              # media-manager group already reads these folders.
+              sharedAudiobooksRoot = "${vars.sharedRoot}/_Audiobooks";
+              audiobookUsersRoot = vars.usersRoot;
             };
           };
         })

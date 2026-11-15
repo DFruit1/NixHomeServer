@@ -424,6 +424,9 @@ fn build_body(entry: &Value) -> String {
         .collect();
     parts.extend(list("By", creators));
     parts.extend(list("Written by", writers));
+    parts.extend(list("Directed by", string_list(entry, "directors")));
+    parts.extend(list("Cast", string_list(entry, "cast")));
+    parts.extend(list("Characters", string_list(entry, "characters")));
     parts.extend(list("Narrated by", string_list(entry, "narrators")));
     parts.extend(list("Genres", string_list(entry, "genres")));
     parts.extend(list("Tags", string_list(entry, "tags")));
@@ -468,8 +471,25 @@ fn build_body(entry: &Value) -> String {
         .take(200)
         .collect();
     parts.extend(list("Chapters", chapters));
+    parts.extend(list(
+        "Volumes and chapters",
+        string_list(entry, "partTitles")
+            .into_iter()
+            .take(400)
+            .collect(),
+    ));
     parts.push(string_field(entry, "subtitle").unwrap_or_default());
-    parts.push(string_field(entry, "description").unwrap_or_default());
+    let description = string_field(entry, "description").unwrap_or_default();
+    // Most episodes carry little or no synopsis of their own; the series
+    // overview says what they are about.
+    if let Some(series) = string_field(entry, "seriesDescription")
+        && !description.contains(&series)
+    {
+        parts.push(description);
+        parts.push(format!("About the series: {series}"));
+    } else {
+        parts.push(description);
+    }
     let mut body: String = parts
         .into_iter()
         .filter(|part| !part.trim().is_empty())
@@ -527,6 +547,227 @@ fn external_id(entry: &Value, title: &str) -> String {
     sha256_hex(&[&root, &relative, title])
 }
 
+/// The readable subtitle track the exporter saved for this item, as one line
+/// per spoken cue: `[00:41:10] the words`. The time lets a result say where
+/// in the film the line is.
+fn subtitle_text(folder: &Path, entry: &Value) -> Option<String> {
+    const LIMIT: usize = 400_000;
+    let item = string_field(entry, "itemId")
+        .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()))?;
+    let file = std::fs::File::open(folder.join(format!("{item}.srt"))).ok()?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, 4_000_000), &mut bytes).ok()?;
+    let raw = crate::text::decode_document_text(&bytes);
+    let mut out = String::new();
+    let mut time: Option<&str> = None;
+    let mut last = String::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if let Some((start, _)) = line.split_once(" --> ") {
+            // "00:41:10,480" keeps hours, minutes and seconds.
+            time = start.get(..8).filter(|start| start.is_ascii());
+            continue;
+        }
+        if line.is_empty() || line.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        // Styling: <i>…</i> and {\an8}.
+        let mut words = String::with_capacity(line.len());
+        let mut skipping = None;
+        for c in line.chars() {
+            match (skipping, c) {
+                (None, '<') => skipping = Some('>'),
+                (None, '{') => skipping = Some('}'),
+                (Some(close), c) if c == close => skipping = None,
+                (None, c) => words.push(c),
+                _ => {}
+            }
+        }
+        let words = words.trim();
+        if !words.chars().any(char::is_alphabetic) || words == last {
+            continue;
+        }
+        match time.take() {
+            Some(time) => out.push_str(&format!("\n[{time}] {words}")),
+            // A cue's second line continues the first.
+            None => out.push_str(&format!(" {words}")),
+        }
+        last = words.to_string();
+        if out.len() >= LIMIT {
+            break;
+        }
+    }
+    let out = out.trim().to_string();
+    (!out.is_empty()).then_some(out)
+}
+
+/// The catalogue file kept beside an audiobook's tracks, if its folder is
+/// readable. Audiobookshelf only reads a folder-level `metadata.opf`, so the
+/// per-track files Media Manager writes never reach its snapshot.
+fn sidecar_file(entry: &Value, source: &SourceConfig) -> Option<PathBuf> {
+    let relative = string_field(entry, "relativePath")?;
+    if Path::new(&relative)
+        .components()
+        .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    let folder = match string_field(entry, "rootId")?.as_str() {
+        "shared-audiobooks" => PathBuf::from(source.setting_str("sharedAudiobooksRoot")?),
+        "personal-audiobooks" => {
+            let owner = string_field(entry, "ownerUsername")
+                .filter(|owner| homelab_common::is_safe_single_component(owner))?;
+            PathBuf::from(source.setting_str("audiobookUsersRoot")?)
+                .join(owner)
+                .join("_Audiobooks")
+        }
+        _ => return None,
+    }
+    .join(relative);
+    let mut files = super::collect_files(&folder, 0, &|file: &Path| {
+        file.extension().is_some_and(|extension| extension == "opf")
+    });
+    files.sort();
+    // The folder's own file describes the whole book; a track's describes
+    // the same book from one of its parts.
+    files
+        .iter()
+        .position(|file| file.file_name().is_some_and(|name| name == "metadata.opf"))
+        .map(|index| files.swap_remove(index))
+        .or_else(|| files.into_iter().next())
+}
+
+/// Fills what the snapshot lacks (author, narrator, year, genres, series,
+/// description) from the audiobook's catalogue file.
+fn with_sidecar_details(entry: &Value, source: &SourceConfig) -> Option<Value> {
+    let file = sidecar_file(entry, source)?;
+    let details = super::document::package_metadata(&std::fs::read(file).ok()?);
+    if details.is_empty() {
+        return None;
+    }
+    let mut entry = entry.clone();
+    let fields = entry.as_object_mut()?;
+    let empty = |fields: &Map<String, Value>, key: &str| match fields.get(key) {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(items)) => items.is_empty(),
+        Some(Value::String(text)) => text.trim().is_empty(),
+        _ => false,
+    };
+    let mut description = details
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    // "Read by Greg Stone" is the narrator, not a description of the book.
+    for prefix in ["Read by ", "Narrated by "] {
+        if let Some(narrator) = description.strip_prefix(prefix)
+            && narrator.len() <= 120
+            && !narrator.contains('\n')
+        {
+            if empty(fields, "narrators") {
+                fields.insert(
+                    "narrators".to_string(),
+                    serde_json::json!([narrator.trim_end_matches('.')]),
+                );
+            }
+            // The snapshot carries the same line as its description.
+            if fields
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                == Some(description.as_str())
+            {
+                fields.remove("description");
+            }
+            description.clear();
+            break;
+        }
+    }
+    let current = fields
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if description.len() > current.len() {
+        fields.insert("description".to_string(), Value::String(description));
+    }
+    for (key, target) in [
+        ("authors", "authors"),
+        ("tags", "genres"),
+        ("series", "series"),
+        ("publisher", "publisher"),
+        ("language", "language"),
+    ] {
+        if let Some(value) = details.get(key)
+            && empty(fields, target)
+        {
+            fields.insert(target.to_string(), value.clone());
+        }
+    }
+    if empty(fields, "year")
+        && let Some(year) = details
+            .get("date")
+            .and_then(Value::as_str)
+            .and_then(|date| date.get(..4)?.parse::<i64>().ok())
+    {
+        fields.insert("year".to_string(), Value::from(year));
+    }
+    Some(entry)
+}
+
+/// A podcast's episodes as documents of their own: what an episode is about
+/// lives in its title and notes, not in the show's description.
+fn emit_episodes(
+    entry: &Value,
+    show: &str,
+    show_metadata: &Map<String, Value>,
+    app_url: &str,
+    emit: &mut dyn FnMut(ExtractedDocument),
+) {
+    let Some(episodes) = entry.get("episodes").and_then(Value::as_array) else {
+        return;
+    };
+    let item = external_id(entry, show);
+    for episode in episodes {
+        let (Some(id), Some(title)) = (string_field(episode, "id"), string_field(episode, "title"))
+        else {
+            continue;
+        };
+        let mut metadata = show_metadata.clone();
+        metadata.insert("series".to_string(), Value::String(show.to_string()));
+        for key in ["season", "episode"] {
+            scalar_metadata(&mut metadata, key, string_field(episode, key));
+        }
+        let notes = string_field(episode, "description")
+            .map(|notes| crate::text::html_to_text(&notes))
+            .unwrap_or_default();
+        let body = [string_field(episode, "subtitle").unwrap_or_default(), notes]
+            .into_iter()
+            .filter(|part| !part.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        emit(ExtractedDocument {
+            incidental_text: String::new(),
+            external_id: format!("{item}:episode:{id}"),
+            kind: "podcast".to_string(),
+            title: crate::text::truncate_text(&format!("{show} — {title}"), 2_000),
+            body_text: crate::text::truncate_text(&body, 200_000),
+            content_type: "podcast".to_string(),
+            origin_url: String::new(),
+            app_url: app_url.to_string(),
+            file_path: String::new(),
+            size_bytes: 0,
+            // Audiobookshelf dates episodes in milliseconds.
+            content_created_at: episode
+                .get("publishedAt")
+                .and_then(Value::as_i64)
+                .map(|published| published / 1000),
+            content_modified_at: None,
+            metadata: Value::Object(metadata),
+        });
+    }
+}
+
 impl MediaSnapshotExtractor {
     fn snapshot_path(source: &SourceConfig) -> Result<PathBuf, String> {
         source
@@ -569,6 +810,18 @@ pub(crate) fn source_fingerprint(source: &SourceConfig) -> Option<String> {
         return None;
     }
     let mut files = std::collections::HashSet::from([path.clone()]);
+    if let Some(folder) = source.setting_str("subtitlesDir") {
+        files.extend(super::collect_files(
+            Path::new(folder),
+            0,
+            &|file: &Path| file.extension().is_some_and(|extension| extension == "srt"),
+        ));
+    }
+    if source.setting_str("sharedAudiobooksRoot").is_some() {
+        for entry in MediaSnapshotExtractor::load_entries(&path).ok()? {
+            files.extend(sidecar_file(&entry, source));
+        }
+    }
     let books = super::book_files::BookFiles::new(source, None);
     if books.enabled() {
         for entry in MediaSnapshotExtractor::load_entries(&path).ok()? {
@@ -595,7 +848,10 @@ impl super::Extractor for MediaSnapshotExtractor {
         let mut books = super::book_files::BookFiles::new(source, self.pdftotext.as_deref());
         let mut book_failure = None;
 
+        let subtitles = source.setting_str("subtitlesDir").map(PathBuf::from);
         for entry in &entries {
+            let sidecar = with_sidecar_details(entry, source);
+            let entry = sidecar.as_ref().unwrap_or(entry);
             let title = display_title(entry);
             let media_type = string_field(entry, "mediaType");
             let owner = owner_of(entry);
@@ -616,6 +872,13 @@ impl super::Extractor for MediaSnapshotExtractor {
                 .collect();
             list_metadata(&mut metadata, "authors", creators);
             list_metadata(&mut metadata, "writers", writers);
+            list_metadata(&mut metadata, "directors", string_list(entry, "directors"));
+            list_metadata(&mut metadata, "cast", string_list(entry, "cast"));
+            list_metadata(
+                &mut metadata,
+                "characters",
+                string_list(entry, "characters"),
+            );
             list_metadata(&mut metadata, "narrators", string_list(entry, "narrators"));
             list_metadata(&mut metadata, "genres", string_list(entry, "genres"));
             list_metadata(&mut metadata, "tags", string_list(entry, "tags"));
@@ -675,8 +938,21 @@ impl super::Extractor for MediaSnapshotExtractor {
                 book_failure = Some(err);
             }
 
+            emit_episodes(entry, &title, &metadata, &app_url, emit);
+            // Dialogue finds a film by a remembered line but is not what the
+            // film is about, so it is searched as incidental text.
+            let dialogue = subtitles
+                .as_deref()
+                .and_then(|folder| subtitle_text(folder, entry))
+                .unwrap_or_default();
+            if !dialogue.is_empty() {
+                metadata.insert(
+                    super::INCIDENTAL_LABEL.to_string(),
+                    Value::String("Subtitles".to_string()),
+                );
+            }
             emit(ExtractedDocument {
-                incidental_text: String::new(),
+                incidental_text: dialogue,
                 external_id: external_id(entry, &title),
                 kind: media_type.clone().unwrap_or_else(|| {
                     if fallback_type == "book" {

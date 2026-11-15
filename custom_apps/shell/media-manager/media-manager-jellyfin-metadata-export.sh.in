@@ -29,8 +29,19 @@ done
   echo "Jellyfin did not become ready before metadata export" >&2
   exit 1
 }
+work="$(mktemp -d)"
 tmp="$(mktemp "$(dirname "$output")/.metadata.XXXXXX")"
-trap 'rm -f -- "$tmp"' EXIT
+trap 'rm -f -- "$tmp"; rm -rf -- "$work"' EXIT
+# A series overview describes its episodes, many of which have none of their own.
+printf 'header = "X-Emby-Token: %s"\n' "$api_key" \
+  | curl --config - --fail --silent --show-error --max-time 60 --max-filesize 16777216 \
+    --get "$base_url/Items" \
+    --data-urlencode 'Recursive=true' \
+    --data-urlencode 'IncludeItemTypes=Series' \
+    --data-urlencode 'Fields=Overview' \
+    --data-urlencode 'Limit=10000' \
+  | jq -ce '[(.Items // [])[] | select((.Id|type) == "string" and ((.Overview // "")|length) > 0) | {key:.Id, value:.Overview[0:4000]}] | from_entries' \
+    >"$work/series.json"
 printf 'header = "X-Emby-Token: %s"\n' "$api_key" \
   | curl --config - --fail --silent --show-error --max-time 90 --max-filesize 16777216 \
     --get "$base_url/Items" \
@@ -41,6 +52,7 @@ printf 'header = "X-Emby-Token: %s"\n' "$api_key" \
   | jq -e \
     --arg shared @NIX_VARS_SHAREDROOT_QUOTED@ \
     --arg users @NIX_VARS_USERSROOT_QUOTED@ \
+    --slurpfile series "$work/series.json" \
     --argjson observedAt "$(date +%s)" '
     def clean($n): if type == "string" then .[0:$n] else null end;
     def location:
@@ -71,7 +83,10 @@ printf 'header = "X-Emby-Token: %s"\n' "$api_key" \
             description:(.Overview|clean(20000)),
             publisher:((.Studios // [])[0].Name|clean(500)),
             genres:((.Genres // [])[:64] | map(clean(500))),
+            seriesDescription:(if .Type == "Episode" then $series[0][.SeriesId // ""] else null end),
             writers:((.People // []) | map(select(.Type == "Writer") | .Name | clean(500))[:64]),
+            directors:((.People // []) | map(select(.Type == "Director") | .Name | clean(500))[:16]),
+            cast:((.People // []) | map(select(.Type == "Actor" or .Type == "GuestStar") | .Name | clean(500))[:24]),
             premiereDate:(.PremiereDate|clean(32)),
             runtimeMinutes:(if (.RunTimeTicks|type) == "number" then ((.RunTimeTicks / 600000000)|round) else null end),
             officialRating:(.OfficialRating|clean(64)), communityRating:.CommunityRating,
@@ -85,4 +100,41 @@ printf 'header = "X-Emby-Token: %s"\n' "$api_key" \
   ' >"$tmp"
 chmod 0640 "$tmp"
 mv -f -- "$tmp" "$output"
+# The words of one readable subtitle track per item, for Search. DVD and
+# Blu-ray picture subtitles have no text to read. Each track is fetched once;
+# a handful per run keeps Jellyfin's extraction from overrunning this unit.
+subtitles="$(dirname "$output")/subtitles"
+mkdir -p "$subtitles"
+rm -f -- "$subtitles"/.subtitle.*
+fetched=0
+while IFS=$'\t' read -r item_id stream_index; do
+  [[ "$item_id" =~ ^[0-9a-f]{32}$ && "$stream_index" =~ ^[0-9]+$ ]] || continue
+  target="$subtitles/$item_id.srt"
+  [[ -e "$target" ]] && continue
+  (( fetched < 6 )) || break
+  fetched=$((fetched + 1))
+  subtitle_tmp="$(mktemp "$subtitles/.subtitle.XXXXXX")"
+  if printf 'header = "X-Emby-Token: %s"\n' "$api_key" \
+    | curl --config - --fail --silent --show-error --max-time 30 --max-filesize 4194304 \
+      --output "$subtitle_tmp" \
+      "$base_url/Videos/$item_id/$item_id/Subtitles/$stream_index/Stream.srt"; then
+    chmod 0640 "$subtitle_tmp"
+    mv -f -- "$subtitle_tmp" "$target"
+  else
+    rm -f -- "$subtitle_tmp"
+  fi
+done < <(jq -r '
+  .entries[] | . as $entry
+  | [.subtitleStreams[]? | select((.codec // "" | ascii_downcase) as $codec
+      | ["subrip","srt","ass","ssa","mov_text","webvtt","vtt","text"] | index($codec))]
+  | (map(select((.language // "") | test("^en"))) + .)[0]
+  | select(. != null and (.index|type) == "number")
+  | "\($entry.itemId)\t\(.index)"' "$output")
+# Forget the tracks of items that left the library.
+jq -r '.entries[].itemId // empty' "$output" >"$work/items"
+for file in "$subtitles"/*.srt; do
+  [[ -e "$file" ]] || continue
+  grep -qxF -- "$(basename "$file" .srt)" "$work/items" || rm -f -- "$file"
+done
 trap - EXIT
+rm -rf -- "$work"

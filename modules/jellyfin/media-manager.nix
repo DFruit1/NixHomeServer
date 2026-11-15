@@ -18,7 +18,7 @@ let
   };
   jellyfinMetadataExport = pkgs.writeShellApplication {
     name = "media-manager-jellyfin-metadata-export";
-    runtimeInputs = [ pkgs.coreutils pkgs.curl pkgs.jq ];
+    runtimeInputs = [ pkgs.coreutils pkgs.curl pkgs.gnugrep pkgs.jq ];
     text = renderShell ../../custom_apps/shell/media-manager/media-manager-jellyfin-metadata-export.sh.in {
       VARS_NETWORKING_LOOPBACKIPV4 = vars.networking.loopbackIPv4;
       VARS_NETWORKING_PORTS_JELLYFIN = toString vars.networking.ports.jellyfin;
@@ -112,7 +112,8 @@ in
       MemoryDenyWriteExecute = true;
       MemoryMax = "256M";
       TasksMax = 32;
-      TimeoutStartSec = "3m";
+      # Two listings plus up to six first-time subtitle extractions.
+      TimeoutStartSec = "8m";
       CapabilityBoundingSet = [ ];
       AmbientCapabilities = [ ];
       ReadOnlyPaths = [ "/var/lib/jellyfin/data/library-sync.api-key" ];

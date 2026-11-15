@@ -303,6 +303,50 @@ pub(crate) fn extract_format_text(
     }
 }
 
+/// Catalogue details from a standalone OPF package file (the sidecar that
+/// Calibre and Media Manager keep beside a book's files): title, authors,
+/// tags, publisher, language, description, date and series.
+pub(crate) fn package_metadata(bytes: &[u8]) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::Value;
+    let mut metadata = serde_json::Map::new();
+    let raw = decode_document_text(bytes);
+    let Some(document) = parse_xml(&raw) else {
+        return metadata;
+    };
+    for node in document.descendants().filter(|node| node.is_element()) {
+        let (key, text) = match node.tag_name().name() {
+            "title" => ("title", node.text()),
+            "creator" => ("authors", node.text()),
+            "subject" => ("tags", node.text()),
+            "publisher" => ("publisher", node.text()),
+            "language" => ("language", node.text()),
+            "description" => ("description", node.text()),
+            "date" => ("date", node.text()),
+            "meta" if node.attribute("name") == Some("calibre:series") => {
+                ("series", node.attribute("content"))
+            }
+            _ => continue,
+        };
+        let text = truncate_text(text.unwrap_or_default().trim(), 20_000);
+        if text.is_empty() {
+            continue;
+        }
+        if matches!(key, "authors" | "tags") {
+            let values = metadata
+                .entry(key)
+                .or_insert_with(|| Value::Array(Vec::new()))
+                .as_array_mut()
+                .unwrap();
+            if values.len() < 32 && !values.contains(&Value::String(text.clone())) {
+                values.push(Value::String(text));
+            }
+        } else {
+            metadata.entry(key).or_insert(Value::String(text));
+        }
+    }
+    metadata
+}
+
 /// Reads catalogue metadata embedded in an EPUB package or ComicInfo.xml.
 /// ZIP entries stay in memory and use the same XML/input bounds as body text.
 pub(crate) fn embedded_book_metadata(

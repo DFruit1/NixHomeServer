@@ -149,6 +149,8 @@ pub(crate) fn append_search_metadata(body: &mut String, metadata: &Value) {
         "narrators",
         "writers",
         "directors",
+        "cast",
+        "characters",
         "from",
         "to",
         "cc",
@@ -237,8 +239,10 @@ pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
         // ratings, provider ids, chapters and season/episode wording for media.
         // 6: whole books as sections in reading order; scanned pages read.
         "calibre" => "6",
-        // 6: per-item application deep links for media-snapshot sources.
-        "media-snapshot" => "6",
+        // 7: cast, directors, series overviews and subtitle text for video;
+        // sidecar details for audiobooks; podcast episodes; characters and
+        // volume names for comics; whole books as sections.
+        "media-snapshot" => "7",
         _ => "2",
     };
     Some(crate::timeutil::sha256_hex(&[extraction_version, &inputs]))
