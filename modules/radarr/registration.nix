@@ -1,4 +1,5 @@
 {
+  mediaManager = { label = "Radarr"; capabilities = [ "folder-rescan" ]; };
   ports = {
     radarr = 7878;
     oauth2ProxyRadarr = 4191;
