@@ -109,18 +109,22 @@ changing the meaning of the search.
 ## Bonsai tag review
 
 When the `bonsai` app is enabled, Media Manager also asks Bonsai to check each
-photo's EYE tags against the photo preview, newest photos first. Bonsai answers
-keep or remove for each proposed tag; it cannot add or rename tags. Removed tags
-disappear from the photo and from saved-tag search; kept tags keep EYE's
-confidence. A tag that Bonsai finds plausible but uncertain is kept. If Bonsai
-rejects every tag on a photo with four or more, the answer is treated as a failed
-reading and EYE's tags are left unchanged.
+photo's EYE scene tags (objects, places, activities) against the photo preview,
+newest photos first. Bonsai lists the proposed tags that are clearly wrong; it
+cannot add or rename tags. Removed tags disappear from the photo and from
+saved-tag search; kept tags keep EYE's confidence. EYE's photo type,
+keep/reject, sensitive-content, rotation, quality and face tags are not
+reviewed. If Bonsai rejects every scene tag on a photo with four or more, the
+answer is treated as a failed reading and EYE's tags are left unchanged.
 
 The review runs in the provider broker, one photo at a time, through the
 loopback Bonsai concurrency gate. It pauses briefly between photos so other
-Bonsai users are served first, and waits when the gate is busy. Each review
-uses vision processing on the CPU, so the first pass over a large library can
-take days. Photos that fail are retried after six hours or a day.
+Bonsai users are served first, and waits when the gate is busy. Previews are
+reduced to fit 768 px first: on hand-labelled photos this took about 9 s a
+photo instead of 27 s at full preview size, with the same wrong tags caught
+(50 of 53, removing 3 of 138 correct tags). Vision encoding runs on the CPU,
+so the first pass over a library of about 24,000 photos takes two to three
+days. Photos that fail are retried after six hours or a day.
 
 Reviews are stored only in Media Manager's index (`image_tag_reviews`, with
 the removed tags). Retagging a photo replaces its tags with a fresh EYE result
