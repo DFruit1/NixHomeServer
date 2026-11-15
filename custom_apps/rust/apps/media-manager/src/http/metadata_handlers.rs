@@ -1659,7 +1659,10 @@ async fn video_health_issues(
         return Vec::new();
     };
     let cache = match application_caches.and_then(|caches| caches.video_probes.clone()) {
-        Some(cache) => cache,
+        Some(cache) => Some(cache),
+        // This request already spent its probe budget; report what it loaded
+        // instead of re-reading the cache once per item.
+        None if application_caches.is_some_and(|caches| caches.probe_cache_skipped) => None,
         None => {
             let state_dir = state.config.state_dir.clone();
             let (root_id, root_path) = (item.root_id.clone(), root.resolved_path.clone());
@@ -1668,12 +1671,14 @@ async fn video_health_issues(
             })
             .await
             {
-                Ok(cache) => Arc::new(cache),
+                Ok(cache) => Some(Arc::new(cache)),
                 Err(_) => return Vec::new(),
             }
         }
     };
-    let probe = cache.probe_for(&item.relative_path, &item.fingerprint);
+    let probe = cache
+        .as_ref()
+        .and_then(|cache| cache.probe_for(&item.relative_path, &item.fingerprint));
     let mut issues = Vec::new();
     if let Some(probe) = probe.as_ref()
         && let Some(issue) = super::video_conversions::playback_issue(item, probe)
@@ -1681,7 +1686,10 @@ async fn video_health_issues(
         issues.push(issue);
     }
     // A container fault already explains why FFprobe failed.
-    let probe_failed = file_is_sound && cache.probe_failed(&item.relative_path, &item.fingerprint);
+    let probe_failed = file_is_sound
+        && cache.as_ref().is_some_and(|cache| {
+            cache.probe_failed(&item.relative_path, &item.fingerprint)
+        });
     issues.extend(file_health::video_probe_issues(
         probe.as_ref(),
         probe_failed,
@@ -1718,6 +1726,7 @@ async fn video_health_issues(
             .filter(|feature| feature.media_kind == MediaKind::Video)
             .filter_map(|feature| {
                 let seconds = cache
+                    .as_ref()?
                     .probe_for(&feature.relative_path, &feature.fingerprint)?
                     .duration_seconds?;
                 Some((feature, seconds))
@@ -1741,7 +1750,9 @@ async fn video_health_issues(
     }
 
     if let Some(embedded) = probe.as_ref().and_then(|probe| probe.title.as_deref())
-        && !cache.title_shared_in_folder(&item.relative_path, embedded)
+        && cache
+            .as_ref()
+            .is_some_and(|cache| !cache.title_shared_in_folder(&item.relative_path, embedded))
     {
         let mut names = ["title", "series", "episodeTitle"]
             .into_iter()
@@ -2023,7 +2034,10 @@ pub(super) async fn metadata_issues(
             let budget = probe_deadline.saturating_duration_since(std::time::Instant::now());
             match tokio::time::timeout(budget, probe_work).await {
                 Ok(Ok(cache)) => Some(Arc::new(cache)),
-                _ => None,
+                _ => {
+                    application_caches.probe_cache_skipped = true;
+                    None
+                }
             }
         };
     }
@@ -2590,6 +2604,9 @@ struct ApplicationMetadataCaches {
     indexes: HashMap<&'static str, MetadataIndex>,
     /// The page's video probes, loaded once rather than per item.
     video_probes: Option<Arc<VideoProbeCache>>,
+    /// The request spent its probe budget, so this page reports the probes it
+    /// loaded and must not re-read the cache once per item.
+    probe_cache_skipped: bool,
 }
 
 impl ApplicationMetadataCaches {
@@ -2622,6 +2639,7 @@ impl ApplicationMetadataCaches {
             caches,
             indexes,
             video_probes: None,
+            probe_cache_skipped: false,
         }
     }
 
