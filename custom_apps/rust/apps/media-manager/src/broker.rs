@@ -76,6 +76,23 @@ pub type ReplaceMetadataSidecarAction = ReplaceArtworkAction;
 pub type ReplaceEmbeddedMetadataAction = ReplaceArtworkAction;
 pub type ConvertComicArchiveAction = ReplaceArtworkAction;
 
+/// Replace a library video with its verified conversion. The original is
+/// copied to the plan owner's `_Originals` folder and checked before the
+/// library changes; see `crate::video_conversion`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvertVideoAction {
+    /// Finished encode in the conversion staging spool's video folder.
+    pub staging_filename: String,
+    pub root_id: String,
+    pub source_relative_path: String,
+    pub replacement_relative_path: String,
+    /// Beneath the plan owner's `_Originals` folder.
+    pub archived_relative_path: String,
+    pub expected_source: String,
+    pub expected_replacement: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BrokerAction {
@@ -89,6 +106,9 @@ pub enum BrokerAction {
     ReplaceArtwork(ReplaceArtworkAction),
     /// Install a validated CBZ repack beside a CBR comic and archive the CBR.
     ConvertComicArchive(ConvertComicArchiveAction),
+    /// Archive a video in its owner's originals folder and install its
+    /// conversion in the library.
+    ConvertVideo(ConvertVideoAction),
 }
 
 impl From<MoveAction> for BrokerAction {
@@ -226,6 +246,7 @@ pub fn apply_broker_action(
             validate_convert_comic_archive_action(config, username, action)?;
             apply_replace_file(config, username, action)
         }
+        BrokerAction::ConvertVideo(action) => apply_convert_video(config, username, action),
     }
 }
 
@@ -259,6 +280,7 @@ pub fn recover_broker_action(
             validate_convert_comic_archive_action(config, username, action)?;
             recover_replaced_file(config, username, action)
         }
+        BrokerAction::ConvertVideo(action) => recover_converted_video(config, username, action),
     }
 }
 
@@ -298,6 +320,11 @@ pub fn discard_staged_broker_action(
         ),
         BrokerAction::ConvertComicArchive(action) => discard_staged_file(
             config,
+            &action.staging_filename,
+            &action.expected_replacement,
+        ),
+        BrokerAction::ConvertVideo(action) => discard_staged_file_in(
+            &video_staging_root(config),
             &action.staging_filename,
             &action.expected_replacement,
         ),
@@ -1346,10 +1373,23 @@ fn discard_staged_file(
     staging_filename: &str,
     expected: &str,
 ) -> Result<(), BrokerError> {
+    discard_staged_file_in(
+        &config.state_dir.join("provider-staging"),
+        staging_filename,
+        expected,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn discard_staged_file_in(
+    staging_root: &Path,
+    staging_filename: &str,
+    expected: &str,
+) -> Result<(), BrokerError> {
     if !safe_component(staging_filename) {
         return Err(BrokerError::new("staging filename is not a safe component"));
     }
-    let staging_root_fd = open_root(&config.state_dir.join("provider-staging"))?;
+    let staging_root_fd = open_root(staging_root)?;
     let leaf = c_string(staging_filename)?;
     let fd = unsafe {
         libc::openat(
@@ -1607,7 +1647,25 @@ fn prepare_staged_copy(
     destination_parent_fd: RawFd,
 ) -> Result<(OwnedFd, String), BrokerError> {
     let staging_root_fd = open_root(&config.state_dir.join("provider-staging"))?;
-    let source_fd = open_regular_at(staging_root_fd.as_raw_fd(), staging_filename)?;
+    let temporary_name = copy_staged_into(
+        staging_root_fd.as_raw_fd(),
+        staging_filename,
+        expected,
+        destination_parent_fd,
+    )?;
+    Ok((staging_root_fd, temporary_name))
+}
+
+/// Copy a staged file into a fresh temporary beside its destination, keeping
+/// its timestamps so the installed file has the staged fingerprint.
+#[cfg(target_os = "linux")]
+fn copy_staged_into(
+    staging_root_fd: RawFd,
+    staging_filename: &str,
+    expected: &str,
+    destination_parent_fd: RawFd,
+) -> Result<String, BrokerError> {
+    let source_fd = open_regular_at(staging_root_fd, staging_filename)?;
     let source_stat = file_stat(source_fd.as_raw_fd())?;
     if fingerprint_from_stat(&source_stat) != expected {
         return Err(BrokerError::new(
@@ -1646,7 +1704,7 @@ fn prepare_staged_copy(
         return Err(error);
     }
     drop(temporary);
-    Ok((staging_root_fd, temporary_name))
+    Ok(temporary_name)
 }
 
 #[cfg(target_os = "linux")]
@@ -1794,4 +1852,315 @@ fn owned_fd(fd: libc::c_int) -> std::io::Result<OwnedFd> {
     } else {
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Video conversion: archive the original in the owner's directory, then install
+// the conversion. Each step is checked against fingerprints recorded when the
+// job was queued and encoded, so a re-run after a crash resumes safely.
+// ---------------------------------------------------------------------------
+
+fn video_staging_root(config: &AppConfig) -> std::path::PathBuf {
+    crate::conversion_jobs::staging_root(config).join(crate::video_conversion::STAGING_DIRECTORY)
+}
+
+#[cfg(target_os = "linux")]
+struct VideoConversionPaths<'a> {
+    root_path: String,
+    originals_path: std::path::PathBuf,
+    source_parent: Vec<&'a str>,
+    source_leaf: &'a str,
+    replacement_leaf: &'a str,
+    archive_parent: Vec<&'a str>,
+    archive_leaf: &'a str,
+}
+
+#[cfg(target_os = "linux")]
+impl VideoConversionPaths<'_> {
+    fn replaces_in_place(&self) -> bool {
+        self.source_leaf == self.replacement_leaf
+    }
+}
+
+/// The conversion keeps the folder and name, changing at most the extension to
+/// .mp4 or .mkv; the original goes only to its deterministic place beneath the
+/// plan owner's originals folder.
+#[cfg(target_os = "linux")]
+fn validate_convert_video_action<'a>(
+    config: &AppConfig,
+    username: &str,
+    action: &'a ConvertVideoAction,
+) -> Result<VideoConversionPaths<'a>, BrokerError> {
+    if !safe_component(&action.staging_filename) {
+        return Err(BrokerError::new("staging filename is not a safe component"));
+    }
+    let identity = Identity::try_new(username, ["users"])
+        .map_err(|_| BrokerError::new("plan owner is not a safe identity component"))?;
+    let root = config
+        .resolve_visible_root(&identity, &action.root_id)
+        .ok_or_else(|| BrokerError::new("video root ID is not registered"))?;
+    if root.category != LibraryCategory::Videos {
+        return Err(BrokerError::new(
+            "videos may only be converted in a video root",
+        ));
+    }
+    let (source_parent, source_leaf) = safe_parent_and_leaf(&action.source_relative_path)?;
+    let (replacement_parent, replacement_leaf) =
+        safe_parent_and_leaf(&action.replacement_relative_path)?;
+    let (archive_parent, archive_leaf) = safe_parent_and_leaf(&action.archived_relative_path)?;
+    let split = |leaf: &str| {
+        leaf.rsplit_once('.')
+            .map(|(stem, extension)| (stem.to_string(), extension.to_ascii_lowercase()))
+    };
+    let valid = replacement_parent == source_parent
+        && action.archived_relative_path
+            == crate::video_conversion::archived_relative_path(
+                &action.root_id,
+                &action.source_relative_path,
+            )
+        && match (split(source_leaf), split(replacement_leaf)) {
+            (Some((source_stem, source)), Some((replacement_stem, replacement))) => {
+                source_stem == replacement_stem
+                    && crate::media::MediaKind::Video
+                        .extensions()
+                        .contains(&source.as_str())
+                    && matches!(replacement.as_str(), "mp4" | "mkv")
+            }
+            _ => false,
+        };
+    if !valid {
+        return Err(BrokerError::new(
+            "video conversion must install a same-name .mp4 or .mkv beside the source and archive the source in the owner's originals folder",
+        ));
+    }
+    Ok(VideoConversionPaths {
+        root_path: root.resolved_path,
+        originals_path: config
+            .users_root
+            .join(&identity.username)
+            .join(crate::video_conversion::ORIGINALS_DIRECTORY),
+        source_parent,
+        source_leaf,
+        replacement_leaf,
+        archive_parent,
+        archive_leaf,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn apply_convert_video(
+    config: &AppConfig,
+    username: &str,
+    action: &ConvertVideoAction,
+) -> Result<(), BrokerError> {
+    if recover_converted_video(config, username, action)? {
+        return Ok(());
+    }
+    let paths = validate_convert_video_action(config, username, action)?;
+    let in_place = paths.replaces_in_place();
+    let root_fd = open_root(Path::new(&paths.root_path))?;
+    let parent_fd = open_directory_chain(root_fd.as_raw_fd(), &paths.source_parent, false)?;
+    // Provisioned per user with that user's access; never created here.
+    let originals_fd = open_root(&paths.originals_path)?;
+    let archive_parent_fd =
+        open_directory_chain(originals_fd.as_raw_fd(), &paths.archive_parent, true)?;
+    let parent = parent_fd.as_raw_fd();
+    let source = fingerprint_optional_at(parent, paths.source_leaf)?;
+    let archived = fingerprint_optional_at(archive_parent_fd.as_raw_fd(), paths.archive_leaf)?;
+    let replacement = if in_place {
+        source.clone()
+    } else {
+        fingerprint_optional_at(parent, paths.replacement_leaf)?
+    };
+    let source_unchanged = source.as_deref() == Some(action.expected_source.as_str());
+    let changed = || {
+        BrokerError::new("the video changed after its conversion was queued; nothing was replaced")
+    };
+
+    // 1. A verified copy of the original exists before the library changes.
+    match archived.as_deref() {
+        None if source_unchanged => copy_verified(
+            parent,
+            paths.source_leaf,
+            archive_parent_fd.as_raw_fd(),
+            paths.archive_leaf,
+            &action.expected_source,
+        )?,
+        None => return Err(changed()),
+        Some(found) if found == action.expected_source => {}
+        Some(_) => {
+            return Err(BrokerError::new(format!(
+                "{}/{} already holds a different file; move it and convert again",
+                crate::video_conversion::ORIGINALS_DIRECTORY,
+                action.archived_relative_path
+            )))
+        }
+    }
+
+    // 2. Install the conversion.
+    if replacement.as_deref() != Some(action.expected_replacement.as_str()) {
+        if in_place && !source_unchanged {
+            return Err(changed());
+        }
+        if !in_place && replacement.is_some() {
+            return Err(BrokerError::new(
+                "another file already has the converted name; nothing was replaced",
+            ));
+        }
+        let staging_root_fd = open_root(&video_staging_root(config))?;
+        let temporary = copy_staged_into(
+            staging_root_fd.as_raw_fd(),
+            &action.staging_filename,
+            &action.expected_replacement,
+            parent,
+        )?;
+        if in_place {
+            // Swap atomically, then confirm the swapped-out file is the original
+            // that was archived; anything else is put back untouched.
+            if let Err(error) = rename_exchange(parent, &temporary, paths.source_leaf) {
+                unlink_at_if_present(parent, &temporary);
+                return Err(error);
+            }
+            if fingerprint_optional_at(parent, &temporary)?.as_deref()
+                != Some(action.expected_source.as_str())
+            {
+                rename_exchange(parent, &temporary, paths.source_leaf)?;
+                unlink_at_if_present(parent, &temporary);
+                return Err(changed());
+            }
+            unlink_regular_at(parent, &temporary)?;
+        } else if let Err(error) = rename_noreplace(
+            parent,
+            &temporary,
+            parent,
+            paths.replacement_leaf,
+            "install converted video",
+        ) {
+            unlink_at_if_present(parent, &temporary);
+            return Err(error);
+        }
+        sync_directory(parent)?;
+    }
+
+    // 3. The library copy of the original goes only once both are in place.
+    if !in_place
+        && fingerprint_optional_at(parent, paths.source_leaf)?.as_deref()
+            == Some(action.expected_source.as_str())
+    {
+        unlink_regular_at(parent, paths.source_leaf)?;
+        sync_directory(parent)?;
+    }
+    recover_converted_video(config, username, action)?;
+    Ok(())
+}
+
+/// True once the original is archived, the conversion installed and the old
+/// library file gone; also removes the finished staging file.
+#[cfg(target_os = "linux")]
+fn recover_converted_video(
+    config: &AppConfig,
+    username: &str,
+    action: &ConvertVideoAction,
+) -> Result<bool, BrokerError> {
+    let paths = validate_convert_video_action(config, username, action)?;
+    let root_fd = open_root(Path::new(&paths.root_path))?;
+    let parent_fd = match open_directory_chain(root_fd.as_raw_fd(), &paths.source_parent, false) {
+        Ok(parent) => parent,
+        Err(_) => return Ok(false),
+    };
+    let Ok(originals_fd) = open_root(&paths.originals_path) else {
+        return Ok(false);
+    };
+    let Ok(archive_parent_fd) =
+        open_directory_chain(originals_fd.as_raw_fd(), &paths.archive_parent, false)
+    else {
+        return Ok(false);
+    };
+    let parent = parent_fd.as_raw_fd();
+    if fingerprint_optional_at(archive_parent_fd.as_raw_fd(), paths.archive_leaf)?.as_deref()
+        != Some(action.expected_source.as_str())
+        || fingerprint_optional_at(parent, paths.replacement_leaf)?.as_deref()
+            != Some(action.expected_replacement.as_str())
+        || (!paths.replaces_in_place()
+            && fingerprint_optional_at(parent, paths.source_leaf)?.is_some())
+    {
+        return Ok(false);
+    }
+    let staging_root_fd = open_root(&video_staging_root(config))?;
+    match fingerprint_optional_at(staging_root_fd.as_raw_fd(), &action.staging_filename)? {
+        Some(fingerprint) if fingerprint == action.expected_replacement => {
+            unlink_regular_at(staging_root_fd.as_raw_fd(), &action.staging_filename)?;
+            sync_directory(staging_root_fd.as_raw_fd())?;
+        }
+        Some(_) => {
+            return Err(BrokerError::new(
+                "completed video conversion has a changed staged file",
+            ))
+        }
+        None => {}
+    }
+    Ok(true)
+}
+
+/// Copy one regular file to a new name in another directory (possibly another
+/// filesystem), keeping its timestamps, and verify the result.
+#[cfg(target_os = "linux")]
+fn copy_verified(
+    source_parent_fd: RawFd,
+    source_leaf: &str,
+    destination_parent_fd: RawFd,
+    destination_leaf: &str,
+    expected: &str,
+) -> Result<(), BrokerError> {
+    if fingerprint_at(source_parent_fd, source_leaf)? != expected {
+        return Err(BrokerError::new(
+            "the video changed after its conversion was queued; nothing was replaced",
+        ));
+    }
+    let temporary = copy_staged_into(
+        source_parent_fd,
+        source_leaf,
+        expected,
+        destination_parent_fd,
+    )?;
+    if let Err(error) = rename_noreplace(
+        destination_parent_fd,
+        &temporary,
+        destination_parent_fd,
+        destination_leaf,
+        "archive original video",
+    ) {
+        unlink_at_if_present(destination_parent_fd, &temporary);
+        return Err(error);
+    }
+    sync_directory(destination_parent_fd)?;
+    if fingerprint_at(destination_parent_fd, destination_leaf)? != expected {
+        return Err(BrokerError::new(
+            "the archived original does not match the library file",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn rename_exchange(parent_fd: RawFd, left: &str, right: &str) -> Result<(), BrokerError> {
+    let left = c_string(left)?;
+    let right = c_string(right)?;
+    let exchanged = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            parent_fd,
+            left.as_ptr(),
+            parent_fd,
+            right.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if exchanged != 0 {
+        return Err(BrokerError::new(format!(
+            "swap in converted video: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(())
 }

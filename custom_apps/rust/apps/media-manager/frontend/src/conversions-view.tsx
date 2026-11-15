@@ -21,6 +21,7 @@ import type {
   ConversionInputs,
 } from "./api-contract.generated";
 import { ComicConversions } from "./comic-conversions";
+import { VideoConversions } from "./video-conversions";
 import { Icon } from "./icon";
 import type {
   Conversion,
@@ -116,7 +117,7 @@ const ConversionList = component$<{
   );
 });
 
-type ConversionsTask = ConversionTask | "comics";
+type ConversionsTask = ConversionTask | "comics" | "videos";
 
 const tasks: {
   id: ConversionsTask;
@@ -147,6 +148,12 @@ const tasks: {
     icon: "book",
     title: "Make comics editable",
     detail: "Convert CBR comics to CBZ so their details can be edited.",
+  },
+  {
+    id: "videos",
+    icon: "video",
+    title: "Convert videos",
+    detail: "Make videos load faster and play in browsers and on more devices.",
   },
 ];
 
@@ -296,6 +303,8 @@ export const ConversionsView = component$<{
   initial?: ConversionEnvelope;
   transcriptionAvailable?: boolean;
   canEdit?: boolean;
+  /** A video to convert, from the player's or Library health's link. */
+  initialItemId?: string;
 }>((props) => {
   const conv = useStore<{
     conversions?: ConversionEnvelope;
@@ -313,7 +322,9 @@ export const ConversionsView = component$<{
     inputError: "",
   });
   const logDialog = useSignal<string>("");
-  const task = useSignal<ConversionsTask | "">("");
+  const task = useSignal<ConversionsTask | "">(
+    props.initialItemId ? "videos" : "",
+  );
   const requeues = useStore<Requeues>({});
   // Archived discs move back into the inbox through the same server-file
   // submission as any other ISO, so the broker applies the same checks.
@@ -534,7 +545,10 @@ export const ConversionsView = component$<{
         {task.value === "comics" && (
           <ComicConversions canEdit={props.canEdit ?? false} />
         )}
-        {task.value && task.value !== "comics" && (
+        {task.value === "videos" && (
+          <VideoConversions initialItemId={props.initialItemId} />
+        )}
+        {task.value && task.value !== "comics" && task.value !== "videos" && (
           <ConversionInput
             task={task.value}
             inputs={conv.inputs}

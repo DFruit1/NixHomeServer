@@ -726,6 +726,7 @@ export default component$((props: RootProps) => {
           <ConversionsView
             initial={state.conversions}
             canEdit={state.session?.canEdit ?? false}
+            initialItemId={route.initialItemId}
             transcriptionAvailable={
               state.status?.integrations.some(
                 (i) => i.id === "transcribe" && i.available,

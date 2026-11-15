@@ -19,6 +19,7 @@ const OPERATION_LABELS: Record<string, string> = {
   replace_metadata_sidecar: "Update metadata",
   replace_embedded_metadata: "Embed metadata",
   comic_archive_to_cbz: "Convert comic to CBZ",
+  video_conversion: "Convert video",
   install_artwork: "Add artwork",
   replace_artwork: "Replace artwork",
   archive_embedded_artwork: "Archive artwork",

@@ -809,7 +809,12 @@ export const VideosView = component$<{
           <p class="video-conversion-hint">
             For better loading times and device compatibility, consider
             converting this video to another format in the{" "}
-            <a href="?view=conversions">Conversions page</a>.
+            <a
+              href={`?view=conversions&item=${encodeURIComponent(state.selectedId)}`}
+            >
+              Conversions page
+            </a>
+            .
           </p>
         )}
         {state.error && (

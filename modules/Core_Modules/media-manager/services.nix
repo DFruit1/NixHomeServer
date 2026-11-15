@@ -447,6 +447,80 @@ in
     };
   };
 
+  # Owner request (2026-11-15): convert videos browsers cannot play. Encodes
+  # take hours, so the worker runs at the lowest priority, exits when its queue
+  # is empty, and is never restarted by a deploy (an activation would otherwise
+  # wait on, or kill, an encode). The next start picks up new code.
+  systemd.services.media-manager-video-convert = lib.mkIf (cfg.mutationMode == "enabled") {
+    description = "Convert queued Media Manager videos";
+    requires = [ "data-pool-layout.service" "media-manager-storage-access.service" ];
+    after = [ "data-pool-layout.service" "media-manager-storage-access.service" ];
+    restartIfChanged = false;
+    environment = commonEnvironment;
+    serviceConfig = {
+      Type = "simple";
+      User = "media-manager";
+      Group = "media-manager";
+      ExecStart = lib.getExe' cfg.package "media-manager-video-convert";
+      Nice = 19;
+      CPUSchedulingPolicy = "batch";
+      CPUWeight = 10;
+      IOSchedulingClass = "idle";
+      IOWeight = 10;
+      MemoryHigh = "3G";
+      MemoryMax = "4G";
+      UMask = "0007";
+      NoNewPrivileges = true;
+      PrivateTmp = true;
+      PrivateDevices = true;
+      PrivateNetwork = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectKernelLogs = true;
+      ProtectControlGroups = true;
+      # No ProcSubset: encoders size their thread pools from /proc.
+      ProtectProc = "invisible";
+      ProtectClock = true;
+      ProtectHostname = true;
+      RestrictAddressFamilies = [ "AF_UNIX" ];
+      RestrictNamespaces = true;
+      RestrictRealtime = true;
+      LockPersonality = true;
+      MemoryDenyWriteExecute = true;
+      CapabilityBoundingSet = [ ];
+      AmbientCapabilities = [ ];
+      ReadOnlyPaths = [ "-${vars.sharedRoot}" "-${vars.usersRoot}" ];
+      ReadWritePaths = [ cfg.stateDir "${vars.dataRoot}/media-manager/intake" ];
+      SystemCallArchitectures = "native";
+      SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
+      # Encoder libraries probe CPU affinity; refuse rather than kill them.
+      SystemCallErrorNumber = "EPERM";
+    };
+  };
+
+  systemd.paths.media-manager-video-convert = lib.mkIf (cfg.mutationMode == "enabled") {
+    description = "Start the video conversion worker when a conversion is queued";
+    wantedBy = [ "paths.target" ];
+    pathConfig = {
+      PathChanged = "${cfg.stateDir}/video-conversion-requests";
+      Unit = "media-manager-video-convert.service";
+    };
+  };
+
+  # Resumes queued work after a reboot, or a request made as the worker exited.
+  systemd.timers.media-manager-video-convert = lib.mkIf (cfg.mutationMode == "enabled") {
+    description = "Resume queued Media Manager video conversions";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "3m";
+      OnUnitInactiveSec = "5m";
+      AccuracySec = "30s";
+      Unit = "media-manager-video-convert.service";
+    };
+  };
+
   systemd.paths.media-manager-refresh-requests = {
     description = "Dispatch queued Media Manager application refresh requests";
     wantedBy = [ "paths.target" ];
