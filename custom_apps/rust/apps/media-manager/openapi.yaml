@@ -3526,14 +3526,15 @@ components:
         canEdit: { type: boolean }
     YoutubeItemChange:
       type: object
-      required: [change, rootId, rootLabel, folder, removed, added]
+      required: [change, rootId, rootLabel, folder, removed, added, moved]
       properties:
         change: { type: string, enum: [split, join, embed-cover, remove-cover, move] }
         rootId: { type: string }
         rootLabel: { type: string }
         folder: { type: string, description: "Where the item is filed after the change." }
-        removed: { type: array, items: { type: string }, description: "Paths moved to the tombstone or away." }
-        added: { type: array, items: { type: string } }
+        removed: { type: array, items: { type: string }, description: "Paths moved to the library tombstone." }
+        added: { type: array, items: { type: string }, description: "New media files." }
+        moved: { type: array, items: { type: string }, description: "Where the item's existing files move to." }
     ItemsResponse:
       type: object
       required: [items]

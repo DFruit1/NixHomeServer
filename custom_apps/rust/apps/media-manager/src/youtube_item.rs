@@ -1078,6 +1078,7 @@ struct PlanBuilder<'a> {
     taken: BTreeSet<String>,
     removed: Vec<String>,
     added: Vec<String>,
+    moved: Vec<String>,
 }
 
 impl<'a> PlanBuilder<'a> {
@@ -1088,6 +1089,7 @@ impl<'a> PlanBuilder<'a> {
             taken: BTreeSet::new(),
             removed: Vec::new(),
             added: Vec::new(),
+            moved: Vec::new(),
         }
     }
 
@@ -1137,8 +1139,7 @@ impl<'a> PlanBuilder<'a> {
             destination_relative_path: to.to_string(),
             expected: fingerprint.to_string(),
         }));
-        self.removed.push(from.to_string());
-        self.added.push(to.to_string());
+        self.moved.push(to.to_string());
     }
 }
 
@@ -1229,6 +1230,7 @@ fn summary(builder: &PlanBuilder<'_>, change: &Change, folder: &str, root: &Visi
         "folder": folder,
         "removed": visible(&builder.removed),
         "added": visible(&builder.added),
+        "moved": visible(&builder.moved),
     })
 }
 

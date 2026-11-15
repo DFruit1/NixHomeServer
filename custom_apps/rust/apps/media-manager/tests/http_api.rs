@@ -4338,7 +4338,7 @@ async fn youtube_downloads_describe_their_manifest_and_preview_a_move() {
     api_contract::assert_component("MutationPreview", &plan);
     assert_eq!(plan["youtubeItem"]["folder"], "Clip");
     assert_eq!(
-        plan["youtubeItem"]["added"],
+        plan["youtubeItem"]["moved"],
         serde_json::json!(["Clip/Clip.mkv", "Clip/Clip.jpg"])
     );
     let destinations = plan["actions"]

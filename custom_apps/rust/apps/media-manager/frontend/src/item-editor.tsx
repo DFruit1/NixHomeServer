@@ -93,6 +93,7 @@ import type {
   NamingProfile,
   TrackOrderReport,
 } from "./root-types";
+import { YoutubeItemPanel } from "./youtube-item-panel";
 
 export type {
   MetadataFieldChange,
@@ -2551,6 +2552,19 @@ export const ItemEditor = component$<{
             <div class="metadata-sources">{metadataSources}</div>
           </section>
         )}
+        {!props.folder &&
+          selectedItem &&
+          ["music", "audiobook", "video"].includes(selectedItem.mediaKind) && (
+            <YoutubeItemPanel
+              key={selectedItem.id}
+              itemId={selectedItem.id}
+              onMoved$={$((message: string) => {
+                props.state.notice = message;
+                props.state.metadataDraftDirty = false;
+                props.state.selectedItemId = "";
+              })}
+            />
+          )}
         {!props.folder &&
           supportsMediaAction(
             props.state.status,

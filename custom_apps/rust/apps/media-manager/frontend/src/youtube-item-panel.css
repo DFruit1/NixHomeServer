@@ -1,0 +1,141 @@
+/* YouTube download section of the metadata editor (youtube-item-panel.tsx). */
+.youtube-item {
+  margin: 0 20px;
+  border-top: 1px solid var(--line);
+}
+.youtube-item__load-error {
+  margin: 0 20px;
+}
+.youtube-item__body {
+  gap: 16px;
+}
+.youtube-item__facts {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+.youtube-item__facts > div {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  gap: 12px;
+}
+.youtube-item__facts dt {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 1.5;
+}
+.youtube-item__facts dd {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  min-width: 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.youtube-item__facts a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.youtube-item__quiet {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+.youtube-item__chapters > summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  font-weight: 600;
+}
+.youtube-item__chapters > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
+.youtube-item__chapters ol {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 22rem;
+  overflow-y: auto;
+}
+.youtube-item__chapters li {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  gap: 12px;
+  overflow-wrap: anywhere;
+}
+.youtube-item__time {
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+}
+.youtube-item__changes,
+.youtube-item__preview {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.youtube-item__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.youtube-item__move {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+.youtube-item__move label {
+  display: grid;
+  flex: 1 1 10rem;
+  gap: 6px;
+  min-width: 0;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.youtube-item__move :is(select, input) {
+  min-height: 38px;
+  width: 100%;
+}
+.youtube-item__preview p,
+.youtube-item__preview li {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.youtube-item__paths,
+.youtube-item__warnings {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-inline-start: 1.1rem;
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+.youtube-item__paths {
+  max-height: 14rem;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+}
+.youtube-item__warnings {
+  color: var(--ink-soft);
+}
+@media (max-width: 640px) {
+  .youtube-item,
+  .youtube-item__load-error {
+    margin-inline: 16px;
+  }
+  .youtube-item__facts > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+}
