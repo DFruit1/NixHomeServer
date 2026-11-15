@@ -2,6 +2,7 @@ pub mod book_files;
 pub mod browsertrix;
 pub mod calibre;
 pub mod document;
+pub mod files;
 pub mod freshrss;
 pub mod kiwix;
 pub mod mail;
@@ -224,6 +225,7 @@ pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
         "calibre" => calibre::source_fingerprint(source),
         "media-snapshot" => media_snapshot::source_fingerprint(source),
         "paperless" => paperless::source_fingerprint(source),
+        "files" => files::source_fingerprint(source),
         _ => None,
     }?;
     // Extraction changes must reach unchanged source files too. A Solr-only
@@ -335,6 +337,9 @@ pub fn run(
     }
     let extractor: Box<dyn Extractor> = match source.source_type.as_str() {
         "paperless" => Box::new(paperless::PaperlessExtractor {
+            pdftotext: settings.pdftotext.clone(),
+        }),
+        "files" => Box::new(files::FilesExtractor {
             pdftotext: settings.pdftotext.clone(),
         }),
         "paperless-documents" => Box::new(paperless_api::PaperlessApiExtractor {

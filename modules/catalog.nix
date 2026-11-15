@@ -204,6 +204,7 @@ rec {
     { module = ./Integrations/expose_media_manager_libraries_to_search.nix; allApps = [ "search" ]; anyApps = [ "jellyfin" "audiobookshelf" "kavita" ]; }
     { module = ./Integrations/expose_mail_archive_emails_to_search.nix; allApps = [ "search" "mail-archive-ui" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_paperless_documents_to_search.nix; allApps = [ "search" "paperless" ]; anyApps = [ ]; }
+    { module = ./Integrations/expose_personal_files_to_search.nix; allApps = [ "search" ]; anyApps = [ "files" "transcribe" ]; }
     { module = ./Integrations/expose_search_to_media_manager.nix; allApps = [ "search" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_searxng_papers_to_search.nix; allApps = [ "search" "searxng" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_mail_archive_emails_in_files.nix; allApps = [ "mail-archive-ui" "files" ]; anyApps = [ ]; }

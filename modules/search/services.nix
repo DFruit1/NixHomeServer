@@ -313,6 +313,7 @@ in
             };
             sourceType = lib.mkOption {
               type = lib.types.enum [
+                "files"
                 "paperless"
                 "paperless-api"
                 "paperless-documents"
