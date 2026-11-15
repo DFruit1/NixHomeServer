@@ -117,10 +117,14 @@ jq -e '
   and (.providerService.PrivateDevices == true)
   and (.providerService.CapabilityBoundingSet == [])
   and (.providerService.AmbientCapabilities == [])
-  and ((.providerService.RestrictAddressFamilies | sort) ==
+  and ((.providerService.RestrictAddressFamilies | unique) ==
     (["AF_INET", "AF_INET6"] +
-      (if (.providerEnvironment.MEDIA_MANAGER_EYE_SOCKET // "") != "" then ["AF_UNIX"] else [] end)
-    | sort))
+      (if (.providerEnvironment.MEDIA_MANAGER_EYE_SOCKET // "") != ""
+        or (.providerEnvironment.MEDIA_MANAGER_PROVIDER_SYSTEM_SOCKET // "") != ""
+      then ["AF_UNIX"] else [] end)
+    | unique))
+  and ((.app.providerSystemClients != [])
+    == ((.providerEnvironment.MEDIA_MANAGER_PROVIDER_SYSTEM_SOCKET // "") != ""))
   and (.providerService.ReadWritePaths == ["/var/lib/media-manager-provider"])
   and (.providerEnvironment.MEDIA_MANAGER_PROVIDER_ADDRESS == "127.0.0.1")
   and (.providerEnvironment.MEDIA_MANAGER_PROVIDER_PORT == "8089")

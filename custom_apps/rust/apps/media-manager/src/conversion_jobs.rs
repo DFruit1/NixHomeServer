@@ -280,7 +280,13 @@ fn advance(config: &AppConfig, job: &mut Job) -> Result<(), String> {
         job.options.validate(config, &identity)?;
         let dir = inbox(config, job)?;
         if job.options.kind == "iso" {
-            for archive in ["", "_Processed", "_Failed", "_Duplicate"] {
+            for archive in [
+                "",
+                "_Processed",
+                "_Failed",
+                "_Duplicate",
+                "_NeedsIdentification",
+            ] {
                 let location = if archive.is_empty() {
                     Dir(dir.0.try_clone().map_err(|e| e.to_string())?)
                 } else {
@@ -331,6 +337,13 @@ fn advance(config: &AppConfig, job: &mut Job) -> Result<(), String> {
             .is_ok()
         {
             return Err("This DVD is a duplicate; the converter retained it in _Duplicate.".into());
+        }
+        if dir
+            .child("_NeedsIdentification")
+            .and_then(|d| d.file(&job.inbox_name))
+            .is_ok()
+        {
+            return Err("The DVD was converted, but its episodes need identifying. Rename it as described under Process, needs identifying.".into());
         }
         let processed = dir.child("_Processed")?;
         // Require the output manifest as well as the archived ISO.

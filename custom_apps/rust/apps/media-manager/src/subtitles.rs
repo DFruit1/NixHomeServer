@@ -131,6 +131,29 @@ impl OpenSubtitlesClient {
             .await
     }
 
+    /// Episode subtitles by the series' IMDb ID. Parameters are sent sorted
+    /// and lowercase as the API asks, so it answers without a redirect.
+    pub async fn search_by_episode(
+        &self,
+        parent_imdb_id: u64,
+        season: u16,
+        episode: u16,
+        language: &str,
+    ) -> Result<Vec<SubtitleMatch>, ProviderError> {
+        let parent_imdb_id = parent_imdb_id.to_string();
+        let season = season.to_string();
+        let episode = episode.to_string();
+        self.search(&[
+            ("ai_translated", "exclude"),
+            ("episode_number", episode.as_str()),
+            ("languages", language),
+            ("machine_translated", "exclude"),
+            ("parent_imdb_id", parent_imdb_id.as_str()),
+            ("season_number", season.as_str()),
+        ])
+        .await
+    }
+
     pub async fn search_by_hash(
         &self,
         movie_hash: &MovieHash,
@@ -387,16 +410,23 @@ async fn require_success(
         return Ok(response);
     }
     let status = response.status();
+    // OpenSubtitles answers 406 once the account's daily downloads are spent.
+    let quota = matches!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS | StatusCode::NOT_ACCEPTABLE
+    );
     let category = match status {
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => "provider credentials were rejected",
-        StatusCode::TOO_MANY_REQUESTS => "provider quota or rate limit was reached",
+        _ if quota => "provider quota or rate limit was reached",
         _ if status.is_server_error() => "provider service is unavailable",
         _ => "provider rejected the request",
     };
-    Err(ProviderError::new(format!(
+    let mut error = ProviderError::new(format!(
         "{operation}: {category} (HTTP {})",
         status.as_u16()
-    )))
+    ));
+    error.quota = quota;
+    Err(error)
 }
 
 fn provider_base_url(value: &str) -> Result<Url, ProviderError> {
@@ -469,17 +499,28 @@ impl Drop for OpenSubtitlesCredentials {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProviderError(String);
+pub struct ProviderError {
+    message: String,
+    quota: bool,
+}
 
 impl ProviderError {
     fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self {
+            message: message.into(),
+            quota: false,
+        }
+    }
+
+    /// The provider refused because the account's quota or rate limit is spent.
+    pub fn is_quota(&self) -> bool {
+        self.quota
     }
 }
 
 impl fmt::Display for ProviderError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 

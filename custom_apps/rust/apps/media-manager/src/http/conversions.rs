@@ -59,16 +59,18 @@ pub(super) async fn conversions_inbox(
             "pending": [],
             "processed": [],
             "failed": [],
+            "needsIdentification": [],
             "requestId": request_id,
         }))
         .into_response();
     }
-    let mut groups = Vec::with_capacity(3);
+    let mut groups = Vec::with_capacity(4);
     let shared_root = state.config.shared_root.clone();
     for (key, directory) in [
         ("pending", inbox.clone()),
         ("processed", inbox.join("_Processed")),
         ("failed", inbox.join("_Failed")),
+        ("needsIdentification", inbox.join("_NeedsIdentification")),
     ] {
         match list_iso_directory(&directory, key, &shared_root, &request_id).await {
             Ok(entries) => groups.push((key, entries)),
@@ -87,6 +89,7 @@ pub(super) async fn conversions_inbox(
         "pending": groups[0].1,
         "processed": groups[1].1,
         "failed": groups[2].1,
+        "needsIdentification": groups[3].1,
         "requestId": request_id,
     });
     if let Some(ref base_url) = state.config.files_base_url {
@@ -178,6 +181,23 @@ async fn list_iso_directory(
                     }
                 }
             }
+            "needsIdentification" => {
+                let sidecar_path = directory.join(format!("{name}.identify.json"));
+                if let Some(report) = identification_report(&sidecar_path, shared_root).await {
+                    for (key, value) in [
+                        ("heldDir", report.held_dir),
+                        ("summary", report.summary),
+                        ("suggestedName", report.suggested_name),
+                    ] {
+                        if let Some(value) = value {
+                            iso_entry[key] = json!(value);
+                        }
+                    }
+                    if let Some(finished) = report.finished_ns {
+                        iso_entry["finishedNs"] = json!(finished);
+                    }
+                }
+            }
             _ => {}
         }
         entries.push(iso_entry);
@@ -208,6 +228,80 @@ async fn file_modified_ns(path: &FilePath) -> Option<i64> {
     let modified = tokio::fs::metadata(path).await.ok()?.modified().ok()?;
     let duration = modified.duration_since(UNIX_EPOCH).ok()?;
     Some(duration.as_nanos().min(i64::MAX as u128) as i64)
+}
+
+/// The importer's sidecar for a disc it encoded but could not match to
+/// episodes. Every field is optional and bounded: the file sits in a
+/// user-writable share, so it is display data and never a path to follow.
+struct IdentificationReport {
+    held_dir: Option<String>,
+    summary: Option<String>,
+    suggested_name: Option<String>,
+    finished_ns: Option<i64>,
+}
+
+const MAX_IDENTIFY_SIDECAR_BYTES: u64 = 64 * 1024;
+
+async fn identification_report(
+    sidecar_path: &FilePath,
+    shared_root: &FilePath,
+) -> Option<IdentificationReport> {
+    let metadata = tokio::fs::symlink_metadata(sidecar_path).await.ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_IDENTIFY_SIDECAR_BYTES {
+        return None;
+    }
+    let content = tokio::fs::read(sidecar_path).await.ok()?;
+    let report = serde_json::from_slice::<Value>(&content).ok()?;
+    let finished_ns = match report["finishedAt"]
+        .as_i64()
+        .filter(|seconds| (1..=i64::MAX / 1_000_000_000).contains(seconds))
+    {
+        Some(seconds) => Some(seconds * 1_000_000_000),
+        None => file_modified_ns(sidecar_path).await,
+    };
+    Some(parse_identification_report(
+        &report,
+        &shared_root.to_string_lossy(),
+        finished_ns,
+    ))
+}
+
+fn parse_identification_report(
+    report: &Value,
+    shared_root: &str,
+    finished_ns: Option<i64>,
+) -> IdentificationReport {
+    let text = |value: &Value, limit: usize| {
+        value
+            .as_str()
+            .map(|text| text.trim())
+            .filter(|text| !text.is_empty() && text.len() <= limit && !text.contains('\0'))
+            .map(str::to_owned)
+    };
+    // The schema records the folder relative to the shared root; accept an
+    // absolute path under it too, as the processed manifests do.
+    let held_dir = text(&report["heldDir"], 1024)
+        .map(|dir| {
+            dir.strip_prefix(shared_root.trim_end_matches('/'))
+                .filter(|rest| rest.starts_with('/'))
+                .unwrap_or(&dir)
+                .trim_matches('/')
+                .to_owned()
+        })
+        .filter(|dir| {
+            !dir.is_empty()
+                && dir
+                    .split('/')
+                    .all(|part| !part.is_empty() && part != "." && part != "..")
+        });
+    let suggested_name = text(&report["suggestion"]["isoName"], 255)
+        .filter(|name| !name.contains('/') && name.to_ascii_lowercase().ends_with(".iso"));
+    IdentificationReport {
+        held_dir,
+        summary: text(&report["summary"], 1000),
+        suggested_name,
+        finished_ns,
+    }
 }
 
 struct FailureReport {

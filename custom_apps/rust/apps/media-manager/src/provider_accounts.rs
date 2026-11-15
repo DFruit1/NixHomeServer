@@ -145,6 +145,34 @@ impl ProviderAccountStore {
             .map_err(|_| ProviderAccountError::Decrypt)
     }
 
+    /// The saved identity behind a provider account, found by sign-in name for
+    /// system jobs acting on that user's behalf. The newest account wins when
+    /// several stable subjects have carried the same username.
+    pub(crate) fn account_identity_for_username(
+        &self,
+        provider_id: &str,
+        username: &str,
+    ) -> Result<Option<Identity>, ProviderAccountError> {
+        validate_provider_id(provider_id)?;
+        let connection = self.connection()?;
+        let saved = connection
+            .query_row(
+                "SELECT owner_subject, owner_username FROM provider_accounts
+                 WHERE provider_id = ?1 AND owner_username = ?2
+                 ORDER BY updated_at DESC, owner_subject LIMIT 1",
+                params![provider_id, username],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(storage_error)?;
+        saved
+            .map(|(subject, username)| {
+                Identity::try_new_with_subject(&subject, &username, std::iter::empty::<&str>())
+                    .map_err(ProviderAccountError::Storage)
+            })
+            .transpose()
+    }
+
     pub(crate) fn image_accounts(
         &self,
         managed: bool,

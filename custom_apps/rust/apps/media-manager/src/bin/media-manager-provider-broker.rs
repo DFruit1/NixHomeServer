@@ -1,9 +1,14 @@
 use media_manager::{
-    provider_account_http::{provider_account_router, ProviderBrokerState},
+    provider_account_http::{provider_account_router, provider_system_router, ProviderBrokerState},
     provider_accounts::ProviderAccountStore,
 };
 use serde_json::json;
-use std::{net::IpAddr, path::PathBuf, sync::Arc};
+use std::{
+    net::IpAddr,
+    os::unix::fs::{FileTypeExt, PermissionsExt},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[tokio::main]
 async fn main() {
@@ -60,6 +65,30 @@ async fn run() -> Result<(), String> {
         }
     }
     tokio::spawn(state.clone().run_image_indexer());
+    // Host system jobs reach a separate router over a Unix socket whose
+    // directory group grants access; they never use forwarded identities.
+    let system = match std::env::var("MEDIA_MANAGER_PROVIDER_SYSTEM_SOCKET") {
+        Ok(path) if !path.is_empty() => {
+            let path = PathBuf::from(path);
+            let listener = bind_system_socket(&path)?;
+            let router = provider_system_router(state.clone());
+            eprintln!(
+                "{}",
+                json!({
+                    "level": "info",
+                    "service": "media-manager-provider-broker",
+                    "event": "system_listening",
+                    "socket": path.display().to_string(),
+                })
+            );
+            Some(tokio::spawn(async move {
+                axum::serve(listener, router)
+                    .await
+                    .map_err(|error| format!("serve provider system API: {error}"))
+            }))
+        }
+        _ => None,
+    };
     let app = provider_account_router(state);
     let socket = std::net::SocketAddr::new(address, port);
     let listener = tokio::net::TcpListener::bind(socket)
@@ -76,9 +105,36 @@ async fn run() -> Result<(), String> {
     );
     // Axum 0.8's documented Tokio listener pattern:
     // https://docs.rs/axum/0.8.6/axum/fn.serve.html
-    axum::serve(listener, app)
-        .await
-        .map_err(|error| format!("serve provider account API: {error}"))
+    let public = axum::serve(listener, app);
+    match system {
+        Some(system) => tokio::select! {
+            result = public => result.map_err(|error| format!("serve provider account API: {error}")),
+            result = system => result
+                .map_err(|error| format!("provider system API task failed: {error}"))
+                .and_then(|result| result)
+                .and_then(|()| Err("provider system API stopped".to_string())),
+        },
+        None => public
+            .await
+            .map_err(|error| format!("serve provider account API: {error}")),
+    }
+}
+
+/// Bind the system socket with mode 0660; its directory (set up by the unit)
+/// decides which group may connect. Only a stale socket is ever replaced.
+fn bind_system_socket(path: &Path) -> Result<tokio::net::UnixListener, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(path)
+            .map_err(|error| format!("remove stale system socket: {error}"))?,
+        Ok(_) => return Err(format!("{} exists and is not a socket", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("inspect system socket: {error}")),
+    }
+    let listener = tokio::net::UnixListener::bind(path)
+        .map_err(|error| format!("bind {}: {error}", path.display()))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))
+        .map_err(|error| format!("set system socket mode: {error}"))?;
+    Ok(listener)
 }
 
 fn env_string(name: &str, default: &str) -> String {
