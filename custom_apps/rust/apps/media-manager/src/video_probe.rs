@@ -63,9 +63,17 @@ pub struct SubtitleStreamProbe {
     pub is_hearing_impaired: bool,
 }
 
+/// Longest one probe may take. A caller with less of its own budget left passes
+/// a shorter limit so the request can answer instead of waiting for the probe.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Returned instead of a probe result when the caller's own budget, not the
+/// file, ended the probe. Callers leave such a file for a later attempt.
+pub const PROBE_BUDGET_EXHAUSTED: &str = "probe budget exhausted";
+
 pub fn probe_video(ffprobe: &Path, path: &Path) -> Result<VideoProbe, String> {
     let input = std::fs::File::open(path).map_err(|error| format!("open video: {error}"))?;
-    probe_open_file(ffprobe, input)
+    probe_open_file(ffprobe, input, PROBE_TIMEOUT)
 }
 
 pub fn probe_video_beneath(
@@ -73,12 +81,28 @@ pub fn probe_video_beneath(
     root: &Path,
     relative_path: &str,
 ) -> Result<VideoProbe, String> {
-    let input = crate::broker::open_regular_file_beneath(root, relative_path)
-        .map_err(|error| format!("open video beneath root: {error}"))?;
-    probe_open_file(ffprobe, input)
+    probe_video_beneath_within(ffprobe, root, relative_path, PROBE_TIMEOUT)
 }
 
-fn probe_open_file(ffprobe: &Path, input: std::fs::File) -> Result<VideoProbe, String> {
+/// Probe one video, giving up after `limit`, which must not exceed
+/// [`PROBE_TIMEOUT`]. A limit shorter than that is the caller's remaining
+/// request budget, so a timeout is reported as [`PROBE_BUDGET_EXHAUSTED`].
+pub fn probe_video_beneath_within(
+    ffprobe: &Path,
+    root: &Path,
+    relative_path: &str,
+    limit: Duration,
+) -> Result<VideoProbe, String> {
+    let input = crate::broker::open_regular_file_beneath(root, relative_path)
+        .map_err(|error| format!("open video beneath root: {error}"))?;
+    probe_open_file(ffprobe, input, limit)
+}
+
+fn probe_open_file(
+    ffprobe: &Path,
+    input: std::fs::File,
+    limit: Duration,
+) -> Result<VideoProbe, String> {
     // This synchronous entrypoint is called on blocking workers. Bound child
     // lifetime as well as FFprobe's media-analysis budget.
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -112,7 +136,7 @@ fn probe_open_file(ffprobe: &Path, input: std::fs::File) -> Result<VideoProbe, S
             .map_err(|error| format!("run ffprobe: {error}"))?;
         let stdout = child.stdout.take().ok_or("ffprobe stdout missing")?;
         let stderr = child.stderr.take().ok_or("ffprobe stderr missing")?;
-        let result = tokio::time::timeout(Duration::from_secs(15), async {
+        let result = tokio::time::timeout(limit, async {
             let mut out = Vec::new();
             let mut err = Vec::new();
             let read = async {
@@ -142,6 +166,9 @@ fn probe_open_file(ffprobe: &Path, input: std::fs::File) -> Result<VideoProbe, S
                 let _ = child.wait().await;
                 Err(match result {
                     Ok(Err(error)) => error,
+                    // A timeout inside the file's own allowance is the file's
+                    // fault; a shorter limit means the caller ran out of budget.
+                    _ if limit < PROBE_TIMEOUT => PROBE_BUDGET_EXHAUSTED.to_string(),
                     _ => "ffprobe timed out".to_string(),
                 })
             }
@@ -539,18 +566,36 @@ pub fn refresh_root_probes_until(
     videos: &[(String, String)],
     deadline: Option<std::time::Instant>,
 ) -> Result<usize, String> {
+    /// Starting a probe with less than this left would only time it out.
+    const MIN_PROBE_BUDGET: Duration = Duration::from_secs(2);
+
     let mut probed = 0;
     for (relative_path, fingerprint) in videos {
         if probed >= MAX_PROBES_PER_REFRESH {
             break;
         }
-        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-            break;
-        }
+        let limit = match deadline {
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining < MIN_PROBE_BUDGET {
+                    break;
+                }
+                remaining.min(PROBE_TIMEOUT)
+            }
+            None => PROBE_TIMEOUT,
+        };
         if cache.has_probe(relative_path, fingerprint) {
             continue;
         }
-        let result = probe_video_beneath(ffprobe, root_path, relative_path);
+        let result = probe_video_beneath_within(ffprobe, root_path, relative_path, limit);
+        if result
+            .as_ref()
+            .is_err_and(|error| error == PROBE_BUDGET_EXHAUSTED)
+        {
+            // The request ran out of time, not the file: leave it unrecorded so
+            // the Videos page probes it next instead of caching a failure.
+            break;
+        }
         cache.record(relative_path, fingerprint, result);
         probed += 1;
     }
