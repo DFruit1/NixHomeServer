@@ -532,6 +532,10 @@ in
 
     systemd.services.search-article-archive = lib.mkIf cfg.articleArchive.enable {
       description = "Fetch the articles behind summary-only feed entries";
+      # A pass paces itself at one request a second and can run for minutes;
+      # activation would restart a running pass and wait for all of it. Saved
+      # articles persist, so the next timer run simply uses the new definition.
+      restartIfChanged = false;
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
       environment = commonEnvironment // {
