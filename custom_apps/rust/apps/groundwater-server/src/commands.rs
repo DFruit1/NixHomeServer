@@ -25,7 +25,8 @@ pub const DANGER_KEYS: [&str; 6] = [
     "Erase keys",
 ];
 
-/// Most V2.x handlers only printf/TODO, despite acknowledging receipt. Keep
+/// Most V2.x handlers only printf/TODO. Legacy firmware still acknowledges
+/// receipt; gwl/v1 firmware reports them as unsupported (see acks.rs). Keep
 /// this display contract aligned with groundwater_command_supported in SQL.
 pub fn capabilities(profile: &str, policy: &str, offset: Option<i32>, unverified: bool) -> Value {
     let known = matches!(profile, "V21" | "V20" | "ML");

@@ -57,8 +57,8 @@ logger. The older V2.00/ML trees retain legacy addressing.
 | `gps`, `storage`, `motion` | device → app | Raw diagnostic messages                          |
 | `alerts`                   | device → app | Reserved; firmware publisher remains unfinished  |
 | `test/result`              | device → app | Existing self-test output                        |
-| `config/applied`           | device → app | Existing incremental receipt echo                |
-| `cmd/ack`                  | device → app | Existing danger receipt acknowledgment           |
+| `config/applied`           | device → app | Structured ack for `config/set`/`config/desired` |
+| `cmd/ack`                  | device → app | Structured ack for `cmd/danger`                  |
 | `info`                     | device → app | Startup banner, stored as raw evidence           |
 | `config/set`               | app → device | Full project settings                            |
 | `config/desired`           | app → device | Incremental flags; handlers remain unsupported   |
@@ -73,6 +73,33 @@ Explicit trusted bindings are required; topic identities never auto-enroll a
 device. Unknown versions and malformed v1 paths are quarantined. A v1 binding
 whose topic names another device is refused. Dispatch uses the exact device
 path. Existing payloads and capability restrictions remain unchanged.
+
+### Acknowledgments on `gwl/v1`
+
+Firmware on `gwl/v1` topics acknowledges every command with a JSON report of
+what it did, instead of echoing the request:
+
+```text
+config/applied  {"kind":"project-settings","status":"ok"}
+config/applied  {"kind":"cfg","status":"failed","results":{"Get_Status":"unsupported"}}
+cmd/ack         {"kind":"danger","status":"ok","results":{"Reboot":"ok"}}
+cmd/ack         {"kind":"danger","status":"rejected","reason":"no-action"}
+```
+
+`status` is `ok`, `partial`, `failed` (nothing done) or `rejected` (payload
+not accepted, with a `reason`); each `results` value is `ok`, `unsupported`
+or `failed`. Reboot reports `ok` just before the reset. The server therefore
+expects a firmware ack for every command sent on a `gwl/v1` topic, including
+project settings and Reboot, and records project settings and cfg toggles as
+applied only when the ack says `ok` for them. Commands on legacy topics keep
+the legacy rules (no ack for settings or Reboot, cfg echo, `Danger
+Acknowledge`). The decision is made per command when it is dispatched, from
+the topic it is sent on (`src/acks.rs`, `groundwater_firmware_ack_expected`).
+
+V2.1 firmware built before this contract (everything up to `feat/hardware-bench`
+at `705e2bd`) does not send these acks: its settings and Reboot stay `sent`
+and are re-sent each wake window. Flash bench loggers with matching firmware
+before deploying this server change.
 
 Migrate one physical logger at a time: deploy compatible app/broker source,
 flash updated V2.1 firmware, and switch that unit's trusted bindings. Keep its

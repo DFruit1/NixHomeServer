@@ -7,6 +7,7 @@
 //! wake windows; alert history is replayed in recorded-time order. The
 //! enrollment, clock, duplicate and quarantine safeguards remain in adapter.
 
+mod acks;
 mod adapter;
 mod api;
 mod clock;

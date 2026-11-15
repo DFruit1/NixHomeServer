@@ -128,12 +128,22 @@ CREATE TABLE IF NOT EXISTS command_events (
     detail JSONB
 );
 -- An attempt is durable before it enters rumqttc's volatile request queue.
--- sent is broker acceptance, not firmware application. In particular Reboot
--- resets the MCU before it can emit cfg/danger_ack.
+-- sent is broker acceptance, not firmware application. Legacy firmware never
+-- acknowledges project settings, and Reboot resets the MCU before it can emit
+-- cfg/danger_ack. Firmware on gwl/v1 topics acknowledges every command with a
+-- structured result (see acks.rs), Reboot included, just before it resets.
+CREATE OR REPLACE FUNCTION groundwater_firmware_ack_expected(structured BOOLEAN,kind TEXT,payload JSONB)
+RETURNS BOOLEAN LANGUAGE sql IMMUTABLE AS $$
+    SELECT structured OR (kind <> 'project-settings' AND
+        NOT (kind='danger' AND payload @> '{"Reboot":"1"}'::jsonb))
+$$;
 ALTER TABLE commands ADD COLUMN IF NOT EXISTS broker_acked_at TIMESTAMPTZ;
 ALTER TABLE commands ADD COLUMN IF NOT EXISTS firmware_ack_expected BOOLEAN
     GENERATED ALWAYS AS (kind <> 'project-settings' AND
         NOT (kind='danger' AND payload @> '{"Reboot":"1"}'::jsonb)) STORED;
+-- Formerly generated from kind/payload alone. Keep existing values; queue
+-- and dispatch now set it from the topic contract the command travels on.
+ALTER TABLE commands ALTER COLUMN firmware_ack_expected DROP EXPRESSION IF EXISTS;
 CREATE TABLE IF NOT EXISTS command_publish_attempts (
     id BIGSERIAL PRIMARY KEY,
     command_id BIGINT NOT NULL REFERENCES commands(id),

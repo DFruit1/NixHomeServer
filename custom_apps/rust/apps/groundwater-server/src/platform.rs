@@ -78,7 +78,7 @@ pub async fn queue(
     wire: &str,
     username: &str,
 ) -> Result<Command, String> {
-    client.query_one("WITH queued AS (INSERT INTO commands(device_id,kind,payload,wire_payload,requested_by) SELECT device_id,$2,$3,$4,$5 FROM devices WHERE device_id=$1 AND revoked_at IS NULL RETURNING *), desired AS (UPDATE devices d SET desired_config=COALESCE(d.desired_config,'{}'::jsonb)||q.payload FROM queued q WHERE d.device_id=q.device_id AND q.kind='cfg') SELECT * FROM queued", &[&device,&kind,&payload,&wire,&username]).await.map(command).map_err(|e|format!("queue: {e:?}"))
+    client.query_one("WITH queued AS (INSERT INTO commands(device_id,kind,payload,wire_payload,requested_by,firmware_ack_expected) SELECT d.device_id,$2,$3,$4,$5,groundwater_firmware_ack_expected(EXISTS(SELECT 1 FROM device_bindings b WHERE b.device_id=d.device_id AND b.revoked_at IS NULL AND b.topic LIKE 'gwl/v1/%'),$2,$3) FROM devices d WHERE d.device_id=$1 AND d.revoked_at IS NULL RETURNING *), desired AS (UPDATE devices d SET desired_config=COALESCE(d.desired_config,'{}'::jsonb)||q.payload FROM queued q WHERE d.device_id=q.device_id AND q.kind='cfg') SELECT * FROM queued", &[&device,&kind,&payload,&wire,&username]).await.map(command).map_err(|e|format!("queue: {e:?}"))
 }
 pub async fn commands(
     client: &Client,

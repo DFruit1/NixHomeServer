@@ -213,7 +213,7 @@ async fn accept(
         } else {
             "sent"
         };
-        tx.execute("UPDATE commands SET state=$2,sent_at=$3,broker_acked_at=$4,last_ready_at=$5,acked_at=$6,ack_payload=$7,active_publish_attempt=NULL WHERE id=$1",&[&command_id,&state,&dispatched,&acked_at,&ready,&firmware_at.filter(|_|expects_ack),&firmware_payload.filter(|_|expects_ack)]).await.map_err(|e|format!("broker acceptance: {e:?}"))?;
+        tx.execute("UPDATE commands SET state=$2,sent_at=$3,broker_acked_at=$4,last_ready_at=$5,acked_at=$6,ack_payload=$7,active_publish_attempt=NULL WHERE id=$1",&[&command_id,&state,&dispatched,&acked_at,&ready,&firmware_at.filter(|_|expects_ack),&firmware_payload.clone().filter(|_|expects_ack)]).await.map_err(|e|format!("broker acceptance: {e:?}"))?;
         // Preserve a conservative pacing boundary even when SQL confirmation
         // was delayed across a database outage.
         tx.execute(
@@ -222,20 +222,18 @@ async fn accept(
         )
         .await
         .map_err(|e| e.to_string())?;
+        let firmware_ack = firmware_payload.as_ref().filter(|_| firmware_at.is_some());
         if kind == "project-settings" {
-            let min = payload["mG"]
-                .as_str()
-                .and_then(|s| s.parse::<f64>().ok())
-                .ok_or("invalid persisted minimum")?;
-            let max = payload["MG"]
-                .as_str()
-                .and_then(|s| s.parse::<f64>().ok())
-                .ok_or("invalid persisted maximum")?;
-            tx.execute("UPDATE devices SET project_config=$2::jsonb,min_limit=$3,max_limit=$4,location_id=$2::jsonb->>'l',sensor_id=$2::jsonb->>'id' WHERE device_id=$1",&[&device,&payload,&min,&max]).await.map_err(|e|format!("accepted settings: {e:?}"))?;
-        } else if kind == "cfg" && firmware_at.is_some() {
+            // Legacy firmware never confirms settings, so broker acceptance
+            // is the only evidence. gwl/v1 firmware must report them applied;
+            // a later ack applies them through scheduler::ancillary.
+            if !expects_ack || firmware_ack.is_some_and(crate::acks::settings_applied) {
+                apply_project_settings(&tx, &device, &payload).await?;
+            }
+        } else if let Some(ack) = firmware_ack.filter(|_| kind == "cfg") {
             tx.execute(
                 "UPDATE devices SET applied_config=COALESCE(applied_config,'{}'::jsonb)||$2::jsonb WHERE device_id=$1",
-                &[&device, &payload],
+                &[&device, &crate::acks::applied_cfg(&payload, ack)],
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -250,4 +248,23 @@ async fn accept(
     tx.execute("INSERT INTO command_events(command_id,event,detail) VALUES($1,'broker-accepted',jsonb_build_object('attempt_id',$2::bigint))",&[&command_id,&id]).await.map_err(|e|e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(Some(device))
+}
+
+/// Record project settings as the device's configuration once they count as
+/// applied (broker acceptance for legacy firmware, an `ok` ack on gwl/v1).
+pub async fn apply_project_settings<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
+    device: &str,
+    payload: &serde_json::Value,
+) -> Result<(), String> {
+    let min = payload["mG"]
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .ok_or("invalid persisted minimum")?;
+    let max = payload["MG"]
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .ok_or("invalid persisted maximum")?;
+    client.execute("UPDATE devices SET project_config=$2::jsonb,min_limit=$3,max_limit=$4,location_id=$2::jsonb->>'l',sensor_id=$2::jsonb->>'id' WHERE device_id=$1",&[&device,payload,&min,&max]).await.map_err(|e|format!("accepted settings: {e:?}"))?;
+    Ok(())
 }
