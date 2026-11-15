@@ -7,11 +7,16 @@ use std::{
     time::Duration,
 };
 
-const PROBE_CACHE_SCHEMA_VERSION: i64 = 2;
+// Version 3 adds the container's running time and embedded title.
+const PROBE_CACHE_SCHEMA_VERSION: i64 = 3;
 const MAX_PROBES_PER_REFRESH: usize = 50;
 pub static PROBE_LIMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+/// Error prefix for a file FFprobe ran on and refused. Every other failure
+/// (FFprobe missing, timed out, unreadable output) says nothing about the file.
+const FFPROBE_REJECTED: &str = "ffprobe failed: ";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +29,14 @@ pub struct VideoProbe {
     pub height: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codec: Option<String>,
+    /// Running time the container declares. Absent when the file was never
+    /// finished being written, which also breaks seeking and resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<f64>,
+    /// The container's own title tag, which players may show instead of the
+    /// library title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Distinct audio codec names from the container. Browsers silently drop
     /// tracks they cannot decode (AC-3, E-AC-3, DTS, ...), so the player uses
     /// this to choose its H.264/AAC conversion before playing.
@@ -85,6 +98,7 @@ fn probe_open_file(ffprobe: &Path, input: std::fs::File) -> Result<VideoProbe, S
                 "-print_format",
                 "json",
                 "-show_streams",
+                "-show_format",
             ])
             .arg("/proc/self/fd/0")
             .stdin(std::process::Stdio::from(input))
@@ -135,7 +149,7 @@ fn probe_open_file(ffprobe: &Path, input: std::fs::File) -> Result<VideoProbe, S
     })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("ffprobe failed: {}", stderr.trim()));
+        return Err(format!("{FFPROBE_REJECTED}{}", stderr.trim()));
     }
     parse_probe_json(&output.stdout)
 }
@@ -144,6 +158,16 @@ fn probe_open_file(ffprobe: &Path, input: std::fs::File) -> Result<VideoProbe, S
 struct ProbeOutput {
     #[serde(default)]
     streams: Vec<ProbeStream>,
+    #[serde(default)]
+    format: Option<ProbeFormat>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProbeFormat {
+    #[serde(default)]
+    duration: Option<String>,
+    #[serde(default)]
+    tags: Option<ProbeTags>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -170,7 +194,7 @@ struct ProbeStream {
 struct ProbeTags {
     #[serde(default)]
     language: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "TITLE")]
     title: Option<String>,
 }
 
@@ -245,6 +269,20 @@ fn parse_probe_json(bytes: &[u8]) -> Result<VideoProbe, String> {
         codec: video
             .map(|stream| stream.codec_name.clone())
             .filter(|codec| !codec.is_empty()),
+        duration_seconds: output
+            .format
+            .as_ref()
+            .and_then(|format| format.duration.as_deref())
+            .and_then(|duration| duration.trim().parse::<f64>().ok())
+            .filter(|duration| duration.is_finite() && *duration > 0.0),
+        title: output
+            .format
+            .as_ref()
+            .and_then(|format| format.tags.as_ref())
+            .and_then(|tags| tags.title.as_deref())
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map(|title| title.chars().take(300).collect()),
         audio_codecs,
         has_embedded_subtitles: output
             .streams
@@ -280,6 +318,9 @@ struct CachedProbe {
     probe: Option<VideoProbe>,
     #[serde(default)]
     attempted_at: u64,
+    /// FFprobe ran on the file and refused it, as opposed to not running.
+    #[serde(default)]
+    rejected: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -337,6 +378,41 @@ impl VideoProbeCache {
             .and_then(|entry| entry.probe.clone())
     }
 
+    /// FFprobe ran on this exact file and could not read it.
+    pub fn probe_failed(&self, relative_path: &str, fingerprint: &str) -> bool {
+        self.entries.get(relative_path).is_some_and(|entry| {
+            entry.fingerprint == fingerprint && entry.probe.is_none() && entry.rejected
+        })
+    }
+
+    /// Whether another video in the same folder carries this embedded title.
+    /// A title shared by siblings names their collection (a video split by
+    /// chapter, a series), not any one file.
+    pub fn title_shared_in_folder(&self, relative_path: &str, title: &str) -> bool {
+        let folder = relative_path
+            .rsplit_once('/')
+            .map_or("", |(folder, _)| folder);
+        let prefix = if folder.is_empty() {
+            String::new()
+        } else {
+            format!("{folder}/")
+        };
+        self.entries
+            .range::<str, _>((
+                std::ops::Bound::Included(prefix.as_str()),
+                std::ops::Bound::Unbounded,
+            ))
+            .take_while(|(path, _)| path.starts_with(&prefix))
+            .any(|(path, entry)| {
+                path != relative_path
+                    && !path[prefix.len()..].contains('/')
+                    && entry
+                        .probe
+                        .as_ref()
+                        .is_some_and(|probe| probe.title.as_deref() == Some(title))
+            })
+    }
+
     pub fn has_probe(&self, relative_path: &str, fingerprint: &str) -> bool {
         self.entries.get(relative_path).is_some_and(|entry| {
             entry.fingerprint == fingerprint
@@ -347,6 +423,31 @@ impl VideoProbeCache {
     }
 
     pub fn set(&mut self, relative_path: &str, fingerprint: &str, probe: Option<VideoProbe>) {
+        self.insert(relative_path, fingerprint, probe, false);
+    }
+
+    /// Cache a probe attempt, keeping whether a failure was the file's fault.
+    pub fn record(
+        &mut self,
+        relative_path: &str,
+        fingerprint: &str,
+        result: Result<VideoProbe, String>,
+    ) -> Option<VideoProbe> {
+        let rejected = result
+            .as_ref()
+            .is_err_and(|error| error.starts_with(FFPROBE_REJECTED));
+        let probe = result.ok();
+        self.insert(relative_path, fingerprint, probe.clone(), rejected);
+        probe
+    }
+
+    fn insert(
+        &mut self,
+        relative_path: &str,
+        fingerprint: &str,
+        probe: Option<VideoProbe>,
+        rejected: bool,
+    ) {
         self.changed.insert(relative_path.to_string());
         self.entries.insert(
             relative_path.to_string(),
@@ -354,6 +455,7 @@ impl VideoProbeCache {
                 fingerprint: fingerprint.to_string(),
                 probe,
                 attempted_at: probe_timestamp(),
+                rejected,
             },
         );
     }
@@ -432,8 +534,8 @@ pub fn refresh_root_probes(
         if cache.has_probe(relative_path, fingerprint) {
             continue;
         }
-        let probe = probe_video_beneath(ffprobe, root_path, relative_path).ok();
-        cache.set(relative_path, fingerprint, probe);
+        let result = probe_video_beneath(ffprobe, root_path, relative_path);
+        cache.record(relative_path, fingerprint, result);
         probed += 1;
     }
     cache.save()?;

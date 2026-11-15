@@ -44,6 +44,9 @@ pub struct TrackOrderFile {
     pub file_name: String,
     pub tag_disc: Option<u64>,
     pub tag_track: Option<u64>,
+    /// How many tracks and discs the tags say the album has.
+    pub tag_track_total: Option<u64>,
+    pub tag_disc_total: Option<u64>,
 }
 
 /// A grouped ordering problem: one per album, never one per file.
@@ -93,6 +96,12 @@ pub struct TrackOrderReport {
 /// name carries no leading number. Numbers are bounded so pathological names
 /// cannot produce absurd orderings.
 pub fn filename_sequence_number(file_name: &str) -> Option<(u64, u64)> {
+    filename_sequence(file_name).map(|(disc, track)| (disc.unwrap_or(1), track))
+}
+
+/// As [`filename_sequence_number`], but the disc is `None` unless the name
+/// carries an explicit disc marker.
+fn filename_sequence(file_name: &str) -> Option<(Option<u64>, u64)> {
     let stem = file_name
         .rsplit_once('.')
         .map(|(stem, _)| stem)
@@ -161,7 +170,7 @@ pub fn filename_sequence_number(file_name: &str) -> Option<(u64, u64)> {
             track = second;
         }
     }
-    Some((disc, track))
+    Some((explicit_disc.then_some(disc), track))
 }
 
 fn leading_number(text: &str) -> Option<(u64, usize)> {
@@ -296,10 +305,12 @@ pub fn assess_track_order(
     }
 
     // Gaps and duplicates in the filename sequence.
-    let mut numbers = BTreeMap::<u64, Vec<String>>::new();
+    // Keyed by disc as well as track: `CD1-01` and `CD2-01` are different
+    // positions, and each disc numbers its own tracks from the start.
+    let mut numbers = BTreeMap::<(u64, u64), Vec<String>>::new();
     let mut unnumbered = Vec::new();
     for file in &files {
-        match filename_sequence_number(&file.file_name).map(|(_, track)| track) {
+        match filename_sequence_number(&file.file_name) {
             Some(number) => numbers
                 .entry(number)
                 .or_default()
@@ -312,9 +323,11 @@ pub fn assess_track_order(
         .filter(|names| names.len() > 1)
         .flat_map(|names| names.clone())
         .collect();
-    let sorted_numbers: Vec<u64> = numbers.keys().copied().collect();
-    let has_gap = sorted_numbers.windows(2).any(|pair| pair[1] != pair[0] + 1);
-    let starts_at_zero = sorted_numbers.first().is_some_and(|&first| first == 0);
+    let sorted_numbers: Vec<(u64, u64)> = numbers.keys().copied().collect();
+    let has_gap = sorted_numbers
+        .windows(2)
+        .any(|pair| pair[0].0 == pair[1].0 && pair[1].1 != pair[0].1 + 1);
+    let starts_at_zero = sorted_numbers.first().is_some_and(|&(_, first)| first == 0);
     if !duplicates.is_empty() || has_gap {
         let affected: Vec<String> = numbers.values().flat_map(|names| names.clone()).collect();
         problems.push(grouped_problem(
@@ -476,6 +489,218 @@ pub fn assess_track_order(
     }
 }
 
+const DISCS_UNTAGGED_TITLE: &str = "Track numbers restart without disc numbers";
+
+/// Two files claiming the same disc and track leave their order undefined.
+/// The usual cause in a multi-disc book is that every disc numbers its
+/// tracks from 1 and no tag says which disc a file belongs to.
+fn duplicate_tag_problem(files: &[TrackOrderFile]) -> Option<TrackOrderProblem> {
+    let mut positions = BTreeMap::<(u64, u64), Vec<&str>>::new();
+    for file in files {
+        if let Some(track) = file.tag_track {
+            positions
+                .entry((file.tag_disc.unwrap_or(1), track))
+                .or_default()
+                .push(&file.file_name);
+        }
+    }
+    let shared: Vec<&Vec<&str>> = positions.values().filter(|names| names.len() > 1).collect();
+    if shared.is_empty() {
+        return None;
+    }
+    let affected: Vec<String> = shared
+        .iter()
+        .flat_map(|names| names.iter().map(|name| name.to_string()))
+        .collect();
+    let tag_discs: BTreeSet<u64> = files.iter().filter_map(|file| file.tag_disc).collect();
+    let filename_discs: BTreeSet<u64> = files
+        .iter()
+        .filter_map(|file| filename_sequence(&file.file_name)?.0)
+        .collect();
+    // Discs restart their numbering, so several track numbers repeat; a
+    // single repeated number is more likely one mistagged file.
+    let discs_untagged = tag_discs.len() < 2 && (filename_discs.len() > 1 || shared.len() > 1);
+    Some(if discs_untagged {
+        grouped_problem(
+            "duplicate-track-numbers",
+            "warning",
+            DISCS_UNTAGGED_TITLE,
+            format!(
+                "{} files share a track number with another file and no tag says which disc each belongs to, so the player cannot tell disc 1 track 1 from disc 2 track 1 and interleaves them. Renumber the folder as one sequence, or add disc numbers to the tags.",
+                affected.len(),
+            ),
+            affected,
+        )
+    } else {
+        grouped_problem(
+            "duplicate-track-numbers",
+            "warning",
+            "Track numbers are duplicated",
+            format!(
+                "{} files share a disc and track number with another file, so their playback order is undefined. Renumber the tracks.",
+                affected.len(),
+            ),
+            affected,
+        )
+    })
+}
+
+/// A folder holding several discs should hold all of them, numbered from 1.
+/// A folder holding one disc is left alone: per-disc folders are a normal
+/// layout and say nothing about the discs beside them.
+fn disc_sequence_problem(files: &[TrackOrderFile]) -> Option<TrackOrderProblem> {
+    let mut discs: BTreeSet<u64> = files.iter().filter_map(|file| file.tag_disc).collect();
+    if discs.is_empty() {
+        discs = files
+            .iter()
+            .filter_map(|file| filename_sequence(&file.file_name)?.0)
+            .collect();
+    }
+    if discs.len() < 2 {
+        return None;
+    }
+    let highest = *discs.last()?;
+    let declared = most_common(files.iter().filter_map(|file| file.tag_disc_total));
+    let expected = declared
+        .filter(|total| *total <= 99)
+        .map_or(highest, |total| total.max(highest));
+    let missing: Vec<u64> = (1..=expected)
+        .filter(|disc| !discs.contains(disc))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let affected: Vec<String> = files.iter().map(|file| file.file_name.clone()).collect();
+    Some(grouped_problem(
+        "disc-sequence-gap",
+        "warning",
+        "A disc is missing or misnumbered",
+        format!(
+            "This folder holds {} {} of {expected}, but not {} {}. Either the missing part was never copied or the discs are misnumbered, and the book skips at that point.",
+            if discs.len() == 1 { "disc" } else { "discs" },
+            number_list(&discs.iter().copied().collect::<Vec<_>>()),
+            if missing.len() == 1 { "disc" } else { "discs" },
+            number_list(&missing),
+        ),
+        affected,
+    ))
+}
+
+/// Tags that number the tracks "of N" promise N files. Fewer means the copy
+/// or download is incomplete. Assessed per disc; callers skip folders that
+/// hold one disc of a set numbered across all of its discs.
+fn track_count_problem(files: &[TrackOrderFile]) -> Option<TrackOrderProblem> {
+    let mut by_disc = BTreeMap::<u64, Vec<&TrackOrderFile>>::new();
+    for file in files {
+        by_disc
+            .entry(file.tag_disc.unwrap_or(1))
+            .or_default()
+            .push(file);
+    }
+    let several_discs = by_disc.len() > 1;
+    for (disc, files) in by_disc {
+        let totals: Vec<u64> = files
+            .iter()
+            .filter_map(|file| file.tag_track_total)
+            .collect();
+        let Some(total) = most_common(totals.iter().copied()) else {
+            continue;
+        };
+        let agreeing = totals.iter().filter(|value| **value == total).count();
+        // Most files must agree on the total, and the first track must be
+        // here: a folder starting mid-album is one part of a larger set.
+        if total > MAX_TRACK_ORDER_FILES as u64 || agreeing * 5 < files.len() * 3 {
+            continue;
+        }
+        let present: BTreeSet<u64> = files.iter().filter_map(|file| file.tag_track).collect();
+        if !present.contains(&1) {
+            continue;
+        }
+        let missing: Vec<u64> = (1..=total)
+            .filter(|track| !present.contains(track))
+            .collect();
+        if missing.is_empty() || files.len() as u64 >= total {
+            continue;
+        }
+        return Some(grouped_problem(
+            "track-count-mismatch",
+            "warning",
+            "Tracks are missing",
+            format!(
+                "The tags number these files out of {total}{}, but {} {} not in the folder: {} {}. The copy or download is probably incomplete.",
+                if several_discs { format!(" on disc {disc}") } else { String::new() },
+                missing.len(),
+                if missing.len() == 1 { "is" } else { "are" },
+                if missing.len() == 1 { "track" } else { "tracks" },
+                number_list(&missing),
+            ),
+            Vec::new(),
+        ));
+    }
+    None
+}
+
+fn most_common(values: impl Iterator<Item = u64>) -> Option<u64> {
+    let mut counts = BTreeMap::<u64, usize>::new();
+    for value in values {
+        *counts.entry(value).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(value, count)| (*count, std::cmp::Reverse(*value)))
+        .map(|(value, _)| value)
+}
+
+/// "1, 2 and 5", eliding long lists after eight numbers.
+fn number_list(numbers: &[u64]) -> String {
+    const SHOWN: usize = 8;
+    let shown: Vec<String> = numbers.iter().take(SHOWN).map(u64::to_string).collect();
+    match (shown.len(), numbers.len() > SHOWN) {
+        (_, true) => format!("{} and {} more", shown.join(", "), numbers.len() - SHOWN),
+        (0, _) => String::new(),
+        (1, _) => shown[0].clone(),
+        (count, _) => format!("{} and {}", shown[..count - 1].join(", "), shown[count - 1]),
+    }
+}
+
+/// Whether a folder name marks one disc or part of a larger set (`CD2`,
+/// `Disc 1`, `Part 3`, `Volume 2`).
+fn names_one_part_of_a_set(folder_relative_path: &str) -> bool {
+    const MARKERS: &[&str] = &["cd", "disc", "disk", "part", "vol", "volume"];
+    let name = folder_relative_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(folder_relative_path)
+        .to_ascii_lowercase();
+    let words: Vec<&str> = name
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    words.iter().enumerate().any(|(index, word)| {
+        let marker = word.trim_end_matches(|character: char| character.is_ascii_digit());
+        let numbered = marker.len() < word.len()
+            || words
+                .get(index + 1)
+                .is_some_and(|next| next.chars().all(|character| character.is_ascii_digit()));
+        numbered && MARKERS.contains(&marker)
+    })
+}
+
+/// Checks that only make sense for a book split into numbered parts: a
+/// music folder of loose singles legitimately repeats track 1.
+fn audiobook_set_problems(
+    files: &[TrackOrderFile],
+    folder_relative_path: &str,
+) -> Vec<TrackOrderProblem> {
+    let mut problems = Vec::new();
+    problems.extend(duplicate_tag_problem(files));
+    problems.extend(disc_sequence_problem(files));
+    if !names_one_part_of_a_set(folder_relative_path) {
+        problems.extend(track_count_problem(files));
+    }
+    problems
+}
+
 /// Maximum bytes read from a single playlist sidecar.
 pub const MAX_PLAYLIST_BYTES: u64 = 128 * 1024;
 
@@ -627,14 +852,37 @@ pub fn inspect_folder_track_order(
     let mut track_files = Vec::new();
     for name in &audio {
         let relative = format!("{folder_relative_path}/{name}");
-        let (disc, track) = crate::metadata::audio_track_numbers(root, &relative);
+        let numbers = crate::metadata::audio_track_numbers(root, &relative);
         track_files.push(TrackOrderFile {
             file_name: name.clone(),
-            tag_disc: disc,
-            tag_track: track,
+            tag_disc: numbers.disc,
+            tag_track: numbers.track,
+            tag_track_total: numbers.track_total,
+            tag_disc_total: numbers.disc_total,
         });
     }
-    let report = assess_track_order(track_files, playlist_name, playlist_entries, unrecognised);
+    let set_problems = if category == LibraryCategory::Audiobooks {
+        audiobook_set_problems(&track_files, folder_relative_path)
+    } else {
+        Vec::new()
+    };
+    let mut report = assess_track_order(track_files, playlist_name, playlist_entries, unrecognised);
+    if !set_problems.is_empty() {
+        // Untagged discs are the cause of the filename/tag disagreement
+        // they produce; state the cause once.
+        if set_problems
+            .iter()
+            .any(|problem| problem.title == DISCS_UNTAGGED_TITLE)
+        {
+            report
+                .problems
+                .retain(|problem| problem.code != "track-order-mismatch");
+        }
+        report.problems.extend(set_problems);
+        if report.status == "ok" {
+            report.status = "warning".to_string();
+        }
+    }
     (Some(report), warnings)
 }
 
@@ -647,6 +895,8 @@ mod tests {
             file_name: name.to_string(),
             tag_disc: Some(1),
             tag_track,
+            tag_track_total: None,
+            tag_disc_total: None,
         }
     }
 

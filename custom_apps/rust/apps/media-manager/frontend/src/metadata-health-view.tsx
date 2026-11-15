@@ -1178,6 +1178,7 @@ const TRACK_SEQUENCE_CODES = new Set([
   "track-sequence-gap-or-duplicate",
   "track-order-mismatch",
   "missing-track-numbers",
+  "duplicate-track-numbers",
 ]);
 const NUMBER_VALUE = /^\d{1,4}(?:\.\d{1,2})?$/;
 const SEQUENCE_START = /^\d{1,4}$/;

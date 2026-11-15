@@ -1569,12 +1569,32 @@ async fn item_metadata_value(
     {
         health.insert(0, issue);
     }
-    if item.media_kind == MediaKind::Video
-        && let Some(probe) = video_probe_for(state, identity, item, application_caches).await
-        && let Some(issue) = super::video_conversions::playback_issue(item, &probe)
-    {
-        health.insert(0, issue);
+    // What the file itself shows leads the list: metadata on a file that is
+    // empty, mislabelled or cut short is not worth settling first.
+    let mut file_issues = Vec::new();
+    if let Some(root) = root.as_ref() {
+        let root_path = root.resolved_path.clone();
+        let inspected = item.clone();
+        file_issues = tokio::task::spawn_blocking(move || {
+            crate::file_health::inspect_file(FilePath::new(&root_path), &inspected)
+        })
+        .await
+        .unwrap_or_default();
     }
+    if item.media_kind == MediaKind::Video {
+        let video_issues = video_health_issues(
+            state,
+            identity,
+            item,
+            application_caches,
+            &response,
+            &observations,
+            file_issues.is_empty(),
+        )
+        .await;
+        file_issues.extend(video_issues);
+    }
+    health.splice(0..0, file_issues);
     response["health"] = json!(health);
     response["modificationTargets"] = json!(modification_targets(
         item.media_kind,
@@ -1586,6 +1606,172 @@ async fn item_metadata_value(
         response["coreInfo"] = json!(core_info);
     }
     response
+}
+
+/// A folder-level track problem as a health issue. Ordering problems end
+/// with the step that makes the player pick the fix up; a missing disc or
+/// track is not an ordering problem and no rescan repairs it.
+fn track_problem_issue(problem: &crate::track_order::TrackOrderProblem) -> MetadataHealthIssue {
+    let incomplete = matches!(
+        problem.code.as_str(),
+        "disc-sequence-gap" | "track-count-mismatch"
+    );
+    MetadataHealthIssue {
+        code: problem.code.clone(),
+        severity: problem.severity.clone(),
+        field: None,
+        title: problem.title.clone(),
+        message: if incomplete {
+            problem.message.clone()
+        } else {
+            format!(
+                "{} Fix the order, then rescan the library and refresh the player app.",
+                problem.message
+            )
+        },
+        sources: vec!["track-order".to_string()],
+        current_value: None,
+        current_sources: Vec::new(),
+        proposed_values: Vec::new(),
+        affected_files: problem.affected_files.clone(),
+        affected_file_count: Some(problem.affected_file_count),
+    }
+}
+
+/// Subtitle sidecars measured per video; more than this is a folder of
+/// alternates, and the first few already show a mistimed set.
+const MAX_HEALTH_SUBTITLES: usize = 8;
+
+/// Health issues a video's cached probe, its extras folder and its subtitle
+/// sidecars show. Nothing is probed here: an unprobed video simply has no
+/// probe-derived issues until the library page or health scan fills the cache.
+async fn video_health_issues(
+    state: &AppState,
+    identity: &Identity,
+    item: &CatalogItem,
+    application_caches: Option<&ApplicationMetadataCaches>,
+    effective: &Value,
+    observations: &[MetadataObservation],
+    file_is_sound: bool,
+) -> Vec<MetadataHealthIssue> {
+    use crate::file_health;
+    let Some(root) = state.config.resolve_visible_root(identity, &item.root_id) else {
+        return Vec::new();
+    };
+    let cache = match application_caches.and_then(|caches| caches.video_probes.clone()) {
+        Some(cache) => cache,
+        None => {
+            let state_dir = state.config.state_dir.clone();
+            let (root_id, root_path) = (item.root_id.clone(), root.resolved_path.clone());
+            match tokio::task::spawn_blocking(move || {
+                VideoProbeCache::open_for_root(&state_dir, &root_id, FilePath::new(&root_path))
+            })
+            .await
+            {
+                Ok(cache) => Arc::new(cache),
+                Err(_) => return Vec::new(),
+            }
+        }
+    };
+    let probe = cache.probe_for(&item.relative_path, &item.fingerprint);
+    let mut issues = Vec::new();
+    if let Some(probe) = probe.as_ref()
+        && let Some(issue) = super::video_conversions::playback_issue(item, probe)
+    {
+        issues.push(issue);
+    }
+    // A container fault already explains why FFprobe failed.
+    let probe_failed = file_is_sound && cache.probe_failed(&item.relative_path, &item.fingerprint);
+    issues.extend(file_health::video_probe_issues(
+        probe.as_ref(),
+        probe_failed,
+    ));
+    let duration = probe.as_ref().and_then(|probe| probe.duration_seconds);
+
+    // Catalog rows are read in one block: the connection must not be held
+    // across an await.
+    let directory = item
+        .relative_path
+        .rsplit_once('/')
+        .map(|(directory, _)| directory)
+        .unwrap_or("");
+    let owner = item.owner_username.as_deref();
+    let (features, subtitles) = match state.catalog.open() {
+        Ok(catalog) => (
+            file_health::feature_folder_of_extra(&item.relative_path)
+                .and_then(|folder| {
+                    catalog
+                        .list_media_in_directory(&item.root_id, owner, folder)
+                        .ok()
+                })
+                .unwrap_or_default(),
+            catalog
+                .list_subtitles_in_directory(&item.root_id, owner, directory, 256)
+                .unwrap_or_default(),
+        ),
+        Err(_) => (Vec::new(), Vec::new()),
+    };
+
+    if let Some(duration) = duration {
+        let longest_feature = features
+            .iter()
+            .filter(|feature| feature.media_kind == MediaKind::Video)
+            .filter_map(|feature| {
+                let seconds = cache
+                    .probe_for(&feature.relative_path, &feature.fingerprint)?
+                    .duration_seconds?;
+                Some((feature, seconds))
+            })
+            .max_by(|left, right| left.1.total_cmp(&right.1));
+        if let Some((feature, seconds)) = longest_feature {
+            let name = feature
+                .relative_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&feature.relative_path);
+            issues.extend(file_health::long_extra_issue(duration, name, seconds));
+        }
+        let listed_runtime = observations
+            .iter()
+            .filter(|observation| observation.storage == "sidecar-file")
+            .find_map(|observation| observation.fields.get("runtimeMinutes")?.as_f64());
+        if let Some(listed) = listed_runtime {
+            issues.extend(file_health::runtime_issue(duration, listed));
+        }
+    }
+
+    if let Some(embedded) = probe.as_ref().and_then(|probe| probe.title.as_deref())
+        && !cache.title_shared_in_folder(&item.relative_path, embedded)
+    {
+        let mut names = ["title", "series", "episodeTitle"]
+            .into_iter()
+            .filter_map(|field| effective.get(field)?.as_str())
+            .collect::<Vec<_>>();
+        // The path counts too: a release name matching its own file or
+        // folder is consistent, whatever a metadata source renamed it to.
+        names.extend(item.relative_path.rsplit('/').take(3));
+        issues.extend(file_health::embedded_title_issue(embedded, &names));
+    }
+
+    let sidecars = subtitles
+        .iter()
+        .filter(|subtitle| super::subtitles::subtitle_belongs_to_video(item, subtitle))
+        .take(MAX_HEALTH_SUBTITLES)
+        .map(|subtitle| subtitle.relative_path.clone())
+        .collect::<Vec<_>>();
+    if !sidecars.is_empty() {
+        let root_path = root.resolved_path.clone();
+        let timelines = tokio::task::spawn_blocking(move || {
+            sidecars
+                .iter()
+                .filter_map(|path| file_health::subtitle_timeline(FilePath::new(&root_path), path))
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        issues.extend(file_health::subtitle_issues(&timelines, duration));
+    }
+    issues
 }
 
 #[derive(Deserialize)]
@@ -1781,11 +1967,43 @@ pub(super) async fn metadata_issues(
         .flatten();
 
     let mut application_caches = ApplicationMetadataCaches::load(&state, &page).await;
-    if page.iter().any(|item| item.media_kind == MediaKind::Video) {
+    let page_videos = page
+        .iter()
+        .filter(|item| item.media_kind == MediaKind::Video)
+        .map(|item| (item.relative_path.clone(), item.fingerprint.clone()))
+        .collect::<Vec<_>>();
+    if !page_videos.is_empty() {
         let state_dir = state.config.state_dir.clone();
         let (root_id, root_path) = (root.id.clone(), root.resolved_path.clone());
+        let ffprobe = state.config.ffprobe_path.clone();
+        // Health reports what the probe shows, so this page's unprobed
+        // videos are probed now rather than left for the Videos page. The
+        // page is at most MAX_PAGE_SIZE files and waits its turn for the one
+        // probe slot; if the slot stays busy the cached results stand.
+        let permit = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            crate::video_probe::PROBE_LIMIT.acquire(),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok);
         application_caches.video_probes = tokio::task::spawn_blocking(move || {
-            VideoProbeCache::open_for_root(&state_dir, &root_id, FilePath::new(&root_path))
+            let mut cache =
+                VideoProbeCache::open_for_root(&state_dir, &root_id, FilePath::new(&root_path));
+            // Held until the closure returns, so the probes run in the slot.
+            if let (Some(ffprobe), Some(_slot)) = (ffprobe, permit)
+                && page_videos
+                    .iter()
+                    .any(|(path, fingerprint)| !cache.has_probe(path, fingerprint))
+            {
+                let _ = refresh_root_probes(
+                    FilePath::new(&ffprobe),
+                    FilePath::new(&root_path),
+                    &mut cache,
+                    &page_videos,
+                );
+            }
+            cache
         })
         .await
         .ok()
@@ -1836,26 +2054,12 @@ pub(super) async fn metadata_issues(
                                 "track-sequence-gap-or-duplicate"
                                     | "track-order-mismatch"
                                     | "missing-track-numbers"
+                                    | "duplicate-track-numbers"
+                                    | "disc-sequence-gap"
+                                    | "track-count-mismatch"
                             )
                         })
-                        .map(|problem| {
-                            json!(crate::metadata::MetadataHealthIssue {
-                                code: problem.code.clone(),
-                                severity: problem.severity.clone(),
-                                field: None,
-                                title: problem.title.clone(),
-                                message: format!(
-                                    "{} Fix the order, then rescan the library and refresh the player app.",
-                                    problem.message
-                                ),
-                                sources: vec!["track-order".to_string()],
-                                current_value: None,
-                                current_sources: Vec::new(),
-                                proposed_values: Vec::new(),
-                                affected_files: problem.affected_files.clone(),
-                                affected_file_count: Some(problem.affected_file_count),
-                            })
-                        })
+                        .map(|problem| json!(track_problem_issue(problem)))
                         .collect::<Vec<_>>(),
                     _ => Vec::new(),
                 };
@@ -2070,24 +2274,7 @@ pub(super) async fn folder_metadata(
         {
             Ok((Some(report), warnings)) => {
                 track_order_warnings = warnings;
-                for problem in &report.problems {
-                    health.push(MetadataHealthIssue {
-                        code: problem.code.clone(),
-                        severity: problem.severity.clone(),
-                        field: None,
-                        title: problem.title.clone(),
-                        message: format!(
-                            "{} Fix the order, then rescan the library and refresh the player app.",
-                            problem.message
-                        ),
-                        sources: vec!["track-order".to_string()],
-                        current_value: None,
-                        current_sources: Vec::new(),
-                        proposed_values: Vec::new(),
-                        affected_files: problem.affected_files.clone(),
-                        affected_file_count: Some(problem.affected_file_count),
-                    });
-                }
+                health.extend(report.problems.iter().map(track_problem_issue));
                 track_order_value = json!(report);
             }
             Ok((None, warnings)) => track_order_warnings = warnings,
@@ -2385,32 +2572,6 @@ struct ApplicationMetadataCaches {
     indexes: HashMap<&'static str, MetadataIndex>,
     /// The page's video probes, loaded once rather than per item.
     video_probes: Option<Arc<VideoProbeCache>>,
-}
-
-/// The cached ffprobe result for a video, without probing on demand.
-async fn video_probe_for(
-    state: &AppState,
-    identity: &Identity,
-    item: &CatalogItem,
-    application_caches: Option<&ApplicationMetadataCaches>,
-) -> Option<VideoProbe> {
-    if let Some(cache) = application_caches.and_then(|caches| caches.video_probes.as_ref()) {
-        return cache.probe_for(&item.relative_path, &item.fingerprint);
-    }
-    let root = state.config.resolve_visible_root(identity, &item.root_id)?;
-    let state_dir = state.config.state_dir.clone();
-    let item = item.clone();
-    tokio::task::spawn_blocking(move || {
-        VideoProbeCache::open_for_root(
-            &state_dir,
-            &item.root_id,
-            FilePath::new(&root.resolved_path),
-        )
-        .probe_for(&item.relative_path, &item.fingerprint)
-    })
-    .await
-    .ok()
-    .flatten()
 }
 
 impl ApplicationMetadataCaches {

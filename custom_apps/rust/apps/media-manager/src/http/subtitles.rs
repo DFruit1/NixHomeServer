@@ -396,22 +396,19 @@ async fn probe_for_video(
         if cache.has_probe(&relative_path, &fingerprint) {
             return cache.probe_for(&relative_path, &fingerprint);
         }
-        let probe = match probe_video_beneath(
+        let result = probe_video_beneath(
             FilePath::new(&ffprobe),
             FilePath::new(&root_path),
             &relative_path,
-        ) {
-            Ok(probe) => Some(probe),
-            Err(error) => {
-                log_event(
-                    "video_probe_failed",
-                    &request_id_for_probe,
-                    json!({ "error": error, "itemId": item_id_for_probe }),
-                );
-                None
-            }
-        };
-        cache.set(&relative_path, &fingerprint, probe.clone());
+        );
+        if let Err(error) = &result {
+            log_event(
+                "video_probe_failed",
+                &request_id_for_probe,
+                json!({ "error": error, "itemId": item_id_for_probe }),
+            );
+        }
+        let probe = cache.record(&relative_path, &fingerprint, result);
         let _ = cache.save();
         probe
     })
@@ -1082,7 +1079,7 @@ pub(super) async fn installed_subtitle_content(
     }
 }
 
-fn subtitle_belongs_to_video(video: &CatalogItem, subtitle: &CatalogItem) -> bool {
+pub(super) fn subtitle_belongs_to_video(video: &CatalogItem, subtitle: &CatalogItem) -> bool {
     let video_stem = video
         .relative_path
         .rsplit_once('.')

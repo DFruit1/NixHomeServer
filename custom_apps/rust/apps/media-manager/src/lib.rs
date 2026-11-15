@@ -11,6 +11,7 @@ pub mod config;
 pub mod conversion_jobs;
 pub mod core;
 mod decision_index;
+pub mod file_health;
 pub mod http;
 mod image_index;
 mod image_search;

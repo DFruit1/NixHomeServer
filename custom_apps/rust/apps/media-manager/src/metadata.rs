@@ -565,32 +565,47 @@ fn rewrite_pdf_metadata(
     Ok("XMP".to_string())
 }
 
+/// Disc and track numbering read from one audio file's tags.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AudioTrackNumbers {
+    pub disc: Option<u64>,
+    pub track: Option<u64>,
+    pub track_total: Option<u64>,
+    pub disc_total: Option<u64>,
+}
+
 /// Read just the disc/track numbers of one audio file for folder-level
-/// play-order analysis. Returns `(None, None)` for unreadable or untagged
-/// files instead of failing, so one bad sibling cannot sink a whole album.
-pub(crate) fn audio_track_numbers(root: &Path, relative_path: &str) -> (Option<u64>, Option<u64>) {
+/// play-order analysis. Returns nothing for unreadable or untagged files
+/// instead of failing, so one bad sibling cannot sink a whole album.
+pub(crate) fn audio_track_numbers(root: &Path, relative_path: &str) -> AudioTrackNumbers {
+    let none = AudioTrackNumbers::default();
     let Some(file_type) = FileType::from_path(relative_path) else {
-        return (None, None);
+        return none;
     };
     let Ok(file) = open_regular_file_beneath(root, relative_path) else {
-        return (None, None);
+        return none;
     };
     if file
         .metadata()
         .is_ok_and(|metadata| metadata.len() > MAX_CONTAINER_BYTES)
     {
-        return (None, None);
+        return none;
     }
     let Ok(tagged) = Probe::with_file_type(std::io::BufReader::new(file), file_type)
         .options(ParseOptions::new().read_properties(false))
         .read()
     else {
-        return (None, None);
+        return none;
     };
     let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
-        return (None, None);
+        return none;
     };
-    (tag.disk().map(u64::from), tag.track().map(u64::from))
+    AudioTrackNumbers {
+        disc: tag.disk().map(u64::from),
+        track: tag.track().map(u64::from),
+        track_total: tag.track_total().map(u64::from),
+        disc_total: tag.disk_total().map(u64::from),
+    }
 }
 
 fn inspect_audio_tags(
@@ -1097,6 +1112,20 @@ pub fn health_issues(
             Vec::new(),
         ));
     }
+    if effective
+        .get("isbn")
+        .and_then(Value::as_str)
+        .is_some_and(crate::file_health::isbn_check_digit_is_wrong)
+    {
+        issues.push(health_issue(
+            "invalid-isbn",
+            "warning",
+            Some("isbn"),
+            "ISBN has a wrong check digit",
+            "The last digit of an ISBN is computed from the others, and this one does not add up, so a digit was mistyped. Lookups by ISBN find the wrong book or none.",
+            Vec::new(),
+        ));
+    }
     if matches!(media_kind, MediaKind::Audiobook | MediaKind::Podcast) {
         for observation in observations {
             let audio_files = observation
@@ -1321,7 +1350,7 @@ fn value_as_u64(value: &Value) -> Option<u64> {
         .or_else(|| value.as_str().and_then(|value| value.parse::<u64>().ok()))
 }
 
-fn health_issue(
+pub(crate) fn health_issue(
     code: &str,
     severity: &str,
     field: Option<&str>,

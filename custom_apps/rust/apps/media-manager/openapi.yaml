@@ -3315,6 +3315,12 @@ components:
         width: { type: integer }
         height: { type: integer }
         codec: { type: string }
+        durationSeconds:
+          type: number
+          description: Running time the container declares; absent when the file was never finished being written.
+        title:
+          type: string
+          description: The container's own title tag, which players may show instead of the library title.
         audioCodecs:
           type: array
           items: { type: string }
