@@ -1194,13 +1194,15 @@ def prune_empty_dirs(path: Path, stop: Path) -> None:
         current = current.parent
 
 
-def staging_name(target: Path) -> Path:
+def staging_name(target: Path, file: Path) -> Path:
     """Hidden, deterministic staging file beside a library target.
 
-    Scanners ignore dot files, and a retry after a crash reuses (and so
-    replaces) a leftover from the earlier attempt instead of leaking it.
+    Scanners ignore dot files. The name is tied to the held file it comes
+    from, so a retry for this disc finds its own crash leftovers and never
+    mistakes another disc's for them.
     """
-    return target.with_name(f".{target.name}.publish.tmp")
+    tag = hashlib.sha256(str(file).encode("utf-8", "surrogateescape")).hexdigest()[:12]
+    return target.with_name(f".{target.name}.{tag}.publish.tmp")
 
 
 def stage_episode(file: Path, staged: Path) -> bool:
@@ -1240,25 +1242,33 @@ def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, yea
         title = safe_name(names[offset]) if offset < len(names) and names[offset] else ""
         stem = f"{media_name} S{season:02d}E{first + offset:02d}"
         targets.append(season_dir / (f"{stem} - {title}.mkv" if title else f"{stem}.mkv"))
-    # Recover from a publish that was killed part-way. A target that is the
-    # same file as its staging name is this code's own link.
-    ours = [t.exists() and staging_name(t).exists() and os.path.samefile(t, staging_name(t))
-            for t in targets]
-    if targets and all(ours):
+    # Recover from a publish of this disc that was killed part-way. A target
+    # that is the same file as this disc's staging name is its own link; a
+    # target with neither staging nor held file left was already cleaned up.
+    stagings = [staging_name(t, f) for f, t in zip(files, targets)]
+    linked_here = [t.exists() and st.exists() and os.path.samefile(t, st)
+                   for t, st in zip(targets, stagings)]
+    cleaned = [t.exists() and not st.exists() and not f.exists()
+               for f, t, st in zip(files, targets, stagings)]
+    if any(linked_here) and all(a or b for a, b in zip(linked_here, cleaned)):
         # Killed after every link was made: only clean-up was left.
-        for file, target in zip(files, targets):
-            staging_name(target).unlink()
+        for file, target, staging, own in zip(files, targets, stagings, linked_here):
+            if not own:
+                continue
+            if file.exists() and file.stat().st_size != target.stat().st_size:
+                raise RuntimeError(f"{file} differs from the published {target}; left for a person")
+            staging.unlink()
             if file.exists():
                 file.unlink()  # the copied original; the library copy is complete
+        for target in targets:
             print(f"  published {target}")
         if getattr(args, "held_dir", None) is not None:
             for file in files:
                 prune_empty_dirs(file.parent, args.held_dir)
         return season_dir
-    for file, target, own in zip(files, targets, ours):
+    for file, target, staging, own in zip(files, targets, stagings, linked_here):
         if own:
             target.unlink()  # killed while linking: undo this disc's links
-        staging = staging_name(target)
         if staging.exists():
             if file.exists():
                 staging.unlink()  # a stale copy; the original is intact
@@ -1292,7 +1302,7 @@ def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, yea
         for file, target in zip(files, targets):
             if shutdown_signal is not None:
                 raise ShutdownRequested("shutdown while publishing held episodes")
-            staging = staging_name(target)
+            staging = staging_name(target, file)
             staged.append((file, staging, target, stage_episode(file, staging)))
         for _, staging, target, _ in staged:
             os.link(staging, target)
