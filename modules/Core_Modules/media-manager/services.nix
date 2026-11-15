@@ -259,8 +259,12 @@ in
       Nice = 10;
       CPUWeight = 20;
       IOWeight = 20;
+      # "-": systemd builds the sandbox for every command, including the
+      # privileged ExecStartPre that creates this directory, and it does not
+      # exist yet at that point (a fresh /run, or the former RuntimeDirectory
+      # removed by the previous unit's stop). The main process gets it.
       ReadWritePaths = [ cfg.providerStateDir ]
-        ++ lib.optional providerSystemEnabled providerSystemDir;
+        ++ lib.optional providerSystemEnabled "-${providerSystemDir}";
       SystemCallArchitectures = "native";
       SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
     };
