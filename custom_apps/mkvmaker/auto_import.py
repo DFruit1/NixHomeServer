@@ -1257,9 +1257,11 @@ def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, yea
                 continue
             if file.exists() and file.stat().st_size != target.stat().st_size:
                 raise RuntimeError(f"{file} differs from the published {target}; left for a person")
-            staging.unlink()
+            # Held copy first, staging last: at every stopping point an episode
+            # is either still linked to its staging file or fully cleaned.
             if file.exists():
                 file.unlink()  # the copied original; the library copy is complete
+            staging.unlink()
         for target in targets:
             print(f"  published {target}")
         if getattr(args, "held_dir", None) is not None:
@@ -1312,7 +1314,9 @@ def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, yea
         raise
     # Published. Clean-up failures from here on are only worth a warning.
     for file, staging, _, copied in staged:
-        for leftover in ([staging, file] if copied else [staging]):
+        # Held copy first, staging last, so a kill between the two still
+        # reads as "linked" to recovery rather than as a half-cleaned episode.
+        for leftover in ([file, staging] if copied else [staging]):
             try:
                 leftover.unlink()
             except OSError as error:
