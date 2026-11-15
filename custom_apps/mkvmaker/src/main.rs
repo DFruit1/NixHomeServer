@@ -1384,22 +1384,27 @@ fn show_commands(jobs: &[Job]) {
     }
 }
 
-const CREATE_MEDIA_DIR_MODE: u32 = 0o2770;
+const CREATE_MEDIA_DIR_MODE: u32 = 0o770;
 
 /// Create `path` and any missing ancestors inside the media library as
-/// group-writable directories (`rwxrws---`).
+/// group-writable directories (`rwxrws---` under the setgid library roots).
 ///
-/// Setting the mode explicitly is required because the worker's umask (0002)
-/// otherwise produces `0755`-style directories whose ACL mask strips the group
-/// write bit. That masks off the `jellyfin-media` writable grant on each media
-/// folder, so the Jellyfin process cannot delete the produced files. Only
-/// directories created by this call are modified; pre-existing ancestors are
-/// left untouched.
+/// The mode is passed to `mkdir` itself because the worker's umask (0002)
+/// otherwise produces `0775`-style directories whose ACL mask strips the group
+/// write bit, masking off the `jellyfin-media` writable grant so Jellyfin
+/// cannot delete the produced files. The setgid bit is deliberately *not*
+/// requested: the library roots are setgid, so the kernel propagates the bit
+/// and the `media-automation` group to every new directory, while the worker's
+/// `RestrictSUIDSGID=true` sandbox rejects any `chmod`/`mkdir` that asks for
+/// setgid explicitly. (An explicit `chmod 2770` used to fail every first
+/// attempt at a new folder with EPERM.) Only directories created by this call
+/// are modified; pre-existing ancestors are left untouched.
 fn create_media_dirs(path: &Path) -> std::io::Result<()> {
     create_media_dirs_with_mode(path, CREATE_MEDIA_DIR_MODE)
 }
 
 fn create_media_dirs_with_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
     let mut missing: Vec<&Path> = Vec::new();
     let mut current = path;
     while !current.exists() {
@@ -1410,24 +1415,36 @@ fn create_media_dirs_with_mode(path: &Path, mode: u32) -> std::io::Result<()> {
         }
     }
     for directory in missing.into_iter().rev() {
-        fs::create_dir(directory).map_err(|error| {
-            std::io::Error::new(
-                error.kind(),
-                format!(
-                    "failed to create media directory {}: {error}",
-                    directory.display()
-                ),
-            )
-        })?;
-        fs::set_permissions(directory, fs::Permissions::from_mode(mode)).map_err(|error| {
-            std::io::Error::new(
-                error.kind(),
-                format!(
-                    "failed to set mode {mode:o} on media directory {}: {error}",
-                    directory.display()
-                ),
-            )
-        })?;
+        fs::DirBuilder::new()
+            .mode(mode & 0o777)
+            .create(directory)
+            .map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!(
+                        "failed to create media directory {}: {error}",
+                        directory.display()
+                    ),
+                )
+            })?;
+        // A stricter umask than the service's 0002 can still strip bits.
+        // Re-apply them only when no special bits are involved: a chmod that
+        // carries an inherited setgid bit is refused by RestrictSUIDSGID.
+        let actual = fs::metadata(directory)?.permissions().mode();
+        if actual & 0o777 != mode & 0o777 && actual & 0o7000 == 0 {
+            fs::set_permissions(directory, fs::Permissions::from_mode(mode & 0o777)).map_err(
+                |error| {
+                    std::io::Error::new(
+                        error.kind(),
+                        format!(
+                            "failed to set mode {:o} on media directory {}: {error}",
+                            mode & 0o777,
+                            directory.display()
+                        ),
+                    )
+                },
+            )?;
+        }
     }
     Ok(())
 }
@@ -2438,8 +2455,10 @@ Progress: {"State":"SCANDONE"}"#;
     }
 
     #[test]
-    fn media_directory_mode_is_group_writable_and_setgid() {
-        assert_eq!(CREATE_MEDIA_DIR_MODE, 0o2770);
+    fn media_directory_mode_is_group_writable_without_requesting_setgid() {
+        // Setgid is inherited from the library roots; requesting it explicitly
+        // is rejected by the worker's RestrictSUIDSGID sandbox.
+        assert_eq!(CREATE_MEDIA_DIR_MODE, 0o770);
     }
 
     #[test]
@@ -2457,10 +2476,9 @@ Progress: {"State":"SCANDONE"}"#;
         fs::set_permissions(&existing, fs::Permissions::from_mode(0o750)).unwrap();
         let nested = existing.join("Film (2000)/extras");
 
-        // Nix build sandboxes reject setting setgid bits. Exercise the
-        // recursive filesystem behavior with the otherwise equivalent mode;
-        // the separate assertion above pins the production mode to 02770.
-        let sandbox_compatible_mode = 0o770;
+        // Production directories inherit setgid from the library roots; this
+        // temporary parent is not setgid, so the plain mode is expected.
+        let sandbox_compatible_mode = CREATE_MEDIA_DIR_MODE;
         create_media_dirs_with_mode(&nested, sandbox_compatible_mode).unwrap();
 
         assert_eq!(

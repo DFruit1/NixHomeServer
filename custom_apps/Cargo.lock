@@ -1206,11 +1206,15 @@ name = "disc-to-jellyfin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "clap",
  "ctrlc",
  "dialoguer",
+ "form_urlencoded",
  "fs2",
+ "image",
  "libc",
+ "reqwest",
  "serde",
  "serde_json",
 ]
@@ -4457,6 +4461,7 @@ dependencies = [
  "bytes",
  "cookie",
  "cookie_store",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",

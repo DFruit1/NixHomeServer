@@ -193,10 +193,11 @@ Stage these files:
   required by ACME's `CF_DNS_API_TOKEN_FILE` credential.
 - Optional: `secrets/unencrypted/rcloneMegaPassword`, only when enabling the
   configured MEGA offsite copy target.
-- Optional: `secrets/unencrypted/openSubtitlesCredentials`, a JSON object with
-  `apiKey`, `username`, `password`, and optional `userAgent` strings. Omit it
-  to keep Media Manager's provider search disabled while retaining subtitle
-  file uploads and every other Media Manager feature.
+- Optional, legacy: `secrets/unencrypted/openSubtitlesCredentials`, a JSON
+  object with `apiKey`, `username`, `password`, and optional `userAgent`
+  strings. No deployed service reads it, so it can be omitted. Media Manager's
+  subtitle search uses OpenSubtitles accounts that each signed-in user saves
+  under Metadata sources; the provider broker stores them per user.
 
 Generate repo-managed secrets and encrypt all staged external inputs:
 

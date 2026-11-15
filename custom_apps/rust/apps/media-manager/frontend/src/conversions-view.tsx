@@ -391,6 +391,7 @@ export const ConversionsView = component$<{
   const inboxPending = conv.inbox?.pending ?? [];
   const inboxProcessed = conv.inbox?.processed ?? [];
   const inboxFailed = conv.inbox?.failed ?? [];
+  const inboxNeedsIdentification = conv.inbox?.needsIdentification ?? [];
   const filesBaseUrl = conv.inbox?.filesBaseUrl ?? "";
   const transcripts = (conv.transcriptions?.jobs ?? []).map((job) => ({
     ...job,
@@ -594,7 +595,8 @@ export const ConversionsView = component$<{
                   <li>
                     Finished films appear in the shared video library. Source
                     ISOs move to _Processed, or to _Failed after repeated
-                    failures.
+                    failures. TV discs whose episodes cannot be identified wait
+                    in _NeedsIdentification until you rename them.
                   </li>
                   <li>
                     ISO files in the queue can be safely renamed or moved, but
@@ -656,6 +658,12 @@ export const ConversionsView = component$<{
         <RecentSubmissions jobs={conv.inputs?.jobs ?? []} />
       </div>
       <aside class="conv-sidebar">
+        {inboxNeedsIdentification.length > 0 && (
+          <NeedsIdentificationCard
+            isos={inboxNeedsIdentification}
+            filesBaseUrl={filesBaseUrl}
+          />
+        )}
         <ProcessedCard
           isos={inboxProcessed}
           filesBaseUrl={filesBaseUrl}
@@ -673,6 +681,93 @@ export const ConversionsView = component$<{
           onRequeue$={requeue}
         />
       </aside>
+    </section>
+  );
+});
+
+/**
+ * TV discs the importer encoded but held back because it could not match
+ * their episodes. Shown only while some exist: it is a to-do list, unlike
+ * the Completed and Failed history.
+ */
+const NeedsIdentificationCard = component$<{
+  isos: InboxIso[];
+  filesBaseUrl: string;
+}>((props) => {
+  const folder = "_ISO/_DVDs/_NeedsIdentification";
+  return (
+    <section class="panel side-panel">
+      <div class="panel-heading">
+        <div>
+          <h2 id="identify-heading">Process, needs identifying</h2>
+        </div>
+      </div>
+      <div
+        class="side-panel-body"
+        role="region"
+        aria-labelledby="identify-heading"
+        tabIndex={0}
+      >
+        <p class="side-panel-instruction">
+          Rename the ISO in{" "}
+          {props.filesBaseUrl ? (
+            <a
+              href={`${props.filesBaseUrl}/files/_Shared/${folder}/`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {folder}
+            </a>
+          ) : (
+            <code>{folder}</code>
+          )}{" "}
+          to the show, season and episodes, such as{" "}
+          <code>Show (1978) S01E05-E06.iso</code>. Within a minute its videos
+          move into the TV library without re-encoding.
+        </p>
+        <ul class="side-list">
+          {props.isos.map((iso) => {
+            const title = isoTitle(iso);
+            const fileDiffers = iso.name.replace(/\.iso$/i, "") !== title;
+            const detail = [
+              fileDiffers ? iso.name : "",
+              iso.finishedNs ? `Held ${finishedAt(iso)}` : "",
+            ]
+              .filter(Boolean)
+              .join(" · ");
+            return (
+              <li key={iso.name}>
+                <span class="side-item-name" title={iso.name}>
+                  <strong>{title}</strong>
+                  {detail && <small>{detail}</small>}
+                </span>
+                {iso.summary && <p class="side-item-reason">{iso.summary}</p>}
+                {iso.suggestedName && (
+                  <p class="side-item-suggestion">
+                    Suggested name: <code>{iso.suggestedName}</code>
+                  </p>
+                )}
+                {iso.heldDir && props.filesBaseUrl ? (
+                  <a
+                    class="side-item-link"
+                    href={`${props.filesBaseUrl}/files/_Shared/${iso.heldDir}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <Icon name="folder" size={14} />
+                    <span>{iso.heldDir}</span>
+                  </a>
+                ) : iso.heldDir ? (
+                  <span class="side-item-path">
+                    <Icon name="folder" size={14} />
+                    <span>{iso.heldDir}</span>
+                  </span>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
     </section>
   );
 });

@@ -35,6 +35,26 @@ in
       description = "Shared Jellyfin TV library destination.";
     };
 
+    heldOutput = lib.mkOption {
+      type = lib.types.str;
+      default = "${vars.sharedRoot}/_Videos/_Unidentified";
+      description = ''
+        Holding folder for TV episodes whose identity is not certain. It is
+        browsable but outside the Jellyfin libraries, so guessed episode
+        numbers never reach Jellyfin. It must share a filesystem with
+        showsOutput so publishing is a rename.
+      '';
+    };
+
+    needsIdentification = lib.mkOption {
+      type = lib.types.str;
+      default = "${cfg.paths.dvdInbox}/_NeedsIdentification";
+      description = ''
+        ISOs whose episodes await a person. Renaming one to a Jellyfin TV name
+        with an episode range publishes its held episodes without re-encoding.
+      '';
+    };
+
     stagingRoot = lib.mkOption {
       type = lib.types.str;
       default = "${vars.sharedRoot}/.mkvmaker-staging";
@@ -52,7 +72,7 @@ in
     # Only cfg.paths.dvdInbox under the shared root is watched.
     repo.storage.userRoots.contentSubdirs = [ "_ISO" ];
     repo.storage.sharedRoots.contentSubdirs = [ "_ISO" "_Videos" ".mkvmaker-staging" ];
-    repo.storage.sharedRoots.videoSubdirs = [ "_Movies" "_Shows" ];
+    repo.storage.sharedRoots.videoSubdirs = [ "_Movies" "_Shows" "_Unidentified" ];
 
     systemd.tmpfiles.rules = [
       "d ${cfg.paths.stateRoot} 0750 mkvmaker mkvmaker -"

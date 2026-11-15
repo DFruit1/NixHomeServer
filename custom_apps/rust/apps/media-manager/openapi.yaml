@@ -2674,13 +2674,25 @@ components:
         finishedNs:
           type: integer
           minimum: 0
-          description: When the ISO finished or failed, from the worker's manifest or error report.
+          description: When the ISO finished, failed or was held for identification, from the worker's manifest, error report or identification report.
         failureSummary:
           type: string
           description: Plain-language reason a failed ISO stopped.
         failureHint:
           type: string
           description: What the owner can do before retrying the failed ISO.
+        heldDir:
+          type: string
+          maxLength: 1024
+          description: Shared-storage folder holding the encoded videos of a disc whose episodes need identifying.
+        summary:
+          type: string
+          maxLength: 1000
+          description: Plain-language reason the importer could not identify the disc's episodes.
+        suggestedName:
+          type: string
+          maxLength: 255
+          description: The importer's best guess at a Jellyfin TV ISO name with season and episode range.
     IntegrationRefresh:
       type: object
       required: [integrationId, state]
@@ -3404,6 +3416,7 @@ components:
       - pending
       - processed
       - failed
+      - needsIdentification
       properties:
         available:
           type: boolean
@@ -3417,6 +3430,11 @@ components:
             $ref: '#/components/schemas/InboxIso'
         failed:
           type: array
+          items:
+            $ref: '#/components/schemas/InboxIso'
+        needsIdentification:
+          type: array
+          description: Encoded discs held back from the TV library until their ISO in _NeedsIdentification is renamed with a season and episode range.
           items:
             $ref: '#/components/schemas/InboxIso'
         filesBaseUrl:

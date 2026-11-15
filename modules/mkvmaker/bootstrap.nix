@@ -28,9 +28,14 @@ in
         ${lib.escapeShellArg "${cfg.paths.dvdInbox}/_Processed"} \
         ${lib.escapeShellArg "${cfg.paths.dvdInbox}/_Failed"} \
         ${lib.escapeShellArg "${cfg.paths.dvdInbox}/_Duplicate"}
+      # People rename ISOs here to confirm their episodes, so it is writable
+      # by the shared group, unlike the read-only archive folders above.
+      install -d -m 2770 -o mkvmaker -g ${lib.escapeShellArg sharedAccessGroup} \
+        ${lib.escapeShellArg cfg.paths.needsIdentification}
       install -d -m 0770 -o root -g root \
         ${lib.escapeShellArg cfg.paths.moviesOutput} \
         ${lib.escapeShellArg cfg.paths.showsOutput} \
+        ${lib.escapeShellArg cfg.paths.heldOutput} \
         ${lib.escapeShellArg cfg.paths.stagingRoot}
 
       for path in \
@@ -44,8 +49,10 @@ in
         ${lib.escapeShellArg "${cfg.paths.dvdInbox}/_Processed"} \
         ${lib.escapeShellArg "${cfg.paths.dvdInbox}/_Failed"} \
         ${lib.escapeShellArg "${cfg.paths.dvdInbox}/_Duplicate"} \
+        ${lib.escapeShellArg cfg.paths.needsIdentification} \
         ${lib.escapeShellArg cfg.paths.moviesOutput} \
         ${lib.escapeShellArg cfg.paths.showsOutput} \
+        ${lib.escapeShellArg cfg.paths.heldOutput} \
         ${lib.escapeShellArg cfg.paths.stagingRoot}; do
         setfacl -m g:mkvmaker:rwx,d:g:mkvmaker:rwx,u:nobody:rwx,d:u:nobody:rwx "$path"
       done

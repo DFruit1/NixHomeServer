@@ -89,6 +89,30 @@ in
       readOnly = true;
       description = "Broker-only encrypted provider account state.";
     };
+    providerSystemClients = lib.mkOption {
+      type = lib.types.listOf (lib.types.strMatching "[a-z_][a-z0-9_-]*");
+      default = [ ];
+      example = [ "mkvmaker" ];
+      description = ''
+        Unix users whose system jobs may call the provider broker's system
+        socket to act with a named user's saved provider account (for example
+        fetching episode subtitles with the uploader's OpenSubtitles account).
+        Each listed user joins `providerSystemGroup`. When empty, the broker
+        opens no Unix socket.
+      '';
+    };
+    providerSystemGroup = lib.mkOption {
+      type = lib.types.str;
+      default = "media-manager-provider-system";
+      readOnly = true;
+      description = "Group allowed to connect to the provider broker's system socket.";
+    };
+    providerSystemSocket = lib.mkOption {
+      type = lib.types.str;
+      default = "/run/media-manager-provider-system/system.sock";
+      readOnly = true;
+      description = "Provider broker system socket, present only when `providerSystemClients` is non-empty.";
+    };
     indexHintDir = lib.mkOption {
       type = lib.types.str;
       default = "/run/media-manager-index-hints";

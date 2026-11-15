@@ -29,7 +29,10 @@ mod additional;
 mod artwork_lookups;
 mod google_books;
 mod immich;
+mod system;
 mod tmdb_lookups;
+
+pub use system::provider_system_router;
 
 const MAX_CREDENTIAL_FIELDS: usize = 8;
 const MAX_CREDENTIAL_VALUE_BYTES: usize = 8192;

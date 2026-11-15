@@ -1,10 +1,10 @@
-{ appPackages, config, lib, vars, ... }:
+{ appPackages, config, lib, pkgs, vars, ... }:
 
 let
   cfg = config.repo.mkvmaker;
   package = appPackages.mkvmaker;
   sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
-  command = lib.escapeShellArgs [
+  command = lib.escapeShellArgs ([
     "${package}/bin/mkvmaker-auto-import"
     "--input-dir"
     cfg.paths.dvdInbox
@@ -40,7 +40,27 @@ let
     vars.hostname
     "--lease-seconds"
     (toString cfg.leaseSeconds)
-  ];
+  ] ++ lib.optionals cfg.identify.enable ([
+    "--identifier"
+    "${package}/bin/disc-identify"
+    "--held-dir"
+    cfg.paths.heldOutput
+    "--needs-dir"
+    cfg.paths.needsIdentification
+    "--sevenzip"
+    "${pkgs._7zz}/bin/7zz"
+    # HandBrake's own FFmpeg build is already in the closure.
+    "--ffmpeg"
+    "${pkgs.handbrake.ffmpeg-hb}/bin/ffmpeg"
+    "--identify-threads"
+    (toString cfg.identify.threads)
+  ] ++ lib.optionals (cfg.identify.bonsaiUrl != null) [ "--bonsai-url" cfg.identify.bonsaiUrl ]
+    ++ lib.optionals (cfg.identify.parakeet != null) [
+    "--parakeet"
+    cfg.identify.parakeet
+    "--parakeet-model"
+    cfg.identify.parakeetModel
+  ] ++ lib.optionals (cfg.identify.subtitleSocket != null) [ "--subtitle-socket" cfg.identify.subtitleSocket ]));
   dispatchCommand = "/run/current-system/sw/bin/systemctl start --no-block mkvmaker-import-worker.service";
 in
 {
@@ -85,6 +105,42 @@ in
       default = "balanced";
       description = "disc-to-jellyfin x264 quality preset.";
     };
+    identify = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Identify TV episodes from the disc (TheDiscDB sidecar, menus) and,
+          after encoding, from their dialogue. Discs that are not identified
+          with certainty are held outside Jellyfin for a person to confirm.
+        '';
+      };
+      bonsaiUrl = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "OpenAI-compatible endpoint that reads menus and ranks episode summaries; set by the Bonsai integration.";
+      };
+      parakeet = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "parakeet-cli used to transcribe episode excerpts on the CPU; set by the transcribe integration.";
+      };
+      parakeetModel = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Parakeet model file readable by the mkvmaker user.";
+      };
+      subtitleSocket = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Provider broker system socket that fetches episode subtitles with the uploader's OpenSubtitles account.";
+      };
+      threads = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 4;
+        description = "CPU threads for transcribing excerpts.";
+      };
+    };
     leaseSeconds = lib.mkOption {
       type = lib.types.ints.positive;
       default = 120;
@@ -93,7 +149,18 @@ in
   };
 
   config = {
+    # The provider broker's system socket fetches episode subtitles with the
+    # uploading user's own OpenSubtitles account (never returning credentials).
+    # Media Manager is a core module, so its options always exist.
+    repo.mediaManager.providerSystemClients = lib.mkIf cfg.identify.enable [ "mkvmaker" ];
+    repo.mkvmaker.identify.subtitleSocket =
+      lib.mkIf cfg.identify.enable (lib.mkDefault config.repo.mediaManager.providerSystemSocket);
+
     assertions = [
+      {
+        assertion = (cfg.identify.parakeet == null) == (cfg.identify.parakeetModel == null);
+        message = "repo.mkvmaker.identify.parakeet and parakeetModel must be set together.";
+      }
       {
         assertion = cfg.dominantTitleRatio >= 0.5 && cfg.dominantTitleRatio <= 1.0;
         message = "repo.mkvmaker.dominantTitleRatio must be between 0.5 and 1.0.";
@@ -165,8 +232,9 @@ in
       description = "Convert settled shared DVD ISOs into Jellyfin-ready MKVs";
       wantedBy = [ "multi-user.target" ];
       requires = [ "mkvmaker-storage-layout-v1.service" ];
-      wants = [ "network-online.target" ];
-      after = [ "mkvmaker-storage-layout-v1.service" "network-online.target" ];
+      wants = [ "network-online.target" ] ++ lib.optional cfg.identify.enable "media-manager-provider-broker.service";
+      after = [ "mkvmaker-storage-layout-v1.service" "network-online.target" ]
+        ++ lib.optional cfg.identify.enable "media-manager-provider-broker.service";
       environment = {
         HOME = cfg.paths.stateRoot;
         XDG_CONFIG_HOME = "${cfg.paths.stateRoot}/config";
@@ -228,6 +296,7 @@ in
           cfg.paths.dvdInbox
           cfg.paths.moviesOutput
           cfg.paths.showsOutput
+          cfg.paths.heldOutput
           cfg.paths.stagingRoot
         ];
       };

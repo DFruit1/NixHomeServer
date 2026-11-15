@@ -33,10 +33,14 @@ let
       # Reads RAR/7z comics for CBR -> CBZ conversion (no free RAR writer exists).
       MEDIA_MANAGER_BSDTAR = "${pkgs.libarchive}/bin/bsdtar";
     };
+  providerSystemEnabled = cfg.providerSystemClients != [ ];
+  providerSystemDir = builtins.dirOf cfg.providerSystemSocket;
   providerEnvironment = {
     MEDIA_MANAGER_PROVIDER_ADDRESS = cfg.address;
     MEDIA_MANAGER_PROVIDER_PORT = toString cfg.providerPort;
     MEDIA_MANAGER_PROVIDER_STATE_DIR = cfg.providerStateDir;
+  } // lib.optionalAttrs providerSystemEnabled {
+    MEDIA_MANAGER_PROVIDER_SYSTEM_SOCKET = cfg.providerSystemSocket;
   };
   refreshCases = lib.concatStringsSep "\n" (lib.mapAttrsToList
     (id: integration:
@@ -214,8 +218,16 @@ in
       RestartSec = "5s";
       StateDirectory = "media-manager-provider";
       StateDirectoryMode = "0700";
-      RuntimeDirectory = "media-manager-provider";
+      RuntimeDirectory = [ "media-manager-provider" ]
+        ++ lib.optional providerSystemEnabled (builtins.baseNameOf providerSystemDir);
       RuntimeDirectoryMode = "0700";
+      # The system socket directory admits only its client group; setgid
+      # gives the 0660 socket that group. Privileged ("+") because the broker
+      # itself is not in the group and RestrictSUIDSGID forbids setgid.
+      ExecStartPre = lib.optionals providerSystemEnabled [
+        "+${pkgs.coreutils}/bin/chgrp ${cfg.providerSystemGroup} ${providerSystemDir}"
+        "+${pkgs.coreutils}/bin/chmod 2750 ${providerSystemDir}"
+      ];
       UMask = "0077";
       NoNewPrivileges = true;
       PrivateTmp = true;
@@ -230,7 +242,8 @@ in
       ProcSubset = "pid";
       ProtectClock = true;
       ProtectHostname = true;
-      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
+      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ]
+        ++ lib.optional providerSystemEnabled "AF_UNIX";
       RestrictNamespaces = true;
       RestrictRealtime = true;
       RestrictSUIDSGID = true;

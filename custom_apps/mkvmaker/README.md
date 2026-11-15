@@ -111,6 +111,25 @@ Audio profiles:
 
 Run `./disc-to-jellyfin --help` for every option.
 
+## Episode identification (server)
+
+The server's importer also ships `disc-identify`, which names TV episodes
+before they reach Jellyfin:
+
+```sh
+disc-identify disc --iso DISC.iso --title 3:3047 --title 4:2952 \
+  --name-hint "Allcreaturesgreatandsmall" --bonsai-url http://127.0.0.1:8094/v1
+disc-identify content --context disc.json --video E1.mkv --title 3 \
+  --parakeet parakeet-cli --parakeet-model parakeet.bin
+```
+
+`disc` uses the ripper's TheDiscDB sidecar or the episode titles printed on the
+DVD menus, cross-checked against TVmaze. `content` compares a transcript of each
+encoded title with TVmaze summaries and OpenSubtitles text. Both print one JSON
+object, and `status` is `identified` only for consecutive episodes of one season.
+See [the operations runbook](../../documentation/operations.md#identifying-tv-episodes)
+for how held discs are confirmed.
+
 ## Reliability and recovery
 
 - Every ISO is scanned, even in main-feature mode, so title selection and

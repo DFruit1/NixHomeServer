@@ -121,7 +121,7 @@ pub fn validate_folder(folder: &str) -> Result<(), String> {
 
 /// Input root holding the converter's inbox and its archive folders.
 pub const DVD_INBOX_ROOT: &str = "dvd-inbox";
-const DVD_ARCHIVES: [&str; 3] = ["_Processed", "_Failed", "_Duplicate"];
+const DVD_ARCHIVES: [&str; 4] = ["_Processed", "_Failed", "_Duplicate", "_NeedsIdentification"];
 
 /// Folders a user may pick conversion inputs from. The broker recomputes the
 /// same list for the job owner, so a stored root id never widens access.
@@ -463,6 +463,13 @@ fn advance(config: &AppConfig, job: &mut Job) -> Result<(), String> {
             .is_ok()
         {
             return Err("This DVD is a duplicate; the converter retained it in _Duplicate.".into());
+        }
+        if dir
+            .child("_NeedsIdentification")
+            .and_then(|d| d.file(&job.inbox_name))
+            .is_ok()
+        {
+            return Err("The DVD was converted, but its episodes need identifying. Rename it as described under Process, needs identifying.".into());
         }
         let processed = dir.child("_Processed")?;
         // Require the output manifest as well as the archived ISO.
