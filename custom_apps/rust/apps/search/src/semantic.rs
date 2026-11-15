@@ -374,6 +374,7 @@ pub(crate) async fn run_index() -> Result<(), String> {
     let port = std::env::var("SEARCH_EMBED_INDEX_PORT")
         .map_err(|_| "SEARCH_EMBED_INDEX_PORT is required")?;
     let layers = std::env::var("SEARCH_EMBED_GPU_LAYERS").unwrap_or_else(|_| "1".into());
+    let gpu = GpuYield::from_env()?;
     let mut child = tokio::process::Command::new(binary)
         .args([
             "--model",
@@ -426,8 +427,9 @@ pub(crate) async fn run_index() -> Result<(), String> {
                 let generation = crate::timeutil::sha256_hex(&[&id, &record.checksum, VERSION]);
                 for (batch, pairs) in spans.chunks(INDEX_BATCH_SIZE).enumerate() {
                     let input: Vec<_> = pairs.iter().map(|&(start, end)| passage_input(&record.title, &record.body_text[start..end])).collect();
-                    // Limited GPU offload leaves most 4B work on CPU. A library
-                    // batch can take minutes; do not apply the query deadline.
+                    if let Some(gpu) = &gpu { gpu.wait().await?; }
+                    // On CPU, or sharing the GPU, a library passage can take
+                    // minutes; do not apply the query deadline.
                     let vectors = semantic.embed(&endpoint, &input, Duration::from_secs(10 * 60)).await?;
                     let mut docs = Vec::new();
                     for (index, ((start, end), vector)) in pairs.iter().zip(vectors).enumerate() {
@@ -460,6 +462,68 @@ pub(crate) async fn run_index() -> Result<(), String> {
     let _ = child.kill().await;
     let _ = child.wait().await;
     result
+}
+
+/// Lets interactive GPU work go first. With every layer offloaded a passage
+/// takes ~0.6s instead of ~9s, but measured side by side the backfill halved
+/// chat generation (19 to 9 tokens/s) and more than doubled reranking time.
+/// The indexing embedder is idle between requests, so a busy GPU at that
+/// moment is someone else's work: chat, a search being reranked,
+/// transcription. The pass then waits for the GPU to stay quiet before the
+/// next passage, so the most it adds to anyone else is one passage in flight.
+struct GpuYield {
+    status: std::path::PathBuf,
+}
+
+impl GpuYield {
+    /// The xe driver's render power state: `gt-c6` while idle, `gt-c0` while
+    /// working. It changes within milliseconds of work starting or stopping.
+    const IDLE: &'static str = "gt-c6";
+    const POLL: Duration = Duration::from_millis(100);
+    /// Long enough to stay out of the gaps between reranking requests and
+    /// between the steps of a chat tool loop.
+    const SETTLE: Duration = Duration::from_secs(2);
+
+    fn from_env() -> Result<Option<Self>, String> {
+        let Some(status) = std::env::var_os("SEARCH_EMBED_GPU_IDLE_STATUS") else {
+            return Ok(None);
+        };
+        let gpu = Self {
+            status: status.into(),
+        };
+        // Fail the pass rather than run unyielding on a full offload.
+        gpu.idle()?;
+        Ok(Some(gpu))
+    }
+
+    fn idle(&self) -> Result<bool, String> {
+        std::fs::read_to_string(&self.status)
+            .map(|state| state.trim() == Self::IDLE)
+            .map_err(|e| format!("read GPU idle status {}: {e}", self.status.display()))
+    }
+
+    async fn wait(&self) -> Result<(), String> {
+        if self.idle()? {
+            return Ok(());
+        }
+        let started = Instant::now();
+        let mut quiet: Option<Instant> = None;
+        loop {
+            tokio::time::sleep(Self::POLL).await;
+            if !self.idle()? {
+                quiet = None;
+            } else if quiet.get_or_insert_with(Instant::now).elapsed() >= Self::SETTLE {
+                break;
+            }
+        }
+        if started.elapsed() >= Duration::from_secs(60) {
+            eprintln!(
+                "search semantic: waited {}s for other GPU work",
+                started.elapsed().as_secs()
+            );
+        }
+        Ok(())
+    }
 }
 
 fn term(value: &str) -> String {
