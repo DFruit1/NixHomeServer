@@ -152,7 +152,7 @@ fn artifact(
             .and_then(|p| p.strip_prefix("_Transcripts/"))
             .ok_or("invalid output")?;
         Dir::open(&config.users_root)?
-            .child(&identity.username)?
+            .traverse(&identity.username)?
             .child("_Transcripts")?
             .child(output)?
             .read(name, 16 * 1024 * 1024)

@@ -372,7 +372,7 @@ fn inbox(config: &AppConfig, job: &Job) -> Result<Dir, String> {
             .child("_DVDs")
     } else {
         Dir::open(&config.users_root)?
-            .child(&job.owner)?
+            .traverse(&job.owner)?
             .child("_Transcribe")?
             .child(&job.options.backend)
     }

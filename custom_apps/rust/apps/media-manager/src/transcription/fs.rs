@@ -44,12 +44,21 @@ impl Dir {
             .map_err(|e| e.to_string())
     }
     pub fn child(&self, value: &str) -> Result<Self, String> {
+        self.open_child(value, libc::O_RDONLY)
+    }
+    /// Pin an intermediate directory without requiring permission to list it.
+    /// User roots grant service groups traversal only; keep that boundary while
+    /// still rejecting symlinks. Open the known inbox/output below it normally.
+    pub fn traverse(&self, value: &str) -> Result<Self, String> {
+        self.open_child(value, libc::O_PATH)
+    }
+    fn open_child(&self, value: &str, access: libc::c_int) -> Result<Self, String> {
         let value = name(value)?;
         let fd = unsafe {
             libc::openat(
                 self.0.as_raw_fd(),
                 value.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                access | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             )
         };
         if fd < 0 {
