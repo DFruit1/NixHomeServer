@@ -31,6 +31,10 @@ import type {
 } from "./root-types";
 import { EmptyState } from "./view-states";
 
+/** Encode each segment of a shared-folder path for a Files link. */
+const sharedPath = (path: string) =>
+  path.split("/").map(encodeURIComponent).join("/");
+
 const ConversionList = component$<{
   conversion: Conversion;
   queuedEntry: QueuedConversion[];
@@ -712,7 +716,7 @@ const NeedsIdentificationCard = component$<{
           Rename the ISO in{" "}
           {props.filesBaseUrl ? (
             <a
-              href={`${props.filesBaseUrl}/files/_Shared/${folder}/`}
+              href={`${props.filesBaseUrl}/files/_Shared/${sharedPath(folder)}/`}
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -750,7 +754,7 @@ const NeedsIdentificationCard = component$<{
                 {iso.heldDir && props.filesBaseUrl ? (
                   <a
                     class="side-item-link"
-                    href={`${props.filesBaseUrl}/files/_Shared/${iso.heldDir}`}
+                    href={`${props.filesBaseUrl}/files/_Shared/${sharedPath(iso.heldDir)}`}
                     target="_blank"
                     rel="noopener noreferrer"
                   >
@@ -838,7 +842,7 @@ const ProcessedCard = component$<{
                 {iso.outputDir && props.filesBaseUrl ? (
                   <a
                     class="side-item-link"
-                    href={`${props.filesBaseUrl}/files/_Shared/${iso.outputDir}`}
+                    href={`${props.filesBaseUrl}/files/_Shared/${sharedPath(iso.outputDir)}`}
                     target="_blank"
                     rel="noopener noreferrer"
                   >

@@ -15,7 +15,10 @@ in
     };
     # The model is (re)downloaded by transcribe-model-prepare, so grant
     # access after each run rather than once at activation.
+    # The app root is 0750 root:root, so mkvmaker also needs to traverse it;
+    # a later tmpfiles chmod only resets the ACL mask to r-x, keeping --x.
     systemd.services.transcribe-model-prepare.postStart = lib.mkAfter ''
+      ${pkgs.acl}/bin/setfacl -m g:mkvmaker:--x ${lib.escapeShellArg (builtins.dirOf transcribe.modelsDir)}
       ${pkgs.acl}/bin/setfacl -m g:mkvmaker:--x ${lib.escapeShellArg transcribe.modelsDir}
       if [ -f ${lib.escapeShellArg model} ]; then
         ${pkgs.acl}/bin/setfacl -m g:mkvmaker:r-- ${lib.escapeShellArg model}

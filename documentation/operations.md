@@ -1322,7 +1322,7 @@ page lists it under **Process, needs identifying** with the best guess. To
 confirm, rename the ISO in `_NeedsIdentification` to a Jellyfin TV name with
 the full episode range, for example
 `All Creatures Great and Small (1978) [tvdbid-78289] S01E05-E06.iso`. Within a
-minute the worker moves the held videos into `_Shows` without re-encoding and
+minute when idle, or after the disc it is converting, the worker moves the held videos into `_Shows` without re-encoding and
 archives the ISO in `_Processed`. A range that does not match the number of
 held videos is refused and the reason appears on the Conversions page. Deleting
 an ISO from `_NeedsIdentification` leaves its held videos in `_Unidentified`

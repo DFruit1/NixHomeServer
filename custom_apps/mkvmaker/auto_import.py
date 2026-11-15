@@ -1210,8 +1210,18 @@ def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, yea
     if taken:
         raise RuntimeError(f"library already has: {', '.join(taken)}")
     make_media_dirs(season_dir)
-    for file, target in zip(files, targets):
-        os.rename(file, target)
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for file, target in zip(files, targets):
+            os.rename(file, target)
+            moved.append((file, target))
+    except OSError:
+        # All or nothing: put back what already moved so the held record
+        # still describes where every file is.
+        for file, target in reversed(moved):
+            os.rename(target, file)
+        raise
+    for target in targets:
         print(f"  published {target}")
     if getattr(args, "held_dir", None) is not None:
         for file in files:
@@ -1246,9 +1256,13 @@ def iso_suggestion(series: dict[str, Any] | None, assignments: list[dict[str, An
 
 
 def held_record_key(path: Path) -> str:
-    """Survives the person renaming the ISO (same inode and size)."""
+    """Survives the person renaming the ISO (same inode and size).
+
+    The device number is left out: on ZFS it is assigned at mount time and
+    can change across reboots, and the folder is a single filesystem.
+    """
     info = path.stat()
-    return f"{info.st_dev}:{info.st_ino}:{info.st_size}"
+    return f"{info.st_ino}:{info.st_size}"
 
 
 
@@ -1851,9 +1865,14 @@ def park_for_identification(args: argparse.Namespace, source: Path,
 
 
 def note_identification_problem(identify_path: Path, message: str) -> None:
-    try:
-        evidence = json.loads(identify_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    # The folder is writable by people; never follow a link placed there.
+    evidence: Any = {"schemaVersion": 1}
+    if not identify_path.is_symlink():
+        try:
+            evidence = json.loads(identify_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+    if not isinstance(evidence, dict):
         evidence = {"schemaVersion": 1}
     if evidence.get("summary") == message:
         return
@@ -1899,7 +1918,9 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
         if not isinstance(records, dict) or not records:
             return
         live: set[str] = set()
-        for iso in sorted(directory.glob("*.iso"), key=lambda path: natural_key(path.name)):
+        isos = [path for path in directory.iterdir()
+                if path.suffix.lower() == ".iso" and path.is_file() and not path.is_symlink()]
+        for iso in sorted(isos, key=lambda path: natural_key(path.name)):
             try:
                 key = held_record_key(iso)
             except OSError:
@@ -1947,9 +1968,13 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
                 os.replace(original_sidecar, ripper_sidecar(archived))
             del records[key]
             print(f"Published held episodes of {iso.name} to {season_dir}")
-        # Forget holds whose ISO was deleted or moved elsewhere by a person.
+        # Forget holds whose ISO is gone and whose held videos are gone too.
+        # While the videos exist the record is the only map from ISO to
+        # videos, so it is kept.
         for stale in set(records) - live:
-            del records[stale]
+            files = records[stale].get("files", []) if isinstance(records[stale], dict) else []
+            if not any(Path(str(item)).is_file() for item in files):
+                del records[stale]
         state["held"] = records
         atomic_json(state_path, state)
 
@@ -2134,7 +2159,15 @@ def run(args: argparse.Namespace) -> int:
             print(f"Could not process renamed ISOs awaiting identification: {error}", file=sys.stderr)
     public_status(args, "idle", queued=pending_titles())
     failures = 0
+    first_claim = True
     while True:
+        if identification_enabled(args) and not first_claim:
+            # A long queue would otherwise delay renamed holds until it ends.
+            try:
+                resolve_renamed_holds(args, lock_path, state_path, processed_dir)
+            except Exception as error:  # noqa: BLE001 - never block new conversions
+                print(f"Could not process renamed ISOs awaiting identification: {error}", file=sys.stderr)
+        first_claim = False
         claim = claim_next()
         if claim is None:
             break

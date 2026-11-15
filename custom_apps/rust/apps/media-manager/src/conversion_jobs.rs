@@ -121,7 +121,12 @@ pub fn validate_folder(folder: &str) -> Result<(), String> {
 
 /// Input root holding the converter's inbox and its archive folders.
 pub const DVD_INBOX_ROOT: &str = "dvd-inbox";
-const DVD_ARCHIVES: [&str; 4] = ["_Processed", "_Failed", "_Duplicate", "_NeedsIdentification"];
+const DVD_ARCHIVES: [&str; 4] = [
+    "_Processed",
+    "_Failed",
+    "_Duplicate",
+    "_NeedsIdentification",
+];
 
 /// Folders a user may pick conversion inputs from. The broker recomputes the
 /// same list for the job owner, so a stored root id never widens access.
@@ -329,6 +334,37 @@ pub fn check_dvd_name(
     }
     Ok(())
 }
+/// The archived ISO whose output manifest names `source` as its original,
+/// for discs the converter renamed after identifying their episodes. Only
+/// manifests finished after the job was created count, newest first, so an
+/// older disc that once had the same name is never taken for this job's.
+fn renamed_archive(
+    processed: &Dir,
+    source: &str,
+    created_at: u64,
+) -> Result<Option<String>, String> {
+    let mut best: Option<(u64, String)> = None;
+    for manifest in processed.names()? {
+        let Some(iso) = manifest.strip_suffix(".output.json") else {
+            continue;
+        };
+        let Ok(bytes) = processed.read(&manifest, 65536) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        let finished = value["finishedAt"].as_u64().unwrap_or(0);
+        if value["sourceIso"].as_str() == Some(source)
+            && finished >= created_at
+            && best.as_ref().is_none_or(|(newest, _)| finished > *newest)
+        {
+            best = Some((finished, iso.to_string()));
+        }
+    }
+    Ok(best.map(|(_, iso)| iso))
+}
+
 fn inbox(config: &AppConfig, job: &Job) -> Result<Dir, String> {
     if job.options.kind == "iso" {
         Dir::open(&config.shared_root)?
@@ -472,14 +508,21 @@ fn advance(config: &AppConfig, job: &mut Job) -> Result<(), String> {
             return Err("The DVD was converted, but its episodes need identifying. Rename it as described under Process, needs identifying.".into());
         }
         let processed = dir.child("_Processed")?;
-        // Require the output manifest as well as the archived ISO.
-        if processed
+        // Require the output manifest as well as the archived ISO. Identified
+        // TV discs are archived under their episode name, so fall back to the
+        // manifest that records this job's ISO as its source.
+        let archived = if processed
             .read(&format!("{}.output.json", job.inbox_name), 65536)
-            .is_err()
+            .is_ok()
         {
-            return Ok(());
-        }
-        processed.file(&job.inbox_name)?
+            job.inbox_name.clone()
+        } else {
+            match renamed_archive(&processed, &job.inbox_name, job.created_at)? {
+                Some(name) => name,
+                None => return Ok(()),
+            }
+        };
+        processed.file(&archived)?
     } else {
         let Some(state) = &config.transcribe_state_dir else {
             return Err("Transcription was disabled.".into());
@@ -552,6 +595,33 @@ fn advance(config: &AppConfig, job: &mut Job) -> Result<(), String> {
 mod safety_tests {
     use super::*;
     use std::os::unix::fs::symlink;
+
+    // Regression (2026-11-15 review): identified TV discs are archived under
+    // their episode name, so a submitted job must find its manifest by the
+    // recorded source name rather than wait on its own name forever.
+    #[test]
+    fn renamed_dvd_archives_are_found_by_their_recorded_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let processed = Dir::open(temp.path()).unwrap();
+        let manifest = |iso: &str, source: &str, finished: u64| {
+            std::fs::write(
+                temp.path().join(format!("{iso}.output.json")),
+                json!({"sourceIso": source, "finishedAt": finished}).to_string(),
+            )
+            .unwrap();
+        };
+        manifest("Show (1978) S01E01-E02.iso", "DISC.iso", 50);
+        manifest("Show (1978) S01E05-E06.iso", "DISC.iso", 200);
+        manifest("Other.iso", "OTHER.iso", 300);
+        assert_eq!(
+            renamed_archive(&processed, "DISC.iso", 100)
+                .unwrap()
+                .as_deref(),
+            Some("Show (1978) S01E05-E06.iso")
+        );
+        // An older disc that once had the same name is not this job's.
+        assert_eq!(renamed_archive(&processed, "DISC.iso", 250).unwrap(), None);
+    }
 
     // A new post-processing copy must never overwrite existing library files,
     // or write through a library symlink into an unrelated private directory.
