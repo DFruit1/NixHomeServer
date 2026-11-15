@@ -1994,28 +1994,38 @@ pub(super) async fn metadata_issues(
         .await
         .ok()
         .and_then(Result::ok);
-        application_caches.video_probes = tokio::task::spawn_blocking(move || {
-            let mut cache =
-                VideoProbeCache::open_for_root(&state_dir, &root_id, FilePath::new(&root_path));
-            // Held until the closure returns, so the probes run in the slot.
-            if let (Some(ffprobe), Some(_slot)) = (ffprobe, permit)
-                && page_videos
-                    .iter()
-                    .any(|(path, fingerprint)| !cache.has_probe(path, fingerprint))
-            {
-                let _ = crate::video_probe::refresh_root_probes_until(
-                    FilePath::new(&ffprobe),
+        application_caches.video_probes = {
+            let probe_work = tokio::task::spawn_blocking(move || {
+                let mut cache = VideoProbeCache::open_for_root(
+                    &state_dir,
+                    &root_id,
                     FilePath::new(&root_path),
-                    &mut cache,
-                    &page_videos,
-                    Some(probe_deadline),
                 );
+                // Held until the closure returns, so the probes run in the slot.
+                if let (Some(ffprobe), Some(_slot)) = (ffprobe, permit)
+                    && page_videos
+                        .iter()
+                        .any(|(path, fingerprint)| !cache.has_probe(path, fingerprint))
+                {
+                    let _ = crate::video_probe::refresh_root_probes_until(
+                        FilePath::new(&ffprobe),
+                        FilePath::new(&root_path),
+                        &mut cache,
+                        &page_videos,
+                        Some(probe_deadline),
+                    );
+                }
+                cache
+            });
+            // The worker keeps what it finished (it stops itself at the same
+            // deadline), but the response never waits past its own budget: on
+            // a busy lock or a slow disk the cached probes just stand.
+            let budget = probe_deadline.saturating_duration_since(std::time::Instant::now());
+            match tokio::time::timeout(budget, probe_work).await {
+                Ok(Ok(cache)) => Some(Arc::new(cache)),
+                _ => None,
             }
-            cache
-        })
-        .await
-        .ok()
-        .map(Arc::new);
+        };
     }
     let mut results = Vec::new();
     let mut inspected_items = 0usize;
