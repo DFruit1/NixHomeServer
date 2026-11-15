@@ -1978,10 +1978,12 @@ pub(super) async fn metadata_issues(
         let ffprobe = state.config.ffprobe_path.clone();
         // Health reports what the probe shows, so this page's unprobed
         // videos are probed now rather than left for the Videos page. The
-        // page is at most MAX_PAGE_SIZE files and waits its turn for the one
-        // probe slot; if the slot stays busy the cached results stand.
+        // request must still answer inside its client's budget, so it waits
+        // briefly for the one probe slot and stops probing at its deadline;
+        // the cached results then stand and the Videos page finishes the rest.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
         let permit = tokio::time::timeout(
-            std::time::Duration::from_secs(20),
+            std::time::Duration::from_secs(8),
             crate::video_probe::PROBE_LIMIT.acquire(),
         )
         .await
@@ -1996,11 +1998,12 @@ pub(super) async fn metadata_issues(
                     .iter()
                     .any(|(path, fingerprint)| !cache.has_probe(path, fingerprint))
             {
-                let _ = refresh_root_probes(
+                let _ = crate::video_probe::refresh_root_probes_until(
                     FilePath::new(&ffprobe),
                     FilePath::new(&root_path),
                     &mut cache,
                     &page_videos,
+                    Some(deadline),
                 );
             }
             cache

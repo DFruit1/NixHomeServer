@@ -526,9 +526,25 @@ pub fn refresh_root_probes(
     cache: &mut VideoProbeCache,
     videos: &[(String, String)],
 ) -> Result<usize, String> {
+    refresh_root_probes_until(ffprobe, root_path, cache, videos, None)
+}
+
+/// Probes unprobed videos until `deadline`. A request that reports what the
+/// probe shows passes its own deadline so it can return cached results for the
+/// rest instead of waiting behind one probe slot for the whole page.
+pub fn refresh_root_probes_until(
+    ffprobe: &Path,
+    root_path: &Path,
+    cache: &mut VideoProbeCache,
+    videos: &[(String, String)],
+    deadline: Option<std::time::Instant>,
+) -> Result<usize, String> {
     let mut probed = 0;
     for (relative_path, fingerprint) in videos {
         if probed >= MAX_PROBES_PER_REFRESH {
+            break;
+        }
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             break;
         }
         if cache.has_probe(relative_path, fingerprint) {

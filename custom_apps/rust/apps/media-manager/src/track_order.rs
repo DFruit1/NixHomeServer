@@ -545,6 +545,11 @@ fn duplicate_tag_problem(files: &[TrackOrderFile]) -> Option<TrackOrderProblem> 
     })
 }
 
+/// A disc number above this is a broken tag or filename, not a disc. A declared
+/// total is trusted within the same limit, so the missing-range expansion below
+/// stays bounded no matter what a file claims.
+const MAX_DISC_NUMBER: u64 = 99;
+
 /// A folder holding several discs should hold all of them, numbered from 1.
 /// A folder holding one disc is left alone: per-disc folders are a normal
 /// layout and say nothing about the discs beside them.
@@ -559,10 +564,15 @@ fn disc_sequence_problem(files: &[TrackOrderFile]) -> Option<TrackOrderProblem> 
     if discs.len() < 2 {
         return None;
     }
+    if discs.last().is_some_and(|highest| *highest > MAX_DISC_NUMBER) {
+        // Expanding 1..=highest for a corrupt number would allocate one entry
+        // per missing disc; a folder numbered like that is not a disc set.
+        return None;
+    }
     let highest = *discs.last()?;
     let declared = most_common(files.iter().filter_map(|file| file.tag_disc_total));
     let expected = declared
-        .filter(|total| *total <= 99)
+        .filter(|total| *total <= MAX_DISC_NUMBER)
         .map_or(highest, |total| total.max(highest));
     let missing: Vec<u64> = (1..=expected)
         .filter(|disc| !discs.contains(disc))
@@ -988,6 +998,24 @@ mod tests {
         );
         assert!(report.problems.is_empty(), "{:?}", report.problems);
         assert_eq!(report.status, "ok");
+    }
+
+    #[test]
+    fn implausible_disc_numbers_do_not_expand_a_missing_range() {
+        // A corrupt disc tag must not make the gap check allocate one entry per
+        // number between 1 and the tag; such a folder is not a disc set.
+        let mut files = vec![file("disc one.mp3", Some(1)), file("junk.mp3", Some(2))];
+        files[1].tag_disc = Some(u64::MAX - 1);
+        assert!(disc_sequence_problem(&files).is_none());
+        files[1].tag_disc = Some(100);
+        assert!(disc_sequence_problem(&files).is_none());
+        // The declared total is bounded the same way: a sane disc set still
+        // reports its real gap.
+        let mut sane = vec![file("one.mp3", Some(1)), file("three.mp3", Some(1))];
+        sane[1].tag_disc = Some(3);
+        sane[0].tag_disc_total = Some(u64::MAX);
+        let problem = disc_sequence_problem(&sane).expect("gap");
+        assert_eq!(problem.code, "disc-sequence-gap");
     }
 
     #[test]
