@@ -340,3 +340,81 @@ pub(super) async fn install(
         }
     }
 }
+
+/// Read the complete timed transcript beside a visible video, without requiring
+/// the transcription service or its private job history to remain enabled.
+pub(super) async fn video_transcript(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<String>,
+) -> Response {
+    let id = request_id();
+    let identity = match identity_from_headers(&headers, &id) {
+        Ok(i) => i,
+        Err(e) => return e.into_response(),
+    };
+    let catalog = match state.catalog.open() {
+        Ok(c) => c,
+        Err(_) => return ApiError::internal(id).into_response(),
+    };
+    let video = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
+        Ok(item)
+            if item
+                .media_kind
+                .supports(crate::capabilities::MediaAction::ManageSubtitles) =>
+        {
+            item
+        }
+        _ => {
+            return ApiError::new(
+                StatusCode::NOT_FOUND,
+                "video_not_found",
+                "Select a visible video.",
+                id,
+            )
+            .into_response()
+        }
+    };
+    let Some(root) = state.config.resolve_visible_root(&identity, &video.root_id) else {
+        return ApiError::internal(id).into_response();
+    };
+    let worker_id = id.clone();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        use std::io::Read;
+        let (folder, leaf) = video
+            .relative_path
+            .rsplit_once('/')
+            .unwrap_or(("", &video.relative_path));
+        let mut directory = Dir::open(FilePath::new(&root.resolved_path))?;
+        for part in folder.split('/').filter(|p| !p.is_empty()) {
+            directory = directory.child(part)?;
+        }
+        let name = format!("{leaf}.transcript.vtt");
+        if !directory.names()?.contains(&name) {
+            return Ok(json!({"cues": [], "requestId": worker_id}));
+        }
+        let mut file = directory.file(&name)?;
+        let mut bytes = Vec::new();
+        file.by_ref()
+            .take(MAX_SUBTITLE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > MAX_SUBTITLE_BYTES {
+            return Err("Transcript exceeds preview limit".into());
+        }
+        let text = std::str::from_utf8(&bytes).map_err(|_| "Invalid transcript encoding")?;
+        let cues = parse_subtitle("vtt", text)?;
+        Ok(json!({"cues": cues, "requestId": worker_id}))
+    })
+    .await
+    {
+        Ok(Ok(body)) => ([(CACHE_CONTROL, "no-store")], Json(body)).into_response(),
+        _ => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "transcript_unreadable",
+            "The transcript could not be read.",
+            id,
+        )
+        .into_response(),
+    }
+}

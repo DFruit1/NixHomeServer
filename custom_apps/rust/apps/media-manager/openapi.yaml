@@ -1257,6 +1257,28 @@ paths:
           $ref: '#/components/responses/Error'
         '409':
           $ref: '#/components/responses/Error'
+  /items/{itemId}/transcript:
+    get:
+      operationId: videoTranscript
+      description: Reads the complete generated UTF-8 WebVTT transcript beside a visible video. Returns no cues when no transcript exists; never returns a partial preview.
+      parameters:
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Complete timed transcript
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoTranscript'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
   /items/{itemId}/subtitles/installed/{subtitleId}/content:
     get:
       operationId: previewInstalledSubtitle
@@ -3817,6 +3839,15 @@ components:
           items:
             $ref: '#/components/schemas/MetadataConsumer'
         requestId: *id001
+    VideoTranscript:
+      type: object
+      required: [cues, requestId]
+      properties:
+        cues:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubtitleCue'
+        requestId: { type: string }
     SubtitleCue:
       type: object
       required:

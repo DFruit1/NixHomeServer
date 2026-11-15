@@ -217,6 +217,10 @@ pub struct Job {
     pub error: Option<String>,
     pub saved_path: Option<String>,
     pub transcript_id: Option<String>,
+    /// Original server input and its fingerprint at staging time. The broker
+    /// rechecks it before publishing dialogue beside that file.
+    #[serde(default)]
+    pub transcript_source: Option<(SourceFile, String)>,
     /// Set when a DVD ISO moves from the server instead of a staged copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceFile>,
@@ -258,6 +262,7 @@ impl Job {
             saved_path: None,
             transcript_id,
             source: None,
+            transcript_source: None,
         }
     }
     pub fn view(&self) -> Value {
@@ -545,12 +550,28 @@ fn advance(config: &AppConfig, job: &mut Job) -> Result<(), String> {
             return Ok(());
         }
         let source = dir.file(&job.inbox_name)?;
-        if job.options.storage_root_id.is_some() {
+        if job.options.storage_root_id.is_some() || job.transcript_source.is_some() {
             let fingerprint =
                 crate::broker::opened_file_fingerprint(&source).map_err(|e| e.to_string())?;
             if record["sourceFingerprint"].as_str() != Some(fingerprint.as_str()) {
                 return Err("Transcription finished, but the source changed afterward. The library copy was not saved; your transcript and source remain in the job folders.".into());
             }
+        }
+        if let Some((original, expected)) = &job.transcript_source {
+            let (parent, leaf, file) = original.open(config, &identity)?;
+            if crate::broker::opened_file_fingerprint(&file).map_err(|e| e.to_string())?
+                != *expected
+            {
+                return Err(
+                    "The original changed. The transcript is retained in your transcript folder."
+                        .into(),
+                );
+            }
+            install_transcript(config, job, &record, &parent, &leaf)?;
+            job.saved_path = Some(format!("{}.transcript.vtt", original.relative_path));
+        }
+        if job.transcript_source.is_none() && job.options.storage_root_id.is_none() {
+            install_transcript(config, job, &record, &dir, &job.inbox_name)?;
         }
         source
     };
@@ -570,6 +591,27 @@ fn advance(config: &AppConfig, job: &mut Job) -> Result<(), String> {
             destination = destination.create_shared(part)?;
         }
         destination.copy_new(&job.options.name, source).map_err(|e| format!("Processing succeeded, but saving the library copy failed: {e}. The source remains in the job folder."))?;
+        if job.options.kind == "transcription" {
+            let record: Value = serde_json::from_slice(
+                &Dir::open(
+                    config
+                        .transcribe_state_dir
+                        .as_ref()
+                        .ok_or("Transcription unavailable")?,
+                )?
+                .child("users")?
+                .child(&job.owner)?
+                .read(
+                    &format!(
+                        "{}.json",
+                        job.transcript_id.as_ref().ok_or("Missing transcript job")?
+                    ),
+                    1024 * 1024,
+                )?,
+            )
+            .map_err(|e| e.to_string())?;
+            install_transcript(config, job, &record, &destination, &job.options.name)?;
+        }
         job.saved_path = Some(format!(
             "{}/{}{}",
             root.label,
@@ -583,6 +625,45 @@ fn advance(config: &AppConfig, job: &mut Job) -> Result<(), String> {
     }
     job.state = "completed".into();
     job.save(config)
+}
+
+/// Publish only a new, timed transcript. Never replace an existing user file.
+fn install_transcript(
+    config: &AppConfig,
+    job: &Job,
+    record: &Value,
+    destination: &Dir,
+    name: &str,
+) -> Result<(), String> {
+    let output = record["outputDir"]
+        .as_str()
+        .and_then(|p| p.strip_prefix("_Transcripts/"))
+        .ok_or("Invalid transcript output")?;
+    let folder = Dir::open(&config.users_root)?
+        .traverse(&job.owner)?
+        .child("_Transcripts")?
+        .child(output)?;
+    let diarized = job.options.diarize
+        && record["artifacts"]
+            .as_array()
+            .is_some_and(|files| files.iter().any(|f| f == "diarized.srt"));
+    let artifact = if diarized {
+        "diarized.srt"
+    } else {
+        "subtitles.vtt"
+    };
+    let bytes = folder.read(artifact, 10 * 1024 * 1024)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| "Invalid transcript encoding")?;
+    let cues = crate::subtitle_format::parse_subtitle(if diarized { "srt" } else { "vtt" }, text)?;
+    let rendered = crate::subtitle_format::render_vtt(&cues)?;
+    // copy_new provides atomic no-clobber publication with inherited ownership.
+    let mut staged = tempfile::tempfile().map_err(|e| e.to_string())?;
+    use std::io::{Seek, Write};
+    staged
+        .write_all(rendered.as_bytes())
+        .map_err(|e| e.to_string())?;
+    staged.rewind().map_err(|e| e.to_string())?;
+    destination.copy_new(&format!("{name}.transcript.vtt"), staged)
 }
 
 #[cfg(test)]
@@ -617,6 +698,55 @@ mod safety_tests {
         );
         // An older disc that once had the same name is not this job's.
         assert_eq!(renamed_archive(&processed, "DISC.iso", 250).unwrap(), None);
+    }
+
+    // Timed output is published into user libraries by a privileged broker.
+    // Verify that transcript publication cannot overwrite a user file or
+    // follow a planted link into private data.
+    #[test]
+    fn transcript_publication_preserves_existing_files_and_timing() {
+        let temp = tempfile::tempdir().unwrap();
+        let users = temp.path().join("users");
+        std::fs::create_dir_all(users.join("alice/_Transcripts/output")).unwrap();
+        let output = users.join("alice/_Transcripts/output/subtitles.vtt");
+        std::fs::write(
+            &output,
+            "WEBVTT\n\n00:00:07.000 --> 00:00:09.000\nHello there.\n",
+        )
+        .unwrap();
+        let config = AppConfig::for_test(temp.path().to_str().unwrap(), users.to_str().unwrap());
+        let job = Job::new(
+            "alice".into(),
+            Options {
+                name: "video.mp4".into(),
+                kind: "transcription".into(),
+                backend: "parakeet".into(),
+                diarize: true,
+                language: None,
+                storage_root_id: None,
+                storage_folder: String::new(),
+            },
+        );
+        // No diarization turns: the worker retains the plain timed artifact.
+        let record = json!({"outputDir":"_Transcripts/output", "artifacts":["subtitles.vtt"]});
+        let destination = Dir::open(temp.path()).unwrap();
+        install_transcript(&config, &job, &record, &destination, "video.mp4").unwrap();
+        let bytes = destination.read("video.mp4.transcript.vtt", 1024).unwrap();
+        let cues =
+            crate::subtitle_format::parse_subtitle("vtt", std::str::from_utf8(&bytes).unwrap())
+                .unwrap();
+        assert_eq!(cues[0].start_ms, 7000);
+        assert_eq!(cues[0].text, "Hello there.");
+        assert!(install_transcript(&config, &job, &record, &destination, "video.mp4").is_err());
+        symlink(&output, temp.path().join("link.mp4.transcript.vtt")).unwrap();
+        assert!(install_transcript(&config, &job, &record, &destination, "link.mp4").is_err());
+        assert_eq!(
+            destination.read("video.mp4.transcript.vtt", 1024).unwrap(),
+            bytes
+        );
+        assert!(std::fs::read_to_string(output)
+            .unwrap()
+            .contains("Hello there."));
     }
 
     // A new post-processing copy must never overwrite existing library files,

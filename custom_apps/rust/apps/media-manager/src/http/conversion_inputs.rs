@@ -157,6 +157,7 @@ fn publish(
     identity: Identity,
     options: Options,
     staged: tempfile::NamedTempFile,
+    transcript_source: Option<(intake::SourceFile, String)>,
 ) -> Result<Value, String> {
     if staged
         .as_file()
@@ -172,7 +173,8 @@ fn publish(
         .set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o660))
         .map_err(|e| e.to_string())?;
     staged.as_file().sync_all().map_err(|e| e.to_string())?;
-    let job = Job::new(identity.username, options);
+    let mut job = Job::new(identity.username, options);
+    job.transcript_source = transcript_source;
     let destination = intake::staging_path(config, &job.owner).join(format!("{}.source", job.id));
     staged
         .persist_noclobber(&destination)
@@ -237,7 +239,8 @@ pub(super) async fn server_file(
                 "The source changed while it was being copied. Wait until it is complete.".into(),
             );
         }
-        publish(&config, identity, options, staged)
+        let original = intake::SourceFile::locate(&config, &identity, &request.server_path)?;
+        publish(&config, identity, options, staged, Some((original, before)))
     })
     .await;
     match result {
@@ -343,7 +346,7 @@ pub(super) async fn upload(
         return ApiError::internal(id).into_response();
     }
     drop(file);
-    match publish(&state.config, identity, options, staged) {
+    match publish(&state.config, identity, options, staged, None) {
         Ok(body) => (StatusCode::ACCEPTED, Json(body)).into_response(),
         Err(error) => invalid(error, &id).into_response(),
     }

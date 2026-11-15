@@ -632,8 +632,9 @@ export const ConversionInput = component$<{
             )}
             {props.task === "subtitles" && (
               <p class="quiet-copy">
-                When the transcript is ready, open the video in Library, expand
-                Subtitles and pick it under Use a transcript.
+                Timed transcripts are saved beside server videos and library
+                copies. Open Transcript in the video player to search and jump
+                to dialogue.
               </p>
             )}
             {form.source === "upload" && kind === "transcription" && (
@@ -708,7 +709,7 @@ export const ConversionInput = component$<{
             {form.message && submittedJob?.state !== "failed" && (
               <p class="message success" role="status">
                 {submittedJob?.state === "completed"
-                  ? `${submittedJob.name} finished.${submittedJob.savedPath ? ` Library copy: ${submittedJob.savedPath}` : ""}${copy.afterFinish ? ` ${copy.afterFinish}` : ""}`
+                  ? `${submittedJob.name} finished.${submittedJob.savedPath ? ` Saved: ${submittedJob.savedPath}` : ""}${copy.afterFinish ? ` ${copy.afterFinish}` : ""}`
                   : form.message}
               </p>
             )}
@@ -761,7 +762,7 @@ export const RecentSubmissions = component$<{ jobs: ConversionInputJob[] }>(
                 <span>{jobStateLabels[job.state]}</span>
               </div>
               {job.error && <p class="message error">{job.error}</p>}
-              {job.savedPath && <small>Library copy: {job.savedPath}</small>}
+              {job.savedPath && <small>Saved: {job.savedPath}</small>}
             </li>
           ))}
         </ul>

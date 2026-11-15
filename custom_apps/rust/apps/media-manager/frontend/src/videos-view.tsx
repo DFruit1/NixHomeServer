@@ -7,9 +7,14 @@ import {
   useTask$,
   useVisibleTask$,
 } from "@builder.io/qwik";
+import "./video-transcript.css";
 import { api, catalogItems, readableError } from "./api";
 import { useBackLayer } from "./back-layers";
-import type { ImmichAlbumList, VideoClip } from "./api-contract.generated";
+import type {
+  ImmichAlbumList,
+  VideoClip,
+  VideoTranscript,
+} from "./api-contract.generated";
 import { Icon } from "./icon";
 import { findTargetIndex, prepareBrowserPlayback } from "./playback-target";
 import type { CatalogItem, MediaRoot } from "./root-types";
@@ -76,6 +81,12 @@ export const VideosView = component$<{
   initialRootId?: string;
 }>((props) => {
   const videoRef = useSignal<HTMLVideoElement>();
+  const transcript = useStore({
+    open: false,
+    query: "",
+    error: "",
+    cues: [] as VideoTranscript["cues"],
+  });
   const pipSupported = useSignal(false);
   const pipActive = useSignal(false);
   const theatre = useSignal(false);
@@ -108,6 +119,25 @@ export const VideosView = component$<{
     transcode: false,
     transcodeLoading: false,
     audioChecked: false,
+  });
+  useTask$(({ track, cleanup }) => {
+    const id = track(() => state.selectedId);
+    let stopped = false;
+    cleanup(() => {
+      stopped = true;
+    });
+    transcript.open = false;
+    transcript.query = "";
+    transcript.cues = [];
+    transcript.error = "";
+    if (!id) return;
+    void api<VideoTranscript>(`/items/${encodeURIComponent(id)}/transcript`)
+      .then((result) => {
+        if (!stopped) transcript.cues = result.cues;
+      })
+      .catch((error) => {
+        if (!stopped) transcript.error = readableError(error);
+      });
   });
   const configuredVideoRoots = props.roots.filter(
     (root) => root.category === "videos",
@@ -656,6 +686,19 @@ export const VideosView = component$<{
             </div>
             {selected() && (
               <div class="video-actions">
+                {(transcript.cues.length > 0 || transcript.error) && (
+                  <button
+                    type="button"
+                    class="secondary-button compact-action video-action-button"
+                    aria-expanded={transcript.open}
+                    aria-controls="video-transcript"
+                    onClick$={() => {
+                      transcript.open = !transcript.open;
+                    }}
+                  >
+                    Transcript
+                  </button>
+                )}
                 {props.immichUrl && (
                   <button
                     type="button"
@@ -705,6 +748,54 @@ export const VideosView = component$<{
               </div>
             )}
           </div>
+        )}
+        {transcript.open && (
+          <section
+            id="video-transcript"
+            class="video-transcript"
+            aria-label="Transcript"
+          >
+            <label>
+              <span class="sr-only">Search transcript</span>
+              <input
+                type="search"
+                placeholder="Search transcript"
+                value={transcript.query}
+                onInput$={(_, input) => {
+                  transcript.query = input.value;
+                }}
+              />
+            </label>
+            {transcript.error && <p role="alert">{transcript.error}</p>}
+            <ol class="video-transcript-lines" aria-label="Dialogue">
+              {transcript.cues
+                .filter((cue) =>
+                  cue.text
+                    .toLocaleLowerCase()
+                    .includes(transcript.query.trim().toLocaleLowerCase()),
+                )
+                .map((cue) => (
+                  <li key={cue.index}>
+                    <button
+                      type="button"
+                      onClick$={() => {
+                        const video = videoRef.value;
+                        if (video) video.currentTime = cue.startMs / 1000;
+                      }}
+                    >
+                      <time>{clipTime(cue.startMs / 1000)}</time>
+                      <span>{cue.text}</span>
+                    </button>
+                  </li>
+                ))}
+            </ol>
+            {!transcript.error &&
+              !transcript.cues.some((cue) =>
+                cue.text
+                  .toLocaleLowerCase()
+                  .includes(transcript.query.trim().toLocaleLowerCase()),
+              ) && <p role="status">No matching dialogue.</p>}
+          </section>
         )}
         {clipNotice.value && props.immichUrl && (
           <p class="video-clip-status" role="status">
