@@ -6,9 +6,15 @@
 # Raise both title and full-text samples to the app's per-archive limit.
 # Keep index discovery in this existing native tool: libzim can inspect its
 # metadata without decompressing multi-gigabyte Xapian entries into a pipe.
+# One process answers every title lookup of an archive: Search asks each of
+# its 100 archives for the query and up to three of its words, and reopening
+# the archive for each lookup was most of a connected search's time.
 kiwix-tools.overrideAttrs (old: {
   pname = "kiwix-tools-search-paths";
-  patches = (old.patches or [ ]) ++ [ ./kiwix-index-status.patch ];
+  patches = (old.patches or [ ]) ++ [
+    ./kiwix-index-status.patch
+    ./kiwix-suggestion-batch.patch
+  ];
   postPatch = (old.postPatch or "") + ''
     substituteInPlace src/searcher/kiwix-search.cpp \
       --replace-fail 'cout << r.getTitle() << endl;' 'cout << r.getPath() << endl;' \

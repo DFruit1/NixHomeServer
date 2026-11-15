@@ -1,0 +1,33 @@
+--- a/src/searcher/kiwix-search.cpp
++++ b/src/searcher/kiwix-search.cpp
+@@ -40,7 +40,7 @@
+ R"(Find articles based on a fulltext search pattern.
+ 
+ Usage:
+-  kiwix-search [options] ZIM PATTERN
++  kiwix-search [options] ZIM PATTERN [MORE...]
+   kiwix-search --index-status ZIM
+   kiwix-search -h | --help
+   kiwix-search -V | --version
+@@ -48,6 +48,8 @@
+ Arguments:
+   ZIM       The full path of the ZIM file
+   PATTERN   Word(s) - or part of - to search in the ZIM.
++  MORE      Further suggestion patterns answered from the same open ZIM. Each
++            one's results follow a line holding only the record separator.
+ 
+ Options:
+   --index-status     Report fulltext index availability from archive metadata.
+@@ -105,6 +107,12 @@
+       for (const auto& r:searcher.suggest(pattern).getResults(0, 10)) {
+         cout << r.getTitle() << endl;
+       }
++      for (const auto& more : args.at("MORE").asStringList()) {
++        cout << '\x1e' << endl;
++        for (const auto& r:searcher.suggest(more).getResults(0, 25)) {
++          cout << r.getPath() << endl;
++        }
++      }
+     }  else if (args.at("--spelling").asBool()) {
+       kiwix::SpellingsDB spellingsDB(archive, getKiwixCachedDataDirPath());
+       for (const auto& r:spellingsDB.getSpellingCorrections(pattern, 1)) {

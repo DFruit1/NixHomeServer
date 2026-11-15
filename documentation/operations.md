@@ -2254,6 +2254,11 @@ Plain broad queries of up to 256 characters use rank fusion over the leading
   typically reordered; the rest keep their fused order. A query embedding has
   its own five-second budget and otherwise finishes in the background for the
   next search.
+- **Order.** Documents the reranker read come first, by relevance. Those it
+  had no time to read follow in fused order. A keyword match it read and
+  scored below 0.1 comes last: such matches measured 0.00–0.09 where relevant
+  ones scored 0.4 or more. A document whose title names the query is never
+  moved down on the strength of one passage.
 - **Paging and counts.** Results continue past the ranked candidates into the
   remaining keyword matches, so the library total and **Load more** cover
   every keyword match. Facet counts remain keyword counts.
@@ -2309,7 +2314,8 @@ After guarded activation:
 - `search-reranker` keeps the 0.6B model on GPU, loopback port 18095.
 - `search-embed.timer` starts a background passage-indexing pass 15 minutes
   after boot, then 30 minutes after each pass finishes. It processes new or
-  changed PostgreSQL documents without extracting source files again. It loads
+  changed PostgreSQL documents without extracting source files again,
+  shortest first, so most documents are covered before whole books. It loads
   an indexing embedder on loopback port 18094 only when work is pending and
   unloads it on completion or failure.
 - Library embedding sends one passage per request with a ten-minute request
@@ -2338,7 +2344,25 @@ Archive inventory discovery uses the Search-owned `kiwix-search --index-status`
 extension to read libzim metadata. It does not stream/decompress the embedded
 Xapian database or count every article merely to discover index availability.
 The existing native tool owns this extension so Rust does not need separate
-C++ bindings or another archive reader. Search indexing waits for successful
+C++ bindings or another archive reader. The inventory is renewed every five
+minutes of use; an inventory up to a day old answers the search that finds it
+aged and is renewed behind it, so that search does not wait about 1.5 seconds
+for a probe of every archive.
+
+A connected archive search runs in two steps (`zim_search.rs`). Each archive is
+first asked for matching entry paths: one `kiwix-search --suggestion ZIM QUERY
+[WORD...]` process answers the query and up to three of its main or related
+words with the archive opened once (`kiwix-suggestion-batch.patch`). The query
+itself has the 15-second tool timeout; the further words share two seconds and
+keep whatever they returned. Archives are then interleaved to the 100-result
+sample, and only that sample is read with `zimdump` for titles and excerpts,
+sixteen pages at a time within three seconds. One query matched 446 pages in 45
+archives; reading them all before keeping 100 took most of the search.
+Collection titles and icons are read once an hour per archive. The largest
+title indexes set the floor: single words take 2–5 seconds in the 90 GB
+archive, and more archives at a time measured no faster.
+
+Search indexing waits for successful
 Solr core bootstrap, preventing source-sync failures caused by a reloading
 core during activation. A source warning clears after its next successful
 index pass; do not clear the database error merely to hide a failed sync.

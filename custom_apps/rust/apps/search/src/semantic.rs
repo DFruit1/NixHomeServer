@@ -42,6 +42,11 @@ const MIN_COSINE: f64 = 0.4;
 /// query's words: clearly related passages score above 0.9, tangential ones
 /// below 0.1.
 const ADMIT_SCORE: f64 = 0.5;
+/// Below this the reranker read a keyword match's best passage and found it
+/// unrelated: such matches measured 0.00-0.09 where relevant ones scored 0.4
+/// or more. They rank after matches it had no time to read, whose order is
+/// still the keyword order.
+const REJECT_SCORE: f64 = 0.1;
 
 /// One ranked answer: keyword candidates and related passages fused, the head
 /// reranked. Later pages and repeats slice it instead of ranking again.
@@ -345,9 +350,12 @@ pub(crate) async fn run_index() -> Result<(), String> {
             .await
             .map_err(|e| e.to_string())?;
     }
+    // Shortest first: a passage costs seconds, so this makes the most
+    // documents searchable by meaning soonest and leaves whole books for last.
+    // The stored size is read without loading the text.
     let pending_sql = "SELECT d.id FROM documents d LEFT JOIN semantic_documents s ON s.document_id=d.id
         WHERE d.source_id=ANY($1) AND (s.document_id IS NULL OR s.checksum<>d.checksum OR s.version<>$2)
-        ORDER BY d.id LIMIT 8";
+        ORDER BY octet_length(d.body_text), d.id LIMIT 8";
     if client
         .query(pending_sql, &[&selected, &VERSION])
         .await
@@ -765,15 +773,20 @@ impl Semantic {
                 )
             })
             .collect();
-        let priority: HashMap<_, _> = hits
+        // Tiers up to 2 name the query in an identifier or the title.
+        let evidence_tier: HashMap<_, _> = hits
             .iter()
             .map(|hit| {
                 let metadata = json!({"identifiers": identifiers.get(&hit.id)});
                 (
                     hit.id.clone(),
-                    crate::relevance::quality(&hit.title, &metadata, "", query).min(2),
+                    crate::relevance::quality(&hit.title, &metadata, "", query),
                 )
             })
+            .collect();
+        let priority: HashMap<_, _> = evidence_tier
+            .iter()
+            .map(|(id, tier)| (id.clone(), (*tier).min(2)))
             .collect();
         hits.sort_by(|a, b| {
             priority[&a.id].cmp(&priority[&b.id]).then_with(|| {
@@ -877,14 +890,20 @@ impl Semantic {
                     .get(&hit.id)
                     .is_some_and(|score| *score >= ADMIT_SCORE)
         });
+        // Read and kept, then not yet read, then read and rejected. A title
+        // that names the query is never rejected on one passage of its text.
+        let standing = |hit: &SearchHit| match reranked.get(&hit.id) {
+            Some(score) if *score >= REJECT_SCORE || evidence_tier[&hit.id] <= 2 => 0,
+            None => 1,
+            Some(_) => 2,
+        };
         hits.sort_by(|a, b| {
             priority[&a.id]
                 .cmp(&priority[&b.id])
+                .then(standing(a).cmp(&standing(b)))
                 .then_with(|| match (reranked.get(&a.id), reranked.get(&b.id)) {
                     (Some(a), Some(b)) => b.total_cmp(a),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => scores[&b.id].total_cmp(&scores[&a.id]),
+                    _ => scores[&b.id].total_cmp(&scores[&a.id]),
                 })
                 .then(a.id.cmp(&b.id))
         });

@@ -66,18 +66,18 @@ pub(crate) fn quality(title: &str, metadata: &Value, body: &str, query: &str) ->
     // is as good as the word; related wording in a title is weaker evidence
     // than the user's own words in the text, so it never outranks them.
     if let Some(concepts) = crate::text::concepts(raw) {
-        use crate::text::{concept_coverage, Coverage};
+        use crate::text::{concept_coverage, concept_coverage_of, Coverage};
         let in_title = concept_coverage(&title, &concepts);
         if in_title == Coverage::Direct {
             return 2;
         }
         if !people.is_empty()
-            && concept_coverage(&format!("{title} {people}"), &concepts) == Coverage::Direct
+            && concept_coverage_of(&[&title, &people], &concepts) == Coverage::Direct
         {
             return 3;
         }
         if in_title == Coverage::Related
-            || concept_coverage(&format!("{title} {people} {body}"), &concepts) == Coverage::Direct
+            || concept_coverage_of(&[&title, &people, body], &concepts) == Coverage::Direct
         {
             return 4;
         }

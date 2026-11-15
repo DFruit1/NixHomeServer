@@ -139,6 +139,10 @@ printf 'fulltext\n'
         );
         let first = cache.get(&config).await.value.unwrap();
         std::fs::write(config.zimdump.as_ref().unwrap(), "#!/bin/sh\nexit 1\n").unwrap();
+        // An aged inventory answers at once while it is renewed behind the
+        // search; the next search waits for that renewal and reports it.
+        let aged = cache.get(&config).await;
+        assert!(Arc::ptr_eq(&first, aged.value.as_ref().unwrap()));
         let failed = cache.get(&config).await;
         assert!(failed.warning.is_some());
         assert!(Arc::ptr_eq(&first, failed.value.as_ref().unwrap()));

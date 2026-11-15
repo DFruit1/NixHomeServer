@@ -21,8 +21,17 @@ const MAX_TOTAL_ZIM_RESULTS: usize = 100;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 /// Return completed archives before the server's 30-second source timeout.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(22);
+/// Shared bound for an archive's optional further title lookups. Single words
+/// take seconds in the largest title indexes (2-5s in a 90 GB archive) and
+/// were the last thing every connected search waited for.
+const MORE_LOOKUPS_TIMEOUT: Duration = Duration::from_secs(2);
 /// Bound for a single title fetch.
 const TITLE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Shared budget for reading the returned sample's titles, excerpts and
+/// collection branding.
+const ENRICHMENT_TIMEOUT: Duration = Duration::from_secs(3);
+/// How many pages of the returned sample are read at once.
+const MAX_PAGE_READS: usize = 16;
 /// HTML considered for a snippet; conversion cost is capped by this.
 const SNIPPET_HTML_LIMIT: usize = 200_000;
 
@@ -166,31 +175,20 @@ pub async fn search(
     let mut remaining = entries.iter().enumerate();
     let mut tasks = tokio::task::JoinSet::new();
     let mut failed_archives = 0;
-    let mut ordered: Vec<(usize, Vec<ZimHit>)> = Vec::new();
+    let mut ordered: Vec<(usize, ArchiveMatches)> = Vec::new();
     loop {
         while tasks.len() < MAX_ZIM_CONCURRENCY {
             let Some((index, entry)) = remaining.next() else {
                 break;
             };
             let kiwix_search = kiwix_search.clone();
-            let zimdump = zimdump.clone();
             let entry = entry.clone();
-            let app_base = config.app_base.clone();
             let query = query.to_string();
             let broad = broad.clone();
             tasks.spawn(async move {
                 (
                     index,
-                    search_zim(
-                        &kiwix_search,
-                        &zimdump,
-                        &entry,
-                        &app_base,
-                        &query,
-                        broad.as_deref(),
-                        full_text,
-                    )
-                    .await,
+                    search_zim(&kiwix_search, &entry, &query, broad.as_deref(), full_text).await,
                 )
             });
         }
@@ -204,9 +202,9 @@ pub async fn search(
             }
         };
         match joined {
-            Ok((index, Ok(result))) => {
-                failed_archives += result.failed_archives;
-                ordered.push((index, result.hits));
+            Ok((index, Ok(matches))) => {
+                failed_archives += matches.failed_archives;
+                ordered.push((index, matches));
             }
             Ok((_, Err(err))) => {
                 failed_archives += 1;
@@ -220,20 +218,88 @@ pub async fn search(
     }
     ordered.sort_by_key(|(index, _)| *index);
     let mut archives: Vec<_> = ordered
-        .into_iter()
-        .map(|(_, hits)| hits.into_iter())
+        .iter()
+        .map(|(index, matches)| (&entries[*index], matches.title_only, matches.paths.iter()))
         .collect();
-    let mut hits = Vec::new();
+    let mut selected: Vec<(&ZimIndexEntry, bool, &String)> = Vec::new();
     'rounds: for _ in 0..MAX_RESULTS_PER_ZIM {
-        for archive in &mut archives {
-            if let Some(hit) = archive.next() {
-                hits.push(hit);
-                if hits.len() == MAX_TOTAL_ZIM_RESULTS {
+        for (entry, title_only, paths) in &mut archives {
+            if let Some(path) = paths.next() {
+                selected.push((*entry, *title_only, path));
+                if selected.len() == MAX_TOTAL_ZIM_RESULTS {
                     break 'rounds;
                 }
             }
         }
     }
+    // Only the sample that will be returned is read from the archives. One
+    // query matched 446 pages in 45 archives; reading them all for titles and
+    // excerpts before keeping 100 was most of the search's time.
+    let enrichment_deadline = deadline.min(tokio::time::Instant::now() + ENRICHMENT_TIMEOUT);
+    let mut distinct: Vec<PathBuf> = Vec::new();
+    for (entry, ..) in &selected {
+        if !distinct.contains(&entry.path) {
+            distinct.push(entry.path.clone());
+        }
+    }
+    let branding = async {
+        let mut found: Vec<(PathBuf, Branding)> = Vec::new();
+        let mut lookups = stream::iter(distinct)
+            .map(|zim| read_branding(zimdump.clone(), zim))
+            .buffer_unordered(MAX_ZIM_CONCURRENCY);
+        while let Ok(Some(result)) =
+            tokio::time::timeout_at(enrichment_deadline, lookups.next()).await
+        {
+            found.push(result);
+        }
+        found
+    };
+    let reads: Vec<_> = selected
+        .iter()
+        .enumerate()
+        .map(|(position, (entry, _, path))| (position, entry.path.clone(), (*path).clone()))
+        .collect();
+    let pages = async {
+        let mut resolved: Vec<Option<(String, Option<String>)>> = vec![None; reads.len()];
+        let mut reads = stream::iter(reads)
+            .map(|(position, zim, path)| {
+                read_page(zimdump.clone(), zim, path, query.to_string(), position)
+            })
+            .buffer_unordered(MAX_PAGE_READS);
+        while let Ok(Some((position, page))) =
+            tokio::time::timeout_at(enrichment_deadline, reads.next()).await
+        {
+            resolved[position] = Some(page);
+        }
+        resolved
+    };
+    let (branding, pages) = tokio::join!(branding, pages);
+    // Slow excerpts must not turn a larger sample into a source timeout. Keep
+    // every confirmed hit, using its path-derived title when enrichment stalls.
+    let mut hits: Vec<ZimHit> = selected
+        .iter()
+        .zip(pages)
+        .map(|((entry, title_only, path), page)| {
+            let (title, snippet) = page.unwrap_or_else(|| (clean_title_from_path(path), None));
+            let (archive_title, archive_icon) = branding
+                .iter()
+                .find(|(archive, _)| *archive == entry.path)
+                .map(|(_, branding)| branding.as_ref().clone())
+                .unwrap_or_default();
+            let origin = entry_origin(&config.app_base, &entry.stem, path);
+            ZimHit {
+                title,
+                snippet,
+                origin_url: origin.clone(),
+                app_url: origin,
+                metadata: serde_json::json!({
+                    "archive": entry.stem, "entry_path": path,
+                    "archive_title": archive_title, "archive_icon": archive_icon,
+                    "search_scope": if *title_only { "Titles" } else { "Full text" },
+                }),
+            }
+        })
+        .collect();
     // Keep archive diversity for equal-quality results, but promote direct
     // title matches across the whole library before returning the sample.
     hits.sort_by_key(|hit| hit_title_match_rank(hit, query));
@@ -269,18 +335,22 @@ fn hit_title_match_rank(hit: &ZimHit, query: &str) -> u8 {
     title_match_rank(&hit.title, query).min(path_rank)
 }
 
-/// Searches one ZIM archive and resolves its hits' titles and snippets.
+/// One archive's matching entry paths, best first, before any page is read.
+struct ArchiveMatches {
+    paths: Vec<String>,
+    title_only: bool,
+    failed_archives: usize,
+}
+
+/// Searches one ZIM archive for matching entry paths.
 async fn search_zim(
     kiwix_search: &Path,
-    zimdump: &Path,
     entry: &ZimIndexEntry,
-    app_base: &str,
     query: &str,
     broad: Option<&str>,
     full_text: bool,
-) -> Result<ZimSearchResult, String> {
+) -> Result<ArchiveMatches, String> {
     let zim = &entry.path;
-    let stem = &entry.stem;
     let has_xapian = full_text && entry.has_xapian;
     let mut title_only = !has_xapian;
     let mut failed_archives = 0;
@@ -315,55 +385,39 @@ async fn search_zim(
             Err(err) => return Err(err),
         }
         titles
-    } else {
-        search_paths(
-            kiwix_search,
-            zim,
-            if title_only {
-                query
-            } else {
-                broad.unwrap_or(query)
-            },
-            title_only,
-        )
-        .await?
-    };
-    if title_only
-        && failed_archives == 0
-        && broad.is_some()
-        && paths.len() < MAX_RESULTS_PER_ZIM
-        && let Some(words) = crate::text::discovery_words(query)
-    {
+    } else if title_only {
         // A title index expects a beginning, not an unordered topic. Look up
         // a few main/related words too, keeping the original completions first.
         // Optional lookups may add hits but never discard a successful sample.
-        let related = crate::text::related_words(&words);
-        let mut main_words = words;
-        main_words.sort_by_key(|word| std::cmp::Reverse(word.chars().count()));
-        let candidates = main_words
-            .into_iter()
-            .chain(related)
-            .filter(|word| !word.eq_ignore_ascii_case(query.trim()))
-            .take(3);
-        let mut completions = stream::iter(candidates)
-            .map(|word| async move {
-                timeout(
-                    Duration::from_secs(2),
-                    search_paths(kiwix_search, zim, &word, true),
-                )
-                .await
-            })
-            .buffered(2);
-        while let Some(result) = completions.next().await {
-            if let Ok(Ok(matches)) = result {
-                for path in matches {
-                    if !paths.contains(&path) {
-                        paths.push(path);
-                    }
+        let more: Vec<String> = match (broad, crate::text::discovery_words(query)) {
+            (Some(_), Some(words)) => {
+                let related = crate::text::related_words(&words);
+                let mut main_words = words;
+                main_words.sort_by_key(|word| std::cmp::Reverse(word.chars().count()));
+                main_words
+                    .into_iter()
+                    .chain(related)
+                    .filter(|word| !word.eq_ignore_ascii_case(query.trim()))
+                    .take(3)
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        let mut lookups = suggest_paths(kiwix_search, zim, query, &more)
+            .await?
+            .into_iter();
+        let mut paths = lookups.next().unwrap_or_default();
+        if paths.len() < MAX_RESULTS_PER_ZIM {
+            for path in lookups.flatten() {
+                if !paths.contains(&path) {
+                    paths.push(path);
                 }
             }
         }
-    }
+        paths
+    } else {
+        search_paths(kiwix_search, zim, broad.unwrap_or(query), false).await?
+    };
     if title_only
         && broad.is_some()
         && let Some(concepts) = crate::text::discovery_concepts(query)
@@ -381,78 +435,138 @@ async fn search_zim(
         .filter(|path| !path.is_empty())
         .collect();
 
-    // Share a single budget across optional branding and snippet enrichment.
-    let enrichment_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    // Read the collection's own branding once per matching archive. Missing
-    // optional metadata must not prevent its article results being returned.
-    let (archive_title, archive_icon) = if paths.is_empty() {
-        (None, None)
-    } else {
-        let (title, icon) = tokio::time::timeout_at(enrichment_deadline, async {
-            tokio::join!(
-                show_html(zimdump, zim, "Title", Some("M")),
-                show_html(zimdump, zim, "Illustration_48x48@1", Some("M")),
-            )
-        })
-        .await
-        .unwrap_or((None, None));
-        let title = title
-            .filter(|data| data.len() <= 4096)
-            .and_then(|data| String::from_utf8(data).ok())
-            .map(|title| title.trim().to_string())
-            .filter(|title| !title.is_empty());
-        // Only inline bounded PNGs, never active archive-supplied SVG/HTML.
-        let icon = icon
-            .filter(|data| data.len() <= 65_536 && data.starts_with(b"\x89PNG\r\n\x1a\n"))
-            .map(|data| {
-                format!(
-                    "data:image/png;base64,{}",
-                    base64::engine::general_purpose::STANDARD.encode(data)
-                )
-            });
-        (title, icon)
-    };
-
-    // Keep snippet subprocesses bounded even when an archive returns more hits.
-    let mut tasks = stream::iter(paths.iter().cloned().enumerate())
-        .map(|(position, path)| async move {
-            let (title, snippet) = fetch_title_and_snippet(zimdump, zim, &path, query).await;
-            (position, path, title, snippet)
-        })
-        .buffer_unordered(5);
-    let mut resolved: Vec<(usize, String, String, Option<String>)> = Vec::new();
-    while let Ok(Some(hit)) = tokio::time::timeout_at(enrichment_deadline, tasks.next()).await {
-        resolved.push(hit);
-    }
-    drop(tasks);
-    // Slow excerpts must not turn a larger sample into a source timeout. Keep
-    // every confirmed hit, using its path-derived title when enrichment stalls.
-    for (position, path) in paths.into_iter().enumerate() {
-        if !resolved.iter().any(|(done, ..)| *done == position) {
-            let title = clean_title_from_path(&path);
-            resolved.push((position, path, title, None));
-        }
-    }
-    resolved.sort_by_key(|(position, ..)| *position);
-    let mut hits: Vec<_> = resolved
-        .into_iter()
-        .map(|(_, path, title, snippet)| ZimHit {
-            title,
-            snippet,
-            origin_url: entry_origin(app_base, stem, &path),
-            app_url: entry_origin(app_base, stem, &path),
-            metadata: serde_json::json!({
-                "archive": stem, "entry_path": path,
-                "archive_title": archive_title, "archive_icon": archive_icon,
-                "search_scope": if title_only { "Titles" } else { "Full text" },
-            }),
-        })
-        .collect();
-    hits.sort_by_key(|hit| hit_title_match_rank(hit, query));
-    Ok(ZimSearchResult {
-        hits,
+    Ok(ArchiveMatches {
+        paths,
+        title_only,
         failed_archives,
     })
+}
+
+/// A collection's own title and icon, as a data URL.
+type Branding = std::sync::Arc<(Option<String>, Option<String>)>;
+
+/// Branding never changes while an archive is installed, so each archive is
+/// asked once an hour rather than twice per matching search.
+static BRANDING: std::sync::LazyLock<crate::cache::TtlCache<Branding>> =
+    std::sync::LazyLock::new(|| crate::cache::TtlCache::new(Duration::from_secs(3600), 512));
+
+async fn read_branding(zimdump: PathBuf, zim: PathBuf) -> (PathBuf, Branding) {
+    let branding = archive_branding(&zimdump, &zim).await;
+    (zim, branding)
+}
+
+async fn read_page(
+    zimdump: PathBuf,
+    zim: PathBuf,
+    path: String,
+    query: String,
+    position: usize,
+) -> (usize, (String, Option<String>)) {
+    (
+        position,
+        fetch_title_and_snippet(&zimdump, &zim, &path, &query).await,
+    )
+}
+
+/// Missing optional metadata must not prevent article results being returned.
+async fn archive_branding(zimdump: &Path, zim: &Path) -> Branding {
+    let key = zim.to_string_lossy();
+    if let Some(known) = BRANDING.get(&key) {
+        return known;
+    }
+    let (title, icon) = tokio::join!(
+        show_html(zimdump, zim, "Title", Some("M")),
+        show_html(zimdump, zim, "Illustration_48x48@1", Some("M")),
+    );
+    let title = title
+        .filter(|data| data.len() <= 4096)
+        .and_then(|data| String::from_utf8(data).ok())
+        .map(|title| title.trim().to_string())
+        .filter(|title| !title.is_empty());
+    // Only inline bounded PNGs, never active archive-supplied SVG/HTML.
+    let icon = icon
+        .filter(|data| data.len() <= 65_536 && data.starts_with(b"\x89PNG\r\n\x1a\n"))
+        .map(|data| {
+            format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(data)
+            )
+        });
+    let branding = std::sync::Arc::new((title, icon));
+    // A read that returned nothing may only have been slow; ask again.
+    if branding.0.is_some() || branding.1.is_some() {
+        BRANDING.insert(&key, branding.clone());
+    }
+    branding
+}
+
+/// Title lookups for `query` and then each of `more`, answered by one process
+/// with the archive opened once. The first group is required within the
+/// search timeout; the rest are optional and share a short budget of their
+/// own, so a slow extra lookup costs its matches rather than the archive's.
+async fn suggest_paths(
+    kiwix_search: &Path,
+    zim: &Path,
+    query: &str,
+    more: &[String],
+) -> Result<Vec<Vec<String>>, String> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+    let mut child = Command::new(kiwix_search)
+        .kill_on_drop(true)
+        .arg("--suggestion")
+        .arg(zim)
+        .arg(query)
+        .args(more)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("failed to run kiwix-search: {err}"))?;
+    let stdout = child.stdout.take().ok_or("kiwix-search has no output")?;
+    let stderr = child.stderr.take();
+    let complaint = tokio::spawn(async move {
+        let mut text = String::new();
+        if let Some(stderr) = stderr {
+            let _ = stderr.take(4096).read_to_string(&mut text).await;
+        }
+        text
+    });
+    let mut lines = tokio::io::BufReader::new(stdout).lines();
+    let mut groups: Vec<Vec<String>> = vec![Vec::new()];
+    let mut deadline = tokio::time::Instant::now() + SEARCH_TIMEOUT;
+    loop {
+        match tokio::time::timeout_at(deadline, lines.next_line()).await {
+            // The tool starts each further lookup with a record separator, so
+            // the first one means the required lookup is complete.
+            Ok(Ok(Some(line))) if line == "\u{1e}" => {
+                if groups.len() == 1 {
+                    deadline = tokio::time::Instant::now() + MORE_LOOKUPS_TIMEOUT;
+                }
+                groups.push(Vec::new());
+            }
+            Ok(Ok(Some(line))) => {
+                let line = line.trim();
+                if !line.is_empty() {
+                    groups.last_mut().unwrap().push(line.to_string());
+                }
+            }
+            Ok(Ok(None)) => break,
+            Ok(Err(_)) | Err(_) if groups.len() > 1 => return Ok(groups),
+            Ok(Err(err)) => return Err(format!("failed to read kiwix-search output: {err}")),
+            Err(_) => return Err(format!("kiwix-search timed out for {}", zim.display())),
+        }
+    }
+    let status = child
+        .wait()
+        .await
+        .map_err(|err| format!("failed to run kiwix-search: {err}"))?;
+    if !status.success() && groups.len() == 1 {
+        return Err(format!(
+            "kiwix-search failed for {}: {}",
+            zim.display(),
+            complaint.await.unwrap_or_default().trim()
+        ));
+    }
+    Ok(groups)
 }
 
 /// Runs `kiwix-search ZIM PATTERN` and returns the matching entry paths.

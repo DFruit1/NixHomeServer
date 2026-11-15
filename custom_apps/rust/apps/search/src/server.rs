@@ -781,6 +781,7 @@ async fn execute_search_plan(
     match response {
         Ok((response, semantic_snippets, ranked_more, warning)) => {
             let semantic = ranked_more.is_some();
+            let retrieved = started.elapsed();
             // Solr never returns the body; load it once for the returned page
             // and build snippets from the authoritative Postgres copy. A failed
             // enrichment degrades to title-only results rather than a 500.
@@ -792,6 +793,7 @@ async fn execute_search_plan(
                     Default::default()
                 }
             };
+            let enriched_at = started.elapsed();
             let mut hits: Vec<serde_json::Value> =
                 federated.hits.iter().map(FederatedHit::to_json).collect();
             // Federated hits are only ever returned on the first page, so more
@@ -831,8 +833,10 @@ async fn execute_search_plan(
             warnings.extend(warning);
             // Durations and counts only: queries are private.
             eprintln!(
-                "search: library query ms={} order={} page={page} hits={}",
+                "search: library query ms={} retrieve_ms={} bodies_ms={} order={} page={page} hits={}",
                 started.elapsed().as_millis(),
+                retrieved.as_millis(),
+                (enriched_at - retrieved).as_millis(),
                 if semantic { "reranked" } else { "keyword" },
                 response.hits.len(),
             );

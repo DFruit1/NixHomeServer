@@ -402,20 +402,55 @@ pub enum Coverage {
 }
 
 pub fn concept_coverage(text: &str, concepts: &[Concept]) -> Coverage {
-    let words: std::collections::HashSet<String> = title_words(text).into_iter().collect();
-    let has = |term: &String| words.contains(term);
-    let mut coverage = Coverage::Direct;
-    for concept in concepts {
-        if has(&concept.word) || concept.forms.iter().any(has) {
-            continue;
+    concept_coverage_of(&[text], concepts)
+}
+
+/// Coverage of several texts read as one. Each text is lowercased once and
+/// only the query's own terms are looked up, so judging a 400 KB body does not
+/// allocate a string for every word in it.
+pub fn concept_coverage_of(texts: &[&str], concepts: &[Concept]) -> Coverage {
+    // Evidence per concept: 2 as typed or in another form, 1 through related wording.
+    let mut wanted: std::collections::HashMap<&str, Vec<(usize, u8)>> =
+        std::collections::HashMap::new();
+    for (index, concept) in concepts.iter().enumerate() {
+        for term in std::iter::once(&concept.word).chain(&concept.forms) {
+            wanted.entry(term).or_default().push((index, 2));
         }
-        if concept.related.iter().any(has) {
-            coverage = Coverage::Related;
-        } else {
-            return Coverage::Partial;
+        for term in &concept.related {
+            wanted.entry(term).or_default().push((index, 1));
         }
     }
-    coverage
+    let mut found = vec![0u8; concepts.len()];
+    let mut missing_direct = concepts.len();
+    'texts: for text in texts {
+        let lowered = text.to_lowercase();
+        for word in lowered
+            .split(|ch: char| !ch.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+        {
+            let Some(matches) = wanted.get(word) else {
+                continue;
+            };
+            for &(index, strength) in matches {
+                if strength > found[index] {
+                    if strength == 2 {
+                        missing_direct -= 1;
+                    }
+                    found[index] = strength;
+                }
+            }
+            if missing_direct == 0 {
+                break 'texts;
+            }
+        }
+    }
+    if missing_direct == 0 {
+        Coverage::Direct
+    } else if found.iter().all(|strength| *strength > 0) {
+        Coverage::Related
+    } else {
+        Coverage::Partial
+    }
 }
 
 /// Returns at most `limit` bytes of `text`, rounded down to a character

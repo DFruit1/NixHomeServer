@@ -5,6 +5,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
+/// How old a usable value may be and still answer while it is renewed.
+const MAX_STALE: Duration = Duration::from_secs(24 * 3600);
+
 #[derive(Debug, Clone)]
 pub struct CachedValue<T> {
     pub value: Option<T>,
@@ -53,6 +56,9 @@ impl<T: Clone> SourceCache<T> {
 
     /// Finish an inventory scan even if its requesting search times out. Only
     /// the refresh owns a task; callers waiting for it hold no background work.
+    /// An inventory that has merely aged is answered from at once and renewed
+    /// behind the search, so the first search after a quiet spell does not
+    /// wait for a scan of every archive.
     pub async fn get_or_refresh_background<F, Fut>(&self, refresh: F) -> CachedValue<T>
     where
         T: Send + 'static,
@@ -61,6 +67,15 @@ impl<T: Clone> SourceCache<T> {
     {
         let mut entry = self.entry.clone().lock_owned().await;
         if let Some(current) = self.fresh_value(&entry) {
+            return current;
+        }
+        if entry.current.value.is_some()
+            && entry
+                .checked_at
+                .is_some_and(|checked| checked.elapsed() < MAX_STALE)
+        {
+            let current = entry.current.clone();
+            tokio::spawn(async move { Self::refresh(&mut entry, refresh()).await });
             return current;
         }
         match tokio::spawn(async move { Self::refresh(&mut entry, refresh()).await }).await {
