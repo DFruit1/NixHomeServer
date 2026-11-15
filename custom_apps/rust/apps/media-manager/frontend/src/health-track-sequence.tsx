@@ -3,6 +3,7 @@ import {
   component$,
   useStore,
   useSignal,
+  useId,
   useVisibleTask$,
 } from "@builder.io/qwik";
 import { api, catalogItems, readableError } from "./api";
@@ -17,6 +18,13 @@ import type {
 import "./health-track-sequence.css";
 import { HealthPlayButton } from "./health-playback";
 import { revealWhenMounted } from "./reveal";
+import {
+  hasCompleteTrackMetadata,
+  hasCompletePlaylist,
+  recommendedTrackOrder,
+  sortTrackSequence,
+  type TrackSequenceOrder,
+} from "./track-sequence-order";
 
 export const HealthTrackSequence = component$<{
   target: MetadataHealthResult;
@@ -24,6 +32,7 @@ export const HealthTrackSequence = component$<{
 }>((props) => {
   const state = useStore({
     open: false,
+    order: "recommended" as TrackSequenceOrder,
     busy: false,
     files: [] as TrackOrderFileRow[],
     items: [] as CatalogItem[],
@@ -32,6 +41,7 @@ export const HealthTrackSequence = component$<{
     notice: "",
     submitted: false,
   });
+  const orderId = useId();
   const previewElement = useSignal<HTMLElement>();
   const feedbackElement = useSignal<HTMLElement>();
   useVisibleTask$(({ track }) => {
@@ -68,9 +78,8 @@ export const HealthTrackSequence = component$<{
         throw new Error(
           "A complete folder track list is unavailable. Refresh the library and try again.",
         );
-      state.files = [...report.files].sort(
-        (a, b) => a.effectivePosition - b.effectivePosition,
-      );
+      state.order = "recommended";
+      state.files = sortTrackSequence(report.files, "recommended");
       state.items = catalog.items;
     } catch (error) {
       state.error = readableError(error);
@@ -79,6 +88,9 @@ export const HealthTrackSequence = component$<{
     }
   });
   const move$ = $((index: number, delta: number) => {
+    if (state.busy || state.submitted || !props.canEdit) return;
+    if (index + delta < 0 || index + delta >= state.files.length) return;
+    state.order = "custom";
     const files = [...state.files];
     const [file] = files.splice(index, 1);
     files.splice(index + delta, 0, file);
@@ -162,20 +174,18 @@ export const HealthTrackSequence = component$<{
   return (
     <section
       class={{ "health-track-sequence": true, "is-open": state.open }}
-      aria-label="Continuous track numbers"
+      aria-label="Choose and write track numbers"
     >
       {!state.open ? (
         <button type="button" onClick$={load$}>
-          Renumber tracks…
+          Choose track order…
         </button>
       ) : (
         <>
-          <h4>Renumber tracks from 01</h4>
+          <h4>Choose track order</h4>
           <p>
-            Choose the play order. Confirmation writes track numbers 1–N and the
-            total into the audio files, aligns filenames, and creates matching
-            playlist and metadata sidecars. Disc number and disc total become 1
-            so this sequence stays continuous across the folder.
+            Choose where the order comes from, check the new numbers, then
+            preview and write the changes to the files.
           </p>
           {state.busy && (
             <p role="status">
@@ -186,39 +196,93 @@ export const HealthTrackSequence = component$<{
           )}
           {!!state.files.length && (
             <>
-              <label class="health-track-sort">
-                Starting order
-                <select
-                  disabled={state.busy || state.submitted}
-                  onChange$={(_, select) => {
-                    const field = select.value;
-                    state.files = [...state.files].sort((a, b) => {
-                      if (field === "filename")
-                        return a.fileName.localeCompare(b.fileName, undefined, {
-                          numeric: true,
-                        });
-                      if (field === "playlist")
-                        return (
-                          (a.playlistPosition ?? Infinity) -
-                            (b.playlistPosition ?? Infinity) ||
-                          a.effectivePosition - b.effectivePosition
-                        );
-                      return a.effectivePosition - b.effectivePosition;
-                    });
-                    state.plans = [];
-                    state.error = "";
-                    state.notice = "";
-                  }}
-                >
-                  <option value="effective">
-                    Current playback order (disc, then track)
-                  </option>
-                  <option value="filename">Filename order</option>
-                  {state.files.some(
-                    (file) => file.playlistPosition != null,
-                  ) && <option value="playlist">Playlist order</option>}
-                </select>
-              </label>
+              <fieldset
+                class="health-track-sort"
+                disabled={state.busy || state.submitted || !props.canEdit}
+              >
+                <legend>Order to use</legend>
+                {(
+                  [
+                    [
+                      "recommended",
+                      "Use recommended order",
+                      recommendedTrackOrder(state.files).reason,
+                      true,
+                    ],
+                    [
+                      "metadata",
+                      "Use order in metadata",
+                      hasCompleteTrackMetadata(state.files)
+                        ? "Sort by embedded disc number, then track number."
+                        : "Unavailable: some track tags are missing or duplicated. Choose another source or set a custom order.",
+                      hasCompleteTrackMetadata(state.files),
+                    ],
+                    [
+                      "filename",
+                      "Use numbering in filenames",
+                      "Sort whole filenames naturally (2 before 10), including numbers within names. Names without numbers sort alphabetically.",
+                      true,
+                    ],
+                    [
+                      "playlist",
+                      "Use playlist order",
+                      hasCompletePlaylist(state.files)
+                        ? "Follow the folder’s existing playlist."
+                        : "Unavailable: no playlist lists every file once.",
+                      hasCompletePlaylist(state.files),
+                    ],
+                    [
+                      "custom",
+                      "Set a custom order",
+                      "Start with the list below. Enter a new position or use the arrows to move a file.",
+                      true,
+                    ],
+                  ] as const
+                ).map(([value, label, description, available]) => (
+                  <label key={value} class="health-track-choice">
+                    <input
+                      type="radio"
+                      name={orderId}
+                      value={value}
+                      checked={state.order === value}
+                      disabled={!available}
+                      onChange$={() => {
+                        state.order = value;
+                        state.files = sortTrackSequence(state.files, value);
+                        state.plans = [];
+                        state.error = "";
+                        state.notice = "";
+                      }}
+                    />
+                    <span>
+                      <strong>{label}</strong>
+                      <small>{description}</small>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+              <p class="health-track-write-summary">
+                Writing assigns tracks 1–{state.files.length} in this order,
+                saves the track total in each audio file, and renames files to
+                match. All files become disc 1 of 1; a matching playlist and
+                metadata files are also saved. Existing gaps and disc divisions
+                are removed.
+              </p>
+              {!state.submitted && props.canEdit && (
+                <div class="health-track-actions">
+                  <button
+                    type="button"
+                    disabled={state.busy}
+                    onClick$={preview$}
+                  >
+                    {state.plans.length
+                      ? "Refresh preview"
+                      : "Preview file changes"}
+                  </button>
+                  <span>No files change until you confirm the preview.</span>
+                </div>
+              )}
+              <h4>New track numbers</h4>
               <ol class="health-track-list">
                 {state.files.map((file, index) => {
                   const parent = props.target.relativePath
@@ -248,15 +312,56 @@ export const HealthTrackSequence = component$<{
                       <span class="health-track-name">
                         <strong>{file.fileName}</strong>
                         <span>
-                          Track {index + 1}/{state.files.length} · Disc 1/1
+                          Existing:{" "}
+                          {file.tagTrack != null
+                            ? `disc ${file.tagDisc ?? 1}, track ${file.tagTrack}`
+                            : "no track tag"}
+                          {file.filenameNumber != null
+                            ? ` · filename number ${file.filenameNumber}`
+                            : ""}
+                          {file.playlistPosition != null
+                            ? ` · playlist ${file.playlistPosition}`
+                            : ""}
+                        </span>
+                        <span>
+                          Will write: track {index + 1}/{state.files.length} ·
+                          disc 1/1
                         </span>
                       </span>
                       <span class="health-track-move">
+                        {state.order === "custom" && (
+                          <label class="health-track-position">
+                            Position
+                            <input
+                              type="number"
+                              min={1}
+                              max={state.files.length}
+                              value={index + 1}
+                              aria-label={`New position for ${file.fileName}`}
+                              disabled={
+                                state.busy || state.submitted || !props.canEdit
+                              }
+                              onChange$={(_, input) => {
+                                const position = input.valueAsNumber;
+                                if (
+                                  Number.isInteger(position) &&
+                                  position >= 1 &&
+                                  position <= state.files.length
+                                )
+                                  move$(index, position - index - 1);
+                                else input.value = String(index + 1);
+                              }}
+                            />
+                          </label>
+                        )}
                         <button
                           type="button"
                           aria-label={`Move ${file.fileName} up`}
                           disabled={
-                            index === 0 || state.busy || state.submitted
+                            index === 0 ||
+                            state.busy ||
+                            state.submitted ||
+                            !props.canEdit
                           }
                           onClick$={() => move$(index, -1)}
                         >
@@ -268,7 +373,8 @@ export const HealthTrackSequence = component$<{
                           disabled={
                             index === state.files.length - 1 ||
                             state.busy ||
-                            state.submitted
+                            state.submitted ||
+                            !props.canEdit
                           }
                           onClick$={() => move$(index, 1)}
                         >
@@ -283,7 +389,7 @@ export const HealthTrackSequence = component$<{
           )}
           {state.plans.length > 0 && !state.submitted && (
             <div class="health-track-preview" ref={previewElement}>
-              <h4>Track order to confirm</h4>
+              <h4>Review changes before writing</h4>
               <ul>
                 {state.plans.flatMap((plan) =>
                   (plan.trackSequence ?? []).map((track) => (
@@ -326,8 +432,8 @@ export const HealthTrackSequence = component$<{
                     onClick$={state.plans.length ? confirm$ : preview$}
                   >
                     {state.plans.length
-                      ? `Confirm track order for ${state.files.length} files`
-                      : "Preview track order"}
+                      ? `Write track numbers to ${state.files.length} files`
+                      : "Preview file changes"}
                   </button>
                 ) : (
                   <p>Editing is unavailable for this account or server.</p>

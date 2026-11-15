@@ -116,3 +116,90 @@
   color: var(--ink-soft);
   margin-block: 0.25rem 0.75rem;
 }
+
+.health-track-sort {
+  margin: 0 0 1rem;
+  padding: 0;
+  border: 0;
+}
+.health-track-sort legend {
+  margin-block-end: 0.5rem;
+  font-weight: 700;
+}
+.health-track-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.6rem;
+  border-inline-start: 3px solid transparent;
+  cursor: pointer;
+}
+.health-track-choice:has(input:checked) {
+  border-inline-start-color: var(--accent);
+  background: var(--paper-deep);
+}
+.health-track-choice:has(input:disabled) {
+  color: var(--ink-soft);
+  cursor: default;
+}
+.health-track-choice input {
+  flex-shrink: 0;
+  margin-block-start: 0.25rem;
+  accent-color: var(--accent);
+}
+.health-track-choice span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.health-track-choice strong,
+.health-track-choice small {
+  display: block;
+}
+.health-track-choice small {
+  margin-block-start: 0.15rem;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+.health-track-actions {
+  margin-block: 0.75rem;
+}
+.health-track-actions > span {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+.health-track-position {
+  display: grid;
+  gap: 0.15rem;
+  font-size: var(--text-sm);
+}
+.health-track-position input {
+  width: 4.5rem;
+  min-height: 44px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  padding: 0.35rem;
+}
+.health-track-move {
+  align-items: center;
+}
+@media (max-width: 600px) {
+  .health-track-list li {
+    flex-wrap: wrap;
+  }
+  .health-track-list .health-track-name {
+    flex-basis: calc(100% - 52px);
+  }
+  .health-track-move {
+    margin-inline-start: auto;
+  }
+  .health-track-position {
+    display: flex;
+    align-items: center;
+  }
+  .health-track-position input {
+    font-size: 16px;
+  }
+}
