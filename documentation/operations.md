@@ -2280,6 +2280,78 @@ comparable matches. Under a strict Newest order only the typed words and their
 forms may admit a document. The same bounded query drives every page. Filters
 and source scope remain applied.
 
+### How each kind of content is represented
+
+One rule decides where extracted text goes. Text that is what an item is about
+(an article, an email, a book, a scanned letter) is body text. Words that are
+merely inside an item (film dialogue, text caught in a photograph or in a
+picture attached to an email) are incidental text: indexed in
+`incidental_txt` at a twentieth of the body's weight, with none of the phrase
+or coverage boosts, never embedded for related-passage search, and never
+counted as the document covering the query. A result found that way shows its
+excerpt introduced by what it is ("Subtitles: [00:41:10] …"). Comic and manga
+pages are deliberately not read at all.
+
+- Books (Calibre, Kavita files, personal documents). A long work is split
+  into sections of roughly 60,000 bytes that follow its own structure: EPUB
+  reading order named from the contents table, PDF pages. A 2 MB cap used to
+  cut 133 of 222 books; the King James Bible stopped in Ezekiel. Sections
+  share one result slot (`dedupe_s` starts with `sections:`), so a search
+  lists the book once, by its best-matching section, titled "Book — Section".
+  The first section keeps the book's id and title.
+- Scans. PDF pages without a text layer and pictures attached to mail (40 KB
+  to 16 MB, at most eight a message) are recognised with Tesseract
+  (`repo.search.ocr`, English by default). At most 400 pages a document, four
+  at a time, 90 seconds a page; output is kept only when it reads as language.
+  A picture with 40 or more recognised words is a scanned document and joins
+  the message text; fewer words are incidental. Recognition runs once per
+  file inside the indexing pass, so the first pass after this change is slow.
+- Mail. Mail carrying `List-Unsubscribe` or `List-Id` (47% of the archive) is
+  marked, filterable as the "Mailing list" topic and scored at 0.7. Only 9% of
+  invoice- and receipt-like mail carries those headers. A reply's quoted copy
+  of an earlier message is dropped only when that message is itself in the
+  archive. Forwarded content is kept; long tracking links and legal notices
+  are dropped.
+- Video. The Jellyfin snapshot carries directors, cast and, for episodes, the
+  series overview. The exporter saves one readable subtitle track per item
+  under `/var/cache/media-manager-jellyfin/subtitles/`, six new tracks a run;
+  Search indexes it as incidental text with cue times. DVD and Blu-ray picture
+  subtitles have no text and are not read.
+- Audiobooks and podcasts. Author, narrator, year, genres and series come from
+  the catalogue file beside the tracks when Audiobookshelf has none. Podcast
+  episodes are documents of their own.
+- Comics and manga. Summary, genres, characters and volume and chapter names.
+- Feeds. `search-article-archive.timer` (daily, `repo.search.articleArchive`)
+  fetches the article behind entries with under 1,500 bytes of text into
+  `/var/lib/search/article-archive`; indexing reads what it saved and makes
+  no requests itself. Each request and each redirect is resolved first and
+  refused unless every address is public, and the connection is pinned to the
+  checked address. One request a second, 200 a run, 3 MB a page; a failure is
+  retried after 30 days. `journalctl -u search-article-archive` reports counts
+  only.
+- Kiwix. Each archive's record carries its own title, description, language,
+  creator, publisher, date and topics.
+- Personal files. `_Files` and `_Transcripts` in each person's folder, by
+  owner. Only document formats are read; hidden, dependency and build folders
+  and links are skipped, and a software project contributes only its PDFs and
+  office files. Search has read-only access to those two folders through
+  `repo.storage.userRoots.recursiveReadonlyGrants`.
+- Photos (Immich). Indexed from what Immich already knows: place, date,
+  albums, named people, tags, camera, and recognised text of 40 bytes or more
+  as incidental text. Pictures taken on one day in one place share a result
+  slot and photos score at 0.5, so a town or a month finds written material
+  first; photo records are not embedded. When a search is restricted to
+  photos (Content: Photo, or the Photos source) the words are also sent to
+  Immich's image model and its 40 nearest pictures are added. That model
+  returns its nearest pictures for any words, which is why it is not asked
+  otherwise. `search-immich-access.service` grants the `search` database role
+  `SELECT` on the listed columns only; after an Immich upgrade that renames
+  one, the unit fails and `journalctl -u search-immich-access` names it.
+
+Re-extraction after this change happens on the next `search-index` pass for
+mail, books, media, feeds, Kiwix and Paperless, and changed documents are
+embedded again by `search-embed`.
+
 ### Local semantic search
 
 Search combines the keyword index with a separate `search-passages-v1` Solr
@@ -2644,8 +2716,9 @@ Notes:
   stored email subjects and book titles appear in results instead of falling
   back to `Untitled`. This response-parsing fix needs no schema reset or reindex.
 * Runtime-federated sources. A source that already ships a queryable index is
-  searched at request time instead of being copied into Solr. Two sources work
-  this way:
+  searched at request time instead of being copied into Solr. Kiwix works
+  this way, as does the photo library's image model when a search is
+  restricted to photos (see "How each kind of content is represented"):
   * Kiwix: a ZIM with an embedded Xapian index is detected automatically and
     queried live via `kiwix-search` (body and title are resolved from the
     archive on demand); only ZIMs without an embedded index are extracted into
@@ -2662,23 +2735,26 @@ Notes:
     operator-based queries retain their precise meaning. The result Details
     state whether full text or titles supplied the hit. Indexed and live
     copies of the same article share an identity and display once.
-  * Paperless: Search queries Paperless's own Tantivy index over loopback at
-    `http://127.0.0.1:<port>/api/documents/`, using the advanced `query`
-    parameter with a fallback to `text` for input the advanced parser rejects.
-    `paperless-search-api-token.service` mints an idempotent DRF token for a
-    dedicated, view-only `search-service` local user (member of
-    `paperless-users`) and writes it to `/run/paperless-search-api-token`
-    (`root:search`, `0640`); the Search UI reads it per query, so a missing
-    token produces a source warning while other results remain available. The
-    token lives in the Paperless database and is regenerated on every boot, so
-    it is never backed up. Paperless is configured to accept the loopback Host
-    header via `repo.paperless.additionalAllowedHosts`.
-  Add a future source the same way when it exposes a search API, so duplicate
-  bodies are never indexed. Switching a source from indexed to federated leaves
-  its old documents in the database until the next `search-index` pass, which
-  prunes them because the federated extractor emits none.
-* Paperless permissions. Because Search now uses the Paperless API, results are
-  subject to the permission filter Paperless applies for the `search-service`
+  Switching a source from indexed to federated leaves its old documents in
+  the database until the next `search-index` pass, which prunes them because
+  the federated extractor emits none.
+* Paperless. Search reads every document's stored text and details from
+  `http://127.0.0.1:<port>/api/documents/` and indexes them (source type
+  `paperless-documents`), so documents share ranking, related passages and
+  reranking with every other source. Paperless has already read the scans;
+  nothing is recognised twice. `paperless-search-api-token.service` mints an
+  idempotent DRF token for a dedicated, view-only `search-service` local user
+  (member of `paperless-users`) and writes it to
+  `/run/paperless-search-api-token` (`root:search`, `0640`); the indexer reads
+  it each pass, so a missing token fails that source's pass and leaves its
+  indexed documents in place. The token lives in the Paperless database and is
+  regenerated on every boot, so it is never backed up. Paperless is configured
+  to accept the loopback Host header via
+  `repo.paperless.additionalAllowedHosts`. This replaced querying Paperless's
+  own index at request time (`paperless-api`, still supported), which kept its
+  documents out of that ranking; the indexed copy is a few hundred kilobytes.
+* Paperless permissions. Because Search uses the Paperless API, what it indexes
+  is subject to the permission filter Paperless applies for the `search-service`
   user. Documents owned by (or shared only with) another account will not appear
   to Search. The service user is a member of `paperless-users` (global view
   permissions) but is deliberately not a superuser, so a leaked token cannot

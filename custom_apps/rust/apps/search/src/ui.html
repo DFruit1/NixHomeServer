@@ -299,7 +299,7 @@ const resultsEl = el('results');
 const statusEl = el('status');
 const controls = { source: sourceEl, kind: el('kind'), type: typeEl, owner: ownerEl, author: el('author'), creator: el('creator'), tag: el('tag'), series: el('series'), year: el('year'), after: afterEl, before: beforeEl };
 const filterLabels = { source: 'Source', kind: 'Content', type: 'Format', owner: 'Owner', author: 'Author', creator: 'Author/sender', tag: 'Tag', series: 'Series', year: 'Year', after: 'From', before: 'To' };
-const kindLabels = { email: 'Email', document: 'Document', book: 'Book', 'web-page': 'Web page', 'zim-article': 'Kiwix pages', 'zim-archive': 'Kiwix collection titles', video: 'Video', movie: 'Movies', episode: 'TV episodes', audiobook: 'Audiobook' };
+const kindLabels = { email: 'Email', document: 'Document', book: 'Book', 'web-page': 'Web page', 'zim-article': 'Kiwix pages', 'zim-archive': 'Kiwix collection titles', video: 'Video', movie: 'Movies', episode: 'TV episodes', audiobook: 'Audiobook', podcast: 'Podcast', photo: 'Photo', transcript: 'Transcript' };
 if (window.SEARCH_ONLINE_PAPERS) kindLabels['online-paper'] = 'Online papers';
 const formatLabels = { 'message/rfc822': 'Email', 'application/pdf': 'PDF', 'text/html': 'Web page', 'application/epub+zip': 'EPUB', 'text/plain': 'Text', 'video/mp4': 'MP4 video', 'video/x-matroska': 'MKV video', 'audio/mpeg': 'MP3 audio', 'audio/mp4': 'MP4 audio' };
 const INTENT_KEYS = ['kind', 'creator', 'after', 'before', 'sort'];
@@ -730,7 +730,7 @@ function metadataValue(value) {
   return String(value).trim();
 }
 function metadataLabel(key) {
-  return ({entry_path: 'Article path', page_count: 'Pages', file: 'File name', from: 'From', to: 'To', cc: 'Cc', series_index: 'Series number', engines: 'Search engines', audio_languages: 'Audio', subtitle_languages: 'Subtitles', community_rating: 'Rating', rated: 'Rated', writers: 'Written by'})[key]
+  return ({entry_path: 'Article path', page_count: 'Pages', file: 'File name', from: 'From', to: 'To', cc: 'Cc', series_index: 'Series number', engines: 'Search engines', audio_languages: 'Audio', subtitle_languages: 'Subtitles', community_rating: 'Rating', rated: 'Rated', writers: 'Written by', directors: 'Directed by', matched: 'Matched by'})[key]
     || key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
 }
 function updateResultNode(item, hit) {

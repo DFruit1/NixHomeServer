@@ -318,6 +318,10 @@ pub(crate) async fn run_index() -> Result<(), String> {
         .sources
         .iter()
         .filter(|s| !crate::config::is_federated(&s.source_type))
+        // A photo's record is a line of place and date: nothing to find by
+        // meaning, and tens of thousands of them. Pictures are found by what
+        // they show through the photo library's own image model.
+        .filter(|s| s.source_type != "immich")
         .map(|s| s.id.clone())
         .collect();
     // Remove vectors for deleted documents and disabled integrations first.

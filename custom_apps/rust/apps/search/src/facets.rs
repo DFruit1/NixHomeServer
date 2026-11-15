@@ -27,9 +27,9 @@ const AUTHOR_KEYS: [&str; 8] = [
     "correspondent",
 ];
 /// Metadata keys that identify a category label.
-const TAG_KEYS: [&str; 2] = ["tags", "genres"];
+const TAG_KEYS: [&str; 3] = ["tags", "genres", "people"];
 /// Metadata keys that identify a collection or series of works.
-const SERIES_KEYS: [&str; 2] = ["series", "feed"];
+const SERIES_KEYS: [&str; 3] = ["series", "feed", "albums"];
 
 /// Keeps a runaway metadata list (e.g. a long mail thread's recipients) from
 /// bloating a Solr document's facet fields.

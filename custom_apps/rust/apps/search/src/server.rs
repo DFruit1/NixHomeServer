@@ -989,6 +989,13 @@ fn runtime_source_in_scope(
             "kiwix" => filters.created_after.is_none() && filters.created_before.is_none(),
             // Kind is applied after sampling so its facet exposes alternatives.
             "paperless-api" => true,
+            // Photos are also indexed by place, date and people. The image
+            // model answers any words with its nearest pictures, so it is
+            // asked only when the search is about photos.
+            "immich" => {
+                filters.kind.as_deref() == Some("photo")
+                    || filters.source.as_deref() == Some(&source.id)
+            }
             _ => false,
         }
 }
@@ -1021,6 +1028,8 @@ async fn federate_runtime_sources(
                     filters.wiki_full_text,
                     filters.matches_kind("zim-article")
                 )
+            } else if source.source_type == "immich" {
+                format!("immich\u{1f}{}\u{1f}{query}", source.id)
             } else {
                 format!("paperless\u{1f}{}\u{1f}{filters:?}\u{1f}{query}", source.id)
             };
@@ -1028,6 +1037,22 @@ async fn federate_runtime_sources(
                 return (source.id.clone(), Ok(cached.as_ref().clone()));
             }
             let operation = async {
+                if source.source_type == "immich" {
+                    // Browsing by filter alone has no words to look for.
+                    if query == "*:*" {
+                        return Ok(LiveResults::default());
+                    }
+                    return crate::extract::immich::visual_search(
+                        &state.inner.paperless_http,
+                        &source,
+                        query,
+                    )
+                    .await
+                    .map(|hits| LiveResults {
+                        hits,
+                        ..Default::default()
+                    });
+                }
                 if query == "*:*"
                     && !filters.matches_kind(if source.source_type == "kiwix" {
                         "zim-article"

@@ -4,6 +4,7 @@ pub mod calibre;
 pub mod document;
 pub mod files;
 pub mod freshrss;
+pub mod immich;
 pub mod kiwix;
 pub mod mail;
 pub mod media_snapshot;
@@ -153,6 +154,9 @@ pub(crate) fn append_search_metadata(body: &mut String, metadata: &Value) {
         "directors",
         "cast",
         "characters",
+        "people",
+        "albums",
+        "place",
         "from",
         "to",
         "cc",
@@ -339,6 +343,7 @@ pub fn run(
         "paperless" => Box::new(paperless::PaperlessExtractor {
             pdftotext: settings.pdftotext.clone(),
         }),
+        "immich" => Box::new(immich::ImmichExtractor),
         "files" => Box::new(files::FilesExtractor {
             pdftotext: settings.pdftotext.clone(),
         }),

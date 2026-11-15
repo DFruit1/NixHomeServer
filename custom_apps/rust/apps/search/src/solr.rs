@@ -75,6 +75,9 @@ fn kind_words(kind: &str, content_type: &str) -> &'static str {
         ("movie", _) => "movie film video",
         ("episode", _) => "episode tv television show series video",
         ("video", _) => "video",
+        ("photo", _) => "photo picture image",
+        ("podcast", _) => "podcast episode audio",
+        ("transcript", _) => "transcript recording",
         ("audiobook", _) => "audiobook audio book",
         ("book", "application/pdf") => "book ebook pdf",
         ("book", "application/epub+zip") => "book ebook epub",
@@ -901,7 +904,7 @@ impl SolrClient {
         // everything; between comparable matches, prefer mail written to a
         // person. They stay findable and filterable as "Mailing list".
         let boost = format!(
-            "product({},if(query($mailingList),{MAILING_LIST_SCORE_FACTOR},1))",
+            "product({},if(query($mailingList),{MAILING_LIST_SCORE_FACTOR},1),if(query($photos),{PHOTO_SCORE_FACTOR},1))",
             coherence
                 .as_ref()
                 .map(|_| {
@@ -942,6 +945,7 @@ impl SolrClient {
             // scattered is demoted rather than excluded.
             ("boost", boost),
             ("mailingList", "mailing_list_b:true".to_string()),
+            ("photos", "kind_s:photo".to_string()),
             ("rows", rows.to_string()),
             ("start", offset.to_string()),
             // Identical copies share a content signature; show the best one
@@ -1241,6 +1245,12 @@ const COHERENCE_SLOP: usize = 50;
 /// visible so a long document that discusses the ideas in separate sections is
 /// not lost, but it ranks behind documents that discuss them together.
 const INCOHERENT_SCORE_FACTOR: f32 = 0.3;
+
+/// Score kept by a photograph. Its record is a few words of place and date, so
+/// it scores like a perfect short document for any town or month; halving it
+/// puts written material about the same subject first. Restricting a search
+/// to photos removes the competition, so nothing is lost there.
+const PHOTO_SCORE_FACTOR: f32 = 0.5;
 
 /// Score kept by mail sent through a mailing list or subscription.
 const MAILING_LIST_SCORE_FACTOR: f32 = 0.7;

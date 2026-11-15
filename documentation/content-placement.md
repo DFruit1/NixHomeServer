@@ -18,7 +18,7 @@ The short rule:
 Paperless is the filing cabinet. It is for documents that arrive or get scanned,
 that are short relative to a book, and that you retrieve by searching a phrase,
 a correspondent, or a date. It owns OCR and its own document index, and the
-unified Search app federates Paperless results at query time.
+unified Search app indexes the text Paperless stored for each document.
 
 Put these in Paperless:
 
@@ -134,9 +134,11 @@ How to add:
 
 ## Search coverage
 
-Unified Search (`search.<domain>`) currently indexes: Paperless (live-federated
-via its API), Calibre-Web (full-text), Kiwix ZIMs, Browsertrix web archives,
-the mail archive, FreshRSS entries, and the Jellyfin, Audiobookshelf, and Kavita
+Unified Search (`search.<domain>`) currently indexes: Paperless (its stored
+text, read through its API), Calibre-Web (full-text, in sections), Kiwix ZIMs,
+Browsertrix web archives, the mail archive, FreshRSS entries, each person's
+`_Files` documents and `_Transcripts`, Immich photos (place, date, albums,
+people and recognised text), and the Jellyfin, Audiobookshelf, and Kavita
 libraries (metadata snapshots exported by Media Manager). Kavita results carry
 catalog metadata (title, series, authors, genres, tags, description) rather
 than page text, so keep using Kavita's own reader search and OPDS feeds when you

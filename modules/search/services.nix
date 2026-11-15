@@ -314,6 +314,7 @@ in
             sourceType = lib.mkOption {
               type = lib.types.enum [
                 "files"
+                "immich"
                 "paperless"
                 "paperless-api"
                 "paperless-documents"
