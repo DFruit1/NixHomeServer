@@ -1,13 +1,12 @@
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config.js';
 import { Database } from '../db.js';
 import {
   JobQueue,
-  audioChapterSpecs,
-  buildAudioChapterFfmpegArgs,
   chapterGateFor,
   normalizeCreateJobRequest,
   validateDownloadUrl,
@@ -17,6 +16,8 @@ import {
 import type { CreateJobRequest, CurrentUser, ProbeResponse } from '../../shared/types.js';
 
 let tempDir = '';
+
+const HAS_FFMPEG = spawnSync('ffmpeg', ['-version']).status === 0 && spawnSync('ffprobe', ['-version']).status === 0;
 
 const request: CreateJobRequest = {
   url: 'https://www.youtube.com/watch?v=fiwd5hMQsEU',
@@ -236,15 +237,15 @@ describe('queue alerts', () => {
   });
 
   it('identifies chapter confirmation and no-chapter downgrade cases', () => {
-    expect(chapterGateFor({ ...request, splitChapters: false }, { ...source, chapters: [{ index: 1, title: 'Intro', startTime: 0 }] })).toBe(
-      'alert',
-    );
+    const one = [{ index: 1, title: 'Intro', startTime: 0 }];
+    const two = [...one, { index: 2, title: 'Main', startTime: 30 }];
+    expect(chapterGateFor({ ...request, splitChapters: false }, { ...source, chapters: two })).toBe('alert');
     expect(chapterGateFor({ ...request, splitChapters: true }, source)).toBe('single-file');
+    // One chapter is the whole item: nothing to split and nothing to ask.
+    expect(chapterGateFor({ ...request, splitChapters: true }, { ...source, chapters: one })).toBe('single-file');
+    expect(chapterGateFor({ ...request, splitChapters: false }, { ...source, chapters: one })).toBe('download');
     expect(
-      chapterGateFor(
-        { ...request, splitChapters: false, chaptersConfirmed: true },
-        { ...source, chapters: [{ index: 1, title: 'Intro', startTime: 0 }] },
-      ),
+      chapterGateFor({ ...request, splitChapters: false, chaptersConfirmed: true }, { ...source, chapters: two }),
     ).toBe('download');
   });
 
@@ -313,75 +314,6 @@ describe('queue alerts', () => {
     expect(() => validateDownloadUrl('https://www.youtube.com/@example/videos')).not.toThrow();
     expect(() => validateDownloadUrl('https://www.youtube.com/channel/UC1234567890')).not.toThrow();
   });
-
-  it('derives audio chapter durations from explicit and adjacent chapter boundaries', () => {
-    expect(
-      audioChapterSpecs({
-        ...source,
-        durationSeconds: 180,
-        chapters: [
-          { index: 1, title: 'One', startTime: 0, endTime: 60 },
-          { index: 2, title: 'Two', startTime: 60 },
-          { index: 3, title: 'Three', startTime: 125 },
-        ],
-      }).map(({ start, duration }) => ({ start, duration })),
-    ).toEqual([
-      { start: 0, duration: 60 },
-      { start: 60, duration: 65 },
-      { start: 125, duration: 55 },
-    ]);
-  });
-
-  it('re-encodes split flac chapters so duration metadata is regenerated', () => {
-    const args = buildAudioChapterFfmpegArgs({
-      input: '/tmp/source.flac',
-      output: '/tmp/01 - Intro.flac',
-      chapter: { index: 1, title: 'Intro', startTime: 0, endTime: 30 },
-      start: 0,
-      duration: 30,
-      audioFormat: 'flac',
-    });
-
-    expect(args).toContain('-t');
-    expect(args).toContain('30.000');
-    expect(args).toContain('flac');
-    expect(args).not.toContain('copy');
-    expect(args).toContain('-map_chapters');
-    expect(args).toContain('-1');
-  });
-
-  it('embeds cover art into supported split audio chapter formats when a cover is available', () => {
-    const args = buildAudioChapterFfmpegArgs({
-      input: '/tmp/source.mp3',
-      output: '/tmp/01 - Intro.mp3',
-      chapter: { index: 1, title: 'Intro', startTime: 0, endTime: 30 },
-      start: 0,
-      duration: 30,
-      audioFormat: 'mp3',
-      coverPath: '/tmp/cover.jpg',
-    });
-
-    expect(args).toContain('/tmp/cover.jpg');
-    expect(args).toContain('1:v:0');
-    expect(args).toContain('attached_pic');
-    expect(args).not.toContain('-vn');
-  });
-
-  it('omits cover art mapping for unsupported split audio chapter formats', () => {
-    const args = buildAudioChapterFfmpegArgs({
-      input: '/tmp/source.opus',
-      output: '/tmp/01 - Intro.opus',
-      chapter: { index: 1, title: 'Intro', startTime: 0, endTime: 30 },
-      start: 0,
-      duration: 30,
-      audioFormat: 'opus',
-      coverPath: '/tmp/cover.jpg',
-    });
-
-    expect(args).not.toContain('/tmp/cover.jpg');
-    expect(args).not.toContain('1:v:0');
-    expect(args).toContain('-vn');
-  });
 });
 
 describe('queue output layout', () => {
@@ -435,21 +367,43 @@ process.stdout.write('[download] 100% of 1MiB\\n');
     await db.close();
   });
 
-  it('embeds chapter covers but never copies the folder-level cover into the library', async () => {
+  describe.runIf(HAS_FFMPEG)('with a real chapter split', () => {
+    let fixtures = '';
+
+    beforeAll(async () => {
+      fixtures = await mkdtemp(path.join(os.tmpdir(), 'youtube-downloader-split-fixture-'));
+      const ffmpeg = (args: string[]) => {
+        const result = spawnSync('ffmpeg', ['-nostdin', '-v', 'error', '-y', ...args]);
+        if (result.status !== 0) {
+          throw new Error(String(result.stderr));
+        }
+      };
+      ffmpeg(['-f', 'lavfi', '-i', 'sine=f=440:d=4', '-c:a', 'flac', path.join(fixtures, 'source.flac')]);
+      ffmpeg(['-f', 'lavfi', '-i', 'color=red:s=64x64', '-frames:v', '1', path.join(fixtures, 'thumb.jpg')]);
+    });
+
+    afterAll(async () => {
+      await rm(fixtures, { recursive: true, force: true });
+    });
+
     const chapterProbe = JSON.stringify({
       id: 'abc123',
       title: 'Test Song',
       channel: 'Test Channel',
       upload_date: '20260101',
-      duration: 60,
+      duration: 4,
       chapters: [
-        { title: 'Intro', start_time: 0, end_time: 30 },
-        { title: 'Main', start_time: 30, end_time: 60 },
+        { title: 'Intro', start_time: 0, end_time: 2 },
+        { title: 'Main', start_time: 2, end_time: 4 },
       ],
       _type: 'video',
     });
-    const fake = await writeFakeYtDlp(`
-import { writeFileSync } from 'node:fs';
+
+    // Stands in for yt-dlp: the probe JSON, then a real FLAC download with its
+    // thumbnail, info.json and (when asked for) transcripts beside it.
+    const fakeDownloader = () =>
+      writeFakeYtDlp(`
+import { copyFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 if (args.includes('--dump-single-json')) {
   process.stdout.write(${JSON.stringify(chapterProbe)});
@@ -457,30 +411,35 @@ if (args.includes('--dump-single-json')) {
 }
 const template = args[args.indexOf('-o') + 1];
 const media = template.replace('%(ext)s', 'flac');
-writeFileSync(media, 'audio');
-writeFileSync(media.replace(/\\.flac$/, '.jpg'), 'thumb');
+copyFileSync(process.env.SPLIT_FIXTURES + '/source.flac', media);
+copyFileSync(process.env.SPLIT_FIXTURES + '/thumb.jpg', media.replace(/\\.flac$/, '.jpg'));
 writeFileSync(media.replace(/\\.flac$/, '.info.json'), '{}');
+if (args.includes('--write-subs')) {
+  writeFileSync(media.replace(/\\.flac$/, '.en-orig.srt'), '1\\n00:00:00,000 --> 00:00:01,000\\ntranscript\\n');
+  writeFileSync(media.replace(/\\.flac$/, '.en.srt'), '1\\n00:00:00,000 --> 00:00:01,000\\ntranscript\\n');
+}
 process.stdout.write('[download] 100% of 1MiB\\n');
 `);
 
-    const binDir = path.join(tempDir, 'bin');
-    await mkdir(binDir, { recursive: true });
-    const fakeFfmpeg = path.join(binDir, 'ffmpeg');
-    await writeFile(
-      fakeFfmpeg,
-      `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nconst args = process.argv.slice(2);\nwriteFileSync(args[args.length - 1], 'audio');\n`,
-    );
-    await chmod(fakeFfmpeg, 0o755);
-    const originalPath = process.env.PATH;
-    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ''}`;
+    const runSplitJob = async (overrides: Partial<CreateJobRequest>) => {
+      process.env.SPLIT_FIXTURES = fixtures;
+      const fake = await fakeDownloader();
+      const db = new Database(path.join(tempDir, 'state.sqlite'));
+      await db.migrate();
+      const queue = new JobQueue({ ...config(), concurrency: 1, ytDlpPath: fake }, db);
+      try {
+        await queue.start();
+        const id = await queue.enqueue(user, { ...request, splitChapters: true, chaptersConfirmed: true, ...overrides });
+        // Real ffmpeg runs four passes over the file.
+        return await waitForJobStatus(db, id, 'completed', 30_000);
+      } finally {
+        await queue.stop(0);
+        await db.close();
+      }
+    };
 
-    const db = new Database(path.join(tempDir, 'state.sqlite'));
-    await db.migrate();
-    const queue = new JobQueue({ ...config(), concurrency: 1, ytDlpPath: fake }, db);
-    try {
-      await queue.start();
-      const id = await queue.enqueue(user, { ...request, splitChapters: true, chaptersConfirmed: true });
-      const job = await waitForJobStatus(db, id, 'completed');
+    it('files verified chapter files with embedded covers and keeps the thumbnail only in the metadata folder', async () => {
+      const job = await runSplitJob({});
 
       // A chapter split gets its own folder inside the channel folder.
       const outputFolder = job.outputFolder ?? '';
@@ -488,97 +447,47 @@ process.stdout.write('[download] 100% of 1MiB\\n');
       const names = (await readdir(outputFolder)).sort();
       expect(names).toEqual(['.youtube-downloader', '01 - Intro.flac', '02 - Main.flac', 'Test Song.info.json']);
       expect([...job.files].sort()).toEqual(names.slice(1));
+      const cover = spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'stream_disposition=attached_pic', '-of', 'csv=p=0', path.join(outputFolder, '01 - Intro.flac')]);
+      expect(String(cover.stdout)).toContain('1');
 
-      // The thumbnail the library leaves out is archived with a manifest that
-      // ties each chapter file to its chapter, so the split can be undone.
+      // The manifest ties each chapter file to its chapter and records the
+      // original's streams, so the split can be joined back exactly.
       const metadata = path.join(outputFolder, '.youtube-downloader');
       expect((await readdir(metadata)).sort()).toEqual(['.nomedia', 'abc123.jpg', 'abc123.json']);
       const manifest = JSON.parse(await readFile(path.join(metadata, 'abc123.json'), 'utf8'));
       expect(manifest.chapters).toEqual([
-        { index: 1, title: 'Intro', startTime: 0, endTime: 30 },
-        { index: 2, title: 'Main', startTime: 30, endTime: 60 },
+        { index: 1, title: 'Intro', startTime: 0, endTime: 2 },
+        { index: 2, title: 'Main', startTime: 2, endTime: 4 },
       ]);
-      expect(manifest.files).toEqual([
-        { path: 'Test Song.info.json', role: 'info-json' },
-        { path: '01 - Intro.flac', role: 'chapter', chapter: 1 },
-        { path: '02 - Main.flac', role: 'chapter', chapter: 2 },
+      expect(manifest.files.map(({ path: file, role, chapter }: { path: string; role: string; chapter?: number }) => ({ file, role, chapter }))).toEqual([
+        { file: 'Test Song.info.json', role: 'info-json', chapter: undefined },
+        { file: '01 - Intro.flac', role: 'chapter', chapter: 1 },
+        { file: '02 - Main.flac', role: 'chapter', chapter: 2 },
       ]);
-      expect(manifest.state).toMatchObject({ folder: 'Test Channel/Test Song', layout: 'channel-video', split: true, coverEmbedded: true });
-      expect(manifest.thumbnail).toBe('.youtube-downloader/abc123.jpg');
-    } finally {
-      process.env.PATH = originalPath;
-      await queue.stop(0);
-      await db.close();
-    }
-  });
-
-  it('carries transcript sidecars across chapter splitting, which only relocates media', async () => {
-    const chapterProbe = JSON.stringify({
-      id: 'abc123',
-      title: 'Test Song',
-      channel: 'Test Channel',
-      upload_date: '20260101',
-      duration: 60,
-      chapters: [
-        { title: 'Intro', start_time: 0, end_time: 30 },
-        { title: 'Main', start_time: 30, end_time: 60 },
-      ],
-      _type: 'video',
+      // The cut falls on the first FLAC frame (4096 samples) at or after 2 s.
+      expect(manifest.files[2].start).toBeGreaterThanOrEqual(2);
+      expect(manifest.files[2].start).toBeLessThan(2.1);
+      expect(manifest.state).toEqual({ split: true, coverEmbedded: true });
+      expect(manifest.original).toMatchObject({ extension: '.flac', method: 'stream-copy', streams: [{ type: 'audio', codec: 'flac' }] });
+      expect(manifest.original.streams[0].packetMd5).toMatch(/^[0-9a-f]{32}$/);
+      expect(manifest.hasThumbnail).toBe(true);
     });
-    const fake = await writeFakeYtDlp(`
-import { writeFileSync } from 'node:fs';
-const args = process.argv.slice(2);
-if (args.includes('--dump-single-json')) {
-  process.stdout.write(${JSON.stringify(chapterProbe)});
-  process.exit(0);
-}
-if (!args.includes('--write-subs')) {
-  process.stderr.write('expected subtitle flags\\n');
-  process.exit(1);
-}
-const template = args[args.indexOf('-o') + 1];
-const media = template.replace('%(ext)s', 'flac');
-writeFileSync(media, 'audio');
-// Subtitle sidecars are written beside the media in the temp root, exactly as
-// yt-dlp does before its chapter splitter runs.
-writeFileSync(media.replace(/\\.flac$/, '.en-orig.srt'), '1\\n00:00:00,000 --> 00:00:01,000\\ntranscript\\n');
-writeFileSync(media.replace(/\\.flac$/, '.en.srt'), '1\\n00:00:00,000 --> 00:00:01,000\\ntranscript\\n');
-process.stdout.write('[download] 100% of 1MiB\\n');
-`);
 
-    const binDir = path.join(tempDir, 'bin');
-    await mkdir(binDir, { recursive: true });
-    const fakeFfmpeg = path.join(binDir, 'ffmpeg');
-    await writeFile(
-      fakeFfmpeg,
-      `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nconst args = process.argv.slice(2);\nwriteFileSync(args[args.length - 1], 'audio');\n`,
-    );
-    await chmod(fakeFfmpeg, 0o755);
-    const originalPath = process.env.PATH;
-    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ''}`;
-
-    const db = new Database(path.join(tempDir, 'state.sqlite'));
-    await db.migrate();
-    const queue = new JobQueue({ ...config(), concurrency: 1, ytDlpPath: fake }, db);
-    try {
-      await queue.start();
-      const id = await queue.enqueue(user, {
-        ...request,
-        splitChapters: true,
-        chaptersConfirmed: true,
-        downloadTranscript: true,
-      });
-      const job = await waitForJobStatus(db, id, 'completed');
+    it('carries transcript sidecars across chapter splitting, which only relocates media', async () => {
+      const job = await runSplitJob({ downloadTranscript: true });
 
       const outputFolder = job.outputFolder ?? '';
       const names = (await readdir(outputFolder)).sort();
-      expect(names).toEqual(['.youtube-downloader', '01 - Intro.flac', '02 - Main.flac', 'Test Song.en-orig.srt', 'Test Song.en.srt']);
+      expect(names).toEqual([
+        '.youtube-downloader',
+        '01 - Intro.flac',
+        '02 - Main.flac',
+        'Test Song.en-orig.srt',
+        'Test Song.en.srt',
+        'Test Song.info.json',
+      ]);
       expect([...job.files].sort()).toEqual(names.slice(1));
-    } finally {
-      process.env.PATH = originalPath;
-      await queue.stop(0);
-      await db.close();
-    }
+    });
   });
 });
 
@@ -594,11 +503,14 @@ const waitForFile = async (file: string): Promise<void> => {
   throw new Error(`timed out waiting for ${file}`);
 };
 
-const waitForJobStatus = async (db: Database, id: string, status: string) => {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+const waitForJobStatus = async (db: Database, id: string, status: string, timeoutMs = 1000) => {
+  for (let attempt = 0; attempt < timeoutMs / 10; attempt += 1) {
     const job = await db.getJob(id);
     if (job?.status === status) {
       return job;
+    }
+    if (job?.status === 'failed' && status !== 'failed') {
+      throw new Error(`job ${id} failed: ${job.error ?? 'no error recorded'}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }

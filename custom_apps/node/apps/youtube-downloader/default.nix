@@ -53,6 +53,9 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     pnpm
     pnpmConfigHook
     makeWrapper
+    # The check phase splits and rejoins real media to prove chapter splits
+    # are lossless (`chapter-split.test.ts`); the service gets its own ffmpeg.
+    pkgs.ffmpeg-headless
   ];
 
   CI = "true";

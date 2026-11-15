@@ -22,7 +22,7 @@ const baseRequest = {
 
 describe('yt-dlp argv generation', () => {
   it('generates flac extraction without shell interpolation', () => {
-    const args = buildDownloadArgs(baseRequest, '/tmp/out.%(ext)s', '/tmp/ch/%(section_title)s.%(ext)s');
+    const args = buildDownloadArgs(baseRequest, '/tmp/out.%(ext)s');
     expect(args).toContain('-x');
     expect(args[0]).toBe('--no-config');
     expect(args).toContain('--windows-filenames');
@@ -33,13 +33,13 @@ describe('yt-dlp argv generation', () => {
   });
 
   it('can disable embedded cover art for audio extraction', () => {
-    const args = buildDownloadArgs({ ...baseRequest, embedAudioCoverArt: false }, '/tmp/out.%(ext)s', '/tmp/ch/%(section_title)s.%(ext)s');
+    const args = buildDownloadArgs({ ...baseRequest, embedAudioCoverArt: false }, '/tmp/out.%(ext)s');
     expect(args).not.toContain('--embed-thumbnail');
     expect(args).toContain('--write-thumbnail');
   });
 
   it('downloads one converted source file for audio chapter splitting', () => {
-    const args = buildDownloadArgs({ ...baseRequest, splitChapters: true }, '/tmp/out.%(ext)s', '/tmp/ch/%(section_title)s.%(ext)s');
+    const args = buildDownloadArgs({ ...baseRequest, splitChapters: true }, '/tmp/out.%(ext)s');
     expect(args).not.toContain('--split-chapters');
     expect(args).toContain('-x');
     expect(args).toContain('--audio-format');
@@ -47,7 +47,7 @@ describe('yt-dlp argv generation', () => {
     expect(args).toContain('--embed-chapters');
   });
 
-  it('generates split chapter output arguments for video', () => {
+  it('leaves video chapter splitting to the lossless splitter', () => {
     const args = buildDownloadArgs(
       {
         ...baseRequest,
@@ -58,10 +58,9 @@ describe('yt-dlp argv generation', () => {
         splitChapters: true,
       },
       '/tmp/out.%(ext)s',
-      '/tmp/ch/%(section_title)s.%(ext)s',
     );
-    expect(args).toContain('--split-chapters');
-    expect(args).toContain('chapter:/tmp/ch/%(section_title)s.%(ext)s');
+    expect(args).not.toContain('--split-chapters');
+    expect(args).toContain('--embed-chapters');
   });
 
   it('generates video quality selectors', () => {
@@ -74,7 +73,6 @@ describe('yt-dlp argv generation', () => {
         videoQuality: '1080p',
       },
       '/tmp/out.%(ext)s',
-      '/tmp/ch/%(section_title)s.%(ext)s',
     );
     expect(args).toContain('bestvideo[height<=1080]+bestaudio/best[height<=1080]/best');
     expect(args).toContain('--format-sort');
@@ -83,7 +81,7 @@ describe('yt-dlp argv generation', () => {
   });
 
   it('does not request subtitles unless the transcript option is set', () => {
-    const args = buildDownloadArgs(baseRequest, '/tmp/out.%(ext)s', '/tmp/ch/%(section_title)s.%(ext)s');
+    const args = buildDownloadArgs(baseRequest, '/tmp/out.%(ext)s');
     expect(args).not.toContain('--write-subs');
     expect(args).not.toContain('--write-auto-subs');
     expect(args).not.toContain('--convert-subs');
@@ -93,7 +91,6 @@ describe('yt-dlp argv generation', () => {
     const args = buildDownloadArgs(
       { ...baseRequest, downloadTranscript: true },
       '/tmp/out.%(ext)s',
-      '/tmp/ch/%(section_title)s.%(ext)s',
     );
     expect(args).toContain('--write-subs');
     expect(args).toContain('--write-auto-subs');
@@ -115,7 +112,6 @@ describe('yt-dlp argv generation', () => {
         downloadTranscript: true,
       },
       '/tmp/out.%(ext)s',
-      '/tmp/ch/%(section_title)s.%(ext)s',
     );
     expect(args).toContain('--write-subs');
     expect(args[args.indexOf('--convert-subs') + 1]).toBe('srt');
@@ -126,7 +122,6 @@ describe('yt-dlp argv generation', () => {
     const args = buildDownloadArgs(
       { ...baseRequest, downloadTranscript: true },
       '/tmp/out.%(ext)s',
-      '/tmp/ch/%(section_title)s.%(ext)s',
       '.*-orig,en,es',
     );
     expect(args[args.indexOf('--sub-langs') + 1]).toBe('.*-orig,en,es');

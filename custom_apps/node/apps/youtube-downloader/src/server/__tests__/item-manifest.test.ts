@@ -49,9 +49,9 @@ describe('buildItemManifest', () => {
       downloadedAt: '2026-11-16T00:00:00.000Z',
       request,
       source,
-      libraryRoot: root,
       itemFolder: `${root}/Some Artist`,
       files: [`${root}/Some Artist/Live Set Part One.opus`, `${root}/Some Artist/Live Set Part One.info.json`],
+      hasThumbnail: true,
     });
 
     expect(manifest.chapters).toEqual([
@@ -59,15 +59,8 @@ describe('buildItemManifest', () => {
       { index: 2, title: 'Main', startTime: 60, endTime: 240 },
       { index: 3, title: 'Outro', startTime: 240, endTime: 300 },
     ]);
-    expect(manifest.state).toEqual({
-      destination: 'personal',
-      library: 'music',
-      folder: 'Some Artist',
-      layout: 'channel',
-      split: false,
-      splitMethod: undefined,
-      coverEmbedded: false,
-    });
+    expect(manifest.state).toEqual({ split: false, coverEmbedded: false });
+    expect(manifest.original).toBeUndefined();
     expect(manifest.files).toEqual([
       { path: 'Live Set Part One.info.json', role: 'info-json' },
       { path: 'Live Set Part One.opus', role: 'media' },
@@ -77,27 +70,33 @@ describe('buildItemManifest', () => {
     expect(manifest.download.options).not.toHaveProperty('chaptersConfirmed');
   });
 
-  it('maps each chapter file of a split to its chapter', () => {
+  it('maps each chapter file of a split to its chapter and cut points', () => {
     const folder = `${root}/Some Artist/Live Set Part One`;
+    const part = (index: number, start: number, end: number) => ({ chapter: source.chapters[index - 1], file: '', start, end });
     const manifest = buildItemManifest({
       jobId: 'job-2',
       downloadedBy: 'someone',
       downloadedAt: '2026-11-16T00:00:00.000Z',
       request: { ...request, mediaType: 'video', videoContainer: 'mkv', videoQuality: 'best', splitChapters: true },
       source,
-      libraryRoot: '/library/_Videos/_YouTube',
+      split: {
+        extension: '.mkv',
+        streams: [{ type: 'video', codec: 'h264', timeBase: '1/1000', startPts: 0, packetMd5: '0'.repeat(32) }],
+        parts: [part(1, 0, 61.2), part(2, 61.2, 241.6), part(3, 241.6, 300)],
+      },
       itemFolder: folder,
       files: [`${folder}/03 - Outro.mkv`, `${folder}/01 - Intro.mkv`, `${folder}/video.nfo`, `${folder}/poster.jpg`, `${folder}/02 - Main.mkv`],
-      thumbnail: `${folder}/${ITEM_METADATA_FOLDER}/abcdefghijk.jpg`,
+      hasThumbnail: true,
     });
 
     expect(manifest.files.filter((file) => file.role === 'chapter')).toEqual([
-      { path: '01 - Intro.mkv', role: 'chapter', chapter: 1 },
-      { path: '02 - Main.mkv', role: 'chapter', chapter: 2 },
-      { path: '03 - Outro.mkv', role: 'chapter', chapter: 3 },
+      { path: '01 - Intro.mkv', role: 'chapter', chapter: 1, start: 0, end: 61.2 },
+      { path: '02 - Main.mkv', role: 'chapter', chapter: 2, start: 61.2, end: 241.6 },
+      { path: '03 - Outro.mkv', role: 'chapter', chapter: 3, start: 241.6, end: 300 },
     ]);
-    expect(manifest.state).toMatchObject({ library: 'videos', layout: 'channel-video', split: true, splitMethod: 'stream-copy' });
-    expect(manifest.thumbnail).toBe(`${ITEM_METADATA_FOLDER}/abcdefghijk.jpg`);
+    // Video chapters rely on the folder poster rather than an embedded cover.
+    expect(manifest.state).toEqual({ split: true, coverEmbedded: false });
+    expect(manifest.original).toMatchObject({ extension: '.mkv', method: 'stream-copy' });
   });
 });
 

@@ -16,7 +16,7 @@ import {
 import { buildDownloadArgs, parseProgress, probeUrl, transcriptSubLangs } from './ytdlp.js';
 import { normalizeDownloadUrl } from '../shared/url.js';
 import type { CreateJobRequest, CurrentUser, Job, JobAlert, ProbeResponse } from '../shared/types.js';
-import { collectFiles, isMediaFile, splitAudioChapters } from './audio-chapters.js';
+import { collectFiles, findDownloadedMedia, isMediaFile, splitLosslessly, type LosslessSplit } from './chapter-split.js';
 import {
   chapterGateFor,
   normalizeCreateJobRequest,
@@ -55,7 +55,6 @@ export {
   validateRequest,
   ytDlpPathFor,
 } from './request-validation.js';
-export { audioChapterSpecs, buildAudioChapterFfmpegArgs } from './audio-chapters.js';
 
 
 export class JobQueue {
@@ -351,7 +350,7 @@ export class JobQueue {
     if (chapterGate === 'single-file') {
       request = { ...request, splitChapters: false };
       await this.db.updateRequest(job.id, request);
-      await this.db.addEvent(job.id, 'chapters', 'chapter splitting was requested, but this item has no chapters; downloading as a single file');
+      await this.db.addEvent(job.id, 'chapters', 'chapter splitting was requested, but this item has fewer than two chapters; downloading as a single file');
     }
     if (chapterGate === 'alert') {
       await rm(tempDir, { recursive: true, force: true });
@@ -385,8 +384,7 @@ export class JobQueue {
 
     const title = sanitizeSegment(source.title, 'Unknown Title');
     const baseTemplate = path.join(tempDir, `${title}.%(ext)s`);
-    const chapterTemplate = path.join(tempDir, 'chapters', '%(section_number)02d - %(section_title|Chapter)S.%(ext)s');
-    const args = buildDownloadArgs(request, baseTemplate, chapterTemplate, transcriptSubLangs(source));
+    const args = buildDownloadArgs(request, baseTemplate, transcriptSubLangs(source));
     await this.db.setStatus(job.id, 'running');
     try {
       await this.runYtDlp(job.id, ytDlpPath, args);
@@ -408,34 +406,25 @@ export class JobQueue {
     }
 
     await this.db.setStatus(job.id, 'postprocessing');
-    if (request.splitChapters && request.mediaType === 'audio') {
+    const isVideo = request.mediaType === 'video';
+    let split: LosslessSplit | undefined;
+    if (request.splitChapters) {
       await this.db.setProgress(job.id, { phase: 'postprocess' });
-      await splitAudioChapters(
-        tempDir,
-        source,
-        request.audioFormat ?? 'flac',
-        request.embedAudioCoverArt !== false,
-        {
-          isStopped: () => this.stopped,
-          onSpawn: (child) => {
-            this.postprocessing.add(child);
-            this.terminateLateChild(child);
-          },
-          onExit: (child) => this.postprocessing.delete(child),
-        },
-      );
+      split = await this.splitChapters(job.id, request, source, tempDir);
+      if (await this.abortIfCancelled(job.id, tempDir)) {
+        return;
+      }
     }
     await this.db.setProgress(job.id, { phase: 'move' });
-    const sourceDir = request.splitChapters ? path.join(tempDir, 'chapters') : tempDir;
+    const sourceDir = split ? path.join(tempDir, 'chapters') : tempDir;
     await mkdir(outputFolder, { recursive: true, mode: 0o775 });
     // Audio keeps its cover art embedded only: loose images would let music
     // apps apply one folder image to every track. Video keeps the YouTube
     // thumbnail beside the file (`<title>.jpg`), which is where Jellyfin and
     // Media Manager look, because neither reads covers embedded in MKV.
-    const isVideo = request.mediaType === 'video';
     const written = await copyDirectoryContents(sourceDir, outputFolder, { skipArtworkSidecars: !isVideo });
-    if (sourceDir !== tempDir) {
-      // Chapter splitting moved the media into the chapter subdirectory but
+    if (split) {
+      // Chapter splitting wrote the media into the chapter subdirectory but
       // left the transcripts and info.json in the temp root, so bring those
       // across too.
       written.push(...(await copyChapterSplitSidecars(tempDir, outputFolder)));
@@ -446,7 +435,7 @@ export class JobQueue {
     // Everything written so far belongs to this one item; the channel
     // folder's own metadata below is shared with the channel's other
     // downloads and stays out of the item's manifest.
-    await this.writeItemManifest(job, request, source, tempDir, safeRoot, outputFolder, [...written]);
+    await this.writeItemManifest(job, request, source, split, tempDir, outputFolder, [...written]);
     if (isVideo) {
       if (request.includeChannel) {
         const channelFolder = path.join(safeRoot, folders[0]);
@@ -503,6 +492,46 @@ export class JobQueue {
   }
 
   /**
+   * Split the downloaded file into its chapters without re-encoding (see
+   * `chapter-split.ts`). A split that cannot be made or does not verify as
+   * lossless is logged on the job, and the single file is filed instead with
+   * its chapters still embedded, so nothing is lost and it can be split later.
+   */
+  private async splitChapters(
+    jobId: string,
+    request: CreateJobRequest,
+    source: ProbeResponse,
+    tempDir: string,
+  ): Promise<LosslessSplit | undefined> {
+    try {
+      const input = await findDownloadedMedia(tempDir);
+      const embedCover = request.mediaType === 'audio' && request.embedAudioCoverArt !== false;
+      return await splitLosslessly({
+        input,
+        chapters: source.chapters,
+        outputDir: path.join(tempDir, 'chapters'),
+        workDir: path.join(tempDir, 'split-work'),
+        coverPath: embedCover ? await findThumbnail(tempDir) : undefined,
+        durationSeconds: source.durationSeconds,
+        childHooks: {
+          isStopped: () => this.stopped,
+          onSpawn: (child) => {
+            this.postprocessing.add(child);
+            this.terminateLateChild(child);
+          },
+          onExit: (child) => this.postprocessing.delete(child),
+        },
+      });
+    } catch (error) {
+      if (this.stopped) {
+        throw error;
+      }
+      await this.db.addEvent(jobId, 'chapters', `kept as one file because the chapters could not be split losslessly: ${errorMessage(error)}`);
+      return undefined;
+    }
+  }
+
+  /**
    * Record the download in the item folder's hidden metadata folder: the
    * manifest, and the original thumbnail even where the options left it out
    * of the library. A failure here is logged on the job and never fails the
@@ -512,8 +541,8 @@ export class JobQueue {
     job: Job,
     request: CreateJobRequest,
     source: ProbeResponse,
+    split: LosslessSplit | undefined,
     tempDir: string,
-    libraryRoot: string,
     itemFolder: string,
     itemFiles: string[],
   ): Promise<void> {
@@ -533,10 +562,10 @@ export class JobQueue {
         downloadedAt: new Date().toISOString(),
         request,
         source,
-        libraryRoot,
+        split,
         itemFolder,
         files: itemFiles,
-        thumbnail: archived,
+        hasThumbnail: archived != null,
       });
       await writeItemManifest(reserved.folder, reserved.stem, manifest);
     } catch (error) {

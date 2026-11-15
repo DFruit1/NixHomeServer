@@ -139,7 +139,6 @@ export const probeUrl = async (
 export const buildDownloadArgs = (
   request: CreateJobRequest,
   outputTemplate: string,
-  chapterTemplate: string,
   subLangs: string = '.*-orig,en',
 ): string[] => {
   const args = [
@@ -174,11 +173,10 @@ export const buildDownloadArgs = (
     );
   }
 
-  if (request.splitChapters && request.mediaType === 'video') {
-    args.push('--split-chapters', '-o', `chapter:${chapterTemplate}`);
-  } else {
-    args.push('--embed-chapters');
-  }
+  // Chapters are always kept in the file. A requested split is made
+  // afterwards by our own lossless splitter (`chapter-split.ts`) instead of
+  // yt-dlp's, whose keyframe cuts overlap and cannot be joined back exactly.
+  args.push('--embed-chapters');
 
   if (request.mediaType === 'audio') {
     const audioFormat: AudioFormat = request.audioFormat ?? 'flac';

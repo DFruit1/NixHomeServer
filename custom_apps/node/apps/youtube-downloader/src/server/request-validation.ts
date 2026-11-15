@@ -160,10 +160,11 @@ const ipv4FromMappedIpv6 = (hostname: string): string | undefined => {
 };
 
 export const chapterGateFor = (request: CreateJobRequest, source: ProbeResponse): 'download' | 'single-file' | 'alert' => {
-  if (request.splitChapters && source.chapters.length === 0) {
+  // A single chapter is the whole item; there is nothing to split.
+  if (request.splitChapters && source.chapters.length < 2) {
     return 'single-file';
   }
-  if (!request.splitChapters && source.chapters.length > 0 && !request.chaptersConfirmed) {
+  if (!request.splitChapters && source.chapters.length > 1 && !request.chaptersConfirmed) {
     return 'alert';
   }
   return 'download';

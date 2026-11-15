@@ -1,11 +1,11 @@
 import { cp, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isMediaFile } from './audio-chapters.js';
+import { isMediaFile, type LosslessSplit, type SplitPart, type SplitStream } from './chapter-split.js';
 import { allocateUniqueDestination, isInfoJsonSidecar, isSubtitleSidecar } from './output-move.js';
 import { dateParts, sanitizeSegment } from './paths.js';
 import { FOLDER_POSTER, VIDEO_SIDECAR } from './youtube-folders.js';
-import type { AudioFormat, CreateJobRequest, Destination, ProbeResponse } from '../shared/types.js';
+import type { AudioFormat, CreateJobRequest, ProbeResponse } from '../shared/types.js';
 
 /**
  * Every download leaves a manifest in a hidden folder beside its files. The
@@ -25,17 +25,6 @@ export const ITEM_METADATA_FOLDER = '.youtube-downloader';
 export const ITEM_MANIFEST_SCHEMA = 'youtube-downloader.item';
 export const ITEM_MANIFEST_VERSION = 1;
 
-/** Which library the files were filed under. */
-export type ManifestLibrary = 'music' | 'audiobooks' | 'videos';
-
-/**
- * How the item's folder was chosen:
- * - `channel`: flat in the channel's folder beside its other downloads;
- * - `channel-video`: in its own folder inside the channel's folder (chapter splits);
- * - `title`: in its own folder named after the video, optionally under a year.
- */
-export type ManifestLayout = 'channel' | 'channel-video' | 'title';
-
 export type ManifestFileRole =
   | 'media'
   | 'chapter'
@@ -52,7 +41,17 @@ export type ManifestFile = {
   role: ManifestFileRole;
   /** The chapter a `chapter` file holds, matching `ManifestChapter.index`. */
   chapter?: number;
+  /**
+   * Where a `chapter` file starts and ends in the original, in seconds. Cuts
+   * fall on packet (audio) or keyframe (video) boundaries, so they can sit a
+   * little after the chapter's own start time.
+   */
+  start?: number;
+  end?: number;
 };
+
+/** One coded stream of the original a split was cut from. */
+export type ManifestStream = SplitStream;
 
 export type ManifestChapter = {
   index: number;
@@ -98,27 +97,33 @@ export type ItemManifest = {
   /** Every chapter the source has, whether or not the files were split. */
   chapters: ManifestChapter[];
   /**
-   * Where and how the item is filed now. Media Manager updates this block
-   * (and `files`) whenever it splits, recombines, re-embeds or moves the item.
+   * What the files hold now. Media Manager updates this block (and `files`)
+   * whenever it splits, recombines, or embeds or removes the cover. Where the
+   * item is filed is not recorded: it is wherever this manifest is, relative
+   * to the library root, so moving the folder never makes the manifest stale.
    */
   state: {
-    destination: Destination;
-    library: ManifestLibrary;
-    /** The item folder relative to the library's YouTube root, `/`-separated. */
-    folder: string;
-    layout: ManifestLayout;
+    /** The media is one file per chapter. */
     split: boolean;
-    /**
-     * How the chapter files were cut: `stream-copy` (yt-dlp, video) keeps the
-     * original encode, `re-encode` (ffmpeg, audio) encoded each chapter again
-     * into `audioFormat`.
-     */
-    splitMethod?: 'stream-copy' | 're-encode';
+    /** The media files carry the thumbnail as embedded cover art. */
     coverEmbedded: boolean;
   };
+  /**
+   * The single file a split was cut from, present while `state.split` is set.
+   * The chapter files concatenated in chapter order hold exactly these
+   * packets (`packetMd5`); shifting each stream to start at `startPts` again
+   * restores the original's timing, so a recombination is bit-exact.
+   */
+  original?: {
+    /** File extension of the original, with the dot. */
+    extension: string;
+    method: 'stream-copy';
+    /** Video streams first, then audio, as ffmpeg's `-map 0:V? -map 0:a` orders them. */
+    streams: ManifestStream[];
+  };
   files: ManifestFile[];
-  /** The original YouTube thumbnail, relative to the item folder. */
-  thumbnail?: string;
+  /** Whether the original YouTube thumbnail is kept as `<manifest stem>.jpg` in the metadata folder. */
+  hasThumbnail: boolean;
 };
 
 /** The request fields that shape the output; one-shot confirmations are dropped. */
@@ -159,20 +164,6 @@ export const downloadOptions = (request: CreateJobRequest): DownloadOptions => {
   return options;
 };
 
-export const libraryFor = (request: CreateJobRequest): ManifestLibrary => {
-  if (request.mediaType === 'video') {
-    return 'videos';
-  }
-  return request.saveAudioToAudiobooks ? 'audiobooks' : 'music';
-};
-
-export const layoutFor = (request: CreateJobRequest): ManifestLayout => {
-  if (!request.includeChannel) {
-    return 'title';
-  }
-  return request.splitChapters ? 'channel-video' : 'channel';
-};
-
 /**
  * Chapters with every end time filled in, the way the audio splitter cuts
  * them. A chapter whose end cannot be resolved keeps only its start.
@@ -187,15 +178,18 @@ export const manifestChapters = (source: ProbeResponse): ManifestChapter[] =>
     return entry;
   });
 
-// Both splitters name chapter files `NN - <title>.<ext>` with a 1-based
-// chapter number (yt-dlp's `section_number`, and our own ffmpeg splitter).
+// The splitter names chapter files `NN - <title>.<ext>` with the chapter's
+// 1-based number (`chapterFileName`).
 const CHAPTER_FILE = /^(\d{1,4}) - /;
 
-export const classifyItemFile = (relativePath: string, split: boolean): ManifestFile => {
+export const classifyItemFile = (relativePath: string, parts: SplitPart[] | undefined): ManifestFile => {
   const name = path.posix.basename(relativePath);
   if (isMediaFile(name)) {
-    const chapter = split ? CHAPTER_FILE.exec(name)?.[1] : undefined;
-    return chapter ? { path: relativePath, role: 'chapter', chapter: Number.parseInt(chapter, 10) } : { path: relativePath, role: 'media' };
+    const chapter = parts ? CHAPTER_FILE.exec(name)?.[1] : undefined;
+    const part = chapter ? parts?.find((candidate) => candidate.chapter.index === Number.parseInt(chapter, 10)) : undefined;
+    return part
+      ? { path: relativePath, role: 'chapter', chapter: part.chapter.index, start: part.start, end: part.end }
+      : { path: relativePath, role: 'media' };
   }
   if (isSubtitleSidecar(name)) {
     return { path: relativePath, role: 'subtitle' };
@@ -218,17 +212,18 @@ export const classifyItemFile = (relativePath: string, split: boolean): Manifest
 const COVER_EMBEDDABLE_WHEN_SPLIT: AudioFormat[] = ['flac', 'm4a', 'mp3'];
 
 /** Whether the files carry the thumbnail as embedded cover art. */
-export const coverEmbeddedFor = (request: CreateJobRequest): boolean => {
+export const coverEmbeddedFor = (request: CreateJobRequest, split: boolean): boolean => {
   if (request.mediaType === 'video') {
-    return true;
+    // yt-dlp embeds it in the single file; chapter files rely on the folder's poster.
+    return !split;
   }
   if (request.embedAudioCoverArt === false) {
     return false;
   }
   const format = request.audioFormat ?? 'flac';
-  // The chapter splitter only attaches covers to formats with a picture
-  // stream; yt-dlp embeds into everything it was asked to produce but WAV.
-  return request.splitChapters ? COVER_EMBEDDABLE_WHEN_SPLIT.includes(format) : format !== 'wav';
+  // The splitter only attaches covers to formats with a picture stream;
+  // yt-dlp embeds into everything it was asked to produce but WAV.
+  return split ? COVER_EMBEDDABLE_WHEN_SPLIT.includes(format) : format !== 'wav';
 };
 
 const toPosix = (value: string): string => value.split(path.sep).join('/');
@@ -239,22 +234,20 @@ export type BuildItemManifestInput = {
   downloadedAt: string;
   request: CreateJobRequest;
   source: ProbeResponse;
-  /** The library's YouTube root the item was filed under. */
-  libraryRoot: string;
+  /** The verified split, when the media was cut into chapters. */
+  split?: LosslessSplit;
   /** The folder holding the item's files (and the metadata folder). */
   itemFolder: string;
   /** Absolute paths of the files this download wrote into `itemFolder`. */
   files: string[];
-  /** The archived thumbnail's absolute path, if one was kept. */
-  thumbnail?: string;
+  hasThumbnail: boolean;
 };
 
 export const buildItemManifest = (input: BuildItemManifestInput): ItemManifest => {
-  const { request, source } = input;
-  const split = request.splitChapters;
+  const { request, source, split } = input;
   const { year, date } = dateParts(source);
   const files = input.files
-    .map((file) => classifyItemFile(toPosix(path.relative(input.itemFolder, file)), split))
+    .map((file) => classifyItemFile(toPosix(path.relative(input.itemFolder, file)), split?.parts))
     .sort((a, b) => (a.chapter ?? 0) - (b.chapter ?? 0) || a.path.localeCompare(b.path));
   return {
     schema: ITEM_MANIFEST_SCHEMA,
@@ -284,16 +277,12 @@ export const buildItemManifest = (input: BuildItemManifestInput): ItemManifest =
     },
     chapters: manifestChapters(source),
     state: {
-      destination: request.destination,
-      library: libraryFor(request),
-      folder: toPosix(path.relative(input.libraryRoot, input.itemFolder)),
-      layout: layoutFor(request),
-      split,
-      splitMethod: split ? (request.mediaType === 'video' ? 'stream-copy' : 're-encode') : undefined,
-      coverEmbedded: coverEmbeddedFor(request),
+      split: split != null,
+      coverEmbedded: coverEmbeddedFor(request, split != null),
     },
+    original: split ? { extension: split.extension, method: 'stream-copy', streams: split.streams } : undefined,
     files,
-    thumbnail: input.thumbnail ? toPosix(path.relative(input.itemFolder, input.thumbnail)) : undefined,
+    hasThumbnail: input.hasThumbnail,
   };
 };
 
