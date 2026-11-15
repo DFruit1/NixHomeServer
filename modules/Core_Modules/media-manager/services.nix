@@ -218,15 +218,16 @@ in
       RestartSec = "5s";
       StateDirectory = "media-manager-provider";
       StateDirectoryMode = "0700";
-      RuntimeDirectory = [ "media-manager-provider" ]
-        ++ lib.optional providerSystemEnabled (builtins.baseNameOf providerSystemDir);
+      RuntimeDirectory = "media-manager-provider";
       RuntimeDirectoryMode = "0700";
       # The system socket directory admits only its client group; setgid
-      # gives the 0660 socket that group. Privileged ("+") because the broker
-      # itself is not in the group and RestrictSUIDSGID forbids setgid.
+      # gives the 0660 socket that group. It is not a RuntimeDirectory:
+      # systemd re-applies RuntimeDirectoryMode and the service group to
+      # those when the main process starts, which undid the group grant.
+      # Privileged ("+") because the broker itself is not in the group and
+      # RestrictSUIDSGID forbids setgid.
       ExecStartPre = lib.optionals providerSystemEnabled [
-        "+${pkgs.coreutils}/bin/chgrp ${cfg.providerSystemGroup} ${providerSystemDir}"
-        "+${pkgs.coreutils}/bin/chmod 2750 ${providerSystemDir}"
+        "+${pkgs.coreutils}/bin/install -d -m 2750 -o media-manager-provider -g ${cfg.providerSystemGroup} ${providerSystemDir}"
       ];
       UMask = "0077";
       NoNewPrivileges = true;
@@ -258,7 +259,8 @@ in
       Nice = 10;
       CPUWeight = 20;
       IOWeight = 20;
-      ReadWritePaths = [ cfg.providerStateDir ];
+      ReadWritePaths = [ cfg.providerStateDir ]
+        ++ lib.optional providerSystemEnabled providerSystemDir;
       SystemCallArchitectures = "native";
       SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
     };

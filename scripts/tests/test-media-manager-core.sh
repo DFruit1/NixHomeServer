@@ -125,7 +125,9 @@ jq -e '
     | unique))
   and ((.app.providerSystemClients != [])
     == ((.providerEnvironment.MEDIA_MANAGER_PROVIDER_SYSTEM_SOCKET // "") != ""))
-  and (.providerService.ReadWritePaths == ["/var/lib/media-manager-provider"])
+  and (.providerService.ReadWritePaths == (["/var/lib/media-manager-provider"] +
+    (if (.providerEnvironment.MEDIA_MANAGER_PROVIDER_SYSTEM_SOCKET // "") != ""
+    then ["/run/media-manager-provider-system"] else [] end)))
   and (.providerEnvironment.MEDIA_MANAGER_PROVIDER_ADDRESS == "127.0.0.1")
   and (.providerEnvironment.MEDIA_MANAGER_PROVIDER_PORT == "8089")
   and (.providerEnvironment.MEDIA_MANAGER_PROVIDER_STATE_DIR == "/var/lib/media-manager-provider")
