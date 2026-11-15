@@ -1033,7 +1033,6 @@ const HealthDecisionRow = component$<{
   album?: AlbumTarget;
   showFile: boolean;
   sharedReason?: boolean;
-  sharedSources?: boolean;
   multipleFiles?: boolean;
   canEdit: boolean;
   selections: HealthSelections;
@@ -1104,11 +1103,7 @@ const HealthDecisionRow = component$<{
         {currents.map((candidate, index) => (
           <HealthValueCandidate
             key={index}
-            {...candidateProps(
-              candidate,
-              "Current",
-              !props.sharedSources && !!candidate.sources.length,
-            )}
+            {...candidateProps(candidate, "Current", false)}
           />
         ))}
       </td>
@@ -1782,7 +1777,6 @@ const HealthIssueReview = component$<{
                       album={album}
                       showFile={false}
                       sharedReason={sharedReason}
-                      sharedSources={sharedSources}
                       multipleFiles={count > 1}
                       canEdit={props.canEdit}
                       selections={props.selections}
@@ -1801,7 +1795,6 @@ const HealthIssueReview = component$<{
                         entries={[entry]}
                         showFile={entries.length > 1}
                         sharedReason={sharedReason}
-                        sharedSources={sharedSources}
                         canEdit={props.canEdit}
                         selections={props.selections}
                         onApply$={props.onApply$}

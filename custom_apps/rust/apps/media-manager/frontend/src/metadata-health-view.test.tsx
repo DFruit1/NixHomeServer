@@ -143,6 +143,10 @@ it("inspects every library and every page by default and shows source values", a
   expect(screen.textContent).toContain("Current title");
   expect(screen.textContent).toContain("Proposed title");
   expect(screen.textContent).toContain("Embedded tags");
+  // The current value states no source of its own; provenance stays in prose.
+  const current = screen.querySelector(".health-issue-table .health-value");
+  expect(current?.textContent).toContain("Current title");
+  expect(current?.textContent).not.toContain("Sidecar");
   expect(
     fetchMock.mock.calls.some(([path]) => String(path).includes("cursor=next")),
   ).toBe(true);

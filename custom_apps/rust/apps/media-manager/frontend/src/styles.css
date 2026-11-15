@@ -5443,7 +5443,10 @@ a:focus-visible {
 }
 .health-issue-table tbody tr {
   display: grid;
-  grid-template-columns: minmax(0, 24fr) minmax(0, 30fr) minmax(0, 46fr);
+  /* Current and proposed are the values being read; the reason column only
+     needs room for one sentence. */
+  grid-template-columns: minmax(0, 30fr) minmax(0, 34fr) minmax(0, 36fr);
+  align-items: stretch;
 }
 .health-issue-table tbody th {
   grid-column: 1 / -1;
@@ -5476,6 +5479,17 @@ a:focus-visible {
 .health-issue-table td:last-child {
   padding-right: 0;
 }
+/* Both value columns share the row height so "Use current" and "Use proposed"
+   meet on one line below the taller of the two values. */
+.health-issue-table td.health-value {
+  display: flex;
+  flex-direction: column;
+}
+.health-candidate {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
 .health-album-scope label {
   display: flex;
   align-items: center;
@@ -5500,9 +5514,13 @@ a:focus-visible {
   line-height: 1.4;
 }
 .health-value-set {
-  display: block;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
   width: 100%;
-  padding: 0;
+  /* The box is the same whether or not this value is chosen, so a pick never
+     moves the surrounding text. */
+  padding: 8px 10px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -5515,7 +5533,8 @@ a:focus-visible {
 }
 .health-value-action {
   display: block;
-  margin-top: 4px;
+  margin-top: auto;
+  padding-top: 4px;
   color: var(--accent);
   font-size: 13px;
   font-weight: 500;
@@ -5528,7 +5547,6 @@ a:focus-visible {
   text-underline-offset: 3px;
 }
 .health-value-set.is-selected {
-  padding: 8px 10px;
   border-radius: var(--radius-control);
   background: var(--accent-wash);
   box-shadow: inset 0 0 0 1px var(--accent-line);
@@ -7620,6 +7638,7 @@ a:focus-visible {
 /* Automatic suggestions share the existing proposed-value action and evidence. */
 .health-auto-proposal {
   display: grid;
+  flex: 1 1 auto;
   gap: 8px;
   min-width: 0;
 }
