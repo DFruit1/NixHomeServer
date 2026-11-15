@@ -47,6 +47,7 @@ mod playback;
 mod refresh;
 mod subtitles;
 mod track_sequence;
+mod video_conversions;
 
 use axum::{
     body::{to_bytes, Body, Bytes},
@@ -347,6 +348,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/conversions/files", get(conversion_inputs::files))
         .route("/api/v1/comic-archives", get(comic_archives::list))
+        .route(
+            "/api/v1/video-conversions",
+            get(video_conversions::list).post(video_conversions::queue),
+        )
+        .route(
+            "/api/v1/video-conversions/{job_id}/cancel",
+            post(video_conversions::cancel),
+        )
         .route(
             "/api/v1/conversions/uploads",
             post(conversion_inputs::upload),

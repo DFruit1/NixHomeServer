@@ -1,4 +1,5 @@
 {
+  mediaManager = { label = "Sonarr"; capabilities = [ "folder-rescan" ]; };
   ports = {
     sonarr = 8989;
     oauth2ProxySonarr = 4190;

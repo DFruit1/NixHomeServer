@@ -32,4 +32,6 @@ pub mod tmdb;
 pub mod track_order;
 pub mod transcription;
 pub mod transfer;
+pub mod video_conversion;
+pub mod video_conversion_worker;
 pub mod video_probe;

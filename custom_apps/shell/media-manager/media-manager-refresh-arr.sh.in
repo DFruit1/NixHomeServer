@@ -1,0 +1,40 @@
+set -euo pipefail
+# Ask Radarr or Sonarr to rescan its library from disk, so a video Media Manager
+# replaced (for example a conversion with a new extension) is re-linked rather
+# than reported missing. Follows the command until it finishes.
+app=@NIX_APP_LABEL@
+base_url="http://@NIX_VARS_NETWORKING_LOOPBACKIPV4@:@NIX_PORT@/api/v3"
+config_xml=@NIX_CONFIG_XML_QUOTED@
+command_name=@NIX_COMMAND_QUOTED@
+[[ -f "$config_xml" && ! -L "$config_xml" ]] || {
+  echo "$app configuration is unavailable" >&2
+  exit 1
+}
+api_key="$(sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' "$config_xml" | head -n1)"
+[[ "$api_key" =~ ^[A-Za-z0-9]+$ ]] || {
+  echo "$app API key is unavailable" >&2
+  exit 1
+}
+arr_curl() {
+  printf 'header = "X-Api-Key: %s"\n' "$api_key" \
+    | curl --config - --fail --silent --show-error --max-time 30 "$@"
+}
+
+command_id="$(arr_curl -X POST -H 'Content-Type: application/json' \
+  --data "$(jq -cn --arg name "$command_name" '{name: $name}')" \
+  "$base_url/command" | jq -er '.id | select(type == "number")')"
+# A whole-library disk rescan; bounded so a wedged command cannot hold the
+# refresh dispatcher forever.
+for _ in $(seq 1 1800); do
+  status="$(arr_curl "$base_url/command/$command_id" | jq -r '.status // empty')"
+  case "$status" in
+    completed) exit 0 ;;
+    failed | aborted | cancelled | orphaned)
+      echo "$app $command_name ended with status: $status" >&2
+      exit 1
+      ;;
+  esac
+  sleep 2
+done
+echo "Timed out waiting for $app $command_name" >&2
+exit 1

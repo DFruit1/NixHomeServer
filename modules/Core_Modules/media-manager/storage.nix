@@ -14,6 +14,8 @@ let
 in
 {
   repo.storage.userRoots = {
+    # Originals of converted videos, kept in the converting user's folder.
+    contentSubdirs = [ "_Originals" ];
     rootTraverseGroups = [ "media-manager" "media-manager-broker" ];
     recursiveReadonlyGrants = [
       {
@@ -24,7 +26,7 @@ in
     recursiveWritableGrants = [
       {
         group = "media-manager-broker";
-        relativePaths = [ "_Videos" "_Music" "_Audiobooks" "_Podcasts" "_Books" ];
+        relativePaths = [ "_Videos" "_Music" "_Audiobooks" "_Podcasts" "_Books" "_Originals" ];
       }
     ];
   };
@@ -88,6 +90,7 @@ in
     "d ${cfg.stateDir} 0770 media-manager media-manager -"
     "d ${cfg.stateDir}/refresh-requests 0750 media-manager media-manager -"
     "d ${cfg.stateDir}/refresh-results 0750 media-manager media-manager -"
+    "d ${cfg.stateDir}/video-conversion-requests 2770 media-manager media-manager -"
     # Sticky, write-only for producers: they can drop hints but cannot list,
     # read or remove anyone else's. Transient by design; the periodic scan
     # covers anything lost across a reboot.

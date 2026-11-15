@@ -5,9 +5,9 @@ use media_manager::{
         apply_broker_action, apply_install_metadata_sidecar, apply_install_subtitle, apply_move,
         apply_replace_artwork, apply_replace_metadata_sidecar, discard_staged_broker_action,
         file_fingerprint, move_destination_matches, open_regular_file_beneath,
-        recover_broker_action, ArchiveEmbeddedArtworkAction, BrokerAction, InstallArtworkAction,
-        InstallMetadataSidecarAction, InstallSubtitleAction, MoveAction, ReplaceArtworkAction,
-        ReplaceEmbeddedMetadataAction, ReplaceMetadataSidecarAction,
+        recover_broker_action, ArchiveEmbeddedArtworkAction, BrokerAction, ConvertVideoAction,
+        InstallArtworkAction, InstallMetadataSidecarAction, InstallSubtitleAction, MoveAction,
+        ReplaceArtworkAction, ReplaceEmbeddedMetadataAction, ReplaceMetadataSidecarAction,
     },
     config::AppConfig,
 };
@@ -608,4 +608,129 @@ fn broker_rejects_relative_path_traversal() {
         expected: "0:0".to_string(),
     };
     assert!(apply_move(&config, "editor", &action).is_err());
+}
+
+struct VideoFixture {
+    _temp: tempfile::TempDir,
+    config: AppConfig,
+    library: std::path::PathBuf,
+    originals: std::path::PathBuf,
+    staging: std::path::PathBuf,
+}
+
+fn video_fixture(source: &str) -> VideoFixture {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let shared = temp.path().join("shared");
+    let users = temp.path().join("users");
+    let library = shared.join("_Videos/Movies");
+    let originals = users.join("editor/_Originals");
+    let staging = temp.path().join("intake/video-conversions");
+    for directory in [&library, &originals, &staging] {
+        fs::create_dir_all(directory).expect("fixture directory");
+    }
+    fs::write(library.join(source), b"original video").expect("source");
+    fs::write(staging.join("job.mkv"), b"converted video").expect("staged conversion");
+    let mut config = AppConfig::for_test(
+        shared.to_str().expect("shared path"),
+        users.to_str().expect("users path"),
+    );
+    config.conversion_staging_dir = Some(temp.path().join("intake"));
+    VideoFixture {
+        _temp: temp,
+        config,
+        library,
+        originals,
+        staging,
+    }
+}
+
+fn video_action(fixture: &VideoFixture, source: &str, replacement: &str) -> BrokerAction {
+    BrokerAction::ConvertVideo(ConvertVideoAction {
+        staging_filename: "job.mkv".into(),
+        root_id: "shared-videos".into(),
+        source_relative_path: format!("Movies/{source}"),
+        replacement_relative_path: format!("Movies/{replacement}"),
+        archived_relative_path: format!("Videos/shared-videos/Movies/{source}"),
+        expected_source: file_fingerprint(&fixture.library.join(source))
+            .expect("source fingerprint"),
+        expected_replacement: file_fingerprint(&fixture.staging.join("job.mkv"))
+            .expect("staged fingerprint"),
+    })
+}
+
+#[test]
+fn video_conversion_archives_the_original_before_replacing_it() {
+    let fixture = video_fixture("Old.avi");
+    let action = video_action(&fixture, "Old.avi", "Old.mkv");
+    apply_broker_action(&fixture.config, "editor", &action).expect("convert video");
+    let archived = fixture
+        .originals
+        .join("Videos/shared-videos/Movies/Old.avi");
+    assert_eq!(
+        fs::read(archived).expect("archived original"),
+        b"original video"
+    );
+    assert_eq!(
+        fs::read(fixture.library.join("Old.mkv")).expect("installed conversion"),
+        b"converted video"
+    );
+    assert!(!fixture.library.join("Old.avi").exists());
+    assert!(!fixture.staging.join("job.mkv").exists());
+    // A broker restart after completion recovers instead of failing.
+    assert!(recover_broker_action(&fixture.config, "editor", &action).expect("recover"));
+    apply_broker_action(&fixture.config, "editor", &action).expect("idempotent re-run");
+}
+
+#[test]
+fn in_place_video_conversion_swaps_only_the_archived_original() {
+    let fixture = video_fixture("Film.mkv");
+    let action = video_action(&fixture, "Film.mkv", "Film.mkv");
+    apply_broker_action(&fixture.config, "editor", &action).expect("convert in place");
+    assert_eq!(
+        fs::read(
+            fixture
+                .originals
+                .join("Videos/shared-videos/Movies/Film.mkv")
+        )
+        .expect("archived original"),
+        b"original video"
+    );
+    assert_eq!(
+        fs::read(fixture.library.join("Film.mkv")).expect("installed conversion"),
+        b"converted video"
+    );
+    let leftovers = fs::read_dir(&fixture.library).expect("library").count();
+    assert_eq!(
+        leftovers, 1,
+        "no temporary or original copy remains in the library"
+    );
+}
+
+#[test]
+fn video_conversion_refuses_a_changed_source_or_foreign_archive_path() {
+    let fixture = video_fixture("Old.avi");
+    let action = video_action(&fixture, "Old.avi", "Old.mkv");
+    fs::write(
+        fixture.library.join("Old.avi"),
+        b"re-downloaded video, longer",
+    )
+    .expect("change");
+    assert!(apply_broker_action(&fixture.config, "editor", &action).is_err());
+    assert!(fixture.library.join("Old.avi").exists());
+    assert!(!fixture.library.join("Old.mkv").exists());
+    assert!(fixture.staging.join("job.mkv").exists());
+
+    let fixture = video_fixture("Old.avi");
+    let BrokerAction::ConvertVideo(mut escaped) = video_action(&fixture, "Old.avi", "Old.mkv")
+    else {
+        unreachable!()
+    };
+    escaped.archived_relative_path = "Videos/elsewhere/Old.avi".into();
+    assert!(apply_broker_action(
+        &fixture.config,
+        "editor",
+        &BrokerAction::ConvertVideo(escaped)
+    )
+    .is_err());
+    assert!(fixture.library.join("Old.avi").exists());
 }

@@ -2374,15 +2374,25 @@ After guarded activation:
   unloads it on completion or failure.
 - Library embedding sends one passage per request with a ten-minute request
   budget, independently of the 90-second interactive inference deadline.
-  Limited offload can take longer than an interactive query; completed
-  passages are published progressively while document checkpoints wait for
-  the complete document.
-- The owner chose to keep chat available. Indexing therefore defaults to one
-  GPU layer, with the remaining 4B weights in RAM. No chat service is stopped
-  or reconfigured. This deliberately conservative offload may make the first
-  backfill slow. `repo.search.semantic.indexingGpuLayers` may be increased
-  only after measuring concurrent chat/reranker/indexer VRAM use. GPU headroom
-  and real-model latency still require verification on the deployed system.
+  Completed passages are published progressively while document checkpoints
+  wait for the complete document.
+- The indexing embedder runs with every layer on the GPU
+  (`repo.search.semantic.indexingGpuLayers = "all"`). Measured on the deployed
+  card on 2026-11-15: 9.3 GiB of VRAM beside chat (7.8 GiB) and the reranker
+  (4.1 GiB), leaving 2.7 GiB of 23.9 GiB for transcription; 0.6 seconds a
+  passage against 9 with one layer; vectors matching the CPU query embedder
+  (cosine 0.99996). It holds about 0.1 GiB of RAM. ggml-vulkan cannot spill a
+  failed allocation to host RAM: a pass that cannot load fails and is retried
+  by the timer, and another resident GPU model needs the budget re-measured.
+- A pass yields the GPU. Unthrottled it halved chat generation (19 to 9
+  tokens a second) and more than doubled reranking time, so before each
+  passage it reads `repo.search.semantic.indexingGpuIdleStatus` (the xe
+  `gtidle/idle_status` file: `gt-c6` idle, `gt-c0` working) and waits until
+  the GPU has been quiet for two seconds. Other GPU work therefore shares the
+  card with at most the one passage in flight, and a long transcription pauses
+  the backfill; waits over a minute are logged as `waited Ns for other GPU
+  work`. No chat service is stopped or reconfigured. A pass fails if the
+  status file cannot be read.
 
 Use `systemctl status search-embedding-query search-reranker search-embed` and
 `journalctl -u search-embed -u search-reranker -u search-embedding-query` for

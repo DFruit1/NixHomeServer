@@ -53,12 +53,27 @@ in {
       description = "Passage-level hybrid search using local Qwen3 4B embeddings and 0.6B reranking.";
     };
     indexingGpuLayers = lib.mkOption {
-      type = lib.types.ints.positive;
-      default = 1;
+      type = lib.types.either lib.types.ints.positive (lib.types.enum [ "all" ]);
+      default = "all";
       description = ''
-        Limited indexing GPU offload. Chat stays available; the F16 4B model
-        otherwise lives in RAM. Increase only after measuring simultaneous
-        chat, reranker and indexing VRAM usage. No chat allocation is changed.
+        Layers of the indexing embedder held on the GPU while a backfill pass
+        runs. Measured on the 23.9 GiB Arc Pro B60: every layer takes 9.3 GiB
+        beside chat (7.8 GiB) and the reranker (4.1 GiB), leaving 2.7 GiB for
+        transcription, and embeds a passage in 0.6s against 9s with one layer.
+        Vectors match the CPU query embedder (cosine 0.99996). ggml-vulkan
+        cannot spill a failed allocation to host RAM, so re-measure before
+        adding another resident GPU model. No chat allocation is changed.
+      '';
+    };
+    indexingGpuIdleStatus = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = "/sys/class/drm/card0/device/tile0/gt0/gtidle/idle_status";
+      description = ''
+        The xe driver's render power state. A backfill pass reads it before
+        each passage and waits while anything else is using the GPU, so chat,
+        reranking and transcription keep their speed. A pass fails when the
+        file cannot be read. Null disables yielding; pair that with a small
+        indexingGpuLayers, since an unyielding full offload halves chat speed.
       '';
     };
   };
@@ -130,7 +145,7 @@ in {
     };
     systemd.services.search-solr-core-bootstrap.environment.SEARCH_PASSAGE_CORE = "search-passages-v1";
     systemd.services.search-embed = {
-      description = "Embed pending library passages with limited GPU offload";
+      description = "Embed pending library passages on the GPU while it is otherwise idle";
       # A pass can run for hours, and activation would otherwise restart a
       # running pass and wait for the whole oneshot (TimeoutStartSec=infinity):
       # a guarded deploy then times out, and so does its rollback. Passes
@@ -145,6 +160,8 @@ in {
         SEARCH_EMBED_MODEL = embeddingModel;
         SEARCH_EMBED_INDEX_PORT = toString ports.searchEmbeddingIndex;
         SEARCH_EMBED_GPU_LAYERS = toString cfg.semantic.indexingGpuLayers;
+      } // lib.optionalAttrs (cfg.semantic.indexingGpuIdleStatus != null) {
+        SEARCH_EMBED_GPU_IDLE_STATUS = cfg.semantic.indexingGpuIdleStatus;
       };
       serviceConfig = {
         Type = "oneshot";

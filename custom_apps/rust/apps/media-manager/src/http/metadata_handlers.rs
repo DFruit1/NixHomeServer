@@ -1569,6 +1569,12 @@ async fn item_metadata_value(
     {
         health.insert(0, issue);
     }
+    if item.media_kind == MediaKind::Video
+        && let Some(probe) = video_probe_for(state, identity, item, application_caches).await
+        && let Some(issue) = super::video_conversions::playback_issue(item, &probe)
+    {
+        health.insert(0, issue);
+    }
     response["health"] = json!(health);
     response["modificationTargets"] = json!(modification_targets(
         item.media_kind,
@@ -1774,7 +1780,17 @@ pub(super) async fn metadata_issues(
         .then(|| page.last().map(|item| item.relative_path.clone()))
         .flatten();
 
-    let application_caches = ApplicationMetadataCaches::load(&state, &page).await;
+    let mut application_caches = ApplicationMetadataCaches::load(&state, &page).await;
+    if page.iter().any(|item| item.media_kind == MediaKind::Video) {
+        let state_dir = state.config.state_dir.clone();
+        let (root_id, root_path) = (root.id.clone(), root.resolved_path.clone());
+        application_caches.video_probes = tokio::task::spawn_blocking(move || {
+            VideoProbeCache::open_for_root(&state_dir, &root_id, FilePath::new(&root_path))
+        })
+        .await
+        .ok()
+        .map(Arc::new);
+    }
     let mut results = Vec::new();
     let mut inspected_items = 0usize;
     let mut issue_count = 0usize;
@@ -2367,6 +2383,34 @@ type MetadataIndex = HashMap<MetadataPathKey, Vec<usize>>;
 struct ApplicationMetadataCaches {
     caches: HashMap<&'static str, Arc<Value>>,
     indexes: HashMap<&'static str, MetadataIndex>,
+    /// The page's video probes, loaded once rather than per item.
+    video_probes: Option<Arc<VideoProbeCache>>,
+}
+
+/// The cached ffprobe result for a video, without probing on demand.
+async fn video_probe_for(
+    state: &AppState,
+    identity: &Identity,
+    item: &CatalogItem,
+    application_caches: Option<&ApplicationMetadataCaches>,
+) -> Option<VideoProbe> {
+    if let Some(cache) = application_caches.and_then(|caches| caches.video_probes.as_ref()) {
+        return cache.probe_for(&item.relative_path, &item.fingerprint);
+    }
+    let root = state.config.resolve_visible_root(identity, &item.root_id)?;
+    let state_dir = state.config.state_dir.clone();
+    let item = item.clone();
+    tokio::task::spawn_blocking(move || {
+        VideoProbeCache::open_for_root(
+            &state_dir,
+            &item.root_id,
+            FilePath::new(&root.resolved_path),
+        )
+        .probe_for(&item.relative_path, &item.fingerprint)
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 impl ApplicationMetadataCaches {
@@ -2395,7 +2439,11 @@ impl ApplicationMetadataCaches {
                 caches.insert(source.app_id(), cache);
             }
         }
-        Self { caches, indexes }
+        Self {
+            caches,
+            indexes,
+            video_probes: None,
+        }
     }
 
     /// Entry lookup by (root, owner, path): exact match first, then the

@@ -1714,6 +1714,18 @@ const HealthIssueReview = component$<{
       </header>
       <div class="health-comparison">
         {!compares && <p>{issue.message}</p>}
+        {issue.code === "video-needs-conversion" &&
+          entries.map((entry) => (
+            <a
+              key={entry.target.itemId}
+              class="health-review-link"
+              href={`?view=conversions&item=${encodeURIComponent(entry.target.itemId)}`}
+            >
+              {entries.length > 1
+                ? `Convert ${entry.target.relativePath.split("/").at(-1)}`
+                : "Convert on the Conversions page"}
+            </a>
+          ))}
         {COMIC_ARCHIVE_CODES.has(issue.code) &&
           entries.map((entry) => (
             <div key={entry.target.itemId} class="health-comic-archive">

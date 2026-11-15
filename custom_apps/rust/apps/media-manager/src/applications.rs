@@ -266,6 +266,31 @@ pub fn integration_available(config: &AppConfig, id: &str) -> bool {
         .any(|entry| entry.id == id && entry.available)
 }
 
+/// Whether a configuration-owned refresh unit exists for this integration.
+pub fn refresh_adapter_available(config: &AppConfig, integration_id: &str) -> bool {
+    if let Some(app) = applications().iter().find(|app| app.id() == integration_id) {
+        let Some(capability) = app.refresh_capability() else {
+            return false;
+        };
+        return config.integrations.iter().any(|integration| {
+            integration.id == integration_id
+                && integration.available
+                && integration
+                    .capabilities
+                    .iter()
+                    .any(|candidate| candidate.as_str() == capability)
+        });
+    }
+    config.integrations.iter().any(|integration| {
+        integration.id == integration_id
+            && integration.available
+            && integration
+                .capabilities
+                .iter()
+                .any(|capability| capability.as_str() == "folder-rescan")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

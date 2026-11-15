@@ -805,6 +805,18 @@ export const VideosView = component$<{
             a while.
           </p>
         )}
+        {state.transcodeLoading && (
+          <p class="video-conversion-hint">
+            For better loading times and device compatibility, consider
+            converting this video to another format in the{" "}
+            <a
+              href={`?view=conversions&item=${encodeURIComponent(state.selectedId)}`}
+            >
+              Conversions page
+            </a>
+            .
+          </p>
+        )}
         {state.error && (
           <p class="message error" role="alert">
             {state.error}

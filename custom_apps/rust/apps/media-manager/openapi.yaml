@@ -906,6 +906,80 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ComicArchiveList" }
         "401": { $ref: "#/components/responses/Error" }
+  /video-conversions:
+    get:
+      operationId: listVideoConversions
+      description: >-
+        Lists videos in the caller's visible video libraries whose container,
+        video or audio codec browsers cannot play (from the cached ffprobe
+        results; unprobed videos are probed in the background and counted in
+        probePending), together with the caller's conversion jobs. itemId
+        additionally returns that one video as selected even when it plays.
+      parameters:
+        - in: query
+          name: itemId
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Videos needing conversion, the offered formats and the caller's jobs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VideoConversionList" }
+        "401": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: queueVideoConversions
+      description: >-
+        Queues one conversion per video for the low-priority conversion
+        worker. When an encode is verified, the filesystem broker copies the
+        original into the caller's _Originals folder, then installs the
+        conversion beside it with the same name and the format's extension.
+        Requires editor access and enabled mutations.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [itemIds, format]
+              properties:
+                itemIds: { type: array, minItems: 1, maxItems: 500, items: { type: string } }
+                format: { $ref: "#/components/schemas/VideoConversionFormatId" }
+      responses:
+        "202":
+          description: Jobs queued, and videos that were skipped with the reason.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VideoConversionQueued" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /video-conversions/{jobId}/cancel:
+    post:
+      operationId: cancelVideoConversion
+      description: >-
+        Cancels a queued conversion immediately, or asks the worker to stop an
+        encode in progress. A conversion that is already being installed
+        cannot be cancelled.
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The job as it is now.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job: { $ref: "#/components/schemas/VideoConversionJob" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /conversions/inbox:
     get:
       operationId: listConversionInbox
@@ -3090,6 +3164,80 @@ components:
         relativePath: { type: string }
         sizeBytes: { type: integer }
         format: { type: string, enum: [zip, rar, 7z, unknown, unreadable] }
+    VideoConversionFormatId:
+      type: string
+      enum: [compatible-mp4, compatible-mkv, efficient-hevc, modern-av1]
+    VideoConversionFormat:
+      type: object
+      required: [id, extension]
+      properties:
+        id: { $ref: "#/components/schemas/VideoConversionFormatId" }
+        extension: { type: string, enum: [mp4, mkv] }
+    VideoConversionCandidate:
+      type: object
+      required: [itemId, rootId, rootLabel, relativePath, sizeBytes, reasons, audioCodecs, imageSubtitles]
+      properties:
+        itemId: { type: string }
+        rootId: { type: string }
+        rootLabel: { type: string }
+        relativePath: { type: string }
+        sizeBytes: { type: integer }
+        reasons: { type: array, items: { type: string } }
+        videoCodec: { type: string, nullable: true }
+        audioCodecs: { type: array, items: { type: string } }
+        imageSubtitles:
+          type: boolean
+          description: Picture-based subtitle tracks, which MP4 cannot hold.
+    VideoConversionJob:
+      type: object
+      required: [id, itemId, rootId, rootLabel, relativePath, format, state, createdAt, sourceBytes, archivedPath, droppedSubtitles]
+      properties:
+        id: { type: string }
+        itemId: { type: string }
+        rootId: { type: string }
+        rootLabel: { type: string }
+        relativePath: { type: string }
+        format: { $ref: "#/components/schemas/VideoConversionFormatId" }
+        state: { type: string, enum: [queued, encoding, installing, completed, failed, cancelled] }
+        createdAt: { type: integer }
+        startedAt: { type: integer, nullable: true }
+        finishedAt: { type: integer, nullable: true }
+        progress: { type: number, nullable: true }
+        error: { type: string, nullable: true }
+        sourceBytes: { type: integer }
+        outputBytes: { type: integer, nullable: true }
+        outputRelativePath: { type: string, nullable: true }
+        archivedPath:
+          type: string
+          description: Where the original is kept, relative to the user's own folder.
+        droppedSubtitles: { type: integer }
+    VideoConversionList:
+      type: object
+      required: [available, canConvert, formats, candidates, selected, jobs, probePending, truncated]
+      properties:
+        available: { type: boolean }
+        canConvert: { type: boolean }
+        formats: { type: array, items: { $ref: "#/components/schemas/VideoConversionFormat" } }
+        candidates: { type: array, items: { $ref: "#/components/schemas/VideoConversionCandidate" } }
+        selected:
+          nullable: true
+          allOf: [{ $ref: "#/components/schemas/VideoConversionCandidate" }]
+        jobs: { type: array, items: { $ref: "#/components/schemas/VideoConversionJob" } }
+        probePending: { type: integer }
+        truncated: { type: boolean }
+    VideoConversionQueued:
+      type: object
+      required: [jobs, skipped]
+      properties:
+        jobs: { type: array, items: { $ref: "#/components/schemas/VideoConversionJob" } }
+        skipped:
+          type: array
+          items:
+            type: object
+            required: [itemId, reason]
+            properties:
+              itemId: { type: string }
+              reason: { type: string }
     ComicArchiveList:
       type: object
       required: [items, truncated, conversionAvailable]

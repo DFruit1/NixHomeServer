@@ -1,0 +1,160 @@
+/* Conversions → Convert videos. Shares the comic list layout; the format
+   choice is a compact radio group whose tradeoffs show beneath it. */
+.video-formats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.video-formats legend {
+  margin-bottom: 8px;
+  padding: 0;
+  font-weight: 600;
+}
+.video-format {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  cursor: pointer;
+}
+.video-format:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-wash);
+}
+.video-format:has(input:checked) {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: var(--accent-wash);
+}
+.video-format:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.video-format input {
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+.video-format span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.video-format strong {
+  overflow-wrap: anywhere;
+}
+.video-format small {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+.video-format-details {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+.video-format-details dt {
+  color: var(--ink-soft);
+}
+.video-format-details dd {
+  margin: 0;
+  max-width: 72ch;
+}
+.video-conversions__note {
+  color: var(--ink-soft);
+  font-size: var(--text-md);
+}
+.video-conversions code {
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+.video-conversions__group {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.video-conversions__group h3 {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+.video-conversions__heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  min-height: var(--control-height);
+}
+.video-conversions__confirm {
+  display: grid;
+  gap: 8px;
+  margin-block: 4px 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--paper-recess);
+}
+.video-conversions__confirm p {
+  margin: 0;
+}
+.video-conversions .comic-conversions__list > li.video-conversions__selected {
+  margin-inline: -8px;
+  padding-inline: 8px;
+  border-radius: var(--radius-control);
+  background: var(--accent-wash);
+}
+.video-conversions__caution {
+  color: var(--warning-strong);
+}
+.video-job__status {
+  color: var(--ink);
+}
+.video-job__status--error {
+  color: var(--danger-strong);
+}
+.video-job .progress-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+}
+.video-job .progress-track {
+  flex: 1 1 auto;
+  height: 6px;
+  margin: 0;
+}
+.video-job .progress-row strong {
+  flex: none;
+  min-width: 4ch;
+  font-size: var(--text-sm);
+  text-align: right;
+}
+@media (max-width: 640px) {
+  .video-formats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .video-format-details {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .video-format-details dd + dt {
+    margin-top: 6px;
+  }
+}
+.video-conversions .quiet-copy {
+  margin: 0;
+  padding: 0;
+}

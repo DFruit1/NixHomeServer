@@ -3703,6 +3703,11 @@ a:focus-visible {
   color: var(--ink-soft);
   font-size: var(--text-sm);
 }
+.video-conversion-hint {
+  margin-top: 4px;
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+}
 .video-library {
   display: flex;
   flex-direction: column;
@@ -7265,8 +7270,13 @@ a:focus-visible {
   font-size: var(--title-lg);
 }
 .video-title p,
-.video-conversion-status {
+.video-conversion-status,
+.video-conversion-hint {
   color: rgba(246, 243, 236, 0.7);
+}
+.video-conversion-hint a {
+  color: #f2d58d;
+  text-underline-offset: 3px;
 }
 .video-player-column > .message {
   margin: 12px 8px 4px;
