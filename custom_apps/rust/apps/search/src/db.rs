@@ -398,6 +398,7 @@ pub(crate) async fn documents_by_ids(
 /// holds the inverted index, not a second stored copy of the text.
 #[derive(Debug, Clone)]
 pub struct DocumentEnrichment {
+    /// The opening of the body: all that snippets and match evidence read.
     pub body_text: String,
     pub metadata: Value,
 }
@@ -413,9 +414,12 @@ pub async fn enrich_documents(
         return Ok(HashMap::new());
     }
     let ids = ids.to_vec();
+    // Snippets and match evidence read at most the first 400,000 bytes, so a
+    // multi-megabyte book or mail thread is not fetched whole for every page.
+    // `left` counts characters, which never undercuts that byte bound.
     let rows = client
         .query(
-            "SELECT id, body_text, metadata FROM documents WHERE id = ANY($1)",
+            "SELECT id, left(body_text, 400000), metadata FROM documents WHERE id = ANY($1)",
             &[&ids],
         )
         .await

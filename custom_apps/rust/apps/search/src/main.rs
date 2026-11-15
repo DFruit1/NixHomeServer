@@ -1,4 +1,5 @@
 mod bootstrap_solr;
+mod cache;
 mod cli;
 mod config;
 mod db;

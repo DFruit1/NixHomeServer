@@ -2230,20 +2230,59 @@ and source scope remain applied.
 
 Search combines the keyword index with a separate `search-passages-v1` Solr
 core. Qwen3-Embedding-4B F16 produces normalized 2,560-dimensional vectors;
-Qwen3-Reranker-0.6B F16 reranks the leading 40 candidate documents using up to
-two passages each. Text stays in PostgreSQL; the vector core stores offsets,
-vectors and filter metadata. Passages overlap, respect paragraph boundaries
-where possible, and cover the whole document. Input byte limits leave room
-for titles and the model's query/reranking templates.
+Qwen3-Reranker-0.6B F16 reorders the leading candidate documents. Text stays
+in PostgreSQL; the vector core stores offsets, vectors and filter metadata.
+Passages overlap, respect paragraph boundaries where possible, and cover the
+whole document. Input byte limits leave room for titles and the model's
+query/reranking templates.
 
-Plain broad queries of up to 256 characters use rank fusion over up to 100
-keyword and 100 semantic candidate documents. Pagination slices that bounded
-window; it does not enumerate every semantically related item. Search coverage
-states the sample limit and that library facet counts remain keyword counts.
+Plain broad queries of up to 256 characters use rank fusion over the leading
+100 keyword matches and the documents whose passages are close to the query
+(`semantic.rs`):
+
+- **Related passages.** A passage is a candidate only at a cosine similarity
+  of 0.4 or more. On this library related passages measured 0.54–0.74 and
+  unrelated ones at most 0.30, so a query about something the vector core does
+  not cover adds nothing. A document without the query's words is shown only
+  when the reranker read one of its passages and gave it a relevance of 0.5 or
+  more; keyword matches always stay.
+- **Reranking budget.** The reranker reads one passage per document in rank
+  order, three per request, for at most five seconds, then a second passage
+  per document if time remains. Keyword matches are judged on their densest
+  640-byte window, related documents on the matched passage. It manages about
+  730 tokens a second while indexing shares the GPU, so 12–18 documents are
+  typically reordered; the rest keep their fused order. A query embedding has
+  its own five-second budget and otherwise finishes in the background for the
+  next search.
+- **Paging and counts.** Results continue past the ranked candidates into the
+  remaining keyword matches, so the library total and **Load more** cover
+  every keyword match. Facet counts remain keyword counts.
+- **Delivery.** The browser requests `rank=keyword` first and shows those
+  matches at once, then requests the reranked order and applies it when it
+  arrives. Matches already on screen are kept and move below the reranked
+  ones. **Load more** waits for that order. The CLI and other clients omit
+  `rank` and wait for the reranked order.
+- **Reuse.** One ranked answer is kept for ten minutes per query, filters and
+  source sync state, so later pages and repeats do not rerank again. Query
+  vectors are kept for an hour. A connected source's complete answer is kept
+  for five minutes: the archives per query and match mode, Paperless per
+  query and filters. Answers with a warning are never kept. All of this is
+  in-memory state of `search-ui` and is lost on restart.
+
 Exact identifiers/titles retain priority in the shared UI/CLI ordering.
 Quotes, operators, All words and Newest retain their existing keyword semantics.
-Inference or an empty/unavailable passage core falls back to ordinary keyword
-search with a visible warning. Connected sources keep their existing search.
+An inference or passage-core failure, or a reranker that returns nothing
+within its budget, falls back to ordinary keyword search with a visible
+warning. An empty passage core still reranks keyword matches. Connected sources
+keep their existing search.
+
+`search-ui` logs one line per library query with its duration, order and hit
+count, and one per ranked answer with retrieval and reranking times and how
+many passages were read. Query text is never logged:
+
+```bash
+journalctl -u search-ui --since -1h | grep 'search: '
+```
 
 The model preparation script pins repository revisions, file sizes and SHA-256
 hashes: [`scripts/admin/search-prepare-models.sh`](../scripts/admin/search-prepare-models.sh).
@@ -2260,7 +2299,13 @@ After guarded activation:
 
 - `search-embedding-query` keeps the same 4B embedder in system RAM with
   `--device none --n-gpu-layers 0` on loopback port 18093. Queries are embedded
-  on CPU, with a bounded ten-minute in-memory vector cache.
+  on CPU, with a bounded one-hour in-memory vector cache.
+- The Search inference units use a llama.cpp build without OpenBLAS
+  (`useBlas = false` in `lib/llama-cpp-runtime.nix`). OpenBLAS takes over CPU
+  matrix products for inputs of 32 or more tokens and converts the half-float
+  weights on every call. Under the units' four-CPU quota a 36-token query took
+  69 seconds against 1.3 without it, and a 300-token passage 78 seconds against
+  9, which had limited the backfill to 26 of 20,534 documents.
 - `search-reranker` keeps the 0.6B model on GPU, loopback port 18095.
 - `search-embed.timer` starts a background passage-indexing pass 15 minutes
   after boot, then 30 minutes after each pass finishes. It processes new or

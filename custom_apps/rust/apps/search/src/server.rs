@@ -9,6 +9,7 @@ use axum::{Json, Router};
 use homelab_common::{env_or, log_server_started, shutdown_signal};
 use serde_json::json;
 
+use crate::cache::TtlCache;
 use crate::config::Settings;
 use crate::db;
 use crate::federate::FederatedHit;
@@ -28,6 +29,11 @@ const DEFAULT_PAGE_SIZE: usize = 50;
 const MAX_PAGE_SIZE: usize = 200;
 /// How long Paperless correspondent/tag/document-type names are cached.
 const PAPERLESS_TAXONOMY_TTL_SECONDS: i64 = 600;
+/// How long one connected source's answer to a query is reused. Searching the
+/// offline archives measured 3-9s per query, and changing a filter or the sort
+/// order asks the same question of them again.
+const LIVE_RESULT_TTL_SECONDS: u64 = 300;
+const LIVE_RESULT_CAPACITY: usize = 64;
 
 #[derive(Clone)]
 struct AppState {
@@ -40,6 +46,8 @@ struct Inner {
     settings: Settings,
     solr: SolrClient,
     zim_cache: ZimInventoryCache,
+    /// Complete answers from connected sources, keyed by source and question.
+    live_results: TtlCache<std::sync::Arc<LiveResults>>,
     /// Shared HTTP client used for runtime-federated Paperless searches.
     paperless_http: reqwest::Client,
     /// Cached Paperless taxonomy names, keyed by base URL.
@@ -66,6 +74,10 @@ impl AppState {
                     &env_or("SEARCH_SOLR_CORE", "search"),
                 ),
                 zim_cache: ZimInventoryCache::default(),
+                live_results: TtlCache::new(
+                    std::time::Duration::from_secs(LIVE_RESULT_TTL_SECONDS),
+                    LIVE_RESULT_CAPACITY,
+                ),
                 paperless_http: reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(15))
                     .redirect(reqwest::redirect::Policy::none())
@@ -251,6 +263,10 @@ pub(crate) struct SearchParams {
     /// hold up indexed results. Older clients retain the combined response.
     #[serde(default)]
     scope: SearchScope,
+    /// The browser shows keyword matches at once, then asks for the reranked
+    /// order. Other clients wait for the best available ranking.
+    #[serde(default)]
+    rank: RankMode,
     /// Set by the interpreter for "latest …" queries; never a wire parameter.
     #[serde(skip)]
     prefer_recent: bool,
@@ -263,6 +279,16 @@ enum SearchScope {
     All,
     Indexed,
     Live,
+}
+
+#[derive(Clone, Copy, Default, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum RankMode {
+    /// Reranked when available, keyword order otherwise.
+    #[default]
+    Auto,
+    /// Keyword order only; the response says whether a reranked order exists.
+    Keyword,
 }
 
 impl SearchParams {
@@ -660,6 +686,11 @@ async fn execute_search_plan(
             return Err(search_database_unavailable(&err));
         }
     };
+    let generation = sources
+        .iter()
+        .map(|source| format!("{}@{}", source.id, source.last_synced_at.unwrap_or(0)))
+        .collect::<Vec<_>>()
+        .join(",");
     let selected: Vec<String> = sources.into_iter().map(|source| source.id).collect();
     let mut filters = params.filters();
     filters.wiki_full_text = filters.kind.as_deref() == Some("zim-article")
@@ -694,10 +725,14 @@ async fn execute_search_plan(
         }
         return Ok(body);
     }
+    let rerankable = state.inner.semantic.is_some()
+        && crate::semantic::eligible(&query, &filters, params.sort_order());
+    let started = std::time::Instant::now();
     let indexed = async {
         let mut warning = None;
         if let Some(semantic) = &state.inner.semantic
-            && crate::semantic::eligible(&query, &filters, params.sort_order())
+            && rerankable
+            && params.rank != RankMode::Keyword
         {
             match semantic
                 .search(crate::semantic::Request {
@@ -706,12 +741,20 @@ async fn execute_search_plan(
                     query: &query,
                     sources: &selected,
                     filters: &filters,
+                    generation: &generation,
                     rows,
                     offset,
                 })
                 .await
             {
-                Ok(ranked) => return Ok((ranked.response, ranked.snippets, true, None)),
+                Ok(ranked) => {
+                    return Ok((
+                        ranked.response,
+                        ranked.snippets,
+                        Some(ranked.has_more),
+                        None,
+                    ))
+                }
                 Err(error) => {
                     eprintln!("search: semantic retrieval unavailable: {error}");
                     warning = Some(
@@ -732,11 +775,12 @@ async fn execute_search_plan(
                 params.sort_order(),
             )
             .await
-            .map(|response| (response, HashMap::<String, String>::new(), false, warning))
+            .map(|response| (response, HashMap::<String, String>::new(), None, warning))
     };
     let (response, federated) = tokio::join!(indexed, live);
     match response {
-        Ok((response, semantic_snippets, semantic, warning)) => {
+        Ok((response, semantic_snippets, ranked_more, warning)) => {
+            let semantic = ranked_more.is_some();
             // Solr never returns the body; load it once for the returned page
             // and build snippets from the authoritative Postgres copy. A failed
             // enrichment degrades to title-only results rather than a 500.
@@ -752,7 +796,9 @@ async fn execute_search_plan(
                 federated.hits.iter().map(FederatedHit::to_json).collect();
             // Federated hits are only ever returned on the first page, so more
             // results remain exactly when Solr still has rows past this page.
-            let has_more = offset + response.hits.len() < response.total as usize;
+            // A ranked answer counts positions, not the rows it returned.
+            let has_more =
+                ranked_more.unwrap_or(offset + response.hits.len() < response.total as usize);
             for (rank, hit) in response.hits.iter().enumerate() {
                 let enriched = enrichment.get(&hit.id);
                 let snippet = semantic_snippets.get(&hit.id).cloned().or_else(|| {
@@ -783,6 +829,13 @@ async fn execute_search_plan(
             }
             let mut warnings = federated.warnings;
             warnings.extend(warning);
+            // Durations and counts only: queries are private.
+            eprintln!(
+                "search: library query ms={} order={} page={page} hits={}",
+                started.elapsed().as_millis(),
+                if semantic { "reranked" } else { "keyword" },
+                response.hits.len(),
+            );
             Ok(json!({
                 "hits": hits,
                 "total": response.total + federated.hits.len() as u64,
@@ -794,6 +847,8 @@ async fn execute_search_plan(
                 "warnings": warnings,
                 "semantic": semantic,
                 "semanticLimited": semantic,
+                // A reranked order exists for this query and was not asked for.
+                "refinable": rerankable && params.rank == RankMode::Keyword,
                 "facetScope": if semantic { "keyword" } else { "all" },
                 "sourceFacets": facet_json(&response.source_facets),
                 "kindFacets": facet_json(&response.kind_facets),
@@ -881,7 +936,7 @@ fn truncate(value: &str, limit: usize) -> String {
 
 /// Live results are a bounded sample, with source-specific failures kept
 /// separate from successful zero-match queries.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct LiveResults {
     hits: Vec<FederatedHit>,
     warnings: Vec<serde_json::Value>,
@@ -920,6 +975,23 @@ async fn federate_runtime_sources(
         .collect();
     let mut results = stream::iter(sources)
         .map(|source| async move {
+            // The archives answer from the words alone (a filter-only browse
+            // also depends on whether pages were asked for); Paperless applies
+            // the selected filters itself.
+            let key = if source.source_type == "kiwix" {
+                format!(
+                    "kiwix\u{1f}{}\u{1f}{:?}\u{1f}{}\u{1f}{}\u{1f}{query}",
+                    source.id,
+                    filters.matching,
+                    filters.wiki_full_text,
+                    filters.matches_kind("zim-article")
+                )
+            } else {
+                format!("paperless\u{1f}{}\u{1f}{filters:?}\u{1f}{query}", source.id)
+            };
+            if let Some(cached) = state.inner.live_results.get(&key) {
+                return (source.id.clone(), Ok(cached.as_ref().clone()));
+            }
             let operation = async {
                 if query == "*:*"
                     && !filters.matches_kind(if source.source_type == "kiwix" {
@@ -947,6 +1019,15 @@ async fn federate_runtime_sources(
             let result = tokio::time::timeout(std::time::Duration::from_secs(30), operation)
                 .await
                 .unwrap_or_else(|_| Err("The source took too long to respond.".to_string()));
+            // An incomplete answer is retried rather than remembered.
+            if let Ok(complete) = &result
+                && complete.warnings.is_empty()
+            {
+                state
+                    .inner
+                    .live_results
+                    .insert(&key, std::sync::Arc::new(complete.clone()));
+            }
             (source.id.clone(), result)
         })
         .buffer_unordered(4)

@@ -1,23 +1,58 @@
 //! Local semantic retrieval. Text stays in Postgres; Solr holds vectors and
 //! byte offsets only. Inference services are loopback-only llama.cpp servers.
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio_postgres::Client;
 
+use crate::cache::TtlCache;
 use crate::db;
-use crate::solr::{SearchFilters, SearchResponse, SolrClient, SolrDocument, SortOrder};
+use crate::solr::{SearchFilters, SearchHit, SearchResponse, SolrClient, SolrDocument, SortOrder};
 
 const DIMENSIONS: usize = 2560;
 const VERSION: &str = "qwen4b-f16-e8b4e85c-passage-v1";
 const CANDIDATES: usize = 100;
-const RERANK_DOCS: usize = 40;
 const PASSAGE_BYTES: usize = 1600;
 const OVERLAP_BYTES: usize = 200;
 const INDEX_BATCH_SIZE: usize = 1;
 
-type QueryCache = std::sync::Arc<tokio::sync::Mutex<HashMap<String, (Instant, Vec<f32>)>>>;
+/// Query-time budgets, measured on the deployed 0.6B reranker: about 730
+/// tokens a second while indexing shares the GPU, so an 800-byte library
+/// passage (a median 268 tokens) costs ~0.35s and a full indexed passage
+/// ~0.7s. Reranking 40 documents on two full passages each held every search
+/// for 22-47s. The reranker now reads each document's strongest evidence in
+/// rank order, in small requests, and stops at a deadline.
+const RERANK_DOCS: usize = 30;
+const RERANK_CHUNK: usize = 3;
+const RERANK_BUDGET: Duration = Duration::from_secs(5);
+/// Keyword evidence shown to the reranker: the densest window of a matching
+/// document, about a paragraph, rather than a whole indexed passage.
+const EVIDENCE_BYTES: usize = 640;
+const EVIDENCE_OVERLAP_BYTES: usize = 128;
+/// A query embedding normally takes well under a second. A slow one must not
+/// hold the answer; it finishes in the background for the next search.
+const VECTOR_BUDGET: Duration = Duration::from_secs(5);
+/// Passages closer than this to the query are candidates. On this library
+/// related passages measured 0.54-0.74 and unrelated ones at most 0.30, so the
+/// nearest neighbours of an unrelated query are not mistaken for matches.
+const MIN_COSINE: f64 = 0.4;
+/// The reranker's relevance probability a document needs when it lacks the
+/// query's words: clearly related passages score above 0.9, tangential ones
+/// below 0.1.
+const ADMIT_SCORE: f64 = 0.5;
+
+/// One ranked answer: keyword candidates and related passages fused, the head
+/// reranked. Later pages and repeats slice it instead of ranking again.
+struct Window {
+    hits: Vec<SearchHit>,
+    snippets: HashMap<String, String>,
+    /// The keyword response behind the window, its hits moved into `hits`.
+    keyword: SearchResponse,
+    /// Keyword results consumed from the front of the full keyword ranking.
+    consumed: usize,
+}
 
 #[derive(Clone)]
 pub(crate) struct Semantic {
@@ -25,7 +60,9 @@ pub(crate) struct Semantic {
     query_url: String,
     rerank_url: String,
     core_url: String,
-    query_cache: QueryCache,
+    /// Embeddings are deterministic, so a repeated query never pays twice.
+    vectors: Arc<TtlCache<Arc<Vec<f32>>>>,
+    windows: Arc<TtlCache<Arc<Window>>>,
 }
 
 impl Semantic {
@@ -60,7 +97,8 @@ impl Semantic {
                 std::env::var("SEARCH_PASSAGE_CORE")
                     .unwrap_or_else(|_| "search-passages-v1".into())
             ),
-            query_cache: Default::default(),
+            vectors: Arc::new(TtlCache::new(Duration::from_secs(3600), 256)),
+            windows: Arc::new(TtlCache::new(Duration::from_secs(600), 32)),
         }))
     }
 
@@ -139,26 +177,18 @@ impl Semantic {
         Ok(vectors)
     }
 
-    async fn query_vector(&self, query: &str) -> Result<Vec<f32>, String> {
-        {
-            let cache = self.query_cache.lock().await;
-            if let Some((_, vector)) = cache
-                .get(query)
-                .filter(|(when, _)| when.elapsed() < Duration::from_secs(600))
-            {
-                return Ok(vector.clone());
-            }
-        }
-        let input = format!("Instruct: Given a library search query, retrieve relevant passages that address the user's request\nQuery: {query}");
-        let vector = self
-            .embed(&self.query_url, &[input], Duration::from_secs(90))
-            .await?
-            .remove(0);
-        let mut cache = self.query_cache.lock().await;
-        if cache.len() >= 128 {
-            cache.clear();
-        }
-        cache.insert(query.into(), (Instant::now(), vector.clone()));
+    async fn query_vector(&self, query: &str) -> Result<Arc<Vec<f32>>, String> {
+        let (vector, _) = self
+            .vectors
+            .get_or_try_init(query, || async {
+                let input = format!("Instruct: Given a library search query, retrieve relevant passages that address the user's request\nQuery: {query}");
+                let vector = self
+                    .embed(&self.query_url, &[input], Duration::from_secs(90))
+                    .await?
+                    .remove(0);
+                Ok(Arc::new(vector))
+            })
+            .await?;
         Ok(vector)
     }
 }
@@ -166,13 +196,17 @@ impl Semantic {
 /// UTF-8 byte offsets with bounded paragraph-aware overlap. A title-only
 /// catalog record still gets one passage; no long-book prefix truncation.
 fn passages(body: &str) -> Vec<(usize, usize)> {
+    spans(body, PASSAGE_BYTES, OVERLAP_BYTES)
+}
+
+fn spans(body: &str, size: usize, overlap: usize) -> Vec<(usize, usize)> {
     if body.is_empty() {
         return vec![(0, 0)];
     }
     let mut spans = Vec::new();
     let mut start = 0;
     while start < body.len() {
-        let max_end = body.floor_char_boundary((start + PASSAGE_BYTES).min(body.len()));
+        let max_end = body.floor_char_boundary((start + size).min(body.len()));
         let end = if max_end < body.len() {
             body[start..max_end]
                 .rfind('\n')
@@ -186,7 +220,7 @@ fn passages(body: &str) -> Vec<(usize, usize)> {
         if end == body.len() {
             break;
         }
-        let overlap = body.floor_char_boundary(end.saturating_sub(OVERLAP_BYTES));
+        let overlap = body.floor_char_boundary(end.saturating_sub(overlap));
         start = overlap.max(start + body[start..].chars().next().unwrap().len_utf8());
     }
     spans
@@ -199,9 +233,10 @@ fn passage_input(title: &str, body: &str) -> String {
     )
 }
 
-/// Before vector backfill reaches a book, retain its strongest lexical
-/// passages, including grammatical forms. A last-match tie can otherwise
-/// present an unrelated chapter to the reranker and hide the useful section.
+/// The windows of a document that best cover the query's words, including
+/// grammatical forms, strongest first. A last-match tie can otherwise present
+/// an unrelated chapter to the reranker and hide the useful section. A body
+/// without any of the words (a title match) is represented by its opening.
 fn lexical_passages<'a>(body: &'a str, query: &str) -> Vec<&'a str> {
     let words =
         crate::text::discovery_words(query).unwrap_or_else(|| crate::text::query_terms(query));
@@ -213,7 +248,7 @@ fn lexical_passages<'a>(body: &'a str, query: &str) -> Vec<&'a str> {
                 .collect()
         })
         .collect();
-    let mut candidates: Vec<_> = passages(body)
+    let mut candidates: Vec<_> = spans(body, EVIDENCE_BYTES, EVIDENCE_OVERLAP_BYTES)
         .into_iter()
         .map(|(start, end)| {
             let text = &body[start..end];
@@ -234,12 +269,19 @@ fn lexical_passages<'a>(body: &'a str, query: &str) -> Vec<&'a str> {
             (text, score)
         })
         .collect();
+    let opening = candidates.first().map(|candidate| candidate.0);
+    candidates.retain(|candidate| candidate.1 .0 > 0);
     candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.1));
-    candidates
+    let best: Vec<_> = candidates
         .into_iter()
         .take(2)
         .map(|(text, _)| text)
-        .collect()
+        .collect();
+    if best.is_empty() {
+        opening.into_iter().collect()
+    } else {
+        best
+    }
 }
 
 /// A separate maintenance pass catches existing and newly changed documents.
@@ -448,12 +490,16 @@ impl Semantic {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct Request<'a> {
     pub solr: &'a SolrClient,
     pub database: &'a Client,
     pub query: &'a str,
     pub sources: &'a [String],
     pub filters: &'a SearchFilters,
+    /// Changes whenever a source finishes syncing, so a ranked answer is not
+    /// reused across an index update.
+    pub generation: &'a str,
     pub rows: usize,
     pub offset: usize,
 }
@@ -461,6 +507,7 @@ pub(crate) struct Request<'a> {
 pub(crate) struct Ranked {
     pub response: SearchResponse,
     pub snippets: HashMap<String, String>,
+    pub has_more: bool,
 }
 
 pub(crate) fn eligible(query: &str, filters: &SearchFilters, sort: SortOrder) -> bool {
@@ -473,25 +520,104 @@ pub(crate) fn eligible(query: &str, filters: &SearchFilters, sort: SortOrder) ->
             .any(|w| matches!(w, "AND" | "OR" | "NOT" | "TO") || w.starts_with(['-', '+']))
 }
 
+/// Documents with a passage close to the query, nearest first, and the
+/// passages that put them there.
+#[derive(Default)]
+struct Neighbours {
+    parents: Vec<String>,
+    spans: HashMap<String, Vec<(usize, usize, String)>>,
+}
+
 impl Semantic {
-    /// A bounded hybrid result window: keyword and semantic candidates are
-    /// fused by rank, not incompatible raw score magnitudes. All pages slice
-    /// the same deterministic window; counts describe that window, not the
-    /// number of semantically relevant documents in the entire library.
+    /// Keyword and related-passage candidates fused by rank, never by
+    /// incompatible raw score magnitudes, with the leading documents reordered
+    /// by the reranker. Results continue into the remaining keyword matches,
+    /// so counts and paging cover the whole library.
     pub(crate) async fn search(&self, request: Request<'_>) -> Result<Ranked, String> {
         let Request {
             solr,
-            database,
             query,
             sources,
             filters,
+            generation,
             rows,
             offset,
+            ..
         } = request;
-        let vector = self.query_vector(query).await?;
+        let key = crate::timeutil::sha256_hex(&[
+            query,
+            &sources.join("\u{1f}"),
+            &format!("{filters:?}"),
+            generation,
+        ]);
+        let (window, _) = self
+            .windows
+            .get_or_try_init(&key, || self.window(request))
+            .await?;
+        let remaining = window.keyword.total.saturating_sub(window.consumed as u64);
+        let total = window.hits.len() as u64 + remaining;
+        let mut hits: Vec<SearchHit> = window
+            .hits
+            .iter()
+            .skip(offset)
+            .take(rows)
+            .cloned()
+            .collect();
+        if hits.len() < rows && remaining > 0 {
+            let past_window = offset.saturating_sub(window.hits.len());
+            let more = solr
+                .search(
+                    query,
+                    sources,
+                    filters,
+                    rows - hits.len(),
+                    window.consumed + past_window,
+                    SortOrder::Relevance,
+                )
+                .await?;
+            // A related passage admitted above may also be a distant keyword
+            // match; show it once.
+            let shown: HashSet<&str> = window.hits.iter().map(|hit| hit.id.as_str()).collect();
+            hits.extend(
+                more.hits
+                    .into_iter()
+                    .filter(|hit| !shown.contains(hit.id.as_str())),
+            );
+        }
+        let mut response = window.keyword.clone();
+        response.hits = hits;
+        response.total = total;
+        Ok(Ranked {
+            response,
+            snippets: window.snippets.clone(),
+            has_more: ((offset + rows) as u64) < total,
+        })
+    }
+
+    async fn neighbours(
+        &self,
+        query: &str,
+        sources: &[String],
+        filters: &SearchFilters,
+    ) -> Result<Neighbours, String> {
+        let embedder = self.clone();
+        let text = query.to_string();
+        // Detached, so an embedding that outlives its budget still lands in
+        // the cache for the next search of the same words.
+        let embedding = tokio::spawn(async move { embedder.query_vector(&text).await });
+        let vector = match tokio::time::timeout(VECTOR_BUDGET, embedding).await {
+            Ok(Ok(vector)) => vector?,
+            Ok(Err(error)) => return Err(format!("query embedding task failed: {error}")),
+            Err(_) => {
+                eprintln!(
+                    "search: query embedding exceeded its budget; ranking keyword candidates only"
+                );
+                return Ok(Neighbours::default());
+            }
+        };
         let vector_query = format!(
             "{{!knn f=vector topK=1000}}{}",
-            serde_json::to_string(&vector).map_err(|e| e.to_string())?
+            serde_json::to_string(vector.as_ref()).map_err(|e| e.to_string())?
         );
         let mut params = vec![
             ("q", vector_query),
@@ -508,33 +634,27 @@ impl Semantic {
         if !filters.wiki_full_text {
             params.push(("fq", "-kind_s:zim-article".into()));
         }
-        let (lexical, semantic) = tokio::join!(
-            solr.search(query, sources, filters, CANDIDATES, 0, SortOrder::Relevance),
-            self.select(params),
-        );
-        let mut response = lexical?;
-        let semantic = semantic?;
-        let vectors = semantic["response"]["docs"]
+        let passages = self.select(params).await?;
+        let mut neighbours = Neighbours::default();
+        for hit in passages["response"]["docs"]
             .as_array()
-            .ok_or("passage response missing docs")?;
-        // An empty core is not semantic coverage. Keep ordinary keyword paging
-        // and counts during initial backfill rather than truncating the library.
-        if vectors.is_empty() {
-            return Err("the semantic passage index has no matching passages yet".into());
-        }
-        let mut candidates: Vec<String> = Vec::new();
-        let mut spans: HashMap<String, Vec<(usize, usize, String)>> = HashMap::new();
-        for hit in vectors {
+            .ok_or("passage response missing docs")?
+        {
+            // Unit vectors: Solr reports (1 + cosine) / 2, nearest first.
+            let cosine = 2.0 * hit["score"].as_f64().unwrap_or(0.0) - 1.0;
+            if cosine < MIN_COSINE {
+                break;
+            }
             let Some(id) = hit["parent_s"].as_str() else {
                 continue;
             };
-            if !spans.contains_key(id) {
-                if candidates.len() >= CANDIDATES {
+            if !neighbours.spans.contains_key(id) {
+                if neighbours.parents.len() >= CANDIDATES {
                     continue;
                 }
-                candidates.push(id.into());
+                neighbours.parents.push(id.into());
             }
-            let entries = spans.entry(id.into()).or_default();
+            let entries = neighbours.spans.entry(id.into()).or_default();
             if entries.len() < 2
                 && let (Some(start), Some(end), Some(generation)) = (
                     hit["start_l"].as_u64(),
@@ -545,30 +665,90 @@ impl Semantic {
                 entries.push((start as usize, end as usize, generation.into()));
             }
         }
-        // Only the current main index can admit a semantic candidate. This
-        // also blocks stale ownership/tags and removed sources immediately.
-        let allowed = solr.filtered_ids(&candidates, sources, filters).await?;
+        Ok(neighbours)
+    }
+
+    /// Relevance probabilities for `documents`, in input order.
+    async fn rerank(&self, query: &str, documents: &[String]) -> Result<Vec<f64>, String> {
+        // The endpoint formats Qwen's trained query/document template; no
+        // generated answer text is involved.
+        let ranked = self
+            .post(
+                &format!("{}/v1/rerank", self.rerank_url),
+                &json!({"query": query, "documents": documents, "top_n": documents.len()}),
+            )
+            .await?;
+        let ranked = ranked["results"]
+            .as_array()
+            .ok_or("reranker response missing results")?;
+        if ranked.len() != documents.len() {
+            return Err("reranker returned an incomplete result set".into());
+        }
+        let mut scores = vec![None; documents.len()];
+        for item in ranked {
+            let index = item["index"]
+                .as_u64()
+                .ok_or("reranker result missing index")? as usize;
+            let score = item["relevance_score"]
+                .as_f64()
+                .filter(|s| s.is_finite())
+                .ok_or("reranker result missing finite score")?;
+            if index >= scores.len() || scores[index].is_some() {
+                return Err("invalid reranker result index".into());
+            }
+            scores[index] = Some(score);
+        }
+        Ok(scores.into_iter().flatten().collect())
+    }
+
+    async fn window(&self, request: Request<'_>) -> Result<Arc<Window>, String> {
+        let Request {
+            solr,
+            database,
+            query,
+            sources,
+            filters,
+            ..
+        } = request;
+        let started = Instant::now();
+        let (keyword, neighbours) = tokio::join!(
+            solr.search(query, sources, filters, CANDIDATES, 0, SortOrder::Relevance),
+            self.neighbours(query, sources, filters),
+        );
+        let mut keyword = keyword?;
+        let neighbours = neighbours?;
+        let mut hits = std::mem::take(&mut keyword.hits);
+        let consumed = hits.len();
+        let keyword_ids: HashSet<String> = hits.iter().map(|hit| hit.id.clone()).collect();
         let mut scores: HashMap<String, f64> = HashMap::new();
-        for (rank, hit) in response.hits.iter().enumerate() {
+        for (rank, hit) in hits.iter().enumerate() {
             scores.insert(hit.id.clone(), 1.0 / (60.0 + rank as f64));
         }
-        let allowed_ids: HashSet<_> = allowed.hits.iter().map(|h| h.id.clone()).collect();
-        for (rank, id) in candidates
-            .iter()
-            .enumerate()
-            .filter(|(_, id)| allowed_ids.contains(*id))
-        {
-            *scores.entry(id.clone()).or_default() += 1.0 / (60.0 + rank as f64);
-        }
-        let mut known: HashSet<_> = response.hits.iter().map(|h| h.id.clone()).collect();
-        for hit in allowed.hits {
-            if known.insert(hit.id.clone()) {
-                response.hits.push(hit);
+        if !neighbours.parents.is_empty() {
+            // Only the current main index can admit a related passage. This
+            // also blocks stale ownership/tags and removed sources immediately.
+            let allowed = solr
+                .filtered_ids(&neighbours.parents, sources, filters)
+                .await?;
+            let allowed_ids: HashSet<_> = allowed.hits.iter().map(|h| h.id.clone()).collect();
+            for (rank, id) in neighbours
+                .parents
+                .iter()
+                .enumerate()
+                .filter(|(_, id)| allowed_ids.contains(*id))
+            {
+                *scores.entry(id.clone()).or_default() += 1.0 / (60.0 + rank as f64);
+            }
+            for hit in allowed.hits {
+                if !keyword_ids.contains(&hit.id) {
+                    hits.push(hit);
+                }
             }
         }
+        let retrieved = started.elapsed();
         // Pin exact recovery matches before pagination, not just within each
         // displayed page. Read identifiers only, without loading every body.
-        let all_ids: Vec<_> = response.hits.iter().map(|h| h.id.clone()).collect();
+        let all_ids: Vec<_> = hits.iter().map(|h| h.id.clone()).collect();
         let identifier_rows = database
             .query(
                 "SELECT id, metadata->'identifiers' FROM documents WHERE id=ANY($1)",
@@ -585,8 +765,7 @@ impl Semantic {
                 )
             })
             .collect();
-        let priority: HashMap<_, _> = response
-            .hits
+        let priority: HashMap<_, _> = hits
             .iter()
             .map(|hit| {
                 let metadata = json!({"identifiers": identifiers.get(&hit.id)});
@@ -596,104 +775,109 @@ impl Semantic {
                 )
             })
             .collect();
-        response.hits.sort_by(|a, b| {
+        hits.sort_by(|a, b| {
             priority[&a.id].cmp(&priority[&b.id]).then_with(|| {
                 scores[&b.id]
                     .total_cmp(&scores[&a.id])
                     .then(a.id.cmp(&b.id))
             })
         });
-        let ids: Vec<_> = response
-            .hits
+        let head: Vec<_> = hits
             .iter()
             .take(RERANK_DOCS)
             .map(|h| h.id.clone())
             .collect();
-        let documents: HashMap<_, _> = db::documents_by_ids(database, &ids)
+        let documents: HashMap<_, _> = db::documents_by_ids(database, &head)
             .await?
             .into_iter()
             .collect();
-        let mut inputs = Vec::new();
-        let mut owners = Vec::new();
-        let mut contexts = Vec::new();
-        for hit in response.hits.iter().take(RERANK_DOCS) {
-            let Some(record) = documents.get(&hit.id) else {
+        // Every document's strongest evidence is read before any document's
+        // second passage, so a deadline costs depth rather than coverage.
+        let mut evidence: [Vec<(&String, &str)>; 2] = [Vec::new(), Vec::new()];
+        for id in &head {
+            let Some(record) = documents.get(id) else {
                 continue;
             };
-            let expected = crate::timeutil::sha256_hex(&[&hit.id, &record.checksum, VERSION]);
-            let mut texts: Vec<&str> = spans
-                .get(&hit.id)
+            let expected = crate::timeutil::sha256_hex(&[id, &record.checksum, VERSION]);
+            let related = neighbours
+                .spans
+                .get(id)
                 .into_iter()
                 .flatten()
                 .filter(|(_, _, generation)| generation == &expected)
-                .filter_map(|&(start, end, _)| record.body_text.get(start..end))
-                .collect();
-            // Give both retrieval methods a chance to supply evidence while
-            // keeping the same two-passage budget per document.
-            let lexical = lexical_passages(&record.body_text, query);
-            if let Some(best) = lexical.first()
-                && !texts.contains(best)
-            {
-                texts.insert(texts.len().min(1), best);
-            }
-            for text in lexical {
-                if texts.len() >= 2 {
-                    break;
-                }
-                if !texts.contains(&text) {
-                    texts.push(text);
+                .filter_map(|&(start, end, _)| record.body_text.get(start..end));
+            let worded = lexical_passages(&record.body_text, query);
+            // A keyword match is judged first on the words the user typed; a
+            // related passage is all the evidence a document without them has.
+            let ordered: Vec<&str> = if keyword_ids.contains(id) {
+                worded.into_iter().chain(related).collect()
+            } else {
+                related.chain(worded).collect()
+            };
+            let mut chosen: Vec<&str> = Vec::new();
+            for text in ordered {
+                if chosen.len() < 2 && !chosen.contains(&text) {
+                    chosen.push(text);
                 }
             }
-            texts.truncate(2);
-            for text in texts {
-                inputs.push(passage_input(&record.title, text));
-                owners.push(hit.id.clone());
-                contexts.push(text.to_string());
+            for (round, text) in chosen.into_iter().enumerate() {
+                evidence[round].push((id, text));
             }
         }
-        if inputs.is_empty() {
-            return Err("no current passages are available to rerank".into());
-        }
-        // The endpoint formats Qwen's trained query/document template; no
-        // generated answer text or probability interpretation is involved.
-        let ranked = self
-            .post(
-                &format!("{}/v1/rerank", self.rerank_url),
-                &json!({"query":query, "documents":inputs, "top_n":inputs.len()}),
-            )
-            .await?;
-        let ranked = ranked["results"]
-            .as_array()
-            .ok_or("reranker response missing results")?;
-        if ranked.len() != inputs.len() {
-            return Err("reranker returned an incomplete result set".into());
-        }
-        let mut seen = HashSet::new();
+        let queue: Vec<(&String, &str)> = evidence.into_iter().flatten().collect();
+        let deadline = tokio::time::Instant::now() + RERANK_BUDGET;
+        let reranking = Instant::now();
+        let mut scored: u32 = 0;
         let mut reranked: HashMap<String, f64> = HashMap::new();
         let mut snippets = HashMap::new();
-        for item in ranked {
-            let index = item["index"]
-                .as_u64()
-                .ok_or("reranker result missing index")? as usize;
-            let score = item["relevance_score"]
-                .as_f64()
-                .filter(|s| s.is_finite())
-                .ok_or("reranker result missing finite score")?;
-            if index >= owners.len() || !seen.insert(index) {
-                return Err("invalid reranker result index".into());
+        for chunk in queue.chunks(RERANK_CHUNK) {
+            // A request that cannot finish in time would only delay the answer.
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if scored > 0 && remaining < reranking.elapsed() / scored * chunk.len() as u32 {
+                break;
             }
-            let id = &owners[index];
-            if reranked.get(id).is_none_or(|previous| score > *previous) {
-                reranked.insert(id.clone(), score);
-                if let Some(snippet) = crate::text::result_snippet(&contexts[index], query) {
-                    snippets.insert(id.clone(), snippet);
+            let titled: Vec<String> = chunk
+                .iter()
+                .map(|(id, text)| passage_input(&documents[*id].title, text))
+                .collect();
+            let relevance =
+                match tokio::time::timeout_at(deadline, self.rerank(query, &titled)).await {
+                    Ok(Ok(relevance)) => relevance,
+                    // Scores are per passage, so those already returned stand.
+                    Ok(Err(error)) if scored > 0 => {
+                        eprintln!("search: reranking stopped early: {error}");
+                        break;
+                    }
+                    Ok(Err(error)) => return Err(error),
+                    Err(_) => break,
+                };
+            for ((id, text), score) in chunk.iter().zip(relevance) {
+                scored += 1;
+                if reranked.get(*id).is_none_or(|previous| score > *previous) {
+                    reranked.insert((*id).clone(), score);
+                    if let Some(snippet) = crate::text::result_snippet(text, query) {
+                        snippets.insert((*id).clone(), snippet);
+                    }
                 }
             }
         }
-        response
-            .hits
-            .retain(|h| !ids.contains(&h.id) || documents.contains_key(&h.id));
-        response.hits.sort_by(|a, b| {
+        if scored == 0 && !queue.is_empty() {
+            return Err("the reranker did not answer within its budget".into());
+        }
+        let candidates = hits.len();
+        hits.retain(|hit| {
+            // Deleted since it was indexed.
+            if head.contains(&hit.id) && !documents.contains_key(&hit.id) {
+                return false;
+            }
+            // Without the user's words, only a passage the reranker read and
+            // judged relevant belongs in the results.
+            keyword_ids.contains(&hit.id)
+                || reranked
+                    .get(&hit.id)
+                    .is_some_and(|score| *score >= ADMIT_SCORE)
+        });
+        hits.sort_by(|a, b| {
             priority[&a.id]
                 .cmp(&priority[&b.id])
                 .then_with(|| match (reranked.get(&a.id), reranked.get(&b.id)) {
@@ -704,10 +888,10 @@ impl Semantic {
                 })
                 .then(a.id.cmp(&b.id))
         });
-        // Signatures deduplicate copies across lexical and semantic retrieval.
+        // Signatures deduplicate copies across keyword and related retrieval.
         let mut signatures: HashMap<String, (usize, u64)> = HashMap::new();
-        let mut unique: Vec<crate::solr::SearchHit> = Vec::new();
-        for hit in response.hits {
+        let mut unique: Vec<SearchHit> = Vec::new();
+        for hit in hits {
             if !hit.dedupe.is_empty() {
                 if let Some((index, members)) = signatures.get_mut(&hit.dedupe) {
                     *members += 1;
@@ -718,15 +902,21 @@ impl Semantic {
             }
             unique.push(hit);
         }
-        response.hits = unique;
-        response.relaxed = false;
-        response.related_terms.clear();
-        response.unknown_terms.clear();
-        response.total = response.hits.len() as u64;
-        response.hits = response.hits.into_iter().skip(offset).take(rows).collect();
-        // Lexical facets remain lexical counts; the caller labels the bounded
-        // semantic window explicitly rather than claiming exhaustive facets.
-        Ok(Ranked { response, snippets })
+        // Durations and counts only: queries are private.
+        eprintln!(
+            "search: ranked library results retrieval_ms={} keyword={consumed} related={} rerank_ms={} passages={scored}/{} results={}",
+            retrieved.as_millis(),
+            candidates - consumed,
+            reranking.elapsed().as_millis(),
+            queue.len(),
+            unique.len(),
+        );
+        Ok(Arc::new(Window {
+            hits: unique,
+            snippets,
+            keyword,
+            consumed,
+        }))
     }
 }
 

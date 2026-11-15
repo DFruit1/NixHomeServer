@@ -208,7 +208,7 @@ impl SolrDocument {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SearchHit {
     pub id: String,
     pub kind: String,
@@ -225,7 +225,7 @@ pub struct SearchHit {
     pub dedupe: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SearchResponse {
     pub hits: Vec<SearchHit>,
     pub total: u64,

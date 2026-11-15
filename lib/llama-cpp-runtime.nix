@@ -1,4 +1,9 @@
 { pkgs, useVulkan ? false,
+  # OpenBLAS takes over CPU matrix products for inputs of 32+ tokens and
+  # converts half-float weights to single precision on every call. Search's
+  # CPU embedder measured 69s for a 36-token input with it and 1.3s without,
+  # so consumers running half-float models on CPU turn it off.
+  useBlas ? true,
   revision ? "6fcaa16f4b360649933a54d1f91ad40ed35c0e11",
   sourceUrl ? "https://github.com/danielhanchen/llama.cpp/archive/${revision}.tar.gz",
   sourceHash ? "sha256-YgIkYHiV1LNA1OvTcB8SSdOeqr37+cEFAOQjEBfXcK4="
@@ -18,7 +23,7 @@ let
   baseRuntime =
     pkgs.callPackage "${source}/.devops/nix/package.nix" {
       llamaVersion = revision;
-      useBlas = true;
+      inherit useBlas;
       useCuda = false;
       useMetalKit = false;
       useRocm = false;

@@ -3,7 +3,12 @@ let
   cfg = config.repo.search;
   ports = vars.networking.ports;
   loopback = vars.networking.loopbackIPv4;
-  runtime = (import ../../lib/llama-cpp-runtime.nix { inherit pkgs; useVulkan = true; }).runtime;
+  # Without OpenBLAS: it takes over CPU matrix products for inputs of 32+
+  # tokens and re-converts the half-float embedding weights on every call.
+  # Measured under these units' CPU quota, a 36-token query took 69s against
+  # 1.3s without it and a full passage 78s against 9s, which stalled both long
+  # questions and the library backfill.
+  runtime = (import ../../lib/llama-cpp-runtime.nix { inherit pkgs; useVulkan = true; useBlas = false; }).runtime;
   embeddingModel = "${cfg.paths.models}/Qwen3-Embedding-4B-f16.gguf";
   rerankerModel = "${cfg.paths.models}/Qwen3-Reranker-0.6B.F16.gguf";
   inferenceEnvironment = {
