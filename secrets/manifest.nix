@@ -233,6 +233,14 @@
       required = false;
       consumedBy = "when the Media Manager metadata editor is enabled";
     };
+    groundwaterMqttTlsKey = {
+      description = "Private key for the internet-facing groundwater MQTT TLS listener (mqtt.sydneybasiniot.org).";
+      format = "PEM private key matching modules/groundwater-logger/mqtt-tls/server.pem";
+      settingPath = "secrets/unencrypted/groundwaterMqttTlsKey";
+      validator = "pem-private-key";
+      required = false;
+      consumedBy = "when the groundwater logger platform is enabled";
+    };
     forgejoGithubToken = {
       description = "Optional GitHub personal access token used when Forgejo pulls private or rate-limited GitHub mirrors.";
       format = "plain GitHub token value";

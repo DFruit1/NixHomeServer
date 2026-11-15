@@ -24,5 +24,6 @@ in
   config.assertions = lib.mkIf config.repo.groundwaterLogger.enable (mkSecretAssertions [
     "groundwaterAppMqttPassword"
     "groundwaterLoggerMqttPassword"
+    "groundwaterMqttTlsKey"
   ]);
 }

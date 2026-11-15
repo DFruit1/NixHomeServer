@@ -49,6 +49,7 @@ rec {
     groundwater-logger = app ./groundwater-logger "Groundwater Platform" "operations" [
       "groundwaterAppMqttPassword"
       "groundwaterLoggerMqttPassword"
+      "groundwaterMqttTlsKey"
     ] [ "groundwater-server" "mosquitto" ];
     immich = app ./immich "Immich" "media" [ "immichClientSecret" ] [
       "immich-storage-layout-v1"

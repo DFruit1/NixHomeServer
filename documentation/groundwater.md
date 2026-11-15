@@ -250,6 +250,12 @@ exposed to the public internet. No public plaintext listener. Firmware TLS
 (`AT+QMTSSLCFG`) remains a later hardening item (§11.3). The HiveMQ bridge
 (Path B) is not used.
 
+**Amendment (2026-11-15):** for cellular field units the owner chose a public
+TLS listener instead of NetBird. The router port-forwards TCP 8883 to the
+server's LAN address, and `mqtt.sydneybasiniot.org` points at it. Only the
+logger account is accepted there. Plain 1883 stays LAN/NetBird only. See
+[Commission a logger](groundwater-operations.md#commission-a-logger).
+
 ### 4.2 Accounts and ACLs
 
 Reuse the module's two-account model, unchanged semantics:
@@ -681,6 +687,8 @@ supersede the earlier open questions. Each cites the section it affects.
    Mosquitto with credentials; field/LTE units join the existing NetBird mesh.
    No public plaintext listener. HiveMQ bridge not used. Firmware TLS remains
    a later hardening item (§11.3).
+   *Amended 2026-11-15:* cellular field units use a public TLS-only
+   listener on 8883 (logger account only) instead of NetBird; see §4.1.
 3. **Tunnel technology (§4.1):** NetBird (existing mesh), site-dependent
    fallback documented in the runbook.
 4. **Roles (§9):** `app-admin` (Operator) + new `groundwater-user` (Viewer).
