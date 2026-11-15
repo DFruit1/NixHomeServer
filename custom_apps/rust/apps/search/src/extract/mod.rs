@@ -6,7 +6,9 @@ pub mod freshrss;
 pub mod kiwix;
 pub mod mail;
 pub mod media_snapshot;
+pub mod ocr;
 pub mod paperless;
+pub mod sections;
 
 use std::path::{Path, PathBuf};
 
@@ -21,6 +23,12 @@ pub struct ExtractedDocument {
     pub kind: String,
     pub title: String,
     pub body_text: String,
+    /// Words that happen to be inside the item without being what it is
+    /// about: film dialogue, text caught in a photograph. Searchable at a
+    /// small fraction of the body's weight, never embedded for meaning-based
+    /// search, and never counted as the document covering a query, so it
+    /// cannot outrank an article, email or book that discusses the subject.
+    pub incidental_text: String,
     pub content_type: String,
     pub origin_url: String,
     pub app_url: String,
@@ -30,6 +38,17 @@ pub struct ExtractedDocument {
     pub content_modified_at: Option<i64>,
     pub metadata: Value,
 }
+
+/// Metadata key naming the document a section was split from. Sections of one
+/// work share a result slot: a search shows the best-matching section.
+pub(crate) const SECTION_OF: &str = "section_of";
+/// Metadata flag for mail sent through a mailing list or subscription. Such
+/// mail is filterable as the "Mailing list" topic and ranks a little lower
+/// than mail addressed to a person.
+pub(crate) const MAILING_LIST: &str = "mailing_list";
+/// Metadata key for the words shown before a snippet taken from incidental
+/// text, such as "Subtitles".
+pub(crate) const INCIDENTAL_LABEL: &str = "incidental_label";
 
 impl ExtractedDocument {
     pub fn checksum(&self) -> String {
@@ -42,8 +61,8 @@ impl ExtractedDocument {
             .content_modified_at
             .map(|value| value.to_string())
             .unwrap_or_default();
-        crate::timeutil::sha256_hex(&[
-            &self.kind,
+        let mut parts = vec![
+            self.kind.as_str(),
             &self.title,
             &self.body_text,
             &self.content_type,
@@ -53,7 +72,14 @@ impl ExtractedDocument {
             &metadata,
             &created,
             &modified,
-        ])
+        ];
+        // Only when present: documents without incidental text keep the
+        // checksum they had before the field existed, so nothing is re-indexed
+        // or re-embedded for it.
+        if !self.incidental_text.is_empty() {
+            parts.push(&self.incidental_text);
+        }
+        crate::timeutil::sha256_hex(&parts)
     }
 
     pub fn into_record(mut self) -> crate::db::DocumentRecord {
@@ -67,6 +93,7 @@ impl ExtractedDocument {
             kind: self.kind,
             title: self.title,
             body_text: self.body_text,
+            incidental_text: self.incidental_text,
             content_type: self.content_type,
             origin_url: self.origin_url,
             app_url: self.app_url,
@@ -201,11 +228,15 @@ pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
     // Preserve unaffected sources' revisions so a targeted improvement does
     // not repeat extraction of unrelated, potentially large archives.
     let extraction_version = match source.source_type.as_str() {
-        "mail-archive" | "freshrss" | "kiwix" => "3",
+        "freshrss" | "kiwix" => "3",
+        // 4: mailing-list marking, quoted replies and tracking links dropped,
+        // scanned attachments and attached pictures read.
+        "mail-archive" => "4",
         "browsertrix" => "5",
         // 5: publication dates for Calibre books; stream languages, runtime,
         // ratings, provider ids, chapters and season/episode wording for media.
-        "calibre" => "5",
+        // 6: whole books as sections in reading order; scanned pages read.
+        "calibre" => "6",
         // 6: per-item application deep links for media-snapshot sources.
         "media-snapshot" => "6",
         _ => "2",

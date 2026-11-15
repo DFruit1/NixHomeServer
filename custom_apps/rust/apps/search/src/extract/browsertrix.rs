@@ -535,6 +535,7 @@ impl super::Extractor for BrowsertrixExtractor {
             let crawl_base = sha256_hex(&[&file_name]);
 
             emit(ExtractedDocument {
+                incidental_text: String::new(),
                 external_id: format!("{crawl_base}-crawl"),
                 kind: "web-crawl".to_string(),
                 title: crawl_title.clone(),
@@ -558,6 +559,7 @@ impl super::Extractor for BrowsertrixExtractor {
                     .filter(|title| !title.trim().is_empty())
                     .unwrap_or_else(|| page.url.clone());
                 emit(ExtractedDocument {
+                    incidental_text: String::new(),
                     external_id: sha256_hex(&[&crawl_base, &page.url]),
                     kind: if page.content_type == "text/html" {
                         "web-page"

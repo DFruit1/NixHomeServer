@@ -282,6 +282,7 @@ impl super::Extractor for KiwixExtractor {
             let metadata = !has_xapian && (matches_any(&file_name, &metadata_patterns) || fulltext);
 
             emit(ExtractedDocument {
+                incidental_text: String::new(),
                 external_id: crate::timeutil::sha256_hex(&[&file_name]),
                 kind: "zim-archive".to_string(),
                 title: zim_stem.clone(),
@@ -323,6 +324,7 @@ impl super::Extractor for KiwixExtractor {
                     body = truncate(&html_to_text(&html), FULLTEXT_BODY_LIMIT);
                 }
                 emit(ExtractedDocument {
+                    incidental_text: String::new(),
                     external_id: crate::timeutil::sha256_hex(&[&file_name, &entry_path]),
                     kind: "zim-article".to_string(),
                     title: html_title_value,

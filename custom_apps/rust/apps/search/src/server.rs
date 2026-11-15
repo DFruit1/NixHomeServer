@@ -106,6 +106,16 @@ pub async fn run() -> Result<(), String> {
         })?;
 
     let state = AppState::from_env()?;
+    // The indexing passes own the schema, but after an upgrade this process
+    // may start first and its result query reads the newest columns.
+    match db::connect(&state.inner.settings.database_url).await {
+        Ok(mut client) => {
+            if let Err(err) = db::migrate(&mut client).await {
+                eprintln!("search: schema check at start-up failed: {err}");
+            }
+        }
+        Err(err) => eprintln!("search: schema check at start-up failed: {err}"),
+    }
 
     let app = Router::new()
         .route("/", get(index))
@@ -803,9 +813,10 @@ async fn execute_search_plan(
                 ranked_more.unwrap_or(offset + response.hits.len() < response.total as usize);
             for (rank, hit) in response.hits.iter().enumerate() {
                 let enriched = enrichment.get(&hit.id);
-                let snippet = semantic_snippets.get(&hit.id).cloned().or_else(|| {
-                    enriched.and_then(|doc| text::result_snippet(&doc.body_text, &query))
-                });
+                let snippet = semantic_snippets
+                    .get(&hit.id)
+                    .cloned()
+                    .or_else(|| enriched.and_then(|doc| document_snippet(doc, &query)));
                 let empty_metadata = serde_json::Value::Null;
                 let raw_metadata = enriched.map(|doc| &doc.metadata).unwrap_or(&empty_metadata);
                 let metadata = enriched
@@ -885,6 +896,22 @@ fn facet_json(facets: &[(String, u64)]) -> Vec<serde_json::Value> {
 /// response so the UI can present key metadata uniformly across every source.
 /// The full metadata stays in Postgres; only scalar values and short string
 /// lists are exposed, each capped so a long mail header cannot bloat a page.
+/// A snippet from the body when it has the query's words, otherwise from the
+/// incidental text, introduced by what that text is ("Subtitles: ...").
+fn document_snippet(doc: &db::DocumentEnrichment, query: &str) -> Option<String> {
+    text::snippet_from_text(&doc.body_text, query)
+        .or_else(|| {
+            let found = text::snippet_from_text(&doc.incidental_text, query)?;
+            let label = doc
+                .metadata
+                .get(crate::extract::INCIDENTAL_LABEL)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Text inside");
+            Some(format!("{}: {found}", text::escape_html(label)))
+        })
+        .or_else(|| text::result_snippet(&doc.body_text, query))
+}
+
 fn present_metadata(metadata: &serde_json::Value) -> serde_json::Value {
     const MAX_STRING_CHARS: usize = 300;
     const MAX_LIST_ITEMS: usize = 20;
@@ -894,7 +921,11 @@ fn present_metadata(metadata: &serde_json::Value) -> serde_json::Value {
     };
     for (key, value) in entries {
         // Owner is a first-class result field, not repeat it here.
-        if key == "owner" {
+        if key == "owner"
+            || key == crate::extract::SECTION_OF
+            || key == crate::extract::INCIDENTAL_LABEL
+            || key == crate::extract::MAILING_LIST
+        {
             continue;
         }
         match value {

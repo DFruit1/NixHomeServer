@@ -18,6 +18,9 @@ const SOLR_DELETE_CHUNK: usize = 1000;
 /// one commit instead of imposing a hard commit per batch; the indexer issues
 /// one explicit hard commit once a source has finished syncing.
 const SOLR_COMMIT_WITHIN_MS: u64 = 10_000;
+/// Marks a `dedupe_s` value shared by the sections of one work, as opposed to
+/// the content signature shared by identical copies.
+const SECTIONS_PREFIX: &str = "sections:";
 
 /// One document rendered for the Solr index.
 ///
@@ -37,6 +40,11 @@ pub struct SolrDocument {
     pub kind: String,
     pub title: String,
     pub body: String,
+    /// Incidental text (dialogue, words in a photo), indexed as
+    /// `incidental_txt` and searched at a small fraction of the body's weight.
+    pub incidental: String,
+    /// Mailing-list mail, indexed as `mailing_list_b` for a mild demotion.
+    pub mailing_list: bool,
     pub discovery: String,
     pub content_type: String,
     pub origin_url: String,
@@ -136,12 +144,24 @@ impl SolrDocument {
             .content_created_at
             .map(|value| value.to_string())
             .unwrap_or_default();
-        let dedupe = crate::timeutil::sha256_hex(&[
-            &record.kind,
-            &record.title.trim().to_lowercase(),
-            &created,
-            &record.body_text,
-        ]);
+        // Sections of one work share a slot, so a search lists the work once
+        // with its best-matching section instead of a page of its chapters.
+        let dedupe = match record
+            .metadata
+            .get(crate::extract::SECTION_OF)
+            .and_then(Value::as_str)
+        {
+            Some(work) => format!(
+                "{SECTIONS_PREFIX}{}",
+                crate::timeutil::sha256_hex(&[source_id, work])
+            ),
+            None => crate::timeutil::sha256_hex(&[
+                &record.kind,
+                &record.title.trim().to_lowercase(),
+                &created,
+                &record.body_text,
+            ]),
+        };
         Self {
             dedupe,
             id: db::full_document_id(source_id, &record.external_id),
@@ -149,6 +169,9 @@ impl SolrDocument {
             kind: record.kind.clone(),
             title: record.title.clone(),
             body: record.body_text.clone(),
+            incidental: record.incidental_text.clone(),
+            mailing_list: record.metadata.get(crate::extract::MAILING_LIST)
+                == Some(&Value::Bool(true)),
             discovery,
             content_type: record.content_type.clone(),
             origin_url: record.origin_url.clone(),
@@ -188,6 +211,12 @@ impl SolrDocument {
         }
         if !self.owner.is_empty() {
             doc["owner_s"] = json!(self.owner);
+        }
+        if !self.incidental.is_empty() {
+            doc["incidental_txt"] = json!(self.incidental);
+        }
+        if self.mailing_list {
+            doc["mailing_list_b"] = json!(true);
         }
         // Dynamic fields (defined by the stock `_default` configset) keep the
         // facet vocabulary out of the managed schema, so adding a dimension
@@ -868,15 +897,21 @@ impl SolrClient {
                 "0.1"
             }
         );
-        let boost = coherence
-            .as_ref()
-            .map(|_| {
-                format!(
-                    "product(if(query($coherence),1,{}),{recency})",
-                    INCOHERENT_SCORE_FACTOR
-                )
-            })
-            .unwrap_or(recency);
+        // Newsletters and promotions are half the mail archive and mention
+        // everything; between comparable matches, prefer mail written to a
+        // person. They stay findable and filterable as "Mailing list".
+        let boost = format!(
+            "product({},if(query($mailingList),{MAILING_LIST_SCORE_FACTOR},1))",
+            coherence
+                .as_ref()
+                .map(|_| {
+                    format!(
+                        "product(if(query($coherence),1,{}),{recency})",
+                        INCOHERENT_SCORE_FACTOR
+                    )
+                })
+                .unwrap_or(recency)
+        );
         let mut params: Vec<(&str, String)> = vec![
             ("q", main_query.clone()),
             // Stored fields only; the body is index-only and is enriched from
@@ -887,7 +922,10 @@ impl SolrClient {
                     .to_string(),
             ),
             ("defType", "edismax".to_string()),
-            ("qf", "title^6 body discovery_txt^2".to_string()),
+            // Incidental text (dialogue, words in a photo) can find an item
+            // but carries a twentieth of the body's weight, and none of the
+            // phrase or coverage boosts below.
+            ("qf", "title^6 body discovery_txt^2 incidental_txt^0.05".to_string()),
             // Phrase boosts: documents whose title or body contains the query
             // terms adjacent (within the phrase slop `ps`) rank above documents
             // where the same terms appear scattered.
@@ -903,6 +941,7 @@ impl SolrClient {
             // passage keeps its full score; a document whose ideas are only
             // scattered is demoted rather than excluded.
             ("boost", boost),
+            ("mailingList", "mailing_list_b:true".to_string()),
             ("rows", rows.to_string()),
             ("start", offset.to_string()),
             // Identical copies share a content signature; show the best one
@@ -1203,6 +1242,9 @@ const COHERENCE_SLOP: usize = 50;
 /// not lost, but it ranks behind documents that discuss them together.
 const INCOHERENT_SCORE_FACTOR: f32 = 0.3;
 
+/// Score kept by mail sent through a mailing list or subscription.
+const MAILING_LIST_SCORE_FACTOR: f32 = 0.7;
+
 /// Matches documents that discuss adjacent query ideas near each other. Used
 /// only by the score penalty, never to admit a document. Adjacent pairs and
 /// their two strongest forms are enough for a strong signal without turning a
@@ -1419,9 +1461,11 @@ pub fn parse_search_response(response: &Value) -> Result<SearchResponse, String>
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
+            // Other sections of the same work are not copies of this one.
             copies: doc
                 .get("dedupe_s")
                 .and_then(Value::as_str)
+                .filter(|signature| !signature.starts_with(SECTIONS_PREFIX))
                 .and_then(|signature| response.pointer("/expanded")?.get(signature))
                 .and_then(|group| group.get("numFound"))
                 .and_then(Value::as_u64)
@@ -1591,6 +1635,7 @@ mod tests {
     #[test]
     fn payload_indexes_body_and_discovery_with_normalised_facets() {
         let record = db::DocumentRecord {
+            incidental_text: String::new(),
             external_id: "1".to_string(),
             kind: "document".to_string(),
             title: "t".to_string(),

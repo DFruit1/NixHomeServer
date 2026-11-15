@@ -110,6 +110,13 @@ let
     SEARCH_ZIMDUMP = "${pkgs.zim-tools}/bin/zimdump";
     SEARCH_KIWIXSEARCH = "${kiwixSearchPackage}/bin/kiwix-search";
     SEARCH_PDFTOTEXT = "${pkgs."poppler-utils"}/bin/pdftotext";
+  }
+  // lib.optionalAttrs cfg.ocr.enable {
+    # Recognition for scanned PDF pages and attached pictures; see
+    # custom_apps/rust/apps/search/src/extract/ocr.rs.
+    SEARCH_TESSERACT = "${pkgs.tesseract.override { enableLanguages = cfg.ocr.languages; }}/bin/tesseract";
+    SEARCH_PDFTOPPM = "${pkgs."poppler-utils"}/bin/pdftoppm";
+    SEARCH_OCR_LANGUAGES = lib.concatStringsSep "+" cfg.ocr.languages;
   };
 
   pdfArchiveEnvironment = {
@@ -249,6 +256,23 @@ in
         the indexing pass. Archives whose names do not match any entry are
         indexed at archive level only.
       '';
+    };
+
+    ocr = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Recognise the text in scanned PDF pages and in pictures attached to
+          mail. It runs only where a page or picture has no text of its own,
+          once per file, inside the indexing pass.
+        '';
+      };
+      languages = lib.mkOption {
+        type = lib.types.nonEmptyListOf lib.types.str;
+        default = [ "eng" ];
+        description = "Tesseract language models used for recognition.";
+      };
     };
 
     sources = lib.mkOption {

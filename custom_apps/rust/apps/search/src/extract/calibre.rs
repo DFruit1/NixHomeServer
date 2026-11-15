@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
 
-use super::document::{content_type_for_format, extract_format_text};
+use super::document::content_type_for_format;
+use super::sections::{emit_work, extract_format_units, sections};
 use super::ExtractedDocument;
 use crate::config::SourceConfig;
 use crate::text::{html_to_text, truncate_text};
@@ -268,19 +269,20 @@ impl super::Extractor for CalibreExtractor {
             let mut total_size = 0i64;
             let mut primary_path = String::new();
             let mut content_type = "application/octet-stream".to_string();
-            let mut book_text = String::new();
+            let mut book_sections = Vec::new();
 
             let mut ordered: Vec<&FormatFile> = book_formats.iter().collect();
             ordered.sort_by_key(|format| format_priority(&format.format));
             for format in &ordered {
                 let path = format_path(&library_dir, &book, format);
                 total_size += format_file_size(&path);
-                if book_text.is_empty()
-                    && let Some(text) =
-                        extract_format_text(&path, &format.format, self.pdftotext.as_deref())
-                    && !text.trim().is_empty()
+                if book_sections.is_empty()
+                    && let Ok(units) =
+                        extract_format_units(&path, &format.format, self.pdftotext.as_deref())
+                    && let found = sections(units)
+                    && !found.is_empty()
                 {
-                    book_text = text;
+                    book_sections = found;
                     primary_path = path.display().to_string();
                     content_type = content_type_for_format(&format.format);
                 }
@@ -320,10 +322,6 @@ impl super::Extractor for CalibreExtractor {
                 body.push_str(&html_to_text(description));
                 body.push('\n');
             }
-            if !book_text.trim().is_empty() {
-                body.push('\n');
-                body.push_str(&book_text);
-            }
 
             let mut metadata = serde_json::Map::new();
             metadata.insert("owner".to_string(), serde_json::json!("shared"));
@@ -359,7 +357,8 @@ impl super::Extractor for CalibreExtractor {
                 metadata.insert("formats".to_string(), serde_json::json!(format_names));
             }
 
-            emit(ExtractedDocument {
+            let work = ExtractedDocument {
+                incidental_text: String::new(),
                 external_id: book.id.to_string(),
                 kind: "book".to_string(),
                 title: if book.title.trim().is_empty() {
@@ -382,7 +381,8 @@ impl super::Extractor for CalibreExtractor {
                     .or_else(|| book.timestamp.as_deref().and_then(parse_date)),
                 content_modified_at: book.last_modified.as_deref().and_then(parse_date),
                 metadata: serde_json::Value::Object(metadata),
-            });
+            };
+            emit_work(work, book_sections, emit);
         }
         Ok(())
     }

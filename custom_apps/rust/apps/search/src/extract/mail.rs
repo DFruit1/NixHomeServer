@@ -96,7 +96,95 @@ struct ParsedMail {
     cc: String,
     date: Option<i64>,
     body: String,
+    /// Sparse words recognised in attached pictures.
+    incidental: String,
+    /// Sent through a mailing list or subscription.
+    mailing_list: bool,
     attachments: Vec<String>,
+}
+
+/// Pictures smaller than this are logos, signatures and tracking pixels.
+const PICTURE_MINIMUM_BYTES: usize = 40_000;
+const PICTURE_MAXIMUM_BYTES: usize = 16_000_000;
+const PICTURES_PER_MESSAGE: usize = 8;
+/// A picture with at least this many recognised words is a scanned document
+/// and joins the message text; fewer are words that happen to be in a photo.
+const SCAN_WORDS: usize = 40;
+
+struct Parts<'a> {
+    pdftotext: Option<&'a Path>,
+    /// MIME parts still allowed, bounding a hostile or runaway message.
+    remaining: usize,
+    /// Drop quoted earlier messages from this message's own text.
+    strip_quotes: bool,
+    pictures: usize,
+    incidental: String,
+}
+
+/// Message identifiers as they appear in `Message-ID`, `In-Reply-To` and
+/// `References`: every `<...>` token.
+fn message_ids(value: &str) -> impl Iterator<Item = &str> {
+    value
+        .split('<')
+        .skip(1)
+        .filter_map(|rest| rest.split('>').next())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+}
+
+/// Removes what a message repeats rather than says: the earlier messages it
+/// quotes (when `strip_quotes`), long tracking links and legal notices.
+/// Quoted text is only dropped when the quoted message is itself in the
+/// archive, so nothing becomes unfindable. Forwarded content is kept: there
+/// the earlier message is the point.
+fn clean_message_text(text: &str, strip_quotes: bool) -> String {
+    const NOTICES: [&str; 6] = [
+        "this email and any",
+        "this e-mail and any",
+        "this message and any",
+        "this email (including",
+        "confidentiality notice",
+        "this communication is confidential",
+    ];
+    let mut out = String::with_capacity(text.len());
+    let mut in_notice = false;
+    let mut forwarded = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.contains("forwarded message") || lower.starts_with("begin forwarded message") {
+            forwarded = true;
+        }
+        if strip_quotes && !forwarded {
+            // An unprefixed copy of the earlier message follows this marker.
+            if lower.trim_matches('-').trim() == "original message" {
+                break;
+            }
+            if trimmed.starts_with('>') || (lower.starts_with("on ") && lower.ends_with("wrote:")) {
+                continue;
+            }
+        }
+        // html2text lists link targets as "[3]: https://..."; a long one is a
+        // tracking address whose random tokens only add noise.
+        if let Some((reference, target)) = trimmed.split_once("]: ")
+            && reference.starts_with('[')
+            && target.starts_with("http")
+            && target.len() > 100
+        {
+            continue;
+        }
+        if trimmed.is_empty() {
+            in_notice = false;
+        } else if NOTICES.iter().any(|notice| lower.starts_with(notice)) {
+            in_notice = true;
+        }
+        if in_notice {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
 
 fn attachment_name(mail: &mailparse::ParsedMail<'_>) -> Option<String> {
@@ -108,16 +196,12 @@ fn attachment_name(mail: &mailparse::ParsedMail<'_>) -> Option<String> {
         .map(|name| truncate_text(name, 4_096))
 }
 
-fn text_parts(
-    mail: &mailparse::ParsedMail<'_>,
-    pdftotext: Option<&Path>,
-    depth: usize,
-    remaining: &mut usize,
-) -> String {
-    if depth > 16 || *remaining == 0 {
+fn text_parts(mail: &mailparse::ParsedMail<'_>, depth: usize, parts: &mut Parts<'_>) -> String {
+    if depth > 16 || parts.remaining == 0 {
         return String::new();
     }
-    *remaining -= 1;
+    parts.remaining -= 1;
+    let pdftotext = parts.pdftotext;
     let mime = mail.ctype.mimetype.to_ascii_lowercase();
     if !mail.subparts.is_empty() {
         let mut body = String::new();
@@ -125,14 +209,14 @@ fn text_parts(
         // representation (usually HTML) instead of indexing duplicate prose.
         if mime == "multipart/alternative" {
             for part in mail.subparts.iter().rev() {
-                let text = text_parts(part, pdftotext, depth + 1, remaining);
+                let text = text_parts(part, depth + 1, parts);
                 if !text.trim().is_empty() {
                     return text;
                 }
             }
         } else {
             for part in &mail.subparts {
-                let text = text_parts(part, pdftotext, depth + 1, remaining);
+                let text = text_parts(part, depth + 1, parts);
                 if !text.trim().is_empty() {
                     body.push_str(&truncate_text(
                         &text,
@@ -160,11 +244,53 @@ fn text_parts(
             mail.get_body().unwrap_or_default()
         };
         let bounded = truncate_text(&raw, super::document::TEXT_LIMIT);
-        return if mime == "text/html" {
+        let text = if mime == "text/html" {
             truncate_text(&html_to_text(&bounded), super::document::TEXT_LIMIT)
         } else {
             bounded
         };
+        return clean_message_text(&text, parts.strip_quotes);
+    }
+    if mime.starts_with("image/") || mime == "application/octet-stream" {
+        let name = attachment_name(mail).unwrap_or_default();
+        let extension = name
+            .rsplit('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let picture = matches!(
+            mime.as_str(),
+            "image/png" | "image/jpeg" | "image/tiff" | "image/bmp" | "image/webp"
+        ) || (mime == "application/octet-stream"
+            && matches!(
+                extension.as_str(),
+                "png" | "jpg" | "jpeg" | "tif" | "tiff" | "bmp" | "webp"
+            ));
+        if picture {
+            if parts.pictures >= PICTURES_PER_MESSAGE
+                || !(PICTURE_MINIMUM_BYTES..=PICTURE_MAXIMUM_BYTES).contains(&mail.raw_bytes.len())
+            {
+                return String::new();
+            }
+            let Ok(bytes) = mail.get_body_raw() else {
+                return String::new();
+            };
+            if bytes.len() < PICTURE_MINIMUM_BYTES {
+                return String::new();
+            }
+            parts.pictures += 1;
+            let Some(text) = super::ocr::image_text(&bytes) else {
+                return String::new();
+            };
+            if super::ocr::readable(&text, SCAN_WORDS) {
+                return format!("{name}\n{}", truncate_text(&text, 200_000));
+            }
+            if super::ocr::readable(&text, 6) && parts.incidental.len() < 100_000 {
+                parts.incidental.push_str(&truncate_text(&text, 20_000));
+                parts.incidental.push('\n');
+            }
+            return String::new();
+        }
     }
     // Only decode recognised document types; images, executables and large
     // binary attachments keep their filenames without consuming extraction work.
@@ -226,16 +352,24 @@ fn text_parts(
             super::document::zip_text(std::io::Cursor::new(&bytes), format)
         }
         "fb2" => super::document::xml_text(&decode_document_text(&bytes)),
-        "eml" => mailparse::parse_mail(&bytes)
-            .ok()
-            .map(|nested| text_parts(&nested, pdftotext, depth + 1, remaining)),
+        // An attached message is forwarded content: keep what it quotes.
+        "eml" => mailparse::parse_mail(&bytes).ok().map(|nested| {
+            let strip_quotes = std::mem::replace(&mut parts.strip_quotes, false);
+            let text = text_parts(&nested, depth + 1, parts);
+            parts.strip_quotes = strip_quotes;
+            text
+        }),
         "html" | "htm" => Some(html_to_text(&decode_document_text(&bytes))),
         _ => Some(decode_document_text(&bytes)),
     };
     truncate_text(&text.unwrap_or_default(), super::document::TEXT_LIMIT)
 }
 
-fn parse_eml(bytes: &[u8], pdftotext: Option<&Path>) -> Result<ParsedMail, String> {
+fn parse_eml(
+    bytes: &[u8],
+    pdftotext: Option<&Path>,
+    archived: &std::collections::HashSet<String>,
+) -> Result<ParsedMail, String> {
     let mail =
         mailparse::parse_mail(bytes).map_err(|err| format!("failed to parse email: {err}"))?;
     let headers = mail.get_headers();
@@ -251,7 +385,27 @@ fn parse_eml(bytes: &[u8], pdftotext: Option<&Path>) -> Result<ParsedMail, Strin
         .get_first_value("Date")
         .as_deref()
         .and_then(parse_date);
-    let body = text_parts(&mail, pdftotext, 0, &mut 256);
+    // A subscription can be left; mail addressed to one person cannot. This
+    // marks newsletters, digests and promotions and leaves almost all
+    // invoices and receipts alone (9% of them carried these headers here).
+    let mailing_list = headers.get_first_value("List-Unsubscribe").is_some()
+        || headers.get_first_value("List-Id").is_some();
+    let replies_to = [
+        headers.get_first_value("In-Reply-To"),
+        headers.get_first_value("References"),
+    ];
+    let mut parts = Parts {
+        pdftotext,
+        remaining: 256,
+        strip_quotes: replies_to
+            .iter()
+            .flatten()
+            .flat_map(|value| message_ids(value))
+            .any(|id| archived.contains(id)),
+        pictures: 0,
+        incidental: String::new(),
+    };
+    let body = text_parts(&mail, 0, &mut parts);
     let attachments = mail.parts().filter_map(attachment_name).take(64).collect();
     Ok(ParsedMail {
         subject,
@@ -260,6 +414,8 @@ fn parse_eml(bytes: &[u8], pdftotext: Option<&Path>) -> Result<ParsedMail, Strin
         cc,
         date,
         body,
+        incidental: parts.incidental,
+        mailing_list,
         attachments,
     })
 }
@@ -297,6 +453,22 @@ impl super::Extractor for MailExtractor {
         }
         emails.sort_by(|left, right| left.0.cmp(&right.0));
 
+        // Which messages the archive holds, so a reply's quoted copy of one
+        // can be dropped without losing the only copy of that text.
+        let mut archived = std::collections::HashSet::new();
+        for (path, _) in &emails {
+            let mut head = Vec::new();
+            if let Ok(file) = std::fs::File::open(path) {
+                use std::io::Read;
+                let _ = file.take(65_536).read_to_end(&mut head);
+            }
+            if let Ok((headers, _)) = mailparse::parse_headers(&head)
+                && let Some(id) = headers.get_first_value("Message-ID")
+            {
+                archived.extend(message_ids(&id).map(str::to_string));
+            }
+        }
+
         for (path, owner) in emails {
             let bytes = match std::fs::read(&path) {
                 Ok(bytes) => bytes,
@@ -308,7 +480,7 @@ impl super::Extractor for MailExtractor {
                     continue;
                 }
             };
-            let parsed = match parse_eml(&bytes, self.pdftotext.as_deref()) {
+            let parsed = match parse_eml(&bytes, self.pdftotext.as_deref(), &archived) {
                 Ok(parsed) => parsed,
                 Err(err) => {
                     eprintln!(
@@ -330,6 +502,15 @@ impl super::Extractor for MailExtractor {
                     serde_json::json!(parsed.attachments),
                 );
             }
+            if parsed.mailing_list {
+                metadata.insert(super::MAILING_LIST.to_string(), serde_json::json!(true));
+            }
+            if !parsed.incidental.is_empty() {
+                metadata.insert(
+                    super::INCIDENTAL_LABEL.to_string(),
+                    serde_json::json!("Text in an attached picture"),
+                );
+            }
             for (key, value) in [
                 ("from", &parsed.from),
                 ("to", &parsed.to),
@@ -343,6 +524,7 @@ impl super::Extractor for MailExtractor {
                 }
             }
             emit(ExtractedDocument {
+                incidental_text: parsed.incidental,
                 external_id: sha256_hex(&[path.to_string_lossy().as_ref()]),
                 kind: "email".to_string(),
                 title: if parsed.subject.is_empty() {
@@ -393,7 +575,7 @@ Content-Type: text/html; charset=utf-8\r\n\
 
     #[test]
     fn parses_plain_email() {
-        let parsed = parse_eml(EML.as_bytes(), None).expect("parse");
+        let parsed = parse_eml(EML.as_bytes(), None, &Default::default()).expect("parse");
         assert_eq!(parsed.subject, "Hello there");
         assert_eq!(parsed.from, "Alice <alice@example.org>");
         assert_eq!(parsed.date, Some(1_700_000_000));
@@ -402,7 +584,7 @@ Content-Type: text/html; charset=utf-8\r\n\
 
     #[test]
     fn parses_html_email() {
-        let parsed = parse_eml(HTML_EML.as_bytes(), None).expect("parse");
+        let parsed = parse_eml(HTML_EML.as_bytes(), None, &Default::default()).expect("parse");
         assert_eq!(parsed.subject, "Report");
         assert!(
             parsed.body.contains("Quarterly report attached"),

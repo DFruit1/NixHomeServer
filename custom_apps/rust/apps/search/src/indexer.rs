@@ -27,7 +27,9 @@ const ALLOW_MASS_DELETE_ENV: &str = "SEARCH_ALLOW_MASS_DELETE";
 // Revision 2 adds filename, host and descriptive-metadata discovery text.
 // Revision 3 adds the `dedupe_s` content signature, folder names, content-kind
 // words and an attachment marker to discovery text, and writer/director facets.
-const INDEX_VERSION: i64 = 3;
+// Revision 4 adds incidental text, one result slot per sectioned work and the
+// mailing-list marker with its "Mailing list" topic.
+const INDEX_VERSION: i64 = 4;
 
 /// Guards against a source silently producing no documents at all — most often
 /// a mount that is present but empty, or an integration whose data was
@@ -699,6 +701,7 @@ mod tests {
         let solr = SolrClient::new(&format!("http://{address}"), "fixture");
         let records = (0..200)
             .map(|index| DocumentRecord {
+                incidental_text: String::new(),
                 external_id: format!("document-{index:03}"),
                 kind: "fixture".into(),
                 title: format!("Document {index}"),

@@ -163,6 +163,7 @@ impl super::Extractor for FreshRssExtractor {
                             }
                         };
                     emit(ExtractedDocument {
+                        incidental_text: String::new(),
                         external_id,
                         kind: "document".to_string(),
                         title: if entry.title.is_empty() {
@@ -184,6 +185,7 @@ impl super::Extractor for FreshRssExtractor {
                     });
                 }
                 emit(ExtractedDocument {
+                    incidental_text: String::new(),
                     external_id: sha256_hex(&[&username, &entry.guid]),
                     kind: "feed-entry".to_string(),
                     title: if entry.title.is_empty() {

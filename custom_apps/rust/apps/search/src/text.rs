@@ -739,7 +739,7 @@ pub fn highlight_terms(text: &str, terms: &[String]) -> String {
 
 /// Escapes the five HTML-significant characters so snippet text can be inserted
 /// into markup without carrying any structure of its own.
-fn escape_html(text: &str) -> String {
+pub(crate) fn escape_html(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {

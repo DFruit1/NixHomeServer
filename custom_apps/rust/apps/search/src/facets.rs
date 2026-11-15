@@ -101,9 +101,13 @@ pub fn extract(metadata: &Value, content_created_at: Option<i64>) -> Facets {
             .map(|datetime| datetime.format("%Y").to_string())
             .and_then(|year| year.parse().ok())
     });
+    let mut tags = collect_keys(metadata, &TAG_KEYS);
+    if metadata.get(crate::extract::MAILING_LIST) == Some(&Value::Bool(true)) {
+        tags.push("Mailing list".to_string());
+    }
     Facets {
         authors: collect_keys(metadata, &AUTHOR_KEYS),
-        tags: collect_keys(metadata, &TAG_KEYS),
+        tags,
         series: collect_keys(metadata, &SERIES_KEYS),
         year,
     }

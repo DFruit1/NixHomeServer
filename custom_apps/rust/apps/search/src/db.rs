@@ -22,6 +22,8 @@ pub struct DocumentRecord {
     pub kind: String,
     pub title: String,
     pub body_text: String,
+    /// See `ExtractedDocument::incidental_text`.
+    pub incidental_text: String,
     pub content_type: String,
     pub origin_url: String,
     pub app_url: String,
@@ -113,6 +115,7 @@ pub async fn migrate(client: &mut Client) -> Result<(), String> {
             ALTER TABLE sources ADD COLUMN IF NOT EXISTS last_error TEXT;
             ALTER TABLE sources ADD COLUMN IF NOT EXISTS last_error_at BIGINT;
             ALTER TABLE sources ADD COLUMN IF NOT EXISTS index_version INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE documents ADD COLUMN IF NOT EXISTS incidental_text TEXT NOT NULL DEFAULT '';
             ",
         )
         .await
@@ -327,7 +330,7 @@ pub async fn documents_batch(
 ) -> Result<Vec<(String, DocumentRecord)>, String> {
     const COLUMNS: &str = "id, external_id, kind, title, body_text, content_type, \
         origin_url, app_url, file_path, size_bytes, checksum, content_created_at, \
-        content_modified_at, metadata";
+        content_modified_at, metadata, incidental_text";
     let rows = match after_id {
         Some(after) => {
             client
@@ -373,6 +376,7 @@ fn row_to_document(row: tokio_postgres::Row) -> (String, DocumentRecord) {
             content_created_at: row.get(11),
             content_modified_at: row.get(12),
             metadata: row.get(13),
+            incidental_text: row.get(14),
         },
     )
 }
@@ -385,7 +389,7 @@ pub(crate) async fn documents_by_ids(
         .query(
             "SELECT id, external_id, kind, title, body_text, content_type,
         origin_url, app_url, file_path, size_bytes, checksum, content_created_at,
-        content_modified_at, metadata FROM documents WHERE id = ANY($1) ORDER BY id",
+        content_modified_at, metadata, incidental_text FROM documents WHERE id = ANY($1) ORDER BY id",
             &[&ids],
         )
         .await
@@ -400,6 +404,9 @@ pub(crate) async fn documents_by_ids(
 pub struct DocumentEnrichment {
     /// The opening of the body: all that snippets and match evidence read.
     pub body_text: String,
+    /// The opening of the incidental text, for a snippet when the body has
+    /// none of the query's words.
+    pub incidental_text: String,
     pub metadata: Value,
 }
 
@@ -419,7 +426,8 @@ pub async fn enrich_documents(
     // `left` counts characters, which never undercuts that byte bound.
     let rows = client
         .query(
-            "SELECT id, left(body_text, 400000), metadata FROM documents WHERE id = ANY($1)",
+            "SELECT id, left(body_text, 400000), metadata, left(incidental_text, 400000) \
+             FROM documents WHERE id = ANY($1)",
             &[&ids],
         )
         .await
@@ -432,6 +440,7 @@ pub async fn enrich_documents(
                 DocumentEnrichment {
                     body_text: row.get(1),
                     metadata: row.get(2),
+                    incidental_text: row.get(3),
                 },
             )
         })
@@ -475,9 +484,11 @@ pub async fn prepare_upsert(client: &Client) -> Result<Statement, String> {
             INSERT INTO documents (
                 id, source_id, external_id, kind, title, body_text, content_type,
                 origin_url, app_url, file_path, size_bytes, checksum,
-                content_created_at, content_modified_at, metadata, indexed_at
+                content_created_at, content_modified_at, metadata, indexed_at,
+                incidental_text
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16,
+                $17
             )
             ON CONFLICT (id) DO UPDATE SET
                 kind = EXCLUDED.kind,
@@ -492,7 +503,8 @@ pub async fn prepare_upsert(client: &Client) -> Result<Statement, String> {
                 content_created_at = EXCLUDED.content_created_at,
                 content_modified_at = EXCLUDED.content_modified_at,
                 metadata = EXCLUDED.metadata,
-                indexed_at = EXCLUDED.indexed_at
+                indexed_at = EXCLUDED.indexed_at,
+                incidental_text = EXCLUDED.incidental_text
             ",
         )
         .await
@@ -530,6 +542,7 @@ pub async fn upsert_document(
                 &doc.content_modified_at,
                 &metadata,
                 &now_epoch(),
+                &strip_nul_str(&doc.incidental_text),
             ],
         )
         .await

@@ -9,7 +9,7 @@ use crate::text::{decode_document_text, html_to_text, truncate_text};
 pub(crate) const TEXT_LIMIT: usize = 2_000_000;
 pub(crate) const XML_LIMIT: u64 = 8_000_000;
 
-fn parse_xml(raw: &str) -> Option<roxmltree::Document<'_>> {
+pub(crate) fn parse_xml(raw: &str) -> Option<roxmltree::Document<'_>> {
     if raw.len() as u64 > XML_LIMIT {
         return None;
     }

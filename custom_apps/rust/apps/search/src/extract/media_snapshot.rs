@@ -676,6 +676,7 @@ impl super::Extractor for MediaSnapshotExtractor {
             }
 
             emit(ExtractedDocument {
+                incidental_text: String::new(),
                 external_id: external_id(entry, &title),
                 kind: media_type.clone().unwrap_or_else(|| {
                     if fallback_type == "book" {

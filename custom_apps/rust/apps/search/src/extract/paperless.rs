@@ -196,6 +196,7 @@ impl super::Extractor for PaperlessExtractor {
             }
 
             emit(ExtractedDocument {
+                incidental_text: String::new(),
                 external_id,
                 kind: "document".to_string(),
                 title,
@@ -214,13 +215,25 @@ impl super::Extractor for PaperlessExtractor {
     }
 }
 
+/// A PDF's text, pages separated by form feeds. Pages without a text layer
+/// are read by recognition when it is configured.
 pub(crate) fn extract_pdf_text(path: &Path, pdftotext: Option<&Path>) -> Result<String, String> {
     let bytes =
         std::fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-    extract_pdf_bytes(&bytes, pdftotext)
+    Ok(super::ocr::fill_scanned_pages(
+        path,
+        text_layer(&bytes, pdftotext)?,
+    ))
 }
 
 pub(crate) fn extract_pdf_bytes(bytes: &[u8], pdftotext: Option<&Path>) -> Result<String, String> {
+    Ok(super::ocr::fill_scanned_pages_of_bytes(
+        bytes,
+        text_layer(bytes, pdftotext)?,
+    ))
+}
+
+fn text_layer(bytes: &[u8], pdftotext: Option<&Path>) -> Result<String, String> {
     let pdftotext = pdftotext
         .filter(|path| path.exists())
         .ok_or_else(|| "SEARCH_PDFTOTEXT must point to a pdftotext binary".to_string())?;

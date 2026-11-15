@@ -194,16 +194,21 @@ impl<'a> BookFiles<'a> {
                     metadata.insert(key, value);
                 }
             }
-            let text = if format == "pdf" {
-                super::paperless::extract_pdf_text(&path, self.pdftotext)?
+            // A PDF that cannot be read fails the pass, as before; other
+            // formats without readable text are indexed by their details.
+            let units = super::sections::extract_format_units(&path, &format, self.pdftotext);
+            let units = if format == "pdf" {
+                units?
             } else {
-                document::extract_format_text(&path, &format, self.pdftotext).unwrap_or_default()
+                units.unwrap_or_default()
             };
-            let body = match metadata.get("description").and_then(Value::as_str) {
-                Some(description) => format!("{}\n{text}", html_to_text(description)),
-                None => text,
-            };
-            emit(ExtractedDocument {
+            let body = metadata
+                .get("description")
+                .and_then(Value::as_str)
+                .map(html_to_text)
+                .unwrap_or_default();
+            let work = ExtractedDocument {
+                incidental_text: String::new(),
                 external_id: format!("file:{}", sha256_hex(&[path.to_string_lossy().as_ref()])),
                 kind: "book".to_string(),
                 title: truncate_text(&title, 2_000),
@@ -223,7 +228,8 @@ impl<'a> BookFiles<'a> {
                     .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|duration| duration.as_secs() as i64),
                 metadata: Value::Object(metadata),
-            });
+            };
+            super::sections::emit_work(work, super::sections::sections(units), emit);
         }
         Ok(())
     }
