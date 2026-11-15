@@ -664,8 +664,10 @@ pending. States are `scheduled`, `waiting`, `extended`, `shutting-down`,
 `cancelled`, and `unknown`.
 
 From the desktop session, the orchestrator requests the server shutdown, polls
-until the server is down, then opens a visible terminal that schedules and
-broadcasts a local poweroff after `--local-grace` minutes (default 5). Cancel
+until three consecutive SSH probes fail, then schedules a local poweroff after
+`--local-grace` minutes (default 5) and opens a visible countdown terminal. SSH
+unreachability is not physical power-state confirmation. Flapping connectivity
+remains subject to `--poll-timeout`; a cancelled server guard stops the runner. Cancel
 the local poweroff with Ctrl-C in that window or `loginctl -c`.
 
 ```bash
@@ -678,7 +680,17 @@ sets the existing power scheduler's `resume-hold.json` to at least two hours
 from now, preserving a longer hold, and renews it hourly while waiting. This
 postpones nightly suspend without changing the configured schedule. The server
 hold expires automatically, including after cancellation; desktop protection
-ends with the runner. Failure to acquire either protection stops the sequence.
+ends with the runner. Failure to acquire or renew either protection stops the
+sequence. The runner acquires its single-instance lock inside the inhibited
+child; concurrent runs are refused even with the deprecated `--force` flag.
+Interruption cancels this runner's server request and any unfinished desktop
+countdown. Failure to open the countdown terminal cancels the scheduled desktop
+poweroff rather than leaving an unattended timer.
+
+Invoking `$nixhomeserver-shutdown-guard` without additional context requests an
+immediate start of this guarded sequence with the default 60-minute timeout
+(or the timeout specified for that invocation), without chat or tool questions.
+Requests to edit the skill/script or inspect status do not start shutdown.
 
 Use `--dry-run` to print the plan without touching the server or the PC, and
 `--no-local-shutdown` to manage only the server.

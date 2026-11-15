@@ -12,6 +12,26 @@ reference, and the `Guarded Server Shutdown` section of
 not raw poweroff, shutdown, or a replacement watcher. An explicit manual-shutdown request uses
 the separate procedure below.
 
+## Invocation contract
+
+An explicit invocation of `$nixhomeserver-shutdown-guard` with no additional
+context is an instruction and authorization to start the guarded shutdown of
+both server and desktop immediately. Run
+`scripts/admin/desktop-server-shutdown.sh` through the visible-terminal launch
+below in the same turn. Do not ask clarification or confirmation questions,
+either in chat or through a question tool. Use the script's default timeout
+(60 minutes) unless the user has specified another timeout for this invocation;
+pass that value with `--timeout MIN`. Keep all other defaults unless specified.
+“Immediately” means start the guarded wait now, not bypass its timeout or checks.
+This skill invokes guarded shutdown, not `nix run .#deploy`.
+
+Perform the required preflight and verification without asking questions. If an
+existing runner is active, report it without duplicating it or resetting its
+deadline. If execution is blocked, diagnose within the authorized scope and
+report the concrete failure; do not substitute manual poweroff or deployment.
+An explicit request to inspect, extend, cancel, document, or edit this skill or
+script selects that requested operation instead; it does not start shutdown.
+
 ## Shut down both machines
 
 A request to run the guarded shutdown for both machines authorizes this sequence;
@@ -23,6 +43,8 @@ do not ask again. A request to implement the skill alone does not.
    read its guard status over SSH with `BatchMode=yes` and `ConnectTimeout=10`.
    If a guarded shutdown is already pending, inspect the existing desktop runner
    and report its status rather than starting a duplicate or resetting its deadline.
+   A pending server guard without a desktop runner is incomplete; diagnose and
+   report it rather than claiming that both-machine shutdown is running.
 2. Run the script with `--dry-run` to verify the plan. Preserve the defaults
    unless the user requests different timing: server timeout 60 minutes,
    server grace 60 minutes, desktop countdown 5 minutes. Do not disable local
@@ -69,7 +91,9 @@ do not ask again. A request to implement the skill alone does not.
    Report the actual state and earliest attempt time, plus the desktop countdown
    timing. The timeout is not a guaranteed poweroff deadline: desktop activity
    markers expire after five minutes, then the server requires five quiet minutes.
-   A grace deadline never forces shutdown through active work. Starting the runner
+   A grace deadline never forces shutdown through active work. The runner refuses
+   concurrent instances (including `--force`), exits on failed sleep-hold renewal,
+   and cancels its server request and local poweroff on interruption. Starting the runner
    is not proof either machine has powered off.
    If launch fails, inspect the failure and server status before retrying;
    never bypass guard checks or shorten timing to obtain a successful result.

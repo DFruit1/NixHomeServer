@@ -18,6 +18,8 @@ POLL_TIMEOUT_MIN=90
 DRY_RUN=false
 LOCAL_SHUTDOWN=true
 SERVER_SHUTDOWN_COMPLETED=false
+LOCAL_COUNTDOWN_COMPLETED=false
+SERVER_REQUESTED=false
 DESKTOP_LOAD_FACTOR="${SHUTDOWN_GUARD_DESKTOP_LOAD_FACTOR:-1.0}"
 DESKTOP_RUNNABLE_THRESHOLD="${SHUTDOWN_GUARD_DESKTOP_RUNNABLE_THRESHOLD:-2}"
 DESKTOP_TTY_ACTIVITY_SEC="${SHUTDOWN_GUARD_DESKTOP_TTY_ACTIVITY_SEC:-300}"
@@ -56,7 +58,7 @@ Options:
   --check               Print desktop work state (idle/busy) and exit.
   --status              Print runner status and exit.
   --cleanup             Cancel any stale/leftover scheduled desktop poweroff and exit.
-  --force               Bypass the single-runner guard.
+  --force               Deprecated; concurrent shutdown runners are refused.
   -h, --help            Show this help.
 EOF
 }
@@ -194,16 +196,18 @@ desktop_work_active() {
 
 cleanup_on_exit() {
   local rc=$?
-  if [[ "$SERVER_SHUTDOWN_COMPLETED" != true && "$DRY_RUN" != true ]]; then
+  trap - EXIT INT TERM HUP
+  if [[ "$SERVER_REQUESTED" == true && "$SERVER_SHUTDOWN_COMPLETED" != true ]]; then
     for _ in 1 2 3; do
       ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "$HOST" \
         "sudo $GUARD cancel" >/dev/null 2>&1 && break
       sleep 1
     done
-    # Do not leave a desktop poweroff scheduled if this run did not complete.
-    loginctl -c >/dev/null 2>&1 || true
-    rm -f -- "$POWEROFF_STATE_FILE"
   fi
+  if [[ "$LOCAL_COUNTDOWN_COMPLETED" != true ]]; then
+    cancel_local_poweroff
+  fi
+  [[ -z "${COUNTDOWN_DIR:-}" ]] || rm -rf -- "$COUNTDOWN_DIR"
   rm -f -- "$PID_FILE"
   return "$rc"
 }
@@ -232,13 +236,13 @@ cleanup_stale_local_poweroff() {
   if [[ "$scheduled" == *poweroff* ]]; then
     if stale_poweroff; then
       cancel_local_poweroff
-      printf 'Cancelled stale/leftover scheduled desktop poweroff.\\n'
+      printf 'Cancelled stale/leftover scheduled desktop poweroff.\n'
     else
-      printf 'A fresh scheduled desktop poweroff is still pending; not cancelling.\\n'
+      printf 'A fresh scheduled desktop poweroff is still pending; not cancelling.\n'
     fi
   else
     rm -f -- "$POWEROFF_STATE_FILE"
-    printf 'No scheduled desktop poweroff is pending.\\n'
+    printf 'No scheduled desktop poweroff is pending.\n'
   fi
 }
 
@@ -388,7 +392,7 @@ server_reachable() {
 wait_for_server_deadline() {
   local remaining=$(( TIMEOUT_MIN * 60 )) step
   while (( remaining > 0 )); do
-    protect_server_sleep || true
+    protect_server_sleep || die "could not renew server sleep protection"
     if desktop_work_active; then
       if ! remote sudo "$GUARD" mark-activity >/dev/null; then
         printf 'Could not report desktop work to the server; retrying at the next check.\n' >&2
@@ -445,12 +449,13 @@ broadcast_local_shutdown() {
   mkdir -p -- "$(dirname "$POWEROFF_STATE_FILE")" 2>/dev/null || true
   printf 'created=%s\nrun_pid=%s\ngrace=%s\n' "$(date +%s)" "$$" "$grace" >"$POWEROFF_STATE_FILE"
   terminal="$(detect_terminal)" || die "no terminal emulator found; set \$TERMINAL"
-  script="$(mktemp "${TMPDIR:-/tmp}/desktop-server-shutdown.XXXXXX")"
-  cat >"$script" <<EOF
+  COUNTDOWN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/desktop-server-shutdown.XXXXXX")"
+  script="$COUNTDOWN_DIR/countdown.sh"
+  cat >"$script" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
-grace=${grace}
-POWEROFF_STATE_FILE=${POWEROFF_STATE_FILE}
+grace="$1"
+POWEROFF_STATE_FILE="$2"
 cancel() {
   loginctl -c >/dev/null 2>&1 || true
   rm -f -- "$POWEROFF_STATE_FILE"
@@ -458,35 +463,26 @@ cancel() {
   exit 0
 }
 trap cancel INT TERM HUP
-cleanup() { rm -f -- "\$0"; }
+cleanup() { rm -f -- "$0"; }
 trap cleanup EXIT
 echo "The NixHomeServer has shut down."
 echo "This PC will power off in ${grace} minutes."
 echo "Cancel with Ctrl-C or 'loginctl -c'. Closing this window also cancels."
 for ((remaining = grace * 60; remaining > 0; remaining--)); do
-  printf '\rPowering off in %02d:%02d  (cancel: Ctrl-C or loginctl -c) ' "\$((remaining / 60))" "\$((remaining % 60))"
+  printf '\rPowering off in %02d:%02d  (cancel: Ctrl-C or loginctl -c) ' "$((remaining / 60))" "$((remaining % 60))"
   sleep 1
 done
 printf '\n'
 EOF
   chmod 0700 "$script"
   printf 'Server is down. Broadcasting local shutdown in %s minutes via %s.\n' "$grace" "$terminal"
-  spawn_terminal "$terminal" "$script"
+  spawn_terminal "$terminal" "$script" "$grace" "$POWEROFF_STATE_FILE"
+  LOCAL_COUNTDOWN_COMPLETED=true
 }
 
 command -v ssh >/dev/null 2>&1 || die "ssh is required"
 if ! command -v elogind-inhibit >/dev/null 2>&1 && ! command -v systemd-inhibit >/dev/null 2>&1; then
   die "systemd-inhibit or elogind-inhibit is required for desktop sleep protection"
-fi
-
-if [[ "$FORCE" != true && "${DESKTOP_SHUTDOWN_ALLOW_CONCURRENT:-0}" != "1" ]]; then
-  if [[ -f "$PID_FILE" ]]; then
-    existing_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
-    if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
-      printf 'A guarded shutdown runner is already active (pid %s). Use --status or --force.\n' "$existing_pid"
-      exit 0
-    fi
-  fi
 fi
 
 if [[ "$DRY_RUN" == true ]]; then
@@ -496,21 +492,6 @@ if [[ "$DRY_RUN" == true ]]; then
   printf 'dry-run: would run: ssh %s sudo %s start --timeout %s --grace %s\n' \
     "$HOST" "$GUARD" "$TIMEOUT_MIN" "$GRACE_MIN"
   exit 0
-fi
-
-# Never inherit a leftover scheduled desktop poweroff from a previous run.
-cancel_local_poweroff
-
-printf '%s\n' "$$" >"$PID_FILE"
-
-if [[ -z "$LOG_FILE" ]]; then
-  state_dir="${XDG_STATE_HOME:-$HOME/.local/state}"
-  if mkdir -p "$state_dir" 2>/dev/null; then
-    LOG_FILE="$state_dir/desktop-server-shutdown.log"
-  fi
-fi
-if [[ -n "$LOG_FILE" ]]; then
-  exec > >(tee -a "$LOG_FILE") 2>&1
 fi
 
 if [[ "${DESKTOP_SHUTDOWN_SLEEP_INHIBITED:-}" != 1 ]]; then
@@ -528,12 +509,41 @@ if [[ "${DESKTOP_SHUTDOWN_SLEEP_INHIBITED:-}" != 1 ]]; then
     bash "$0" "${ORIGINAL_ARGS[@]}"
 fi
 
-protect_server_sleep || true
+# Acquire ownership only in the inhibited child, not in its parent wrapper.
+# An advisory lock closes the PID-file race; never unlink the lock inode.
+command -v flock >/dev/null 2>&1 || die "flock is required"
+exec 9>"${PID_FILE}.lock"
+if ! flock -n 9; then
+  printf 'A guarded shutdown runner is already active. Use --status.\n'
+  exit 0
+fi
+[[ "$FORCE" != true ]] || printf 'Ignoring --force: concurrent runners are unsafe.\n' >&2
+# Never inherit a leftover scheduled desktop poweroff from a previous run.
+cancel_local_poweroff
+
+printf '%s\n' "$$" >"$PID_FILE"
+
+if [[ -z "$LOG_FILE" ]]; then
+  state_dir="${XDG_STATE_HOME:-$HOME/.local/state}"
+  if mkdir -p "$state_dir" 2>/dev/null; then
+    LOG_FILE="$state_dir/desktop-server-shutdown.log"
+  fi
+fi
+if [[ -n "$LOG_FILE" ]]; then
+  exec > >(exec 9>&-; tee -a "$LOG_FILE") 2>&1
+fi
+
+trap cleanup_on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+protect_server_sleep || die "could not acquire server sleep protection; shutdown not started"
 printf 'Sleep protection active: desktop inhibitor and renewable two-hour server hold.\n'
-trap cleanup_on_exit INT TERM HUP EXIT
 
 printf 'Requesting guarded shutdown on %s in %s minutes (grace %s minutes)...\n' \
   "$HOST" "$TIMEOUT_MIN" "$GRACE_MIN"
+SERVER_REQUESTED=true
 remote sudo "$GUARD" start --timeout "$TIMEOUT_MIN" --grace "$GRACE_MIN"
 
 printf 'Waiting up to %s minutes for the server shutdown; reporting desktop work throughout...\n' "$TIMEOUT_MIN"
@@ -542,29 +552,28 @@ wait_for_server_deadline
 printf 'Polling %s until it powers off...\n' "$HOST"
 poll_deadline=$(( $(date +%s) + POLL_TIMEOUT_MIN * 60 ))
 consecutive_failures=0
-while server_reachable; do
-  protect_server_sleep || true
-  status="$(remote sudo cat "$STATUS_FILE" 2>/dev/null || true)"
-  state="$(printf '%s\n' "$status" | sed -n 's/^state=//p')"
-  message="$(printf '%s\n' "$status" | sed -n 's/^message=//p')"
-  printf '[%s] server: %s (%s)\n' "$(date +%H:%M:%S)" "${message:-status unavailable}" "${state:-unknown}"
-  if desktop_work_active; then
-    remote sudo "$GUARD" mark-activity >/dev/null 2>&1 || true
-  fi
-  if (( $(date +%s) >= poll_deadline )); then
-    die "server is still up after ${POLL_TIMEOUT_MIN} minutes of polling; giving up"
-  fi
-  sleep "$POLL_SEC"
-done
-
 while :; do
   if server_reachable; then
     consecutive_failures=0
+    protect_server_sleep || die "could not renew server sleep protection"
+    status="$(remote sudo cat "$STATUS_FILE" 2>/dev/null || true)"
+    state="$(printf '%s\n' "$status" | sed -n 's/^state=//p')"
+    message="$(printf '%s\n' "$status" | sed -n 's/^message=//p')"
+    printf '[%s] server: %s (%s)\n' "$(date +%H:%M:%S)" "${message:-status unavailable}" "${state:-unknown}"
+    [[ "$state" != cancelled ]] || die "server shutdown was cancelled"
+    if desktop_work_active; then
+      remote sudo "$GUARD" mark-activity >/dev/null 2>&1 || true
+    fi
+    poll_step="$POLL_SEC"
   else
     consecutive_failures=$((consecutive_failures + 1))
     (( consecutive_failures >= 3 )) && break
+    poll_step=5
   fi
-  sleep 5
+  if (( $(date +%s) >= poll_deadline )); then
+    die "could not confirm server shutdown after ${POLL_TIMEOUT_MIN} minutes of polling; giving up"
+  fi
+  sleep "$poll_step"
 done
 
 printf 'Server %s is down.\n' "$HOST"

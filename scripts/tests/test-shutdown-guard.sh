@@ -12,7 +12,7 @@ guard="scripts/helpers/shutdown-guard.sh"
   exit 1
 }
 
-tmpdir="$(mktemp -d)"
+tmpdir="$(mktemp -d /tmp/shutdown-guard-tests.XXXXXX)"
 cleanup() { rm -rf "$tmpdir"; }
 trap cleanup EXIT
 
@@ -72,6 +72,11 @@ EOF
 
 cat >"$mock_bin/sleep" <<'EOF'
 #!/usr/bin/env bash
+if [[ -e "${MOCK_FLAGS}/interrupt_sleep" ]]; then
+  rm -f "${MOCK_FLAGS}/interrupt_sleep"
+  kill -TERM "$PPID"
+  exit 0
+fi
 if [[ -e "${MOCK_FLAGS}/now" ]]; then
   now="$(cat "${MOCK_FLAGS}/now")"
   if [[ -e "${MOCK_FLAGS}/uptime" ]]; then
@@ -111,12 +116,25 @@ EOF
 cat >"$mock_bin/systemd-inhibit" <<'EOF'
 #!/usr/bin/env bash
 while [[ "${1:-}" == --* ]]; do shift; done
-exec "$@"
+"$@"
+exit $?
+EOF
+
+cat >"$mock_bin/loginctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${MOCK_FLAGS}/loginctl.log"
+EOF
+
+cat >"$mock_bin/kitty" <<'EOF'
+#!/usr/bin/env bash
+[[ ! -e "${MOCK_FLAGS}/terminal_fail" ]] || exit 1
+exec "$@" >"${MOCK_FLAGS}/countdown.log"
 EOF
 
 cat >"$mock_bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${MOCK_FLAGS}/ssh.log"
+[[ "$*" != *'sudo bash -s'* || ! -e "${MOCK_FLAGS}/hold_fail" ]] || exit 1
 [[ "$*" == *' true' ]] && exit 1
 exit 0
 EOF
@@ -135,6 +153,8 @@ make_test_executable \
   "$mock_bin/systemd-run" \
   "$mock_bin/ssh" \
   "$mock_bin/systemd-inhibit" \
+  "$mock_bin/loginctl" \
+  "$mock_bin/kitty" \
   "$mock_bin/nixhomeserver-shutdown-guard"
 
 export MOCK_FLAGS="$flags"
@@ -146,6 +166,10 @@ export SHUTDOWN_GUARD_LOAD_FACTOR=0
 export SHUTDOWN_GUARD_RUNNABLE_THRESHOLD=0
 export SHUTDOWN_GUARD_TTY_ACTIVITY_SEC=0
 export PATH="$mock_bin:$PATH"
+export XDG_RUNTIME_DIR="$tmpdir"
+export XDG_STATE_HOME="$tmpdir/desktop state"
+export DESKTOP_SHUTDOWN_LOG="$tmpdir/desktop.log"
+export TERMINAL=kitty
 
 run_guard() {
   bash "$guard" "$@"
@@ -360,10 +384,66 @@ fi
 # 12. The desktop script reports local work during the final five minutes.
 : >"$flags/ssh.log"
 touch "$flags/pgrep_busy"
-MOCK_FAST_SLEEP=1 DESKTOP_SHUTDOWN_ALLOW_CONCURRENT=1 scripts/admin/desktop-server-shutdown.sh \
+MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh \
   --host test@server --timeout 1 --grace 10 --no-local-shutdown >/dev/null
 rm -f "$flags/pgrep_busy"
 require_fixed "$flags/ssh.log" "sudo nixhomeserver-shutdown-guard mark-activity" \
   "The desktop should relay build activity to the server guard."
+
+# These regressions can leave an unintended desktop poweroff queued or let
+# two runners cancel each other's guard; all power/sleep/SSH effects are mocked.
+touch "$flags/hold_fail"
+: >"$flags/ssh.log"
+if MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh --timeout 0 --no-local-shutdown >"$tmpdir/hold.out" 2>&1; then
+  echo "❌ Failed sleep protection must stop startup." >&2
+  exit 1
+fi
+if rg -q ' start | cancel' "$flags/ssh.log"; then
+  echo "❌ Failed preflight must not start or cancel a server guard." >&2
+  exit 1
+fi
+rm "$flags/hold_fail"
+
+# A signal must exit once, cancel the server guard, and never proceed to poweroff.
+touch "$flags/interrupt_sleep" "$flags/pgrep_busy"
+: >"$flags/ssh.log"
+: >"$flags/loginctl.log"
+if MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh --timeout 1 >"$tmpdir/signal.out" 2>&1; then
+  echo "❌ SIGTERM should terminate the runner." >&2
+  exit 1
+fi
+expect_equal "$(rg -c 'sudo nixhomeserver-shutdown-guard cancel' "$flags/ssh.log")" '1' 'Signal cleanup should cancel exactly once.'
+if rg -q 'poweroff ' "$flags/loginctl.log"; then
+  echo "❌ Interrupted runner must never schedule desktop poweroff." >&2
+  exit 1
+fi
+rm "$flags/pgrep_busy"
+
+# A busy lock must survive --force and must not disturb the owning runner.
+(
+  exec 9>"$XDG_RUNTIME_DIR/desktop-server-shutdown.$(id -u).pid.lock"
+  flock 9
+  : >"$flags/ssh.log"
+  MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh --force --timeout 0 >"$tmpdir/duplicate.out"
+  require_fixed "$tmpdir/duplicate.out" 'already active' 'Duplicate runner should be refused.'
+  [[ ! -s "$flags/ssh.log" ]] || exit 1
+)
+
+# Terminal failure after scheduling must cancel local poweroff, even though
+# server shutdown has already completed.
+touch "$flags/terminal_fail"
+: >"$flags/loginctl.log"
+if MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh --timeout 0 >"$tmpdir/terminal.out" 2>&1; then
+  echo "❌ A failed countdown terminal must fail the run." >&2
+  exit 1
+fi
+require_fixed "$flags/loginctl.log" 'poweroff +5' 'Fixture should reach local scheduling.'
+expect_equal "$(tail -n 1 "$flags/loginctl.log")" '-c' 'Terminal failure must cancel local poweroff.'
+[[ ! -e "$XDG_STATE_HOME/desktop-server-shutdown-poweroff.state" ]]
+rm "$flags/terminal_fail"
+
+# Exercise the generated countdown with a state path containing spaces.
+MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh --timeout 0 --local-grace 0 >"$tmpdir/countdown.out"
+require_fixed "$flags/countdown.log" 'This PC will power off in 0 minutes.' 'Countdown should receive its arguments intact.'
 
 echo "✅ Shutdown guard schedules, detects critical tasks, and enforces the grace window."
