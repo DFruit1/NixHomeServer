@@ -482,10 +482,12 @@ process.stdout.write('[download] 100% of 1MiB\\n');
       const id = await queue.enqueue(user, { ...request, splitChapters: true, chaptersConfirmed: true });
       const job = await waitForJobStatus(db, id, 'completed');
 
+      // A chapter split gets its own folder inside the channel folder.
       const outputFolder = job.outputFolder ?? '';
+      expect(path.relative(path.dirname(path.dirname(outputFolder)), outputFolder)).toBe(path.join('Test Channel', 'Test Song'));
       const names = (await readdir(outputFolder)).sort();
-      expect(names).toEqual(['01 - Intro.flac', '02 - Main.flac']);
-      expect([...job.files].sort()).toEqual(['01 - Intro.flac', '02 - Main.flac']);
+      expect(names).toEqual(['01 - Intro.flac', '02 - Main.flac', 'Test Song.info.json']);
+      expect([...job.files].sort()).toEqual(names);
     } finally {
       process.env.PATH = originalPath;
       await queue.stop(0);

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { allocateUniqueDestination, copyDirectoryContents, copySubtitleSidecars, isArtworkSidecar, isSubtitleSidecar } from '../output-move.js';
+import { allocateUniqueDestination, copyDirectoryContents, copyChapterSplitSidecars, isArtworkSidecar, isSubtitleSidecar } from '../output-move.js';
 
 let tempDir = '';
 
@@ -90,8 +90,8 @@ describe('isSubtitleSidecar', () => {
   });
 });
 
-describe('copySubtitleSidecars', () => {
-  it('copies only subtitles from the temp root', async () => {
+describe('copyChapterSplitSidecars', () => {
+  it('copies subtitles and the info.json record from the temp root, never loose artwork', async () => {
     const source = path.join(tempDir, 'source');
     const destination = path.join(tempDir, 'destination');
     await mkdir(source, { recursive: true });
@@ -101,10 +101,10 @@ describe('copySubtitleSidecars', () => {
     await writeFile(path.join(source, 'Talk.jpg'), 'cover');
     await writeFile(path.join(source, 'Talk.info.json'), '{}');
 
-    await copySubtitleSidecars(source, destination);
+    await copyChapterSplitSidecars(source, destination);
 
     const copied = (await readdir(destination)).sort();
-    expect(copied).toEqual(['Talk.en-orig.srt', 'Talk.en.srt']);
+    expect(copied).toEqual(['Talk.en-orig.srt', 'Talk.en.srt', 'Talk.info.json']);
   });
 
   it('does not descend into subdirectories', async () => {
@@ -114,7 +114,7 @@ describe('copySubtitleSidecars', () => {
     await mkdir(destination, { recursive: true });
     await writeFile(path.join(source, 'chapters', '01 - Intro.flac'), 'audio');
 
-    await copySubtitleSidecars(source, destination);
+    await copyChapterSplitSidecars(source, destination);
 
     expect(await readdir(destination)).toEqual([]);
   });

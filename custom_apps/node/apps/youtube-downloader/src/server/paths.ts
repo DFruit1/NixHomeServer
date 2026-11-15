@@ -66,7 +66,10 @@ export const folderNameFor = (source: ProbeResponse, request: CreateJobRequest):
   const { year, date } = dateParts(source);
   const leaf = request.includeDate && date ? `${date} - ${title}` : title;
   if (request.includeChannel) {
-    return [channel];
+    // A single file sits directly in its channel's folder. A chapter split
+    // produces many files that only make sense together, so they get a
+    // folder of their own named after the video.
+    return request.splitChapters ? [channel, title] : [channel];
   }
   const segments: string[] = [];
   if (request.includeDate && year) {
@@ -75,6 +78,14 @@ export const folderNameFor = (source: ProbeResponse, request: CreateJobRequest):
   segments.push(leaf);
   return segments;
 };
+
+/**
+ * Whether the output folder belongs to this one download (a title folder, or a
+ * chapter split's video folder) rather than being a channel folder that
+ * collects many downloads.
+ */
+export const isDedicatedFolder = (request: CreateJobRequest): boolean =>
+  !request.includeChannel || request.splitChapters;
 
 export type CandidateFolder = {
   folder: string;

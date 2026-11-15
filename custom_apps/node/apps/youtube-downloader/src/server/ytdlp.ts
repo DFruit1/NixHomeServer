@@ -13,7 +13,9 @@ type RawProbe = {
   id?: string;
   title?: string;
   channel?: string;
+  channel_id?: string;
   uploader?: string;
+  description?: string;
   duration?: number;
   release_date?: string;
   upload_date?: string;
@@ -118,7 +120,9 @@ export const probeUrl = async (
     title: raw.title || 'Unknown Title',
     id: raw.id,
     channel: raw.channel,
+    channelId: raw.channel_id,
     uploader: raw.uploader,
+    description: raw.description,
     durationSeconds: raw.duration,
     releaseDate: raw.release_date,
     uploadDate: raw.upload_date,

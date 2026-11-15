@@ -23,15 +23,20 @@ const SUBTITLE_SIDECAR_EXTENSIONS = new Set(['.srt', '.vtt', '.ass', '.ssa', '.l
 export const isSubtitleSidecar = (name: string): boolean =>
   SUBTITLE_SIDECAR_EXTENSIONS.has(path.extname(name).toLowerCase());
 
+// yt-dlp's `.info.json` is the full record of the source video. Like the
+// transcripts it stays in the temp root when chapters are split.
+export const isInfoJsonSidecar = (name: string): boolean => name.toLowerCase().endsWith('.info.json');
+
 /**
- * Copy only subtitle sidecars, leaving every other temp-directory file behind.
- * Returns the destination path of every copied sidecar.
+ * Copy the subtitle and info.json sidecars that chapter splitting leaves in
+ * the temp root, leaving every other temp-directory file behind. Returns the
+ * destination path of every copied sidecar.
  */
-export const copySubtitleSidecars = async (sourceDir: string, destinationDir: string): Promise<string[]> => {
+export const copyChapterSplitSidecars = async (sourceDir: string, destinationDir: string): Promise<string[]> => {
   const entries = await readdir(sourceDir, { withFileTypes: true });
   const copied: string[] = [];
   for (const entry of entries) {
-    if (!entry.isFile() || !isSubtitleSidecar(entry.name)) {
+    if (!entry.isFile() || !(isSubtitleSidecar(entry.name) || isInfoJsonSidecar(entry.name))) {
       continue;
     }
     const destination = await allocateUniqueDestination(destinationDir, entry.name);
@@ -42,6 +47,29 @@ export const copySubtitleSidecars = async (sourceDir: string, destinationDir: st
     copied.push(destination);
   }
   return copied;
+};
+
+/** The thumbnail yt-dlp wrote beside the media in `directory`, if any. */
+export const findThumbnail = async (directory: string): Promise<string | undefined> => {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const thumbnail = entries.find((entry) => entry.isFile() && /\.jpe?g$/i.test(entry.name));
+  return thumbnail ? path.join(directory, thumbnail.name) : undefined;
+};
+
+/**
+ * Copy `source` to `destination` unless something is already there. Returns
+ * whether the file was copied.
+ */
+export const copyFileIfMissing = async (source: string, destination: string): Promise<boolean> => {
+  try {
+    await cp(source, destination, { force: false, errorOnExist: true });
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ERR_FS_CP_EEXIST' || (error as NodeJS.ErrnoException).code === 'EEXIST') {
+      return false;
+    }
+    throw error;
+  }
 };
 
 export type CopyDirectoryOptions = {

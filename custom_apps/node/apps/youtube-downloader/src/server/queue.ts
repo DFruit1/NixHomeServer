@@ -1,10 +1,18 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdir, rm } from 'node:fs/promises';
+import { access, mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AppConfig } from './config.js';
 import { Database } from './db.js';
-import { assertInside, allocateUniqueFolder, folderNameFor, mediaRootFor, prepareDirectory, sanitizeSegment } from './paths.js';
+import {
+  assertInside,
+  allocateUniqueFolder,
+  folderNameFor,
+  isDedicatedFolder,
+  mediaRootFor,
+  prepareDirectory,
+  sanitizeSegment,
+} from './paths.js';
 import { buildDownloadArgs, parseProgress, probeUrl, transcriptSubLangs } from './ytdlp.js';
 import { normalizeDownloadUrl } from '../shared/url.js';
 import type { CreateJobRequest, CurrentUser, Job, JobAlert, ProbeResponse } from '../shared/types.js';
@@ -17,8 +25,20 @@ import {
   ytDlpPathFor,
 } from './request-validation.js';
 import { childHasExited, delay, killChildGroup, waitForChildExit } from './process-utils.js';
-import { copyDirectoryContents, copySubtitleSidecars } from './output-move.js';
+import { copyChapterSplitSidecars, copyDirectoryContents, copyFileIfMissing, findThumbnail } from './output-move.js';
 import { writeMediaIndexHint } from './media-index-hint.js';
+import { runCommand } from './child.js';
+import {
+  CHANNEL_SIDECAR,
+  FOLDER_POSTER,
+  VIDEO_SIDECAR,
+  buildChannelNfo,
+  buildVideoNfo,
+  channelArtworkArgs,
+  channelUrlFor,
+  readChannelDescription,
+  writeFileIfMissing,
+} from './youtube-folders.js';
 
 export {
   chapterGateFor,
@@ -341,7 +361,7 @@ export class JobQueue {
     const folders = folderNameFor(source, request);
     const baseFolder = path.join(safeRoot, ...folders);
     let outputFolder: string;
-    if (request.includeChannel) {
+    if (!isDedicatedFolder(request)) {
       outputFolder = baseFolder;
     } else {
       const outputCandidate = await allocateUniqueFolder(safeRoot, folders);
@@ -400,14 +420,24 @@ export class JobQueue {
     await this.db.setProgress(job.id, { phase: 'move' });
     const sourceDir = request.splitChapters ? path.join(tempDir, 'chapters') : tempDir;
     await mkdir(outputFolder, { recursive: true, mode: 0o775 });
-    // Cover art is embedded into each media file. Loose thumbnail sidecars are
-    // deliberately left in the temp directory so the synced library contains
-    // only media and metadata, keeping per-track artwork authoritative.
-    const written = await copyDirectoryContents(sourceDir, outputFolder, { skipArtworkSidecars: true });
+    // Audio keeps its cover art embedded only: loose images would let music
+    // apps apply one folder image to every track. Video keeps the YouTube
+    // thumbnail beside the file (`<title>.jpg`), which is where Jellyfin and
+    // Media Manager look, because neither reads covers embedded in MKV.
+    const isVideo = request.mediaType === 'video';
+    const written = await copyDirectoryContents(sourceDir, outputFolder, { skipArtworkSidecars: !isVideo });
     if (sourceDir !== tempDir) {
       // Chapter splitting moved the media into the chapter subdirectory but
-      // left subtitle sidecars in the temp root, so bring those across too.
-      written.push(...(await copySubtitleSidecars(tempDir, outputFolder)));
+      // left the transcripts and info.json in the temp root, so bring those
+      // across too.
+      written.push(...(await copyChapterSplitSidecars(tempDir, outputFolder)));
+    }
+    if (isVideo) {
+      written.push(...(await this.writeVideoFolderMetadata(job.id, request, source, tempDir, outputFolder)));
+      if (request.includeChannel) {
+        const channelFolder = path.join(safeRoot, folders[0]);
+        written.push(...(await this.writeChannelFolderMetadata(job.id, ytDlpPath, source, tempDir, channelFolder)));
+      }
     }
     await this.recordFiles(job.id, outputFolder);
     if (this.config.mediaIndexHintDir) {
@@ -422,6 +452,112 @@ export class JobQueue {
     await rm(tempDir, { recursive: true, force: true });
     await this.db.setProgress(job.id, null);
     await this.db.setStatus(job.id, 'completed');
+  }
+
+  /**
+   * A folder that holds one video (a title folder, or a chapter split's own
+   * folder) is marked as a YouTube video and, when split, given the video's
+   * thumbnail as its poster since no single file carries it.
+   */
+  private async writeVideoFolderMetadata(
+    jobId: string,
+    request: CreateJobRequest,
+    source: ProbeResponse,
+    tempDir: string,
+    outputFolder: string,
+  ): Promise<string[]> {
+    if (!isDedicatedFolder(request)) {
+      return [];
+    }
+    const written: string[] = [];
+    try {
+      const nfoPath = path.join(outputFolder, VIDEO_SIDECAR);
+      if (await writeFileIfMissing(nfoPath, buildVideoNfo(source, request.url))) {
+        written.push(nfoPath);
+      }
+      if (request.splitChapters) {
+        const thumbnail = await findThumbnail(tempDir);
+        const posterPath = path.join(outputFolder, FOLDER_POSTER);
+        if (thumbnail && (await copyFileIfMissing(thumbnail, posterPath))) {
+          written.push(posterPath);
+        }
+      }
+    } catch (error) {
+      await this.db.addEvent(jobId, 'metadata', `could not write the video folder metadata: ${errorMessage(error)}`);
+    }
+    return written;
+  }
+
+  /**
+   * A channel folder is marked as a YouTube channel and given the channel's
+   * profile picture as its poster, once; later downloads leave both alone so
+   * edits made in Media Manager stick. A failure here never fails the
+   * download, which is already in the library.
+   */
+  private async writeChannelFolderMetadata(
+    jobId: string,
+    ytDlpPath: string,
+    source: ProbeResponse,
+    tempDir: string,
+    channelFolder: string,
+  ): Promise<string[]> {
+    const written: string[] = [];
+    const posterPath = path.join(channelFolder, FOLDER_POSTER);
+    const nfoPath = path.join(channelFolder, CHANNEL_SIDECAR);
+    const needsPoster = !(await pathExists(posterPath));
+    const needsNfo = !(await pathExists(nfoPath));
+    if (!needsPoster && !needsNfo) {
+      return written;
+    }
+    const channelUrl = channelUrlFor(source.channelId);
+    let description: string | undefined;
+    try {
+      if (channelUrl) {
+        const workDir = path.join(tempDir, 'channel');
+        await mkdir(workDir, { recursive: true, mode: 0o750 });
+        let spawned: ChildProcess | undefined;
+        const result = await runCommand(
+          ytDlpPath,
+          channelArtworkArgs(channelUrl, path.join(workDir, 'poster.%(ext)s'), path.join(workDir, 'channel.%(ext)s')),
+          {
+            timeoutMs: 120000,
+            onSpawn: (child) => {
+              spawned = child;
+              this.postprocessing.add(child);
+              this.terminateLateChild(child);
+            },
+          },
+        ).finally(() => {
+          if (spawned) {
+            this.postprocessing.delete(spawned);
+          }
+        });
+        if (result.code === 0) {
+          description = await readChannelDescription(path.join(workDir, 'channel.info.json'));
+          if (needsPoster && (await pathExists(path.join(workDir, FOLDER_POSTER)))) {
+            if (await copyFileIfMissing(path.join(workDir, FOLDER_POSTER), posterPath)) {
+              written.push(posterPath);
+            }
+          }
+        } else {
+          await this.db.addEvent(jobId, 'metadata', `could not fetch the channel picture: ${result.stderr.trim() || `yt-dlp exited with code ${result.code ?? 'unknown'}`}`);
+        }
+      }
+      if (needsNfo) {
+        const nfo = buildChannelNfo({
+          name: source.channel || source.uploader || path.basename(channelFolder),
+          id: channelUrl ? source.channelId : undefined,
+          url: channelUrl,
+          description,
+        });
+        if (await writeFileIfMissing(nfoPath, nfo)) {
+          written.push(nfoPath);
+        }
+      }
+    } catch (error) {
+      await this.db.addEvent(jobId, 'metadata', `could not write the channel folder metadata: ${errorMessage(error)}`);
+    }
+    return written;
   }
 
   private async abortIfCancelled(jobId: string, tempDir: string): Promise<boolean> {
@@ -541,6 +677,17 @@ export class JobQueue {
     child.once('error', cleanup);
   }
 }
+
+const pathExists = async (file: string): Promise<boolean> => {
+  try {
+    await access(file);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 const duplicateAlert = (request: CreateJobRequest, duplicateJobId: string): JobAlert => ({
   kind: 'duplicate',

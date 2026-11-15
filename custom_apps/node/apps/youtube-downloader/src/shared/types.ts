@@ -41,7 +41,9 @@ export type ProbeResponse = {
   title: string;
   id?: string;
   channel?: string;
+  channelId?: string;
   uploader?: string;
+  description?: string;
   durationSeconds?: number;
   releaseDate?: string;
   uploadDate?: string;
