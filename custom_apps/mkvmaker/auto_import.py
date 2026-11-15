@@ -1791,11 +1791,22 @@ def finish_held(args: argparse.Namespace, source: Path, plan: dict[str, Any],
         assignments = identified_assignments(result, plan["titles"])
         if assignments is not None:
             name, year, provider = library_identity(args.shows_dir, result["series"])
-            season_dir = publish_episodes(
-                args, [Path(video) for video in videos], name, year, provider,
-                assignments[0]["season"], assignments[0]["episode"],
-                [str(a.get("name") or "") for a in assignments],
-            )
+            try:
+                season_dir = publish_episodes(
+                    args, [Path(video) for video in videos], name, year, provider,
+                    assignments[0]["season"], assignments[0]["episode"],
+                    [str(a.get("name") or "") for a in assignments],
+                )
+            except (OSError, RuntimeError) as error:
+                # Usually the library already holds these episodes. Keep the
+                # encode held for a person rather than failing the disc and
+                # orphaning its videos.
+                print(f"Could not publish identified episodes: {error}", file=sys.stderr)
+                result = dict(result, summary=f"{result.get('summary') or 'Identified'} "
+                              "It could not be published, so it was held instead.")
+                result["reasons"] = [*result["reasons"], f"publishing failed: {error}"]
+                season_dir = None
+        if assignments is not None and season_dir is not None:
             plan.update(
                 name=name, year=year, provider=provider, season=assignments[0]["season"],
                 first_episode=assignments[0]["episode"], output=str(args.shows_dir),

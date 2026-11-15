@@ -271,7 +271,8 @@ fn from_sidecar(
         ));
         return Ok(false);
     }
-    let mut episodes: Vec<(u32, u32, String)> = resolution["episodes"]
+    // (season, episode, title, DVD title index when TheDiscDB gives one)
+    let mut episodes: Vec<(u32, u32, String, Option<u32>)> = resolution["episodes"]
         .as_array()
         .into_iter()
         .flatten()
@@ -280,12 +281,37 @@ fn from_sidecar(
                 u32::try_from(item["season"].as_u64()?).ok()?,
                 u32::try_from(item["episode"].as_u64()?).ok()?,
                 item["title"].as_str().unwrap_or_default().to_string(),
+                item["title_index"]
+                    .as_u64()
+                    .and_then(|index| u32::try_from(index).ok()),
             ))
         })
         .collect();
-    episodes.sort_by_key(|(s, e, _)| (*s, *e));
-    episodes.dedup_by_key(|(s, e, _)| (*s, *e));
-    let pairs: Vec<(u32, u32)> = episodes.iter().map(|(s, e, _)| (*s, *e)).collect();
+    episodes.sort_by_key(|(s, e, _, _)| (*s, *e));
+    episodes.dedup_by_key(|(s, e, _, _)| (*s, *e));
+    let pairs: Vec<(u32, u32)> = episodes.iter().map(|(s, e, _, _)| (*s, *e)).collect();
+    // TheDiscDB can say which DVD title holds which episode. When its title
+    // numbers are the selected titles, they must also be in episode order,
+    // since titles are assigned in disc order. Numbers from another scheme
+    // (a different set) say nothing about the order and are ignored.
+    let indexed: Option<Vec<u32>> = episodes.iter().map(|(_, _, _, index)| *index).collect();
+    let selected: Vec<u32> = titles.iter().map(|(index, _)| *index).collect();
+    let same_titles = |indexed: &Vec<u32>| {
+        let mut left = indexed.clone();
+        let mut right = selected.clone();
+        left.sort_unstable();
+        right.sort_unstable();
+        left == right
+    };
+    if let Some(indexed) = &indexed
+        && same_titles(indexed)
+        && indexed != &selected
+    {
+        outcome.reasons.push(format!(
+            "TheDiscDB places these episodes in DVD titles {indexed:?}, which differ from the selected titles."
+        ));
+        return Ok(false);
+    }
     if episodes.len() != titles.len() || !consecutive(&pairs) {
         outcome.reasons.push(format!(
             "TheDiscDB maps {} episode(s) to this disc but {} titles were selected, or they are not consecutive.",
@@ -322,7 +348,7 @@ fn from_sidecar(
     outcome.assignments = titles
         .iter()
         .zip(&episodes)
-        .map(|((title, _), (season, episode, name))| Assignment {
+        .map(|((title, _), (season, episode, name, _))| Assignment {
             title: *title,
             season: *season,
             episode: *episode,
@@ -849,8 +875,18 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         let scores = text::keyword_scores(&transcript, &documents);
         let mut order: Vec<usize> = (0..pool.len()).collect();
         order.sort_by(|a, b| scores[*b].total_cmp(&scores[*a]));
-        let keyword_top = order.first().copied();
-        let shortlist: Vec<usize> = order.iter().copied().take(25).collect();
+        // The keyword signal only counts when it actually prefers one
+        // episode; with nothing heard in common every score is zero.
+        let keyword_top = order
+            .first()
+            .copied()
+            .filter(|&top| scores[top] > 0.0)
+            .filter(|&top| order.get(1).is_none_or(|&second| scores[top] > scores[second]));
+        // Bonsai sees the shortlist in broadcast order, not keyword order, so
+        // a model that favours the first option cannot simply echo the
+        // keyword ranking and pass as a second, independent signal.
+        let mut shortlist: Vec<usize> = order.iter().copied().take(25).collect();
+        shortlist.sort_unstable();
 
         let mut model_pick: Option<(usize, f64)> = None;
         if let Some(client) = &model_client {
