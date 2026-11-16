@@ -60,12 +60,21 @@ impl Harness {
     }
 
     async fn publish(&mut self, channel: &str, payload: &[u8]) -> Result<(), String> {
+        self.publish_at(channel, payload, Utc::now()).await
+    }
+
+    async fn publish_at(
+        &mut self,
+        channel: &str,
+        payload: &[u8],
+        at: chrono::DateTime<Utc>,
+    ) -> Result<(), String> {
         crate::ingest::handle_publish(
             &format!("gwl/v1/{D}/{channel}"),
             payload,
             1,
             false,
-            Utc::now(),
+            at,
             &TopicMap::default(),
             &mut self.client,
             &self.registry,
@@ -123,5 +132,69 @@ async fn a_payload_the_database_refuses_is_rejected_not_retried_forever() {
     assert_eq!(
         h.scalar::<i64>("SELECT count(*) FROM device_health").await,
         1
+    );
+}
+
+fn routine(seq: u32, index: u16) -> Vec<u8> {
+    let mut payload = index.to_le_bytes().to_vec();
+    payload.extend_from_slice(&1200u16.to_le_bytes());
+    payload.extend_from_slice(&5000i32.to_le_bytes());
+    payload.push(0);
+    crate::stream::encode::frame(0, seq, &payload)
+}
+
+// A gap whose resend request expired (logger out of coverage, ack lost)
+// stayed 'requested' for ever: never asked again, never closed, and still
+// blocking Type 0 readings after it from their anchor.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn an_expired_gap_request_is_asked_again_and_finally_closed() {
+    use crate::stream::encode::batch;
+    let mut h = Harness::new().await;
+    let start = Utc::now();
+    let first = [routine(1, 1), routine(2, 2)];
+    h.publish_at("data/stream", &batch(9, 0, 0, &first), start)
+        .await
+        .unwrap();
+    // Frames 3 and 4 (32 bytes) never arrived.
+    h.publish_at("data/stream", &batch(9, 64, 0, &[routine(5, 5)]), start)
+        .await
+        .unwrap();
+    let ready = br#"{"v":2,"state":"ready","win":60}"#;
+    let policy = crate::config::rev2_policy();
+    let attempts = policy.max_gap_attempts;
+    for attempt in 1..=attempts {
+        let at = start
+            + chrono::Duration::seconds(
+                i64::from(attempt) * (policy.gap_request_interval_seconds + 60),
+            );
+        h.publish_at("status", ready, at).await.unwrap();
+        assert_eq!(
+            h.scalar::<i64>("SELECT count(*) FROM commands WHERE op='flush_mqtt'")
+                .await,
+            i64::from(attempt),
+            "attempt {attempt}"
+        );
+        h.client
+            .execute(
+                "UPDATE commands SET state='expired' WHERE op='flush_mqtt'",
+                &[],
+            )
+            .await
+            .unwrap();
+    }
+    let at = start
+        + chrono::Duration::seconds(
+            i64::from(attempts + 1) * (policy.gap_request_interval_seconds + 60),
+        );
+    h.publish_at("status", ready, at).await.unwrap();
+    assert_eq!(
+        h.scalar::<String>("SELECT state FROM stream_gaps").await,
+        "unrecoverable"
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM commands WHERE op='flush_mqtt'")
+            .await,
+        i64::from(attempts)
     );
 }

@@ -1735,6 +1735,19 @@ pub async fn request_gaps<C: GenericClient + Sync>(
     now: DateTime<Utc>,
     policy: &Rev2Policy,
 ) -> Result<bool, String> {
+    // A request that ended without an ack (expired, cancelled, never
+    // acknowledged) settles nothing: ask again, or close the gap once its
+    // attempts are spent, instead of leaving it 'requested' for ever.
+    client
+        .execute(
+            "UPDATE stream_gaps g SET state=CASE WHEN g.attempts>=$3 THEN 'unrecoverable' ELSE 'open' END,
+                resolved_at=CASE WHEN g.attempts>=$3 THEN $2::timestamptz ELSE NULL END
+             WHERE g.device_id=$1 AND g.state='requested'
+               AND NOT EXISTS(SELECT 1 FROM commands c WHERE c.id=g.command_id AND c.state IN ('queued','sent'))",
+            &[&device, &now, &policy.max_gap_attempts],
+        )
+        .await
+        .map_err(dberr("stale gap requests"))?;
     let gap = client
         .query_opt(
             "SELECT g.id,g.log_id,g.from_seq,g.to_seq FROM stream_gaps g JOIN devices d ON d.device_id=g.device_id
