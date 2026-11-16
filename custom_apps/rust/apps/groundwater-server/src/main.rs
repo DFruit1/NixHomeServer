@@ -64,6 +64,27 @@ use ingest::{EventBus, IngestStats};
 
 /// How often the raw delivery log is pruned.
 const PRUNE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+/// The re-run of flagged derived work: time it may take before ingest
+/// starts, how often it runs while the service is up, and how long one
+/// background pass may take.
+const RERUN_AT_START: Duration = Duration::from_secs(20);
+const RERUN_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const RERUN_PASS: Duration = Duration::from_secs(4 * 60);
+
+async fn rerun_pass(
+    client: &mut tokio_postgres::Client,
+    policy: &config::Rev2Policy,
+    limit: Duration,
+) {
+    let deadline = std::time::Instant::now() + limit;
+    match rev2_store::rederive_pending_until(client, policy, Some(deadline)).await {
+        Ok((0, 0)) => {}
+        Ok((done, failing)) => {
+            eprintln!("groundwater: re-derived {done} stream log(s); {failing} still failing")
+        }
+        Err(err) => eprintln!("groundwater: re-derivation pass stopped: {err}"),
+    }
+}
 
 fn main() -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -91,14 +112,24 @@ async fn run() -> Result<(), String> {
     config::install_rev2_policy(settings.rev2.clone());
     let mut client = db::connect(&settings.database_url).await?;
     db::migrate(&client).await?;
-    // Derived work that failed for a reason in the data (raw frames kept).
-    match rev2_store::rederive_pending(&mut client, &settings.rev2).await {
-        Ok((0, 0)) => {}
-        Ok((done, failing)) => {
-            eprintln!("groundwater: re-derived {done} stream log(s); {failing} still failing")
+    // Derived work that failed or was deferred (raw frames kept): at most
+    // RERUN_AT_START before ingest starts, the rest in the background.
+    rerun_pass(&mut client, &settings.rev2, RERUN_AT_START).await;
+    let rerun_url = settings.database_url.clone();
+    let rerun_policy = settings.rev2.clone();
+    tokio::spawn(async move {
+        let mut timer = tokio::time::interval(RERUN_INTERVAL);
+        let mut db: Option<tokio_postgres::Client> = None;
+        loop {
+            timer.tick().await;
+            if db.as_ref().is_none_or(tokio_postgres::Client::is_closed) {
+                db = db::connect(&rerun_url).await.ok();
+            }
+            if let Some(db) = db.as_mut() {
+                rerun_pass(db, &rerun_policy, RERUN_PASS).await;
+            }
         }
-        Err(err) => eprintln!("groundwater: re-derivation failed: {err}"),
-    }
+    });
 
     // Trust state is loaded once so the first message is decided against real
     // enrollments; the ingest loop refreshes it on its own timer.

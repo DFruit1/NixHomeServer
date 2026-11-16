@@ -24,6 +24,16 @@ impl Harness {
         let url = std::env::var("GROUNDWATER_TEST_DATABASE_URL").unwrap();
         let client = db::connect(&url).await.unwrap();
         db::migrate(&client).await.unwrap();
+        // Fault-injection triggers a failed test left behind.
+        client
+            .batch_execute(
+                "DO $$ DECLARE t RECORD; BEGIN
+                     FOR t IN SELECT tgname,tgrelid::regclass AS rel FROM pg_trigger WHERE tgname LIKE 'gw_probe_%' LOOP
+                         EXECUTE format('DROP TRIGGER %I ON %s',t.tgname,t.rel);
+                     END LOOP; END $$",
+            )
+            .await
+            .unwrap();
         client
             .batch_execute(
                 "TRUNCATE devices,device_bindings,observations,deliveries,stream_batches,stream_frames,
@@ -1035,4 +1045,125 @@ async fn a_default_command_lifetime_covers_the_next_connection() {
         .unwrap()
         .unwrap();
     assert!(lifetime(id).await <= 3_600);
+}
+
+// V3: the re-run stopped at the first error, so one log that kept failing
+// (here a statement timeout) kept every later log from ever being re-run.
+// Each log is now re-run on its own; a failure is recorded with its
+// attempt count and retried after a back-off, not at full cost each pass.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn one_failing_log_does_not_stop_the_rerun_of_the_others() {
+    use crate::stream::encode::batch;
+    let mut h = Harness::new().await;
+    fail_on(&h, "observations", "NEW.sensor_mv=4242", "P0001").await;
+    set_fail(&h, true).await;
+    for log in [10u32, 11, 12, 13] {
+        let frames = [
+            damaged_anchor(1, 1_763_300_000, 900),
+            reading_mv(2, 1, 4242),
+            routine(3, 2),
+        ];
+        h.publish("data/stream", &batch(log, 0, 0, &frames))
+            .await
+            .unwrap();
+    }
+    fail_on(
+        &h,
+        "observations",
+        "NEW.sensor_mv=4242 AND NEW.log_id=12",
+        "57014",
+    )
+    .await;
+    let rerun =
+        crate::rev2_store::rederive_pending(&mut h.client, crate::config::rev2_policy()).await;
+    assert_eq!(rerun, Ok((3, 1)));
+    assert_eq!(pending_logs(&h).await, [12]);
+    let (attempts, error): (i32, Option<String>) = {
+        let r = h
+            .client
+            .query_one(
+                "SELECT rerun_attempts,resolve_error FROM stream_logs WHERE log_id=12",
+                &[],
+            )
+            .await
+            .unwrap();
+        (r.get(0), r.get(1))
+    };
+    assert_eq!(attempts, 1);
+    assert!(error.unwrap_or_default().contains("attempt 1"));
+    // Backed off: the next pass does not retry it at once.
+    assert_eq!(
+        crate::rev2_store::rederive_pending(&mut h.client, crate::config::rev2_policy()).await,
+        Ok((0, 0))
+    );
+    set_fail(&h, false).await;
+    drop_fail(&h, "observations").await;
+    h.client
+        .execute(
+            "UPDATE stream_logs SET rerun_after=now() WHERE log_id=12",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        crate::rev2_store::rederive_pending(&mut h.client, crate::config::rev2_policy()).await,
+        Ok((1, 0))
+    );
+    assert!(pending_logs(&h).await.is_empty());
+}
+
+// V3: the re-run now runs in the background while ingest runs. A live
+// batch of a log whose re-run is working leaves its log-level work to the
+// re-run instead of waiting on (or racing) it.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn a_batch_leaves_log_work_to_a_running_rerun() {
+    use crate::stream::encode::batch;
+    let mut h = Harness::new().await;
+    let url = std::env::var("GROUNDWATER_TEST_DATABASE_URL").unwrap();
+    let rerun = db::connect(&url).await.unwrap();
+    let a1 = damaged_anchor(1, 1_763_300_000, 900);
+    let alen = a1.len() as u32;
+    h.publish("data/stream", &batch(5, 0, 0, &[a1]))
+        .await
+        .unwrap();
+    rerun
+        .execute(
+            "SELECT pg_advisory_lock(hashtextextended('groundwater-log/'||$1::text||'/'||$2::bigint::text,0))",
+            &[&D, &5i64],
+        )
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    h.publish("data/stream", &batch(5, 2 * alen, 0, &[routine(3, 0)]))
+        .await
+        .unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    let (pending, gaps_pending, _) = log_flags(&h, 5).await;
+    assert!(pending && gaps_pending);
+    assert_eq!(anchor_of(&h, 5, 3).await, None);
+    drop(rerun);
+    assert_eq!(
+        crate::rev2_store::rederive_pending(&mut h.client, crate::config::rev2_policy()).await,
+        Ok((1, 0))
+    );
+    assert_eq!(
+        h.scalar::<String>("SELECT from_seq||'-'||to_seq FROM stream_gaps")
+            .await,
+        "2-2"
+    );
+}
+
+async fn pending_logs(h: &Harness) -> Vec<i64> {
+    h.client
+        .query(
+            "SELECT DISTINCT log_id FROM stream_frames WHERE derive_pending ORDER BY 1",
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.get::<_, i64>(0))
+        .collect()
 }

@@ -267,7 +267,26 @@ async fn status(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
     } else {
         None
     };
-    Ok(Json(json!({"service":"groundwater-server","user":{"username":i.username,"role":if r==Role::Operator{"operator"}else{"viewer"}},"broker":{"configured":s.settings.mqtt.is_some(),"connected":stats.connected && stats.telemetry_connected,"endpoint":s.settings.mqtt.as_ref().map(|m|format!("{}:{}",m.host,m.port)),"lastError":if r==Role::Operator{stats.last_error}else{None}},"ingest":{"deliveries":stats.deliveries,"observations":stats.observations,"redeliveryCandidates":stats.redelivery_candidates,"conflicts":stats.conflicts,"quarantined":stats.quarantined,"lastDeliveryAt":last_delivery_at},"adapter":{"profiles":crate::profiles::ALL_PROFILES.iter().map(|p|json!({"id":p.as_str(),"label":p.label(),"carriesDeviceId":p.carries_device_id()})).collect::<Vec<_>>()},"devices":visible.len(),"retentionDays":s.settings.retention_days})).into_response())
+    // Derived work waiting for the re-run, and logs whose re-run keeps
+    // failing (operators only).
+    let rerun = if r == Role::Operator {
+        let row = s
+            .db
+            .get()
+            .await
+            .map_err(database)?
+            .query_one(
+                "SELECT count(*) FILTER (WHERE resolve_pending),count(*) FILTER (WHERE rerun_attempts>0)
+                 FROM stream_logs",
+                &[],
+            )
+            .await
+            .map_err(|e| database(e.to_string()))?;
+        Some(json!({"pendingLogs":row.get::<_,i64>(0),"failingLogs":row.get::<_,i64>(1)}))
+    } else {
+        None
+    };
+    Ok(Json(json!({"service":"groundwater-server","user":{"username":i.username,"role":if r==Role::Operator{"operator"}else{"viewer"}},"broker":{"configured":s.settings.mqtt.is_some(),"connected":stats.connected && stats.telemetry_connected,"endpoint":s.settings.mqtt.as_ref().map(|m|format!("{}:{}",m.host,m.port)),"lastError":if r==Role::Operator{stats.last_error}else{None}},"ingest":{"deliveries":stats.deliveries,"observations":stats.observations,"redeliveryCandidates":stats.redelivery_candidates,"conflicts":stats.conflicts,"quarantined":stats.quarantined,"lastDeliveryAt":last_delivery_at,"held":stats.held,"rerun":rerun},"adapter":{"profiles":crate::profiles::ALL_PROFILES.iter().map(|p|json!({"id":p.as_str(),"label":p.label(),"carriesDeviceId":p.carries_device_id()})).collect::<Vec<_>>()},"devices":visible.len(),"retentionDays":s.settings.retention_days})).into_response())
 }
 async fn devices(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
     let db = s.db.get().await.map_err(database)?;

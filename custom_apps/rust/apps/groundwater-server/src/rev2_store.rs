@@ -1341,12 +1341,23 @@ async fn store_stream<C: GenericClient + Sync>(
         let deadline =
             std::time::Instant::now() + std::time::Duration::from_millis(budget_ms as u64);
         let derived = derive_frames(client, ctx, log_id, &to_derive, false, Some(deadline)).await?;
-        let log_error = if derived.deferred || std::time::Instant::now() >= deadline {
+        // The log's re-run holds this lock while it works: leave the
+        // log-level work to it rather than wait.
+        let locked: bool = client
+            .query_one(
+                &format!("SELECT pg_try_advisory_xact_lock({LOG_LOCK})"),
+                &[&ctx.device_id, &log_id],
+            )
+            .await
+            .map_err(dberr("log lock"))?
+            .get(0);
+        let log_error = if !locked || derived.deferred || std::time::Instant::now() >= deadline {
             // Not scanned for gaps: no reading of the log is paired until
             // the re-run has scanned it whole.
             client
                 .execute(
-                    "UPDATE stream_logs SET resolve_pending=true,gaps_pending=true WHERE device_id=$1 AND log_id=$2",
+                    "UPDATE stream_logs SET resolve_pending=true,gaps_pending=true,resolve_epoch=resolve_epoch+1
+                     WHERE device_id=$1 AND log_id=$2",
                     &[&ctx.device_id, &log_id],
                 )
                 .await
@@ -1365,7 +1376,6 @@ async fn store_stream<C: GenericClient + Sync>(
                 !new_seqs.is_empty(),
                 &derived.generations,
                 derived.tests,
-                false,
             )
             .await?
         };
@@ -1522,18 +1532,18 @@ async fn derive_frames<C: GenericClient + Sync>(
     Ok(derived)
 }
 
-/// Log-level derived work: gaps around `gaps` (min, max seq of new or newly
-/// positioned frames) and, when `resolve` (new frames), settings snapshots,
-/// record times and power alerts. Gap detection runs in its own savepoint,
-/// so a failure in the later steps never costs this range's gap scan.
-/// Returns the error when a step failed for a reason in the data; the log is
-/// then flagged `resolve_pending` (and `gaps_pending` when the gap scan
-/// failed: no reading is paired until the whole log has been scanned).
+/// Log-level derived work of a live batch: gaps around `gaps` (min, max
+/// seq of new or newly positioned frames) and, when `resolve` (new
+/// frames), settings snapshots, record times and power alerts. Gap
+/// detection runs in its own savepoint, so a failure in the later steps
+/// never costs this range's gap scan. Returns the error when a step failed;
+/// the log is then flagged `resolve_pending` (and `gaps_pending` when the
+/// gap scan failed: no reading is paired until the whole log has been
+/// scanned).
 ///
-/// Only a `whole` run (the re-run over the log's full seq range and every
-/// settings generation) clears the flags: a later batch's success covers
-/// its own range only, not the work the failed batch lost.
-#[allow(clippy::too_many_arguments)]
+/// A batch never clears the flags: its success covers its own range only,
+/// not the work an earlier failed batch lost. Only the re-run
+/// ([`rederive_pending`]) clears them, after redoing the whole log.
 async fn derive_log<C: GenericClient + Sync>(
     client: &C,
     ctx: &Context<'_>,
@@ -1542,28 +1552,13 @@ async fn derive_log<C: GenericClient + Sync>(
     resolve: bool,
     generations: &[i64],
     tests: bool,
-    whole: bool,
 ) -> Result<Option<String>, String> {
     let mut failed: Vec<String> = Vec::new();
-    let mut gaps_scanned = gaps.is_some() || !whole;
     let mut deferred = false;
+    let mut gaps_scanned = true;
     if let Some((min, max)) = gaps {
         savepoint(client, "rev2_gaps").await?;
-        let scanned = async {
-            detect_gaps(client, ctx.device_id, log_id, min, max, ctx.received_at).await?;
-            if whole {
-                client
-                    .execute(
-                        "UPDATE stream_logs SET gaps_pending=false WHERE device_id=$1 AND log_id=$2 AND gaps_pending",
-                        &[&ctx.device_id, &log_id],
-                    )
-                    .await
-                    .map_err(dberr("gaps pending"))?;
-            }
-            Ok::<(), String>(())
-        }
-        .await;
-        match scanned {
+        match detect_gaps(client, ctx.device_id, log_id, min, max, ctx.received_at).await {
             Ok(()) => end_savepoint(client, "rev2_gaps", true).await?,
             Err(error) if derived_retry(&error) => return Err(error),
             Err(error) => {
@@ -1584,13 +1579,7 @@ async fn derive_log<C: GenericClient + Sync>(
         // Settings and times in separate savepoints: a snapshot the database
         // refuses (a NUL in a text setting) must not cost the times.
         savepoint(client, "rev2_settings").await?;
-        let result = async {
-            for generation in generations {
-                assemble_settings(client, ctx, *generation).await?;
-            }
-            activate_snapshot_settings(client, ctx).await
-        }
-        .await;
+        let result = settle_settings(client, ctx, generations).await;
         match result {
             Ok(()) => end_savepoint(client, "rev2_settings", true).await?,
             Err(error) if derived_retry(&error) => return Err(error),
@@ -1601,61 +1590,32 @@ async fn derive_log<C: GenericClient + Sync>(
         }
         savepoint(client, "rev2_log").await?;
         let result = async {
-            // A batch dates the runs from its first new frame on; the
-            // re-run the whole log, in steps, and every paired reading.
-            let pair = if whole {
-                gaps_scanned
-            } else {
-                gaps_scanned
-                    && !client
-                        .query_one(
-                            "SELECT gaps_pending FROM stream_logs WHERE device_id=$1 AND log_id=$2",
-                            &[&ctx.device_id, &log_id],
-                        )
-                        .await
-                        .map_err(dberr("gaps pending"))?
-                        .get::<_, bool>(0)
-            };
-            let scope = if whole {
-                None
-            } else {
-                gaps.map(|(min, _)| min)
-            };
-            let budget = if whole {
-                RESOLVE_RERUN_BUDGET
-            } else {
-                RESOLVE_BATCH_BUDGET
-            };
-            loop {
-                let done: bool = client
+            // A batch dates the runs from its first new frame on, at most
+            // RESOLVE_BATCH_BUDGET readings.
+            let pair = gaps_scanned
+                && !client
                     .query_one(
-                        "SELECT groundwater_resolve_log($1,$2,$3,$4,$5)",
-                        &[&ctx.device_id, &log_id, &scope, &budget, &pair],
+                        "SELECT gaps_pending FROM stream_logs WHERE device_id=$1 AND log_id=$2",
+                        &[&ctx.device_id, &log_id],
                     )
                     .await
-                    .map_err(dberr("time resolution"))?
-                    .get(0);
-                if done {
-                    break;
-                }
-                if !whole {
-                    deferred = true;
-                    break;
-                }
-            }
-            if whole {
-                let mut after: Option<i64> = Some(-1);
-                while after.is_some() {
-                    after = client
-                        .query_one(
-                            "SELECT groundwater_retime_log($1,$2,$3,$4)",
-                            &[&ctx.device_id, &log_id, &after, &RESOLVE_RERUN_BUDGET],
-                        )
-                        .await
-                        .map_err(dberr("retiming"))?
-                        .get(0);
-                }
-            }
+                    .map_err(dberr("gaps pending"))?
+                    .get::<_, bool>(0);
+            let scope = gaps.map(|(min, _)| min);
+            deferred = !client
+                .query_one(
+                    "SELECT groundwater_resolve_log($1,$2,$3,$4,$5)",
+                    &[
+                        &ctx.device_id,
+                        &log_id,
+                        &scope,
+                        &RESOLVE_BATCH_BUDGET,
+                        &pair,
+                    ],
+                )
+                .await
+                .map_err(dberr("time resolution"))?
+                .get::<_, bool>(0);
             if tests {
                 client
                     .execute("SELECT groundwater_power_alerts($1)", &[&ctx.device_id])
@@ -1674,131 +1634,324 @@ async fn derive_log<C: GenericClient + Sync>(
             }
         }
     }
-    if !failed.is_empty() {
-        let error = failed.join("; ");
+    let error = (!failed.is_empty()).then(|| failed.join("; "));
+    if error.is_some() || deferred {
+        // A deferral is not an error: the re-run dates the rest.
         client
             .execute(
-                "UPDATE stream_logs SET resolve_pending=true,resolve_error=$3 WHERE device_id=$1 AND log_id=$2",
+                "UPDATE stream_logs SET resolve_pending=true,resolve_error=COALESCE($3,resolve_error),
+                    resolve_epoch=resolve_epoch+1
+                 WHERE device_id=$1 AND log_id=$2",
                 &[&ctx.device_id, &log_id, &error],
             )
             .await
             .map_err(dberr("resolve pending"))?;
-        return Ok(Some(error));
     }
-    if deferred {
-        // Not an error: the re-run dates the rest.
-        client
-            .execute(
-                "UPDATE stream_logs SET resolve_pending=true WHERE device_id=$1 AND log_id=$2",
-                &[&ctx.device_id, &log_id],
-            )
-            .await
-            .map_err(dberr("resolve pending"))?;
-    }
-    if whole && resolve {
-        client
-            .execute(
-                "UPDATE stream_logs SET resolve_pending=false,resolve_error=NULL
-                 WHERE device_id=$1 AND log_id=$2 AND resolve_pending",
-                &[&ctx.device_id, &log_id],
-            )
-            .await
-            .map_err(dberr("resolve pending"))?;
-    }
-    Ok(None)
+    Ok(error)
 }
 
-/// Re-runs derived work that failed for a reason in the data (frames
-/// flagged `derive_pending`, logs flagged `resolve_pending`), one log per
-/// transaction. Called at start, before ingest runs. Returns (logs
-/// re-derived, logs that still fail).
-pub async fn rederive_pending(
+/// Assembles the given settings generations and activates a snapshot an
+/// anchor shows in force.
+async fn settle_settings<C: GenericClient + Sync>(
+    client: &C,
+    ctx: &Context<'_>,
+    generations: &[i64],
+) -> Result<(), String> {
+    for generation in generations {
+        assemble_settings(client, ctx, *generation).await?;
+    }
+    activate_snapshot_settings(client, ctx).await
+}
+
+/// The advisory lock that keeps a log's re-run and a live batch's
+/// log-level work apart.
+const LOG_LOCK: &str = "hashtextextended('groundwater-log/'||$1::text||'/'||$2::bigint::text,0)";
+
+/// Frames re-derived per re-run transaction.
+const RERUN_FRAMES_PER_STEP: i64 = 200;
+
+/// What one log's re-run did.
+#[derive(Default)]
+struct LogRerun {
+    /// Steps that failed (each with its SQLSTATE).
+    errors: Vec<String>,
+    /// The deadline cut the work short; the rest waits for the next pass.
+    unfinished: bool,
+    /// The whole log was scanned for gaps.
+    gaps_scanned: bool,
+}
+
+/// Re-runs one log in short transactions (frames in steps, the whole-log
+/// gap scan, settings, then times in budgeted steps), so live batches
+/// never wait long on its row locks. Every step is idempotent: a step cut
+/// short by `deadline` or an error is redone by the next pass. Err only
+/// when the connection is gone.
+async fn rederive_log(
     client: &mut tokio_postgres::Client,
     policy: &Rev2Policy,
+    device: &str,
+    log_id: i64,
+    deadline: Option<std::time::Instant>,
+) -> Result<LogRerun, String> {
+    let late = || deadline.is_some_and(|d| std::time::Instant::now() >= d);
+    let mut run = LogRerun::default();
+    let step_error = |run: &mut LogRerun, error: String| -> Result<(), String> {
+        if derived_retry(&error) {
+            return Err(error);
+        }
+        run.errors.push(error);
+        Ok(())
+    };
+    let ctx_at = |received_at: DateTime<Utc>, delivery_id: Option<i64>| Context {
+        device_id: device,
+        channel: "data/stream",
+        received_at,
+        retained: false,
+        delivery_id,
+        policy,
+    };
+    // 1. Frames whose derivation failed or was deferred.
+    let mut after = -1i64;
+    loop {
+        if late() {
+            run.unfinished = true;
+            return Ok(run);
+        }
+        let tx = client
+            .transaction()
+            .await
+            .map_err(dberr("re-run transaction"))?;
+        let rows = tx
+            .query(
+                "SELECT f.seq,f.raw,f.received_at,b.delivery_id FROM stream_frames f
+                 LEFT JOIN stream_batches b ON b.id=f.batch_id
+                 WHERE f.device_id=$1 AND f.log_id=$2 AND f.derive_pending AND f.seq>$3 ORDER BY f.seq LIMIT $4",
+                &[&device, &log_id, &after, &RERUN_FRAMES_PER_STEP],
+            )
+            .await
+            .map_err(dberr("pending frames"))?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in &rows {
+            after = row.get(0);
+            let raw: Vec<u8> = row.get(1);
+            let ctx = ctx_at(row.get(2), row.get(3));
+            let Some(frame) = stream::split_frames(&raw).0.into_iter().next() else {
+                continue;
+            };
+            let derived = derive_frames(&tx, &ctx, log_id, &[&frame], true, None).await?;
+            run.errors.extend(derived.failures);
+        }
+        tx.commit().await.map_err(dberr("re-run commit"))?;
+    }
+    let now_ctx = ctx_at(Utc::now(), None);
+    // 2. The whole log's gaps.
+    let tx = client
+        .transaction()
+        .await
+        .map_err(dberr("re-run transaction"))?;
+    let bounds = tx
+        .query_one(
+            "SELECT min(seq),max(seq),ARRAY(SELECT DISTINCT settings_gen FROM settings_fragments
+                WHERE device_id=$1 AND log_id=$2 ORDER BY 1)
+             FROM stream_frames WHERE device_id=$1 AND log_id=$2",
+            &[&device, &log_id],
+        )
+        .await
+        .map_err(dberr("log bounds"))?;
+    let (min, max): (Option<i64>, Option<i64>) = (bounds.get(0), bounds.get(1));
+    let generations: Vec<i64> = bounds.get(2);
+    run.gaps_scanned = true;
+    if let (Some(min), Some(max)) = (min, max) {
+        if let Err(error) = detect_gaps(&tx, device, log_id, min, max, now_ctx.received_at).await {
+            run.gaps_scanned = false;
+            drop(tx);
+            step_error(&mut run, error)?;
+        } else {
+            tx.commit().await.map_err(dberr("re-run commit"))?;
+        }
+    } else {
+        tx.commit().await.map_err(dberr("re-run commit"))?;
+    }
+    // 3. Every settings generation of the log.
+    let tx = client
+        .transaction()
+        .await
+        .map_err(dberr("re-run transaction"))?;
+    match settle_settings(&tx, &now_ctx, &generations).await {
+        Ok(()) => tx.commit().await.map_err(dberr("re-run commit"))?,
+        Err(error) => {
+            drop(tx);
+            step_error(&mut run, error)?;
+        }
+    }
+    // 4. Times over the whole log, in budgeted steps; then every paired
+    // reading brought in line with its anchor; then power alerts.
+    loop {
+        if late() {
+            run.unfinished = true;
+            return Ok(run);
+        }
+        let done = client
+            .query_one(
+                "SELECT groundwater_resolve_log($1,$2,NULL,$3,$4)",
+                &[&device, &log_id, &RESOLVE_RERUN_BUDGET, &run.gaps_scanned],
+            )
+            .await
+            .map_err(dberr("time resolution"));
+        match done {
+            Ok(row) if row.get::<_, bool>(0) => break,
+            Ok(_) => {}
+            Err(error) => {
+                step_error(&mut run, error)?;
+                break;
+            }
+        }
+    }
+    let mut cursor: Option<i64> = Some(-1);
+    while cursor.is_some() {
+        if late() {
+            run.unfinished = true;
+            return Ok(run);
+        }
+        match client
+            .query_one(
+                "SELECT groundwater_retime_log($1,$2,$3,$4)",
+                &[&device, &log_id, &cursor, &RESOLVE_RERUN_BUDGET],
+            )
+            .await
+            .map_err(dberr("retiming"))
+        {
+            Ok(row) => cursor = row.get(0),
+            Err(error) => {
+                step_error(&mut run, error)?;
+                break;
+            }
+        }
+    }
+    if let Err(error) = client
+        .execute("SELECT groundwater_power_alerts($1)", &[&device])
+        .await
+        .map_err(dberr("power alerts"))
+    {
+        step_error(&mut run, error)?;
+    }
+    Ok(run)
+}
+
+/// Re-runs derived work flagged for it: frames flagged `derive_pending`
+/// (failed or deferred past a batch's time budget) and logs flagged
+/// `resolve_pending`. Each log is re-run on its own; a failure is recorded
+/// on the log (`resolve_error` with the attempt count, `rerun_attempts`,
+/// `rerun_after`) and the pass continues with the next log. A log that
+/// keeps failing is retried after a back-off doubling from 1 minute to 1
+/// day, not at full cost every pass. Called before ingest starts (bounded
+/// by `deadline`) and then periodically while ingest runs. A live batch's
+/// log-level work and the re-run of the same log exclude each other through
+/// an advisory lock (whoever comes second leaves the work to the next pass),
+/// and the flags are cleared only when no batch flagged the log again while
+/// the re-run ran (`resolve_epoch`). Returns (logs re-derived, logs that
+/// still fail).
+pub async fn rederive_pending_until(
+    client: &mut tokio_postgres::Client,
+    policy: &Rev2Policy,
+    deadline: Option<std::time::Instant>,
 ) -> Result<(usize, usize), String> {
     let logs = client
         .query(
-            "SELECT device_id,log_id FROM stream_frames WHERE derive_pending
-             UNION SELECT device_id,log_id FROM stream_logs WHERE resolve_pending",
+            "SELECT l.device_id,l.log_id,l.resolve_epoch,l.rerun_attempts FROM stream_logs l
+             WHERE (l.resolve_pending OR EXISTS(SELECT 1 FROM stream_frames f
+                    WHERE f.device_id=l.device_id AND f.log_id=l.log_id AND f.derive_pending))
+               AND (l.rerun_after IS NULL OR l.rerun_after<=now())
+             ORDER BY l.rerun_attempts,l.last_received_at",
             &[],
         )
         .await
         .map_err(dberr("pending derivations"))?;
     let (mut done, mut failing) = (0, 0);
     for row in logs {
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            break;
+        }
         let device: String = row.get(0);
         let log_id: i64 = row.get(1);
-        let tx = client
-            .transaction()
-            .await
-            .map_err(dberr("re-derive transaction"))?;
-        let frames = tx
-            .query(
-                "SELECT f.raw,f.received_at,b.delivery_id FROM stream_frames f
-                 LEFT JOIN stream_batches b ON b.id=f.batch_id
-                 WHERE f.device_id=$1 AND f.log_id=$2 AND f.derive_pending ORDER BY f.seq",
-                &[&device, &log_id],
-            )
-            .await
-            .map_err(dberr("pending frames"))?;
-        let mut still = false;
-        for frame_row in frames {
-            let raw: Vec<u8> = frame_row.get(0);
-            let ctx = Context {
-                device_id: &device,
-                channel: "data/stream",
-                received_at: frame_row.get(1),
-                retained: false,
-                delivery_id: frame_row.get(2),
-                policy,
-            };
-            let Some(frame) = stream::split_frames(&raw).0.into_iter().next() else {
-                continue;
-            };
-            let derived = derive_frames(&tx, &ctx, log_id, &[&frame], true, None).await?;
-            still |= !derived.failures.is_empty();
-        }
-        let bounds = tx
+        let epoch: i64 = row.get(2);
+        let attempts: i32 = row.get(3);
+        let locked: bool = client
             .query_one(
-                "SELECT min(seq),max(seq),ARRAY(SELECT DISTINCT settings_gen FROM settings_fragments
-                    WHERE device_id=$1 AND log_id=$2 ORDER BY 1)
-                 FROM stream_frames WHERE device_id=$1 AND log_id=$2",
+                &format!("SELECT pg_try_advisory_lock({LOG_LOCK})"),
                 &[&device, &log_id],
             )
             .await
-            .map_err(dberr("log bounds"))?;
-        let (min, max): (Option<i64>, Option<i64>) = (bounds.get(0), bounds.get(1));
-        let generations: Vec<i64> = bounds.get(2);
-        if let (Some(min), Some(max)) = (min, max) {
-            let ctx = Context {
-                device_id: &device,
-                channel: "data/stream",
-                received_at: Utc::now(),
-                retained: false,
-                delivery_id: None,
-                policy,
-            };
-            still |= derive_log(
-                &tx,
-                &ctx,
-                log_id,
-                Some((min, max)),
-                true,
-                &generations,
-                true,
-                true,
+            .map_err(dberr("re-run lock"))?
+            .get(0);
+        if !locked {
+            continue;
+        }
+        let result = rederive_log(client, policy, &device, log_id, deadline).await;
+        if client.is_closed() {
+            return result.map(|_| (done, failing));
+        }
+        client
+            .query_one(
+                &format!("SELECT pg_advisory_unlock({LOG_LOCK})"),
+                &[&device, &log_id],
             )
-            .await?
-            .is_some();
-        }
-        tx.commit().await.map_err(dberr("re-derive commit"))?;
-        if still {
-            failing += 1;
-        } else {
-            done += 1;
-        }
+            .await
+            .map_err(dberr("re-run unlock"))?;
+        let errors = match result {
+            Ok(run) if run.unfinished => continue,
+            Ok(run) if run.errors.is_empty() => {
+                client
+                    .execute(
+                        "UPDATE stream_logs SET resolve_pending=false,gaps_pending=false,resolve_error=NULL,
+                            rerun_attempts=0,rerun_after=NULL
+                         WHERE device_id=$1 AND log_id=$2 AND resolve_epoch=$3",
+                        &[&device, &log_id, &epoch],
+                    )
+                    .await
+                    .map_err(dberr("re-run done"))?;
+                done += 1;
+                continue;
+            }
+            Ok(run) => {
+                if run.gaps_scanned {
+                    client
+                        .execute(
+                            "UPDATE stream_logs SET gaps_pending=false WHERE device_id=$1 AND log_id=$2 AND resolve_epoch=$3",
+                            &[&device, &log_id, &epoch],
+                        )
+                        .await
+                        .map_err(dberr("re-run gaps"))?;
+                }
+                run.errors.join("; ")
+            }
+            Err(error) => error,
+        };
+        failing += 1;
+        let text = format!("re-run attempt {} failed: {errors}", attempts + 1);
+        eprintln!("groundwater: log {log_id:08X} of {device}: {text}");
+        client
+            .execute(
+                "UPDATE stream_logs SET resolve_pending=true,resolve_error=$3,rerun_attempts=rerun_attempts+1,
+                    rerun_after=now()+LEAST(interval '1 minute'*power(2,LEAST(rerun_attempts,11)),interval '1 day')
+                 WHERE device_id=$1 AND log_id=$2",
+                &[&device, &log_id, &text],
+            )
+            .await
+            .map_err(dberr("re-run failure"))?;
     }
     Ok((done, failing))
+}
+
+/// [`rederive_pending_until`] with no deadline.
+#[cfg(test)]
+pub async fn rederive_pending(
+    client: &mut tokio_postgres::Client,
+    policy: &Rev2Policy,
+) -> Result<(usize, usize), String> {
+    rederive_pending_until(client, policy, None).await
 }
 
 enum Stored {

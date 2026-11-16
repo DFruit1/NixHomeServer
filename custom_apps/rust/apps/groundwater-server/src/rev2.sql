@@ -194,6 +194,13 @@ CREATE INDEX IF NOT EXISTS stream_frames_derive_pending_idx ON stream_frames(dev
 -- resolve_pending/gaps_pending; a later batch's success does not redo the
 -- failed batch's work.
 ALTER TABLE stream_logs ADD COLUMN IF NOT EXISTS gaps_pending BOOLEAN NOT NULL DEFAULT false;
+-- Re-run bookkeeping: every flagging by a live batch bumps resolve_epoch,
+-- and the re-run clears the flags only if it did not change meanwhile. A
+-- log whose re-run fails is retried after rerun_after (back-off), its
+-- attempts counted.
+ALTER TABLE stream_logs ADD COLUMN IF NOT EXISTS resolve_epoch BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE stream_logs ADD COLUMN IF NOT EXISTS rerun_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE stream_logs ADD COLUMN IF NOT EXISTS rerun_after TIMESTAMPTZ;
 
 -- Holes between received frames. A sequence jump whose positions are
 -- contiguous is the firmware's reserved-number skip after a reboot, not a gap.
