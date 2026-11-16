@@ -262,7 +262,7 @@ def lost_batch_resent_from_sd(s):
     compare_readings(s, lg, "after SD resend")
 
 
-@scenario(xfail="E2E-02")
+@scenario()
 def flush_ack_survives_slow_ingest(s):
     """A range flush_mqtt acked ok during a backlog stays final ok: never re-published, never 'duplicate'."""
     s.settle_timeout = 900

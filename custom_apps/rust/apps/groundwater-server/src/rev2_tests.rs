@@ -878,13 +878,24 @@ async fn rev2_command_lifecycle_handshake_and_republish() {
     assert_eq!(republished.state, "queued");
     assert_eq!(
         republished.status_reason.as_deref(),
-        Some("no ack before the logger slept; re-publishing")
+        Some("no ack before the logger slept; re-publishing at its next connection")
     );
+    // Not before the logger's next connection: the ack from the window
+    // that closed may still be behind a backlog (E2E-02).
+    while let Some((_, wire)) = h.send_next().await {
+        assert_ne!(
+            wire["id"].as_i64(),
+            Some(queued[2]),
+            "re-published while asleep"
+        );
+    }
     assert!(
         !h.command(queued[0]).await.hold_until_sleep,
         "busy released by sleep"
     );
     for round in 0..3 {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        h.json("status", json!({"v":2,"state":"online"})).await;
         while h.send_next().await.is_some() {}
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         h.json("status", json!({"v":2,"state":"sleep"})).await;

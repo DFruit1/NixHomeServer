@@ -1167,3 +1167,107 @@ async fn pending_logs(h: &Harness) -> Vec<i64> {
         .map(|r| r.get::<_, i64>(0))
         .collect()
 }
+
+// E2E-02: during a slow backlog the control loop stalled, dropped its MQTT
+// connection and with it the PUBACK of a flush_mqtt it had published. The
+// attempt was abandoned and the command stayed queued, so it was published
+// again in the same window: the logger answered `duplicate` (and `busy`
+// once its queue was full) while the original `ok` was still behind the
+// backlog. A published attempt counts as sent now, and the original ack
+// that arrives after the `duplicate` is still applied with its data.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn a_lost_puback_is_not_republished_and_the_late_ack_is_recorded() {
+    use crate::rev2_commands::{queue, QueueOptions};
+    let mut h = Harness::new().await;
+    let policy = crate::config::rev2_policy();
+    let id = queue(
+        &h.client,
+        D,
+        "flush_mqtt",
+        &serde_json::json!({"log_id":7,"from_seq":17,"to_seq":1040}),
+        &QueueOptions::new(policy, Utc::now()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    h.client
+        .batch_execute(&format!(
+            "WITH a AS (INSERT INTO command_publish_attempts(command_id,ready_at,topic,state,dispatched_at,mqtt_packet_id)
+                VALUES({id},now(),'gwl/v1/{D}/cmd/basic','inflight',now(),7) RETURNING id)
+             UPDATE commands SET active_publish_attempt=(SELECT id FROM a) WHERE id={id}"
+        ))
+        .await
+        .unwrap();
+    // The control connection is replaced before the PUBACK is processed.
+    crate::publisher::recover(&h.client).await.unwrap();
+    assert_eq!(
+        h.scalar::<String>(&format!(
+            "SELECT state||' '||publish_count FROM commands WHERE id={id}"
+        ))
+        .await,
+        "sent 1",
+        "a command that went out was left to be published again in the same window"
+    );
+    for channel in crate::rev2::DOWNLINK_CHANNELS {
+        let topic = format!("gwl/v1/{D}/{channel}");
+        h.client
+            .execute(
+                "INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES($1,$2,$1,'V22')",
+                &[&topic, &D],
+            )
+            .await
+            .unwrap();
+    }
+    // The sleep (control session) overtakes the ack (durable session,
+    // behind the backlog): the command is not published again while the
+    // logger sleeps, only at its next connection.
+    h.publish("status", br#"{"v":2,"state":"sleep"}"#)
+        .await
+        .unwrap();
+    assert_eq!(
+        h.scalar::<String>(&format!("SELECT state FROM commands WHERE id={id}"))
+            .await,
+        "queued"
+    );
+    assert!(
+        crate::rev2_commands::next_publish(&h.client, policy)
+            .await
+            .unwrap()
+            .is_none(),
+        "re-published while the ack from the closed window may still be on its way"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    h.publish("status", br#"{"v":2,"state":"online"}"#)
+        .await
+        .unwrap();
+    let next = crate::rev2_commands::next_publish(&h.client, policy)
+        .await
+        .unwrap()
+        .expect("re-published at the next connection");
+    h.client
+        .execute(
+            "UPDATE command_publish_attempts SET state='abandoned' WHERE id=$1",
+            &[&next.attempt_id],
+        )
+        .await
+        .unwrap();
+    h.client
+        .execute("UPDATE commands SET active_publish_attempt=NULL", &[])
+        .await
+        .unwrap();
+    let duplicate =
+        format!(r#"{{"v":2,"id":{id},"op":"flush_mqtt","status":"duplicate","prev":"ok"}}"#);
+    let ok = format!(
+        r#"{{"v":2,"id":{id},"op":"flush_mqtt","status":"ok","data":{{"frames":1024,"batches":13,"first_seq":17,"last_seq":1040,"missing":0}}}}"#
+    );
+    h.publish("cmd/ack", duplicate.as_bytes()).await.unwrap();
+    h.publish("cmd/ack", ok.as_bytes()).await.unwrap();
+    assert_eq!(
+        h.scalar::<String>(&format!(
+            "SELECT state||' '||final_status||' '||(ack_payload->'data'->>'frames') FROM commands WHERE id={id}"
+        ))
+        .await,
+        "acked ok 1024"
+    );
+}

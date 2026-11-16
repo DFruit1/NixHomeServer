@@ -439,6 +439,8 @@ ALTER TABLE commands ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
 ALTER TABLE commands ADD COLUMN IF NOT EXISTS publish_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE commands ADD COLUMN IF NOT EXISTS last_published_at TIMESTAMPTZ;
 ALTER TABLE commands ADD COLUMN IF NOT EXISTS hold_until_sleep BOOLEAN NOT NULL DEFAULT false;
+-- Re-published after this sleep: not before the logger's next connection.
+ALTER TABLE commands ADD COLUMN IF NOT EXISTS republish_after TIMESTAMPTZ;
 ALTER TABLE commands ADD COLUMN IF NOT EXISTS final_status TEXT;
 ALTER TABLE commands ADD COLUMN IF NOT EXISTS status_reason TEXT;
 ALTER TABLE commands ADD COLUMN IF NOT EXISTS parent_id BIGINT REFERENCES commands(id);
@@ -786,6 +788,31 @@ LANGUAGE sql IMMUTABLE AS $$
     SELECT CASE WHEN jsonb_typeof(settings->'send_s')='number' AND (settings->>'send_s')::numeric BETWEEN 1 AND 2332800
         THEN (settings->>'send_s')::double precision END
 $$;
+
+-- A publish attempt abandoned after it went out (the connection that
+-- would have carried its PUBACK was dropped: a stalled control loop, a
+-- reconnect, a restart) may well have reached the logger. It counts as
+-- published: re-sent by the sleep rule in the next window, never again in
+-- this one, where the logger would only answer `duplicate` (or `busy` once
+-- its four-command queue is full) while the original ack is on its way.
+CREATE OR REPLACE FUNCTION groundwater_publish_abandoned() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE commands c SET
+        state=CASE WHEN d.link_state IN ('sleep','offline') AND NOT d.link_retained AND d.link_state_at>NEW.dispatched_at
+            THEN 'queued' ELSE 'sent' END,
+        republish_after=CASE WHEN d.link_state IN ('sleep','offline') AND NOT d.link_retained
+            AND d.link_state_at>NEW.dispatched_at THEN d.link_state_at ELSE c.republish_after END,
+        sent_at=COALESCE(c.sent_at,NEW.dispatched_at),last_published_at=NEW.dispatched_at,
+        publish_count=c.publish_count+1,
+        status_reason='published; its broker confirmation was lost with the connection'
+    FROM devices d
+    WHERE c.id=NEW.command_id AND c.protocol=2 AND c.state='queued' AND d.device_id=c.device_id;
+    RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS groundwater_publish_abandoned ON command_publish_attempts;
+CREATE TRIGGER groundwater_publish_abandoned AFTER UPDATE OF state ON command_publish_attempts
+    FOR EACH ROW WHEN (OLD.state='inflight' AND NEW.state='abandoned' AND NEW.dispatched_at IS NOT NULL)
+    EXECUTE FUNCTION groundwater_publish_abandoned();
 
 -- Revision 2 command ids (commands.id is the wire id) must never repeat for a
 -- device: the logger answers a remembered id `duplicate` without running it,

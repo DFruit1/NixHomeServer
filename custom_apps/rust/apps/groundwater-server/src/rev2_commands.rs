@@ -225,6 +225,12 @@ pub async fn next_publish<C: GenericClient + Sync>(
                     WHEN 'basic' THEN 'cmd/basic' ELSE 'cmd/danger' END
              WHERE c.protocol=2 AND c.state='queued' AND c.active_publish_attempt IS NULL AND NOT c.hold_until_sleep
                AND d.revoked_at IS NULL
+               -- A re-publish after a sleep waits for the logger's next
+               -- connection: its ack from the window that closed may still
+               -- be on the way behind a backlog on the durable session (the
+               -- sleep travels on the control session and overtakes it).
+               AND (c.republish_after IS NULL OR (d.link_state IN ('online','ready') AND NOT d.link_retained
+                    AND d.link_state_at>c.republish_after))
                AND groundwater_command_supported(d.source_profile,c.kind,c.payload,d.clock_policy,d.local_offset_min,d.clock_change_unverified) IS TRUE
                AND (c.expires_at IS NULL OR c.expires_at>now())
                AND (NOT c.live_only OR (d.link_state IN ('online','ready') AND NOT d.link_retained
@@ -234,7 +240,9 @@ pub async fn next_publish<C: GenericClient + Sync>(
                -- expired, already acked).
                AND (c.op<>'confirm' OR EXISTS(SELECT 1 FROM commands p WHERE p.id=c.parent_id AND p.state='challenge'))
                AND (c.op='confirm' OR c.live_only OR NOT EXISTS(SELECT 1 FROM commands h WHERE h.device_id=c.device_id
-                    AND h.protocol=2 AND h.state='queued' AND h.hold_until_sleep AND h.id<c.id))
+                    AND h.protocol=2 AND h.state='queued' AND h.id<c.id AND (h.hold_until_sleep
+                        OR (h.republish_after IS NOT NULL AND NOT (d.link_state IN ('online','ready')
+                            AND NOT d.link_retained AND d.link_state_at>h.republish_after)))))
                AND (c.op='confirm' OR (SELECT count(*) FROM commands o WHERE o.device_id=c.device_id AND o.protocol=2
                     AND o.op IS DISTINCT FROM 'confirm'
                     AND (o.state IN ('sent','challenge') OR o.active_publish_attempt IS NOT NULL))<$1)
@@ -308,7 +316,8 @@ pub async fn accepted<C: GenericClient + Sync>(
             "UPDATE commands c SET state=CASE WHEN c.live_only OR c.op='confirm' THEN 'expired'
                     WHEN c.publish_count>$3 THEN 'unacknowledged' ELSE 'queued' END,
                 final_status=CASE WHEN c.live_only OR c.op='confirm' THEN 'expired' ELSE c.final_status END,
-                status_reason='the logger slept right after this publish without acknowledging it'
+                status_reason='the logger slept right after this publish without acknowledging it',
+                republish_after=d.link_state_at
              FROM devices d WHERE c.id=$1 AND c.state='sent' AND d.device_id=c.device_id
                AND d.link_state IN ('sleep','offline') AND NOT d.link_retained AND d.link_state_at>$2",
             &[&command_id, &dispatched, &policy.max_republish],
@@ -344,7 +353,8 @@ pub async fn on_status<C: GenericClient + Sync>(
                 status_reason=CASE WHEN expires_at<=$2 THEN 'exp passed without a final ack'
                     WHEN live_only OR op='confirm' THEN 'the awake window closed without an ack'
                     WHEN publish_count>$3 THEN 'no ack after '||publish_count||' publishes'
-                    ELSE 'no ack before the logger slept; re-publishing' END
+                    ELSE 'no ack before the logger slept; re-publishing at its next connection' END,
+                republish_after=$2
              WHERE device_id=$1 AND protocol=2 AND state='sent' AND active_publish_attempt IS NULL
                AND last_published_at<$2",
             &[&device, &at, &policy.max_republish],
@@ -442,6 +452,7 @@ struct CommandRow {
     state: String,
     /// The challenged command's op, for a `confirm`.
     parent_op: Option<String>,
+    final_status: Option<String>,
 }
 
 async fn load_command<C: GenericClient + Sync>(
@@ -451,7 +462,8 @@ async fn load_command<C: GenericClient + Sync>(
 ) -> Result<Option<CommandRow>, String> {
     let row = client
         .query_opt(
-            "SELECT c.id,c.op,c.kind,c.parent_id,c.origin,c.download_id,c.args,c.preconfirmed,c.publish_count,c.state,p.op
+            "SELECT c.id,c.op,c.kind,c.parent_id,c.origin,c.download_id,c.args,c.preconfirmed,c.publish_count,c.state,p.op,
+                c.final_status
              FROM commands c LEFT JOIN commands p ON p.id=c.parent_id
              WHERE c.id=$1 AND c.device_id=$2 AND c.protocol=2 FOR UPDATE OF c",
             &[&id, &device],
@@ -470,6 +482,7 @@ async fn load_command<C: GenericClient + Sync>(
         publish_count: row.get(8),
         state: row.get(9),
         parent_op: row.get(10),
+        final_status: row.get(11),
     }))
 }
 
@@ -521,7 +534,13 @@ pub async fn handle_ack<C: GenericClient + Sync>(
     // different MQTT sessions). It must not replace the outcome: a
     // `duplicate`/`challenge` after a confirmed wipe would otherwise show
     // the executed wipe as failed and invite the operator to run it again.
-    if command.state == "acked" {
+    // The one exception: the logger's `duplicate` answer to a re-published
+    // copy was processed first, and the original ack (its result and data)
+    // arrives after it, for example behind a slow backlog on the durable
+    // session (E2E-02). The original is the outcome and is applied.
+    let original_after_duplicate = command.final_status.as_deref() == Some("duplicate")
+        && !matches!(ack.status, AckStatus::Duplicate | AckStatus::Challenge);
+    if command.state == "acked" && !original_after_duplicate {
         server_event(
             client,
             ctx.device_id,
