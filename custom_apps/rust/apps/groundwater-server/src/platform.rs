@@ -236,8 +236,34 @@ pub async fn alerts(
 
 /// A late sample dirties the historical replay; normal samples use the same
 /// replay in a coalesced background batch, never once per backlog packet.
+/// Replays the alerts of every device flagged dirty, each in its own
+/// statement: one device whose replay fails (a statement timeout over a
+/// long dirty range) must not keep every other device's alerts from being
+/// evaluated, as one statement over all of them did. A failing device stays
+/// dirty and is reported in the error after the others are done.
 pub async fn refresh_alerts(client: &Client) -> Result<Vec<String>, String> {
-    client.query("SELECT device_id, groundwater_replay_alerts(device_id) FROM devices WHERE alerts_dirty", &[]).await.map(|r|r.iter().map(|r|r.get(0)).collect()).map_err(|e|format!("alert replay: {e:?}"))
+    let dirty = client
+        .query("SELECT device_id FROM devices WHERE alerts_dirty", &[])
+        .await
+        .map_err(|e| format!("alert replay: {e:?}"))?;
+    let (mut done, mut failed) = (Vec::new(), Vec::new());
+    for row in dirty {
+        let device: String = row.get(0);
+        match client
+            .execute("SELECT groundwater_replay_alerts($1)", &[&device])
+            .await
+        {
+            Ok(_) => done.push(device),
+            Err(e) => failed.push(format!("{device}: {e:?}")),
+        }
+    }
+    if !failed.is_empty() && done.is_empty() {
+        return Err(format!("alert replay: {}", failed.join("; ")));
+    }
+    if !failed.is_empty() {
+        eprintln!("groundwater: alert replay failed for {}", failed.join("; "));
+    }
+    Ok(done)
 }
 
 pub fn awake(now: DateTime<Utc>, ready: Option<DateTime<Utc>>, status: &str) -> bool {

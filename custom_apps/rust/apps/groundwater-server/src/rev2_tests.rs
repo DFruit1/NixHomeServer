@@ -878,13 +878,24 @@ async fn rev2_command_lifecycle_handshake_and_republish() {
     assert_eq!(republished.state, "queued");
     assert_eq!(
         republished.status_reason.as_deref(),
-        Some("no ack before the logger slept; re-publishing")
+        Some("no ack before the logger slept; re-publishing at its next connection")
     );
+    // Not before the logger's next connection: the ack from the window
+    // that closed may still be behind a backlog (E2E-02).
+    while let Some((_, wire)) = h.send_next().await {
+        assert_ne!(
+            wire["id"].as_i64(),
+            Some(queued[2]),
+            "re-published while asleep"
+        );
+    }
     assert!(
         !h.command(queued[0]).await.hold_until_sleep,
         "busy released by sleep"
     );
     for round in 0..3 {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        h.json("status", json!({"v":2,"state":"online"})).await;
         while h.send_next().await.is_some() {}
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         h.json("status", json!({"v":2,"state":"sleep"})).await;
@@ -933,9 +944,9 @@ async fn rev2_command_lifecycle_handshake_and_republish() {
     let wipe = body["command"]["id"].as_i64().unwrap();
     let (topic, wire) = h.send_next().await.unwrap();
     assert_eq!(topic, format!("gwl/v1/{D}/cmd/danger"));
-    assert!(
-        (wire["exp"].as_i64().unwrap() - (Utc::now() + Duration::days(1)).timestamp()).abs() < 60
-    );
+    // At least the danger default (24 h); longer when the device's next
+    // connection is further away (E2E-06).
+    assert!(wire["exp"].as_i64().unwrap() >= (Utc::now() + Duration::days(1)).timestamp() - 60);
     let nexp = (Utc::now() + Duration::seconds(120)).timestamp();
     h.json("status", json!({"v":2,"state":"ready","win":60}))
         .await;

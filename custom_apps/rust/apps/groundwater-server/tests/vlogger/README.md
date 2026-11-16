@@ -40,8 +40,7 @@ binary), firmware console log and server log. Everything else lives in one
 `mkdtemp` directory under `$TMPDIR`, removed at the end unless `--keep`.
 
 Runtime: about 15 minutes for the whole suite on a workstation (most
-scenarios 10-40 s; the backlog scenarios take minutes because of finding
-E2E-01). Exit status 1 on FAIL, ERROR or XPASS.
+scenarios 10-40 s, the backlog scenarios under a minute each). Exit status 1 on FAIL, ERROR or XPASS.
 
 ## What runs for real, what is emulated
 

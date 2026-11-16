@@ -384,13 +384,15 @@ Firmware 2.2 (`V22`) units use `{v,id,exp,op,args}` commands on `config/set`,
 README "Protocol revision 2"). They are published at once, QoS 1, never
 retained: the logger's persistent session holds them while it sleeps, and it
 runs them at its next connection. A command without a final ack is
-re-published after the logger's next `sleep`/`offline` (at most three
-times, then `unacknowledged`); at most four are in flight per device; a
+re-published at the logger's next connection after a `sleep`/`offline` (at
+most three times, then `unacknowledged`); at most four are in flight per device; a
 `busy` rejection waits for the next connection. Lifetimes count from the
 moment you queue: 7 days for basic commands and settings, 24 hours for
 danger commands (`GROUNDWATER_COMMAND_EXPIRY_HOURS`,
-`GROUNDWATER_DANGER_EXPIRY_HOURS`), or the expiry you choose (60 s to 30
-days). For a danger command the console proposes the logger's next
+`GROUNDWATER_DANGER_EXPIRY_HOURS`), and in any case until the logger's next
+connection (or one send interval) has passed; or exactly the expiry you
+choose (60 s to 30 days). A settings command you queue while a logger is in
+settings RECOVERY replaces the automatic restore. For a danger command the console proposes the logger's next
 connection + 1 hour, so a weekly logger still receives it. Danger operations
 follow the handshake under "Typed confirmations".
 
@@ -548,12 +550,20 @@ Workers retry initial database connection failures as well as later outages.
 
 A revision 2 batch is stored raw before anything is derived from it. When
 deriving readings or times fails for a reason in the data, the raw frames are
-kept, the frame or log is flagged and the work is re-run at the next service
-start (the start log counts what still fails); Data stream shows those logs
-and batches in words. A database error that is not about the content is
-retried without acknowledging the message, so nothing is lost; a refused
-payload is quarantined (`rev2-invalid`, `rev2-store-failed`) with its raw
-bytes kept.
+kept, the frame or log is flagged and the work is re-run per log: at most 20 s
+at start, then in the background every 5 minutes and shortly after a batch
+deferred work (a batch's derived work is bounded in time and readings, and a
+timeout there never holds up ingest). A log whose re-run keeps failing is
+retried with back-off; `/api/status` `ingest.rerun` counts logs waiting and
+failing, and the journal names the error. Data stream shows those logs and
+batches in words. A database error while storing the raw rows is retried
+with back-off without acknowledging that message; the same logger's later
+messages wait behind it, other loggers' are stored (`ingest.held` counts the
+held ones). A refused payload is quarantined (`rev2-invalid`,
+`rev2-store-failed`) with its raw bytes kept. Salvaged content that exists
+nowhere else is exempt from retention until the re-run stores it or you
+dismiss it: `ingest.salvaged` shows count and oldest; after checking it,
+`POST /api/devices/<DEV>/salvaged/dismiss` releases a device's rows.
 
 Device counters/latest pointers are maintained on observation insertion and
 initialized once for existing databases. Device reads scope authorized IDs in SQL.

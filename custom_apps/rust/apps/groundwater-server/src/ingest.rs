@@ -140,6 +140,9 @@ pub struct IngestStats {
     /// Most recent quarantine reason code, for a quick look at the status page.
     pub last_quarantine_reason: Option<String>,
     pub last_error: Option<String>,
+    /// Uplinks held unacknowledged because their raw rows could not be
+    /// stored yet (a transient database error); retried with back-off.
+    pub held: usize,
 }
 
 /// Shared, refreshable trust state.
@@ -195,6 +198,7 @@ pub async fn run(
     let mut refresh = tokio::time::interval(Duration::from_secs(REGISTRY_REFRESH_SECONDS));
     let mut resumed = tokio::time::Instant::now();
     let mut subscribed = std::collections::HashSet::new();
+    let mut backlog = Backlog::default();
 
     loop {
         // A database stall can leave identity-free Ready packets buffered in
@@ -203,6 +207,8 @@ pub async fn run(
         if resumed.elapsed() > Duration::from_secs(5) {
             publisher.disconnected();
             (mqtt_client, event_loop) = AsyncClient::new(options.clone(), 10);
+            // Held packet ids belong to the discarded connection.
+            backlog.clear(&stats).await;
             reset_ready = true;
             connected = false;
             stats.lock().await.connected = false;
@@ -211,6 +217,7 @@ pub async fn run(
         let event = tokio::select! {
             event = event_loop.poll() => event,
             _ = dispatch.tick() => {
+                backlog.retry(&settings, &mut client, &registry, &bus, &stats, &mqtt_client).await;
                 if publisher_db.is_closed() {
                     match db::connect(&settings.database_url).await {
                         Ok(db)=>publisher_db=db,
@@ -270,6 +277,7 @@ pub async fn run(
         match event {
             Ok(Event::Incoming(Incoming::ConnAck(_))) => {
                 connected = true;
+                backlog.clear(&stats).await;
                 // Clean session: every subscription is new again.
                 subscribed.clear();
                 reset_ready = crate::scheduler::invalidate_ready(&publisher_db)
@@ -315,11 +323,21 @@ pub async fn run(
                 // Durable channels belong to the persistent session; a stale
                 // control subscription from an older release must not store
                 // them twice.
-                if !crate::topics::durable(&publish.topic, &settings.topics) {
-                    persist_publish(&settings, &publish, &mut client, &registry, &bus, &stats)
-                        .await?;
+                if crate::topics::durable(&publish.topic, &settings.topics) {
+                    acknowledge(mqtt_client.clone(), publish);
+                } else {
+                    backlog
+                        .intake(
+                            publish,
+                            &settings,
+                            &mut client,
+                            &registry,
+                            &bus,
+                            &stats,
+                            &mqtt_client,
+                        )
+                        .await;
                 }
-                acknowledge(mqtt_client.clone(), publish);
             }
             Ok(_) => {}
             Err(err) => {
@@ -328,6 +346,7 @@ pub async fn run(
                 // MQTT replay could otherwise publish after sleep or cancel.
                 publisher.disconnected();
                 reset_ready = true;
+                backlog.clear(&stats).await;
                 crate::publisher::discard_session(&mut event_loop);
                 if let Err(e) = publisher.reconcile(&mut publisher_db, &bus).await {
                     eprintln!("groundwater publish recovery: {e}");
@@ -430,9 +449,15 @@ async fn telemetry_run(
     let mut refresh = tokio::time::interval(Duration::from_secs(REGISTRY_REFRESH_SECONDS));
     let mut connected = false;
     let mut subscribed = std::collections::HashSet::new();
+    let mut backlog = Backlog::default();
+    let mut retry = tokio::time::interval(Duration::from_secs(1));
     loop {
         let event = tokio::select! {
             event = events.poll() => event,
+            _ = retry.tick(), if backlog.len() > 0 => {
+                backlog.retry(&settings, &mut client, &registry, &bus, &stats, &subscriber).await;
+                continue;
+            },
             _ = async {
                 tokio::select! {
                     _ = refresh.tick() => {},
@@ -454,6 +479,8 @@ async fn telemetry_run(
             Ok(Event::Incoming(Incoming::ConnAck(ack))) => {
                 connected = true;
                 stats.lock().await.telemetry_connected = true;
+                // The broker redelivers what was not acknowledged.
+                backlog.clear(&stats).await;
                 if !ack.session_present {
                     subscribed.clear();
                 }
@@ -478,14 +505,25 @@ async fn telemetry_run(
                 // Discard any pre-upgrade control subscription from a resumed
                 // telemetry session rather than allowing it to open a window.
                 if crate::topics::durable(&publish.topic, &settings.topics) {
-                    persist_publish(&settings, &publish, &mut client, &registry, &bus, &stats)
-                        .await?;
+                    backlog
+                        .intake(
+                            publish,
+                            &settings,
+                            &mut client,
+                            &registry,
+                            &bus,
+                            &stats,
+                            &subscriber,
+                        )
+                        .await;
+                } else {
+                    acknowledge(subscriber.clone(), publish);
                 }
-                acknowledge(subscriber.clone(), publish);
             }
             Ok(_) => {}
             Err(e) => {
                 connected = false;
+                backlog.clear(&stats).await;
                 let mut state = stats.lock().await;
                 state.telemetry_connected = false;
                 state.last_error = Some(e.to_string());
@@ -532,70 +570,226 @@ async fn worker_database(
     }
 }
 
-async fn persist_publish(
+/// One attempt to store a delivery: reconnects the database when needed
+/// and runs it through [`handle_publish`]. An Err means nothing was
+/// committed (the raw rows included) and the message must stay
+/// unacknowledged.
+async fn persist_once(
     settings: &Settings,
     publish: &rumqttc::Publish,
+    received_at: chrono::DateTime<chrono::Utc>,
     client: &mut Client,
     registry: &SharedRegistry,
     bus: &EventBus,
     stats: &Arc<tokio::sync::Mutex<IngestStats>>,
 ) -> Result<(), String> {
-    let received_at = chrono::Utc::now();
-    let mut refresh_registry = client.is_closed();
-    loop {
-        let result = if client.is_closed() {
-            refresh_registry = true;
-            match db::connect(&settings.database_url).await {
-                Ok(db) => {
-                    *client = db;
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
+    if client.is_closed() {
+        *client = db::connect(&settings.database_url).await?;
+        *registry.write().await = db::load_registry(client).await?;
+    }
+    handle_publish(
+        &publish.topic,
+        &publish.payload,
+        publish.qos as i16,
+        publish.retain,
+        received_at,
+        &settings.topics,
+        client,
+        registry,
+        bus,
+        stats,
+    )
+    .await
+}
+
+/// Longest pause between attempts to store a held delivery.
+const HELD_RETRY_MAX_SECONDS: u64 = 60;
+
+fn held_retry_delay(attempts: u32) -> Duration {
+    Duration::from_secs((1u64 << attempts.min(6)).min(HELD_RETRY_MAX_SECONDS))
+}
+
+/// The ordering unit of held deliveries: the logger a `gwl/v1/<DEV>/...`
+/// topic belongs to, otherwise the topic itself.
+fn source_key(topic: &str) -> String {
+    crate::topics::device_channel(topic)
+        .map(|(device, _)| device.to_owned())
+        .unwrap_or_else(|| topic.to_owned())
+}
+
+struct Held {
+    publish: rumqttc::Publish,
+    received_at: chrono::DateTime<chrono::Utc>,
+    attempts: u32,
+    due: tokio::time::Instant,
+}
+
+/// Deliveries whose raw rows could not be stored (a transient database
+/// error: connection lost, deadlock, a timeout on the raw rows), held
+/// unacknowledged and retried with back-off (1 s doubling to 60 s).
+///
+/// Ordering: MQTT orders delivery per topic and the broker resends an
+/// unacknowledged message only when the session reconnects, so holding
+/// one back and acknowledging later ones is allowed (Mosquitto accepts
+/// PUBACKs out of order) but breaks order unless the holder keeps it.
+/// The server keeps order per logger: while a logger has a held message,
+/// its later messages queue behind it here, in arrival order, and are
+/// stored only after it. Other loggers' messages are stored and
+/// acknowledged meanwhile, so one logger's failing message never stalls
+/// the others. The broker's in-flight window (Mosquitto
+/// `max_inflight_messages`, 20 by default) bounds how many messages can be
+/// held: once it is full the broker sends nothing new until a held one is
+/// acknowledged. Held messages are dropped on a reconnect; the durable
+/// session gets them again from the broker, the clean control session
+/// loses them as it always did.
+#[derive(Default)]
+pub(crate) struct Backlog {
+    held: std::collections::BTreeMap<String, std::collections::VecDeque<Held>>,
+}
+
+impl Backlog {
+    pub(crate) fn len(&self) -> usize {
+        self.held
+            .values()
+            .map(std::collections::VecDeque::len)
+            .sum()
+    }
+
+    /// Queues `publish` behind its logger's held messages; `attempts` 0
+    /// means it is tried as soon as everything before it is stored.
+    fn hold(
+        &mut self,
+        publish: rumqttc::Publish,
+        received_at: chrono::DateTime<chrono::Utc>,
+        attempts: u32,
+        now: tokio::time::Instant,
+    ) {
+        let due = if attempts == 0 {
+            now
         } else {
-            Ok(())
+            now + held_retry_delay(attempts)
         };
-        let result = if result.is_ok() && refresh_registry {
-            match db::load_registry(client).await {
-                Ok(loaded) => {
-                    *registry.write().await = loaded;
-                    refresh_registry = false;
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
+        self.held
+            .entry(source_key(&publish.topic))
+            .or_default()
+            .push_back(Held {
+                publish,
+                received_at,
+                attempts,
+                due,
+            });
+    }
+
+    async fn clear(&mut self, stats: &Arc<tokio::sync::Mutex<IngestStats>>) {
+        if !self.held.is_empty() {
+            eprintln!(
+                "groundwater: dropping {} held delivery(ies) with the connection; the broker redelivers durable ones",
+                self.len()
+            );
+            self.held.clear();
+            stats.lock().await.held = 0;
+        }
+    }
+
+    /// Stores a new delivery, or holds it behind its logger's held ones.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn intake(
+        &mut self,
+        publish: rumqttc::Publish,
+        settings: &Settings,
+        client: &mut Client,
+        registry: &SharedRegistry,
+        bus: &EventBus,
+        stats: &Arc<tokio::sync::Mutex<IngestStats>>,
+        mqtt: &AsyncClient,
+    ) {
+        let received_at = chrono::Utc::now();
+        let now = tokio::time::Instant::now();
+        if self.held.contains_key(&source_key(&publish.topic)) {
+            self.hold(publish, received_at, 0, now);
         } else {
-            result
-        };
-        let result = match result {
-            Ok(()) => {
-                handle_publish(
-                    &publish.topic,
-                    &publish.payload,
-                    publish.qos as i16,
-                    publish.retain,
-                    received_at,
-                    &settings.topics,
+            match persist_once(
+                settings,
+                &publish,
+                received_at,
+                client,
+                registry,
+                bus,
+                stats,
+            )
+            .await
+            {
+                Ok(()) => acknowledge(mqtt.clone(), publish),
+                Err(e) => {
+                    eprintln!(
+                        "groundwater: holding uncommitted delivery on {}: {e}",
+                        publish.topic
+                    );
+                    stats.lock().await.last_error = Some(e);
+                    self.hold(publish, received_at, 1, now);
+                }
+            }
+        }
+        stats.lock().await.held = self.len();
+    }
+
+    /// Retries every logger's oldest held delivery that is due, and the
+    /// ones queued behind it once it is stored.
+    pub(crate) async fn retry(
+        &mut self,
+        settings: &Settings,
+        client: &mut Client,
+        registry: &SharedRegistry,
+        bus: &EventBus,
+        stats: &Arc<tokio::sync::Mutex<IngestStats>>,
+        mqtt: &AsyncClient,
+    ) {
+        if self.held.is_empty() {
+            return;
+        }
+        let keys: Vec<String> = self.held.keys().cloned().collect();
+        for key in keys {
+            let Some(queue) = self.held.get_mut(&key) else {
+                continue;
+            };
+            while let Some(head) = queue.front_mut() {
+                let now = tokio::time::Instant::now();
+                if head.due > now {
+                    break;
+                }
+                match persist_once(
+                    settings,
+                    &head.publish,
+                    head.received_at,
                     client,
                     registry,
                     bus,
                     stats,
                 )
                 .await
-            }
-            Err(e) => Err(e),
-        };
-        match result {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                eprintln!("groundwater: retrying uncommitted delivery: {e}");
-                stats.lock().await.last_error = Some(e);
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
-                    _ = homelab_common::shutdown_signal() => return Err("ingest stopping with uncommitted delivery".into()),
+                {
+                    Ok(()) => {
+                        if let Some(done) = queue.pop_front() {
+                            acknowledge(mqtt.clone(), done.publish);
+                        }
+                    }
+                    Err(e) => {
+                        head.attempts += 1;
+                        head.due = now + held_retry_delay(head.attempts);
+                        eprintln!(
+                            "groundwater: held delivery on {} failed again (attempt {}): {e}",
+                            head.publish.topic, head.attempts
+                        );
+                        stats.lock().await.last_error = Some(e);
+                        break;
+                    }
                 }
             }
+            if queue.is_empty() {
+                self.held.remove(&key);
+            }
         }
+        stats.lock().await.held = self.len();
     }
 }
 

@@ -9,7 +9,7 @@ the payloads that prove it.
 
 import struct
 
-from harness import VirtualLogger, check, wait_for
+from harness import ScenarioFailure, VirtualLogger, check, wait_for
 
 SCENARIOS = []
 
@@ -35,26 +35,28 @@ def readings_sent(lg, since=0):
     end up with after recovery): {(log_id, seq): (t, tv, level_milli, status)}.
     Type 0 times follow the firmware's own rule (gwl_records.c CSV export):
     the latest anchor's t + sample_index * interval, anchors carrying across
-    batches in ring order (resent batches are skipped for anchor tracking)."""
-    out = {}
-    anchor = {}
+    batches in ring (seq) order. Resent batches (bit0) count too: a range
+    the ring reclaimed before any upload reaches the server only as an SD
+    resend; every frame is taken once, from its first copy."""
+    frames = {}
     for b in lg.batches(since):
-        if b.get("flags", 0) & 0x01:  # resends (bit0) repeat frames already seen
-            continue
         log = b.get("log_id")
         for f in b.get("frames", []):
-            if not f.get("ok"):
-                continue
-            p = bytes.fromhex(f["payload"])
-            if f["type"] == 1:
-                t, tf, gen, reason, flags, interval, mv, lvl, ss = struct.unpack_from("<IBIBBIHiB", p)
-                if flags & 1:
-                    anchor[log] = (t, tf, interval)
-                out[(log, f["seq"])] = (t, tf & 1, lvl, ss)
-            elif f["type"] == 0 and log in anchor:
-                idx, mv, lvl, ss = struct.unpack_from("<HHiB", p)
-                a = anchor[log]
-                out[(log, f["seq"])] = (a[0] + idx * a[2], a[1] & 1, lvl, ss)
+            if f.get("ok"):
+                frames.setdefault((log, f["seq"]), f)
+    out = {}
+    anchor = {}
+    for (log, seq), f in sorted(frames.items()):
+        p = bytes.fromhex(f["payload"])
+        if f["type"] == 1:
+            t, tf, gen, reason, flags, interval, mv, lvl, ss = struct.unpack_from("<IBIBBIHiB", p)
+            if flags & 1:
+                anchor[log] = (t, tf, interval)
+            out[(log, seq)] = (t, tf & 1, lvl, ss)
+        elif f["type"] == 0 and log in anchor:
+            idx, mv, lvl, ss = struct.unpack_from("<HHiB", p)
+            a = anchor[log]
+            out[(log, seq)] = (a[0] + idx * a[2], a[1] & 1, lvl, ss)
     return out
 
 
@@ -80,8 +82,16 @@ def boot(s, sets=(), args=(), enroll=True, uid="0123456789ABCDEF01234567", name=
 
 def compare_readings(s, lg, label):
     sent = readings_sent(lg)
-    stored = wait_for(lambda: (lambda r: r if len(r) >= len(sent) else None)(server_readings(s, lg.device_id)),
-                      f"{label}: {len(sent)} readings on the server", seconds=20)
+    # Every reading stored, and dated where the logger's clock was valid: a
+    # large resend can leave part of the dating to the server's background
+    # re-run, which follows within seconds.
+    dated = lambda r: all(r[k]["t"] is not None for k, v in sent.items() if v[1] and k in r)
+    try:
+        stored = wait_for(lambda: (lambda r: r if len(r) >= len(sent) and dated(r) else None)(
+                              server_readings(s, lg.device_id)),
+                          f"{label}: {len(sent)} readings on the server", seconds=20)
+    except ScenarioFailure:
+        stored = server_readings(s, lg.device_id)  # reported in detail below
     wrong = []
     for key, (t, tv, lvl, ss) in sent.items():
         row = stored.get(key)
@@ -232,10 +242,10 @@ def lost_batch_resent_from_mram(s):
           gaps=gaps(s, lg.device_id))
 
 
-@scenario(xfail="E2E-03")
+@scenario()
 def lost_batch_resent_from_sd(s):
     """MRAM wrapped past a lost range: the next upload is flagged GAP and the SD archive serves the range."""
-    s.settle_timeout = 900  # ingest of this backlog is slow: see backlog_ingest_time
+    s.settle_timeout = 900
     lg = boot(s)
     configure(s, lg, {"read_s": 60})
     t0 = lg.last["world"]
@@ -262,7 +272,7 @@ def lost_batch_resent_from_sd(s):
     compare_readings(s, lg, "after SD resend")
 
 
-@scenario(xfail="E2E-02")
+@scenario()
 def flush_ack_survives_slow_ingest(s):
     """A range flush_mqtt acked ok during a backlog stays final ok: never re-published, never 'duplicate'."""
     s.settle_timeout = 900
@@ -822,7 +832,7 @@ def broker_acl_device_account(s):
           read=read[:160], other_status_deliveries=(before, after), own_health=own)
 
 
-@scenario(xfail="E2E-01")
+@scenario()
 def backlog_ingest_time(s):
     """A realistic backlog (6 days of minute readings, ~10k frames) is ingested within 60 s of real time."""
     s.settle_timeout = 900
@@ -893,7 +903,7 @@ def redelivered_command_keeps_result(s):
           after_status=after.get("final_status"), after_ack=after.get("ack_payload"))
 
 
-@scenario(xfail="E2E-06")
+@scenario()
 def command_outlives_long_send_interval(s):
     """send_s 14 days (allowed up to 27): a command queued after a connection is still delivered at the next one."""
     lg = boot(s)

@@ -1241,20 +1241,26 @@ pub async fn device_series(
 /// Observations are never pruned: their `delivery_id` is cleared by the
 /// foreign key's `ON DELETE SET NULL`, so the measurement survives the log.
 pub async fn prune_deliveries(client: &Client, retention_days: i64) -> Result<u64, String> {
+    // A JSON uplink kept as rev2-store-failed exists nowhere else: kept
+    // until an operator dismisses it (released_at).
     let removed = client
         .execute(
-            "DELETE FROM deliveries WHERE received_at < now() - ($1::BIGINT * INTERVAL '1 day')",
+            "DELETE FROM deliveries WHERE received_at < now() - ($1::BIGINT * INTERVAL '1 day')
+               AND (reason IS DISTINCT FROM 'rev2-store-failed' OR released_at IS NOT NULL)",
             &[&retention_days],
         )
         .await
         .map_err(|err| db_context("delivery prune failed", err))?;
-    // Raw data/stream and data/file bytes follow the same retention. Every
-    // valid frame is kept byte-exact in stream_frames, so nothing decodable
-    // is lost; the batch row keeps its header and counters.
+    // Raw data/stream and data/file bytes follow the same retention: every
+    // frame of a stored batch is kept byte-exact in stream_frames and the
+    // batch row keeps its header and counters. Salvaged bytes (a message
+    // whose rows could not be stored, a chunk whose download could not
+    // advance) are the only copy and stay until derived or dismissed.
     client
         .execute(
             "UPDATE stream_batches SET raw=NULL
-             WHERE raw IS NOT NULL AND received_at < now() - ($1::BIGINT * INTERVAL '1 day')",
+             WHERE raw IS NOT NULL AND received_at < now() - ($1::BIGINT * INTERVAL '1 day')
+               AND NOT (released_at IS NULL AND groundwater_salvaged_batch(error,channel,derive_error))",
             &[&retention_days],
         )
         .await

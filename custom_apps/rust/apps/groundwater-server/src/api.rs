@@ -56,6 +56,10 @@ pub fn router(state: AppState) -> Router {
             "/api/devices/{device_id}/commands/{command_id}/cancel",
             post(cancel),
         )
+        .route(
+            "/api/devices/{device_id}/salvaged/dismiss",
+            post(dismiss_salvaged),
+        )
         .merge(crate::api_rev2::routes())
         .merge(crate::ops_api::routes())
         .fallback(frontend)
@@ -267,7 +271,53 @@ async fn status(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
     } else {
         None
     };
-    Ok(Json(json!({"service":"groundwater-server","user":{"username":i.username,"role":if r==Role::Operator{"operator"}else{"viewer"}},"broker":{"configured":s.settings.mqtt.is_some(),"connected":stats.connected && stats.telemetry_connected,"endpoint":s.settings.mqtt.as_ref().map(|m|format!("{}:{}",m.host,m.port)),"lastError":if r==Role::Operator{stats.last_error}else{None}},"ingest":{"deliveries":stats.deliveries,"observations":stats.observations,"redeliveryCandidates":stats.redelivery_candidates,"conflicts":stats.conflicts,"quarantined":stats.quarantined,"lastDeliveryAt":last_delivery_at},"adapter":{"profiles":crate::profiles::ALL_PROFILES.iter().map(|p|json!({"id":p.as_str(),"label":p.label(),"carriesDeviceId":p.carries_device_id()})).collect::<Vec<_>>()},"devices":visible.len(),"retentionDays":s.settings.retention_days})).into_response())
+    // Derived work waiting for the re-run, and logs whose re-run keeps
+    // failing (operators only).
+    let rerun = if r == Role::Operator {
+        let row = s
+            .db
+            .get()
+            .await
+            .map_err(database)?
+            .query_one(
+                "SELECT count(*) FILTER (WHERE resolve_pending),count(*) FILTER (WHERE rerun_attempts>0)
+                 FROM stream_logs",
+                &[],
+            )
+            .await
+            .map_err(|e| database(e.to_string()))?;
+        Some(json!({"pendingLogs":row.get::<_,i64>(0),"failingLogs":row.get::<_,i64>(1)}))
+    } else {
+        None
+    };
+    // Acknowledged content kept only as salvaged raw bytes (exempt from
+    // retention until derived or dismissed): how much and since when.
+    let salvaged = if r == Role::Operator {
+        let row = s
+            .db
+            .get()
+            .await
+            .map_err(database)?
+            .query_one(
+                "SELECT (SELECT count(*) FROM stream_batches WHERE released_at IS NULL AND raw IS NOT NULL
+                        AND groundwater_salvaged_batch(error,channel,derive_error) AND device_id=ANY($1)),
+                    (SELECT min(received_at) FROM stream_batches WHERE released_at IS NULL AND raw IS NOT NULL
+                        AND groundwater_salvaged_batch(error,channel,derive_error) AND device_id=ANY($1)),
+                    (SELECT count(*) FROM deliveries WHERE released_at IS NULL AND reason='rev2-store-failed'
+                        AND device_id=ANY($1)),
+                    (SELECT min(received_at) FROM deliveries WHERE released_at IS NULL AND reason='rev2-store-failed'
+                        AND device_id=ANY($1))",
+                &[&visible],
+            )
+            .await
+            .map_err(|e| database(e.to_string()))?;
+        Some(json!({
+            "rawBatches":row.get::<_,i64>(0),"oldestRawBatchAt":row.get::<_,Option<DateTime<Utc>>>(1),
+            "storeFailedMessages":row.get::<_,i64>(2),"oldestStoreFailedAt":row.get::<_,Option<DateTime<Utc>>>(3)}))
+    } else {
+        None
+    };
+    Ok(Json(json!({"service":"groundwater-server","user":{"username":i.username,"role":if r==Role::Operator{"operator"}else{"viewer"}},"broker":{"configured":s.settings.mqtt.is_some(),"connected":stats.connected && stats.telemetry_connected,"endpoint":s.settings.mqtt.as_ref().map(|m|format!("{}:{}",m.host,m.port)),"lastError":if r==Role::Operator{stats.last_error}else{None}},"ingest":{"deliveries":stats.deliveries,"observations":stats.observations,"redeliveryCandidates":stats.redelivery_candidates,"conflicts":stats.conflicts,"quarantined":stats.quarantined,"lastDeliveryAt":last_delivery_at,"held":stats.held,"rerun":rerun,"salvaged":salvaged},"adapter":{"profiles":crate::profiles::ALL_PROFILES.iter().map(|p|json!({"id":p.as_str(),"label":p.label(),"carriesDeviceId":p.carries_device_id()})).collect::<Vec<_>>()},"devices":visible.len(),"retentionDays":s.settings.retention_days})).into_response())
 }
 async fn devices(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
     let db = s.db.get().await.map_err(database)?;
@@ -521,6 +571,34 @@ async fn cancel(
         })?;
     s.bus.emit(LiveEvent::Command { device_id: device });
     Ok(Json(json!({"command":command,"warning":warning})).into_response())
+}
+/// An operator has looked at a device's salvaged raw content (see
+/// `/api/status` `ingest.salvaged`) and releases it to normal retention.
+async fn dismiss_salvaged(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    AxumPath(device): AxumPath<String>,
+) -> ApiResult {
+    let db = s.db.get().await.map_err(database)?;
+    operator(&h)?;
+    let device = authorize(&s, &h, &device).await?;
+    let batches = db
+        .execute(
+            "UPDATE stream_batches SET released_at=now() WHERE device_id=$1 AND released_at IS NULL
+               AND groundwater_salvaged_batch(error,channel,derive_error)",
+            &[&device],
+        )
+        .await
+        .map_err(|e| database(e.to_string()))?;
+    let messages = db
+        .execute(
+            "UPDATE deliveries SET released_at=now() WHERE device_id=$1 AND released_at IS NULL
+               AND reason='rev2-store-failed'",
+            &[&device],
+        )
+        .await
+        .map_err(|e| database(e.to_string()))?;
+    Ok(Json(json!({"rawBatches":batches,"storeFailedMessages":messages})).into_response())
 }
 async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>) -> ApiResult {
     let device = authorize(&s, &h, &q.device).await?;
