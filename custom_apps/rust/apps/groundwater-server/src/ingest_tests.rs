@@ -640,3 +640,103 @@ async fn only_a_pending_type_1_frame_blocks_later_readings() {
     );
     assert_eq!(anchor_of(&h, 8, 49).await, Some(1));
 }
+
+// Stores readings 0..=last of log `log` directly (anchor at seq 0, 60 s
+// interval, all unpaired), with their raw frames, as a long backlog would.
+async fn backlog(h: &Harness, log: i64, last: i64, skip: i64) {
+    h.client
+        .batch_execute(&format!(
+            "SET session_replication_role=replica;
+             INSERT INTO observations(device_id,kind,payload_digest,received_at,recorded_at,time_quality,time_reason,zone_source,
+                interpretation_version,battery_truncated,solar_truncated,duplicate_outcome,duplicate_reason,payload,source,log_id,seq,
+                record_type,anchor,interval_s,time_valid,sample_index,time_rel_s)
+             SELECT '{D}','reading','x',now(),CASE WHEN g=0 THEN now() END,'plausible','r','utc','2','f','f','new','','{{}}','record',{log},g,
+                CASE WHEN g=0 THEN 1 ELSE 0 END,g=0,60,true,g,0 FROM generate_series(0,{last}) g WHERE g<>{skip};
+             INSERT INTO stream_frames(device_id,log_id,seq,record_type,size,raw,payload_schema,received_at,pos)
+                SELECT '{D}',{log},g,0,18,'\\x00'::bytea,1,now(),g*18 FROM generate_series(0,{last}) g WHERE g<>{skip};
+             INSERT INTO stream_logs(device_id,log_id,first_received_at,last_received_at) VALUES('{D}',{log},now(),now());
+             RESET session_replication_role; ANALYZE observations;"
+        ))
+        .await
+        .unwrap();
+}
+
+// V1: readings waiting behind a gap the logger can no longer fill were
+// re-examined by every batch, each walking back to its anchor row by row.
+// Past the statement timeout (30 s at about 20k waiting readings; 3 s
+// here at 10k) every batch of the log failed as transient and was retried
+// for ever, stalling the shared MQTT session for every logger.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn readings_behind_an_unrecoverable_gap_cost_a_batch_nothing() {
+    use crate::stream::encode::batch;
+    let mut h = Harness::new().await;
+    backlog(&h, 20, 10_000, 3).await;
+    h.client
+        .batch_execute(&format!(
+            "INSERT INTO stream_gaps(device_id,log_id,from_seq,to_seq,state) VALUES('{D}',20,3,3,'unrecoverable');
+             SET statement_timeout='3s'"
+        ))
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    h.publish(
+        "data/stream",
+        &batch(20, 10_001 * 18, 0, &[routine(10_001, 10_001)]),
+    )
+    .await
+    .unwrap();
+    let took = started.elapsed();
+    h.client
+        .batch_execute("RESET statement_timeout")
+        .await
+        .unwrap();
+    assert!(
+        took < std::time::Duration::from_secs(1),
+        "batch took {took:?}"
+    );
+    assert_eq!(anchor_of(&h, 20, 2).await, Some(0));
+    assert_eq!(anchor_of(&h, 20, 4).await, None);
+    assert_eq!(
+        h.scalar::<String>("SELECT state FROM deliveries").await,
+        "accepted"
+    );
+}
+
+// V1 (b): the dating work one batch does is bounded; the rest is left
+// flagged for the re-run instead of being done inline.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn a_batch_dates_a_bounded_number_of_readings_and_the_rerun_the_rest() {
+    use crate::stream::encode::batch;
+    let mut h = Harness::new().await;
+    backlog(&h, 21, 30_000, -1).await;
+    h.publish(
+        "data/stream",
+        &batch(21, 30_001 * 18, 0, &[routine(30_001, 30_001)]),
+    )
+    .await
+    .unwrap();
+    let paired: i64 = h
+        .scalar("SELECT count(*) FROM observations WHERE log_id=21 AND anchor_seq IS NOT NULL")
+        .await;
+    assert!(
+        paired > 0 && paired < 30_001,
+        "{paired} paired in one batch"
+    );
+    assert!(log_flags(&h, 21).await.0);
+    crate::rev2_store::rederive_pending(&mut h.client, crate::config::rev2_policy())
+        .await
+        .unwrap();
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM observations WHERE log_id=21 AND record_type=0 AND anchor_seq IS NULL")
+            .await,
+        0
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM observations WHERE log_id=21 AND seq=30001 AND recorded_at IS NOT NULL")
+            .await,
+        1
+    );
+    assert!(!log_flags(&h, 21).await.0);
+}

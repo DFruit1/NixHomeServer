@@ -83,26 +83,38 @@ $$;
 
 -- A record retimed after insertion (anchor or clock set arriving later)
 -- must update the latest pointers and replay alerts like a new sample.
+-- Once per statement, not per row: dating a run of readings updates
+-- thousands of rows, and a device-row update for each one cost about
+-- 0.5 ms (100k readings: 56 s).
 CREATE OR REPLACE FUNCTION groundwater_observation_retimed() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    IF NEW.recorded_at IS DISTINCT FROM OLD.recorded_at OR NEW.time_quality IS DISTINCT FROM OLD.time_quality
-        OR NEW.gwl IS DISTINCT FROM OLD.gwl THEN
-        UPDATE devices SET
-            latest_plausible_id=CASE WHEN NEW.time_quality='plausible' AND NEW.recorded_at IS NOT NULL AND
-                (latest_plausible_at IS NULL OR (NEW.recorded_at,NEW.id)>(latest_plausible_at,latest_plausible_id))
-                THEN NEW.id ELSE latest_plausible_id END,
-            latest_plausible_at=CASE WHEN NEW.time_quality='plausible' THEN GREATEST(latest_plausible_at,NEW.recorded_at)
-                ELSE latest_plausible_at END,
-            alerts_dirty=true,
-            alerts_dirty_from=LEAST(alerts_dirty_from,NEW.recorded_at,OLD.recorded_at),
-            alerts_replay_all=alerts_replay_all OR OLD.recorded_at IS NOT NULL
-        WHERE device_id=NEW.device_id;
-    END IF;
-    RETURN NEW;
+    WITH changed AS (
+        SELECT n.id,n.device_id,n.recorded_at,n.time_quality,o.recorded_at AS old_at
+        FROM retimed_new n JOIN retimed_old o ON o.id=n.id
+        WHERE n.recorded_at IS DISTINCT FROM o.recorded_at OR n.time_quality IS DISTINCT FROM o.time_quality
+            OR n.gwl IS DISTINCT FROM o.gwl),
+    latest AS (
+        SELECT DISTINCT ON (device_id) device_id,id,recorded_at FROM changed
+        WHERE time_quality='plausible' AND recorded_at IS NOT NULL ORDER BY device_id,recorded_at DESC,id DESC),
+    per_device AS (
+        SELECT device_id,LEAST(min(recorded_at),min(old_at)) AS dirty_from,bool_or(old_at IS NOT NULL) AS replay_all
+        FROM changed GROUP BY device_id)
+    UPDATE devices d SET
+        latest_plausible_id=CASE WHEN l.id IS NOT NULL AND
+            (d.latest_plausible_at IS NULL OR (l.recorded_at,l.id)>(d.latest_plausible_at,d.latest_plausible_id))
+            THEN l.id ELSE d.latest_plausible_id END,
+        latest_plausible_at=GREATEST(d.latest_plausible_at,l.recorded_at),
+        alerts_dirty=true,
+        alerts_dirty_from=LEAST(d.alerts_dirty_from,p.dirty_from),
+        alerts_replay_all=d.alerts_replay_all OR p.replay_all
+    FROM per_device p LEFT JOIN latest l ON l.device_id=p.device_id
+    WHERE d.device_id=p.device_id;
+    RETURN NULL;
 END $$;
 DROP TRIGGER IF EXISTS groundwater_observation_retimed ON observations;
-CREATE TRIGGER groundwater_observation_retimed AFTER UPDATE OF recorded_at,time_quality,gwl ON observations
-    FOR EACH ROW EXECUTE FUNCTION groundwater_observation_retimed();
+CREATE TRIGGER groundwater_observation_retimed AFTER UPDATE ON observations
+    REFERENCING OLD TABLE AS retimed_old NEW TABLE AS retimed_new
+    FOR EACH STATEMENT EXECUTE FUNCTION groundwater_observation_retimed();
 
 -- Raw data/stream and data/file messages, verified or not. Raw bytes follow
 -- delivery retention; the decoded frames below are kept.
@@ -536,13 +548,101 @@ RETURNS TIMESTAMPTZ LANGUAGE sql IMMUTABLE AS $$
             THEN to_timestamp((extract(epoch FROM base)+secs)::double precision) END
 $$;
 
--- Rebuilds the derived times of one log: relative (tv=0) records of a boot
+-- Time resolution runs for every data/stream batch, so its cost must not
+-- grow with a log's history. Readings waiting for an anchor (behind a gap
+-- the logger can no longer fill: "never datable") stay unpaired for good;
+-- without these partial indexes every batch re-examined each of them and
+-- walked back to its anchor row by row (quadratic: 20k waiting readings
+-- took 30 s, past the statement timeout).
+CREATE INDEX IF NOT EXISTS observations_anchor_idx ON observations(device_id,log_id,seq) WHERE anchor;
+CREATE INDEX IF NOT EXISTS observations_unpaired_idx ON observations(device_id,log_id,seq)
+    WHERE record_type=0 AND anchor_seq IS NULL;
+-- Non-reading records (anchors, off-schedule readings): the clock-set
+-- boundary search walks these, not the readings between them.
+CREATE INDEX IF NOT EXISTS observations_records_idx ON observations(device_id,log_id,seq) WHERE record_type<>0;
+
+-- Dates readings from anchor `a_seq` (Rev2 "Time, anchors and readings":
+-- anchor time + sample_index x interval_s), at most `lim` rows in seq
+-- order below `hi` (NULL: no bound). `pair`: unpaired readings, which are
+-- paired with this anchor; otherwise readings already paired with it whose
+-- stored time differs (the anchor was retimed by a clock set). Returns the
+-- number of rows changed.
+CREATE OR REPLACE FUNCTION groundwater_time_readings(target TEXT, target_log BIGINT, a_seq BIGINT, hi BIGINT,
+    pair BOOLEAN, lim INTEGER) RETURNS INTEGER LANGUAGE plpgsql AS $$
+DECLARE n INTEGER;
+BEGIN
+    IF pair THEN
+        UPDATE observations r SET anchor_seq=a.seq,
+            recorded_at=groundwater_offset_time(a.recorded_at,r.sample_index::numeric*a.interval_s),
+            time_rel_s=a.time_rel_s+r.sample_index::bigint*a.interval_s,
+            time_valid=a.time_valid,
+            settings_gen=a.settings_gen,
+            interval_s=a.interval_s,
+            time_source='anchor',
+            time_quality=groundwater_time_quality(groundwater_offset_time(a.recorded_at,r.sample_index::numeric*a.interval_s),r.received_at),
+            time_reason=groundwater_anchor_reason(a.seq,a.recorded_at,r.sample_index,a.interval_s)
+        FROM observations a
+        WHERE r.id=ANY(ARRAY(SELECT r.id FROM observations r WHERE r.device_id=target AND r.log_id=target_log
+                AND r.record_type=0 AND r.anchor_seq IS NULL AND r.seq>a_seq AND (hi IS NULL OR r.seq<hi)
+                ORDER BY r.seq LIMIT lim))
+          AND a.device_id=target AND a.log_id=target_log AND a.seq=a_seq;
+    ELSE
+        UPDATE observations r SET
+            recorded_at=groundwater_offset_time(a.recorded_at,r.sample_index::numeric*a.interval_s),
+            time_rel_s=a.time_rel_s+r.sample_index::bigint*a.interval_s,
+            time_valid=a.time_valid,
+            settings_gen=a.settings_gen,
+            interval_s=a.interval_s,
+            time_source='anchor',
+            time_quality=groundwater_time_quality(groundwater_offset_time(a.recorded_at,r.sample_index::numeric*a.interval_s),r.received_at),
+            time_reason=groundwater_anchor_reason(a.seq,a.recorded_at,r.sample_index,a.interval_s)
+        FROM observations a
+        WHERE r.id=ANY(ARRAY(SELECT r.id FROM observations r JOIN observations a
+                    ON a.device_id=target AND a.log_id=target_log AND a.seq=a_seq
+                WHERE r.device_id=target AND r.log_id=target_log AND r.record_type=0 AND r.anchor_seq=a_seq
+                  AND r.seq>a_seq AND (hi IS NULL OR r.seq<hi)
+                  AND (r.recorded_at IS DISTINCT FROM groundwater_offset_time(a.recorded_at,r.sample_index::numeric*a.interval_s)
+                    OR r.time_rel_s IS DISTINCT FROM a.time_rel_s+r.sample_index::bigint*a.interval_s
+                    OR r.settings_gen IS DISTINCT FROM a.settings_gen OR r.time_source IS DISTINCT FROM 'anchor')
+                ORDER BY r.seq LIMIT lim))
+          AND a.device_id=target AND a.log_id=target_log AND a.seq=a_seq;
+    END IF;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    RETURN n;
+END $$;
+
+-- A damaged anchor (CRC-8 passes 1 in 256 damaged frames) can carry any
+-- interval_s: an instant outside 1970-2200 leaves the reading's time
+-- unresolved with the reason, it never fails the batch.
+CREATE OR REPLACE FUNCTION groundwater_anchor_reason(a_seq BIGINT, a_at TIMESTAMPTZ, idx INTEGER, a_interval BIGINT)
+RETURNS TEXT LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN a_at IS NULL THEN 'anchor at seq '||a_seq||' has no UTC time yet'
+        WHEN groundwater_offset_time(a_at,idx::numeric*a_interval) IS NULL
+            THEN 'anchor at seq '||a_seq||' + '||idx||' x '||a_interval||' s is outside 1970-2200 (damaged anchor?); time unresolved'
+        ELSE 'anchor at seq '||a_seq||' + '||idx||' x '||a_interval||' s' END
+$$;
+
+-- Resolves the derived times of one log: relative (tv=0) records of a boot
 -- once a Type 15 clock set pairs uptime with UTC (Rev2 "Time, anchors and
--- readings"), Type 0 anchor assignment
--- (only across a stretch with no open gap, so a missing anchor is never
+-- readings"), Type 0 anchor assignment (only across a stretch with no
+-- unfilled gap and no pending Type 1 frame, so a missing anchor is never
 -- skipped over), and Type 0 times from their anchors.
-CREATE OR REPLACE FUNCTION groundwater_resolve_log(target TEXT, target_log BIGINT) RETURNS INTEGER LANGUAGE plpgsql AS $$
-DECLARE cs RECORD; boundary BIGINT; shift BIGINT; changed INTEGER := 0; n INTEGER; a_seq BIGINT; a_rel BIGINT;
+--
+-- The work is bounded whatever the log's history: pairing visits only the
+-- runs (anchor to next anchor) at or after `scope_from` (NULL: the whole
+-- log) that hold unpaired readings, and dates at most `budget` readings.
+-- Returns false when the budget ran out before the scope was done; the
+-- caller then leaves the log to the re-run. Readings behind an unfilled
+-- gap are skipped as a range, never examined one by one. `pair` false
+-- (the log's gap scan is incomplete: a missing anchor could lie in the
+-- unscanned range) skips pairing.
+DROP FUNCTION IF EXISTS groundwater_resolve_log(TEXT,BIGINT);
+CREATE OR REPLACE FUNCTION groundwater_resolve_log(target TEXT, target_log BIGINT, scope_from BIGINT, budget INTEGER,
+    pair BOOLEAN)
+RETURNS BOOLEAN LANGUAGE plpgsql AS $$
+DECLARE cs RECORD; boundary BIGINT; shift BIGINT; n INTEGER; a_seq BIGINT; a_rel BIGINT;
+    retimed BIGINT[] := '{}'; converted BIGINT[]; remaining INTEGER := budget; r_seq BIGINT; next_a BIGINT;
+    stop_at BIGINT; after BIGINT := -1;
 BEGIN
     FOR cs IN SELECT seq,(details->>'new_time')::bigint AS new_time,(details->>'uptime_s')::bigint AS uptime_s
         FROM device_events WHERE device_id=target AND log_id=target_log AND event='clock_set'
@@ -558,18 +658,20 @@ BEGIN
             WHERE device_id=target AND log_id=target_log AND anchor AND reading_reason IN (1,2) AND seq<=cs.seq
             ORDER BY seq DESC LIMIT 1;
         CONTINUE WHEN a_seq IS NULL OR a_rel IS NULL;
-        SELECT COALESCE(max(s)+1,0) INTO boundary FROM (
-            SELECT seq AS s FROM observations WHERE device_id=target AND log_id=target_log AND seq<a_seq
-                AND record_type<>0 AND (time_valid IS NOT FALSE OR time_rel_s>a_rel)
-            UNION ALL SELECT seq FROM device_events WHERE device_id=target AND log_id=target_log AND source='record'
-                AND seq<a_seq AND (time_valid IS NOT FALSE OR time_rel_s>a_rel)
-            UNION ALL SELECT seq FROM device_positions WHERE device_id=target AND log_id=target_log AND seq<a_seq
-                AND (time_valid IS NOT FALSE OR time_rel_s>a_rel)
-            UNION ALL SELECT seq FROM device_tilt WHERE device_id=target AND log_id=target_log AND seq<a_seq
-                AND (time_valid IS NOT FALSE OR time_rel_s>a_rel)
-            UNION ALL SELECT seq FROM device_tests WHERE device_id=target AND log_id=target_log AND seq<a_seq
-                AND (time_valid IS NOT FALSE OR time_rel_s>a_rel)
-        ) earlier;
+        -- The latest such record of each table, found walking back from
+        -- the anchor (not the max over the whole log before it).
+        SELECT COALESCE(GREATEST(
+            (SELECT seq FROM observations WHERE device_id=target AND log_id=target_log AND seq<a_seq
+                AND record_type<>0 AND (time_valid IS NOT FALSE OR time_rel_s>a_rel) ORDER BY seq DESC LIMIT 1),
+            (SELECT seq FROM device_events WHERE device_id=target AND log_id=target_log AND source='record'
+                AND seq<a_seq AND (time_valid IS NOT FALSE OR time_rel_s>a_rel) ORDER BY seq DESC LIMIT 1),
+            (SELECT seq FROM device_positions WHERE device_id=target AND log_id=target_log AND seq<a_seq
+                AND (time_valid IS NOT FALSE OR time_rel_s>a_rel) ORDER BY seq DESC LIMIT 1),
+            (SELECT seq FROM device_tilt WHERE device_id=target AND log_id=target_log AND seq<a_seq
+                AND (time_valid IS NOT FALSE OR time_rel_s>a_rel) ORDER BY seq DESC LIMIT 1),
+            (SELECT seq FROM device_tests WHERE device_id=target AND log_id=target_log AND seq<a_seq
+                AND (time_valid IS NOT FALSE OR time_rel_s>a_rel) ORDER BY seq DESC LIMIT 1)
+        )+1,0) INTO boundary;
         -- A boot resumes numbering at the reserved block end, so the
         -- previous boot normally ends at a sequence skip. A boot that died
         -- within seconds has relative times no later than this anchor's;
@@ -580,14 +682,18 @@ BEGIN
               AND NOT EXISTS(SELECT 1 FROM stream_frames p
                   WHERE p.device_id=target AND p.log_id=target_log AND p.seq=f.seq-1);
         shift:=cs.new_time-cs.uptime_s;
-        UPDATE observations SET recorded_at=groundwater_offset_time('epoch',time_rel_s+shift),time_source='clock-set',
-            time_quality=groundwater_time_quality(groundwater_offset_time('epoch',time_rel_s+shift),received_at),
-            time_reason='seconds since boot converted by the clock-set record at seq '||cs.seq
-        WHERE device_id=target AND log_id=target_log AND record_type<>0 AND time_valid IS FALSE
-          AND recorded_at IS NULL AND time_rel_s IS NOT NULL AND seq>=boundary AND seq<cs.seq;
-        GET DIAGNOSTICS n = ROW_COUNT; changed:=changed+n;
+        -- Anchors converted here change the times of their readings.
+        WITH u AS (
+            UPDATE observations SET recorded_at=groundwater_offset_time('epoch',time_rel_s+shift),time_source='clock-set',
+                time_quality=groundwater_time_quality(groundwater_offset_time('epoch',time_rel_s+shift),received_at),
+                time_reason='seconds since boot converted by the clock-set record at seq '||cs.seq
+            WHERE device_id=target AND log_id=target_log AND record_type<>0 AND time_valid IS FALSE
+              AND recorded_at IS NULL AND time_rel_s IS NOT NULL AND seq>=boundary AND seq<cs.seq
+            RETURNING seq,anchor)
+        SELECT array_agg(seq) FILTER (WHERE anchor) INTO converted FROM u;
+        retimed:=retimed||COALESCE(converted,'{}');
         UPDATE device_events SET recorded_at=groundwater_offset_time('epoch',time_rel_s+shift),time_source='clock-set'
-        WHERE device_id=target AND log_id=target_log AND time_valid IS FALSE AND recorded_at IS NULL
+        WHERE device_id=target AND log_id=target_log AND source='record' AND time_valid IS FALSE AND recorded_at IS NULL
           AND time_rel_s IS NOT NULL AND seq>=boundary AND seq<cs.seq;
         UPDATE device_positions SET recorded_at=groundwater_offset_time('epoch',time_rel_s+shift),time_source='clock-set'
         WHERE device_id=target AND log_id=target_log AND time_valid IS FALSE AND recorded_at IS NULL
@@ -600,47 +706,70 @@ BEGIN
           AND time_rel_s IS NOT NULL AND seq>=boundary AND seq<cs.seq;
     END LOOP;
 
-    WITH pairs AS (
-        SELECT r.id,a.seq AS anchor_seq FROM observations r
-        CROSS JOIN LATERAL (
-            SELECT a.seq FROM observations a WHERE a.device_id=r.device_id AND a.log_id=r.log_id
-              AND a.anchor AND a.seq<r.seq ORDER BY a.seq DESC LIMIT 1) a
-        WHERE r.device_id=target AND r.log_id=target_log AND r.record_type=0 AND r.anchor_seq IS NULL
-          AND NOT EXISTS(SELECT 1 FROM stream_gaps g WHERE g.device_id=target AND g.log_id=target_log
-              AND g.state<>'filled' AND g.from_seq<r.seq AND g.to_seq>a.seq)
-          -- A stored Type 1 frame whose record is not derived yet may be
-          -- the reading's real anchor: wait for it as for a gap. Only a
-          -- Type 1 record can be an anchor (Rev2 "Time, anchors and
-          -- readings"); a pending frame of another type blocks nothing.
-          AND NOT EXISTS(SELECT 1 FROM stream_frames p WHERE p.device_id=target AND p.log_id=target_log
-              AND p.derive_pending AND p.record_type=1 AND p.seq<r.seq AND p.seq>a.seq)
-          AND NOT EXISTS(SELECT 1 FROM stream_logs l WHERE l.device_id=target AND l.log_id=target_log
-              AND l.gaps_pending)
-    ) UPDATE observations o SET anchor_seq=pairs.anchor_seq FROM pairs WHERE o.id=pairs.id;
+    -- Readings of a retimed anchor follow it.
+    FOREACH a_seq IN ARRAY retimed LOOP
+        SELECT seq INTO next_a FROM observations WHERE device_id=target AND log_id=target_log AND anchor AND seq>a_seq
+            ORDER BY seq LIMIT 1;
+        remaining:=remaining-groundwater_time_readings(target,target_log,a_seq,next_a,false,GREATEST(remaining,0)+1);
+        IF remaining<0 THEN RETURN false; END IF;
+    END LOOP;
 
-    -- A damaged anchor (CRC-8 passes 1 in 256 damaged frames) can carry any
-    -- interval_s: an instant outside 1970-2200 leaves the reading's time
-    -- unresolved with the reason, it never fails the batch.
-    UPDATE observations r SET
-        recorded_at=groundwater_offset_time(a.recorded_at,r.sample_index::numeric*a.interval_s),
-        time_rel_s=a.time_rel_s+r.sample_index::bigint*a.interval_s,
-        time_valid=a.time_valid,
-        settings_gen=a.settings_gen,
-        interval_s=a.interval_s,
-        time_source='anchor',
-        time_quality=groundwater_time_quality(groundwater_offset_time(a.recorded_at,r.sample_index::numeric*a.interval_s),r.received_at),
-        time_reason=CASE WHEN a.recorded_at IS NULL THEN 'anchor at seq '||a.seq||' has no UTC time yet'
-            WHEN groundwater_offset_time(a.recorded_at,r.sample_index::numeric*a.interval_s) IS NULL
-                THEN 'anchor at seq '||a.seq||' + '||r.sample_index||' x '||a.interval_s||' s is outside 1970-2200 (damaged anchor?); time unresolved'
-            ELSE 'anchor at seq '||a.seq||' + '||r.sample_index||' x '||a.interval_s||' s' END
-    FROM observations a
-    WHERE r.device_id=target AND r.log_id=target_log AND r.record_type=0 AND r.anchor_seq IS NOT NULL
-      AND a.device_id=r.device_id AND a.log_id=r.log_id AND a.seq=r.anchor_seq
-      AND (r.recorded_at IS DISTINCT FROM groundwater_offset_time(a.recorded_at,r.sample_index::numeric*a.interval_s)
-        OR r.time_rel_s IS DISTINCT FROM a.time_rel_s+r.sample_index::bigint*a.interval_s
-        OR r.settings_gen IS DISTINCT FROM a.settings_gen OR r.time_source IS DISTINCT FROM 'anchor');
-    GET DIAGNOSTICS n = ROW_COUNT; changed:=changed+n;
-    RETURN changed;
+    IF NOT pair THEN RETURN true; END IF;
+    -- Pairing, one run (anchor to next anchor) at a time. The run starts at
+    -- the anchor at or before scope_from: earlier runs did not change.
+    IF scope_from IS NOT NULL THEN
+        SELECT seq INTO after FROM observations WHERE device_id=target AND log_id=target_log AND anchor
+            AND seq<=scope_from ORDER BY seq DESC LIMIT 1;
+        after:=COALESCE(after,-1);
+    END IF;
+    LOOP
+        SELECT seq INTO r_seq FROM observations WHERE device_id=target AND log_id=target_log
+            AND record_type=0 AND anchor_seq IS NULL AND seq>after ORDER BY seq LIMIT 1;
+        EXIT WHEN r_seq IS NULL;
+        a_seq:=NULL; next_a:=NULL;
+        SELECT seq INTO a_seq FROM observations WHERE device_id=target AND log_id=target_log AND anchor
+            AND seq<r_seq ORDER BY seq DESC LIMIT 1;
+        SELECT seq INTO next_a FROM observations WHERE device_id=target AND log_id=target_log AND anchor
+            AND seq>r_seq ORDER BY seq LIMIT 1;
+        IF a_seq IS NOT NULL THEN
+            -- The run is paired up to the first unfilled gap or stored
+            -- Type 1 frame not derived yet (either may be a missing anchor;
+            -- only a Type 1 record can be one).
+            stop_at:=LEAST(next_a,
+                (SELECT from_seq FROM stream_gaps WHERE device_id=target AND log_id=target_log AND state<>'filled'
+                    AND from_seq>a_seq ORDER BY from_seq LIMIT 1),
+                (SELECT seq FROM stream_frames WHERE device_id=target AND log_id=target_log AND derive_pending
+                    AND record_type=1 AND seq>a_seq ORDER BY seq LIMIT 1));
+            IF stop_at IS NULL OR stop_at>r_seq THEN
+                remaining:=remaining-groundwater_time_readings(target,target_log,a_seq,stop_at,true,GREATEST(remaining,0)+1);
+                IF remaining<0 THEN RETURN false; END IF;
+            END IF;
+        END IF;
+        EXIT WHEN next_a IS NULL;
+        after:=next_a;
+    END LOOP;
+    RETURN true;
+END $$;
+
+-- Re-run (rev2_store::rederive_pending) over a whole log: brings every
+-- reading paired with an anchor at or after `after_seq` back in line with
+-- its anchor, at most `budget` rows. Returns the anchor to continue after,
+-- or NULL when the log is done.
+CREATE OR REPLACE FUNCTION groundwater_retime_log(target TEXT, target_log BIGINT, after_seq BIGINT, budget INTEGER)
+RETURNS BIGINT LANGUAGE plpgsql AS $$
+DECLARE a_seq BIGINT; next_a BIGINT; remaining INTEGER := budget; previous BIGINT := after_seq;
+BEGIN
+    FOR a_seq IN SELECT seq FROM observations WHERE device_id=target AND log_id=target_log AND anchor
+        AND seq>COALESCE(after_seq,-1) ORDER BY seq
+    LOOP
+        SELECT seq INTO next_a FROM observations WHERE device_id=target AND log_id=target_log AND anchor AND seq>a_seq
+            ORDER BY seq LIMIT 1;
+        remaining:=remaining-groundwater_time_readings(target,target_log,a_seq,next_a,false,GREATEST(remaining,0)+1);
+        -- Not finished with this anchor's run: continue it next time.
+        IF remaining<0 THEN RETURN COALESCE(previous,-1); END IF;
+        previous:=a_seq;
+    END LOOP;
+    RETURN NULL;
 END $$;
 
 -- Revision 2 command ids (commands.id is the wire id) must never repeat for a

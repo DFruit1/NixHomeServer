@@ -27,6 +27,13 @@ use crate::stream;
 /// Interpretation tag stored on revision 2 observations.
 pub const INTERPRETATION: &str = "gw-adapter/2+v22";
 
+/// Readings one batch may date (pair with their anchor and time). Past
+/// this the log is flagged and the re-run continues, so a batch's cost
+/// never grows with a log's history or backlog.
+const RESOLVE_BATCH_BUDGET: i32 = 5_000;
+/// Readings one re-run call dates (the re-run repeats it until done).
+const RESOLVE_RERUN_BUDGET: i32 = 50_000;
+
 /// One attributed revision 2 delivery.
 pub struct Context<'a> {
     pub device_id: &'a str,
@@ -1449,6 +1456,8 @@ async fn derive_log<C: GenericClient + Sync>(
     whole: bool,
 ) -> Result<Option<String>, String> {
     let mut failed: Vec<String> = Vec::new();
+    let mut gaps_scanned = gaps.is_some() || !whole;
+    let mut deferred = false;
     if let Some((min, max)) = gaps {
         savepoint(client, "rev2_gaps").await?;
         let scanned = async {
@@ -1477,6 +1486,7 @@ async fn derive_log<C: GenericClient + Sync>(
                     )
                     .await
                     .map_err(dberr("gaps pending"))?;
+                gaps_scanned = false;
                 failed.push(error);
             }
         }
@@ -1502,13 +1512,61 @@ async fn derive_log<C: GenericClient + Sync>(
         }
         savepoint(client, "rev2_log").await?;
         let result = async {
-            client
-                .execute(
-                    "SELECT groundwater_resolve_log($1,$2)",
-                    &[&ctx.device_id, &log_id],
-                )
-                .await
-                .map_err(dberr("time resolution"))?;
+            // A batch dates the runs from its first new frame on; the
+            // re-run the whole log, in steps, and every paired reading.
+            let pair = if whole {
+                gaps_scanned
+            } else {
+                gaps_scanned
+                    && !client
+                        .query_one(
+                            "SELECT gaps_pending FROM stream_logs WHERE device_id=$1 AND log_id=$2",
+                            &[&ctx.device_id, &log_id],
+                        )
+                        .await
+                        .map_err(dberr("gaps pending"))?
+                        .get::<_, bool>(0)
+            };
+            let scope = if whole {
+                None
+            } else {
+                gaps.map(|(min, _)| min)
+            };
+            let budget = if whole {
+                RESOLVE_RERUN_BUDGET
+            } else {
+                RESOLVE_BATCH_BUDGET
+            };
+            loop {
+                let done: bool = client
+                    .query_one(
+                        "SELECT groundwater_resolve_log($1,$2,$3,$4,$5)",
+                        &[&ctx.device_id, &log_id, &scope, &budget, &pair],
+                    )
+                    .await
+                    .map_err(dberr("time resolution"))?
+                    .get(0);
+                if done {
+                    break;
+                }
+                if !whole {
+                    deferred = true;
+                    break;
+                }
+            }
+            if whole {
+                let mut after: Option<i64> = Some(-1);
+                while after.is_some() {
+                    after = client
+                        .query_one(
+                            "SELECT groundwater_retime_log($1,$2,$3,$4)",
+                            &[&ctx.device_id, &log_id, &after, &RESOLVE_RERUN_BUDGET],
+                        )
+                        .await
+                        .map_err(dberr("retiming"))?
+                        .get(0);
+                }
+            }
             if tests {
                 client
                     .execute("SELECT groundwater_power_alerts($1)", &[&ctx.device_id])
@@ -1537,6 +1595,16 @@ async fn derive_log<C: GenericClient + Sync>(
             .await
             .map_err(dberr("resolve pending"))?;
         return Ok(Some(error));
+    }
+    if deferred {
+        // Not an error: the re-run dates the rest.
+        client
+            .execute(
+                "UPDATE stream_logs SET resolve_pending=true WHERE device_id=$1 AND log_id=$2",
+                &[&ctx.device_id, &log_id],
+            )
+            .await
+            .map_err(dberr("resolve pending"))?;
     }
     if whole && resolve {
         client
