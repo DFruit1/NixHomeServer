@@ -171,7 +171,10 @@ Common fields `{"v":2,"t":..,"tv":..,"ev":"<event>","seq":<ring seq or omitted>}
 Alerts are a notification copy. The authoritative record arrives in
 `data/stream`. Alerts are best effort: the logger keeps at most 8 unsent
 alerts in RAM (the oldest is dropped when a ninth arrives) and loses them at a
-reset; the records stay in the ring. Alerts raised while asleep are published at the next connection;
+reset; the records stay in the ring. An alert raised before the clock was
+set (seconds since boot, `tv` 0) and still queued when the clock is set in
+the same boot is published with its UTC time (`tv` 1), as its record is
+converted by Type 15. Alerts raised while asleep are published at the next connection;
 an alarm entry, impact, sensor fault, power critical, MRAM almost full or Tail
 Lock brings the next connection forward (subject to the 10 % rule). A
 `gps_moved` or `orientation` alert connects at once: it is not held by the
@@ -234,6 +237,14 @@ no "No GPS" warning); `mram` `ok` | `absent` | `fault`.
 ```
 `lvl` is omitted when not available. The server must still accept revision 1
 `reading` lines (V2.1 SD backlog: `{"DeviceID":..,"GWL":"..",...}`).
+A line taken before the clock was set (a reading at boot, before the boot
+connection sets the clock) is stored with seconds since boot. Lines of the
+current boot are not published while the clock is still invalid (they wait
+for the next connection and do not count as a failed upload); once it is
+set they are published with their UTC time (`t` = the boot's UTC second +
+seconds since boot, `tv` 1). Only a line whose boot ended (power loss or
+reset) before its clock was set arrives with `tv` 0: seconds since a boot
+the server cannot identify, so it cannot be placed.
 
 ### data/stream and data/file
 Type 14 (log start) `firmware_version`: the u32 value is
@@ -376,7 +387,7 @@ page or the defaults. While Tail Locked: `rejected`,
 | `flush_sd` | — | save unsaved frames to the SD archive now; `data`: `{"frames":n,"segment":s}` |
 | `file_list` | `{"path":"/GWL","page":0}` | `{"path":..,"files":[["B0000001.BIN",123456],["SUBDIR/",0]],"more":false}` (≤ 16 entries per page). `file_list` and `file_chunk` take any absolute 8.3 path on the card, not only `/GWL` (e.g. `/` or a V2.1 `/String.txt`); both only read. `.`, `..`, `\`, `:` and control characters are refused; `path` is at most 63 bytes (longer: `rejected`/`bad-args`) |
 | `file_chunk` | `{"path":"/GWL/6A1B2C3D/B0000001.BIN","off":0,"len":1024}` | publishes `data/file`; ack `data` `{"off":..,"len":..,"size":..,"crc32":"…"}` |
-| `clear_error_latch` | — | clears `err` and latched SD/MRAM fault states; in fallback mode after a boot-time MRAM fault it retries the MRAM ring at once (the logger also retries at most hourly at a connection); a clean ring boot replaces the RAM-only settings with the ring's (a new `config/applied` is not sent; `get_settings` shows them) |
+| `clear_error_latch` | — | clears `err` and latched SD/MRAM fault states; in fallback mode after a boot-time MRAM fault it retries the MRAM ring at once (the logger also retries at most hourly at a connection); a ring boot replaces the RAM-only settings with the ring's (a new `config/applied` is not sent; `get_settings` shows them). A ring found in read-only RECOVERY this way is taken as after a boot into it: `health` `mram` `recovery`, `recover_mram` / `wipe_mram` accepted, readings stay on the fallback text files until it is recovered |
 | `enable_logging` | — | resumes logging (Type 16 gap reason 4, anchor) |
 | `sync_time` | `{"t":<UTC s>}` | sets the RTC (source 3) when invalid or > 2 s off; Type 15. `t` is advanced by the time the command waited in the logger's queue. `data`: `{"t":..,"tv":..,"set":true\|false}` (the clock afterwards; `set` false when it was already within 2 s). A `t` outside 2024–2099 → `failed`/`bad-args` |
 
