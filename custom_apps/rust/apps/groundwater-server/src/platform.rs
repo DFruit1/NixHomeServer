@@ -19,7 +19,12 @@ pub async fn migrate(client: &Client) -> Result<(), String> {
     client
         .batch_execute(include_str!("ops.sql"))
         .await
-        .map_err(|e| format!("operations migration: {e:?}"))
+        .map_err(|e| format!("operations migration: {e:?}"))?;
+    // Alerts from logger events and health: last, it builds on all three.
+    client
+        .batch_execute(include_str!("alerting.sql"))
+        .await
+        .map_err(|e| format!("alerting migration: {e:?}"))
 }
 
 pub async fn allowed(

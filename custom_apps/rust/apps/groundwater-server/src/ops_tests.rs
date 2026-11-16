@@ -621,7 +621,8 @@ async fn missed_connections_open_and_close_stale_alerts() {
     let app = app(&url, OpsSettings::default()).await;
     enroll_v22(&app).await;
     let now = Utc::now();
-    // Asleep, announced next connection 2 h ago; margin 30 min → stale.
+    // Asleep, announced next connection 2 h ago; margin 30 min, raised to
+    // the 40 min retry floor → stale.
     client
         .execute(
             "UPDATE devices SET last_seen=$2,link_state='sleep',link_state_at=$2,next_contact_at=$3 WHERE device_id=$1",
@@ -644,9 +645,9 @@ async fn missed_connections_open_and_close_stale_alerts() {
     assert!((row.get::<_, f64>(1) - 2.0).abs() < 0.05);
     assert_eq!(
         row.get::<_, DateTime<Utc>>(2).timestamp(),
-        (now - Duration::minutes(90)).timestamp()
+        (now - Duration::minutes(80)).timestamp()
     );
-    assert_eq!(row.get::<_, Value>(3)["margin_min"], 30);
+    assert_eq!(row.get::<_, Value>(3)["margin_min"], 40);
     // Idempotent while still stale.
     assert!(crate::alerting::evaluate_stale(&client, now, 30)
         .await
@@ -790,7 +791,8 @@ async fn notifications_deliver_dedupe_and_rate_limit() {
         }
     };
     // A flapping battery: open, resolve, open, resolve within the cooldown.
-    let first = open("battery_low", 30).await;
+    // (Openings under 15 minutes old: not late reports, which wait.)
+    let first = open("battery_low", 14).await;
     crate::notify::process(&client, &ops, &http).await.unwrap();
     resolve(first).await;
     let second = open("battery_low", 10).await;
@@ -893,7 +895,7 @@ async fn notifications_deliver_dedupe_and_rate_limit() {
     assert_eq!(
         scalar::<i64>(
             &client,
-            "SELECT count(*) FROM notification_outbox WHERE kind='tamper'"
+            "SELECT count(*) FROM notification_outbox WHERE kind IN ('tamper','impact')"
         )
         .await,
         0
@@ -942,7 +944,7 @@ async fn notifications_deliver_dedupe_and_rate_limit() {
     assert_eq!(last["tags"], json!(["rotating_light"]));
     assert_eq!(
         last["click"],
-        format!("https://groundwater.example/#device={D}&view=events")
+        format!("https://groundwater.example/#device={D}&view=alerts")
     );
 
     // Rules: disabling a kind skips it; the API validates and audits.
@@ -1072,7 +1074,7 @@ async fn notification_delivery_retries_and_test_messages() {
     )
     .await;
     assert_eq!(rules["delivery"]["configured"], false);
-    assert_eq!(rules["rules"].as_array().unwrap().len(), 10);
+    assert_eq!(rules["rules"].as_array().unwrap().len(), 11);
 }
 
 async fn app_unconfigured(url: &str) -> axum::Router {

@@ -277,6 +277,17 @@ DECLARE d devices%ROWTYPE; sample RECORD; current_kind TEXT := NULL;
 BEGIN
     SELECT * INTO d FROM devices WHERE device_id=target FOR UPDATE;
     IF NOT d.alerts_dirty THEN RETURN; END IF;
+    -- Firmware 2.2 (V22) evaluates its own lo/hi with lo_hys/hi_hys on every
+    -- reading and reports gwl_alarm enter/exit, which alerting.sql turns
+    -- into alerts: the logger is authoritative there, so one crossing is one
+    -- alert with the logger's thresholds. The server replay below applies to
+    -- the older profiles only; its earlier V22 level alerts are superseded.
+    IF groundwater_profile_id(d.source_profile)='V22' THEN
+        UPDATE alerts SET superseded=true WHERE device_id=target AND kind IN ('above_max','below_min') AND NOT superseded;
+        UPDATE devices SET alerts_dirty=false,alerts_replay_all=false,alerts_dirty_from=NULL,
+            alerts_cursor=d.latest_plausible_at,alerts_active_id=NULL WHERE device_id=target;
+        RETURN;
+    END IF;
     replay_all:=d.alerts_replay_all OR d.alerts_cursor IS NULL OR COALESCE(d.alerts_dirty_from<=d.alerts_cursor,false);
     IF replay_all THEN
         UPDATE alerts SET superseded=true WHERE device_id=target AND kind IN ('above_max','below_min');
