@@ -1625,6 +1625,51 @@ mod tests {
         assert!(prepare("teleport", &json!({}), false, now).is_err());
     }
 
+    /// `tests/vectors/rev2-server-vectors.json` `commands`, written by the
+    /// independent Python generator and parsed by the firmware's gwl_proto
+    /// on the host: the server builds each wire byte for byte and refuses
+    /// exactly the ones marked refused.
+    #[test]
+    fn server_command_vectors() {
+        let vectors: Value =
+            serde_json::from_str(include_str!("../tests/vectors/rev2-server-vectors.json"))
+                .unwrap();
+        let cases = vectors["commands"].as_array().unwrap();
+        assert!(cases.len() >= 30);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let op = case["op"].as_str().unwrap();
+            let replace = case["replace"] == true;
+            let now = crate::rev2_store::utc(case["now"].as_i64().unwrap());
+            let prepared = prepare(op, &case["args"], replace, now);
+            if let Some(fragment) = case["refused"].as_str() {
+                let error = prepared.expect_err(name);
+                assert!(error.contains(fragment), "{name}: {error}");
+                continue;
+            }
+            let args = prepared.unwrap_or_else(|e| panic!("{name}: {e}"));
+            let publish = case["publish_t"]
+                .as_i64()
+                .map_or(now, crate::rev2_store::utc);
+            let built = wire(
+                case["id"].as_i64().unwrap(),
+                crate::rev2_store::utc(case["exp"].as_i64().unwrap()),
+                op,
+                &args,
+                replace,
+                publish,
+            );
+            assert_eq!(built, case["wire"].as_str().unwrap(), "{name}");
+            assert!(built.len() <= rev2::MAX_DOWNLINK_BYTES, "{name}");
+            let channel = match rev2::kind_of(op).unwrap() {
+                rev2::CommandKind::Config => "config/set",
+                rev2::CommandKind::Basic => "cmd/basic",
+                rev2::CommandKind::Danger => "cmd/danger",
+            };
+            assert_eq!(channel, case["channel"], "{name}");
+        }
+    }
+
     #[test]
     fn danger_operations_get_the_shorter_default_expiry() {
         let policy = Rev2Policy::default();
