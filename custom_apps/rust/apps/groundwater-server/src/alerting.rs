@@ -628,13 +628,100 @@ mod db_tests {
             .iter()
             .map(|r| (r.get(0), r.get(1), r.get(2)))
             .collect();
+        // The resolution is enqueued (the opening was still pending) and
+        // folded into the skipped opening.
         assert_eq!(
             states,
-            [("open".into(), "skipped".into(), Some("history".into()))]
+            [
+                ("open".into(), "skipped".into(), Some("history".into())),
+                ("resolved".into(), "skipped".into(), Some("history".into()))
+            ]
         );
         assert!(matches!(
             crate::notify::late(now, days(3), now, Some(now - Duration::hours(2))),
             crate::notify::Late::Ended(_)
         ));
+    }
+
+    // R6 (independent review): an alarm notified as current whose exit the
+    // logger reports more than a day later never got its all-clear (the
+    // ops.sql trigger dropped resolutions older than 24 h), and a late
+    // opening was sent after 120 s although its connection was still
+    // uploading and could carry its exit.
+    #[tokio::test]
+    #[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+    async fn a_notified_alarm_always_gets_its_all_clear() {
+        let client = setup().await;
+        let now = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
+        let days = |d: i64| now - Duration::days(d);
+        let low = |state: &str| json!({"limit":"low","state":state,"level":0.4,"threshold":0.5});
+        event(
+            &client,
+            "record",
+            "gwl_alarm_enter",
+            Some(1),
+            Some(7),
+            days(3),
+            low("enter"),
+        )
+        .await;
+        // The logger is still in the connection that reported it.
+        client
+            .execute(
+                "UPDATE devices SET link_state='online',link_state_at=now(),link_retained=false WHERE device_id=$1",
+                &[&D],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "UPDATE notification_outbox SET created_at=now()-interval '5 minutes',next_attempt_at=now()",
+                &[],
+            )
+            .await
+            .unwrap();
+        let ops = crate::config::OpsSettings::default();
+        crate::notify::process(&client, &ops, &crate::notify::http_client())
+            .await
+            .unwrap();
+        let state: String = client
+            .query_one(
+                "SELECT state FROM notification_outbox WHERE transition='open'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            state, "pending",
+            "held while the connection is still uploading"
+        );
+        // It went out; the exit arrives in a later connection.
+        client
+            .execute(
+                "UPDATE notification_outbox SET state='sent',sent_at=now()",
+                &[],
+            )
+            .await
+            .unwrap();
+        event(
+            &client,
+            "record",
+            "gwl_alarm_exit",
+            Some(2),
+            Some(7),
+            days(2),
+            low("exit"),
+        )
+        .await;
+        let resolved: i64 = client
+            .query_one(
+                "SELECT count(*) FROM notification_outbox WHERE transition='resolved' AND state='pending'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(resolved, 1);
     }
 }

@@ -510,6 +510,8 @@ const MAX_ATTEMPTS: i32 = 5;
 pub const LATE_MINUTES: i64 = 15;
 /// How long a late opening waits for the rest of its connection.
 const LATE_HOLD_SECONDS: i64 = 120;
+/// How long a late opening waits at most while its logger is still awake.
+const LATE_AWAKE_HOLD_MINUTES: i64 = 15;
 
 /// What to do with an alert opening, given what is known of its episode now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -557,7 +559,8 @@ pub async fn process(
                 COALESCE(a.superseded,false),o.created_at,
                 CASE WHEN a.state='resolved' THEN a.resolved_at END,
                 COALESCE(CASE WHEN d.settings->>'utc_off' ~ '^-?[0-9]{1,4}$' THEN (d.settings->>'utc_off')::integer END,
-                    CASE WHEN d.clock_policy='local-offset' THEN d.local_offset_min END)
+                    CASE WHEN d.clock_policy='local-offset' THEN d.local_offset_min END),
+                COALESCE(d.link_state IN ('online','ready') AND NOT d.link_retained,false)
              FROM notification_outbox o JOIN devices d ON d.device_id=o.device_id
              LEFT JOIN notification_rules r ON r.kind=groundwater_notification_kind(o.kind)
              LEFT JOIN alerts a ON a.id=o.alert_id
@@ -608,6 +611,25 @@ pub async fn process(
         let mut ended_at = None;
         if transition == "open" && alert_id.is_some() {
             match late(Utc::now(), occurred_at, created_at, resolved_at) {
+                // A late opening whose connection is still uploading may yet
+                // be followed by its exit: wait for the logger's sleep (at
+                // most LATE_AWAKE_HOLD_MINUTES) rather than call it current.
+                Late::Normal
+                    if row.get::<_, bool>(24)
+                        && resolved_at.is_none()
+                        && created_at - occurred_at > chrono::Duration::minutes(LATE_MINUTES)
+                        && Utc::now() - created_at
+                            < chrono::Duration::minutes(LATE_AWAKE_HOLD_MINUTES) =>
+                {
+                    let until = Utc::now() + chrono::Duration::seconds(30);
+                    db.execute(
+                        "UPDATE notification_outbox SET next_attempt_at=$2 WHERE id=$1",
+                        &[&id, &until],
+                    )
+                    .await
+                    .map_err(|e| format!("notification hold: {e}"))?;
+                    continue;
+                }
                 Late::Normal => {}
                 Late::Hold(until) => {
                     db.execute(
