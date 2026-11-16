@@ -213,7 +213,7 @@ async fn a_file_chunk_must_answer_the_offset_it_was_asked_for() {
         D,
         "file_chunk",
         &serde_json::json!({"path":"/GWL/A.CSV","off":0,"len":4}),
-        &crate::rev2_commands::QueueOptions::new(&policy, Utc::now()),
+        &crate::rev2_commands::QueueOptions::new(policy, Utc::now()),
     )
     .await
     .unwrap()
