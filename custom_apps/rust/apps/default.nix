@@ -12,7 +12,15 @@ let
     workspaceRoot = workspaceSrcRoot;
     excludePrefixes = if checks then [ ] else [ "tests" ] ++ lib.optional (name == "mail-archive-ui") "src/tests.rs";
     extraSourcePrefixes = lib.optional (name == "search") "src/ui.html"
-      ++ lib.optional (name == "groundwater-server") "src/platform.sql"
+      ++ lib.optionals (name == "groundwater-server") [
+        "src/platform.sql"
+        "src/rev2.sql"
+        # include_str! fixtures of the protocol revision 2 decoder tests.
+        "tests/vectors/rev2-server-vectors.json"
+        "tests/vectors/firmware/rev2-records.json"
+        "tests/vectors/firmware/rev2-batches.json"
+        "tests/vectors/firmware/rev2-json.json"
+      ]
       ++ lib.optionals (name == "ai-tools") [
         "skills/office-editing/SKILL.md"
         "skills/office-editing/references/word.md"
