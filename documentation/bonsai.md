@@ -64,7 +64,9 @@ without it. It remains in the catalog: re-add `paperless-gpt` to
 `applications.enabled` in `vars.nix` to restore the container, route and
 provisioning. Disabling it retains `/var/lib/paperless-gpt` and the Paperless
 `paperless-gpt-service` identity/token; the unused token stays valid until it
-is revoked manually.
+is revoked manually. The Linux runtime user is removed while the app is
+disabled, so after re-enabling check that the state directory and its files
+are still readable by the recreated user.
 
 When enabled, the separately removable app provides the upstream v0.31.0 UI
 at `https://paperless-gpt.<domain>`, restricted to the configured owner's
