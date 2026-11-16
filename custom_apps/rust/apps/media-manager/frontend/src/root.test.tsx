@@ -820,7 +820,7 @@ describe("Media Manager refresh feedback", () => {
 describe("Media Manager conversions inbox", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("lists inbox ISOs with identification and shows setup guidance", async () => {
+  it("lists waiting DVDs in the unified processing panel", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -865,15 +865,15 @@ describe("Media Manager conversions inbox", () => {
     await vi.waitFor(() =>
       expect(screen.textContent).toContain("EXAMPLE_MOVIE"),
     );
-    expect(screen.textContent).toContain("MOVIE_DISC.ISO");
-    expect(screen.textContent).toContain("Processed");
+    expect(screen.textContent).toContain("DVD conversion");
+    expect(screen.textContent).toContain("Completed");
     expect(screen.textContent).toContain("Failed");
     // Each finished disc is named once: the file name without its extension.
     expect(screen.textContent).toContain("OLD_MOVIE");
     expect(screen.textContent).not.toContain("OLD_MOVIE.ISO");
-    expect(screen.textContent).toContain(
-      "Copy a DVD ISO into the shared inbox at _Shared/_ISO/_DVDs.",
-    );
+    expect(screen.textContent).not.toContain("How to add DVDs");
+    expect(screen.textContent).not.toContain("Use a watched folder instead");
+    expect(screen.textContent).not.toContain("Recent submissions");
     expect(screen.textContent).toContain("No failed jobs.");
     expect(screen.querySelector("main")?.classList).toContain(
       "main-content--conversions",
@@ -938,12 +938,12 @@ describe("Media Manager conversions inbox", () => {
     expect(queue?.textContent).not.toContain(".iso");
     const progress = screen.querySelector('[role="progressbar"]');
     expect(progress?.getAttribute("aria-valuenow")).toBe("42");
-    // "Converting" is stated once, in the card header.
+    // The active DVD shares the processing panel with the waiting discs.
     expect(
       screen
         .querySelector(".conversion-focus")
-        ?.textContent?.match(/Converting/g),
-    ).toHaveLength(1);
+        ?.textContent?.match(/DVD conversion/g),
+    ).toHaveLength(3);
   });
 
   it("shows each running transcript's own stage and measured progress", async () => {

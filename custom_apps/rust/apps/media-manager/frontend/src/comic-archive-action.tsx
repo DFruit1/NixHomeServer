@@ -21,6 +21,7 @@ export const ComicArchiveAction = component$<{
   /** Archive format when already known; "zip" offers a rename. */
   format?: string;
   canEdit: boolean;
+  onProcessing$?: QRL<(stage: string) => void>;
   /** Run after the new CBZ is in place so the caller can refresh its list. */
   onConverted$?: QRL<() => void>;
 }>((props) => {
@@ -37,6 +38,7 @@ export const ComicArchiveAction = component$<{
     state.phase = "preparing";
     state.error = "";
     state.plan = undefined;
+    await props.onProcessing$?.("Converting and checking pages");
     try {
       state.plan = await api<MutationPreview>(
         "/plans",
@@ -53,6 +55,8 @@ export const ComicArchiveAction = component$<{
     } catch (error) {
       state.error = readableError(error);
       state.phase = "idle";
+    } finally {
+      await props.onProcessing$?.("");
     }
   });
 
@@ -60,6 +64,7 @@ export const ComicArchiveAction = component$<{
     const plan = state.plan;
     if (!plan || state.phase !== "previewed") return;
     state.phase = "applying";
+    await props.onProcessing$?.("Saving CBZ");
     state.error = "";
     try {
       let status = await api<PlanStatus>(
@@ -98,6 +103,8 @@ export const ComicArchiveAction = component$<{
       state.error = readableError(error);
       state.phase = "idle";
       state.plan = undefined;
+    } finally {
+      await props.onProcessing$?.("");
     }
   });
 

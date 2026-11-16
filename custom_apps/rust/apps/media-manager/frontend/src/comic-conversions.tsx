@@ -1,4 +1,4 @@
-import { component$, useStore, useTask$ } from "@builder.io/qwik";
+import { component$, type QRL, useStore, useTask$ } from "@builder.io/qwik";
 import { api, readableError } from "./api";
 import type { ComicArchiveList } from "./api-contract.generated";
 import { ComicArchiveAction } from "./comic-archive-action";
@@ -12,7 +12,10 @@ const FORMAT_NOTES: Record<string, string> = {
 };
 
 /** CBR comics in the visible book libraries, each with its own CBZ action. */
-export const ComicConversions = component$<{ canEdit: boolean }>((props) => {
+export const ComicConversions = component$<{
+  canEdit: boolean;
+  onProcessing$?: QRL<(id: string, name: string, stage: string) => void>;
+}>((props) => {
   const state = useStore({
     list: undefined as ComicArchiveList | undefined,
     error: "",
@@ -80,6 +83,13 @@ export const ComicConversions = component$<{ canEdit: boolean }>((props) => {
                       rootId={item.rootId}
                       format={item.format}
                       canEdit={props.canEdit}
+                      onProcessing$={(stage) =>
+                        props.onProcessing$?.(
+                          item.itemId,
+                          name ?? item.relativePath,
+                          stage,
+                        )
+                      }
                     />
                   )}
                 </li>

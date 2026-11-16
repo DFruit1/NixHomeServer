@@ -11,14 +11,13 @@ import {
 import { api, ApiError, readableError } from "./api";
 import { useBackLayer } from "./back-layers";
 import type {
+  VideoConversionList,
+  PlanListResponse,
+  CatalogItem,
   TranscriptionEnvelope,
   TranscriptionJob,
 } from "./api-contract.generated";
-import {
-  ConversionInput,
-  type ConversionTask,
-  RecentSubmissions,
-} from "./conversion-input";
+import { ConversionInput, type ConversionTask } from "./conversion-input";
 import type {
   ConversionInputAccepted,
   ConversionInputs,
@@ -39,134 +38,50 @@ import { EmptyState } from "./view-states";
 const sharedPath = (path: string) =>
   path.split("/").map(encodeURIComponent).join("/");
 
-const ConversionList = component$<{
-  conversion: Conversion;
-  queuedEntry: QueuedConversion[];
-}>((props) => {
-  const hasQueued = props.queuedEntry.length > 0;
-  const hasActive = !!(props.conversion?.title || props.conversion?.sourceIso);
-  if (!hasActive && !hasQueued) {
-    return (
-      <EmptyState
-        title="No DVDs being converted"
-        detail="Choose a disc image above to start."
-      />
-    );
-  }
-  const percent = Math.max(0, Math.min(100, props.conversion.percent ?? 0));
-  const isoName = props.conversion.sourceIso ?? "";
-  return (
-    <div class="conversion-list">
-      {props.conversion.title && (
-        <article class="conversion-card">
-          <span class="conversion-symbol" aria-hidden="true">
-            <Icon name="disc" size={28} />
-          </span>
-          <div class="conversion-copy">
-            <h3>{props.conversion.title}</h3>
-            <p>
-              {[
-                isoName,
-                props.conversion.detail || "Encoding a Jellyfin-compatible MKV",
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-            </p>
-            <div class="progress-row">
-              <div
-                class="progress-track"
-                role="progressbar"
-                aria-label={`Converting ${props.conversion.title}`}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={percent}
-              >
-                <span style={{ transform: `scaleX(${percent / 100})` }} />
-              </div>
-              <strong class="tabular" aria-hidden="true">
-                {percent.toFixed(0)}%
-              </strong>
-            </div>
-          </div>
-        </article>
-      )}
-      {hasQueued && (
-        <div
-          class="conversion-queue"
-          aria-label={`${props.queuedEntry.length} DVD discs waiting`}
-        >
-          <span class="conversion-queue__heading">
-            In queue ({props.queuedEntry.length})
-          </span>
-          <ol class="conversion-queue__list">
-            {props.queuedEntry.map((item, index) => (
-              <li key={`${item.isoName}-${index}`}>
-                <span class="conversion-queue__number">{index + 1}.</span>
-                <span class="conversion-queue__title" title={item.isoName}>
-                  {item.title}
-                  {item.isoName.replace(/\.iso$/i, "") !== item.title && (
-                    <span class="conversion-queue__file">
-                      {" "}
-                      ({item.isoName})
-                    </span>
-                  )}
-                </span>
-              </li>
-            ))}
-          </ol>
-        </div>
-      )}
-    </div>
-  );
-});
-
 type ConversionsTask = ConversionTask | "comics" | "videos";
 
-/** What each reported transcription stage is doing, in plain language. */
-const TRANSCRIPT_STAGES: Record<TranscriptionJob["state"], string> = {
-  queued: "Waiting",
-  extracting: "Extracting audio",
-  transcribing: "Transcribing",
-  diarising: "Finding speakers",
-  writing: "Writing transcript files",
-  completed: "Finished",
-  failed: "Failed",
+type ProcessingJob = {
+  id: string;
+  name: string;
+  icon: IconName;
+  label: string;
+  stage: string;
+  percent?: number | null;
+  waiting?: boolean;
+  cancelId?: string;
 };
 
-const backendLabel = (job: TranscriptionJob) =>
-  job.backend === "parakeet" ? "Parakeet" : "Whisper";
-
-/**
- * One running transcript. The bar shows the engine's own decoded position, so
- * a stage that reports no percentage (speaker detection) stays unmeasured
- * rather than showing an invented number.
- */
-const TranscriptProgress = component$<{ job: TranscriptionJob }>((props) => {
+/** Every worker uses the original DVD card and progress track. */
+const JobProgress = component$<{
+  job: ProcessingJob;
+  onCancel$: QRL<(id: string) => void>;
+}>((props) => {
+  const job = props.job;
   const percent =
-    typeof props.job.progress === "number"
-      ? Math.max(0, Math.min(100, props.job.progress))
+    typeof job.percent === "number"
+      ? Math.max(0, Math.min(100, job.percent))
       : null;
-  const stage = TRANSCRIPT_STAGES[props.job.state];
   return (
-    <article class="conversion-card transcript-card">
+    <article class="conversion-card">
       <span class="conversion-symbol" aria-hidden="true">
-        <Icon name="mic" size={28} />
+        <Icon name={job.icon} size={28} />
       </span>
       <div class="conversion-copy">
-        <h3>{props.job.name}</h3>
+        <h3>{job.name}</h3>
         <p>
-          {backendLabel(props.job)} · {stage}
+          {job.label}
+          {job.waiting ? ` · ${job.stage}` : ""}
         </p>
-        {props.job.state !== "queued" && (
-          <div class="progress-row">
+        {!job.waiting && (
+          <>
             <div
               class="progress-track"
               role="progressbar"
-              aria-label={`${stage} ${props.job.name}`}
+              aria-label={`${job.label}: ${job.name}`}
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={percent ?? undefined}
-              aria-valuetext={percent === null ? stage : `${percent}%`}
+              aria-valuetext={percent === null ? job.stage : `${percent}%`}
             >
               <span
                 class={percent === null ? "progress-track__moving" : undefined}
@@ -177,17 +92,39 @@ const TranscriptProgress = component$<{ job: TranscriptionJob }>((props) => {
                 }
               />
             </div>
-            {percent !== null && (
-              <strong class="tabular" aria-hidden="true">
-                {percent}%
-              </strong>
-            )}
-          </div>
+            <div class="progress-meta">
+              <span>{job.stage}</span>
+              {percent !== null && (
+                <strong class="tabular">{percent.toFixed(0)}%</strong>
+              )}
+            </div>
+          </>
+        )}
+        {job.cancelId && (
+          <button
+            type="button"
+            class="text-button"
+            onClick$={() => props.onCancel$(job.cancelId!)}
+          >
+            Cancel
+          </button>
         )}
       </div>
     </article>
   );
 });
+
+const TRANSCRIPT_STAGES: Record<TranscriptionJob["state"], string> = {
+  queued: "Waiting",
+  extracting: "Extracting audio",
+  transcribing: "Transcribing",
+  diarising: "Finding speakers",
+  writing: "Writing transcript files",
+  completed: "Finished",
+  failed: "Failed",
+};
+const backendLabel = (job: TranscriptionJob) =>
+  job.backend === "parakeet" ? "Parakeet" : "Whisper";
 
 const tasks: {
   id: ConversionsTask;
@@ -386,13 +323,22 @@ export const ConversionsView = component$<{
     transcriptionError: string;
     inputs?: ConversionInputs;
     inputError: string;
+    videos?: VideoConversionList;
+    plans?: PlanListResponse;
+    jobError: string;
+    itemNames: Record<string, string>;
   }>({
     conversions: props.initial,
     inbox: undefined,
     error: "",
     transcriptionError: "",
     inputError: "",
+    jobError: "",
+    itemNames: {},
   });
+  const comicJobs = useStore<Record<string, { name: string; stage: string }>>(
+    {},
+  );
   const logDialog = useSignal<string>("");
   const logDialogOpen = useComputed$(() => logDialog.value !== "");
   useBackLayer(
@@ -430,7 +376,7 @@ export const ConversionsView = component$<{
     const transcribe = track(() => props.transcriptionAvailable);
     let stopped = false;
     const load = async () => {
-      const [inputs, conversions, inbox, transcription] =
+      const [inputs, conversions, inbox, transcription, videos, plans] =
         await Promise.allSettled([
           api<ConversionInputs>("/conversions/jobs"),
           api<ConversionEnvelope>("/conversions"),
@@ -438,8 +384,40 @@ export const ConversionsView = component$<{
           transcribe
             ? api<TranscriptionEnvelope>("/transcriptions")
             : Promise.resolve(undefined),
+          api<VideoConversionList>("/video-conversions"),
+          api<PlanListResponse>("/plans"),
         ]);
       if (stopped) return;
+      if (videos.status === "fulfilled") conv.videos = videos.value;
+      if (plans.status === "fulfilled") {
+        conv.plans = plans.value;
+        const ids = [
+          ...new Set(
+            (plans.value.plans ?? [])
+              .filter(
+                (p) =>
+                  p.operationKind === "comic_archive_to_cbz" &&
+                  ["queued", "running"].includes(p.state),
+              )
+              .flatMap((p) => p.itemIds),
+          ),
+        ].filter((id) => !(id in conv.itemNames));
+        await Promise.allSettled(
+          ids.map(async (id) => {
+            const item = await api<CatalogItem>(
+              `/items/${encodeURIComponent(id)}`,
+            );
+            if (!stopped)
+              conv.itemNames[id] =
+                item.relativePath.split("/").at(-1) ?? item.relativePath;
+          }),
+        );
+      }
+      conv.jobError = [videos, plans]
+        .flatMap((result) =>
+          result.status === "rejected" ? [readableError(result.reason)] : [],
+        )
+        .join(" ");
       if (inputs.status === "fulfilled") {
         conv.inputs = inputs.value;
         conv.inputError = "";
@@ -478,8 +456,6 @@ export const ConversionsView = component$<{
 
   const activeConversions = conv.conversions?.progress.conversions ?? [];
   const progressQueued = conv.conversions?.progress.queued ?? [];
-  const working = activeConversions.length > 0;
-  const inboxReady = conv.inbox?.available ?? false;
 
   const inboxPending = conv.inbox?.pending ?? [];
   const inboxProcessed = conv.inbox?.processed ?? [];
@@ -568,19 +544,116 @@ export const ConversionsView = component$<{
     }
   }
 
-  const showDvd = task.value === "dvd" || working || queuedEntries.length > 0;
-  const showTranscription =
-    !!props.transcriptionAvailable &&
-    (task.value === "transcribe" ||
-      task.value === "subtitles" ||
-      activeTranscripts.length > 0);
+  const jobs: ProcessingJob[] = [
+    ...Object.entries(comicJobs).map(([id, job]) => ({
+      id: `comic-preparing-${id}`,
+      name: job.name,
+      stage: job.stage,
+      icon: "book" as const,
+      label: "Comic conversion",
+    })),
+    ...activeConversions.map((job, index) => ({
+      id: `dvd-${job.sourceIso ?? index}`,
+      name: job.title || job.sourceIso || "DVD",
+      icon: "disc" as const,
+      label: "DVD conversion",
+      stage: job.detail || "Encoding a Jellyfin-compatible MKV",
+      percent: job.percent,
+    })),
+    ...activeTranscripts.map((job) => ({
+      id: `transcript-${job.id}`,
+      name: job.name,
+      icon: "mic" as const,
+      label: "Transcription / subtitles",
+      stage: `${backendLabel(job)} · ${TRANSCRIPT_STAGES[job.state]}`,
+      percent: job.progress,
+      waiting: job.state === "queued",
+    })),
+    ...(conv.videos?.jobs ?? [])
+      .filter((job) => ["queued", "encoding", "installing"].includes(job.state))
+      .map((job) => ({
+        id: `video-${job.id}`,
+        name: job.relativePath.split("/").at(-1) ?? job.relativePath,
+        icon: "video" as const,
+        label: "Video conversion",
+        stage:
+          job.state === "queued"
+            ? "Waiting"
+            : job.state === "installing"
+              ? "Replacing the original"
+              : "Encoding",
+        percent:
+          job.state === "encoding" && job.progress != null
+            ? job.progress * 100
+            : null,
+        waiting: job.state === "queued",
+        cancelId:
+          conv.videos?.canConvert && job.state !== "installing"
+            ? job.id
+            : undefined,
+      })),
+    ...(conv.plans?.plans ?? [])
+      .filter(
+        (job) =>
+          job.operationKind === "comic_archive_to_cbz" &&
+          !job.itemIds.some((id) => comicJobs[id]) &&
+          ["queued", "running"].includes(job.state),
+      )
+      .map((job) => ({
+        id: `comic-${job.id}`,
+        name: job.itemIds.map((id) => conv.itemNames[id] ?? "Comic").join(", "),
+        icon: "book" as const,
+        label: "Comic conversion",
+        stage: job.state === "queued" ? "Waiting" : "Saving CBZ",
+        waiting: job.state === "queued",
+      })),
+    ...(conv.inputs?.jobs ?? [])
+      .filter(
+        (job) =>
+          !["completed", "failed"].includes(job.state) &&
+          !(
+            job.transcriptId &&
+            transcripts.some((t) => t.id === job.transcriptId)
+          ) &&
+          !(
+            job.kind === "iso" &&
+            [
+              ...activeConversions.map((c) => c.sourceIso),
+              ...queuedEntries.map((q) => q.isoName),
+            ].some((name) => name?.split("/").at(-1) === job.name)
+          ),
+      )
+      .map((job) => ({
+        id: `input-${job.id}`,
+        name: job.name,
+        icon: job.kind === "iso" ? ("disc" as const) : ("mic" as const),
+        label:
+          job.kind === "iso" ? "DVD conversion" : "Transcription / subtitles",
+        stage: {
+          queued: "Waiting",
+          submitting: "Submitting",
+          processing: "Processing",
+          saving: "Saving results",
+          completed: "Finished",
+          failed: "Failed",
+        }[job.state],
+        waiting: job.state === "queued",
+      })),
+  ];
+  const cancelVideo = $(async (id: string) => {
+    try {
+      await api(`/video-conversions/${encodeURIComponent(id)}/cancel`, {
+        method: "POST",
+      });
+      conv.videos = await api<VideoConversionList>("/video-conversions");
+    } catch (error) {
+      conv.jobError = readableError(error);
+    }
+  });
 
   const canRequeue =
     !!conv.inputs?.canSubmit &&
     !!conv.inputs.roots.some((r) => r.id === "dvd-inbox");
-  const dvdLink = filesBaseUrl
-    ? `${filesBaseUrl}/files/_Shared/_ISO/_DVDs/`
-    : "";
   const failedIso = logDialog.value
     ? inboxFailed.find((iso) => iso.name === logDialog.value)
     : undefined;
@@ -653,10 +726,19 @@ export const ConversionsView = component$<{
           </div>
         </section>
         {task.value === "comics" && (
-          <ComicConversions canEdit={props.canEdit ?? false} />
+          <ComicConversions
+            canEdit={props.canEdit ?? false}
+            onProcessing$={(id, name, stage) => {
+              if (stage) comicJobs[id] = { name, stage };
+              else delete comicJobs[id];
+            }}
+          />
         )}
         {task.value === "videos" && (
-          <VideoConversions initialItemId={props.initialItemId} />
+          <VideoConversions
+            initialItemId={props.initialItemId}
+            hideActiveJobs
+          />
         )}
         {task.value && task.value !== "comics" && task.value !== "videos" && (
           <ConversionInput
@@ -672,108 +754,57 @@ export const ConversionsView = component$<{
             }}
           />
         )}
-        {showDvd && (
-          <section class="panel conversion-focus" aria-labelledby="dvd-heading">
-            <header class="panel-heading">
-              <h2 id="dvd-heading">DVD conversions</h2>
-              <span class="conversion-state">
-                {working ? "Converting" : "Idle"}
-              </span>
-            </header>
-            {activeConversions.length ? (
-              activeConversions.map((conversion, index) => (
-                <ConversionList
-                  key={conversion.sourceIso ?? index}
-                  conversion={conversion}
-                  queuedEntry={
-                    index === activeConversions.length - 1 ? queuedEntries : []
-                  }
-                />
-              ))
-            ) : (
-              <ConversionList
-                conversion={{} as Conversion}
-                queuedEntry={queuedEntries}
-              />
-            )}
-            <details class="conversion-help">
-              <summary>How to add DVDs</summary>
-              <div class="setup-body">
-                <p class="setup-ready">
-                  {inboxReady
-                    ? "The converter is watching "
-                    : "Copy a DVD ISO into "}
-                  {dvdLink ? (
-                    <a href={dvdLink} target="_blank" rel="noopener noreferrer">
-                      the shared inbox
-                    </a>
-                  ) : (
-                    "the shared inbox"
-                  )}
-                  .
-                </p>
-                <ol class="setup-steps">
-                  <li>
-                    Copy a DVD ISO into the shared inbox at _Shared/_ISO/_DVDs.
-                  </li>
-                  <li>
-                    Leave the ISO untouched for about one minute so the server
-                    picks it up.
-                  </li>
-                  <li>
-                    Finished films appear in the shared video library. Source
-                    ISOs move to _Processed, or to _Failed after repeated
-                    failures. TV discs whose episodes cannot be identified wait
-                    in _NeedsIdentification until you rename them.
-                  </li>
-                  <li>
-                    ISO files in the queue can be safely renamed or moved, but
-                    do not modify any file that is actively being converted.
-                  </li>
+        <section
+          class="panel conversion-focus"
+          aria-labelledby="processing-heading"
+        >
+          <header class="panel-heading">
+            <h2 id="processing-heading">Processing jobs</h2>
+            <span class="conversion-state">
+              {jobs.some((job) => !job.waiting)
+                ? "Processing"
+                : jobs.length || queuedEntries.length
+                  ? "Waiting"
+                  : "Idle"}
+            </span>
+          </header>
+          {[conv.transcriptionError, conv.jobError, conv.inputError]
+            .filter(Boolean)
+            .map((error) => (
+              <p key={error} class="message error" role="alert">
+                {error}
+              </p>
+            ))}
+          <div class="conversion-list">
+            {jobs.map((job) => (
+              <JobProgress key={job.id} job={job} onCancel$={cancelVideo} />
+            ))}
+            {queuedEntries.length > 0 && (
+              <div class="conversion-queue" aria-label="DVD discs waiting">
+                <span class="conversion-queue__heading">
+                  In queue ({queuedEntries.length})
+                </span>
+                <ol class="conversion-queue__list">
+                  {queuedEntries.map((job, index) => (
+                    <li key={job.isoName}>
+                      <span class="conversion-queue__number">{index + 1}.</span>
+                      <Icon name="disc" size={16} />
+                      <span class="conversion-queue__title">
+                        {job.title} <small>· DVD conversion · Waiting</small>
+                      </span>
+                    </li>
+                  ))}
                 </ol>
               </div>
-            </details>
-          </section>
-        )}
-        {showTranscription && (
-          <section
-            class="panel transcription-panel"
-            aria-labelledby="transcription-heading"
-          >
-            <header class="panel-heading">
-              <h2 id="transcription-heading">Audio transcription</h2>
-            </header>
-            <div class="transcription-body">
-              {conv.transcriptionError && (
-                <p class="message error" role="alert">
-                  {conv.transcriptionError}
-                </p>
-              )}
-              {activeTranscripts.length === 0 ? (
-                <p class="quiet-copy">No transcription jobs waiting.</p>
-              ) : (
-                <div class="transcript-progress-list">
-                  {activeTranscripts.map((job) => (
-                    <TranscriptProgress key={job.id} job={job} />
-                  ))}
-                </div>
-              )}
-            </div>
-            <details class="conversion-help">
-              <summary>Use a watched folder instead</summary>
-              <div class="setup-body">
-                <p>
-                  Audio and video placed in your{" "}
-                  <code>_Transcribe/parakeet/</code> or{" "}
-                  <code>_Transcribe/whisper/</code> folder are picked up
-                  automatically after a minute. Results are saved in{" "}
-                  <code>_Transcripts/</code>; sources are retained.
-                </p>
-              </div>
-            </details>
-          </section>
-        )}
-        <RecentSubmissions jobs={conv.inputs?.jobs ?? []} />
+            )}
+            {!jobs.length && !queuedEntries.length && (
+              <EmptyState
+                title="No processing jobs"
+                detail="Choose a task above to start."
+              />
+            )}
+          </div>
+        </section>
       </div>
       <aside class="conv-sidebar">
         {inboxNeedsIdentification.length > 0 && (

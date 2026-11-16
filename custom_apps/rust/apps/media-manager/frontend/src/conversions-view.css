@@ -126,10 +126,57 @@
   background: var(--warning-wash);
 }
 
-/* DVD progress: an ordinary panel, so the task form keeps the attention. */
+/* One processing surface, restored from the original DVD progress card. */
 .conversion-focus {
   min-width: 0;
+  color: var(--accent-ink);
+  background: var(--media-surface);
 }
+.conversion-focus .panel-heading {
+  border-color: var(--media-line);
+}
+.conversion-focus .conversion-card + .conversion-card {
+  border-top: 1px solid var(--media-line);
+}
+.conversion-focus .conversion-symbol {
+  color: var(--navigation-muted);
+}
+.conversion-focus .progress-track {
+  height: 6px;
+  background: var(--media-line);
+}
+.conversion-focus .progress-track span {
+  background: var(--navigation-muted);
+}
+.conversion-focus .progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  color: var(--navigation-muted);
+  font-size: var(--text-md);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.conversion-focus .progress-meta strong {
+  color: var(--accent-ink);
+}
+.conversion-focus .conversion-queue {
+  border-color: var(--media-line);
+}
+.conversion-focus .conversion-queue__title {
+  color: var(--accent-ink);
+}
+.conversion-focus .text-button {
+  color: var(--accent-ink);
+}
+.conversion-focus .message {
+  margin: 16px 20px;
+}
+.conversion-focus .conversion-state {
+  color: var(--navigation-muted);
+}
+
 .conversion-state {
   color: var(--ink-soft);
   font-size: var(--text-md);
@@ -157,7 +204,7 @@
 .conversion-focus :is(.conversion-copy p, .empty-state p),
 .transcript-card .conversion-copy p {
   margin: 0;
-  color: var(--ink-soft);
+  color: var(--navigation-muted);
   font-size: var(--text-md);
   line-height: 1.5;
   overflow-wrap: anywhere;
@@ -173,7 +220,7 @@
 .transcript-card .progress-track {
   flex: 1 1 auto;
   height: 6px;
-  margin: 0;
+  margin: 16px 0 0;
 }
 .conversion-focus .progress-row strong,
 .transcript-card .progress-row strong {
@@ -184,7 +231,7 @@
 }
 .conversion-focus .conversion-queue__heading,
 .conversion-focus :is(.conversion-queue__number, .conversion-queue__file) {
-  color: var(--ink-soft);
+  color: var(--navigation-muted);
 }
 .conversion-focus .empty-state {
   min-height: 96px;
