@@ -67,6 +67,7 @@ extern vl_reset_t vl_reset_cause;
 extern uint32_t vl_bkp[5];
 _Noreturn void vl_reset(vl_reset_t next, uint32_t dr4_bits);
 _Noreturn void vl_power_off(void);
+_Noreturn void vl_power_cut(void); /* exit 43: the controller restarts cold */
 void vl_state_load(const char *path, bool power_on);
 
 /* ---- modem (vl_modem.c) ---- */

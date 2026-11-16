@@ -24,6 +24,9 @@
  *   dup:<topic suffix>:<n>    n-th matching publish is delivered twice
  *   cut:<topic suffix>:<n>    the link drops (no DISCONNECT) instead of the
  *                             n-th matching publish: Last Will, +QMTSTAT
+ *   reset:<topic suffix>:<n>  watchdog reset right after the n-th matching
+ *                             publish was acknowledged
+ *   power:<topic suffix>:<n>  loss of supply right after it
  *   clear                     removes every rule */
 #include <mosquitto.h>
 #include <stdio.h>
@@ -289,6 +292,8 @@ static void publish_done(void) {
     }
     snprintf(reply, sizeof reply, "\r\n%s: 0,%u,%d\r\n", urc, pub_id, result);
     say(reply);
+    if (strcmp(fault, "reset") == 0) vl_reset(VL_RESET_WDG, 0);
+    if (strcmp(fault, "power") == 0) vl_power_cut();
 }
 
 static int parse_pub(const char *c, size_t *len) {

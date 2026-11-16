@@ -176,12 +176,14 @@ HAL_StatusTypeDef HAL_RTC_SetDate(RTC_HandleTypeDef *h, RTC_DateTypeDef *d, uint
 
 static bool alarm_on;
 static RTC_AlarmTypeDef rtc_alarm_a;
+static uint32_t alarm_armed_s; /* RTC second when Alarm A was armed */
 
 HAL_StatusTypeDef HAL_RTC_SetAlarm_IT(RTC_HandleTypeDef *h, RTC_AlarmTypeDef *a, uint32_t fmt) {
     (void)h;
     (void)fmt;
     rtc_alarm_a = *a;
     alarm_on = true;
+    alarm_armed_s = rtc_s();
     return HAL_OK;
 }
 
@@ -191,19 +193,22 @@ HAL_StatusTypeDef HAL_RTC_DeactivateAlarm(RTC_HandleTypeDef *h, uint32_t which) 
     return HAL_OK;
 }
 
-/* Next RTC second (> now) whose calendar matches Alarm A (date, h:m:s), as
- * world milliseconds; -1 when no rtc_alarm_a is armed. */
+/* World milliseconds of the next Alarm A match, -1 when none is armed. The
+ * RTC sets the alarm flag on the 1 Hz update INTO the matching second, so
+ * the match is the first calendar second after the one it was armed in; a
+ * match the clock has already passed (the second ticked over between the
+ * firmware's last check and STOP) is due now. */
 int64_t vl_alarm_world_ms(void) {
     if (!alarm_on) return -1;
-    uint32_t now = rtc_s();
-    uint32_t day0 = now - now % 86400u;
+    uint32_t day0 = alarm_armed_s - alarm_armed_s % 86400u;
     for (uint32_t k = 0; k < 64; k++) {
         uint32_t cand = day0 + k * 86400u + rtc_alarm_a.AlarmTime.Hours * 3600u + rtc_alarm_a.AlarmTime.Minutes * 60u +
                         rtc_alarm_a.AlarmTime.Seconds;
         gwl_civil_t c;
         gwl_civil_from_epoch(cand, &c);
-        if (c.day != rtc_alarm_a.AlarmDateWeekDay || cand <= now) continue;
-        return (int64_t)cand * 1000 - vl_rtc_delta_ms;
+        if (c.day != rtc_alarm_a.AlarmDateWeekDay || cand <= alarm_armed_s) continue;
+        int64_t w = (int64_t)cand * 1000 - vl_rtc_delta_ms;
+        return w < vl_world_ms() ? vl_world_ms() : w;
     }
     return -1;
 }

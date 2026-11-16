@@ -196,6 +196,14 @@ _Noreturn void vl_power_off(void) {
     exit(0);
 }
 
+_Noreturn void vl_power_cut(void) {
+    vl_status_event("power_cut");
+    vl_modem_shutdown();
+    vl_board_power_off();
+    remove(state_path);
+    exit(43);
+}
+
 /* ---------------------------------------------------------------- control */
 
 static void set_key(const char *k, const char *v) {
