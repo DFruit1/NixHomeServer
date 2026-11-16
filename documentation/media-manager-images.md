@@ -121,11 +121,16 @@ The review runs in the provider broker, one photo at a time, through the
 loopback Bonsai concurrency gate. It shares the card with Search's passage
 backfill through a coarse bulk-GPU lease: each side keeps the GPU for about
 30 seconds, then hands over. It also waits when the gate is busy. Previews are
-reduced to fit 768 px first: on hand-labelled photos this took about 9 s a
-photo instead of 27 s at full preview size, catching 50 of 53 wrong tags and
-removing 3 of 138 correct ones. Live, a review completes about every 12 s,
-so the first pass over a library of about 24,000 photos takes three to four
-days. Photos that fail are retried after six hours or a day.
+reduced to fit 1024 px. A 768 px trial while vision ran on the CPU took about
+9 s a photo instead of 27 s at full preview size, catching 50 of 53 wrong tags
+and removing 3 of 138 correct ones; 512 px started missing them. The projector
+now runs on the GPU, so 1024 px is being measured for better small-detail
+tags. At 768 px a review completed about every 12 s live (7-9 s after the
+GPU/Q8 update), so the first pass over a library of about 24,000 photos takes
+days rather than hours; record the new rate and catch/removal counts before
+treating 1024 px as better. Photos already reviewed at 768 px are not queued
+again, so the change applies to new reviews unless a photo is retagged. Photos
+that fail are retried after six hours or a day.
 
 Reviews are stored only in Media Manager's index (`image_tag_reviews`, with
 the removed tags). Retagging a photo replaces its tags with a fresh EYE result

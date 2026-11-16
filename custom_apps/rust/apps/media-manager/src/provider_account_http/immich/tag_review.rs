@@ -7,12 +7,14 @@ use base64::Engine;
 use homelab_common::gpu_bulk::{self, GpuBulkLease, LeaseAttempt};
 
 /// Changing the prompt, image size or reviewer model changes this identity.
-const REVIEW_VERSION: &str = "tag-review-v2";
-/// Previews are reduced to fit this box before review. Measured on Bonsai
-/// with hand-labelled photos while vision ran on the CPU: the full ~1440 px
-/// preview took 27 s a photo; 768 px took 9 s and caught as many wrong tags,
-/// while 512 px started missing them.
-const REVIEW_IMAGE_SIZE: u32 = 768;
+const REVIEW_VERSION: &str = "tag-review-v3";
+/// Previews are reduced to fit this box before review. A hand-labelled trial
+/// while vision ran on the CPU measured a full ~1440 px preview at 27 s a
+/// photo, 768 px at 9 s with the same wrong-tag catches, and 512 px starting
+/// to miss them; 768 px then stayed until the projector moved to the GPU. At
+/// 1024 px the faster path is being measured for better small-detail tags:
+/// record catch and removal counts and per-photo time before preferring it.
+const REVIEW_IMAGE_SIZE: u32 = 1024;
 /// Listing only the wrong tags generated far fewer tokens than a verdict per
 /// tag, and removed fewer correct tags. Several photos per request saved no
 /// time (each image is still encoded separately) and confused photos.
