@@ -67,6 +67,8 @@ export function eventTone(event: Pick<DeviceEvent, "event" | "details">) {
       "unmatched_ack",
       "link_lost",
       "settings_restore_unavailable",
+      "command_outcome_unknown",
+      "settings_ram_replaced",
     ].includes(event.event)
   )
     return "problem";
@@ -145,7 +147,11 @@ export function eventSummary(event: Pick<DeviceEvent, "event" | "details">) {
     case "settings_recovery_ended":
       return `Logger has settings again (generation ${d.gen ?? "?"}); settings lost since ${stamp(typeof d.since === "string" ? d.since : null)}`;
     case "log_start":
-      return `New log ${d.log_id ?? ""} (${d.reason ?? "?"}), firmware ${d.firmware_version ?? "?"}`;
+      return `New log ${d.log_id ?? ""} (${d.reason === "payload-schema-changed" ? "the firmware's payload schema changed" : (d.reason ?? "?")}), firmware ${d.firmware_version ?? "?"}`;
+    case "command_outcome_unknown":
+      return `Command #${d.command_id ?? "?"} (${d.op ?? "?"}) interrupted by a logger reset: no outcome was reported and it may have run in part or in full; it was not run again`;
+    case "settings_ram_replaced":
+      return `The logger's MRAM ring is back: its settings (generation ${d.gen ?? "?"}) replaced the RAM-only settings (RAM generation ${d.ram_gen ?? "?"}); send settings again if the RAM ones are still wanted`;
     case "sd_flush":
     case "mqtt_flush":
       return `${event.event === "sd_flush" ? "SD" : "MQTT"} flush (${d.reason ?? "routine"})`;
@@ -261,4 +267,52 @@ export function observationProblem(
   observation: Pick<Observation, "sensor_status"> | null | undefined,
 ): string {
   return sensorProblem(observation?.sensor_status);
+}
+
+/** get_debug `boot_report` bits (contract §5, rev2.rs BOOT_REPORT_BITS). */
+export const BOOT_REPORT_BITS = [
+  "MRAM chip formatted",
+  "settings slot A failed its check",
+  "settings slot B failed its check",
+  "checkpoint A invalid",
+  "checkpoint B invalid",
+  "a committed settings change was activated",
+  "settings rolled back to the older slot",
+  "settings restored from a snapshot",
+  "settings lost",
+  "read-only RECOVERY",
+  "power gap recorded",
+  "Tail Locked",
+  "frames found past the checkpoint head",
+  "an interrupted factory reset was completed",
+  "new log started: the payload schema changed",
+];
+export function bootReportWords(report: number): string[] {
+  const words = BOOT_REPORT_BITS.filter((_, bit) => report & (1 << bit));
+  if (report >>> BOOT_REPORT_BITS.length) words.push("unknown bits");
+  return words;
+}
+/** get_debug `reset_flags` (rev2.rs reset_flags_words). */
+export function resetFlagsWords(flags: number): string[] {
+  const words: string[] = [];
+  const unclean = flags & 0x0f;
+  if (unclean) words.push(`${unclean} consecutive unclean reset(s)`);
+  const named: [number, string][] = [
+    [4, "next reset commanded"],
+    [5, "flash ECC double error seen"],
+    [6, "HardFault since the last cold start"],
+    [
+      8,
+      "32.768 kHz crystal did not start: clock runs from the internal LSI (about ±5 %)",
+    ],
+    [25, "MCU: option byte loader reset"],
+    [26, "MCU: reset pin"],
+    [27, "MCU: power-on reset"],
+    [28, "MCU: software reset"],
+    [29, "MCU: independent watchdog"],
+    [30, "MCU: window watchdog"],
+    [31, "MCU: low-power reset"],
+  ];
+  for (const [bit, word] of named) if ((flags >>> bit) & 1) words.push(word);
+  return words;
 }

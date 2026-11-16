@@ -347,7 +347,36 @@ export function validateSettings(args: unknown, now: number): string[] {
     const error = modePair(object, prefix);
     if (error) errors.push(error);
   }
+  if (!errors.length) {
+    const error = loHiError(object, null, false);
+    if (error) errors.push(error);
+  }
   return errors;
+}
+
+/** settings.rs `lo_hi`: the logger merges the request with the settings in
+ * force (the defaults with `replace`) and refuses lo above hi when both are
+ * set (bad-args). Equal values and an unset side are fine. `base` null:
+ * the settings in force are unknown, so only a request with both limits is
+ * checked. */
+export function loHiError(
+  args: Record<string, unknown>,
+  base: Record<string, unknown> | null,
+  replace: boolean,
+): string {
+  const limit = (key: string): number | null | undefined => {
+    if (key in args)
+      return typeof args[key] === "number" ? (args[key] as number) : null;
+    if (replace) return null;
+    if (!base) return undefined;
+    return typeof base[key] === "number" ? (base[key] as number) : null;
+  };
+  const lo = limit("lo"),
+    hi = limit("hi");
+  if (typeof lo !== "number" || typeof hi !== "number" || lo <= hi) return "";
+  const from = (key: string, value: number) =>
+    key in args ? `${key} ${value}` : `${key} ${value} in force on the logger`;
+  return `lo must not be above hi: ${from("lo", lo)} is above ${from("hi", hi)} (the logger rejects it as bad-args); lower lo, raise hi, or unset one of them`;
 }
 
 /** Text shown in an editor input for a settings value. */

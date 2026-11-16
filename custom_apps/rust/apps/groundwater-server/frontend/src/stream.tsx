@@ -68,6 +68,19 @@ const PENDING_TEXT: Record<string, string> = {
   no_time: "no time information",
 };
 
+/** Type 14 `reason` names (records.rs) in words. */
+const LOG_START_TEXT: Record<string, string> = {
+  "blank-mram-formatted": "new log: blank MRAM formatted",
+  "wipe-mram": "new log: wipe_mram",
+  "factory-reset": "new log: factory reset",
+  "sequence-rollover": "new log: sequence numbers rolled over",
+  "recovery-rebuild": "new log: ring rebuilt in recovery",
+  "payload-schema-changed":
+    "new log: the firmware's payload schema changed (older frames keep their own log and schema)",
+};
+export const logStartText = (reason: string | null | undefined) =>
+  !reason ? "start unknown" : LOG_START_TEXT[reason] || reason;
+
 export const StreamView = component$<Props>((props) => {
   const rev = useComputed$(() => props.revision);
   const hours = useSignal(720);
@@ -168,8 +181,9 @@ export const StreamView = component$<Props>((props) => {
                     <td>
                       <strong class="mono">{l.log_hex}</strong>
                       <small>
-                        {l.start_reason || "start unknown"} · fw{" "}
-                        {l.firmware_version || "?"}
+                        {logStartText(l.start_reason)} · fw{" "}
+                        {l.firmware_version || "?"} · schema{" "}
+                        {l.payload_schema ?? "?"}
                       </small>
                       <small>started {stamp(l.started_at)}</small>
                     </td>
@@ -188,6 +202,15 @@ export const StreamView = component$<Props>((props) => {
                       </small>
                     </td>
                     <td>
+                      {(l.undecodable ?? 0) > 0 && (
+                        <small class="error-text">
+                          {l.undecodable} frame
+                          {l.undecodable === 1 ? "" : "s"} of payload schema{" "}
+                          {l.payload_schema ?? "?"} kept raw: this server has no
+                          decoder for it. Update the server; they are decoded at
+                          the first start of a version that has one.
+                        </small>
+                      )}
                       {(l.derive_pending ?? 0) > 0 && (
                         <small class="error-text">
                           {l.derive_pending} frame

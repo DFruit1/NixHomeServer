@@ -81,10 +81,13 @@ the firmware 2.2 unit an over-range latest reading, a locked MRAM ring, a
 latched error and logging off (with the server alerts they raise); `lost`
 gives it settings-lost RECOVERY (err 4, an expired `auto-restore`, the
 `settings_lost` alert) and a health object with not-read values (null);
-`restoring` is the same state with the restore still queued. The
+`restoring` is the same state with the restore still queued; `ram` puts it in
+fallback mode (MRAM faulted at boot, settings held in RAM only). The
 series always has raw over-range and no-sensor readings, a mixed bucket and
 fault-only buckets. The raw log has 260 deliveries (every 25th quarantined),
-the ring log and one batch carry a derive failure, and cancelling a danger
+the ring log and one batch carry a derive failure, a payload schema 2 log has
+frames this server cannot decode, an impact carries the accelerometer record
+written at the alarm, and cancelling a danger
 command after its confirmation was sent returns the cancel warning. `cut=1`
 gives the logger 1,200 older commands (the list pages) and truncates the JSON
 exports. `busy=1`
@@ -360,12 +363,16 @@ directly; `sync_time` takes no args (the server inserts `t` when it publishes).
 
 Revision 2 command rows add: `protocol:2`, `op`, `args`, `expires_at`,
 `publish_count`, `last_published_at`, `final_status`
-(`ok|partial|failed|rejected|expired|duplicate`), `status_reason` (logger
-`reason`, `previously ok` for duplicates, or a server explanation),
+(`ok|partial|failed|rejected|expired|duplicate|interrupted`; `interrupted`:
+a `duplicate` whose `prev` is `failed`, the handler was cut by a logger reset
+and no outcome was reported), `status_reason` (logger `reason` code with its
+meaning, `previously ok` for duplicates, for `interrupted` what to check
+before repeating, or a server explanation),
 `hold_until_sleep`, `parent_id` (confirm → challenged command), `preconfirmed`,
 `challenge` (`{nonce,nexp,unsaved_frames,unsaved_bytes,received_at}`),
 `challenge_expires_at`, `origin` (`operator`, `auto-gap`, `auto-clock`,
-`auto-settings`, `auto-confirm`, `download`), `download_id`.
+`auto-settings`, `auto-confirm`, `auto-restore`, `auto-debug` (get_debug
+after an unexpected reset), `download`), `download_id`.
 
 `state` lifecycle: `queued` → `sent` (broker PUBACK; the command waits in the
 logger's persistent session if it sleeps) → `acked` with `final_status`, or
@@ -461,7 +468,10 @@ Kinds (`trigger_value` unit; severity info/warning/critical as
   operator resolves them; repeats add `repeats` and `last_at`.
 - Server, from health and boot events: `sd_card`, `mram_fault`, `tail_lock`,
   `logger_error` (code), `logging_off`, `clock_invalid`, `signal_low` (CSQ,
-  info), `watchdog_resets` (count in 7 days).
+  info), `watchdog_resets` (count in 7 days), `battery_unread` (three health
+  reports without `bat_mv`); from get_debug `boot_report` (`detail.problems`,
+  `boot`, `boot_report`, `reset_flags` and their words); from data/stream
+  `decoder_missing` (`detail.payload_schema`).
 
 `opened_at` is the event's own time (receipt time when `time_estimated`);
 the UI says "reported N later" when `detail.received_at` is more than
@@ -681,11 +691,16 @@ settings-lost RECOVERY, `mram:"recovery"` with `err` ≠ 3); alert kind
 `status_reason`, `action`); `solar_low` detail `{threshold_mv, days,
 daylight_samples, max_mv}` and policy `solar_samples` meaning days (1–10);
 `/tests` merged rows with `sources`, `json_id`, `json_ok`; `/logs`
-`pending_reasons[{reason,state,count,min_seq,max_seq}]`; JSON exports
+`pending_reasons[{reason,state,count,min_seq,max_seq}]`, `undecodable`
+(frames of a payload schema this server cannot decode) and
+`decoder_available`; `/positions` `alarm_event` (an accelerometer-only Type 2
+written at an impact, or an orientation found by a tilt reading) and `/events` `attitude` on those
+alarms; device `settings_ram_only` (fallback mode, `"persist":false`); JSON exports
 `truncated` and `limit` (20,000, oldest first; GeoJSON in `properties`).
 Not-read health, test and position values are null, and so are they in the
 device summary's `health` object (65535 mV, CSQ 99, `sd_free_mb` while `sd`
-is not `ok`; `rev2.rs` `normalised_health`).
+is neither `ok` nor `full`; `rev2.rs` `normalised_health`). Firmware 2.2
+omits values it did not read instead of sending these markers.
 
 Device summaries also carry `open_alert_kinds` (`[{"kind","subject"}]`, one
 per open kind and level-alarm subject `high`/`low`; the fleet names its

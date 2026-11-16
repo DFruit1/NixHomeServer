@@ -18,6 +18,7 @@ import {
   show,
 } from "./format";
 import { OP_HELP, opArgs, originText } from "./commands";
+import { bootReportWords, resetFlagsWords } from "./events";
 import { devicePath, send, useNow } from "./hooks";
 import type { Command, Device } from "./types";
 import {
@@ -561,6 +562,8 @@ const FINAL_TEXT: Record<string, string> = {
   rejected: "not accepted; nothing changed",
   expired: "not run: its expiry passed before the logger executed it",
   duplicate: "already run under this id; not run again",
+  interrupted:
+    "a logger reset cut it: no outcome was reported, it may have run in part or in full; not re-sent",
 };
 
 /** Ack `data` as label/value pairs (get_status, get_debug, flush results,
@@ -575,7 +578,17 @@ export function ackData(ack: unknown): [string, string][] {
   if (data && typeof data === "object" && !Array.isArray(data))
     for (const [key, value] of Object.entries(data)) {
       if (key === "settings" || key === "files") continue;
-      if (key === "t" && typeof value === "number")
+      if (key === "boot_report" && typeof value === "number")
+        pairs.push([
+          "boot report",
+          `${value}: ${bootReportWords(value).join("; ") || "nothing to report"}`,
+        ]);
+      else if (key === "reset_flags" && typeof value === "number")
+        pairs.push([
+          "reset flags",
+          `0x${value.toString(16).toUpperCase()}: ${resetFlagsWords(value).join("; ") || "none"}`,
+        ]);
+      else if (key === "t" && typeof value === "number")
         pairs.push([
           "logger clock",
           stamp(new Date(value * 1000).toISOString()),

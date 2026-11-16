@@ -8,6 +8,7 @@ const V22 = "6A1B2C3D4E5F60718293A4B5";
 // mode: normal | fault (sensor over-range, ring locked, err 7) | lost
 // (settings-lost RECOVERY after an automatic restore that expired, health
 // with not-read values) | restoring (the same, restore still on its way) |
+// ram (fallback mode: MRAM faulted at boot, settings held in RAM only) |
 // empty | error.
 let role = "operator",
   mode = "normal",
@@ -250,24 +251,30 @@ const deviceView = (d) => ({
         health:
           mode === "fault"
             ? { ...d.health, mram: "locked", err: 7, log: "off" }
-            : lostMode()
-              ? {
-                  ...d.health,
-                  // Settings lost (err 4). The logger sent 65535 mV and
-                  // CSQ 99 (not read); rev2.rs normalised_health serves
-                  // them, and free space of a card that is not ok, as null.
-                  mram: "recovery",
-                  err: 4,
-                  log: "off",
-                  gen: 0,
-                  bat_mv: null,
-                  csq: null,
-                  sd: "error",
-                  sd_free_mb: null,
-                }
-              : d.health,
+            : mode === "ram"
+              ? // Fallback mode: MRAM faulted at boot, no ring (usable 0).
+                { ...d.health, mram: "fault", usable: 0, unsaved: 0, gen: 2 }
+              : lostMode()
+                ? {
+                    ...d.health,
+                    // Settings lost (err 4). The logger sent 65535 mV and
+                    // CSQ 99 (not read); rev2.rs normalised_health serves
+                    // them, and free space of a card that is not ok, as null.
+                    mram: "recovery",
+                    err: 4,
+                    log: "off",
+                    gen: 0,
+                    bat_mv: null,
+                    csq: null,
+                    sd: "error",
+                    sd_free_mb: null,
+                  }
+                : d.health,
         // db.rs scoped_devices: the episode and its automatic restore.
         settings_lost_since: lostMode() ? ago(2 * DAY) : null,
+        // rev2_commands.rs: settings acked with "persist":false.
+        settings_ram_only: mode === "ram",
+        ...(mode === "ram" ? { settings_gen: 2 } : {}),
         settings_restore: lostMode()
           ? (({ id, state, final_status, status_reason, created_at }) => ({
               id,
@@ -865,6 +872,27 @@ deviceEvents.push({
   time_source: null,
   details: { peak_mg: 900 },
 });
+// api_rev2.rs events: firmware 2.2 writes the accelerometer at the alarm as
+// the next record (Type 2 reason 2, no fix).
+deviceEvents.push({
+  ...deviceEvents[2],
+  id: 98,
+  source: "record",
+  event: "impact",
+  seq: 444,
+  recorded_at: ago(5 * HOUR),
+  received_at: ago(4 * HOUR),
+  details: { peak_mg: 1450 },
+  confirmed_by_record: null,
+  attitude: {
+    position_id: 21,
+    seq: 445,
+    accel_x_mg: 180,
+    accel_y_mg: -40,
+    accel_z_mg: 985,
+    accel_status: 0,
+  },
+});
 
 const positions = Array.from({ length: 8 }, (_, i) => ({
   id: 20 - i,
@@ -891,6 +919,26 @@ const positions = Array.from({ length: 8 }, (_, i) => ({
   accel_z_mg: 1002,
   accel_status: 0,
 }));
+// api_rev2.rs ALARM_ATTITUDE: the accelerometer at an impact alarm, not a
+// failed fix; drawn nowhere on the plot.
+positions.unshift({
+  ...positions[0],
+  id: 21,
+  seq: 445,
+  recorded_at: ago(5 * HOUR),
+  received_at: ago(4 * HOUR),
+  reason: 2,
+  fix: 0,
+  lat: null,
+  lon: null,
+  alt_m: null,
+  hdop: null,
+  satellites: 0,
+  accel_x_mg: 180,
+  accel_y_mg: -40,
+  accel_z_mg: 985,
+  alarm_event: "impact",
+});
 const tilt = Array.from({ length: 12 }, (_, i) => ({
   id: 40 - i,
   log_id: 1761000001,
@@ -994,7 +1042,7 @@ const tests = [
     sources: ["json"],
     json_id: 4,
     json_ok: false,
-    trigger: "scheduled",
+    trigger: "button",
     command_id: null,
     recorded_at: ago(35 * HOUR),
     received_at: ago(35 * HOUR),
@@ -1007,7 +1055,8 @@ const tests = [
     sensor_status: 3,
     status_bits: 1022,
     ok: false,
-    details: { sd: "ok", mram: "ok", warn: ["Sensor over-range"] },
+    // gps_mode off: the logger reports gps "off" and no "No GPS" warning.
+    details: { sd: "ok", mram: "ok", gps: "off", warn: ["Sensor over-range"] },
   },
   {
     id: 2,
@@ -1086,6 +1135,58 @@ let settingsHistory = [
   },
 ];
 const logs = [
+  {
+    // A firmware with payload schema 2 started a new log (Type 14 reason 6);
+    // this server has no schema 2 decoder (api_rev2.rs logs `undecodable`).
+    log_id: 1761000002,
+    log_hex: "68F6A0E2",
+    payload_schema: 2,
+    start_reason: null,
+    started_at: null,
+    firmware_version: null,
+    first_received_at: ago(3 * HOUR),
+    last_received_at: ago(3 * HOUR),
+    frames: 18,
+    min_seq: 1,
+    max_seq: 18,
+    decode_errors: 0,
+    conflicting_copies: 0,
+    resent_copies: 0,
+    open_gaps: 0,
+    unrecoverable_gaps: 0,
+    pending_readings: 0,
+    derive_pending: 0,
+    undecodable: 18,
+    decoder_available: false,
+    resolve_pending: false,
+    resolve_error: null,
+    pending_reasons: [],
+  },
+  {
+    log_id: 1761000003,
+    log_hex: "68F6A0E3",
+    payload_schema: 1,
+    start_reason: "payload-schema-changed",
+    started_at: ago(60 * DAY),
+    firmware_version: "2.2.0",
+    first_received_at: ago(60 * DAY),
+    last_received_at: ago(40 * DAY),
+    frames: 96,
+    min_seq: 1,
+    max_seq: 96,
+    decode_errors: 0,
+    conflicting_copies: 0,
+    resent_copies: 0,
+    open_gaps: 0,
+    unrecoverable_gaps: 0,
+    pending_readings: 0,
+    derive_pending: 0,
+    undecodable: 0,
+    decoder_available: true,
+    resolve_pending: false,
+    resolve_error: null,
+    pending_reasons: [],
+  },
   {
     log_id: 1761000001,
     log_hex: "68F6A0E1",
@@ -1526,6 +1627,53 @@ commands.push(
       gen: 5,
       results: { read_s: "ok", hi: "ok", foo_s: "unsupported" },
       settings: { ...rev2Settings },
+    },
+  }),
+  command(V22, {
+    // rev2_commands.rs maybe_fetch_debug: after an unexpected reset.
+    id: 67,
+    op: "get_debug",
+    origin: "auto-debug",
+    requested_by: "auto-debug",
+    state: "acked",
+    final_status: "ok",
+    sent_at: ago(3 * HOUR),
+    acked_at: ago(3 * HOUR),
+    publish_count: 1,
+    last_published_at: ago(3 * HOUR),
+    ack_payload: {
+      v: 2,
+      id: 67,
+      op: "get_debug",
+      status: "ok",
+      data: {
+        fw: "2.2.0",
+        reset: "sw",
+        wdg: 2,
+        last_error: 0,
+        reset_flags: 0x10000141,
+        boot_report: 0x0180,
+      },
+    },
+  }),
+  command(V22, {
+    // A watchdog reset cut it: duplicate/"prev":"failed" (rev2_commands.rs).
+    id: 68,
+    op: "flush_sd",
+    state: "acked",
+    final_status: "interrupted",
+    status_reason:
+      "interrupted by a logger reset, outcome unknown: the logger answered duplicate, previously failed, and did not run flush_sd again. A watchdog or fault reset cut it while it ran (or its ack was lost), so it may have done part or all of its work; it may have sent or saved data before the reset; the data received shows what arrived",
+    sent_at: ago(5 * HOUR),
+    acked_at: ago(3 * HOUR),
+    publish_count: 2,
+    last_published_at: ago(3 * HOUR),
+    ack_payload: {
+      v: 2,
+      id: 68,
+      op: "flush_sd",
+      status: "duplicate",
+      prev: "failed",
     },
   }),
   command(V22, {
