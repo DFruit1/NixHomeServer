@@ -89,6 +89,11 @@ let
       acl = loggerAcl;
     };
   };
+  # Internet-facing listener: with tlsDeviceAccountsOnly the shared account
+  # (which may publish as any DeviceID and read every unit's commands) is
+  # absent, and the client ID must equal the authenticated DeviceID, so no
+  # account can take over another unit's session.
+  tlsDeviceOnly = creds.enable && creds.tlsDeviceAccountsOnly;
   listenerUsers = loggerUser // {
     groundwater-app = {
       passwordFile = config.age.secrets.groundwaterAppMqttPassword.path;
@@ -134,6 +139,18 @@ in
       working until an operator moves a unit to its own account. Enabling
       this alone changes no unit's access
     '';
+    tlsDeviceAccountsOnly = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Accept only per-device accounts on the internet-facing TLS listener
+        (port 8883) and force each client ID to its username (the DeviceID).
+        The shared groundwater-logger account then works only on the LAN and
+        NetBird listeners. Enable once every field unit has been reflashed
+        with its own account: a unit still using the shared account can no
+        longer reach the broker through the router.
+      '';
+    };
     directory = lib.mkOption {
       type = lib.types.str;
       default = "/run/groundwater-mqtt-auth";
@@ -163,6 +180,11 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [{
+      assertion = creds.tlsDeviceAccountsOnly -> creds.enable;
+      message = "repo.groundwaterLogger.deviceCredentials.tlsDeviceAccountsOnly needs deviceCredentials.enable: without per-device accounts the TLS listener would accept no logger.";
+    }];
+
     # Match the Unix service identity for passwordless local peer auth. This
     # app owns only its role/database; shared cluster tuning stays central.
     services.postgresql = {
@@ -191,6 +213,18 @@ in
         # JSON acks/status <= 4 KiB. 16 KiB leaves room for the topic and
         # MQTT framing while bounding abuse.
         max_packet_size = 16384;
+        # Bound the broker's heap below its cgroup limit: anyone holding the
+        # shared logger password can create persistent sessions and fill
+        # their queues (the legacy readwrite topics let one account both
+        # publish and subscribe). Past the limit Mosquitto fails the
+        # allocation instead of growing until the cgroup kills it (losing
+        # every queued command); an upload it does not acknowledge stays in
+        # the logger's ring.
+        memory_limit = 201326592;
+        # Write queued messages and sessions to disk every minute rather
+        # than the default 30: a power cut while the platform is down then
+        # loses at most a minute of acknowledged uploads.
+        autosave_interval = 60;
       };
       listeners = [
         {
@@ -209,19 +243,22 @@ in
           users = listenerUsers;
         })
         # Internet-facing TLS endpoint for field loggers: the router forwards
-        # public TCP 8883 to this LAN address. Only the logger account exists
-        # here, so the web app's broad ACL is never reachable from outside.
+        # public TCP 8883 to this LAN address. Only logger accounts exist
+        # here (the shared one unless tlsDeviceAccountsOnly, plus per-device
+        # accounts), so the web app's broad ACL is never reachable from outside.
         # Ciphers stay at OpenSSL defaults; the Quectel EC21 needs RSA
         # certificates with ECDHE-RSA AES-CBC/GCM suites.
         (withDeviceAccounts 3 {
           address = lanAddress;
           port = mqttTlsPort;
-          users = loggerUser;
+          users = if tlsDeviceOnly then { } else loggerUser;
           settings = {
             certfile = "${./mqtt-tls/server.pem}";
             keyfile = config.age.secrets.groundwaterMqttTlsKey.path;
             tls_version = "tlsv1.2";
             require_certificate = false;
+          } // lib.optionalAttrs tlsDeviceOnly {
+            use_username_as_clientid = true;
           };
         })
       ];
@@ -246,7 +283,12 @@ in
       # After the module wrote passwd-N/acl-N.conf: add the device accounts
       # the server last published (none before its first start).
       preStart = lib.mkIf creds.enable (lib.mkAfter mergeCommand);
-      serviceConfig.ReadOnlyPaths = lib.mkIf creds.enable [ "-${authDir}" ];
+      serviceConfig = {
+        ReadOnlyPaths = lib.mkIf creds.enable [ "-${authDir}" ];
+        # Normal use is a few MiB; memory_limit above refuses messages first.
+        MemoryHigh = "256M";
+        MemoryMax = "384M";
+      };
     };
 
     # The server writes into a setgid directory owned by its own user and the
@@ -295,10 +337,10 @@ in
 
     systemd.services.groundwater-server = {
       description = "Groundwater telemetry, commands and private web platform";
-      unitConfig = {
-        StartLimitIntervalSec = "5min";
-        StartLimitBurst = 5;
-      };
+      # Never give up: an unattended ingest service that stopped after five
+      # failed starts (PostgreSQL still recovering, say) stayed down until
+      # someone noticed. Back off to one attempt every five minutes instead.
+      unitConfig.StartLimitIntervalSec = 0;
       wantedBy = [ "multi-user.target" ];
       wants = [
         "network-online.target"
@@ -339,6 +381,8 @@ in
         ReadWritePaths = lib.optional creds.enable authDir;
         Restart = "on-failure";
         RestartSec = "5s";
+        RestartSteps = 6;
+        RestartMaxDelaySec = "5min";
         TimeoutStartSec = "60s";
         TimeoutStopSec = "15s";
         MemoryHigh = "384M";
