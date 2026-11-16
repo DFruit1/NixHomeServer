@@ -239,3 +239,61 @@ async fn a_file_chunk_must_answer_the_offset_it_was_asked_for() {
         "complete"
     );
 }
+
+fn anchor(seq: u32, rel: u32, reason: u8) -> Vec<u8> {
+    let mut p = rel.to_le_bytes().to_vec();
+    p.push(0); // seconds since boot
+    p.extend_from_slice(&1u32.to_le_bytes());
+    p.extend_from_slice(&[reason, 1]);
+    p.extend_from_slice(&900u32.to_le_bytes());
+    p.extend_from_slice(&1200u16.to_le_bytes());
+    p.extend_from_slice(&5000i32.to_le_bytes());
+    p.push(0);
+    crate::stream::encode::frame(1, seq, &p)
+}
+
+// A boot that died within seconds (a brownout loop with no clock) left
+// relative times no later than the next boot's anchor. The next boot's
+// clock set then converted the dead boot's records too, dating them to the
+// wrong boot. Boots resume numbering at the reserved block end, so a
+// sequence skip marks the boot boundary.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn a_clock_set_converts_only_its_own_boot() {
+    let mut h = Harness::new().await;
+    let set_at: u32 = 1_763_300_000;
+    let mut clock = 30u32.to_le_bytes().to_vec();
+    clock.push(0);
+    clock.extend_from_slice(&set_at.to_le_bytes());
+    clock.push(0x07);
+    clock.extend_from_slice(&30u32.to_le_bytes());
+    let frames = [
+        anchor(1, 2, 1),  // earlier boot, died at 2 s
+        anchor(65, 5, 2), // this boot's anchor at 5 s
+        crate::stream::encode::frame(15, 66, &clock),
+    ];
+    h.publish(
+        "data/stream",
+        &crate::stream::encode::batch(3, 0, 0, &frames),
+    )
+    .await
+    .unwrap();
+    let at = |seq: i64| {
+        let client = &h.client;
+        async move {
+            client
+                .query_one(
+                    "SELECT recorded_at FROM observations WHERE device_id=$1 AND seq=$2",
+                    &[&D, &seq],
+                )
+                .await
+                .unwrap()
+                .get::<_, Option<chrono::DateTime<Utc>>>(0)
+        }
+    };
+    assert_eq!(
+        at(65).await,
+        Some(crate::rev2_store::utc(i64::from(set_at) - 25))
+    );
+    assert_eq!(at(1).await, None, "the earlier boot has no clock");
+}
