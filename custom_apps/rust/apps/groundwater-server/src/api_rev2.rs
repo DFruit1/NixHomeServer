@@ -137,20 +137,42 @@ async fn events(
     let db = s.db.get().await.map_err(database)?;
     let events = query_json(
         &db,
-        "SELECT jsonb_build_object('id',e.id,'source',e.source,'event',e.event,'log_id',e.log_id,'seq',e.seq,
+        &format!("SELECT jsonb_build_object('id',e.id,'source',e.source,'event',e.event,'log_id',e.log_id,'seq',e.seq,
             'record_type',e.record_type,'recorded_at',e.recorded_at,'time_valid',e.time_valid,'time_rel_s',e.time_rel_s,
             'time_source',e.time_source,'received_at',e.received_at,'details',e.details,
             'confirmed_by_record',CASE WHEN e.source='alert' AND e.seq IS NOT NULL THEN EXISTS(
-                SELECT 1 FROM device_events r WHERE r.device_id=e.device_id AND r.source='record' AND r.seq=e.seq) END)
+                SELECT 1 FROM device_events r WHERE r.device_id=e.device_id AND r.source='record' AND r.seq=e.seq) END,
+            -- Firmware 2.2 writes the accelerometer at the moment of an impact
+            -- or orientation alarm as the very next record (Type 2 reason 2,
+            -- no fix); the GPS fix follows before the next connection.
+            'attitude',CASE WHEN e.source='record' AND e.event IN ('impact','orientation') THEN (
+                SELECT jsonb_build_object('position_id',p.id,'seq',p.seq,'accel_x_mg',p.accel_x_mg,'accel_y_mg',p.accel_y_mg,
+                    'accel_z_mg',p.accel_z_mg,'accel_status',p.accel_status)
+                FROM device_positions p WHERE p.device_id=e.device_id AND p.source='record' AND p.log_id=e.log_id
+                    AND p.seq=e.seq+1 AND {ALARM_ATTITUDE} IS NOT NULL) END)
          FROM device_events e
          WHERE e.device_id=$1 AND COALESCE(e.recorded_at,e.received_at)>=$2 AND COALESCE(e.recorded_at,e.received_at)<=$3
            AND ($4::text IS NULL OR e.event=$4) AND ($5::text IS NULL OR e.source=$5)
-         ORDER BY COALESCE(e.recorded_at,e.received_at) DESC,e.id DESC LIMIT $6",
+         ORDER BY COALESCE(e.recorded_at,e.received_at) DESC,e.id DESC LIMIT $6"),
         &[&device, &q.from(), &q.to(), &q.event, &q.source, &q.limit(500)],
     )
     .await?;
     Ok(Json(json!({"events":events})).into_response())
 }
+
+/// SQL (on `device_positions p`): for an accelerometer-only Type 2 of
+/// firmware 2.2, the alarm's event name; else NULL. It is the post's
+/// attitude at the alarm, not a failed position fix. The logger writes it
+/// as the very next record after a Type 11 impact, or after a Type 12
+/// orientation found by a tilt reading (whose Type 4 comes right before the
+/// Type 12). A Type 12 found during a position reading is followed by that
+/// reading's own Type 2, which may also be reason 2 without a fix (the owed
+/// GPS search failed): it has no Type 4 before the Type 12 (contract §4).
+pub const ALARM_ATTITUDE: &str =
+    "(SELECT e.event FROM device_events e WHERE p.source='record' AND p.reason=2 AND p.fix=0
+    AND e.device_id=p.device_id AND e.source='record' AND e.log_id=p.log_id AND e.seq=p.seq-1
+    AND (e.event='impact' OR (e.event='orientation' AND EXISTS(SELECT 1 FROM device_tilt t
+        WHERE t.device_id=p.device_id AND t.log_id=p.log_id AND t.seq=p.seq-2))))";
 
 async fn positions(
     State(s): State<AppState>,
@@ -162,14 +184,14 @@ async fn positions(
     let db = s.db.get().await.map_err(database)?;
     let positions = query_json(
         &db,
-        "SELECT jsonb_build_object('id',id,'source',source,'log_id',log_id,'seq',seq,'recorded_at',recorded_at,
+        &format!("SELECT jsonb_build_object('id',id,'source',source,'log_id',log_id,'seq',seq,'recorded_at',recorded_at,
             'time_valid',time_valid,'time_rel_s',time_rel_s,'time_source',time_source,'received_at',received_at,
             'settings_gen',settings_gen,'reason',reason,'fix',fix,'lat',lat,'lon',lon,'alt_m',alt_m,'hdop',hdop,
             'satellites',satellites,'accel_x_mg',accel_x_mg,'accel_y_mg',accel_y_mg,'accel_z_mg',accel_z_mg,
-            'accel_status',accel_status)
-         FROM device_positions WHERE device_id=$1 AND COALESCE(recorded_at,received_at)>=$2
+            'accel_status',accel_status,'alarm_event',{ALARM_ATTITUDE})
+         FROM device_positions p WHERE device_id=$1 AND COALESCE(recorded_at,received_at)>=$2
            AND COALESCE(recorded_at,received_at)<=$3
-         ORDER BY recorded_at DESC NULLS LAST,id DESC LIMIT $4",
+         ORDER BY recorded_at DESC NULLS LAST,id DESC LIMIT $4"),
         &[&device, &q.from(), &q.to(), &q.limit(500)],
     )
     .await?;
@@ -261,6 +283,14 @@ async fn settings(
     Ok(Json(json!({"effective":effective,"history":history})).into_response())
 }
 
+/// The payload schemas this build decodes, as SQL integers.
+fn supported_schemas() -> Vec<i32> {
+    crate::stream::SUPPORTED_PAYLOAD_SCHEMAS
+        .iter()
+        .map(|&s| i32::from(s))
+        .collect()
+}
+
 async fn logs(State(s): State<AppState>, h: HeaderMap, Path(device): Path<String>) -> ApiResult {
     let device = authorize(&s, &h, &device).await?;
     let db = s.db.get().await.map_err(database)?;
@@ -272,7 +302,8 @@ async fn logs(State(s): State<AppState>, h: HeaderMap, Path(device): Path<String
             'firmware_version',l.firmware_version,'mcu_uid',l.mcu_uid,
             'frames',f.frames,'min_seq',f.min_seq,'max_seq',f.max_seq,'decode_errors',f.decode_errors,
             'conflicting_copies',f.conflicting,'resent_copies',f.resent,
-            'derive_pending',f.derive_pending,'resolve_pending',l.resolve_pending,'resolve_error',l.resolve_error,
+            'derive_pending',f.derive_pending,'undecodable',f.undecodable,'decoder_available',l.payload_schema=ANY($2),
+            'resolve_pending',l.resolve_pending,'resolve_error',l.resolve_error,
             'open_gaps',(SELECT count(*) FROM stream_gaps g WHERE g.device_id=l.device_id AND g.log_id=l.log_id AND g.state IN ('open','requested')),
             'unrecoverable_gaps',(SELECT count(*) FROM stream_gaps g WHERE g.device_id=l.device_id AND g.log_id=l.log_id AND g.state='unrecoverable'),
             'pending_readings',(SELECT count(*) FROM observations o WHERE o.device_id=l.device_id AND o.log_id=l.log_id AND o.recorded_at IS NULL),
@@ -293,11 +324,12 @@ async fn logs(State(s): State<AppState>, h: HeaderMap, Path(device): Path<String
          FROM stream_logs l
          CROSS JOIN LATERAL (SELECT count(*) AS frames,min(seq) AS min_seq,max(seq) AS max_seq,
              count(*) FILTER (WHERE decode_error IS NOT NULL) AS decode_errors,
-             count(*) FILTER (WHERE derive_pending) AS derive_pending,
+             count(*) FILTER (WHERE derive_pending AND payload_schema=ANY($2)) AS derive_pending,
+             count(*) FILTER (WHERE derive_pending AND payload_schema<>ALL($2)) AS undecodable,
              COALESCE(sum(conflicting_copies),0) AS conflicting,COALESCE(sum(copies-1),0) AS resent
              FROM stream_frames sf WHERE sf.device_id=l.device_id AND sf.log_id=l.log_id) f
          WHERE l.device_id=$1 ORDER BY l.last_received_at DESC",
-        &[&device],
+        &[&device, &supported_schemas()],
     )
     .await?;
     let gaps = gap_rows(&db, &device, None).await?;
@@ -652,6 +684,26 @@ pub async fn queue_command(
     }
     let args = rev2_commands::prepare(request.op, &request.args, request.replace, now)
         .map_err(|e| bad(&e))?;
+    if request.op == "settings" {
+        // A request naming only one limit is merged with the other limit in
+        // force on the logger, which refuses lo above hi as bad-args.
+        let effective: Option<Value> = db
+            .query_opt(
+                "SELECT settings FROM devices WHERE device_id=$1",
+                &[&device],
+            )
+            .await
+            .map_err(|e| database(e.to_string()))?
+            .and_then(|row| row.get(0));
+        if let Some(object) = args.as_object() {
+            crate::settings::lo_hi(
+                object,
+                effective.as_ref().and_then(Value::as_object),
+                request.replace,
+            )
+            .map_err(|e| bad(&e))?;
+        }
+    }
     let mut options = QueueOptions::for_op(request.op, &s.settings.rev2, now);
     if let Some(seconds) = request.expires_in_s {
         if !(60..=30 * 86_400).contains(&seconds) {

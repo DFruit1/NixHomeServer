@@ -936,3 +936,22 @@ DO $$ BEGIN
         COMMENT ON COLUMN device_positions.fix IS 'record scale: 0 none, 1 2D, 2 3D';
     END IF;
 END $$;
+
+-- Fallback mode (MRAM absent or faulted at boot): the logger holds settings
+-- in RAM only and loses them at its next reset; its acks carry
+-- "persist":false and a generation counting from 1 per boot. Those
+-- settings are the device's effective settings while it lasts
+-- (settings_ram_only), recorded under their own history sources so the
+-- RAM generations never overwrite or outrank the ring's generations, and
+-- never feed the automatic settings restore (which reads 'ack' and
+-- 'get_settings' only).
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS settings_ram_only BOOLEAN NOT NULL DEFAULT false;
+DO $$
+BEGIN
+    IF pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname='device_settings_history_source_check'
+            AND conrelid='device_settings_history'::regclass)) NOT LIKE '%ack-ram%' THEN
+        ALTER TABLE device_settings_history DROP CONSTRAINT device_settings_history_source_check;
+        ALTER TABLE device_settings_history ADD CONSTRAINT device_settings_history_source_check
+            CHECK(source IN ('snapshot','snapshot-backup','ack','get_settings','requested','ack-ram','get_settings-ram'));
+    END IF;
+END $$;

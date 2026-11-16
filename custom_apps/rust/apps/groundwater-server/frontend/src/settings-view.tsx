@@ -22,6 +22,7 @@ import {
   settingText,
   settingsDiff,
   validateSettings,
+  loHiError,
 } from "./settings";
 import type { Alert, Command, Device, SettingsResponse } from "./types";
 import { Feedback, LoadState, TableRegion } from "./widgets";
@@ -63,12 +64,12 @@ export const SettingsView = component$<Props>((props) => {
       Object.entries(drafts).filter(([, v]) => v !== undefined),
     );
     const diff = changedSettings(edited, base);
-    return {
-      diff,
-      errors: Object.keys(diff).length
-        ? validateSettings(diff, Math.floor(Date.now() / 1000))
-        : [],
-    };
+    const errors = Object.keys(diff).length
+      ? validateSettings(diff, Math.floor(Date.now() / 1000))
+      : [];
+    // One limit edited: the logger checks it against the other in force.
+    const limits = errors.length ? "" : loHiError(diff, base, replace.value);
+    return { diff, errors: limits ? [...errors, limits] : errors };
   });
   const commandsUrl = useComputed$(
     () => `/api/commands?${query({ device: props.device.device_id })}`,
@@ -161,7 +162,9 @@ export const SettingsView = component$<Props>((props) => {
           <span class="muted">
             {lost
               ? "Running firmware defaults · last known generation"
-              : "Generation"}{" "}
+              : props.device.settings_ram_only
+                ? "RAM-only generation"
+                : "Generation"}{" "}
             {show(
               state.data?.effective.settings_gen ?? props.device.settings_gen,
             )}{" "}
@@ -230,6 +233,20 @@ export const SettingsView = component$<Props>((props) => {
                 Fill in generation {acknowledged.settings_gen} with Replace
               </button>
             )}
+          </div>
+        )}
+        {props.device.settings_ram_only && !lost && (
+          <div class="notice" role="status">
+            <p>
+              <strong>Settings held in RAM only.</strong> The logger runs
+              without its MRAM ring (fallback mode, MRAM{" "}
+              {String(props.device.health?.mram ?? "fault")}): these settings
+              are lost at its next reset, when it returns to its V2.1 settings
+              page or the firmware defaults. Their generation counts from 1
+              since its last boot. When the ring comes back (Clear error latch,
+              or the logger's own hourly retry) the ring's settings replace
+              them; the server reads them at the next connection.
+            </p>
           </div>
         )}
         <SettingsRequests

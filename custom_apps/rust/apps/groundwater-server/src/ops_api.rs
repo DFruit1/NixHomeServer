@@ -2030,13 +2030,18 @@ async fn export_positions(
     };
     let (from, to) = q.bounds();
     let db = s.db.get().await.map_err(database)?;
+    // An accelerometer-only Type 2 after an impact or orientation alarm is
+    // the post's attitude, not a failed fix: `alarm_event` names the alarm
+    // and the GeoJSON (points only) leaves it out like any row without one.
     let mut positions = json_rows(
         &*db,
-        "SELECT jsonb_build_object('id',id,'source',source,'log_id',log_id,'seq',seq,'recorded_at',recorded_at,
+        &format!("SELECT jsonb_build_object('id',id,'source',source,'log_id',log_id,'seq',seq,'recorded_at',recorded_at,
             'time_valid',time_valid,'time_source',time_source,'received_at',received_at,'settings_gen',settings_gen,
-            'reason',reason,'fix',fix,'lat',lat,'lon',lon,'alt_m',alt_m,'hdop',hdop,'satellites',satellites)
-         FROM device_positions WHERE device_id=$1 AND COALESCE(recorded_at,received_at) BETWEEN $2 AND $3
-         ORDER BY COALESCE(recorded_at,received_at),id LIMIT $4",
+            'reason',reason,'fix',fix,'lat',lat,'lon',lon,'alt_m',alt_m,'hdop',hdop,'satellites',satellites,
+            'accel_x_mg',accel_x_mg,'accel_y_mg',accel_y_mg,'accel_z_mg',accel_z_mg,
+            'alarm_event',{})
+         FROM device_positions p WHERE device_id=$1 AND COALESCE(recorded_at,received_at) BETWEEN $2 AND $3
+         ORDER BY COALESCE(recorded_at,received_at),id LIMIT $4", crate::api_rev2::ALARM_ATTITUDE),
         &[&device, &from, &to, &(EXPORT_LIMIT + 1)],
     )
     .await?;

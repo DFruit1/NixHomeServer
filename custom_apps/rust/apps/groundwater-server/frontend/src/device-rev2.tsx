@@ -284,8 +284,9 @@ export const Overview = component$<ViewProps>((props) => {
         </dl>
         {info.reset === "wdg" && (
           <p class="notice">
-            The last reset was a watchdog reset. Check get_debug for the
-            watchdog count and latched error.
+            The last reset was a watchdog reset. The server asked for get_debug
+            at that connection; its result (watchdog count, latched error, boot
+            report) is on Commands.
           </p>
         )}
       </section>
@@ -595,6 +596,13 @@ export const EventsView = component$<ViewProps>((props) => {
                   )}
                 </div>
                 <p class="timeline-summary">{eventSummary(e)}</p>
+                {e.attitude && (
+                  <p class="timeline-summary">
+                    {e.attitude.accel_status === 0
+                      ? `Accelerometer at the alarm: ${e.attitude.accel_x_mg ?? "—"} / ${e.attitude.accel_y_mg ?? "—"} / ${e.attitude.accel_z_mg ?? "—"} mg (x / y / z, seq ${e.attitude.seq}); the GPS fix follows before the next connection unless GPS is off`
+                      : `Accelerometer did not answer at the alarm (seq ${e.attitude.seq})`}
+                  </p>
+                )}
                 <small>
                   {eventTime(e)}
                   {e.seq != null && ` · seq ${e.seq}`}
@@ -832,14 +840,17 @@ export const LocationView = component$<ViewProps>((props) => {
                     return (
                       <tr key={p.id}>
                         <td>{stamp(p.recorded_at || p.received_at)}</td>
-                        <td class="mono">
+                        <td class={p.alarm_event ? "" : "mono"}>
                           {validFix(p)
                             ? `${p.lat!.toFixed(6)}, ${p.lon!.toFixed(6)}`
-                            : "no position"}
+                            : p.alarm_event
+                              ? `accelerometer at the ${p.alarm_event} alarm: ${p.accel_x_mg ?? "—"} / ${p.accel_y_mg ?? "—"} / ${p.accel_z_mg ?? "—"} mg`
+                              : "no position"}
                         </td>
                         <td>
-                          {fixText(p)} / {number(p.hdop, 1)} /{" "}
-                          {p.satellites ?? "—"}
+                          {p.alarm_event
+                            ? "no GPS search"
+                            : `${fixText(p)} / ${number(p.hdop, 1)} / ${p.satellites ?? "—"}`}
                         </td>
                         <td>{p.alt_m != null ? `${p.alt_m} m` : "—"}</td>
                         <td>
@@ -967,8 +978,9 @@ export const TestsView = component$<ViewProps>((props) => {
     <section aria-labelledby="tests-heading">
       <h2 id="tests-heading">Self-test results</h2>
       <p class="muted">
-        Queue a remote self-test from Commands (self_test). Button, power-on and
-        scheduled tests arrive too.
+        Queue a remote self-test from Commands (self_test). Button and power-on
+        tests arrive too; one whose connection failed arrives later as its ring
+        record only.
       </p>
       <LoadState
         loading={state.loading && !state.data}
@@ -992,6 +1004,10 @@ export const TestsView = component$<ViewProps>((props) => {
             <tbody>
               {rows.map((t) => {
                 const flags = testStatusFlags(t.status_bits);
+                // gps_mode off: no fix is expected, so it is not a failure.
+                const gpsOff = t.details?.gps === "off";
+                if (gpsOff)
+                  flags.failed = flags.failed.filter((f) => f !== "gnss_fix");
                 const warn = Array.isArray(t.details?.warn)
                   ? (t.details.warn as unknown[])
                   : [];
@@ -1055,6 +1071,7 @@ export const TestsView = component$<ViewProps>((props) => {
                               Not passed: {flags.failed.join(", ")}
                             </small>
                           )}
+                          {gpsOff && <small>GNSS off (gps_mode off)</small>}
                         </>
                       )}
                       <small>

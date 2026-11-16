@@ -325,17 +325,23 @@ pub fn headline(item: &Item) -> String {
             "impact detected{}",
             fixed(num(d, "peak_mg").or(num(d, "peak")), 0, "mg")
         ),
-        ("orientation", false) => {
-            format!("orientation changed{}", fixed(num(d, "tilt_deg"), 1, "°"))
-        }
-        ("gps_moved", false) => match (
-            num(d, "distance_m").or(num(d, "dist_m")),
-            num(d, "threshold_m").or(num(d, "thr_m")),
-        ) {
-            (Some(m), Some(t)) => format!("moved {m:.0} m (threshold {t:.0} m)"),
-            (Some(m), None) => format!("moved {m:.0} m"),
-            _ => "position moved".into(),
-        },
+        // Latched with a re-arm margin (orientation re-arms at 8.0°, GPS at
+        // half the threshold): one alert covers the whole excursion.
+        ("orientation", false) => format!(
+            "orientation changed{}; one alert covers the whole excursion",
+            fixed(num(d, "tilt_deg"), 1, "°")
+        ),
+        ("gps_moved", false) => format!(
+            "{}; one alert covers the whole excursion",
+            match (
+                num(d, "distance_m").or(num(d, "dist_m")),
+                num(d, "threshold_m").or(num(d, "thr_m")),
+            ) {
+                (Some(m), Some(t)) => format!("moved {m:.0} m (threshold {t:.0} m)"),
+                (Some(m), None) => format!("moved {m:.0} m"),
+                _ => "position moved".into(),
+            }
+        ),
         ("logger_error", false) => format!(
             "logger error latched{}",
             num(d, "err")
@@ -363,6 +369,27 @@ pub fn headline(item: &Item) -> String {
             "settings lost: logging is stopped until settings are sent".into()
         }
         ("settings_lost", true) => "settings restored: logging again".into(),
+        ("battery_unread", false) => {
+            "battery voltage not read in the last three health reports: low-battery alerts cannot work".into()
+        }
+        ("battery_unread", true) => "battery voltage read again".into(),
+        ("boot_report", false) => match d.get("problems").and_then(Value::as_array) {
+            Some(problems) if !problems.is_empty() => format!(
+                "logger boot report: {}",
+                problems
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+            _ => "logger boot report needs attention".into(),
+        },
+        ("boot_report", true) => "logger booted without a reported problem".into(),
+        ("decoder_missing", false) => format!(
+            "data of payload schema {} cannot be decoded by this server: update the server (frames are kept raw)",
+            num(d, "payload_schema").map_or("?".into(), |s| format!("{s:.0}"))
+        ),
+        ("decoder_missing", true) => "all received data decoded".into(),
         ("tamper", _) => match item.event.as_str() {
             "impact" => format!(
                 "impact detected{}",

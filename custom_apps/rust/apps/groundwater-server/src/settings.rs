@@ -148,11 +148,59 @@ pub fn validate(args: &Value, now: i64) -> Result<(), Vec<String>> {
     }
     check(mode_pair(args, "gps"));
     check(mode_pair(args, "tilt"));
+    if errors.is_empty()
+        && let Err(error) = lo_hi(args, None, false)
+    {
+        errors.push(error);
+    }
     if errors.is_empty() {
         Ok(())
     } else {
         Err(errors)
     }
+}
+
+/// The firmware's cross-field rule for the alarm limits (contract §5,
+/// `gwl_proto.c` `run_settings`): after merging the request with the
+/// settings in force (`base`; the defaults with `replace`), `lo` above `hi`
+/// with both set is refused as bad-args. Equal values and an unset side are
+/// accepted. `base` is `None` when the server does not know the logger's
+/// settings: only a request carrying both limits can be checked then.
+pub fn lo_hi(
+    args: &Map<String, Value>,
+    base: Option<&Map<String, Value>>,
+    replace: bool,
+) -> Result<(), String> {
+    let limit = |key: &str| -> Option<Option<f64>> {
+        match args.get(key) {
+            Some(value) => Some(value.as_f64()),
+            None if replace => Some(None),
+            None => base.map(|base| base.get(key).and_then(Value::as_f64)),
+        }
+    };
+    let (Some(Some(lo)), Some(Some(hi))) = (limit("lo"), limit("hi")) else {
+        return Ok(());
+    };
+    if lo <= hi {
+        return Ok(());
+    }
+    let sent = |key: &str| args.contains_key(key);
+    let from = |key: &str| {
+        if sent(key) {
+            format!("{key} {}", json!(args[key]))
+        } else {
+            format!(
+                "{key} {} in force on the logger",
+                json!(base.and_then(|b| b.get(key)))
+            )
+        }
+    };
+    Err(format!(
+        "lo must not be above hi: {} is above {} (the logger rejects it as bad-args); \
+         lower lo, raise hi, or unset one of them",
+        from("lo"),
+        from("hi")
+    ))
 }
 
 /// A decoded TLV payload: the keys present plus anything unrecognised.
@@ -329,6 +377,26 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_763_300_000;
+
+    #[test]
+    fn lo_above_hi_is_refused_like_the_logger_does() {
+        let map = |v: Value| v.as_object().unwrap().clone();
+        let now = 1_763_300_000;
+        assert!(validate(&json!({"lo":5.0,"hi":1.0}), now).is_err());
+        assert!(validate(&json!({"lo":1.0,"hi":1.0}), now).is_ok());
+        assert!(validate(&json!({"lo":5.0,"hi":null}), now).is_ok());
+        let base = map(json!({"lo":null,"hi":2.0}));
+        // One limit sent, the other in force on the logger.
+        let error = lo_hi(&map(json!({"lo":3.0})), Some(&base), false).unwrap_err();
+        assert!(error.contains("hi 2.0 in force"), "{error}");
+        assert!(lo_hi(&map(json!({"lo":1.5})), Some(&base), false).is_ok());
+        // replace merges with the defaults (both unset).
+        assert!(lo_hi(&map(json!({"lo":3.0})), Some(&base), true).is_ok());
+        // Unknown settings: only a request with both limits can be checked.
+        assert!(lo_hi(&map(json!({"lo":3.0})), None, false).is_ok());
+        // Unsetting the limit in force removes the conflict.
+        assert!(lo_hi(&map(json!({"lo":3.0,"hi":null})), Some(&base), false).is_ok());
+    }
 
     #[test]
     fn contract_examples_are_valid() {

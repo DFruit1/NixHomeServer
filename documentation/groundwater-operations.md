@@ -247,17 +247,20 @@ What to do for each kind:
 | Level above/below limit, logger level alarm | Check the reading on History against the datum and the bore; it closes by itself when the level returns. |
 | Sensor fault | The reading is not a level ("possible sensor failure"). Check the cable and sensor on site; a persistent over/under range may also be a level beyond the sensor's range. |
 | Battery low, power critical, solar low | Check the solar panel and battery on site; Health shows the trend. |
+| Battery not read | Three health reports came without a battery voltage: the logger's battery measurement failed, so battery low and power critical cannot warn. Plan a site visit (wiring, divider, ADC). |
 | Missed connection | Expect a late connection first (LTE, the logger's retries); then check Raw log for its last traffic, the router endpoint and the unit on site. |
 | SD card problem | `missing`/`error`: reseat or replace the card on site; `full`: download what you need (Files) and replace or wipe it (`wipe_sd`, typed DANGER). The ring keeps logging meanwhile. |
 | MRAM almost full | Readings are waiting to be uploaded: check that the logger connects and the Data stream shows batches; it clears when the ring is saved. |
-| MRAM fault | Ring fault: the logger falls back to `reading`/`gps` JSON. Plan a site visit; `mram` `recovery` with error 4 is "settings lost" below. |
+| MRAM fault | Ring fault: the logger falls back to `reading`/`gps` JSON. Plan a site visit; `mram` `recovery` with error 4 is "settings lost" below. While the MRAM faulted at boot (fallback mode) the Settings tab says "Settings held in RAM only": settings you send then are lost at the logger's next reset. `clear_error_latch` retries the ring at once (the logger also retries hourly); when it comes back the ring's settings replace the RAM ones and the server reads them at the next connection (event "settings_ram_replaced": send the RAM settings again if still wanted). |
 | Tail Lock | Logging has stopped because unsaved data would be overwritten. See "Recovery and Tail Lock" below. |
-| Impact, orientation changed, moved (GPS) | Check the installation (and Location for the move); these stay open until you resolve them. |
+| Impact, orientation changed, moved (GPS) | Check the installation (and Location for the move); these stay open until you resolve them. One alert covers a whole excursion: the logger re-arms orientation only below 8.0° from its reference and a GPS move only within half the threshold, so a value hovering at the limit does not repeat it. An impact, or an orientation change found by a tilt reading, shows the accelerometer reading taken at the alarm; the GPS position follows before the next connection unless GPS is off. A self test takes the current orientation and position as the new reference. |
 | Logger error latched | Read the code on Overview; error 7 means the V2.1 settings were not migrated: send full settings. Clear the latch with `clear_error_latch` once handled. |
 | Logging off | Logging was disabled (by `disable_logging` or the logger); send `enable_logging` if that was not intended. |
 | Clock not set | The server sends `sync_time` while the logger is awake; if it persists, check GNSS reception and the next health. |
 | Weak signal | Antenna or site coverage; listed but not notified by default. |
-| Repeated watchdog resets | Firmware or power instability: read `get_debug` and the boot events; plan a visit if it continues. |
+| Repeated watchdog resets | Firmware or power instability: read the `get_debug` the server requests after each unexpected reset (Commands) and the boot events; plan a visit if it continues. |
+| Boot report | The `get_debug` after an unexpected reset reports a ring boot that lost, rolled back or restored settings from a snapshot, read-only RECOVERY, a new log for a payload schema change, or a HardFault. Check the settings (Settings tab), the Data stream log list and the latched error; a HardFault is a firmware defect to report with the `get_debug` result. |
+| Data cannot be decoded | The logger sends data of a payload schema this server version cannot decode (a newer firmware). Nothing is lost: frames are kept raw. Update the server; its first start decodes them and closes the alert. |
 | Settings lost | See "When a logger loses its settings" below. |
 
 Alert openings and resolutions are sent to the private ntfy server when
@@ -393,11 +396,29 @@ settings RECOVERY replaces the automatic restore. For a danger command the conso
 connection + 1 hour, so a weekly logger still receives it. Danger operations
 follow the handshake under "Typed confirmations".
 
+A command shown **interrupted** ("interrupted by a logger reset, outcome
+unknown") was cut by a watchdog or fault reset while it ran: the logger
+reported no outcome, did not run it again, and the server does not re-send
+it. It may have done part or all of its work, so check before queueing it
+again: after `wipe_sd`, list `/GWL` on Files (empty or missing means it ran);
+after `wipe_mram` or `factory_reset`, a new log on Data stream (Type 14 wipe
+or factory reset) or `get_status` shows whether it ran (the logger completes
+an interrupted factory reset at its next boot); an interrupted `settings` is
+followed by an automatic `get_settings`. A confirmation whose ack never came before the logger slept
+or went offline ends `expired` with the warning that the operation may have
+run; check the same way. `file_list`/`file_chunk` take any absolute 8.3 path
+on the card up to 63 bytes.
+
 The server queues some commands itself, shown with their origin on the
 Commands tab: missing ring data (`flush_mqtt` ranges, automatic gap
 requests every 30 minutes at most, three attempts), the logger clock
 (`sync_time`, only while it is awake), the effective settings
-(`get_settings`) and the restore of lost settings. Battery and solar alerts
+(`get_settings`), the restore of lost settings, and a `get_debug` after a
+reset the server did not command (at most every 6 hours; its boot report
+and reset flags are listed in words with the command and raise the "Boot
+report" alert when they need attention). The settings editor refuses `lo`
+above `hi`, also when you change one and the other is in force on the
+logger. Battery and solar alerts
 are raised by the server from `health` and test data; the logger's effective
 `lo`/`hi`/hysteresis settings become the server's limits.
 

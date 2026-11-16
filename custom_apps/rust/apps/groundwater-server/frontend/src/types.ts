@@ -92,6 +92,9 @@ export interface Device {
   /** Settings-lost RECOVERY: when the logger first reported it (null when
    * it has settings). */
   settings_lost_since?: string | null;
+  /** Fallback mode: the effective settings are held in RAM only
+   * (`"persist":false`) and are lost at the logger's next reset. */
+  settings_ram_only?: boolean;
   /** The episode's automatic restore command, null when none was sent. */
   settings_restore?: SettingsRestore | null;
 }
@@ -240,6 +243,16 @@ export interface DeviceEvent {
   received_at: string;
   details: Record<string, unknown>;
   confirmed_by_record: boolean | null;
+  /** Impact/orientation records: the accelerometer reading written at the
+   * alarm (the next ring record, Type 2 without a fix). */
+  attitude?: {
+    position_id: number;
+    seq: number;
+    accel_x_mg: number | null;
+    accel_y_mg: number | null;
+    accel_z_mg: number | null;
+    accel_status: number | null;
+  } | null;
 }
 export interface StreamGap {
   id: number;
@@ -299,6 +312,9 @@ export interface Position extends Timed {
   accel_y_mg?: number | null;
   accel_z_mg?: number | null;
   accel_status?: number | null;
+  /** `impact`/`orientation`: an accelerometer-only record written at that
+   * alarm (reason 2, no GPS search), not a failed fix. */
+  alarm_event?: string | null;
 }
 export interface TiltSample extends Timed {
   reason: number | null;
@@ -370,6 +386,9 @@ export interface StreamLog {
   pending_reasons?: PendingReason[];
   /** Frames whose derived data failed and is re-run at the next start. */
   derive_pending?: number;
+  /** Frames of a payload schema this server has no decoder for (kept raw). */
+  undecodable?: number;
+  decoder_available?: boolean | null;
   /** Time resolution and settings assembly for the log failed. */
   resolve_pending?: boolean;
   resolve_error?: string | null;
