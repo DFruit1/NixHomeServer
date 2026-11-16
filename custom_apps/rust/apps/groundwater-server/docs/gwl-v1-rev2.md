@@ -127,6 +127,8 @@ scheduled connection (omitted if unknown). `win` only with `ready`.
  "uid":"<24 hex raw MCU UID>","imei":"864292046589220","iccid":"8961...","modem":"EC21EFAR06A07M4G",
  "net":"bench","stream":"bin","reset":"wdg"}
 ```
+`imei`, `iccid` and `modem` are omitted while not known (the modem was not
+identified yet); an `info` without them says nothing about them.
 `stream`: `bin` when `AT+QMTPUBEX` works, `hex` when the fallback encoding is in
 use (§5). `reset`: last reset cause `por` | `pin` | `wdg` | `sw` | `other`
 (`bor` is reserved: the STM32G070 has no brown-out reset, a supply collapse
@@ -140,7 +142,7 @@ reads as `por`).
 ```
 **Values not read are left out** (health, `test/result`, `reading`, alerts):
 `bat_mv`, `sol_mv` and `mv` are omitted when that ADC reading failed (never sent
-as 65535); `sd_free_mb` is present only when the card's free space was read in
+as 65535), and `ma` in `test/result` with `mv`; `sd_free_mb` is present only when the card's free space was read in
 this session and `sd` is `ok` or `full` (never a stale value, never 0 for
 "unknown"). `csq` 99 means "not known" (3GPP), as before.
 `sd`: `ok` | `missing` | `error` | `full`. `mram`: `ok` | `absent` | `fault` |
@@ -195,10 +197,14 @@ urgent. `ss` in a `sensor_fault` enter is the new fault's status; in an exit
 it is the status that ended. A change from one fault status to another
 (say under-range to over-range) is an exit for the old status followed by an
 enter for the new one, so enter and exit always alternate.
-After a Type 11 (impact) or a Type 12 (orientation) the logger writes a Type 2
-(reason 2, alarm) at once with the accelerometer only (`fix` none, position
-not available), and, unless `gps_mode` is 3 (off), a second Type 2 with the
-GPS fix (and the accelerometer again) just before the next connection.
+After a Type 11 (impact), or a Type 12 (orientation) found by a tilt reading,
+the logger writes a Type 2 (reason 2, alarm) at once with the accelerometer
+only (`fix` none, position not available), and, unless `gps_mode` is 3 (off),
+a second Type 2 (reason 2) with the GPS search's result (and the accelerometer
+again) just before the next connection; a position reading in between (a
+scheduled fix, a test) takes the place of that second one. A Type 10, or a
+Type 12 found during a position reading, is followed by that reading's own
+Type 2 (its reason, with the fix when there is one) and nothing more.
 Impacts are rate limited: at most one Type 11 record and `impact` alert per
 10 minutes. Taps inside that hold-off are not recorded on their own; the
 highest of their peaks is recorded at the first wake after it, with that time.
@@ -244,7 +250,9 @@ batch, and deduplicates frames by `(DEVICE, log_id, seq)`.
 
 **Payload schema per log.** One log never mixes payload layouts: a firmware
 whose `GWL_PAYLOAD_SCHEMA` differs from the schema of the log it finds in
-MRAM starts a new log at boot (Type 14 reason 6, sequences from 1). The batch
+MRAM starts a new log at boot (Type 14 reason 6, sequences from 1); when the
+ring cannot take it at boot (Tail Locked, settings lost), the new log starts
+just before the first record written afterwards, never later. The batch
 header's `payload_schema` (and an SD segment header's) is the schema of the
 log its frames belong to, not the running firmware's (`info.schema`): frames
 of an older log sent or resent after the change keep their own schema.
@@ -363,7 +371,7 @@ page or the defaults. While Tail Locked: `rejected`,
 | `self_test` | — | ack `ok`, then `test/result` with this `id`; Type 5 record (trigger 2, req_id = id) |
 | `get_status` | — | the `health` object plus `boot`, `head`, `tail`, `sd_saved`, `mqtt_saved`, `log_id`, `last_seq`, `flags` |
 | `get_settings` | — | `{"gen":..,"settings":{...}}` |
-| `get_debug` | — | firmware/runtime details: `info` fields, reset cause, watchdog resets, `last_error`, modem `csq`/`creg`, free RAM. `reset_flags`: bits 31–23 the MCU reset flags, bit 8 set when the 32.768 kHz crystal did not start at this boot (the RTC runs from the internal LSI, about ±5 %, corrected at each connection; switching to it invalidates the clock until it is set again), bits 7–0 the reset-loop guard (3–0 consecutive unclean resets, 4 next reset commanded, 5 a flash ECC double error was seen, 6 a HardFault reset the MCU since the last cold start; a HardFault reset reports `reset:"sw"`). Also `mram_size`, `rx_dropped`, `rx_errors`, `cmd` {`dropped`,`malformed`,`busy`,`lost`} and `boot_report`: the last MRAM ring boot (Rev2 boot steps 3/6), bits 0 chip formatted, 1/2 settings slot A/B failed its check, 3/4 checkpoint A/B invalid, 5 a committed settings change was activated, 6 settings rolled back to the older slot, 7 settings restored from a snapshot, 8 settings lost, 9 read-only RECOVERY, 10 power gap recorded, 11 Tail Locked, 12 frames found past the checkpoint head, 13 an interrupted factory reset was completed, 14 a new log was started because the payload schema changed. `info` fields not known yet (IMEI, ICCID, modem firmware before the modem was identified) are omitted |
+| `get_debug` | — | firmware/runtime details: `info` fields, reset cause, watchdog resets, `last_error`, modem `csq`/`creg`, free RAM. `reset_flags`: bits 31–23 the MCU reset flags, bit 8 set when the 32.768 kHz crystal did not start at this boot (the RTC runs from the internal LSI, about ±5 %, corrected at each connection; switching to it invalidates the clock until it is set again), bits 7–0 the reset-loop guard (3–0 consecutive unclean resets, 4 next reset commanded, 5 a flash ECC double error was seen, 6 a HardFault reset the MCU since the last cold start; a HardFault reset reports `reset:"sw"`). Also `mram_size`, `rx_dropped`, `rx_errors`, `cmd` {`dropped`,`malformed`,`busy`,`lost`} and `boot_report`: the last MRAM ring boot (Rev2 boot steps 3/6), bits 0 chip formatted, 1/2 settings slot A/B failed its check, 3/4 checkpoint A/B invalid, 5 a committed settings change was activated, 6 settings rolled back to the older slot, 7 settings restored from a snapshot, 8 settings lost, 9 read-only RECOVERY, 10 power gap recorded, 11 Tail Locked, 12 frames found past the checkpoint head, 13 an interrupted factory reset was completed, 14 a new log was started because the payload schema changed (also set when that happened after the boot). `info` fields not known yet (IMEI, ICCID, modem firmware before the modem was identified) are omitted |
 | `flush_mqtt` | optional `{"log_id":L,"from_seq":A,"to_seq":B}` | without args: send unsaved frames now. With args: **resend** that range from MRAM (or from the SD archive when MRAM no longer holds it; batch flag bit2). `data`: `{"frames":n,"batches":m,"first_seq":..,"last_seq":..,"missing":k}` |
 | `flush_sd` | — | save unsaved frames to the SD archive now; `data`: `{"frames":n,"segment":s}` |
 | `file_list` | `{"path":"/GWL","page":0}` | `{"path":..,"files":[["B0000001.BIN",123456],["SUBDIR/",0]],"more":false}` (≤ 16 entries per page). `file_list` and `file_chunk` take any absolute 8.3 path on the card, not only `/GWL` (e.g. `/` or a V2.1 `/String.txt`); both only read. `.`, `..`, `\`, `:` and control characters are refused; `path` is at most 63 bytes (longer: `rejected`/`bad-args`) |
@@ -401,6 +409,11 @@ Every other danger `op` uses the handshake in §7:
    An id is recorded as `failed` just before its handler starts: a command
    whose handler was cut by a watchdog or fault reset is acked `duplicate`
    with `"prev":"failed"` when re-sent after that reset, and is not run again.
+   Such a `failed` means "no outcome was reported": the handler may have done
+   part or all of its work before the reset (a `wipe_mram`, `factory_reset`,
+   `flush_mqtt` range or `file_chunk` that finished just before it). Show it
+   as interrupted, not as "not done", and check the effect (`get_status`,
+   `get_settings`) before repeating a danger command.
 3. **Order.** Commands run in arrival order. `reboot` and `enter_bootloader`
    are deferred to the end of the window.
 4. Every received command gets exactly one final ack (plus the challenge for
