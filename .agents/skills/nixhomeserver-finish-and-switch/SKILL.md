@@ -1,13 +1,13 @@
 ---
 name: nixhomeserver-finish-and-switch
-description: Commit finished uncommitted work, merge it into master, and run the guarded NixOS test and switch. Use for "commit and deploy", "finish and switch", or any request to ship whatever is currently uncommitted; it needs no extra context and never asks questions.
+description: Commit finished uncommitted work, merge it into master, and run the guarded NixOS test and switch. Use for "commit and deploy", "finish and switch", or any request to ship whatever is currently uncommitted, without mid-run questions.
 ---
 
 # Finish, commit, deploy
 
 One unattended pass: find the uncommitted work, commit what is finished, merge it
-into master, then run the guarded test and switch. The invoking request is the
-whole brief. Do not ask for scope, paths, or confirmation.
+into master, then run the guarded test and switch. Use the invoking request and
+established session context; infer routine details from the repository.
 
 Read this checkout's `AGENTS.md` and load
 [safe-change](../nixhomeserver-safe-change/SKILL.md) for server access,
@@ -18,10 +18,9 @@ a focused check recipe.
 
 - Never ask the user anything mid-run, and never call a question/ask tool. If a
   decision cannot be settled from the diff and the repo's own rules, the work is
-  unfinished: leave it uncommitted and raise it in chat text after the deploy.
-- Finished means the work needs only (a) adjustment to fit other work committed
-  with it, or (b) a trivial fix you can complete in this turn with your current
-  capability. Everything else is unfinished: a large refactor, an unresolved
+  unfinished: leave it untouched and explain it in the final report.
+- Finished work is ready to commit and deploy as-is, or after a small, understood
+  fix or integration adjustment. Unfinished work includes an unresolved
   design or product choice, a fix you are not confident in, work needing
   credentials/approval/physical action, work that fails its focused check without
   a trivial fix, or files an active agent is still writing.
@@ -51,6 +50,8 @@ credentials, and never gather ignored build output, caches, or `result` links.
 ## 2. Commit the finished work
 
 Group the finished changes into logical commits in the checkout that owns them.
+Selected changes must work without anything left behind. Run focused checks
+against the selected content, not a dirty tree containing unfinished work.
 Inspect `git status --short` and the full diff before each commit, stage only that
 change's files, and use an imperative conventional subject with a body when the
 reason is not obvious.
@@ -61,23 +62,34 @@ fails, leave it uncommitted and untouched.
 
 ## 3. Merge into master
 
-Verify the destination is `master` and its remote before integrating. Ordinary
-non-rewriting Git only:
+Verify the destination is `master` and its remote before integrating. Merge or
+cherry-pick only in a clean checkout. If master's checkout is dirty, leave it
+untouched and prepare a temporary detached checkout at master first:
 
-- Branch whose commits are all finished work: merge it into `master`.
+```bash
+task_dir="$(mktemp -d /tmp/finish-and-switch.XXXXXX)"
+git worktree add --detach "$task_dir/deploy" master
+cd "$task_dir/deploy"
+```
+
+Ordinary non-rewriting Git only:
+
+- Branch whose commits are all finished work: merge it into the clean checkout.
 - Branch holding finished work beside unfinished commits: apply only the finished
-  commits to `master` as new commits. Never rewrite the source branch.
-- Conflicts: resolve against both changes' intended behavior and re-run the
-  affected check.
+  commits there as new commits. Never rewrite the source branch.
+- Conflicts: resolve against both changes' intended behavior.
 
-Then push `master` to its configured upstream, verifying the remote and branch
-first. A push failure is a delivery blocker to report, never a reason to
+Recheck affected behavior after integration. Push the integrated tip to master's
+configured upstream, verifying the remote and branch first. From a detached
+checkout, push `HEAD` explicitly to that branch; leave a dirty local master
+checkout untouched. A push failure is a delivery blocker, never a reason to
 force-push.
 
 ## 4. Deploy from clean source
 
 The deploy helper builds the working tree and refuses untracked, non-ignored
-files, so run it only from a checkout that is clean at the `master` commit.
+files, so start it only from a clean checkout at the integrated commit just
+published to master's upstream.
 Review the complete diff being shipped first: the commits made in this pass plus
 anything `master` already carries that has not reached the server.
 
@@ -85,26 +97,23 @@ anything `master` already carries that has not reached the server.
 git status --porcelain          # must print nothing
 ```
 
-If the current checkout is clean, deploy there. Otherwise deploy from a fresh
-clean checkout of the committed `master` and leave the dirty one alone:
-
 ```bash
-git worktree add --detach /tmp/<task>-deploy master
-cd /tmp/<task>-deploy
 nix run .#deploy -- --action test
-nix run .#deploy -- --action switch
 ```
 
-`--detach` is required because `master` is normally already checked out in the
-main worktree. The temporary checkout has none of the unfinished files, so the
-helper's untracked-file refusal stays satisfied, and removing it afterwards
-leaves the preserved dirty worktree untouched.
+If test refreshes `flake.lock`, review and run affected checks on that exact
+tested change, then commit and publish it to master's upstream before switching.
+
+```bash
+nix run .#deploy -- --action switch
+```
 
 Test is a real activation with health gates and rollback. Switch only after a
 green test with unchanged source; the helper records the source hash at test and
 refuses a changed checkout at switch, so any later edit needs a new test. Do not
 edit a tested stamp, disable a gate, or change allocation to obtain a pass.
-Remove the temporary worktree when done.
+Remove only this task's temporary worktree and scratch directory when clean and
+all commits are published; otherwise preserve them and report why.
 
 ## 5. Repair loop
 
