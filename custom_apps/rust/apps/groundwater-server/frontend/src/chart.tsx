@@ -47,7 +47,9 @@ export function seriesGeometry(
     }
     const gap = time - previous > gapMinutes * 60000;
     if (gap && previous !== -Infinity) gaps++;
-    path += `${gap ? "M" : "L"}${x(time).toFixed(2)},${y(value).toFixed(2)} `;
+    // A zero-length segment after each move draws an isolated sample as a
+    // dot (round line caps); within a run it is hidden under the line.
+    path += `${gap ? "M" : "L"}${x(time).toFixed(2)},${y(value).toFixed(2)} ${gap ? "l0,0 " : ""}`;
     previous = time;
   }
   return { path, min, max, x, y, gaps };

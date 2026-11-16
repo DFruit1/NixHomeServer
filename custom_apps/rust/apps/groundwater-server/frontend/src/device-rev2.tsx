@@ -693,7 +693,7 @@ export const LocationView = component$<ViewProps>((props) => {
                       y1={proj.y(v)}
                       y2={proj.y(v)}
                     />
-                    <text x="4" y={proj.y(v) - 3}>
+                    <text x="4" y={Math.max(12, proj.y(v) - 3)}>
                       {v.toFixed(lat.digits)}°
                     </text>
                   </g>

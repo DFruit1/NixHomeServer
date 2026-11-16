@@ -60,6 +60,28 @@ describe("history rendering", () => {
     expect(geometry.min).toBeLessThan(0);
     expect(geometry.max).toBeGreaterThan(10);
   });
+  it("draws samples isolated by gaps as dots instead of nothing", () => {
+    const point = (minutes: number, value: number): SeriesPoint => ({
+      recorded_at: new Date(minutes * 60000).toISOString(),
+      gwl: value,
+      gwl_text: null,
+      battery_v: null,
+      rssi: null,
+      sample_count: 1,
+      conflict: false,
+    });
+    // Hourly samples on a 30-minute gap threshold: three separate runs.
+    const geometry = chartGeometry(
+      [point(0, 1), point(60, 2), point(120, 3)],
+      "gwl",
+      0,
+      120 * 60000,
+      30,
+    );
+    expect(geometry.path.match(/M/g)).toHaveLength(3);
+    expect(geometry.path.match(/l0,0/g)).toHaveLength(3);
+    expect(geometry.gaps).toBe(2);
+  });
   it("does not bridge missing secondary measurements", () => {
     const points = [1, null, 3].map((value, i) => ({
       recorded_at: new Date(i * 60000).toISOString(),

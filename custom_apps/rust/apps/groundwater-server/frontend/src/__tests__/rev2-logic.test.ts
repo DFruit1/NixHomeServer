@@ -320,3 +320,16 @@ describe("generic chart geometry", () => {
     expect(inverted.y(inverted.max)).toBeCloseTo(222);
   });
 });
+
+describe("event summaries read both record and alerts-copy fields", () => {
+  it("formats GPS movement from either key set", async () => {
+    const { eventSummary } = await import("../events");
+    const ring = {
+      event: "gps_moved",
+      details: { distance_m: 230, threshold_m: 100 },
+    };
+    const copy = { event: "gps_moved", details: { dist_m: 230, thr_m: 100 } };
+    expect(eventSummary(ring)).toBe(eventSummary(copy));
+    expect(eventSummary(ring)).toContain("230");
+  });
+});

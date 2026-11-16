@@ -418,6 +418,7 @@ td small {
   stroke: var(--accent);
   stroke-width: 2;
   stroke-linejoin: round;
+  stroke-linecap: round;
 }
 .single-point {
   fill: var(--accent);

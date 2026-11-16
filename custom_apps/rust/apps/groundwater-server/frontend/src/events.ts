@@ -95,7 +95,8 @@ export function eventSummary(event: Pick<DeviceEvent, "event" | "details">) {
     case "orientation":
       return `Tilt ${num(d.tilt_deg, 1)}°`;
     case "gps_moved":
-      return `Moved ${num(d.dist_m, 0)} m (threshold ${num(d.thr_m, 0)} m)`;
+      // Ring records say distance_m/threshold_m; alerts copies dist_m/thr_m.
+      return `Moved ${num(d.distance_m ?? d.dist_m, 0)} m (threshold ${num(d.threshold_m ?? d.thr_m, 0)} m)`;
     case "tail_lock":
       return "Ring full with unsaved data: logging stops until data is saved";
     case "tail_unlocked":
