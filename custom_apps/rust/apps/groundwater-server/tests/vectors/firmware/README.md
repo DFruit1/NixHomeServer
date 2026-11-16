@@ -16,6 +16,13 @@ c105daf (`docs/protocol/vectors/`): rebuilding the three generators from a
 `git archive` snapshot and running them with `--write` reproduces all three
 files byte for byte, so the copies here are current.
 
+Re-checked 2026-11-17 against `feat/fw-rev2` @ dfc8fae (round 3
+integration) and again @ 12de183 (its review): the three generators built from a `git archive` snapshot
+report the committed files current, and they are byte-identical to these
+copies. They do not yet exercise the round 3 wire forms (`"persist":false`,
+`"prev":"failed"`, `boot_report`, `gps:"off"`, omitted `bat_mv`); the server
+covers those in `wire_follow_tests.rs` and unit tests.
+
 Known contract point: Type 14 `firmware_version` is packed
 `major<<16 | minor<<8 | patch` (build in bits 24-31), not the byte order
 "major, minor, patch, build" the Rev2 table suggests; the server follows the
