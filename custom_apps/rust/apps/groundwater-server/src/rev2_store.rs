@@ -1968,6 +1968,75 @@ pub async fn rederive_pending_until(
     Ok((done, failing))
 }
 
+/// Re-ingests salvaged `data/stream` payloads (a message whose rows could
+/// not be stored, kept raw and acknowledged): once its frames are stored
+/// the salvaged copy is released to retention. Payloads that still fail or
+/// are refused stay kept for an operator. Returns how many were stored.
+pub async fn reingest_salvaged(
+    client: &mut tokio_postgres::Client,
+    policy: &Rev2Policy,
+    deadline: Option<std::time::Instant>,
+) -> Result<usize, String> {
+    let rows = client
+        .query(
+            "SELECT id,device_id,delivery_id,received_at,raw FROM stream_batches
+             WHERE released_at IS NULL AND raw IS NOT NULL AND channel='data/stream'
+               AND groundwater_salvaged_batch(error,channel,derive_error)
+             ORDER BY received_at LIMIT 100",
+            &[],
+        )
+        .await
+        .map_err(dberr("salvaged batches"))?;
+    let mut stored = 0;
+    for row in rows {
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            break;
+        }
+        let id: i64 = row.get(0);
+        let device: String = row.get(1);
+        let raw: Vec<u8> = row.get(4);
+        let ctx = Context {
+            device_id: &device,
+            channel: "data/stream",
+            received_at: row.get(3),
+            retained: false,
+            delivery_id: row.get(2),
+            policy,
+        };
+        let tx = client
+            .transaction()
+            .await
+            .map_err(dberr("salvage transaction"))?;
+        match store_stream(&tx, &ctx, &raw).await {
+            Ok(outcome) if outcome.rejected.is_none() => {
+                tx.execute(
+                    "UPDATE stream_batches SET released_at=now() WHERE id=$1",
+                    &[&id],
+                )
+                .await
+                .map_err(dberr("salvage release"))?;
+                tx.execute(
+                    "UPDATE deliveries d SET released_at=now() FROM stream_batches b
+                     WHERE b.id=$1 AND d.id=b.delivery_id",
+                    &[&id],
+                )
+                .await
+                .map_err(dberr("salvage release"))?;
+                tx.commit().await.map_err(dberr("salvage commit"))?;
+                stored += 1;
+            }
+            Ok(_) => {}
+            Err(error) if derived_retry(&error) => return Err(error),
+            Err(error) => {
+                eprintln!(
+                    "groundwater: salvaged batch {id} of {device} still not storable: {error}"
+                );
+            }
+        }
+    }
+    Ok(stored)
+}
+
 /// [`rederive_pending_until`] with no deadline.
 #[cfg(test)]
 pub async fn rederive_pending(

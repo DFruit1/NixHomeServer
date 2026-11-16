@@ -77,6 +77,11 @@ async fn rerun_pass(
     limit: Duration,
 ) {
     let deadline = std::time::Instant::now() + limit;
+    match rev2_store::reingest_salvaged(client, policy, Some(deadline)).await {
+        Ok(0) => {}
+        Ok(stored) => eprintln!("groundwater: stored {stored} salvaged data/stream batch(es)"),
+        Err(err) => eprintln!("groundwater: salvaged batches: {err}"),
+    }
     match rev2_store::rederive_pending_until(client, policy, Some(deadline)).await {
         Ok((0, 0)) => {}
         Ok((done, failing)) => {

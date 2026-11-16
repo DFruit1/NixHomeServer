@@ -1312,3 +1312,68 @@ async fn the_rest_of_a_partly_filled_gap_gets_its_own_attempts() {
         "1026-2000 open 0"
     );
 }
+
+// V5: acknowledged content that exists only as salvaged raw bytes (a binary
+// message whose rows could not be stored, a JSON uplink kept as
+// rev2-store-failed) was deleted by the 90-day delivery retention: the
+// only copy of data the logger had already freed.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn retention_keeps_salvaged_content_until_it_is_derived_or_dismissed() {
+    use crate::stream::encode::batch;
+    let mut h = Harness::new().await;
+    fail_on(&h, "stream_logs", "true", "P0001").await;
+    set_fail(&h, true).await;
+    let frames = [damaged_anchor(1, 1_763_300_000, 900), routine(2, 1)];
+    h.publish("data/stream", &batch(9, 0, 0, &frames))
+        .await
+        .unwrap();
+    drop_fail(&h, "stream_logs").await;
+    fail_on(&h, "device_health", "true", "P0001").await;
+    h.publish("health", br#"{"v":2,"t":1763300000,"tv":1,"bat_mv":7400}"#)
+        .await
+        .unwrap();
+    set_fail(&h, false).await;
+    drop_fail(&h, "device_health").await;
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM deliveries WHERE reason='rev2-store-failed'")
+            .await,
+        2
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM stream_frames").await,
+        0
+    );
+    let age = "UPDATE stream_batches SET received_at=received_at-interval '91 days';
+               UPDATE deliveries SET received_at=received_at-interval '91 days'";
+    h.client.batch_execute(age).await.unwrap();
+    db::prune_deliveries(&h.client, 90).await.unwrap();
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM stream_batches WHERE raw IS NOT NULL")
+            .await,
+        1,
+        "the salvaged raw batch was pruned"
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM deliveries").await,
+        2,
+        "the store-failed messages were pruned"
+    );
+    // The re-run stores the salvaged payload; it is then normal data.
+    let stored =
+        crate::rev2_store::reingest_salvaged(&mut h.client, crate::config::rev2_policy(), None)
+            .await
+            .unwrap();
+    assert_eq!(stored, 1);
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM stream_frames").await,
+        2
+    );
+    h.client.batch_execute(age).await.unwrap();
+    db::prune_deliveries(&h.client, 90).await.unwrap();
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM deliveries").await,
+        1,
+        "only the health message, never derived, is still kept"
+    );
+}

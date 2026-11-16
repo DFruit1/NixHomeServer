@@ -183,6 +183,23 @@ CREATE TABLE IF NOT EXISTS stream_logs (
 -- costs the raw data: the frame or log is flagged with the error and
 -- re-derived at the next start (rev2_store::rederive_pending).
 ALTER TABLE stream_batches ADD COLUMN IF NOT EXISTS derive_error TEXT;
+-- Acknowledged content kept only as salvaged raw bytes: a binary message
+-- whose rows could not be stored ('not stored: ...'), a data/file chunk
+-- whose download could not advance, a JSON uplink kept as
+-- rev2-store-failed. The logger has freed it, so retention keeps it until
+-- it has been derived after all (the re-run re-ingests salvaged
+-- data/stream payloads) or an operator dismissed it: released_at.
+ALTER TABLE stream_batches ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ;
+ALTER TABLE deliveries ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ;
+CREATE OR REPLACE FUNCTION groundwater_salvaged_batch(error TEXT, channel TEXT, derive_error TEXT)
+RETURNS BOOLEAN LANGUAGE sql IMMUTABLE AS $$
+    SELECT COALESCE(error LIKE 'not stored:%',false)
+        OR (channel='data/file' AND COALESCE(derive_error LIKE 'download not advanced:%',false))
+$$;
+CREATE INDEX IF NOT EXISTS stream_batches_salvaged_idx ON stream_batches(received_at)
+    WHERE released_at IS NULL AND raw IS NOT NULL AND groundwater_salvaged_batch(error,channel,derive_error);
+CREATE INDEX IF NOT EXISTS deliveries_store_failed_idx ON deliveries(received_at)
+    WHERE released_at IS NULL AND reason='rev2-store-failed';
 ALTER TABLE stream_frames ADD COLUMN IF NOT EXISTS derive_pending BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE stream_frames ADD COLUMN IF NOT EXISTS derive_error TEXT;
 ALTER TABLE stream_logs ADD COLUMN IF NOT EXISTS resolve_pending BOOLEAN NOT NULL DEFAULT false;
