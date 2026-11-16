@@ -21,8 +21,24 @@ import {
   ConfigSnapshot,
   DeviceCommands,
 } from "./operator";
-import { AlertList, Fleet, History, RawLog } from "./views";
+import { Fleet, History, RawLog } from "./views";
 import type { Alert, Command, Device, Series, Status } from "./types";
+import {
+  EventsView,
+  HealthView,
+  LocationView,
+  Overview,
+  TestsView,
+} from "./device-rev2";
+import { SettingsView } from "./settings-view";
+import { Challenges, Rev2Console, Rev2Queue } from "./console";
+import { FilesView } from "./files";
+import { StreamView } from "./stream";
+import { AlertHistory, DevicePolicyPanel, LimitsEditor } from "./alerts";
+import { AdminPage, GapsPage } from "./admin";
+import { InstallationView } from "./installation";
+import { DATUM_MODES } from "./ops";
+import { deviceViews, viewLabel } from "./routes";
 
 interface Workspace {
   device?: Device;
@@ -33,16 +49,9 @@ interface Workspace {
   errors: Record<string, string>;
   loading: boolean;
 }
-const views = [
-  "history",
-  "alerts",
-  "configuration",
-  "commands",
-  "audit",
-  "log",
-] as const;
+const fleetViews = ["alerts", "gaps", "admin", "log"];
 export default component$(() => {
-  const route = useStore({ device: "", view: "history" });
+  const route = useStore({ device: "", view: "", section: "" });
   const global = useStore<{
     status?: Status;
     devices?: Device[];
@@ -65,6 +74,7 @@ export default component$(() => {
     to: now.toISOString(),
     bucket: 15,
     relativeHours: 24 as number | null,
+    datum: "raw",
   });
   const draft = useStore({
     from: dateInput(new Date(range.from)),
@@ -97,10 +107,8 @@ export default component$(() => {
     const readRoute = () => {
       const hash = new URLSearchParams(location.hash.slice(1));
       route.device = hash.get("device") || "";
-      const view = hash.get("view") || "history";
-      route.view = views.includes(view as (typeof views)[number])
-        ? view
-        : "history";
+      route.view = hash.get("view") || "";
+      route.section = hash.get("section") || "";
     };
     readRoute();
     window.addEventListener("hashchange", readRoute);
@@ -154,7 +162,8 @@ export default component$(() => {
     const from = track(() => range.from),
       to = track(() => range.to),
       bucket = track(() => range.bucket),
-      relativeHours = track(() => range.relativeHours);
+      relativeHours = track(() => range.relativeHours),
+      datum = track(() => range.datum);
     track(() => revision.value);
     if (!device) {
       workspace.loading = false;
@@ -171,7 +180,9 @@ export default component$(() => {
     }
     let params: string;
     try {
-      params = rangeQuery(device, from, to, bucket);
+      params =
+        rangeQuery(device, from, to, bucket) +
+        (datum !== "raw" ? `&${query({ datum })}` : "");
     } catch (error) {
       workspace.errors = { series: errorText(error) };
       workspace.loading = false;
@@ -181,6 +192,7 @@ export default component$(() => {
       device,
       view,
       bucket,
+      datum,
       relativeHours === null ? [from, to] : relativeHours,
     ]);
     if (workspace.seriesSelection !== selection) {
@@ -192,7 +204,8 @@ export default component$(() => {
       ["open", `/api/alerts?${query({ device, state: "open" })}`],
       ["resolved", `/api/alerts?${query({ device, state: "resolved" })}`],
     ];
-    if (view === "history") tasks.push(["series", `/api/series?${params}`]);
+    if (view === "history" || view === "")
+      tasks.push(["series", `/api/series?${params}`]);
     if (view === "commands" || view === "audit")
       tasks.push(["commands", `/api/commands?${query({ device })}`]);
     latest.run(
@@ -242,7 +255,14 @@ export default component$(() => {
   const operator = global.status?.user?.role === "operator";
   const device =
     workspace.device?.device_id === route.device ? workspace.device : undefined;
-  const deviceViews = views.filter((view) => view !== "log" || operator);
+  const rev2 = device?.capabilities?.protocol === 2;
+  const tabs = device ? deviceViews(rev2, operator) : [];
+  const view =
+    route.view && tabs.includes(route.view)
+      ? route.view
+      : rev2
+        ? "overview"
+        : "history";
   return (
     <div class="page">
       <a
@@ -257,12 +277,40 @@ export default component$(() => {
         <a class="brand" href="#">
           Groundwater
         </a>
+        <nav class="app-nav" aria-label="Fleet">
+          {(
+            [
+              ["", "Devices"],
+              ["alerts", "Alerts"],
+              ["gaps", "Gaps"],
+              ...(operator
+                ? [
+                    ["admin", "Admin"],
+                    ["log", "Raw deliveries"],
+                  ]
+                : []),
+            ] as [string, string][]
+          ).map(([key, label]) => (
+            <a
+              key={key}
+              href={key ? `#view=${key}` : "#"}
+              aria-current={
+                !route.device &&
+                (route.view === key ||
+                  (!key && !fleetViews.includes(route.view)))
+                  ? "page"
+                  : undefined
+              }
+            >
+              {label}
+            </a>
+          ))}
+        </nav>
         <div class="session">
           <span>
             {global.status?.user?.username || "Checking session"}
             {global.status?.user && ` · ${global.status.user.role}`}
           </span>
-          {operator && <a href="#view=log">Raw deliveries</a>}
           <span class="muted" role="status">
             {live.value}
           </span>
@@ -292,6 +340,17 @@ export default component$(() => {
           <>
             {route.view === "log" && operator ? (
               <RawLog device="" revision={revision.value} />
+            ) : route.view === "alerts" ? (
+              <AlertHistory revision={revision.value} operator={operator} />
+            ) : route.view === "gaps" ? (
+              <GapsPage revision={revision.value} />
+            ) : route.view === "admin" && operator ? (
+              <AdminPage
+                revision={revision.value}
+                devices={global.devices || []}
+                section={route.section}
+                refresh={refresh}
+              />
             ) : (
               <>
                 {global.loading && !global.devices && (
@@ -339,11 +398,34 @@ export default component$(() => {
                     <dt>Firmware profile</dt>
                     <dd>{device.profile}</dd>
                   </div>
-                  <div>
-                    <dt>Last Ready</dt>
-                    <dd>{stamp(device.last_ready_at)}</dd>
-                  </div>
+                  {device.project ? (
+                    <div>
+                      <dt>Project</dt>
+                      <dd>{device.project}</dd>
+                    </div>
+                  ) : null}
+                  {rev2 ? (
+                    <div>
+                      <dt>Next expected connection</dt>
+                      <dd>
+                        {stamp(
+                          device.expected_contact_at || device.next_contact_at,
+                        )}
+                      </dd>
+                    </div>
+                  ) : (
+                    <div>
+                      <dt>Last Ready</dt>
+                      <dd>{stamp(device.last_ready_at)}</dd>
+                    </div>
+                  )}
                 </dl>
+                {device.revoked && (
+                  <p class="notice error-text">
+                    This enrollment is retired. Its history stays visible; new
+                    traffic is quarantined.
+                  </p>
+                )}
                 {device.clock_change_unverified && (
                   <p role="alert" class="notice error-text">
                     An earlier UTC offset change is unverified. Zoneless
@@ -352,19 +434,17 @@ export default component$(() => {
                   </p>
                 )}
                 <nav class="view-nav" aria-label="Device views">
-                  {deviceViews.map((view) => (
+                  {tabs.map((tab) => (
                     <a
-                      key={view}
-                      href={`#${query({ device: device.device_id, view })}`}
-                      aria-current={route.view === view ? "page" : undefined}
+                      key={tab}
+                      href={`#${query({ device: device.device_id, view: tab })}`}
+                      aria-current={view === tab ? "page" : undefined}
                     >
-                      {view === "log"
-                        ? "Raw log"
-                        : view[0].toUpperCase() + view.slice(1)}
+                      {viewLabel(tab)}
                     </a>
                   ))}
                 </nav>
-                {route.view === "history" && (
+                {view === "history" && (
                   <>
                     <form
                       class="range-form"
@@ -429,6 +509,22 @@ export default component$(() => {
                             <option value="1440">1 day</option>
                           </select>
                         </label>
+                        <label class="field" for="range-datum">
+                          Level as
+                          <select
+                            id="range-datum"
+                            value={range.datum}
+                            onChange$={(_, el) => {
+                              range.datum = el.value;
+                            }}
+                          >
+                            {DATUM_MODES.map(([key, label]) => (
+                              <option key={key} value={key}>
+                                {label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
                         <button class="primary" type="submit">
                           Apply range
                         </button>
@@ -489,10 +585,102 @@ export default component$(() => {
                     />
                   </>
                 )}
-                {route.view === "alerts" && (
-                  <AlertList alerts={workspace.alerts} />
+                {view === "overview" && (
+                  <Overview
+                    device={device}
+                    revision={revision.value}
+                    operator={operator}
+                  />
                 )}
-                {route.view === "configuration" && (
+                {view === "health" && (
+                  <HealthView
+                    key={device.device_id}
+                    device={device}
+                    revision={revision.value}
+                    operator={operator}
+                  />
+                )}
+                {view === "events" && (
+                  <EventsView
+                    key={device.device_id}
+                    device={device}
+                    revision={revision.value}
+                    operator={operator}
+                  />
+                )}
+                {view === "location" && (
+                  <LocationView
+                    key={device.device_id}
+                    device={device}
+                    revision={revision.value}
+                    operator={operator}
+                  />
+                )}
+                {view === "tests" && (
+                  <TestsView
+                    key={device.device_id}
+                    device={device}
+                    revision={revision.value}
+                    operator={operator}
+                  />
+                )}
+                {view === "settings" && (
+                  <SettingsView
+                    key={device.device_id}
+                    device={device}
+                    revision={revision.value}
+                    operator={operator && !device.revoked}
+                  />
+                )}
+                {view === "files" && (
+                  <FilesView
+                    key={device.device_id}
+                    device={device}
+                    revision={revision.value}
+                    operator={operator && !device.revoked}
+                  />
+                )}
+                {view === "stream" && (
+                  <StreamView
+                    key={device.device_id}
+                    device={device}
+                    revision={revision.value}
+                    operator={operator}
+                  />
+                )}
+                {view === "installation" && (
+                  <InstallationView
+                    key={device.device_id}
+                    device={device}
+                    revision={revision.value}
+                    operator={operator}
+                    refresh={refresh}
+                  />
+                )}
+                {view === "alerts" && (
+                  <>
+                    <AlertHistory
+                      key={device.device_id}
+                      device={device.device_id}
+                      revision={revision.value}
+                      operator={operator}
+                      refresh={refresh}
+                    />
+                    <LimitsEditor
+                      key={`limits-${device.device_id}`}
+                      device={device}
+                      operator={operator && !device.revoked}
+                      refresh={refresh}
+                    />
+                    <DevicePolicyPanel
+                      key={`policy-${device.device_id}`}
+                      device={device}
+                      revision={revision.value}
+                      operator={operator}
+                    />
+                  </>
+                )}
+                {view === "configuration" && (
                   <>
                     {operator &&
                     !device.revoked &&
@@ -514,7 +702,45 @@ export default component$(() => {
                     <ConfigSnapshot device={device} />
                   </>
                 )}
-                {route.view === "commands" && (
+                {view === "commands" && rev2 && (
+                  <>
+                    <Challenges
+                      device={device.device_id}
+                      commands={workspace.commands}
+                      operator={operator && !device.revoked}
+                      refresh={refresh}
+                    />
+                    {operator && !device.revoked ? (
+                      <Rev2Console
+                        key={device.device_id}
+                        device={device}
+                        refresh={refresh}
+                      />
+                    ) : (
+                      <p class="notice">
+                        {device.revoked
+                          ? "This enrollment is revoked."
+                          : "Your viewer account has read-only access to commands."}
+                      </p>
+                    )}
+                    <Rev2Queue
+                      device={device.device_id}
+                      commands={workspace.commands}
+                      operator={operator && !device.revoked}
+                      refresh={refresh}
+                    />
+                  </>
+                )}
+                {view === "audit" && rev2 && (
+                  <Rev2Queue
+                    device={device.device_id}
+                    commands={workspace.commands}
+                    operator={false}
+                    refresh={refresh}
+                    audit
+                  />
+                )}
+                {view === "commands" && !rev2 && (
                   <>
                     {operator && !device.revoked ? (
                       <DeviceCommands
@@ -537,7 +763,7 @@ export default component$(() => {
                     />
                   </>
                 )}
-                {route.view === "audit" && (
+                {view === "audit" && !rev2 && (
                   <CommandQueue
                     device={device.device_id}
                     commands={workspace.commands}
@@ -546,7 +772,7 @@ export default component$(() => {
                     audit
                   />
                 )}
-                {route.view === "log" &&
+                {view === "log" &&
                   (operator ? (
                     <RawLog
                       key={device.device_id}
@@ -565,7 +791,8 @@ export default component$(() => {
       </main>
       <footer class="muted">
         {updated.value && `Last refreshed ${stamp(updated.value)}. `}Times
-        display in your browser’s local timezone. RSSI is a 0–100 scale.
+        display in your browser’s local timezone. RSSI is the revision 1 0–100
+        scale; CSQ is the modem's 0–31 scale.
       </footer>
     </div>
   );

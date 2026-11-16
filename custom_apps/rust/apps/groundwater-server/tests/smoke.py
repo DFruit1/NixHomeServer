@@ -22,11 +22,40 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import struct
+import zlib
 
 
 DEVICE = "8F3A21C04B9E77A1D25C01FE"
 OTHER = "000000000000000000000002"
 TOPIC = "azman1/feeds/gwl-string"
+REV2 = "6A1B2C3D4E5F60718293A4B5"
+REV2_UPLINK = ("status", "info", "health", "data/stream", "data/file", "alerts",
+               "test/result", "reading", "gps", "config/applied", "cmd/ack")
+REV2_DOWNLINK = ("config/set", "cmd/basic", "cmd/danger")
+
+
+def crc8_autosar(data):
+    crc = 0xFF
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x2F) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+    return crc ^ 0xFF
+
+
+def rev2_frame(rtype, seq, payload):
+    body = struct.pack("<BBI", rtype, len(payload), seq) + payload
+    return b"\xA5\x5A" + body + bytes([crc8_autosar(body)])
+
+
+def rev2_batch(log_id, start_pos, frames):
+    area = b"".join(frames)
+    seqs = [struct.unpack_from("<I", f, 4)[0] for f in frames]
+    header = b"GWB1" + struct.pack("<BBHIIIIIHBB", 32, 1, 1, log_id, seqs[0], seqs[-1],
+                                   start_pos, start_pos + len(area), len(frames), 0, 0)
+    body = header + area
+    return body + struct.pack("<I", zlib.crc32(body))
 
 
 def free_port():
@@ -166,7 +195,11 @@ def main():
                        ('smoke-danger', '{DEVICE}', 'cfg/danger_ack', 'V21'),
                        ('smoke-downlink', '{DEVICE}', 'cfg/desired', 'V21'),
                        ('smoke-reboot', '{DEVICE}', 'cmd/danger', 'V21'),
-                       ('smoke-settings', '{DEVICE}', 'azman1/feeds/project-settings-slash-configuration', 'V21');
+                       ('smoke-request-test', '{DEVICE}', 'requesttesta', 'V21'),
+                       ('smoke-settings', '{DEVICE}', 'azman1/feeds/project-settings-slash-configuration', 'V21'),
+                       -- A migrated gwl/v1 unit: not part of the shared legacy
+                       -- cohort, so DEVICE remains its only legacy member.
+                       ('other-status', '{OTHER}', 'gwl/v1/{OTHER}/status', 'V21');
               UPDATE devices SET min_limit=1, max_limit=4 WHERE device_id='{DEVICE}';
             """)
             app = start_app()
@@ -230,25 +263,25 @@ def main():
             # Remove the other fixture enrollment before testing the shared
             # legacy downlink: those topics cannot safely address two units.
             stop(app)
-            sql(f"DELETE FROM devices WHERE device_id='{OTHER}'")
+            sql(f"DELETE FROM device_bindings WHERE device_id='{OTHER}'; DELETE FROM devices WHERE device_id='{OTHER}'")
             app = start_app()
-            flags = {"Get_Status": "1"}
-            cfg = request(f"/api/devices/{DEVICE}/commands", payload={"kind": "cfg", "payload": flags}, expected=201)["command"]
+            # Incremental cfg toggles are TODO stubs in the pinned firmware
+            # and are refused at queue time; self-test is a real round trip.
+            request(f"/api/devices/{DEVICE}/commands", payload={"kind": "cfg", "payload": {"Get_Status": "1"}}, expected=400)
+            test = request(f"/api/devices/{DEVICE}/commands", payload={"kind": "test", "payload": {}}, expected=201)["command"]
             receiver = subprocess.Popen([
                 "mosquitto_sub", "-h", "127.0.0.1", "-p", str(mqtt_port),
-                "-q", "1", "-t", "cfg/desired", "-C", "1", "-W", "10",
+                "-q", "1", "-t", "requesttesta", "-C", "1", "-W", "10",
             ], text=True, stdout=subprocess.PIPE, stderr=log)
             processes.append(receiver)
             time.sleep(0.2)
             publish("azman1/feeds/device-status", "Ready")
             wire, _ = receiver.communicate(timeout=15)
-            assert receiver.returncode == 0 and json.loads(wire) == flags, wire
-            publish("cfg/desired/applied", flags)
-            wait_for(lambda: any(item["id"] == cfg["id"] and item["state"] == "acked"
+            assert receiver.returncode == 0 and wire.strip() == "test", wire
+            publish("azman1/feeds/testresults", "~ Sensor ok")
+            wait_for(lambda: any(item["id"] == test["id"] and item["state"] == "acked"
                                  for item in request(f"/api/commands?device={DEVICE}")["commands"]),
-                     "configuration acknowledgment")
-            detail = request(f"/api/devices/{DEVICE}")["device"]
-            assert detail["applied_config"] == flags, detail
+                     "self-test acknowledgment")
             publish("azman1/feeds/device-status", "sleep")
             wait_for(lambda: request(f"/api/devices/{DEVICE}")["device"]["status"] == "asleep",
                      "sleep presence")
@@ -256,9 +289,9 @@ def main():
             # A new subscription must not replay a downlink as retained data.
             retained = subprocess.run([
                 "mosquitto_sub", "-h", "127.0.0.1", "-p", str(mqtt_port),
-                "-t", "cfg/desired", "-C", "1", "-W", "1",
+                "-t", "requesttesta", "-C", "1", "-W", "1",
             ], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
-            assert not retained.stdout, "configuration was published retained"
+            assert not retained.stdout, "a command was published retained"
 
             def capture(topic):
                 process = subprocess.Popen([
@@ -293,7 +326,7 @@ def main():
             assert json.loads(settings_wire) == config and len(settings_wire.strip().encode()) <= 150
             wait_for(lambda: sent(full["id"]), "broker-accepted full settings")
             detail = request(f"/api/devices/{DEVICE}")["device"]
-            assert detail["desired_config"] == config and detail["applied_config"] == flags, detail
+            assert detail["project_config"] == config, detail
 
             # Wait past the five-second spacing gate: an empty observation
             # then proves no retry, rather than merely a delayed retry.
@@ -307,6 +340,95 @@ def main():
             publish("azman1/feeds/device-status", "Ready")
             replay, _ = replay_receiver.communicate(timeout=10)
             assert not replay, f"unacknowledgeable command repeated on a later wake: {replay}"
+
+            # Protocol revision 2 (firmware 2.2) through the real broker.
+            stop(app)
+            bindings = ",".join(
+                f"('rev2-{c}', '{REV2}', 'gwl/v1/{REV2}/{c}', 'V22')" for c in REV2_UPLINK + REV2_DOWNLINK)
+            sql(f"""
+              INSERT INTO devices (device_id, display_name, source_profile, clock_policy)
+                VALUES ('{REV2}', 'Rev2 bore', 'V22', 'utc');
+              INSERT INTO device_permissions (device_id, username) VALUES ('{REV2}', 'viewer');
+              INSERT INTO device_bindings (binding_key, device_id, topic, source_profile) VALUES {bindings};
+            """)
+            app = start_app()
+            prefix = f"gwl/v1/{REV2}"
+
+            def logger_session(seconds, *extra):
+                # The logger's persistent session: client ID = DeviceID, clean_session=0.
+                return subprocess.Popen([
+                    "mosquitto_sub", "-h", "127.0.0.1", "-p", str(mqtt_port), "-i", REV2, "-c",
+                    "-q", "1", "-t", f"{prefix}/cmd/basic", "-t", f"{prefix}/cmd/danger",
+                    "-t", f"{prefix}/config/set", "-v", "-W", str(seconds), *extra,
+                ], text=True, stdout=subprocess.PIPE, stderr=log)
+
+            def publish_retained(channel, payload):
+                run(["mosquitto_pub", "-h", "127.0.0.1", "-p", str(mqtt_port), "-q", "1", "-r",
+                     "-t", f"{prefix}/{channel}", "-m", json.dumps(payload, separators=(",", ":"))])
+
+            def rev2_command(command_id):
+                return next(item for item in request(f"/api/commands?device={REV2}")["commands"]
+                            if item["id"] == command_id)
+
+            # Register the persistent session, then sleep (retained status).
+            session = logger_session(1)
+            session.communicate(timeout=10)
+            now = int(time.time())
+            publish_retained("status", {"v": 2, "state": "sleep", "t": now, "tv": 1, "next": now + 86400})
+            wait_for(lambda: request(f"/api/devices/{REV2}")["device"]["link_state"] == "sleep", "rev2 sleep")
+            assert request(f"/api/devices/{REV2}")["device"]["status"] == "asleep"
+
+            # Published at once while the logger sleeps; the broker queues it.
+            queued = request(f"/api/devices/{REV2}/commands", payload={"op": "get_status"}, expected=201)["command"]
+            wait_for(lambda: rev2_command(queued["id"])["state"] == "sent", "rev2 broker acceptance")
+            session = logger_session(10, "-C", "1")
+            line, _ = session.communicate(timeout=20)
+            topic, envelope = line.strip().split(" ", 1)
+            envelope = json.loads(envelope)
+            assert topic == f"{prefix}/cmd/basic", line
+            assert envelope["v"] == 2 and envelope["id"] == queued["id"] and envelope["op"] == "get_status", envelope
+            assert envelope["exp"] > now + 6 * 86400, envelope
+
+            # A connection: online, info, health, binary + hex batches, ack.
+            publish_retained("status", {"v": 2, "state": "online", "t": now + 1, "tv": 1, "up": 30, "boot": 3})
+            publish_retained("info", {"v": 2, "fw": "2.2.0", "hw": "V1.08", "proto": 2, "schema": 1, "stream": "bin"})
+            publish(f"{prefix}/health", {"v": 2, "t": now + 2, "tv": 1, "up": 31, "csq": 21, "bat_mv": 7412,
+                                         "sol_mv": 5120, "sd": "ok", "mram": "ok", "unsaved": 0, "log": "on",
+                                         "gen": 4, "next": now + 86400, "err": 0})
+            anchor = struct.pack("<IBIBBI", now - 900, 3, 4, 2, 1, 900) + struct.pack("<HiB", 1200, 5250, 0)
+            frames = [rev2_frame(1, 1, anchor), rev2_frame(0, 2, struct.pack("<HHiB", 1, 1210, 5300, 0))]
+            batch_file = root / "batch.bin"
+            batch_file.write_bytes(rev2_batch(0x6A000001, 0, frames))
+            run(["mosquitto_pub", "-h", "127.0.0.1", "-p", str(mqtt_port), "-q", "1",
+                 "-t", f"{prefix}/data/stream", "-f", str(batch_file)])
+            hex_batch = rev2_batch(0x6A000001, sum(map(len, frames)),
+                                   [rev2_frame(0, 3, struct.pack("<HHiB", 2, 1220, 5350, 0))])
+            publish(f"{prefix}/data/stream", hex_batch.hex().upper())
+            wait_for(lambda: sql(f"SELECT count(*) FROM observations WHERE device_id='{REV2}' AND recorded_at IS NOT NULL") == "3",
+                     "rev2 readings with anchor-derived times")
+            assert sql(f"SELECT string_agg(encoding, ',' ORDER BY id) FROM stream_batches WHERE device_id='{REV2}'") == "bin,hex"
+            publish(f"{prefix}/cmd/ack", {"v": 2, "id": queued["id"], "op": "get_status", "status": "ok",
+                                          "data": {"head": 4096, "log_id": 0x6A000001}})
+            wait_for(lambda: rev2_command(queued["id"])["final_status"] == "ok", "rev2 ack")
+            detail = request(f"/api/devices/{REV2}", role="viewer")["device"]
+            assert detail["protocol_rev"] == 2 and detail["info"]["fw"] == "2.2.0", detail
+            assert detail["status"] == "awake" and detail["health"]["bat_mv"] == 7412, detail
+            assert len(request(f"/api/devices/{REV2}/health", role="viewer")["health"]) == 1
+
+            # Never retained: a fresh subscriber sees no downlink.
+            retained = subprocess.run([
+                "mosquitto_sub", "-h", "127.0.0.1", "-p", str(mqtt_port),
+                "-t", f"{prefix}/cmd/basic", "--retained-only", "-C", "1", "-W", "1",
+            ], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            assert not retained.stdout, "a revision 2 command was published retained"
+
+            # Unexpected disconnect: the broker publishes the retained Last Will.
+            will = logger_session(30, "--will-topic", f"{prefix}/status", "--will-retain", "--will-qos", "1",
+                                  "--will-payload", '{"v":2,"state":"offline","reason":"lwt"}')
+            processes.append(will)
+            time.sleep(0.5)
+            will.kill()
+            wait_for(lambda: request(f"/api/devices/{REV2}")["device"]["status"] == "offline", "Last Will")
 
             if args.frontend:
                 html = request("/", role="viewer")
@@ -329,7 +451,7 @@ def main():
                     assert path.startswith("/") and not path.startswith("//"), path
                     assert request(path, role="viewer"), f"empty frontend asset: {path}"
                 request("/api/unknown", expected=404)
-            print("PASS: local MQTT ingestion, dedupe, raw log, ACLs, alerts, history, CSV, config validation, wake dispatch, ack, non-retain, presence, restart audit and single-send Reboot/settings")
+            print("PASS: local MQTT ingestion, dedupe, raw log, ACLs, alerts, history, CSV, config validation, wake dispatch, ack, non-retain, presence, restart audit and single-send Reboot/settings; rev2 persistent-session delivery, status/info/health, binary+hex data/stream, ack, non-retain and Last Will")
         except Exception:
             log.flush()
             log.seek(0)

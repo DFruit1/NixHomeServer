@@ -61,7 +61,12 @@ pub async fn ancillary<C: tokio_postgres::GenericClient + Sync>(
         return Ok(Some(device.clone()));
     }
     let channel = crate::topics::device_channel(topic).map(|(_, channel)| channel);
-    let ack_kind = if channel == Some("config/applied") || topic.ends_with("cfg/desired/applied") {
+    let parsed =
+        serde_json::from_str::<serde_json::Value>(text).unwrap_or_else(|_| serde_json::json!(text));
+    let structured = crate::acks::structured_kind(channel, &parsed);
+    let ack_kind = if let Some(kind) = structured {
+        kind
+    } else if channel == Some("config/applied") || topic.ends_with("cfg/desired/applied") {
         "cfg"
     } else if (channel == Some("cmd/ack") || topic.ends_with("cfg/danger_ack"))
         && text == "Danger Acknowledge"
@@ -96,20 +101,19 @@ pub async fn ancillary<C: tokio_postgres::GenericClient + Sync>(
         )
         .await
         .map_err(|e| e.to_string())?;
-    let parsed =
-        serde_json::from_str::<serde_json::Value>(text).unwrap_or_else(|_| serde_json::json!(text));
     // Match only a command actually attempted in this Ready window. Identical
-    // cfg echoes are compared as JSON, not formatting or key order.
+    // legacy cfg echoes are compared as JSON, not formatting or key order; a
+    // structured ack names its kind, and one command is in flight at a time.
     let changed=client.query(
         "WITH candidate AS (
             SELECT c.id,a.id AS attempt_id FROM commands c JOIN devices d ON d.device_id=c.device_id
             LEFT JOIN command_publish_attempts a ON a.id=c.active_publish_attempt AND a.state='inflight'
-            WHERE c.device_id=$1 AND c.kind=$2 AND c.firmware_ack_expected
+            WHERE c.device_id=$1 AND c.kind=$2 AND c.firmware_ack_expected AND c.protocol=1
               AND (c.state IN ('queued','sent') OR ($2='test' AND c.state='acked'))
               AND d.presence_status='awake' AND d.last_ready_at>$3::timestamptz-interval '8 minutes'
               AND ((a.dispatched_at<=$3::timestamptz AND a.ready_at=d.last_ready_at)
                   OR (a.id IS NULL AND c.state IN ('sent','acked') AND c.broker_acked_at IS NOT NULL AND c.sent_at<=$3::timestamptz AND c.last_ready_at=d.last_ready_at))
-              AND ($2<>'cfg' OR c.payload=$4::jsonb)
+              AND ($2<>'cfg' OR $5 OR c.payload=$4::jsonb)
             ORDER BY c.id DESC LIMIT 1
         ), buffered AS (
             UPDATE command_publish_attempts a SET firmware_acked_at=COALESCE(a.firmware_acked_at,$3::timestamptz),
@@ -119,17 +123,24 @@ pub async fn ancillary<C: tokio_postgres::GenericClient + Sync>(
             state=CASE WHEN candidate.attempt_id IS NULL THEN 'acked' ELSE c.state END,
             acked_at=CASE WHEN candidate.attempt_id IS NULL THEN COALESCE(c.acked_at,$3::timestamptz) ELSE c.acked_at END,
             ack_payload=CASE WHEN candidate.attempt_id IS NOT NULL THEN c.ack_payload WHEN $2='test' THEN COALESCE(c.ack_payload,'[]'::jsonb)||jsonb_build_array($4::jsonb) ELSE $4::jsonb END
-        FROM candidate WHERE c.id=candidate.id RETURNING c.id,candidate.attempt_id IS NULL AS finalized",
-        &[&device,&ack_kind,&now,&parsed]).await.map_err(|e|format!("ack match: {e:?}"))?;
+        FROM candidate WHERE c.id=candidate.id RETURNING c.id,candidate.attempt_id IS NULL AS finalized,c.payload",
+        &[&device,&ack_kind,&now,&parsed,&structured.is_some()]).await.map_err(|e|format!("ack match: {e:?}"))?;
     if !changed.is_empty() {
-        if ack_kind == "cfg" && changed.iter().any(|r| r.get::<_, bool>(1)) {
-            client
-                .execute(
-                    "UPDATE devices SET applied_config=COALESCE(applied_config,'{}'::jsonb)||$2::jsonb,last_seen=GREATEST(last_seen,$3) WHERE device_id=$1",
-                    &[&device, &parsed, &now],
-                )
-                .await
-                .map_err(|e| e.to_string())?;
+        // Finalized here only when PUBACK already arrived; otherwise the
+        // buffered ack is applied by publisher::accept.
+        for row in changed.iter().filter(|r| r.get::<_, bool>(1)) {
+            let requested: serde_json::Value = row.get(2);
+            if ack_kind == "cfg" {
+                client
+                    .execute(
+                        "UPDATE devices SET applied_config=COALESCE(applied_config,'{}'::jsonb)||$2::jsonb,last_seen=GREATEST(last_seen,$3) WHERE device_id=$1",
+                        &[&device, &crate::acks::applied_cfg(&requested, &parsed), &now],
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+            } else if ack_kind == "project-settings" && crate::acks::settings_applied(&parsed) {
+                crate::publisher::apply_project_settings(client, device, &requested).await?;
+            }
         }
         bus.emit(LiveEvent::Command {
             device_id: device.clone(),
@@ -147,6 +158,9 @@ pub async fn tick(
     publisher: &mut Publisher,
 ) -> Result<(), String> {
     publisher.reconcile(db, bus).await?;
+    for device_id in crate::rev2_commands::expire(&*db).await? {
+        bus.emit(LiveEvent::Command { device_id });
+    }
     if !publisher.connected || publisher.busy() {
         return Ok(());
     }
@@ -154,14 +168,14 @@ pub async fn tick(
     let rows=tx.query(
         "SELECT c.id,c.device_id,c.kind,c.wire_payload,d.last_ready_at
          FROM commands c JOIN devices d ON d.device_id=c.device_id
-         WHERE c.active_publish_attempt IS NULL
+         WHERE c.active_publish_attempt IS NULL AND c.protocol=1
            AND (c.state='queued' OR (c.state='sent' AND (c.firmware_ack_expected OR c.broker_acked_at IS NULL)))
            AND d.revoked_at IS NULL AND d.presence_status='awake'
            AND groundwater_command_supported(d.source_profile,c.kind,c.payload,d.clock_policy,d.local_offset_min,d.clock_change_unverified) IS TRUE
            AND d.last_ready_at<=now() AND d.last_ready_at>now()-interval '8 minutes'
            AND (d.last_downlink_at IS NULL OR d.last_downlink_at<=now()-interval '5 seconds')
            AND (c.broker_acked_at IS NULL OR c.last_ready_at IS NULL OR c.last_ready_at<d.last_ready_at)
-           AND NOT EXISTS(SELECT 1 FROM commands prior WHERE prior.device_id=c.device_id AND prior.id<c.id
+           AND NOT EXISTS(SELECT 1 FROM commands prior WHERE prior.device_id=c.device_id AND prior.id<c.id AND prior.protocol=1
                AND (prior.state='queued' OR (prior.state='sent' AND (prior.firmware_ack_expected OR prior.broker_acked_at IS NULL)))
                AND groundwater_command_supported(d.source_profile,prior.kind,prior.payload,d.clock_policy,d.local_offset_min,d.clock_change_unverified) IS TRUE)
          ORDER BY c.id LIMIT 32 FOR UPDATE OF c,d SKIP LOCKED", &[])
@@ -206,9 +220,13 @@ pub async fn tick(
         let attempt:i64=tx.query_one(
             "INSERT INTO command_publish_attempts(command_id,ready_at,topic) VALUES($1,$2,$3) RETURNING id",
             &[&id,&ready,&topic]).await.map_err(|e|e.to_string())?.get(0);
+        // The topic decides the acknowledgment contract: gwl/v1 firmware
+        // acknowledges everything, legacy topics keep the legacy rules.
         tx.execute(
-            "UPDATE commands SET active_publish_attempt=$2,attempts=attempts+1 WHERE id=$1",
-            &[&id, &attempt],
+            "UPDATE commands SET active_publish_attempt=$2,attempts=attempts+1,
+                firmware_ack_expected=groundwater_firmware_ack_expected($3 LIKE 'gwl/v1/%',kind,payload)
+             WHERE id=$1",
+            &[&id, &attempt, &topic],
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -222,6 +240,14 @@ pub async fn tick(
         .map_err(|e| e.to_string())?;
         prepared = Some((attempt, topic, wire));
         break;
+    }
+    // Protocol revision 2: no wake window. The logger's persistent session
+    // queues the command until its next connection.
+    if prepared.is_none()
+        && let Some(next) =
+            crate::rev2_commands::next_publish(&tx, crate::config::rev2_policy()).await?
+    {
+        prepared = Some((next.attempt_id, next.topic, next.wire));
     }
     tx.commit().await.map_err(|e| e.to_string())?;
     if let Some((attempt, topic, wire)) = prepared {

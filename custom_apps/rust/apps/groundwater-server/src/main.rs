@@ -7,28 +7,49 @@
 //! wake windows; alert history is replayed in recorded-time order. The
 //! enrollment, clock, duplicate and quarantine safeguards remain in adapter.
 
+mod acks;
 mod adapter;
+mod alerting;
 mod api;
+mod api_rev2;
 mod clock;
 mod commands;
 mod config;
+mod crc;
 mod db;
 #[cfg(test)]
 mod fixtures;
 mod identity;
 mod ingest;
+mod metrics;
+mod mqtt_auth;
+mod notify;
+mod ops_api;
+#[cfg(test)]
+mod ops_tests;
 mod platform;
 #[cfg(test)]
 mod platform_tests;
+mod presence;
 mod profiles;
 mod publisher;
 #[cfg(test)]
 mod publisher_tests;
+mod records;
+mod rev2;
+mod rev2_commands;
+mod rev2_store;
+#[cfg(test)]
+mod rev2_tests;
 mod scheduler;
+mod settings;
+mod stream;
 mod telemetry;
 mod topics;
 #[cfg(test)]
 mod ui;
+#[cfg(test)]
+mod vectors_tests;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -63,6 +84,7 @@ fn main() -> ExitCode {
 
 async fn run() -> Result<(), String> {
     let settings = Arc::new(Settings::from_env()?);
+    config::install_rev2_policy(settings.rev2.clone());
     let client = db::connect(&settings.database_url).await?;
     db::migrate(&client).await?;
 
@@ -75,6 +97,8 @@ async fn run() -> Result<(), String> {
         registry.bindings().len()
     );
     let registry = Arc::new(tokio::sync::RwLock::new(registry));
+    // Provisioning API → ingest loop: reload enrollments and bindings now.
+    let registry_changed = Arc::new(tokio::sync::Notify::new());
 
     let retention_days = settings.retention_days;
     let bus = EventBus::new();
@@ -85,12 +109,28 @@ async fn run() -> Result<(), String> {
         db::connect(&settings.database_url).await?,
     );
     let alert_bus = bus.clone();
+    let stale_margin_min = (settings.rev2.stale_margin_seconds / 60).clamp(5, 10_080) as i32;
     tokio::spawn(async move {
         let mut timer = tokio::time::interval(Duration::from_secs(1));
+        let mut tick: u64 = 0;
         loop {
             timer.tick().await;
+            tick += 1;
+            // Missed connections are a clock event: check once a minute.
+            let stale = tick % 60 == 1;
             let result = match alert_db.get().await {
-                Ok(db) => platform::refresh_alerts(&db).await,
+                Ok(db) => {
+                    let mut changed = platform::refresh_alerts(&db).await;
+                    if stale && let Ok(ids) = &mut changed {
+                        match alerting::evaluate_stale(&db, chrono::Utc::now(), stale_margin_min)
+                            .await
+                        {
+                            Ok(more) => ids.extend(more),
+                            Err(e) => eprintln!("groundwater stale alerts: {e}"),
+                        }
+                    }
+                    changed
+                }
                 Err(e) => Err(e),
             };
             match result {
@@ -103,6 +143,30 @@ async fn run() -> Result<(), String> {
             }
         }
     });
+
+    // Notifications run whether or not ntfy is configured: without it the
+    // outbox rows are marked skipped, so nothing accumulates as pending.
+    tokio::spawn(notify::run(
+        settings.database_url.clone(),
+        settings.ops.clone(),
+    ));
+    match &settings.ops.ntfy {
+        Some(target) => eprintln!("groundwater: notifications to {}", target.topic_url()),
+        None => eprintln!(
+            "groundwater: GROUNDWATER_NTFY_URL is unset; notifications are recorded, not sent"
+        ),
+    }
+    // Per-device MQTT accounts: rewrite the broker's view from the database
+    // on start, so a restored database and the files cannot disagree.
+    if let Some(dir) = &settings.ops.mqtt_auth_dir {
+        match mqtt_auth::publish(&client, dir).await {
+            Ok(count) => eprintln!(
+                "groundwater: {count} per-device MQTT account(s) published to {}",
+                dir.display()
+            ),
+            Err(e) => eprintln!("groundwater: per-device MQTT accounts not published: {e}"),
+        }
+    }
 
     match &settings.mqtt {
         Some(mqtt) => eprintln!(
@@ -127,7 +191,21 @@ async fn run() -> Result<(), String> {
         loop {
             tokio::time::sleep(PRUNE_INTERVAL).await;
             let result = match prune_client.get().await {
-                Ok(db) => db::prune_deliveries(&db, retention_days).await,
+                Ok(db) => {
+                    // Delivered or skipped notifications are history, not
+                    // audit; alerts and the device audit keep the facts.
+                    if let Err(e) = db
+                        .execute(
+                            "DELETE FROM notification_outbox WHERE state<>'pending'
+                             AND created_at < now() - ($1::BIGINT * INTERVAL '1 day')",
+                            &[&retention_days],
+                        )
+                        .await
+                    {
+                        eprintln!("groundwater: notification prune failed: {e}");
+                    }
+                    db::prune_deliveries(&db, retention_days).await
+                }
                 Err(e) => Err(e),
             };
             match result {
@@ -149,6 +227,7 @@ async fn run() -> Result<(), String> {
         let ingest_bus = bus.clone();
         let ingest_stats = Arc::clone(&stats);
         let ingest_registry = Arc::clone(&registry);
+        let ingest_changed = Arc::clone(&registry_changed);
         tokio::spawn(async move {
             if let Err(err) = ingest::run(
                 ingest_settings,
@@ -157,6 +236,7 @@ async fn run() -> Result<(), String> {
                 ingest_bus,
                 Arc::clone(&ingest_stats),
                 ingest_registry,
+                ingest_changed,
             )
             .await
             {
@@ -175,6 +255,7 @@ async fn run() -> Result<(), String> {
         db: Arc::new(db::Database::new(settings.database_url.clone(), client)),
         bus,
         stats,
+        registry_changed,
     };
     api::serve(state).await
 }

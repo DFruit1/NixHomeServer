@@ -421,6 +421,8 @@ async fn firmware_clock_and_atomic_presence_safety() {
             topics: TopicMap::default(),
             mqtt: None,
             retention_days: 90,
+            rev2: Default::default(),
+            ops: Default::default(),
         }),
         db: Arc::new(db::Database::new(
             url.clone(),
@@ -428,6 +430,7 @@ async fn firmware_clock_and_atomic_presence_safety() {
         )),
         bus,
         stats,
+        registry_changed: Default::default(),
     };
     let app = api::router(state);
     let command_path = format!("/api/devices/{A}/commands");
@@ -909,10 +912,13 @@ async fn platform_database_api_and_scheduler_regressions() {
             topics: TopicMap::default(),
             mqtt: None,
             retention_days: 90,
+            rev2: Default::default(),
+            ops: Default::default(),
         }),
         db: Arc::new(db::Database::new(url.clone(), db)),
         bus: bus.clone(),
         stats: Arc::new(tokio::sync::Mutex::new(IngestStats::default())),
+        registry_changed: Default::default(),
     };
     let app = api::router(state.clone());
     let (status, body) = request(app.clone(), "GET", "/api/status", "viewer", "").await;
@@ -945,7 +951,9 @@ async fn platform_database_api_and_scheduler_regressions() {
     for (method, path, body, expected) in [
         ("GET", "/api/series?bucket=invalid", "", 400),
         ("GET", "/api/missing", "", 404),
-        ("POST", "/api/devices", "{}", 405),
+        // POST /api/devices enrolls; an empty body misses required fields.
+        ("POST", "/api/devices", "{}", 422),
+        ("PUT", "/api/devices", "{}", 405),
         ("POST", "/api/devices/A/commands", "{", 400),
     ] {
         let (status, value) = request(app.clone(), method, path, "operator", body).await;
@@ -1007,7 +1015,7 @@ async fn platform_database_api_and_scheduler_regressions() {
     bus.emit(LiveEvent::Observation {
         device_id: B.into(),
         recorded_at: Some(now),
-        gwl: 99.,
+        gwl: Some(99.),
     });
     bus.emit(LiveEvent::Quarantine {
         topic: "secret".into(),
@@ -1016,7 +1024,7 @@ async fn platform_database_api_and_scheduler_regressions() {
     bus.emit(LiveEvent::Observation {
         device_id: A.into(),
         recorded_at: Some(now),
-        gwl: 1.,
+        gwl: Some(1.),
     });
     let data = loop {
         let bytes = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())

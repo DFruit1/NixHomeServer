@@ -401,8 +401,9 @@ pub struct Observation {
     pub interpretation_version: String,
     /// Every caveat that applies to this observation.
     pub quality_reasons: Vec<String>,
-    /// Level in metres as parsed from the firmware text.
-    pub gwl: f64,
+    /// Level in metres as parsed from the firmware text; `None` for a fault
+    /// reading (the firmware's `nan`), which still carries health fields.
+    pub gwl: Option<f64>,
     /// Level exactly as the firmware wrote it.
     pub gwl_text: String,
     pub rssi: Option<i16>,
@@ -464,7 +465,7 @@ pub struct PriorObservation {
     pub recorded_at: Option<DateTime<Utc>>,
     pub received_at: DateTime<Utc>,
     pub payload_digest: String,
-    pub gwl: f64,
+    pub gwl: Option<f64>,
 }
 
 /// The result of attribution before duplicate detection.
@@ -712,6 +713,9 @@ pub fn evaluate(
     if !time.quality.is_plausible() {
         quality_reasons.push(format!("device-time-{}", time.quality.as_str()));
     }
+    if reading.level_fault {
+        quality_reasons.push("gwl-fault-not-a-number".to_string());
+    }
 
     let observation = Observation {
         device_id: enrollment.device_id.clone(),
@@ -726,10 +730,7 @@ pub fn evaluate(
         lag_seconds: time.lag_seconds,
         interpretation_version: binding.profile.interpretation_version().to_string(),
         quality_reasons,
-        gwl: reading
-            .gwl
-            .number()
-            .expect("wire parser only returns readings with a finite level"),
+        gwl: reading.gwl.number(),
         gwl_text: reading.gwl.text.clone(),
         rssi,
         rssi_text: reading.rssi.as_ref().map(|field| field.text.clone()),
@@ -797,8 +798,8 @@ pub fn classify_duplicate(
             outcome: DuplicateOutcome::Conflict,
             reason: format!(
                 "different value at the same device time (stored {}, received {}), prior receipt {}s earlier, window {DUPLICATE_WINDOW_MINUTES} min",
-                prior.gwl,
-                observation.gwl,
+                level_text(prior.gwl),
+                level_text(observation.gwl),
                 (observation.received_at - prior.received_at).num_seconds()
             ),
         };
@@ -818,6 +819,10 @@ pub fn classify_duplicate(
         ));
     }
     DuplicateDecision::fresh("no prior observation at this device time")
+}
+
+fn level_text(level: Option<f64>) -> String {
+    level.map_or_else(|| "fault".to_string(), |value| value.to_string())
 }
 
 /// Finalises an evaluation with its duplicate decision.
@@ -990,7 +995,7 @@ fn health_voltage(
 }
 
 /// Lowercase hex SHA-256 of a payload.
-fn sha256_hex(payload: &[u8]) -> String {
+pub(crate) fn sha256_hex(payload: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(payload);
     let mut text = String::with_capacity(digest.len() * 2);
@@ -1051,7 +1056,7 @@ mod tests {
         let intake = deliver(fixtures::v21_reading());
         let observation = observation_of(&intake);
         assert_eq!(observation.device_id, fixtures::DEVICE_A);
-        assert_eq!(observation.gwl, 1.25);
+        assert_eq!(observation.gwl, Some(1.25));
         assert_eq!(observation.gwl_text, "01.25");
         assert_eq!(observation.rssi_text.as_deref(), Some("007"));
         assert_eq!(observation.rssi, Some(7));
@@ -1419,10 +1424,33 @@ mod tests {
     }
 
     #[test]
+    fn a_nan_level_is_a_fault_observation_with_its_health_fields() {
+        let payload = fixtures::v21_payload_with_level("nan");
+        let intake = intake(
+            &Delivery {
+                topic: fixtures::TOPIC_A,
+                payload: payload.as_bytes(),
+                qos: 1,
+                received_at: fixtures::received_at(),
+            },
+            &registry(),
+            &topics(),
+        );
+        let observation = observation_of(&intake);
+        assert_eq!(observation.gwl, None, "a fault is never a healthy zero");
+        assert_eq!(observation.gwl_text, "nan");
+        assert!(observation.battery_v.is_some());
+        assert!(observation.rssi.is_some());
+        assert!(observation
+            .quality_reasons
+            .iter()
+            .any(|reason| reason == "gwl-fault-not-a-number"));
+    }
+
+    #[test]
     fn an_invalid_level_never_becomes_a_healthy_zero() {
         for payload in [
             fixtures::v21_payload_with_level("high"),
-            fixtures::v21_payload_with_level("NaN"),
             fixtures::v21_payload_with_level(""),
             fixtures::v21_payload_with_level("99999.00"),
         ] {
@@ -1507,7 +1535,7 @@ mod tests {
             );
         }
         // The water value itself is unaffected.
-        assert_eq!(observation.gwl, 1.25);
+        assert_eq!(observation.gwl, Some(1.25));
     }
 
     #[test]
@@ -1669,7 +1697,7 @@ mod tests {
                 observation: Some(observation),
                 duplicate,
             } => {
-                assert_eq!(observation.gwl, 1.30);
+                assert_eq!(observation.gwl, Some(1.30));
                 assert_eq!(duplicate.outcome, DuplicateOutcome::Conflict);
             }
             other => panic!("conflict must still store its observation, got {other:?}"),

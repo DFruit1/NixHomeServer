@@ -116,3 +116,22 @@ export const CFG_KEYS = [
   "CLEAR_ERROR_LATCH",
   "Disable_Logging",
 ] as const;
+
+/** Firmware outcome from a structured gwl/v1 acknowledgment, if it has one
+ * (legacy echoes and test lines do not). `problem` marks a command the
+ * logger did not carry out. */
+export function ackOutcome(
+  ack: unknown,
+): { status: string; detail: string; problem: boolean } | null {
+  if (ack == null || typeof ack !== "object" || Array.isArray(ack)) return null;
+  const { status, reason, results } = ack as Record<string, unknown>;
+  if (typeof status !== "string") return null;
+  const parts =
+    results && typeof results === "object" && !Array.isArray(results)
+      ? Object.entries(results)
+          .filter(([, result]) => result !== "ok")
+          .map(([key, result]) => `${key}: ${String(result)}`)
+      : [];
+  if (typeof reason === "string") parts.unshift(reason);
+  return { status, detail: parts.join(", "), problem: status !== "ok" };
+}

@@ -29,16 +29,22 @@ pub struct AppState {
     pub db: Arc<db::Database>,
     pub bus: EventBus,
     pub stats: Arc<tokio::sync::Mutex<IngestStats>>,
+    /// Signals the ingest loop that enrollments or bindings changed.
+    pub registry_changed: Arc<tokio::sync::Notify>,
 }
-type ApiResult = Result<Response, Response>;
+pub(crate) type ApiResult = Result<Response, Response>;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/api/status", get(status))
-        .route("/api/devices", get(devices))
-        .route("/api/devices/{device_id}", get(device))
+        .route("/api/devices", get(devices).post(crate::ops_api::enroll))
+        .route(
+            "/api/devices/{device_id}",
+            get(device).patch(crate::ops_api::update_device),
+        )
         .route("/api/series", get(series))
-        .route("/api/alerts", get(alerts))
+        .route("/api/alerts", get(crate::ops_api::alerts))
+        .route("/metrics", get(crate::ops_api::metrics))
         .route("/api/commands", get(commands))
         .route("/api/messages", get(deliveries))
         .route("/api/deliveries", get(deliveries))
@@ -50,9 +56,14 @@ pub fn router(state: AppState) -> Router {
             "/api/devices/{device_id}/commands/{command_id}/cancel",
             post(cancel),
         )
+        .merge(crate::api_rev2::routes())
+        .merge(crate::ops_api::routes())
         .fallback(frontend)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            boundary,
+        ))
         .with_state(state)
-        .layer(axum::middleware::from_fn(boundary))
 }
 pub async fn serve(state: AppState) -> Result<(), String> {
     let endpoint = format!("{}:{}", state.settings.address, state.settings.port);
@@ -71,13 +82,13 @@ async fn health(State(s): State<AppState>) -> Response {
         _ => error(StatusCode::SERVICE_UNAVAILABLE, "database unavailable"),
     }
 }
-fn error(code: StatusCode, message: &str) -> Response {
+pub(crate) fn error(code: StatusCode, message: &str) -> Response {
     (code, Json(json!({"error":message}))).into_response()
 }
-fn bad(message: &str) -> Response {
+pub(crate) fn bad(message: &str) -> Response {
     error(StatusCode::BAD_REQUEST, message)
 }
-fn database(e: String) -> Response {
+pub(crate) fn database(e: String) -> Response {
     eprintln!("groundwater API: {e}");
     error(StatusCode::INTERNAL_SERVER_ERROR, "database request failed")
 }
@@ -100,14 +111,18 @@ fn gate(headers: &HeaderMap) -> Result<(Identity, Role), Response> {
     clippy::result_large_err,
     reason = "Return the existing Axum error response directly at the HTTP boundary"
 )]
-fn operator(headers: &HeaderMap) -> Result<Identity, Response> {
+pub(crate) fn operator(headers: &HeaderMap) -> Result<Identity, Response> {
     let (i, r) = gate(headers)?;
     if r != Role::Operator {
         return Err(error(StatusCode::FORBIDDEN, "operator role required"));
     }
     Ok(i)
 }
-async fn authorize(s: &AppState, h: &HeaderMap, device: &str) -> Result<String, Response> {
+pub(crate) async fn authorize(
+    s: &AppState,
+    h: &HeaderMap,
+    device: &str,
+) -> Result<String, Response> {
     let db = s.db.get().await.map_err(database)?;
     let (i, r) = gate(h)?;
     let device = crate::adapter::canonical_device_id(device);
@@ -128,9 +143,20 @@ async fn ids(s: &AppState, h: &HeaderMap) -> Result<Vec<String>, Response> {
 }
 /// Authenticate before extraction; normalize JSON/query/path/body-limit and
 /// method rejections so every API failure is a JSON envelope.
-async fn boundary(request: Request, next: Next) -> Response {
+async fn boundary(State(s): State<AppState>, request: Request, next: Next) -> Response {
     let api = request.uri().path() == "/api" || request.uri().path().starts_with("/api/");
+    // A loopback scraper presents the metrics token instead of a gateway
+    // identity; without the token, /metrics needs an operator session.
+    let scraper = request.uri().path() == "/metrics"
+        && crate::ops_api::metrics_token_ok(&s.settings.ops, request.headers());
+    if request.uri().path() == "/metrics"
+        && !scraper
+        && let Err(e) = operator(request.headers())
+    {
+        return e;
+    }
     if request.uri().path() != "/healthz"
+        && !scraper
         && let Err(e) = gate(request.headers())
     {
         return e;
@@ -217,6 +243,7 @@ struct Range {
     hours: Option<i64>,
     bucket: Option<i64>,
     format: Option<String>,
+    datum: Option<String>,
 }
 impl Range {
     #[allow(
@@ -252,6 +279,8 @@ async fn series(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
             from,
             to,
             bucket_minutes: q.bucket.unwrap_or(0).clamp(0, 1440),
+            datum: db::DatumMode::parse(q.datum.as_deref().unwrap_or("raw"))
+                .ok_or_else(|| bad("datum must be raw, dtw_bgl or rl_ahd"))?,
         },
     )
     .await
@@ -261,22 +290,6 @@ async fn series(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
 #[derive(Deserialize)]
 struct List {
     device: Option<String>,
-    state: Option<String>,
-}
-async fn alerts(State(s): State<AppState>, h: HeaderMap, Query(q): Query<List>) -> ApiResult {
-    let db = s.db.get().await.map_err(database)?;
-    let device = match &q.device {
-        Some(d) => Some(authorize(&s, &h, d).await?),
-        None => None,
-    };
-    if q.state
-        .as_deref()
-        .is_some_and(|v| v != "open" && v != "resolved")
-    {
-        return Err(bad("state must be open or resolved"));
-    }
-    let visible = ids(&s, &h).await?;
-    Ok(Json(json!({"alerts":platform::alerts(&db,&visible,device.as_deref(),q.state.as_deref()).await.map_err(database)?})).into_response())
 }
 async fn commands(State(s): State<AppState>, h: HeaderMap, Query(q): Query<List>) -> ApiResult {
     let db = s.db.get().await.map_err(database)?;
@@ -347,13 +360,20 @@ async fn configure(
     s.bus.emit(LiveEvent::Command { device_id: device });
     Ok((StatusCode::CREATED, Json(json!({"command":command}))).into_response())
 }
+/// Revision 1: `{kind,payload,confirm}`. Revision 2 (V22 units):
+/// `{op,args,confirm,auto_confirm,expires_in_s}`; see the frontend README.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommandRequest {
-    kind: String,
+    kind: Option<String>,
     #[serde(default = "empty_payload")]
     payload: Value,
     confirm: Option<String>,
+    op: Option<String>,
+    args: Option<Value>,
+    #[serde(default)]
+    auto_confirm: bool,
+    expires_in_s: Option<i64>,
 }
 fn empty_payload() -> Value {
     json!({})
@@ -367,16 +387,34 @@ async fn enqueue(
     let db = s.db.get().await.map_err(database)?;
     let user = operator(&h)?;
     let device = authorize(&s, &h, &device).await?;
-    let (payload, wire) =
-        crate::commands::command_payload(&q.kind, &q.payload, q.confirm.as_deref())
-            .map_err(|e| bad(&e))?;
-    if !platform::command_supported(&db, &device, &q.kind, &payload)
+    if let Some(op) = &q.op {
+        if q.kind.is_some() || q.payload != empty_payload() {
+            return Err(bad(
+                "send either {op,args} (revision 2) or {kind,payload} (revision 1)",
+            ));
+        }
+        let request = crate::api_rev2::Rev2Request {
+            op,
+            args: q.args.clone().unwrap_or_else(empty_payload),
+            confirm: q.confirm.as_deref(),
+            auto_confirm: q.auto_confirm,
+            expires_in_s: q.expires_in_s,
+            replace: false,
+        };
+        return crate::api_rev2::queue_command(&s, &db, &device, &user.username, request).await;
+    }
+    let Some(kind) = q.kind.as_deref() else {
+        return Err(bad("kind (revision 1) or op (revision 2) is required"));
+    };
+    let (payload, wire) = crate::commands::command_payload(kind, &q.payload, q.confirm.as_deref())
+        .map_err(|e| bad(&e))?;
+    if !platform::command_supported(&db, &device, kind, &payload)
         .await
         .map_err(database)?
     {
-        return Err(bad("This firmware does not implement the requested action. Incremental configuration and wipe/reset handlers only acknowledge receipt. Supported actions are self-test and, for V2.x, Reboot."));
+        return Err(bad("This firmware does not implement the requested action. Incremental configuration and wipe/reset handlers only acknowledge receipt. Supported actions are self-test and, for V2.x, Reboot. Firmware 2.2 (V22) units take {op,args} commands."));
     }
-    let command = platform::queue(&db, &device, &q.kind, payload, &wire, &user.username)
+    let command = platform::queue(&db, &device, kind, payload, &wire, &user.username)
         .await
         .map_err(database)?;
     s.bus.emit(LiveEvent::Command { device_id: device });
@@ -410,10 +448,53 @@ async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
         return Err(bad("format must be csv"));
     }
     let params: [&(dyn tokio_postgres::types::ToSql + Sync); 3] = [&device, &from, &to];
-    let rows=db.query_raw("SELECT device_id,recorded_at,received_at,gwl,rssi,battery_v,solar_v,time_quality,duplicate_outcome FROM observations WHERE device_id=$1 AND recorded_at >= $2 AND recorded_at <= $3 ORDER BY recorded_at,id",params).await.map_err(|e|database(e.to_string()))?;
-    let body=futures_util::stream::once(async{Ok::<_,std::io::Error>("device_id,recorded_at,received_at,gwl,rssi,battery_v,solar_v,time_quality,duplicate_outcome\r\n".to_owned())}).chain(rows.map_ok(|r|{
-        let fields=vec![r.get::<_,String>(0),r.get::<_,DateTime<Utc>>(1).to_rfc3339(),r.get::<_,DateTime<Utc>>(2).to_rfc3339(),r.get::<_,f64>(3).to_string(),r.get::<_,Option<i16>>(4).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,Option<f64>>(5).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,Option<f64>>(6).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,String>(7),r.get::<_,String>(8)];fields.iter().map(|v|csv_field(v)).collect::<Vec<_>>().join(",")+"\r\n"
-    }).map_err(std::io::Error::other));
+    // Revision 2 fields and the installation datum are appended, so existing
+    // consumers of the first nine columns are unaffected.
+    let rows=db.query_raw("SELECT o.device_id,o.recorded_at,o.received_at,o.gwl,o.rssi,o.battery_v,o.solar_v,o.time_quality,o.duplicate_outcome,
+            o.source,o.log_id,o.seq,o.record_type,o.sensor_mv,o.sensor_status,o.settings_gen,o.csq,o.time_source,
+            groundwater_datum_value('dtw_bgl',o.gwl,dt.sensor_depth_m,dt.casing_height_m,dt.ground_elevation_m),
+            groundwater_datum_value('rl_ahd',o.gwl,dt.sensor_depth_m,dt.casing_height_m,dt.ground_elevation_m)
+        FROM observations o
+        LEFT JOIN LATERAL (SELECT sensor_depth_m,casing_height_m,ground_elevation_m FROM device_datums
+            WHERE device_id=o.device_id AND effective_from<=o.recorded_at ORDER BY effective_from DESC LIMIT 1) dt ON true
+        WHERE o.device_id=$1 AND o.recorded_at >= $2 AND o.recorded_at <= $3 ORDER BY o.recorded_at,o.id",params).await.map_err(|e|database(e.to_string()))?;
+    let body = futures_util::stream::once(async {
+        Ok::<_, std::io::Error>(format!("{}\r\n", EXPORT_COLUMNS.join(",")))
+    })
+    .chain(
+        rows.map_ok(|r| {
+            let text = |v: Option<String>| v.unwrap_or_default();
+            let fields = vec![
+                r.get::<_, String>(0),
+                r.get::<_, DateTime<Utc>>(1).to_rfc3339(),
+                r.get::<_, DateTime<Utc>>(2).to_rfc3339(),
+                text(r.get::<_, Option<f64>>(3).map(|v| v.to_string())),
+                text(r.get::<_, Option<i16>>(4).map(|v| v.to_string())),
+                text(r.get::<_, Option<f64>>(5).map(|v| v.to_string())),
+                text(r.get::<_, Option<f64>>(6).map(|v| v.to_string())),
+                r.get::<_, String>(7),
+                r.get::<_, String>(8),
+                r.get::<_, String>(9),
+                text(r.get::<_, Option<i64>>(10).map(|v| v.to_string())),
+                text(r.get::<_, Option<i64>>(11).map(|v| v.to_string())),
+                text(r.get::<_, Option<i16>>(12).map(|v| v.to_string())),
+                text(r.get::<_, Option<i32>>(13).map(|v| v.to_string())),
+                text(r.get::<_, Option<i16>>(14).map(|v| v.to_string())),
+                text(r.get::<_, Option<i64>>(15).map(|v| v.to_string())),
+                text(r.get::<_, Option<i16>>(16).map(|v| v.to_string())),
+                text(r.get::<_, Option<String>>(17)),
+                text(r.get::<_, Option<f64>>(18).map(|v| format!("{v:.4}"))),
+                text(r.get::<_, Option<f64>>(19).map(|v| format!("{v:.4}"))),
+            ];
+            fields
+                .iter()
+                .map(|v| csv_field(v))
+                .collect::<Vec<_>>()
+                .join(",")
+                + "\r\n"
+        })
+        .map_err(std::io::Error::other),
+    );
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "text/csv; charset=utf-8")
         .header(
@@ -423,6 +504,29 @@ async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
         .body(axum::body::Body::from_stream(body))
         .unwrap())
 }
+/// CSV header: the original nine columns, then revision 2 and datum fields.
+pub(crate) const EXPORT_COLUMNS: [&str; 20] = [
+    "device_id",
+    "recorded_at",
+    "received_at",
+    "gwl",
+    "rssi",
+    "battery_v",
+    "solar_v",
+    "time_quality",
+    "duplicate_outcome",
+    "source",
+    "log_id",
+    "seq",
+    "record_type",
+    "sensor_mv",
+    "sensor_status",
+    "settings_gen",
+    "csq",
+    "time_source",
+    "depth_bgl_m",
+    "level_ahd_m",
+];
 fn csv_field(v: &str) -> String {
     format!("\"{}\"", v.replace('"', "\"\""))
 }
@@ -433,7 +537,11 @@ fn event_device(e: &LiveEvent) -> Option<&str> {
         | LiveEvent::Conflict { device_id }
         | LiveEvent::Presence { device_id }
         | LiveEvent::Alert { device_id }
-        | LiveEvent::Command { device_id } => Some(device_id),
+        | LiveEvent::Command { device_id }
+        | LiveEvent::Health { device_id }
+        | LiveEvent::DeviceEvent { device_id, .. }
+        | LiveEvent::Stream { device_id, .. }
+        | LiveEvent::Download { device_id } => Some(device_id),
         _ => None,
     }
 }
@@ -444,7 +552,13 @@ async fn events(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
     let stream = futures_util::stream::unfold(
         (
             receiver,
-            tokio::time::interval(Duration::from_secs(15)),
+            // The first keepalive is due after one period, not immediately:
+            // `interval` ticks at once, which interleaved a keepalive with
+            // the first real events (and made the SSE ACL test flaky).
+            tokio::time::interval_at(
+                tokio::time::Instant::now() + Duration::from_secs(15),
+                Duration::from_secs(15),
+            ),
             true,
             db,
             identity,

@@ -34,6 +34,9 @@ pub fn command_topic(device: &str, kind: &str) -> Option<String> {
         "cfg" => "config/desired",
         "danger" => "cmd/danger",
         "test" => "cmd/test",
+        // Protocol revision 2 command kinds.
+        "config" => "config/set",
+        "basic" => "cmd/basic",
         _ => return None,
     };
     let topic = format!("{DEVICE_PREFIX}{device}/{channel}");
@@ -42,6 +45,27 @@ pub fn command_topic(device: &str, kind: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Whether the platform's persistent (durable) MQTT session carries `topic`.
+///
+/// Readings always did. Revision 2 adds every `gwl/v1` channel whose loss
+/// would lose data or an acknowledgement (`rev2::DURABLE_CHANNELS`). The
+/// presence channels `status` and `info` stay on the clean control session:
+/// they are retained, so a reconnect delivers their latest value, and a
+/// queued legacy `Ready` can never open a stale command window.
+pub fn durable(topic: &str, map: &TopicMap) -> bool {
+    classify(topic, map) == MessageKind::Reading
+        || device_channel(topic)
+            .is_some_and(|(_, channel)| crate::rev2::DURABLE_CHANNELS.contains(&channel))
+}
+
+/// Server-to-device topics: never subscribed by the platform itself.
+pub fn downlink(topic: &str) -> bool {
+    device_channel(topic).is_some_and(|(_, channel)| {
+        crate::rev2::DOWNLINK_CHANNELS.contains(&channel)
+            || matches!(channel, "config/desired" | "cmd/test")
+    })
 }
 
 /// What a received MQTT message means to the platform.
@@ -66,6 +90,14 @@ pub enum MessageKind {
     Alert,
     /// An acknowledgement echo of a config the platform sent (`cfg/…`).
     ConfigAck,
+    /// Revision 2 firmware identity (`gwl/v1/<DEV>/info`, retained).
+    Info,
+    /// Revision 2 heartbeat (`gwl/v1/<DEV>/health`).
+    Health,
+    /// Revision 2 ring batches (`gwl/v1/<DEV>/data/stream`).
+    DataStream,
+    /// Revision 2 SD file chunks (`gwl/v1/<DEV>/data/file`).
+    DataFile,
     /// Any other message on a subscribed topic.
     Other,
 }
@@ -82,6 +114,10 @@ impl MessageKind {
             Self::Motion => "motion",
             Self::Alert => "alert",
             Self::ConfigAck => "config-ack",
+            Self::Info => "info",
+            Self::Health => "health",
+            Self::DataStream => "data-stream",
+            Self::DataFile => "data-file",
             Self::Other => "other",
         }
     }
@@ -105,6 +141,10 @@ pub fn classify(topic: &str, map: &TopicMap) -> MessageKind {
             Some("alerts") => MessageKind::Alert,
             Some("test/result") => MessageKind::TestResult,
             Some("config/applied" | "cmd/ack") => MessageKind::ConfigAck,
+            Some("info") => MessageKind::Info,
+            Some("health") => MessageKind::Health,
+            Some("data/stream") => MessageKind::DataStream,
+            Some("data/file") => MessageKind::DataFile,
             _ => MessageKind::Other,
         };
     }
@@ -236,12 +276,60 @@ mod tests {
             ("test/result", MessageKind::TestResult),
             ("config/applied", MessageKind::ConfigAck),
             ("cmd/ack", MessageKind::ConfigAck),
+            ("info", MessageKind::Info),
+            ("health", MessageKind::Health),
+            ("data/stream", MessageKind::DataStream),
+            ("data/file", MessageKind::DataFile),
         ] {
             assert_eq!(
                 classify(&format!("{DEVICE_PREFIX}{a}/{channel}"), &map),
                 kind
             );
         }
+        // Session routing: data and acks are durable, presence is not, and
+        // the platform never subscribes to its own downlink.
+        for channel in [
+            "reading",
+            "health",
+            "data/stream",
+            "data/file",
+            "alerts",
+            "cmd/ack",
+        ] {
+            assert!(
+                durable(&format!("{DEVICE_PREFIX}{a}/{channel}"), &map),
+                "{channel}"
+            );
+        }
+        for channel in ["status", "info"] {
+            assert!(
+                !durable(&format!("{DEVICE_PREFIX}{a}/{channel}"), &map),
+                "{channel}"
+            );
+        }
+        assert!(durable(profiles::TOPIC_READING, &map));
+        assert!(!durable(profiles::TOPIC_DEVICE_STATUS, &map));
+        for channel in [
+            "config/set",
+            "cmd/basic",
+            "cmd/danger",
+            "config/desired",
+            "cmd/test",
+        ] {
+            assert!(
+                downlink(&format!("{DEVICE_PREFIX}{a}/{channel}")),
+                "{channel}"
+            );
+        }
+        assert!(!downlink(&format!("{DEVICE_PREFIX}{a}/cmd/ack")));
+        assert_eq!(
+            command_topic(a, "basic").unwrap(),
+            format!("{DEVICE_PREFIX}{a}/cmd/basic")
+        );
+        assert_eq!(
+            command_topic(a, "config").unwrap(),
+            format!("{DEVICE_PREFIX}{a}/config/set")
+        );
         for topic in [
             format!("gwl/v2/{a}/alerts"),
             "gwl/v1/short/status".to_string(),

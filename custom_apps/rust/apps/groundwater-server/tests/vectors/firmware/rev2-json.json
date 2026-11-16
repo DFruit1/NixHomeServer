@@ -1,0 +1,323 @@
+{
+  "description": "gwl/v1 protocol revision 2 JSON vectors generated from the firmware's own gwl_proto/gwl_json code. Payloads are exact bytes. Ack data contents come from a fake application; everything else is what the firmware sends.",
+  "generator": "GWL_Firmware_V2.1/GWL_Firmware_V2.1/tests/gen_json_vectors.c",
+  "contract": "docs/protocol/gwl-v1-rev2.md",
+  "proto": 2,
+  "fake_app": {"settings": "defaults", "gen": 4, "nonces": ["9F3A01C2", "0BADF00D", "12345678", "CAFEBABE"]},
+  "downlink": [
+    {"name": "self_test", "note": "ack ok first; the application publishes test/result with this id afterwards", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":42,\"exp\":1763303600,\"op\":\"self_test\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":42,\"op\":\"self_test\",\"status\":\"ok\"}"}]}]},
+    {"name": "get_status", "note": "data = health fields + ring state (fake values)", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":42,\"exp\":1763303600,\"op\":\"get_status\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":42,\"op\":\"get_status\",\"status\":\"ok\",\"data\":{\"t\":1763300000,\"tv\":1,\"up\":5120,\"csq\":21,\"bat_mv\":7412,\"sol_mv\":5120,\"sd\":\"ok\",\"sd_free_mb\":7400,\"mram\":\"ok\",\"unsaved\":1234,\"usable\":122368,\"log\":\"on\",\"gen\":4,\"next\":1763904800,\"err\":0,\"boot\":17,\"head\":52000,\"tail\":1000,\"sd_saved\":50000,\"mqtt_saved\":49000,\"log_id\":1763000000,\"last_seq\":4410,\"flags\":0}}"}]}]},
+    {"name": "get_settings", "note": "default settings, generation 4", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":42,\"exp\":1763303600,\"op\":\"get_settings\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":42,\"op\":\"get_settings\",\"status\":\"ok\",\"data\":{\"gen\":4,\"settings\":{\"read_s\":3600,\"send_s\":604800,\"gps_mode\":0,\"gps_val\":0,\"tilt_mode\":0,\"tilt_val\":0,\"start\":0,\"fac\":[0,1,1,0],\"tap\":1,\"tap_sens\":5,\"gps_sens\":5,\"lo\":null,\"hi\":null,\"lo_hys\":0,\"hi_hys\":0,\"loc\":\"\",\"proj\":\"\",\"text\":\"\",\"partial\":0,\"utc_off\":0,\"led\":0,\"attempts\":3,\"listen_s\":60}}}"}]}]},
+    {"name": "get_debug", "note": "data = info fields + runtime counters (fake values)", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":42,\"exp\":1763303600,\"op\":\"get_debug\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":42,\"op\":\"get_debug\",\"status\":\"ok\",\"data\":{\"fw\":\"2.2.0\",\"build\":\"Nov 16 2026\",\"hw\":\"V1.08\",\"proto\":2,\"schema\":1,\"uid\":\"0123456789ABCDEF01234567\",\"imei\":\"864292046589220\",\"iccid\":\"8961000000000000000\",\"modem\":\"EC21EFAR06A07M4G\",\"net\":\"bench\",\"stream\":\"bin\",\"reset\":\"wdg\",\"wdg_resets\":2,\"last_error\":0,\"csq\":21,\"creg\":1,\"free_ram\":19000,\"cmd\":{\"dropped\":0,\"malformed\":0,\"busy\":0,\"lost\":0}}}"}]}]},
+    {"name": "flush_mqtt", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":42,\"exp\":1763303600,\"op\":\"flush_mqtt\"}"},
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":43,\"exp\":1763303600,\"op\":\"flush_mqtt\",\"args\":{\"log_id\":1763000000,\"from_seq\":10,\"to_seq\":19}}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":42,\"op\":\"flush_mqtt\",\"status\":\"ok\",\"data\":{\"frames\":7,\"batches\":1,\"first_seq\":100,\"last_seq\":106,\"missing\":0}}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":43,\"op\":\"flush_mqtt\",\"status\":\"ok\",\"data\":{\"frames\":10,\"batches\":1,\"first_seq\":10,\"last_seq\":19,\"missing\":0}}"}]}]},
+    {"name": "flush_mqtt bad range", "note": "all three of log_id/from_seq/to_seq or none; from_seq <= to_seq", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":42,\"exp\":1763303600,\"op\":\"flush_mqtt\",\"args\":{\"log_id\":1,\"from_seq\":10}}"},
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":43,\"exp\":1763303600,\"op\":\"flush_mqtt\",\"args\":{\"log_id\":1,\"from_seq\":10,\"to_seq\":9}}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":42,\"op\":\"flush_mqtt\",\"status\":\"rejected\",\"reason\":\"bad-args\"}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":43,\"op\":\"flush_mqtt\",\"status\":\"rejected\",\"reason\":\"bad-args\"}"}]}]},
+    {"name": "flush_sd", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":42,\"exp\":1763303600,\"op\":\"flush_sd\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":42,\"op\":\"flush_sd\",\"status\":\"ok\",\"data\":{\"frames\":7,\"segment\":3}}"}]}]},
+    {"name": "file_list and file_chunk", "note": "file_chunk publishes data/file before its ack (not shown)", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":42,\"exp\":1763303600,\"op\":\"file_list\",\"args\":{\"path\":\"/GWL\",\"page\":0}}"},
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":43,\"exp\":1763303600,\"op\":\"file_chunk\",\"args\":{\"path\":\"/GWL/6A1B2C3D/B0000001.BIN\",\"off\":0,\"len\":1024}}"},
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":44,\"exp\":1763303600,\"op\":\"file_chunk\",\"args\":{\"path\":\"/GWL/../x\",\"off\":0}}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":42,\"op\":\"file_list\",\"status\":\"ok\",\"data\":{\"path\":\"/GWL\",\"files\":[[\"B0000001.BIN\",123456],[\"SUBDIR/\",0]],\"more\":false}}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":43,\"op\":\"file_chunk\",\"status\":\"ok\",\"data\":{\"off\":0,\"len\":1024,\"size\":123456,\"crc32\":\"1A2B3C4D\"}}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":44,\"op\":\"file_chunk\",\"status\":\"rejected\",\"reason\":\"bad-args\"}"}]}]},
+    {"name": "clear_error_latch, enable_logging", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":42,\"exp\":1763303600,\"op\":\"clear_error_latch\"}"},
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":43,\"exp\":1763303600,\"op\":\"enable_logging\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":42,\"op\":\"clear_error_latch\",\"status\":\"ok\"}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":43,\"op\":\"enable_logging\",\"status\":\"ok\"}"}]}]},
+    {"name": "sync_time without a valid clock", "note": "cmd/basic runs without a valid clock; exp is not checked", "steps": [
+      {"now": {"t": 512, "tv": 0},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":42,\"exp\":1,\"op\":\"sync_time\",\"args\":{\"t\":1763300000}}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":42,\"op\":\"sync_time\",\"status\":\"ok\"}"}]}]},
+    {"name": "settings partial", "note": "contract example: unknown key -> unsupported, the rest applied", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "config/set", "payload": "{\"v\":2,\"id\":43,\"exp\":1763303600,\"op\":\"settings\",\"args\":{\"read_s\":900,\"send_s\":86400,\"hi\":10.5,\"hi_hys\":0.2,\"foo\":1}}"}],
+       "out": [
+         {"channel": "config/applied", "payload": "{\"v\":2,\"id\":43,\"op\":\"settings\",\"status\":\"partial\",\"gen\":5,\"results\":{\"read_s\":\"ok\",\"send_s\":\"ok\",\"hi\":\"ok\",\"hi_hys\":\"ok\",\"foo\":\"unsupported\"},\"settings\":{\"read_s\":900,\"send_s\":86400,\"gps_mode\":0,\"gps_val\":0,\"tilt_mode\":0,\"tilt_val\":0,\"start\":0,\"fac\":[0,1,1,0],\"tap\":1,\"tap_sens\":5,\"gps_sens\":5,\"lo\":null,\"hi\":10.5,\"lo_hys\":0,\"hi_hys\":0.2,\"loc\":\"\",\"proj\":\"\",\"text\":\"\",\"partial\":0,\"utc_off\":0,\"led\":0,\"attempts\":3,\"listen_s\":60}}"}]}]},
+    {"name": "settings replace", "note": "replace:true resets every missing key to its default first", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "config/set", "payload": "{\"v\":2,\"id\":43,\"exp\":1763303600,\"op\":\"settings\",\"args\":{\"loc\":\"Bore 7\",\"lo\":-3.5}}"}],
+       "out": [
+         {"channel": "config/applied", "payload": "{\"v\":2,\"id\":43,\"op\":\"settings\",\"status\":\"ok\",\"gen\":5,\"results\":{\"lo\":\"ok\",\"loc\":\"ok\"},\"settings\":{\"read_s\":3600,\"send_s\":604800,\"gps_mode\":0,\"gps_val\":0,\"tilt_mode\":0,\"tilt_val\":0,\"start\":0,\"fac\":[0,1,1,0],\"tap\":1,\"tap_sens\":5,\"gps_sens\":5,\"lo\":-3.5,\"hi\":null,\"lo_hys\":0,\"hi_hys\":0,\"loc\":\"Bore 7\",\"proj\":\"\",\"text\":\"\",\"partial\":0,\"utc_off\":0,\"led\":0,\"attempts\":3,\"listen_s\":60}}"}]},
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "config/set", "payload": "{\"v\":2,\"id\":44,\"exp\":1763303600,\"op\":\"settings\",\"replace\":true,\"args\":{\"read_s\":600}}"}],
+       "out": [
+         {"channel": "config/applied", "payload": "{\"v\":2,\"id\":44,\"op\":\"settings\",\"status\":\"ok\",\"gen\":6,\"results\":{\"read_s\":\"ok\"},\"settings\":{\"read_s\":600,\"send_s\":604800,\"gps_mode\":0,\"gps_val\":0,\"tilt_mode\":0,\"tilt_val\":0,\"start\":0,\"fac\":[0,1,1,0],\"tap\":1,\"tap_sens\":5,\"gps_sens\":5,\"lo\":null,\"hi\":null,\"lo_hys\":0,\"hi_hys\":0,\"loc\":\"\",\"proj\":\"\",\"text\":\"\",\"partial\":0,\"utc_off\":0,\"led\":0,\"attempts\":3,\"listen_s\":60}}"}]}]},
+    {"name": "settings every key", "note": "strings are UTF-8; text may hold one newline; lo/hi null = unset", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "config/set", "payload": "{\"v\":2,\"id\":43,\"exp\":1763303600,\"op\":\"settings\",\"args\":{\"read_s\":600,\"send_s\":86400,\"gps_mode\":1,\"gps_val\":4,\"tilt_mode\":2,\"tilt_val\":3600,\"start\":1764000000,\"fac\":[0,1,1.25,-5.2],\"tap\":0,\"tap_sens\":7,\"gps_sens\":0,\"lo\":-3.5,\"hi\":null,\"lo_hys\":0.05,\"hi_hys\":0,\"loc\":\"Bore \\u00e9 7\",\"proj\":\"P-1\",\"text\":\"Line one\\nLine two\",\"partial\":1,\"utc_off\":600,\"led\":1,\"attempts\":5,\"listen_s\":120}}"}],
+       "out": [
+         {"channel": "config/applied", "payload": "{\"v\":2,\"id\":43,\"op\":\"settings\",\"status\":\"ok\",\"gen\":5,\"results\":{\"read_s\":\"ok\",\"send_s\":\"ok\",\"gps_mode\":\"ok\",\"gps_val\":\"ok\",\"tilt_mode\":\"ok\",\"tilt_val\":\"ok\",\"start\":\"ok\",\"fac\":\"ok\",\"tap\":\"ok\",\"tap_sens\":\"ok\",\"gps_sens\":\"ok\",\"lo\":\"ok\",\"hi\":\"ok\",\"lo_hys\":\"ok\",\"hi_hys\":\"ok\",\"loc\":\"ok\",\"proj\":\"ok\",\"text\":\"ok\",\"partial\":\"ok\",\"utc_off\":\"ok\",\"led\":\"ok\",\"attempts\":\"ok\",\"listen_s\":\"ok\"},\"settings\":{\"read_s\":600,\"send_s\":86400,\"gps_mode\":1,\"gps_val\":4,\"tilt_mode\":2,\"tilt_val\":3600,\"start\":1764000000,\"fac\":[0,1,1.25,-5.2],\"tap\":0,\"tap_sens\":7,\"gps_sens\":0,\"lo\":-3.5,\"hi\":null,\"lo_hys\":0.05,\"hi_hys\":0,\"loc\":\"Bore é 7\",\"proj\":\"P-1\",\"text\":\"Line one\\nLine two\",\"partial\":1,\"utc_off\":600,\"led\":1,\"attempts\":5,\"listen_s\":120}}"}]}]},
+    {"name": "settings bad-args", "note": "the whole request is validated first; nothing changes", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "config/set", "payload": "{\"v\":2,\"id\":43,\"exp\":1763303600,\"op\":\"settings\",\"args\":{\"read_s\":59,\"tap\":2,\"fac\":[1,2,3],\"loc\":\"ok\",\"bar\":0}}"}],
+       "out": [
+         {"channel": "config/applied", "payload": "{\"v\":2,\"id\":43,\"op\":\"settings\",\"status\":\"rejected\",\"reason\":\"bad-args\",\"results\":{\"read_s\":\"invalid\",\"fac\":\"invalid\",\"tap\":\"invalid\",\"bar\":\"unsupported\"}}"}]}]},
+    {"name": "settings cross-field", "note": "gps_mode 1 needs gps_val 1-255; the current gps_val (0) is kept", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "config/set", "payload": "{\"v\":2,\"id\":43,\"exp\":1763303600,\"op\":\"settings\",\"args\":{\"gps_mode\":1}}"}],
+       "out": [
+         {"channel": "config/applied", "payload": "{\"v\":2,\"id\":43,\"op\":\"settings\",\"status\":\"rejected\",\"reason\":\"bad-args\",\"results\":{\"gps_mode\":\"invalid\"}}"}]}]},
+    {"name": "settings while Tail Locked", "note": "the application refuses: rejected/locked", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "config/set", "payload": "{\"v\":2,\"id\":43,\"exp\":1763303600,\"op\":\"settings\",\"args\":{\"read_s\":600}}"}],
+       "out": [
+         {"channel": "config/applied", "payload": "{\"v\":2,\"id\":43,\"op\":\"settings\",\"status\":\"rejected\",\"reason\":\"locked\"}"}]}]},
+    {"name": "expired", "note": "exp passed on the logger's valid clock", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":46,\"exp\":1763299999,\"op\":\"flush_mqtt\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":46,\"op\":\"flush_mqtt\",\"status\":\"expired\"}"}]}]},
+    {"name": "duplicate", "note": "the last 16 (id, op, status) are remembered; a repeat is never re-run", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":42,\"exp\":1763303600,\"op\":\"get_status\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":42,\"op\":\"get_status\",\"status\":\"ok\",\"data\":{\"t\":1763300000,\"tv\":1,\"up\":5120,\"csq\":21,\"bat_mv\":7412,\"sol_mv\":5120,\"sd\":\"ok\",\"sd_free_mb\":7400,\"mram\":\"ok\",\"unsaved\":1234,\"usable\":122368,\"log\":\"on\",\"gen\":4,\"next\":1763904800,\"err\":0,\"boot\":17,\"head\":52000,\"tail\":1000,\"sd_saved\":50000,\"mqtt_saved\":49000,\"log_id\":1763000000,\"last_seq\":4410,\"flags\":0}}"}]},
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":42,\"exp\":1763303600,\"op\":\"get_status\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":42,\"op\":\"get_status\",\"status\":\"duplicate\",\"prev\":\"ok\"}"}]}]},
+    {"name": "busy", "note": "4 commands queue; the fifth is rejected/busy (acked first) and must be re-sent later", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":41,\"exp\":1763303600,\"op\":\"clear_error_latch\"}"},
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":42,\"exp\":1763303600,\"op\":\"enable_logging\"}"},
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":43,\"exp\":1763303600,\"op\":\"flush_sd\"}"},
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":44,\"exp\":1763303600,\"op\":\"self_test\"}"},
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":45,\"exp\":1763303600,\"op\":\"get_settings\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":45,\"op\":\"get_settings\",\"status\":\"rejected\",\"reason\":\"busy\"}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":41,\"op\":\"clear_error_latch\",\"status\":\"ok\"}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":42,\"op\":\"enable_logging\",\"status\":\"ok\"}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":43,\"op\":\"flush_sd\",\"status\":\"ok\",\"data\":{\"frames\":7,\"segment\":3}}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":44,\"op\":\"self_test\",\"status\":\"ok\"}"}]}]},
+    {"name": "malformed", "note": "readable id -> rejected/malformed (op echoed when readable); no readable id -> dropped", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":47,\"exp\":1763303600,\"op\":\"flush_sd\",\"args\":{"},
+         {"channel": "cmd/basic", "payload": "{\"v\":1,\"id\":48,\"exp\":1763303600,\"op\":\"flush_sd\"}"},
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":49,\"op\":\"flush_sd\"}"},
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"exp\":1763303600,\"op\":\"flush_sd\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":47,\"op\":\"flush_sd\",\"status\":\"rejected\",\"reason\":\"malformed\"}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":48,\"op\":\"flush_sd\",\"status\":\"rejected\",\"reason\":\"malformed\"}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":49,\"op\":\"flush_sd\",\"status\":\"rejected\",\"reason\":\"malformed\"}"}]}]},
+    {"name": "unknown-op", "note": "unknown names, and ops sent on the wrong channel", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":50,\"exp\":1763303600,\"op\":\"fly\"}"},
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":51,\"exp\":1763303600,\"op\":\"wipe_sd\"}"},
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":52,\"exp\":1763303600,\"op\":\"get_status\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":50,\"op\":\"fly\",\"status\":\"rejected\",\"reason\":\"unknown-op\"}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":51,\"op\":\"wipe_sd\",\"status\":\"rejected\",\"reason\":\"unknown-op\"}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":52,\"op\":\"get_status\",\"status\":\"rejected\",\"reason\":\"unknown-op\"}"}]}]},
+    {"name": "time-invalid", "note": "cmd/danger needs a valid clock (send sync_time first)", "steps": [
+      {"now": {"t": 512, "tv": 0},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":53,\"exp\":1763303600,\"op\":\"wipe_sd\"}"},
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":54,\"exp\":1763303600,\"op\":\"reboot\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":53,\"op\":\"wipe_sd\",\"status\":\"rejected\",\"reason\":\"time-invalid\"}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":54,\"op\":\"reboot\",\"status\":\"rejected\",\"reason\":\"time-invalid\"}"}]}]},
+    {"name": "wipe_sd handshake", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":44,\"exp\":1763303600,\"op\":\"wipe_sd\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":44,\"op\":\"wipe_sd\",\"status\":\"challenge\",\"nonce\":\"9F3A01C2\",\"nexp\":1763300120}"}]},
+      {"now": {"t": 1763300030, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":45,\"exp\":1763303600,\"op\":\"confirm\",\"args\":{\"ref\":44,\"nonce\":\"9F3A01C2\"}}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":45,\"op\":\"wipe_sd\",\"ref\":44,\"status\":\"ok\"}"}]}]},
+    {"name": "wipe_mram with unsaved data", "note": "application reports 12 unsaved frames / 3456 bytes", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":44,\"exp\":1763303600,\"op\":\"wipe_mram\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":44,\"op\":\"wipe_mram\",\"status\":\"challenge\",\"nonce\":\"9F3A01C2\",\"nexp\":1763300120,\"unsaved\":{\"frames\":12,\"bytes\":3456}}"}]},
+      {"now": {"t": 1763300030, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":45,\"exp\":1763303600,\"op\":\"confirm\",\"args\":{\"ref\":44,\"nonce\":\"9F3A01C2\",\"confirm_unsaved\":12}}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":45,\"op\":\"wipe_mram\",\"ref\":44,\"status\":\"ok\"}"}]}]},
+    {"name": "unsaved-mismatch", "note": "confirm_unsaved missing, then data logged since the challenge (12 -> 13 frames)", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":44,\"exp\":1763303600,\"op\":\"factory_reset\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":44,\"op\":\"factory_reset\",\"status\":\"challenge\",\"nonce\":\"9F3A01C2\",\"nexp\":1763300120,\"unsaved\":{\"frames\":12,\"bytes\":3456}}"}]},
+      {"now": {"t": 1763300010, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":45,\"exp\":1763303600,\"op\":\"confirm\",\"args\":{\"ref\":44,\"nonce\":\"9F3A01C2\"}}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":45,\"op\":\"factory_reset\",\"ref\":44,\"status\":\"rejected\",\"reason\":\"unsaved-mismatch\"}"}]},
+      {"now": {"t": 1763300020, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":46,\"exp\":1763303600,\"op\":\"factory_reset\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":46,\"op\":\"factory_reset\",\"status\":\"challenge\",\"nonce\":\"0BADF00D\",\"nexp\":1763300140,\"unsaved\":{\"frames\":12,\"bytes\":3456}}"}]},
+      {"now": {"t": 1763300030, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":47,\"exp\":1763303600,\"op\":\"confirm\",\"args\":{\"ref\":46,\"nonce\":\"0BADF00D\",\"confirm_unsaved\":12}}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":47,\"op\":\"factory_reset\",\"ref\":46,\"status\":\"rejected\",\"reason\":\"unsaved-mismatch\"}"}]}]},
+    {"name": "bad-nonce and no-challenge", "note": "any confirm uses up the outstanding challenge", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":44,\"exp\":1763303600,\"op\":\"recover_mram\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":44,\"op\":\"recover_mram\",\"status\":\"challenge\",\"nonce\":\"9F3A01C2\",\"nexp\":1763300120}"}]},
+      {"now": {"t": 1763300005, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":45,\"exp\":1763303600,\"op\":\"confirm\",\"args\":{\"ref\":44,\"nonce\":\"9F3A01C3\"}}"},
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":46,\"exp\":1763303600,\"op\":\"confirm\",\"args\":{\"ref\":44,\"nonce\":\"9F3A01C2\"}}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":45,\"op\":\"confirm\",\"ref\":44,\"status\":\"rejected\",\"reason\":\"bad-nonce\"}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":46,\"op\":\"confirm\",\"ref\":44,\"status\":\"rejected\",\"reason\":\"no-challenge\"}"}]}]},
+    {"name": "stale nonce", "note": "valid until nexp (inclusive)", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":44,\"exp\":1763303600,\"op\":\"disable_logging\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":44,\"op\":\"disable_logging\",\"status\":\"challenge\",\"nonce\":\"9F3A01C2\",\"nexp\":1763300120}"}]},
+      {"now": {"t": 1763300121, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":45,\"exp\":1763303600,\"op\":\"confirm\",\"args\":{\"ref\":44,\"nonce\":\"9F3A01C2\"}}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":45,\"op\":\"confirm\",\"ref\":44,\"status\":\"rejected\",\"reason\":\"bad-nonce\"}"}]}]},
+    {"name": "new challenge replaces the old one", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":44,\"exp\":1763303600,\"op\":\"wipe_sd\"}"},
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":46,\"exp\":1763303600,\"op\":\"recover_mram\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":44,\"op\":\"wipe_sd\",\"status\":\"challenge\",\"nonce\":\"9F3A01C2\",\"nexp\":1763300120}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":46,\"op\":\"recover_mram\",\"status\":\"challenge\",\"nonce\":\"0BADF00D\",\"nexp\":1763300120}"}]},
+      {"now": {"t": 1763300005, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":47,\"exp\":1763303600,\"op\":\"confirm\",\"args\":{\"ref\":44,\"nonce\":\"9F3A01C2\"}}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":47,\"op\":\"confirm\",\"ref\":44,\"status\":\"rejected\",\"reason\":\"bad-nonce\"}"}]}]},
+    {"name": "reboot", "note": "no nonce; ack published, the reset is deferred to the end of the window", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":60,\"exp\":1763303600,\"op\":\"reboot\"}"},
+         {"channel": "cmd/basic", "payload": "{\"v\":2,\"id\":61,\"exp\":1763303600,\"op\":\"flush_sd\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":60,\"op\":\"reboot\",\"status\":\"ok\"}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":61,\"op\":\"flush_sd\",\"status\":\"ok\",\"data\":{\"frames\":7,\"segment\":3}}"}],
+       "pending_reset": "reboot"}]},
+    {"name": "enter_bootloader", "note": "handshake, then a deferred reset into the system bootloader", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":62,\"exp\":1763303600,\"op\":\"enter_bootloader\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":62,\"op\":\"enter_bootloader\",\"status\":\"challenge\",\"nonce\":\"9F3A01C2\",\"nexp\":1763300120}"}]},
+      {"now": {"t": 1763300003, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":63,\"exp\":1763303600,\"op\":\"confirm\",\"args\":{\"ref\":62,\"nonce\":\"9F3A01C2\"}}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":63,\"op\":\"enter_bootloader\",\"ref\":62,\"status\":\"ok\"}"}],
+       "pending_reset": "bootloader"}]},
+    {"name": "unsupported danger ops", "note": "no challenge is issued", "steps": [
+      {"now": {"t": 1763300000, "tv": 1},
+       "in": [
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":64,\"exp\":1763303600,\"op\":\"erase_keys\"}"},
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":65,\"exp\":1763303600,\"op\":\"rotate_keys\"}"},
+         {"channel": "cmd/danger", "payload": "{\"v\":2,\"id\":66,\"exp\":1763303600,\"op\":\"firmware_update\"}"}],
+       "out": [
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":64,\"op\":\"erase_keys\",\"status\":\"rejected\",\"reason\":\"unsupported\"}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":65,\"op\":\"rotate_keys\",\"status\":\"rejected\",\"reason\":\"unsupported\"}"},
+         {"channel": "cmd/ack", "payload": "{\"v\":2,\"id\":66,\"op\":\"firmware_update\",\"status\":\"rejected\",\"reason\":\"unsupported\"}"}]}]}
+  ],
+  "uplink": [
+    {"name": "lwt offline", "channel": "status", "retain": true, "payload": "{\"v\":2,\"state\":\"offline\",\"reason\":\"lwt\"}"},
+    {"name": "status online", "channel": "status", "retain": true, "payload": "{\"v\":2,\"state\":\"online\",\"t\":1763300000,\"tv\":1,\"up\":5120,\"boot\":17,\"next\":1763904800}"},
+    {"name": "status ready", "channel": "status", "retain": true, "payload": "{\"v\":2,\"state\":\"ready\",\"t\":1763300000,\"tv\":1,\"up\":5120,\"boot\":17,\"next\":1763904800,\"win\":60}"},
+    {"name": "status sleep", "channel": "status", "retain": true, "payload": "{\"v\":2,\"state\":\"sleep\",\"t\":1763300060,\"tv\":1,\"up\":5120,\"boot\":17,\"next\":1763904800}"},
+    {"name": "status online, clock invalid, next unknown", "channel": "status", "retain": true, "payload": "{\"v\":2,\"state\":\"online\",\"t\":35,\"tv\":0,\"up\":35,\"boot\":18}"},
+    {"name": "info", "channel": "info", "retain": true, "payload": "{\"v\":2,\"fw\":\"2.2.0\",\"build\":\"Nov 16 2026\",\"hw\":\"V1.08\",\"proto\":2,\"schema\":1,\"uid\":\"0123456789ABCDEF01234567\",\"imei\":\"864292046589220\",\"iccid\":\"89610000000000000000\",\"modem\":\"EC21EFAR06A07M4G\",\"net\":\"bench\",\"stream\":\"bin\",\"reset\":\"wdg\"}"},
+    {"name": "info, hex stream, no SIM", "channel": "info", "retain": true, "payload": "{\"v\":2,\"fw\":\"2.2.0\",\"build\":\"Nov 16 2026\",\"hw\":\"V1.08\",\"proto\":2,\"schema\":1,\"uid\":\"0123456789ABCDEF01234567\",\"imei\":\"864292046589220\",\"modem\":\"EC21EFAR06A07M4G\",\"net\":\"bench\",\"stream\":\"hex\",\"reset\":\"por\"}"},
+    {"name": "health", "channel": "health", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"up\":5120,\"csq\":21,\"bat_mv\":7412,\"sol_mv\":5120,\"sd\":\"ok\",\"sd_free_mb\":7400,\"mram\":\"ok\",\"unsaved\":1234,\"usable\":122368,\"log\":\"on\",\"gen\":4,\"next\":1763904800,\"err\":0}"},
+    {"name": "health, SD missing, Tail Locked, logging off", "channel": "health", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"up\":5120,\"csq\":99,\"bat_mv\":6900,\"sol_mv\":0,\"sd\":\"missing\",\"sd_free_mb\":0,\"mram\":\"locked\",\"unsaved\":122000,\"usable\":122368,\"log\":\"off\",\"gen\":4,\"err\":7}"},
+    {"name": "alert gwl_alarm high enter", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"gwl_alarm\",\"seq\":4411,\"limit\":\"high\",\"state\":\"enter\",\"lvl\":12.345,\"thr\":10.5}"},
+    {"name": "alert gwl_alarm low exit", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"gwl_alarm\",\"seq\":4420,\"limit\":\"low\",\"state\":\"exit\",\"lvl\":2.4,\"thr\":2.2}"},
+    {"name": "alert sensor_fault", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"sensor_fault\",\"seq\":4412,\"state\":\"enter\",\"ss\":1,\"mv\":0}"},
+    {"name": "alert power_critical", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"power_critical\",\"seq\":4413,\"state\":\"enter\",\"bat_mv\":6100,\"sol_mv\":0}"},
+    {"name": "alert storage mram_almost_full", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"storage\",\"seq\":4414,\"kind\":\"mram_almost_full\",\"unsaved\":91776,\"usable\":122368}"},
+    {"name": "alert storage mram_ok", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"storage\",\"seq\":4415,\"kind\":\"mram_ok\",\"unsaved\":91776,\"usable\":122368}"},
+    {"name": "alert storage sd_missing", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"storage\",\"seq\":4416,\"kind\":\"sd_missing\",\"unsaved\":91776,\"usable\":122368}"},
+    {"name": "alert storage sd_error", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"storage\",\"seq\":4417,\"kind\":\"sd_error\",\"unsaved\":91776,\"usable\":122368}"},
+    {"name": "alert storage sd_full", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"storage\",\"seq\":4418,\"kind\":\"sd_full\",\"unsaved\":91776,\"usable\":122368}"},
+    {"name": "alert storage sd_restored", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"storage\",\"seq\":4419,\"kind\":\"sd_restored\",\"unsaved\":91776,\"usable\":122368}"},
+    {"name": "alert storage mram_fault", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"storage\",\"seq\":4420,\"kind\":\"mram_fault\",\"unsaved\":91776,\"usable\":122368}"},
+    {"name": "alert storage tail_lock", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"storage\",\"kind\":\"tail_lock\",\"unsaved\":91776,\"usable\":122368}"},
+    {"name": "alert storage tail_unlocked", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"storage\",\"seq\":4422,\"kind\":\"tail_unlocked\",\"unsaved\":91776,\"usable\":122368}"},
+    {"name": "alert impact", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"impact\",\"seq\":4430,\"peak_mg\":4512}"},
+    {"name": "alert orientation", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"orientation\",\"seq\":4431,\"tilt_deg\":12.3}"},
+    {"name": "alert gps_moved", "channel": "alerts", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"ev\":\"gps_moved\",\"seq\":4432,\"dist_m\":212,\"thr_m\":150}"},
+    {"name": "test/result remote", "channel": "test/result", "retain": false, "payload": "{\"v\":2,\"id\":42,\"trigger\":\"remote\",\"t\":1763300000,\"tv\":1,\"up\":5120,\"mv\":1234,\"ma\":8.23,\"lvl\":12.345,\"ss\":0,\"bat_mv\":7412,\"sol_mv\":5120,\"csq\":21,\"status\":1023,\"ok\":true,\"sd\":\"ok\",\"sim\":\"ok\",\"net\":\"ok\",\"mqtt\":\"ok\",\"gps\":\"fix\",\"epd\":\"ok\",\"acc\":\"ok\",\"mram\":\"ok\",\"warn\":[\"Low battery\"]}"},
+    {"name": "test/result button, failures, mqtt not tried", "channel": "test/result", "retain": false, "payload": "{\"v\":2,\"trigger\":\"button\",\"t\":61,\"tv\":0,\"up\":61,\"mv\":0,\"ma\":0,\"ss\":1,\"bat_mv\":7000,\"sol_mv\":0,\"csq\":99,\"status\":321,\"ok\":false,\"sd\":\"missing\",\"sim\":\"fail\",\"net\":\"fail\",\"gps\":\"nofix\",\"epd\":\"ok\",\"acc\":\"ok\",\"mram\":\"absent\"}"},
+    {"name": "reading (fallback)", "channel": "reading", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"lvl\":12.345,\"mv\":1234,\"ss\":0,\"bat_mv\":7412,\"sol_mv\":5120,\"csq\":21,\"gen\":4}"},
+    {"name": "reading without level (fallback)", "channel": "reading", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"mv\":0,\"ss\":1,\"bat_mv\":7412,\"sol_mv\":5120,\"csq\":21,\"gen\":4}"},
+    {"name": "gps (fallback)", "channel": "gps", "retain": false, "payload": "{\"v\":2,\"t\":1763300000,\"tv\":1,\"fix\":3,\"lat\":-33.8688197,\"lon\":151.2092955,\"alt\":12,\"hdop\":1.1,\"sats\":8}"}
+  ]
+}

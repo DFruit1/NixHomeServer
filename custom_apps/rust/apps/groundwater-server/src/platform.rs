@@ -11,7 +11,15 @@ pub async fn migrate(client: &Client) -> Result<(), String> {
     client
         .batch_execute(include_str!("platform.sql"))
         .await
-        .map_err(|e| format!("platform migration: {e:?}"))
+        .map_err(|e| format!("platform migration: {e:?}"))?;
+    client
+        .batch_execute(include_str!("rev2.sql"))
+        .await
+        .map_err(|e| format!("protocol revision 2 migration: {e:?}"))?;
+    client
+        .batch_execute(include_str!("ops.sql"))
+        .await
+        .map_err(|e| format!("operations migration: {e:?}"))
 }
 
 pub async fn allowed(
@@ -49,6 +57,24 @@ pub struct Command {
     pub cancelled_at: Option<DateTime<Utc>>,
     pub cancelled_by: Option<String>,
     pub supported: Option<bool>,
+    /// 1 = legacy payloads, 2 = `{v,id,exp,op,args}` envelopes.
+    pub protocol: i16,
+    pub op: Option<String>,
+    pub args: Option<Value>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub publish_count: i32,
+    pub last_published_at: Option<DateTime<Utc>>,
+    /// Revision 2 ack status: ok, partial, failed, rejected, expired, duplicate.
+    pub final_status: Option<String>,
+    pub status_reason: Option<String>,
+    pub hold_until_sleep: bool,
+    pub parent_id: Option<i64>,
+    pub preconfirmed: bool,
+    /// `{nonce,nexp,unsaved_frames,unsaved_bytes,received_at}` of a danger challenge.
+    pub challenge: Option<Value>,
+    pub challenge_expires_at: Option<DateTime<Utc>>,
+    pub origin: String,
+    pub download_id: Option<i64>,
 }
 fn command(row: Row) -> Command {
     Command {
@@ -68,7 +94,38 @@ fn command(row: Row) -> Command {
         cancelled_at: row.get("cancelled_at"),
         cancelled_by: row.get("cancelled_by"),
         supported: row.try_get("supported").ok(),
+        protocol: row.try_get("protocol").unwrap_or(1),
+        op: row.try_get("op").unwrap_or_default(),
+        args: row.try_get("args").unwrap_or_default(),
+        expires_at: row.try_get("expires_at").unwrap_or_default(),
+        publish_count: row.try_get("publish_count").unwrap_or_default(),
+        last_published_at: row.try_get("last_published_at").unwrap_or_default(),
+        final_status: row.try_get("final_status").unwrap_or_default(),
+        status_reason: row.try_get("status_reason").unwrap_or_default(),
+        hold_until_sleep: row.try_get("hold_until_sleep").unwrap_or_default(),
+        parent_id: row.try_get("parent_id").unwrap_or_default(),
+        preconfirmed: row.try_get("preconfirmed").unwrap_or_default(),
+        challenge: row.try_get("challenge").unwrap_or_default(),
+        challenge_expires_at: row.try_get("challenge_expires_at").unwrap_or_default(),
+        origin: row.try_get("origin").unwrap_or_else(|_| "operator".into()),
+        download_id: row.try_get("download_id").unwrap_or_default(),
     }
+}
+
+/// One revision 2 command by id, for API responses.
+pub async fn command_by_id(
+    client: &Client,
+    device: &str,
+    id: i64,
+) -> Result<Option<Command>, String> {
+    client
+        .query_opt(
+            "SELECT c.*,true AS supported FROM commands c WHERE c.id=$1 AND c.device_id=$2",
+            &[&id, &device],
+        )
+        .await
+        .map(|row| row.map(command))
+        .map_err(|e| e.to_string())
 }
 pub async fn queue(
     client: &Client,
@@ -78,7 +135,7 @@ pub async fn queue(
     wire: &str,
     username: &str,
 ) -> Result<Command, String> {
-    client.query_one("WITH queued AS (INSERT INTO commands(device_id,kind,payload,wire_payload,requested_by) SELECT device_id,$2,$3,$4,$5 FROM devices WHERE device_id=$1 AND revoked_at IS NULL RETURNING *), desired AS (UPDATE devices d SET desired_config=COALESCE(d.desired_config,'{}'::jsonb)||q.payload FROM queued q WHERE d.device_id=q.device_id AND q.kind='cfg') SELECT * FROM queued", &[&device,&kind,&payload,&wire,&username]).await.map(command).map_err(|e|format!("queue: {e:?}"))
+    client.query_one("WITH queued AS (INSERT INTO commands(device_id,kind,payload,wire_payload,requested_by,firmware_ack_expected) SELECT d.device_id,$2,$3,$4,$5,groundwater_firmware_ack_expected(EXISTS(SELECT 1 FROM device_bindings b WHERE b.device_id=d.device_id AND b.revoked_at IS NULL AND b.topic LIKE 'gwl/v1/%'),$2,$3) FROM devices d WHERE d.device_id=$1 AND d.revoked_at IS NULL RETURNING *), desired AS (UPDATE devices d SET desired_config=COALESCE(d.desired_config,'{}'::jsonb)||q.payload FROM queued q WHERE d.device_id=q.device_id AND q.kind='cfg') SELECT * FROM queued", &[&device,&kind,&payload,&wire,&username]).await.map(command).map_err(|e|format!("queue: {e:?}"))
 }
 pub async fn commands(
     client: &Client,
@@ -104,8 +161,10 @@ pub async fn cancel(
     username: &str,
 ) -> Result<Option<Command>, String> {
     // Single SQL statement serializes against the publisher's reservation.
-    client.query_opt("WITH changed AS (UPDATE commands SET state='cancelled',cancelled_at=now(),cancelled_by=$3 WHERE id=$2 AND device_id=$1 AND state IN ('queued','sent') AND active_publish_attempt IS NULL RETURNING *), audit AS (INSERT INTO command_events(command_id,event,actor) SELECT id,'cancelled',$3 FROM changed) SELECT * FROM changed", &[&device,&id,&username]).await.map(|r|r.map(command)).map_err(|e|e.to_string())
+    client.query_opt("WITH changed AS (UPDATE commands SET state='cancelled',cancelled_at=now(),cancelled_by=$3 WHERE id=$2 AND device_id=$1 AND (state IN ('queued','sent') OR (protocol=2 AND state='challenge')) AND active_publish_attempt IS NULL RETURNING *), audit AS (INSERT INTO command_events(command_id,event,actor) SELECT id,'cancelled',$3 FROM changed) SELECT * FROM changed", &[&device,&id,&username]).await.map(|r|r.map(command)).map_err(|e|e.to_string())
 }
+/// Level alert rows as the revision 1 tests read them.
+#[cfg(test)]
 pub async fn alerts(
     client: &Client,
     ids: &[String],

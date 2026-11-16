@@ -26,6 +26,16 @@ UPDATE devices SET project_config=desired_config,desired_config=NULL
 CREATE OR REPLACE FUNCTION groundwater_command_supported(profile TEXT,kind TEXT,payload JSONB,policy TEXT,offset_min INTEGER,unverified BOOLEAN)
 RETURNS BOOLEAN LANGUAGE sql IMMUTABLE AS $$
     SELECT CASE
+        -- Protocol revision 2 (firmware 2.2): every contract operation, each
+        -- on its own channel. The logger validates again and acks
+        -- unsupported/rejected itself; legacy kinds never reach it.
+        WHEN profile='V22' THEN CASE kind
+            WHEN 'config' THEN payload->>'op'='settings'
+            WHEN 'basic' THEN payload->>'op' IN ('self_test','get_status','get_settings','get_debug',
+                'flush_mqtt','flush_sd','file_list','file_chunk','clear_error_latch','enable_logging','sync_time')
+            WHEN 'danger' THEN payload->>'op' IN ('reboot','wipe_sd','wipe_mram','factory_reset','recover_mram',
+                'disable_logging','erase_keys','rotate_keys','enter_bootloader','firmware_update','confirm')
+            ELSE false END
         WHEN profile NOT IN ('V21','V20','ML') THEN false
         WHEN kind='test' THEN payload='{}'::jsonb
         WHEN kind='danger' THEN profile IN ('V21','V20') AND payload='{"Reboot":"1"}'::jsonb
@@ -53,6 +63,7 @@ LANGUAGE sql IMMUTABLE AS $$
       WHEN 'V21' THEN 'V21' WHEN '2.1' THEN 'V21' WHEN 'GWL_FIRMWARE_V2.1' THEN 'V21'
       WHEN 'V20' THEN 'V20' WHEN '2.0' THEN 'V20' WHEN '2.00' THEN 'V20' WHEN 'GWL_FIRMWARE_V2.00' THEN 'V20'
       WHEN 'ML' THEN 'ML' WHEN 'MQTT-LOGGER' THEN 'ML' WHEN 'MQTT_LOGGER' THEN 'ML'
+      WHEN 'V22' THEN 'V22' WHEN '2.2' THEN 'V22' WHEN 'GWL_FIRMWARE_V2.2' THEN 'V22'
     END
 $$;
 CREATE OR REPLACE FUNCTION groundwater_legacy_device_count() RETURNS BIGINT
@@ -128,12 +139,22 @@ CREATE TABLE IF NOT EXISTS command_events (
     detail JSONB
 );
 -- An attempt is durable before it enters rumqttc's volatile request queue.
--- sent is broker acceptance, not firmware application. In particular Reboot
--- resets the MCU before it can emit cfg/danger_ack.
+-- sent is broker acceptance, not firmware application. Legacy firmware never
+-- acknowledges project settings, and Reboot resets the MCU before it can emit
+-- cfg/danger_ack. Firmware on gwl/v1 topics acknowledges every command with a
+-- structured result (see acks.rs), Reboot included, just before it resets.
+CREATE OR REPLACE FUNCTION groundwater_firmware_ack_expected(structured BOOLEAN,kind TEXT,payload JSONB)
+RETURNS BOOLEAN LANGUAGE sql IMMUTABLE AS $$
+    SELECT structured OR (kind <> 'project-settings' AND
+        NOT (kind='danger' AND payload @> '{"Reboot":"1"}'::jsonb))
+$$;
 ALTER TABLE commands ADD COLUMN IF NOT EXISTS broker_acked_at TIMESTAMPTZ;
 ALTER TABLE commands ADD COLUMN IF NOT EXISTS firmware_ack_expected BOOLEAN
     GENERATED ALWAYS AS (kind <> 'project-settings' AND
         NOT (kind='danger' AND payload @> '{"Reboot":"1"}'::jsonb)) STORED;
+-- Formerly generated from kind/payload alone. Keep existing values; queue
+-- and dispatch now set it from the topic contract the command travels on.
+ALTER TABLE commands ALTER COLUMN firmware_ack_expected DROP EXPRESSION IF EXISTS;
 CREATE TABLE IF NOT EXISTS command_publish_attempts (
     id BIGSERIAL PRIMARY KEY,
     command_id BIGINT NOT NULL REFERENCES commands(id),
@@ -191,6 +212,10 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS alerts_cursor TIMESTAMPTZ;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS alerts_active_id BIGINT;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS alerts_dirty_from TIMESTAMPTZ;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS alerts_replay_all BOOLEAN NOT NULL DEFAULT true;
+-- Level alarm hysteresis. NULL keeps the historical fixed 0.5; protocol
+-- revision 2 loggers report their own lo_hys/hi_hys in effective settings.
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS min_hysteresis DOUBLE PRECISION;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS max_hysteresis DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS observations_device_plausible_idx
     ON observations(device_id,recorded_at DESC,id DESC) WHERE time_quality='plausible';
 
@@ -220,14 +245,15 @@ CREATE TRIGGER groundwater_observation_dirty AFTER INSERT ON observations FOR EA
 
 CREATE OR REPLACE FUNCTION groundwater_limits_dirty() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    IF NEW.min_limit IS DISTINCT FROM OLD.min_limit OR NEW.max_limit IS DISTINCT FROM OLD.max_limit THEN
+    IF NEW.min_limit IS DISTINCT FROM OLD.min_limit OR NEW.max_limit IS DISTINCT FROM OLD.max_limit
+        OR NEW.min_hysteresis IS DISTINCT FROM OLD.min_hysteresis OR NEW.max_hysteresis IS DISTINCT FROM OLD.max_hysteresis THEN
         NEW.alerts_dirty:=true;
         NEW.alerts_replay_all:=true;
     END IF;
     RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS groundwater_limits_dirty ON devices;
-CREATE TRIGGER groundwater_limits_dirty BEFORE UPDATE OF min_limit,max_limit ON devices FOR EACH ROW EXECUTE FUNCTION groundwater_limits_dirty();
+CREATE TRIGGER groundwater_limits_dirty BEFORE UPDATE OF min_limit,max_limit,min_hysteresis,max_hysteresis ON devices FOR EACH ROW EXECUTE FUNCTION groundwater_limits_dirty();
 
 -- Observations are insert-only in production. A disposable DB/operator
 -- truncation must also reset its derived counters and replay checkpoints.
@@ -253,7 +279,7 @@ BEGIN
     IF NOT d.alerts_dirty THEN RETURN; END IF;
     replay_all:=d.alerts_replay_all OR d.alerts_cursor IS NULL OR COALESCE(d.alerts_dirty_from<=d.alerts_cursor,false);
     IF replay_all THEN
-        UPDATE alerts SET superseded=true WHERE device_id=target;
+        UPDATE alerts SET superseded=true WHERE device_id=target AND kind IN ('above_max','below_min');
     ELSE
         SELECT id,kind INTO active_id,current_kind FROM alerts
             WHERE id=d.alerts_active_id AND state='open' AND NOT superseded;
@@ -274,20 +300,25 @@ BEGIN
                 ELSIF sample.gwl<d.min_limit THEN next_kind:='below_min'; END IF;
             ELSIF current_kind='above_max' THEN
                 IF sample.gwl<d.min_limit THEN next_kind:='below_min';
-                ELSIF sample.gwl<=d.max_limit-0.5 THEN next_kind:=NULL; END IF;
+                ELSIF sample.gwl<=d.max_limit-COALESCE(d.max_hysteresis,0.5) THEN next_kind:=NULL; END IF;
             ELSE
                 IF sample.gwl>d.max_limit THEN next_kind:='above_max';
-                ELSIF sample.gwl>=d.min_limit+0.5 THEN next_kind:=NULL; END IF;
+                ELSIF sample.gwl>=d.min_limit+COALESCE(d.min_hysteresis,0.5) THEN next_kind:=NULL; END IF;
             END IF;
             IF next_kind IS DISTINCT FROM current_kind THEN
                 IF active_id IS NOT NULL THEN
-                    UPDATE alerts SET state='resolved',resolved_at=sample.recorded_at WHERE id=active_id;
+                    -- A hand-resolved episode keeps its operator resolution.
+                    UPDATE alerts SET state='resolved',resolved_at=sample.recorded_at
+                        WHERE id=active_id AND state='open';
                 END IF;
                 active_id:=NULL;
                 IF next_kind IS NOT NULL THEN
                     INSERT INTO alerts(device_id,kind,state,trigger_value,opened_at,superseded)
                     VALUES(target,next_kind,'open',sample.gwl,sample.recorded_at,false)
-                    ON CONFLICT(device_id,kind,opened_at) DO UPDATE SET state='open',resolved_at=NULL,trigger_value=EXCLUDED.trigger_value,superseded=false
+                    ON CONFLICT(device_id,kind,opened_at) DO UPDATE SET
+                        state=CASE WHEN alerts.resolved_by IS NOT NULL THEN alerts.state ELSE 'open' END,
+                        resolved_at=CASE WHEN alerts.resolved_by IS NOT NULL THEN alerts.resolved_at END,
+                        trigger_value=EXCLUDED.trigger_value,superseded=false
                     RETURNING id INTO active_id;
                 END IF;
                 current_kind:=next_kind;

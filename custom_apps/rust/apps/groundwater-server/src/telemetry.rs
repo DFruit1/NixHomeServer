@@ -56,8 +56,12 @@ pub struct WireReading {
     /// The device identifier the payload *claims*, if any. A claim is
     /// evidence, not authentication: see [`crate::adapter`].
     pub claimed_device_id: Option<String>,
-    /// Groundwater level, always present in an accepted reading.
+    /// Groundwater level. `value` is `None` only for a firmware fault
+    /// encoding (`nan`/`inf`, see [`is_fault_text`]).
     pub gwl: FieldText,
+    /// The firmware wrote its not-a-number fault encoding instead of a level:
+    /// the sensor was not read, but the health fields are still real.
+    pub level_fault: bool,
     /// Device-local time text, verbatim and unparsed.
     pub time_text: Option<String>,
     /// Signal strength on the firmware's transformed-CSQ scale.
@@ -123,10 +127,16 @@ pub fn parse_wire_reading(payload: &str) -> Result<WireReading, WireError> {
 
     let gwl_text =
         field(object, &["GWL", "gwl", "gwl_string", "level"]).ok_or(WireError::MissingLevel)?;
-    let gwl_value = number_from(&gwl_text).ok_or(WireError::LevelNotNumeric)?;
-    if gwl_value.abs() > GWL_ABS_LIMIT_M {
-        return Err(WireError::LevelOutOfRange);
-    }
+    let level_fault = is_fault_text(&gwl_text);
+    let gwl_value = if level_fault {
+        None
+    } else {
+        let value = number_from(&gwl_text).ok_or(WireError::LevelNotNumeric)?;
+        if value.abs() > GWL_ABS_LIMIT_M {
+            return Err(WireError::LevelOutOfRange);
+        }
+        Some(value)
+    };
 
     Ok(WireReading {
         claimed_device_id: field(object, &["DeviceID", "deviceId", "device_id", "s_id"])
@@ -134,8 +144,9 @@ pub fn parse_wire_reading(payload: &str) -> Result<WireReading, WireError> {
             .filter(|text| !text.is_empty()),
         gwl: FieldText {
             text: gwl_text,
-            value: Some(gwl_value),
+            value: gwl_value,
         },
+        level_fault,
         time_text: field(object, &["TIME", "time", "timestamp", "l_timeoffset"])
             .map(|text| text.trim().to_string())
             .filter(|text| !text.is_empty()),
@@ -144,6 +155,16 @@ pub fn parse_wire_reading(payload: &str) -> Result<WireReading, WireError> {
         solar_v: optional_field(object, &["SOL", "sol", "solar"]),
         payload: value,
     })
+}
+
+/// True for the text C's `printf("%f")` produces for a NaN or infinite
+/// level (`nan`, `-nan`, `inf`, …): the firmware's "sensor not read" value.
+/// Any other non-numeric text is not a known encoding and stays an error.
+pub fn is_fault_text(text: &str) -> bool {
+    let trimmed = text.trim().trim_start_matches(['+', '-']);
+    ["nan", "inf", "infinity"]
+        .iter()
+        .any(|fault| trimmed.eq_ignore_ascii_case(fault))
 }
 
 /// Reads a field that may be a JSON string or number, keeping its text.
@@ -280,17 +301,33 @@ mod tests {
             Err(WireError::LevelNotNumeric)
         );
         assert_eq!(
-            parse_wire_reading(r#"{"DeviceID":"a","GWL":"NaN"}"#),
-            Err(WireError::LevelNotNumeric)
-        );
-        assert_eq!(
-            parse_wire_reading(r#"{"DeviceID":"a","GWL":"inf"}"#),
+            parse_wire_reading(r#"{"DeviceID":"a","GWL":"n/a"}"#),
             Err(WireError::LevelNotNumeric)
         );
         assert_eq!(
             parse_wire_reading(r#"{"DeviceID":"a","GWL":"2500.00"}"#),
             Err(WireError::LevelOutOfRange)
         );
+    }
+
+    #[test]
+    fn the_firmware_nan_level_is_a_fault_reading_not_an_error() {
+        // V2.1 prints a failed ADC read as "nan"; the battery, RSSI and solar
+        // fields of that line are still measurements worth keeping.
+        for text in ["nan", "NaN", "-nan", "inf", " -inf "] {
+            let payload = format!(
+                r#"{{"DeviceID":"a","GWL":"{text}","RSSI":"012","BL":"03.20","SOL":"3.000000"}}"#
+            );
+            let reading = parse_wire_reading(&payload).expect(text);
+            assert!(reading.level_fault, "{text}");
+            assert_eq!(reading.gwl.number(), None);
+            assert_eq!(reading.gwl.text, text);
+            assert_eq!(
+                reading.battery_v.as_ref().and_then(FieldText::number),
+                Some(3.2)
+            );
+        }
+        assert!(!parse_wire_reading(r#"{"GWL":"1.0"}"#).unwrap().level_fault);
     }
 
     #[test]

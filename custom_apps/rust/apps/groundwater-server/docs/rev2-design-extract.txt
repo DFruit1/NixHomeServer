@@ -1,0 +1,1118 @@
+Text extract of 'GW Logger Design Document_Rev2.docx', sections 'Framing & Data Structures' and 'Topic Structure' (2026-11-16).
+Tables are flattened one cell per line. The .docx in Documents/ is authoritative.
+
+Framing & Data Structures
+Rev2, 16 November 2026. This section replaces the Rev1 text. It keeps every Rev1 decision, rewrites the rules in plainer language, and fills each item Rev1 left "to be frozen" with a concrete proposed value: addresses, byte layouts, CRC parameters, the commit protocol, payload schemas and recovery actions. These values are proposals for review. Nothing here is implemented in firmware yet; V2.1 has only a Handle_Wipe_MRAM stub.
+The places where Rev2 changes something Rev1 said are listed in "Rev2 changes to review" below. Questions that need a team decision are listed at the end of the section.
+Principles
+MRAM is the primary record store. Every reading, event and settings change is appended to a ring of immutable records in MRAM. SD and MQTT are copies made from that ring.
+Append only. A record is never edited once it is committed, including a Tail Lock record. State changes are new records or a new metadata checkpoint.
+Reclaim only saved data. Space is reused only after a record has been saved to the SD card or acknowledged by the MQTT broker. One destination is enough.
+Lock rather than overwrite. If the ring is full of unsaved records, logging stops (Tail Lock) until a save succeeds. Unsaved data is never overwritten automatically.
+Everything is recoverable after a power cut at any instant. Configuration and ring state are kept in alternating A/B slots, and each record carries a sequence number and CRC, so boot can tell committed data from a torn write.
+Terms
+Term
+Meaning
+Frame / record
+One entry in the ring: header, payload and CRC (see "Zone 5 frame").
+Logical position
+A byte count that only increases (uint32). It does not wrap when the physical ring wraps. Physical address = ring base + (position mod ring capacity).
+head
+Logical position where the next frame will be written.
+tail
+Logical position of the oldest frame still kept. Frames in [tail, head) are retained.
+sd_saved_end, mqtt_saved_end
+Each destination’s saved boundary: every frame before this position has been saved to that destination. "End" means exclusive: the position just after the last saved frame.
+Saved / unsaved
+A frame is saved when it lies before max(sd_saved_end, mqtt_saved_end). Unsaved bytes = head − max(sd_saved_end, mqtt_saved_end).
+C, R, U
+C = ring capacity (122,880 bytes). R = control reserve (512 bytes). U = usable capacity for ordinary records = C − R = 122,368 bytes.
+Log instance, log_id
+One continuous log. A new log_id starts after a format, wipe, factory reset, recovery rebuild, schema change or sequence rollover.
+Settings generation (settings_gen)
+A number that increases by 1 for every settings change. Readings record the generation used to produce them.
+Anchor
+A Type 1 reading that fixes the time base for the compact Type 0 readings that follow it.
+Commit marker
+A 4-byte value written last. A slot or frame without a valid marker is ignored.
+Decisions confirmed in Rev1 (unchanged)
+Item
+Decision
+Record identity
+Every ring record carries a 32-bit sequence number: readings, events, settings fragments and flush records alike.
+Record length
+Every frame carries a one-byte payload length. Lengths are no longer looked up in a per-type table.
+When full
+Unsaved records are preserved and normal logging locks. A record can be reclaimed after verified SD persistence OR acknowledged MQTT delivery; both are not required.
+Settings recovery
+A/B settings slots. The previous valid configuration is kept until the new one is committed and verified. Types 3/4 record the new configuration for the data that follows.
+SD formats
+A lossless binary archive plus a human-readable CSV export. The CSV is derived from the binary and can be regenerated.
+Rev2 changes to review
+Change
+Reason
+Logical positions are uint32, not 64-bit.
+Even logging every minute, 2³² bytes lasts over 400 years. uint32 is atomic on the Cortex-M0+ and matches the SD and MQTT headers. A new log starts long before rollover.
+CRC-32 for settings, metadata, snapshots and containers (Rev1: CRC-16). Frames keep CRC-8.
+Settings slots are up to 2 KiB, where CRC-16 is weak. The STM32G070 CRC unit computes CRC-32 in hardware, and the server can use the standard zlib function.
+Frame commit: the two magic bytes are written last.
+This makes the commit point a single 2-byte write. A frame torn by a power cut has no magic bytes and is ignored.
+The control reserve holds only the Tail Lock record (512 bytes).
+Unlocking frees space before any further records are written, so no other record needs reserved space. Settings context reaches the server through cfg/applied, and reaches SD through each segment header, so snapshots never have to be re-appended.
+Eight new record types, 14–21.
+Log start, clock set, data gap, sensor fault, power critical, storage warning, tail unlocked and tilt reading. Rev1 listed these as missing; the event list on page 21 needs them.
+Lazy reclaim in steps of at least 1 KiB.
+Saved data stays in MRAM as long as possible, so it can be resent. Larger steps keep metadata writes infrequent.
+Settings are encoded as tag-length-value (TLV) with stated bounds.
+Fixes Rev1 inconsistencies (GPS alarm 0–8 vs 10, the missing Partial_Update setting), removes free-fall and gives the sensitivities linear scales. Documents the level formula.
+Timestamps are uint32 UTC seconds since 1970-01-01.
+The format is familiar to the server, valid until 2106, and paired with an explicit validity flag.
+Team answers, 16 November 2026
+Question
+Decision now written into this section
+Alarm hysteresis
+A distance above or below the alarm level. After an alarm, the level must cross back past it before the alarm ends and can trigger again.
+GPS and tilt frequency
+Separate settings with the same options. Default: one reading of each at every send. Each can instead be N readings per send interval, a fixed interval in seconds, or off.
+Accelerometer
+Free-fall detection removed. Tap monitoring can be switched on or off. Tilt angles are read on their own schedule (default: every send).
+Sensitivities
+Linear 1–10 scales: tap threshold (11 − value) × 0.75 g; GPS alarm distance (11 − value) × 25 m.
+Battery pack
+Two 21700 cells in series (2S, 7.4 V nominal). Critical limit 6.60 V, recovered above 7.00 V.
+Battery and solar alerts
+Raised by the server from state/health and test data. The logger has fixed firmware limits for critical battery levels only (Type 18). Water-level alarms stay on the logger.
+Wipe with unsaved data
+Allowed, with a second confirmation that echoes the unsaved count, on top of the nonce handshake.
+MQTT message size
+Up to 1,500 bytes per data/stream message using AT+QMTPUBEX (binary-safe), subject to a bench check.
+Hardware constraints (PCB V1.08)
+Item
+Constraint
+Device
+U5 = Everspin MR25H10CDF: 1 Mbit (128 KiB), 2.7–3.6 V, SPI up to 40 MHz, no write delay, unlimited write endurance. The schematic symbol says MR25H40, but the BOM and value say MR25H10; this map assumes 128 KiB.
+Bus
+CS PB13, MISO PB6 (AF4), MOSI PB7 (AF1), SCK PB8 (AF1). This is SPI2, which the SD card also uses (on PA0/PC2/PC3). The firmware must switch SPI2’s pins between the two devices. 10 kΩ pull-ups on CS, MISO, MOSI and SCK; WP and HOLD are tied high.
+Start-up
+Wait at least tPU = 400 µs after power-up before the first command.
+Low power
+Send SLEEP (B9h) between uses: about 7 µA, against 90–115 µA in standby. Wake with ABh. Do not idle SCK low against its pull-up (about 330 µA): use SPI mode 3, or set the pins to inputs when idle.
+Power loss
+The STM32G070 has no guaranteed brown-out or PVD warning, so writes can be torn at any byte. Every structure below is designed for that.
+Address wrap
+The chip wraps at the end of its whole array, not at the end of Zone 5. A ring access that crosses the end of Zone 5 must be split into two operations by the firmware.
+Encoding conventions
+Multi-byte integers are little-endian. Integers are unsigned unless shown as i8/i16/i32. f32 is IEEE-754 single precision.
+Native C structs are never written directly: each field is serialised at the offsets given, so padding cannot change the layout.
+Time is uint32 seconds. When the time-valid flag is set, it is UTC seconds since 1970-01-01. When the flag is clear, it is seconds since this boot. Local time is used only on the display.
+Not available: 0xFFFF for u16 readings, INT32_MIN for i32 values, INT16_MIN for i16, NaN for f32 settings.
+Reserved fields and bits are written as 0 and ignored when read.
+CRC parameters
+Name
+Used for
+Parameters
+CRC-8/AUTOSAR
+Ring frames
+poly 0x2F, init 0xFF, no reflection, xorout 0xFF. Check value for ASCII "123456789" = 0xDF.
+CRC-32/ISO-HDLC
+Settings and metadata slots, settings snapshots, SD headers, MQTT batches
+poly 0x04C11DB7, init 0xFFFFFFFF, reflected in and out, xorout 0xFFFFFFFF (zlib crc32). Check value = 0xCBF43926. The STM32 CRC unit computes it with input and output reversal enabled.
+A CRC detects errors; it does not make a write atomic. Atomicity comes from the commit markers and the write order below.
+MRAM memory map
+Zone
+Name
+Addresses
+Size
+Contents
+0
+Settings A
+0x00000–0x007FF
+2,048
+One complete settings slot.
+1
+Settings B
+0x00800–0x00FFF
+2,048
+The other settings slot. A and B alternate; neither is permanently primary.
+2
+Metadata A
+0x01000–0x010FF
+256
+One runtime metadata checkpoint.
+3
+Metadata B
+0x01100–0x011FF
+256
+The other checkpoint; A and B alternate.
+4
+Reserved
+0x01200–0x01FFF
+3,584
+Written as zero; contents ignored. For future use.
+5
+Ring
+0x02000–0x1FFFF
+122,880
+Append-only frames. Base B = 0x02000, capacity C = 122,880.
+Zones 0 & 1 — settings slots (A/B)
+Each slot holds one complete configuration. The slot written most recently and verified is active; the other is the rollback copy. A change always overwrites the older slot, so the active slot is never touched during a change.
+Offset
+Type
+Field
+Meaning
+0
+u32
+magic
+"GWS1" (bytes 47 57 53 31). Identifies a formatted slot.
+4
+u16
+layout_version
+1.
+6
+u16
+payload_len
+Length L of the TLV settings payload, 0–1,024.
+8
+u32
+settings_gen
+Generation, starting at 1. Never reused.
+12
+u32
+applied_time
+UTC time the slot was written; 0 if unknown.
+16
+u8
+source
+1 firmware defaults, 2 server cfg/desired, 3 rollback, 4 factory reset, 5 restored from a ring snapshot.
+17
+u8
+settings_schema
+Version of the TLV tag set; 1.
+18
+u16
+reserved
+0.
+20
+L bytes
+payload
+TLV settings (table below).
+20 + L
+u32
+crc32
+CRC-32 over bytes 0 to 19 + L.
+2044
+u32
+commit
+0xA55AC33C when committed. Any other value means the slot is not committed.
+A slot is eligible if its magic, layout version, length bound, CRC and commit marker are all valid and every setting passes the range checks below. A setting with a valid CRC but out of range makes the slot ineligible. At boot the eligible slot with the higher settings_gen is used. Generations are plain uint32 counters compared as integers; they will not wrap in practice, and firmware refuses changes above 0xFFFFFFF0.
+Applying a settings change
+1.Validate the complete requested configuration in RAM. Assign generation = settings_gen_reserved + 1, record it in a metadata checkpoint, then build the TLV payload. A generation is never reused, even if this change later fails. Check that the ring has ordinary space for both snapshot sets (Types 3 and 4) without touching the reserve. If the logger is tail-locked or short of space, reject the change and report "not applied" on cfg/applied.
+2.Write the candidate to the older slot. First write 0 to its commit marker and read the marker back. Then write the header, payload and CRC. Read the whole slot back and check its CRC.
+3.Append the snapshots: the Type 3 set, then the Type 4 set, each verified (see "Settings snapshots"). The old settings are still active at this point, so readings taken now still use the old generation.
+4.Commit: write the commit marker, read it back, and re-check the slot. Only then activate the new settings, append an anchor reading (Type 1, reason 3) carrying the new generation, checkpoint the metadata and publish cfg/applied as successful.
+If power is lost before step 4 completes, the old slot is still the newest eligible slot, so the old settings remain in force. Snapshots left by the interrupted change are harmless: a snapshot never proves activation; the anchor does. If power is lost after step 4, boot finds the new slot committed and finishes the activation (see "Boot").
+Rollback: if new settings fail a runtime health check, the previous configuration is re-applied through the same four steps as a new generation (source 3). Old generations and old ring records are never altered. Both slots are never updated in one change.
+Settings encoding (TLV)
+The payload is a list of entries: tag (u8), length (u8), value. Tags appear in ascending order, each at most once. A missing tag means the default. Unknown tags are preserved and ignored, so older firmware can read newer settings. Strings are UTF-8 with no terminator.
+Setting
+Tag
+Encoding
+Range
+Default
+Description
+Sensor Reading Frequency
+0x01
+u32 seconds
+60 – 2,332,800 (27 days)
+3600
+How often the groundwater sensor is read.
+Connect + Data Send Frequency
+0x02
+u32 seconds
+300 – 2,332,800
+604800
+How often the logger connects: it uploads data, checks cfg/desired and commands, and publishes state/health (signal and battery).
+GPS Read Frequency
+0x03
+u8 mode + u32 value
+mode 0: at each send
+mode 1: N per send interval (N 1–255)
+mode 2: fixed seconds (600 – 2,332,800)
+mode 3: off
+mode 0
+How often a GPS position reading is taken. By default one is taken at every send, just before connecting. Mode 1 divides the send interval by N, but never below 600 s.
+Tilt Read Frequency
+0x04
+u8 mode + u32 value
+mode 0: at each send
+mode 1: N per send interval (N 1–255)
+mode 2: fixed seconds (600 – 2,332,800)
+mode 3: off
+mode 0
+How often the accelerometer tilt angles are read, with the same options as GPS. Each reading is compared with the reference orientation (orientation alarm, Type 12).
+Future Start Time
+0x05
+u32 UTC seconds
+0 = none, else a future time
+0
+Logging starts at this time, and the read and send schedules count from it. With 0, the first reading is taken as soon as the logger is turned on or tested.
+Level conversion factors
+0x06
+4 × f32: a, p, b, c
+finite values
+a 0, p 1, b 1, c 0
+level = a·V^p + b·V + c, where V is the sensor voltage in volts across the 150 Ω shunt (the V2.1 firmware formula). The defaults record V itself. Rev0/Rev1 called the factors m, a, b, c.
+Tap Detection
+0x07
+u8
+0 = off, 1 = on
+1
+Continuous ADXL345 tap (impact) monitoring. Off saves a little power and stops impact alarms.
+Tap Sensitivity
+0x08
+u8
+1–10
+5
+Linear scale: tap threshold = (11 − value) × 0.75 g, so 1 = 7.5 g (hard knock only) and 10 = 0.75 g (light tap); 5 = 4.5 g.
+GPS Alarm Sensitivity
+0x09
+u8
+0–10
+5
+Linear scale: alarm distance = (11 − value) × 25 m, so 1 = 250 m and 10 = 25 m; 5 = 150 m. 0 = off.
+Minimum GWL Alarm
+0x0A
+f32
+NaN = unset
+unset
+Low alarm is entered when level < this value.
+Maximum GWL Alarm
+0x0B
+f32
+NaN = unset
+unset
+High alarm is entered when level > this value.
+Minimum GWL Hysteresis
+0x0C
+f32
+≥ 0 (a distance, in level units)
+unset = 0
+After a low alarm, the level must rise above Minimum GWL Alarm + this value before the low alarm ends and can trigger again.
+Maximum GWL Hysteresis
+0x0D
+f32
+≥ 0 (a distance, in level units)
+unset = 0
+After a high alarm, the level must fall below Maximum GWL Alarm − this value before the high alarm ends and can trigger again.
+Monitoring Location ID
+0x0E
+UTF-8
+≤ 32 bytes
+empty
+User-defined location ID.
+Project ID
+0x0F
+UTF-8
+≤ 32 bytes
+empty
+User-defined project ID.
+Display Text
+0x10
+UTF-8
+≤ 64 bytes, at most one newline
+empty
+Top-left of the screen. Two lines are drawn in a smaller font; overflow is cut with "…".
+Partial_Update
+0x11
+u8
+0 or 1
+0
+E-ink partial refresh (see "Notes" under the e-ink layout). Was missing from the Rev1 table.
+Display UTC Offset
+0x12
+i16 minutes
+−720 to +840
+0
+Display only. All stored times are UTC.
+A typical payload is about 150 bytes (one snapshot fragment); the 1,024-byte limit leaves room for new settings. Battery and solar thresholds are deliberately not settings: the server raises ordinary battery and solar alerts from state/health and test data, and the logger only has fixed firmware limits for critical conditions (Type 18).
+Zones 2 & 3 — metadata checkpoints (A/B)
+The metadata checkpoint records where the ring is and what has been saved, so boot does not have to scan all of MRAM. It is a cache of verified state, not the only copy: boot checks it against the frames themselves.
+Offset
+Type
+Field
+Meaning
+0
+u32
+magic
+"GWM1" (bytes 47 57 4D 31).
+4
+u16
+layout_version
+1.
+6
+u16
+body_len
+76 (bytes covered by the CRC).
+8
+u32
+metadata_seq
+Checkpoint generation; the higher eligible value wins.
+12
+u32
+log_id
+Current log instance.
+16
+u32
+seq_reserved_end
+Every frame sequence used so far is below this value.
+20
+u32
+last_seq
+Sequence of the last frame before head (0 if none).
+24
+u32
+head
+Logical position.
+28
+u32
+tail
+Logical position.
+32
+u32
+sd_saved_end
+Logical position.
+36
+u32
+mqtt_saved_end
+Logical position.
+40
+u32
+active_settings_gen
+Generation currently used for readings.
+44
+u32
+boot_count
+Incremented at every boot.
+48
+u16
+state_flags
+bit0 TAIL_LOCKED, bit1 RECOVERY, bit2 LOGGING_DISABLED, bit3 ALMOST_FULL_REPORTED.
+50
+u16
+last_error
+Most recent error code, for state/debug.
+52
+u32
+lock_start_time
+Time the Tail Lock began (time format above).
+56
+u32
+missed_readings
+Readings not logged during the current lock or recovery.
+60
+u32
+missed_events
+Events not logged during the current lock or recovery.
+64
+u32
+checkpoint_time
+Time of this checkpoint.
+68
+u32
+settings_gen_reserved
+Highest settings generation ever assigned, used or not.
+72
+u8
+checkpoint_time_flags
+Time flags for checkpoint_time.
+73
+3 bytes
+reserved
+0.
+76
+u32
+crc32
+CRC-32 over bytes 0–75.
+252
+u32
+commit
+0xA55AC33C when committed.
+Writing a checkpoint
+Write to the older slot: (1) write 0 to its commit marker; (2) write bytes 0–79 with metadata_seq one higher than the newest slot; (3) read back and check the CRC; (4) write the commit marker and read it back. A torn write can only damage the slot being written, so the newest committed checkpoint always survives.
+A checkpoint is required: before any sequence number at or above seq_reserved_end is used; after tail advances and before the head writes into the freed space; after either saved boundary moves; when the lock or recovery state changes; and before sleeping if anything changed since the last checkpoint. Head does not need a checkpoint after every frame, because boot scans forward from the stored head.
+Invariants checked at boot: tail ≤ head; head − tail ≤ C; sd_saved_end ≤ head; mqtt_saved_end ≤ head; tail ≤ max(sd_saved_end, mqtt_saved_end); last_seq < seq_reserved_end; active_settings_gen ≤ settings_gen_reserved. A checkpoint that fails any invariant is not eligible.
+Zone 5 — the ring
+Logical position x is stored at physical address 0x02000 + (x mod 122,880). Head, tail and both saved boundaries always fall on frame boundaries. A frame may cross the physical end of the zone; it is then read or written in two operations.
+Frame format
+Byte offset
+Type
+Field
+Definition
+0–1
+2 × u8
+Magic
+0xA5, 0x5A. Written last, as the commit point. Magic bytes alone do not prove a frame: they can also occur inside payloads.
+2
+u8
+Type
+Record type (table below). 255 is never used.
+3
+u8
+Length L
+Payload bytes only, 0–255.
+4–7
+u32
+Sequence
+Record sequence number (below).
+8 to 7 + L
+L bytes
+Payload
+Layout depends on the type. Absent when L = 0.
+8 + L
+u8
+CRC-8
+CRC-8/AUTOSAR over bytes 2 to 7 + L (type, length, sequence, payload). Magic bytes are not covered.
+Total frame size is L + 9 bytes, from 9 to 264. The envelope is identified as envelope version 1 in SD and MQTT containers.
+Sequence numbers and log identity
+Each log starts at sequence 1. Every frame takes the next number, whatever its type, across physical wraps. Numbers order frames; they are not sample counters or timestamps.
+Numbers are reserved 64 at a time: before using a number at or above seq_reserved_end, the firmware raises seq_reserved_end by 64 and writes a checkpoint. At boot, numbering resumes at seq_reserved_end, so a number that might have been used before a reset is never reused. Up to 63 numbers can be skipped per reboot; that is harmless.
+Before next_seq reaches 0xFFFFF000, a new log is started (Type 14, reason 4).
+log_id is a uint32. A new log_id is max(previous log_id + 1, current UTC seconds) when the clock is valid, or previous + 1 when it is not. If no previous log_id is known and the clock is invalid, it is 0x80000000 OR the low 31 bits of a CRC-32 over the MCU UID and 16 ADC noise samples.
+Records are uniquely identified by (DEVICEHEX, log_id, sequence). Every SD segment and MQTT batch carries log_id; DEVICEHEX comes from the topic, and the SD header carries the raw MCU UID.
+Appending a frame (commit protocol)
+1.Build the frame in RAM with bytes 0–1 set to 0x00 0x00, and compute the CRC-8.
+2.Check space. An ordinary frame needs (head + size) − tail ≤ U. If it does not fit, reclaim saved space (see "Persistence"); if that is not possible, enter Tail Lock.
+3.Write the whole frame at the physical address of head, splitting it at the end of Zone 5 if necessary.
+4.Read it back and compare. On a mismatch, rewrite once; a second mismatch is an MRAM fault (see "Faults").
+5.Write 0xA5 0x5A to bytes 0–1. This is the commit point.
+6.In RAM: head += size; last_seq = sequence; next_seq += 1.
+If power is lost before step 5, the frame has no magic bytes and boot ignores it. Old frames from the previous lap that lie beyond head are rejected because their sequence numbers are lower than last_seq.
+Finding head at boot (forward scan)
+Start at the checkpoint’s head and last_seq. Accept the frame at the current position only if: the magic is A5 5A; the type is not 255; last_seq < sequence < seq_reserved_end; the CRC-8 matches; and the frame ends within tail + C. If it is accepted, move past it and repeat. The first frame that fails ends the scan, and that position becomes head. The scan never goes further than tail + C.
+Record types
+Type
+Name
+Payload
+Frame
+Written when
+0
+Routine reading
+9
+18
+Each scheduled sensor reading. Compact: the time comes from the anchor.
+1
+Timestamped reading
+22
+31
+Anchors, and any reading off the schedule (alarms, tests, commands).
+2
+Position reading
+30
+39
+Each scheduled GPS reading (includes the accelerometer at that moment, so it also serves as a tilt reading when both are due); after types 10–12; in tests.
+3
+Settings snapshot
+14 + data
+≤ 264
+Step 3 of a settings change. One or more fragments.
+4
+Settings snapshot backup
+14 + data
+≤ 264
+Immediately after the Type 3 set: an independent copy.
+5
+Test result
+28
+37
+Each test (button, remote or power-on).
+6
+SD flush complete
+15
+24
+After a verified save to SD.
+7
+MQTT flush complete
+15
+24
+After a save fully acknowledged by the broker.
+8
+GWL alarm enter
+18
+27
+Level crosses an alarm limit; followed by a Type 1 reading.
+9
+GWL alarm exit
+18
+27
+Level returns past the alarm level by more than the hysteresis; followed by a Type 1 reading.
+10
+GPS location changed
+13
+22
+Fix moved beyond the threshold; followed by a Type 2 reading.
+11
+Impact
+8
+17
+Tap above the threshold (when tap detection is on); followed by a Type 2 reading.
+12
+Orientation changed
+7
+16
+Tilt differs from the reference orientation by more than 10°; followed by a Type 2 reading.
+13
+Tail Lock
+22
+31
+Logging stopped to protect unsaved data. Uses the reserve.
+14
+Log start (new)
+37
+46
+First frame of every log instance.
+15
+Clock set (new)
+14
+23
+RTC set from an invalid state, or stepped by more than 2 s.
+16
+Data gap (new)
+16
+25
+After a period with no logging: lock, power loss, recovery or logging disabled.
+17
+Sensor fault (new)
+13
+22
+Sensor status changes into or out of a fault.
+18
+Power critical (new)
+10
+19
+Battery crosses the fixed critical limit, either way. Ordinary battery and solar alerts are raised by the server.
+19
+Storage warning (new)
+14
+23
+MRAM almost full or cleared; SD card missing, failing, full or restored.
+20
+Tail unlocked (new)
+21
+30
+Logging resumed after a Tail Lock.
+21
+Tilt reading (new)
+21
+30
+Each scheduled tilt reading not already covered by a Type 2 at the same time.
+22–239
+Reserved
+Future types. Existing numbers are never reused for another meaning.
+240–254
+Bench only
+Test and debug records; never written by release firmware.
+Common blocks
+Offset
+Type
+Field
+Meaning
+TB+0
+u32
+time
+Time format above.
+TB+4
+u8
+time_flags
+bit0 VALID (1 = UTC, 0 = seconds since boot). bits 1–2 SOURCE: 0 RTC kept across a warm reset, 1 GNSS, 2 cellular network, 3 server. Other bits 0.
+SB+0
+u16
+sensor_mV
+Voltage across the 150 Ω shunt in mV (4–20 mA = 600–3,000 mV); 0xFFFF if not read.
+SB+2
+i32
+level
+Level × 1000 in the user’s units, using the factors of the stated generation; INT32_MIN if not available.
+SB+6
+u8
+sensor_status
+0 OK, 1 no sensor / open loop (< 3.5 mA), 2 under-range (3.5–3.9 mA), 3 over-range (> 20.5 mA), 4 ADC fault, 5 factors invalid.
+TB is the 5-byte time block and SB the 7-byte sensor block. Offsets below are within the payload.
+Payload layouts
+Type
+Payload fields (offset: type name)
+0 Routine
+0: u16 sample_index — samples since the anchor (1, 2, …; a missed reading leaves a gap in the index) · 2: SB
+1 Timestamped
+0: TB · 5: u32 settings_gen · 9: u8 reason (anchors: 1 log start, 2 boot/resume, 3 settings activated, 4 clock set, 5 after unlock, 6 index overflow, 7 schedule start/realign; others: 16 alarm follow-up, 17 test, 18 commanded, 19 other off-schedule) · 10: u8 flags (bit0 ANCHOR) · 11: u32 interval_s (sensor interval in force) · 15: SB
+2 Position
+0: TB · 5: u32 settings_gen · 9: u8 reason (1 scheduled, 2 alarm follow-up, 3 test, 4 commanded) · 10: u8 fix (0 none, 1 2D, 2 3D) · 11: i32 lat (1e-7°) · 15: i32 lon (1e-7°) · 19: i16 alt_m · 21: u8 hdop×10 (255 unknown) · 22: u8 satellites · 23: i16 accel_x_mg · 25: i16 accel_y_mg · 27: i16 accel_z_mg · 29: u8 accel_status (0 OK, 1 no response). No fix: lat/lon = INT32_MIN.
+3 / 4 Snapshot
+0: u32 settings_gen · 4: u8 settings_schema · 5: u8 fragment_index (from 0) · 6: u8 fragment_count · 7: u8 reserved · 8: u16 total_len · 10: u32 snapshot_crc32 · 14: data (≤ 241 bytes)
+5 Test
+0: TB · 5: u32 settings_gen · 9: u8 trigger (1 button, 2 remote, 3 power-on) · 10: u32 req_id (0 if none) · 14: u16 battery_mV · 16: u16 solar_mV · 18: u8 CSQ (99 unknown) · 19: SB · 26: u16 status (bit0 sensor, 1 SD, 2 SIM, 3 network registered, 4 MQTT, 5 GNSS fix, 6 display, 7 accelerometer, 8 MRAM, 9 solar present)
+6 SD flush
+0: TB · 5: u32 saved_end · 9: u32 last_seq_saved · 13: u16 segment_no
+7 MQTT flush
+0: TB · 5: u32 saved_end · 9: u32 last_seq_saved · 13: u16 batch_count
+8 / 9 Alarm
+0: TB · 5: u32 settings_gen · 9: u8 limit (1 high, 2 low) · 10: i32 level×1000 · 14: i32 threshold×1000
+10 GPS moved
+0: TB · 5: u32 distance_m · 9: u32 threshold_m
+11 Impact
+0: TB · 5: u8 source (1 tap; others reserved) · 6: u16 peak_mg
+12 Orientation
+0: TB · 5: u16 tilt_change (0.1°, angle between the current and reference gravity vectors)
+13 Tail Lock
+0: TB · 5: u32 head · 9: u32 tail · 13: u32 sd_saved_end · 17: u32 mqtt_saved_end · 21: u8 reason (1 ring full of unsaved data)
+14 Log start
+0: TB · 5: u32 log_id · 9: u32 previous_log_id (0 none) · 13: u8 reason (1 blank MRAM formatted, 2 WIPE_MRAM, 3 factory reset, 4 sequence rollover, 5 recovery rebuild, 6 payload schema changed) · 14: u32 firmware_version (major, minor, patch, build bytes) · 18: u8 envelope_version · 19: u16 payload_schema · 21: u32 settings_gen · 25: 12 bytes MCU UID
+15 Clock set
+0: TB (old time and flags) · 5: u32 new_time (UTC) · 9: u8 new_time_flags · 10: u32 uptime_s (seconds since boot when set)
+16 Data gap
+0: TB (gap start) · 5: u32 gap_end · 9: u32 missed_readings · 13: u16 missed_events · 15: u8 reason (1 tail lock, 2 power loss/reset, 3 recovery, 4 logging disabled, 5 unsaved data wiped)
+17 Sensor fault
+0: TB · 5: u32 settings_gen · 9: u8 state (1 fault started, 0 cleared) · 10: u8 sensor_status · 11: u16 sensor_mV
+18 Power critical
+0: TB · 5: u8 kind (1 battery critical: pack below 6.60 V, i.e. 3.30 V per cell on the 2S pack; 2 recovered: pack above 7.00 V) · 6: u16 battery_mV · 8: u16 solar_mV. Limits are fixed in firmware.
+19 Storage warning
+0: TB · 5: u8 kind (1 MRAM almost full, 2 almost-full cleared, 3 SD missing, 4 SD error, 5 SD full, 6 SD restored) · 6: u32 unsaved_bytes · 10: u32 usable_bytes
+20 Tail unlocked
+0: TB · 5: u32 new_tail · 9: u32 sd_saved_end · 13: u32 mqtt_saved_end · 17: u32 locked_seconds
+21 Tilt
+0: TB · 5: u32 settings_gen · 9: u8 reason (1 scheduled, 2 test, 3 commanded) · 10: i16 accel_x_mg · 12: i16 accel_y_mg · 14: i16 accel_z_mg · 16: i16 pitch (0.1°) · 18: i16 roll (0.1°) · 20: u8 accel_status (0 OK, 1 no response)
+Time, anchors and readings
+An anchor is a Type 1 reading with the ANCHOR flag. It is sample 0 of a run of routine readings. A Type 0 reading with sample_index k was scheduled at anchor time + k × interval_s. A missed reading leaves a gap in the index, so it is never confused with a shorter interval.
+A new anchor is written: at the start of a log; after every boot; when new settings take effect; after a clock set that moves the schedule; after an unlock; when the schedule starts or is realigned; and before sample_index would exceed 65,535.
+Readings carry their settings generation, directly or through their anchor. A snapshot appended without activation never changes how readings are interpreted.
+When the RTC is not valid, times are seconds since boot with VALID = 0. Reset-default dates such as 2000-01-01 are never presented as real times. When the clock is later set, a Type 15 record pairs uptime with UTC, so the server can convert this boot’s relative times. No timestamp is invented across a power loss.
+An alarm triggered by a scheduled reading produces the Type 0 reading, then the Type 8/9 event, then a Type 1 reading (reason 16) with the same value.
+Accelerometer. When tap detection is on, the ADXL345 runs in full-resolution ±16 g mode with its tap interrupt armed: THRESH_TAP = (11 − sensitivity) × 12 (62.5 mg per count) and a fixed 10 ms duration (DUR = 16). Free-fall detection is not used. Tilt is measured on its own schedule by averaging 16 samples; pitch and roll are computed from the gravity vector. The reference orientation is the tilt at the last test or on first deployment, and a change of more than 10° from it raises the orientation alarm (Type 12).
+GPS alarm. Only a 3D fix with HDOP ≤ 2.5 is compared with the reference position (the first such fix after a test or deployment). A distance above (11 − sensitivity) × 25 m raises Type 10.
+Alarm hysteresis. A high alarm starts (Type 8) when the level rises above Maximum GWL Alarm. It ends (Type 9) only when the level falls below Maximum GWL Alarm − Maximum GWL Hysteresis, and only then can it start again. The low alarm mirrors this: it starts below Minimum GWL Alarm and ends above Minimum GWL Alarm + Minimum GWL Hysteresis. A level hovering around an alarm value therefore produces one alarm, not a stream of them. Water-level alarms are always raised by the logger itself.
+Settings snapshots (Types 3 and 4)
+A snapshot is the exact TLV payload of the new settings slot. It is split into fragments of up to 241 data bytes; a typical snapshot fits in one fragment, and the 1,024-byte maximum needs 5.
+Every fragment carries the generation, schema, its index and the fragment count, the total length, and a CRC-32 of the whole assembled snapshot.
+All Type 3 fragments are written first, then a complete second set as Type 4. Each fragment is a normal frame with its own sequence number and CRC-8.
+A set is complete when every index from 0 to count − 1 is present exactly once (or duplicated with identical content) and the assembled CRC-32 matches. If the Type 3 set is incomplete, the Type 4 set is used.
+Persistence, reclaim and capacity
+Saving (flush) to a destination
+1.At the start, record end = head; the flush covers [start, end). start is the destination’s saved_end, or tail if saved_end is below tail. In that case that destination has permanently missed [saved_end, tail) from MRAM; the batch or segment is flagged so the gap is visible.
+2.Transfer the range (see SD output and MQTT). Frames appended during the transfer wait for the next flush.
+3.When the destination confirms a prefix of the range, move its saved_end to the end of that prefix and write a checkpoint. A partial save keeps the remainder unsaved.
+4.Append a Type 6 or Type 7 record. That record lies outside the range it confirms. It is carried by the next flush; no extra flush is started just to deliver it.
+SD is attempted first when both are available. A missing or failed SD card never blocks MQTT. A save to one destination says nothing about the other: if data is reclaimed after an MQTT-only save, the logger never claims an SD copy exists. A retry after an uncertain acknowledgement may resend the same frames with the same identities; the server removes duplicates.
+Reclaiming space
+Tail may advance only up to max(sd_saved_end, mqtt_saved_end), and only over whole frames. Reclaim is lazy: tail moves only when an ordinary frame does not fit, and then by at least 1 KiB, or by all reclaimable space if that is less. The new tail is checkpointed before head writes into the freed bytes.
+Almost full
+When unsaved bytes reach 75% of U, append Type 19 (kind 1), publish EVENT_MRAM_ALMOST_FULL at the next connection, and bring the next connection forward to the next wake. The warning clears (Type 19 kind 2) when unsaved bytes fall below 50% of U.
+Retention if nothing is saved
+Schedule
+Bytes per day
+Days to fill U
+Note
+Sensor 1 h, GPS and tilt at each weekly send (defaults)
+445
+275 (~9 months)
+Sensor 1 h, GPS/tilt 1 h
+1,375
+89 (~3 months)
+GPS records are 68% of the volume.
+Sensor 15 min, GPS/tilt weekly
+1,741
+70
+Sensor 5 min, GPS/tilt weekly
+5,197
+23
+These figures use 18 bytes per routine reading, 39 per position reading and about 7 bytes per day of flush records. Weekly uploads normally keep the ring far from full; the figures show how long an unreachable logger can keep recording before it locks.
+Tail Lock
+Entering the lock
+If an ordinary frame does not fit and no saved space can be reclaimed, the logger appends a Type 13 record using the control reserve, sets TAIL_LOCKED and lock_start_time, and writes a checkpoint. The reserve exists only so this record can always be written. Because the lock is entered while 512 bytes are still free, it never depends on the last free bytes.
+While locked
+No ring appends, and nothing is overwritten.
+Readings and alarms still run: the display updates, and alarms and the lock itself are published to the event topic when connected. They are not stored; missed_readings and missed_events count them in the metadata. Any RAM queue is temporary and lost on power loss.
+Save attempts continue: SD at every wake if a card is present, and an MQTT connection at the next wake and then every min(send interval, 6 h).
+Settings changes are rejected as "not applied (locked)".
+Leaving the lock
+The lock ends when, after a save, unsaved bytes are at most 50% of U. Normally one save clears everything.
+1.Write a checkpoint with the new saved boundary.
+2.Advance tail over the saved data and write a checkpoint. There is now ordinary free space.
+3.Append Type 6 or 7, Type 20 (tail unlocked), Type 16 (data gap: from lock start to now, with the missed counts) and an anchor reading (Type 1, reason 5).
+4.Clear TAIL_LOCKED and the missed counters, and write a checkpoint. Routine logging resumes.
+If power is lost during unlocking, boot still sees TAIL_LOCKED and repeats from step 1. Repeated records are harmless. The Type 13 record is never modified, and there is no "unlock override": only a successful save, or a deliberate WIPE_MRAM, ends a lock.
+SPI2 sharing and timing
+Only one task owns SPI2 at a time. On each hand-over the firmware switches the pin functions and the SPI mode: MRAM uses mode 3 (SCK idles high, matching its pull-up); the SD card uses mode 0.
+SD work runs in units of one 512-byte sector write, each with a 250 ms timeout, and releases the bus between units. An MRAM append (about 1 ms at 4 MHz for the largest frame, including the read-back) can therefore run between units.
+Target: a scheduled reading is taken within 2 s of its scheduled time, because Type 0 times are derived from the schedule. MQTT transfers and CSV conversion also yield to readings and MRAM writes. Rev0 asked for zero blocking; Rev2 sets these measurable limits instead.
+SD output
+The binary archive is the lossless, authoritative copy. The CSV is derived from it for people to read. Both are on the same card, so together they are one backup, not two.
+Files
+Path
+Contents
+/GWL/<LOGID>/
+One directory per log instance; LOGID is the log_id as 8 hex digits.
+B0000001.BIN, B0000002.BIN, …
+Binary segments of up to 1 MiB each. A new segment also starts after a repair or a card change.
+C0000001.CSV, …
+CSV export of the binary segment with the same number.
+EXPORT.DAT
+CSV exporter cursor: segment number, byte offset of the next unconverted frame, and a CRC-32.
+Binary segment header
+Offset
+Type
+Field
+Meaning
+0
+8 bytes
+magic
+"GWLSDBIN".
+8
+u16
+header_len
+64 + length of the settings context block. Frames start at this offset.
+10
+u8
+container_version
+1.
+11
+u8
+envelope_version
+1.
+12
+u16
+payload_schema
+Payload schema of this log.
+14
+u16
+reserved
+0.
+16
+12 bytes
+mcu_uid
+Raw STM32 UID.
+28
+u32
+log_id
+32
+u32
+segment_no
+From 1.
+36
+u32
+first_seq
+Sequence of the first frame in this segment.
+40
+u32
+start_pos
+Logical position of the first frame.
+44
+u32 + u8
+created_time, flags
+When the segment was created.
+49
+11 bytes
+reserved
+0.
+60
+u32
+crc32
+CRC-32 over bytes 0–59.
+64
+variable
+settings context
+u32 settings_gen, u16 length, the TLV settings in force at start_pos, then a CRC-32 over this block. The segment can therefore be decoded even after its snapshot has left MRAM.
+After the header come the exact frame bytes, in logical order, from start_pos. Settings and metadata slots are never mixed into the frame stream.
+Writing and verifying
+Append whole frames only, in chunks of up to 4 KiB. After each chunk, call f_sync, then read the bytes back and compare them with MRAM.
+Only when the whole flush range has been written and verified does sd_saved_end move (followed by a checkpoint and a Type 6 record).
+On restart, walk the last segment from header_len, accepting frames with valid magic, CRC-8 and increasing sequence. Truncate the file after the last valid frame. If the header itself is invalid, rename the file to .BAD and start a new segment. Partial bytes never count as saved, and a retry is never appended behind a torn frame.
+If /GWL/<LOGID>/ is missing, or the last segment does not end where sd_saved_end expects, the card is new or different: start a new segment at tail, so it receives everything MRAM still holds. sd_saved_end never moves backwards.
+CSV export
+The logger converts committed binary segments to CSV in small background steps. The CSV is UTF-8 with no BOM, CRLF line endings and a header row. Quoting follows RFC 4180: a field containing a comma, quote or line break is enclosed in double quotes, and a quote inside it is doubled.
+Column
+Content
+device_uid, log_id
+DEVICEHEX (24 hex digits) and log_id (8 hex digits).
+seq, type, type_name
+Frame sequence, type number and name ("unknown" for types this firmware cannot decode).
+time_utc
+ISO 8601 YYYY-MM-DDThh:mm:ssZ; blank when the time is not valid. Type 0 times are computed from the anchor.
+time_rel_s, time_source
+Seconds since boot when the time is not valid; time source name.
+settings_gen
+Generation used for the row.
+level, sensor_mV, sensor_status
+Level with 3 decimals, raw voltage and status name.
+lat, lon, alt_m, satellites, hdop
+Position (7 decimals for lat/lon).
+accel_x_mg, accel_y_mg, accel_z_mg
+Accelerometer.
+battery_mV, solar_mV, csq
+From test records.
+detail
+Decoded text for events, e.g. "alarm high, threshold 10.500" or "settings gen 4 fragment 1/1".
+raw_hex
+Payload as hex, for every row that is not a reading. Unknown records are never dropped.
+Before appending, the exporter truncates the CSV to its last complete line. A CSV failure never invalidates a verified binary save and never keeps MRAM locked. Any CSV can be regenerated from its binary segment, even after the frames have left MRAM.
+MQTT data/stream
+Each message on <ROOT>/<DEVICEHEX>/data/stream (QoS 1, not retained) is one binary batch: a 32-byte header, up to 1,464 bytes of whole frames, and a CRC-32 over everything before it, so a message is at most 1,500 bytes. A frame is never split across batches.
+Publish command. Batches are sent with AT+QMTPUBEX=<client>,<msgID>,1,0,"<topic>",<length>. The EC21 then reads exactly <length> bytes, so any byte value can be sent; 1,500 bytes per message is the module’s limit in this mode. The V2.1 firmware uses AT+QMTPUB instead, which ends the message at a Ctrl-Z byte (0x1A) and treats ESC (0x1B) as cancel. That suits JSON text, but binary frames contain those byte values, so data/stream must use AT+QMTPUBEX. The JSON topics can stay as they are.
+Offset
+Type
+Field
+Meaning
+0
+u32
+magic
+"GWB1".
+4
+u8
+header_len
+32.
+5
+u8
+envelope_version
+1.
+6
+u16
+payload_schema
+8
+u32
+log_id
+12
+u32
+first_seq
+Sequence of the first frame.
+16
+u32
+last_seq
+Sequence of the last frame.
+20
+u32
+start_pos
+Logical position of the first frame.
+24
+u32
+end_pos
+Exclusive end position.
+28
+u16
+frame_count
+30
+u8
+flags
+bit0 resend, bit1 gap before start_pos for this destination, bit2 read from the SD archive.
+31
+u8
+reserved
+0.
+32
+n bytes
+frames
+Exact frame bytes.
+32 + n
+u32
+crc32
+Over bytes 0 to 31 + n.
+Acknowledgement: a batch is saved when the EC21 reports +QMTPUBEX: <client>,<msgID>,0 for it, which means the broker’s PUBACK arrived. Result 1 (retransmitting) means wait. Result 2 (failed) ends the flush; the rest stays unsaved for the next connection. "OK" from the publish command alone is not proof.
+mqtt_saved_end moves to the end_pos of the last batch in an unbroken run of acknowledged batches. A batch whose acknowledgement was lost in a reset is sent again, not discarded.
+Broker acceptance is the persistence boundary; the broker must have persistence enabled. The server checks the batch CRC-32 and every frame CRC, stores raw batches, removes duplicates by (DEVICEHEX, log_id, sequence) and decodes by payload_schema.
+Send one batch at a time and wait for its result. The module allows up to 5 messages in flight, which can be used later if uploads are slow.
+Bench check before relying on it: AT+QMTPUBEX=? must be accepted by the fitted EC21 firmware, and a 1,500-byte test message containing 0x00, 0x1A and 0x1B must arrive at the broker unchanged. If either fails, the fallback is to base64-encode the same batch (about a third larger) and send it with AT+QMTPUB.
+Boot
+1.Wait at least 400 µs after power-up, send WAKE (ABh) and set SPI2 to MRAM mode.
+2.Read Zones 0–3. If no zone contains a recognised magic value ("GWS1" or "GWM1"), the chip is blank: format it (see the table below) and stop here.
+3.Choose the eligible settings slot and metadata slot with the highest generations. Report any slot that failed a check.
+4.Run the forward scan from the checkpoint head to find the real head and last_seq.
+5.Set next_seq = seq_reserved_end, reserve a new block of 64, add 1 to boot_count, and write a checkpoint.
+6.Reconcile settings. If the selected slot’s generation is newer than active_settings_gen, the change was committed but not yet activated: activate it now (anchor, reason 3). If it is older, the newer slot was lost: keep the selected settings and report a rollback.
+7.If TAIL_LOCKED is set, stay locked and follow "Leaving the lock" after the next successful save.
+8.Otherwise, if the clock is valid and more than 1.5 sensor intervals have passed since the last record, append a Type 16 record (reason 2). Then append an anchor (reason 2) with a fresh reading and resume the schedule.
+Faults and recovery
+Condition
+Action
+Blank chip: no recognised magic in Zones 0–3
+Format: default settings as generation 1 in slot A (source 1); metadata in slot A with head = tail = both boundaries = 0; Zone 4 zeroed; Type 14 (reason 1); anchor.
+One slot of a pair invalid
+Use the other slot and report it. The next write goes to the invalid slot anyway, because it counts as the older one.
+Both settings slots invalid, metadata valid
+Search the ring for a complete Type 3 or Type 4 snapshot of active_settings_gen. If one is found, rewrite it into a slot (source 5) and continue. Otherwise stop ordinary logging, enter RECOVERY, read the retained cfg/desired and apply it as a new generation.
+Both metadata slots invalid, or invariants fail
+Enter RECOVERY in read-only mode: report the problem, do not append and do not format. An operator then sends RECOVER_MRAM or WIPE_MRAM (below).
+Frame CRC failure inside [tail, head)
+Copy the bytes unchanged to SD and MQTT and report the sequence context. Decoders resynchronise at the next frame with valid magic, CRC and the next expected sequence. A historical record is never rewritten.
+Read-back mismatch twice on one write
+MRAM fault: stop appends, set last_error, report on state/debug and event. The display, alarms and MQTT continue.
+SD missing or failing
+Keep logging to MRAM. Append Type 19 when the state changes. MQTT saves continue.
+Format, wipe and reset scope
+Operation
+Scope
+Automatic format
+Only for a blank chip, as above. Never for a corrupt or ambiguous chip.
+WIPE_MRAM (cmd/danger)
+Two-step nonce handshake. If unsaved data exists, the logger’s challenge reply also states the number of unsaved records and bytes, and the confirming command must echo that exact count as confirm_unsaved. A count that no longer matches (more data has been logged since) is refused, so an operator always confirms the loss they were shown. Keeps the settings slots. Zeroes the metadata zones and the ring and starts a new log_id. Then writes Type 14 (reason 2), Type 16 (reason 5, with the wiped counts) if unsaved data was lost, and an anchor.
+FACTORY_RESET (cmd/danger)
+As WIPE_MRAM, and also writes firmware defaults as a new generation (settings_gen_reserved + 1, source 4). Type 14 reason 3. Network keys are outside MRAM and are not touched.
+RECOVER_MRAM (cmd/danger, new)
+Rebuilds the ring from RECOVERY: scan for valid frames, take the highest-sequence unbroken chain as [tail, head), mark all of it unsaved so it is sent again, and start a new log_id (Type 14, reason 5) for new records. Recovered frames are flagged as resends.
+WIPE_SD (cmd/danger)
+Deletes /GWL/ on the card only. MRAM and sd_saved_end are unchanged. The acknowledgement warns that data reclaimed after an SD-only save is now gone.
+Schema identity
+envelope_version (u8) identifies the frame format: 1 = the format in this section. Rev0 framing was never implemented, so no Rev0 data exists to decode.
+payload_schema (u16) starts at 1 and is raised by hand whenever any payload layout or meaning changes. A host test hashes the schema table and fails if the table changes without a version bump. This replaces Rev0’s compile-time hash, which changed on every rebuild.
+A firmware update that changes payload_schema starts a new log (Type 14, reason 6), so one log never mixes schemas. Log start records, SD headers and MQTT batches all carry the schema, and the server keeps a decoder for every version.
+Event list mapping
+event_type_t (page 21)
+Record(s) written
+EVENT_ENTER_ALARM / EVENT_EXIT_ALARM
+Type 8 / Type 9, each followed by Type 1
+EVENT_SENSOR_STOPPED_WORKING
+Type 17, status 1
+EVENT_INVALID_SENSOR_VOLTAGE_VALUE
+Type 17, status 2, 3 or 4
+EVENT_BATTERY_LOW
+Type 18, kind 1 — critical level only. Ordinary low-battery and solar alerts are raised by the server.
+EVENT_GPS_LOCATION_CHANGED
+Type 10, then Type 2
+EVENT_IMPACT_ALARM
+Type 11, then Type 2
+EVENT_ORIENTATION_CHANGED
+Type 12, then Type 2
+EVENT_MRAM_ALMOST_FULL
+Type 19, kind 1
+EVENT_MRAM_FULL_TAIL_LOCK
+Type 13
+Open questions for the team
+1.Orientation threshold. Rev2 fixes the orientation alarm at 10° from the reference. Confirm, or make it a setting.
+2.String limits. 32 / 32 / 64 bytes are proposed; V2.1 firmware currently stores the location ID in a 10-byte buffer.
+3.Sensor status limits. The 3.5 mA and 20.5 mA fault limits, and whether the sensor’s own fault currents (e.g. NAMUR 3.6 / 21 mA) should be decoded.
+FAQ
+What replaces type_lengths[64]?
+The length byte in every frame. A per-type table may still be used to check that a payload has the expected size, but it is never needed to find the next frame.
+Which bytes does each CRC cover?
+Frame CRC-8: type, length, sequence and payload (bytes 2 to 7 + L), not the magic bytes or itself. Slot CRC-32: the slot header and payload up to the CRC field, not the CRC or the commit marker. Snapshot CRC-32: the assembled TLV payload. SD and MQTT CRC-32: everything before the CRC field.
+Why both A/B slots and Type 3/4 snapshots?
+The slots let the logger fall back to a previous configuration after a failed or interrupted change. The snapshots keep a record in the log itself of how every stretch of readings must be interpreted. They solve different problems; neither replaces the other.
+Topic Structure
+The topic structure for the loggers should be as follows
+<ROOT>/<DEVICEHEX>/<TOPIC>/<SUBTOPIC>
+ROOT: Fixed, root topic namespace (e.g. loggers). Allows for namespacing, such as production versus test environment. Not intended for namespacing things like projects, tenants or locations.
+DEVICEHEX: A 24-character hex hash of the MCU UID. Used to uniquely identify the logger. The hash needs to be able to be derived by the logger itself using only the MCU UID to allow regeneration of its own ID if required and avoid losing communication in the field.
+TOPIC: Different topic categories which are sorted as follows:
+state: current state of the device. Retained messages, QoS 1.
+event: publish events as they happen. Not retained, QoS 1.
+data: stream for the logger to send raw data to from the ring buffer. Not retained, QoS 1.
+cmd: send commands to the logger. Not retained, QoS 1.
+cfg: topic for changing logger settings and logger acknowledgement of updated settings. Retained messages, QoS 1.
+All topics shall initially be QoS1, with consideration for QoS 0 or 2 if needed.
+MQTT broker must be configured with persistance enabled.
+SUBTOPIC: optional sub-topics to signal different categories.
+List of Topics & Subtopics
+state
+state/online: Simple topic to assess the online state of a logger while connected and to monitor for unexpected disconnections using broker LWT function. Logger publishes 1 on connect (retain=true, QoS1) and may publish 0 before graceful disconnect (retain=true, QoS1). Logger MUST set an LWT on state/online with payload 0 (retain=true, QoS1) so unexpected disconnects overwrite the retained value.
+state/debug: detailed system and runtime information about the logger, called as part of, such as:
+Firmware version
+MCU Information
+Schema Version
+Current variables in RAM / MRAM
+Others????
+state/health: routine heartbeat of information that the logger publishes on connection prior to sending data (like test but fewer fields and not written to eink screen unless partial updates are enabled).
+Uptime
+Next Expected Connection Time
+Signal strength
+Battery level
+Solar input voltage (for server-side solar alerts)
+state/test: results of last logger test routine (should reflect what is published on eink screen).
+Uptime
+Raw Sensor readings (voltage, mA)
+Battery level
+Signal Strength
+Solar Strength
+Status of SD, SIM, GPS, Eink Screen
+Datetime of test
+event
+no subtopics
+The purpose of the event topic is to provide a place where the logger can publish urgent events as they occur and then the server can listen on this topic to take appropriate action depending on the type of event and the contents of the message payload.
+The topic is intended to trigger server side events. The details of the event itself if needed for later review by the user will be contained within the relevant data record sent to the data/stream topic.
+cmd
+cmd/basic: contains routine commands such as
+flush_mqtt / flush_sd
+run self-test
+get_debug_info
+cmd/danger: Any commands that have a high risk (e.g. may brick the device or erase wanted data) should be placed here in order to prevent accidental calling during normal operations and to allow broker level access control (e.g. only specific admin accounts can send commands here).
+factory reset / wipe MRAM / wipe SD
+disable logging
+firmware update / bootloader mode
+erase keys / rotate credentials
+cmd/basic_ack: Once device receives a command, it must acknowledge the success or failure of the command itself back to this topic.
+cmd/danger_ack: Same as basic_ack but for danger commands.
+Commands are non-retained and should include req_id (and optional batch_id). The device should execute commands at-most-once per req_id (duplicates result in re-ack, not re-execution).
+data
+data/stream: Contains ring buffer data sent as bytes as part of MQTT transmission.
+Additional subtopics for data to be added as needed.
+cfg
+cfg/desired: server pushes new configs to here in order to apply them to the logger. Logger checks this topic on each connection to see if any config has changed and if so applies it.
+cfg/applied: once new settings are successfully applied, the logger replies here with the settings it applied plus any additional metadata (e.g. time applied, any errors).
+Who writes to which topics?
+The server shall write to the following topics:
+- cmd/basic
+- cmd/danger
+- cfg/desired
+The logger writes to all other topics.
+Example List of Events
+typedef enum {
+    EVENT_ENTER_ALARM = 0x01,
+    EVENT_EXIT_ALARM,
+    EVENT_SENSOR_STOPPED_WORKING,
+    EVENT_INVALID_SENSOR_VOLTAGE_VALUE,
+    EVENT_BATTERY_LOW,
+    EVENT_GPS_LOCATION_CHANGED,
+    EVENT_IMPACT_ALARM,
+    EVENT_ORIENTATION_CHANGED,
+    EVENT_MRAM_ALMOST_FULL,
+    EVENT_MRAM_FULL_TAIL_LOCK,
+    (others as needed, always preserve variant order)
+    EVENT_COUNT (end variant for checking variant count)
+} event_type_t;
+Example List of Basic Commands:
+typedef enum {
+    CMD_BASIC_GET_STATUS = 0x01,
+    CMD_BASIC_GET_SETTINGS,
+    CMD_BASIC_RUN_SELF_TEST,
+    CMD_BASIC_FLUSH_MQTT,
+    CMD_BASIC_FLUSH_SD,
+    CMD_BASIC_FETCH_FILE_LIST,
+    CMD_BASIC_FETCH_FILE_CHUNK,
+    CMD_BASIC_CLEAR_ERROR_LATCH,
+    CMD_BASIC_COUNT
+} cmd_basic_type_t;
+Notes:
+If test button is pressed and a test command is also queued, no need to repeat test.
+Example List of Danger Commands:
+typedef enum {
+    CMD_DANGER_FACTORY_RESET = 0x01,
+    CMD_DANGER_WIPE_MRAM,
+    CMD_DANGER_WIPE_SD,
+    CMD_DANGER_ENTER_BOOTLOADER,
+    CMD_DANGER_FIRMWARE_UPDATE,
+    CMD_DANGER_ROTATE_KEYS,
+    CMD_DANGER_ERASE_KEYS,
+    CMD_DANGER_DISABLE_LOGGING,
+    CMD_DANGER_REBOOT,
+    CMD_DANGER_COUNT
+} cmd_danger_type_t;
+Notes: To be implemented as needed
+Connection To Server Routine
+Connect, set LWT, publish state/online=1
+Publish state/health
+Subscribe cfg/desired, apply cfg/desired if changed, publish cfg/applied
+Pull any queued commands (cmd window), queue them locally and parse.
+Execute queued commands that are allowed in current state; 
+Publish command acks and optionally to state topics (e.g. state/tests for test results)
+Upload data to data/stream if any of the following are true:
+A command forces the device to send data over MQTT
+If all the following are true
+If one or more events are to be published to the event stream; AND
+Last publish date was at least 10% of the user specified upload frequency (to prevent several tiny commits of data) (e.g. if settings specify upload every 7 days, then only upload if the last upload was more than 0.7 days ago)
+Optionally publish state/online=0
+Disconnect

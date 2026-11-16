@@ -46,7 +46,8 @@ pub enum LiveEvent {
     Observation {
         device_id: String,
         recorded_at: Option<chrono::DateTime<chrono::Utc>>,
-        gwl: f64,
+        /// `None` for a fault reading.
+        gwl: Option<f64>,
     },
     /// A delivery was identical to one already stored at the same device time.
     Redelivery {
@@ -63,6 +64,24 @@ pub enum LiveEvent {
         device_id: String,
     },
     Command {
+        device_id: String,
+    },
+    /// A revision 2 heartbeat (`health`) was stored.
+    Health {
+        device_id: String,
+    },
+    /// A device event (record, `alerts` copy or server action) was stored.
+    DeviceEvent {
+        device_id: String,
+        event: String,
+    },
+    /// A `data/stream` batch added new ring frames.
+    Stream {
+        device_id: String,
+        new_frames: u32,
+    },
+    /// An SD listing or download changed.
+    Download {
         device_id: String,
     },
     /// Traffic that was recorded but not attributed to any device.
@@ -137,8 +156,14 @@ pub async fn run(
     bus: EventBus,
     stats: Arc<tokio::sync::Mutex<IngestStats>>,
     registry: SharedRegistry,
+    registry_changed: Arc<tokio::sync::Notify>,
 ) -> Result<(), String> {
     let options = mqtt_options(&mqtt, false)?;
+    // Wakes the telemetry session after every reload, so it subscribes a new
+    // unit's durable channels from the registry this loop just loaded rather
+    // than racing it on its own timer.
+    let reloaded = Arc::new(tokio::sync::Notify::new());
+    let telemetry_reloaded = reloaded.clone();
     let telemetry_settings = settings.clone();
     let telemetry_mqtt = mqtt.clone();
     let telemetry_bus = bus.clone();
@@ -151,6 +176,7 @@ pub async fn run(
             telemetry_bus,
             telemetry_stats.clone(),
             telemetry_registry,
+            telemetry_reloaded,
         )
         .await
         {
@@ -168,6 +194,7 @@ pub async fn run(
     let mut reset_ready = true;
     let mut refresh = tokio::time::interval(Duration::from_secs(REGISTRY_REFRESH_SECONDS));
     let mut resumed = tokio::time::Instant::now();
+    let mut subscribed = std::collections::HashSet::new();
 
     loop {
         // A database stall can leave identity-free Ready packets buffered in
@@ -202,7 +229,13 @@ pub async fn run(
                 }
                 continue;
             }
-            _ = refresh.tick() => {
+            // Provisioning changed the registry: reload now, not within 60 s.
+            _ = async {
+                tokio::select! {
+                    _ = refresh.tick() => {},
+                    _ = registry_changed.notified() => {},
+                }
+            } => {
                 if client.is_closed()
                     && let Ok(db) = db::connect(&settings.database_url).await
                 {
@@ -212,10 +245,11 @@ pub async fn run(
                     Ok(loaded) => {
                         let enrollments = loaded.enrollments().count();
                         let bindings = loaded.bindings().len();
-                        let topics = session_topics(&settings, &loaded, false);
+                        let topics = new_topics(&mut subscribed, session_topics(&settings, &loaded, false));
                         let subscriber=mqtt_client.clone();
                         tokio::spawn(async move {for topic in topics {if let Err(e)=subscriber.subscribe(topic,rumqttc::QoS::AtLeastOnce).await {eprintln!("groundwater subscription refresh: {e}");}}});
                         *registry.write().await = loaded;
+                        reloaded.notify_one();
                         eprintln!(
                             "groundwater: registry refreshed ({enrollments} enrollment(s), {bindings} binding(s))"
                         );
@@ -236,6 +270,8 @@ pub async fn run(
         match event {
             Ok(Event::Incoming(Incoming::ConnAck(_))) => {
                 connected = true;
+                // Clean session: every subscription is new again.
+                subscribed.clear();
                 reset_ready = crate::scheduler::invalidate_ready(&publisher_db)
                     .await
                     .is_err();
@@ -248,7 +284,10 @@ pub async fn run(
                 // Subscription production must not await queue capacity while
                 // this same task owns event_loop.poll().
                 let subscriber = mqtt_client.clone();
-                let subscriptions = session_topics(&settings, &*registry.read().await, false);
+                let subscriptions = new_topics(
+                    &mut subscribed,
+                    session_topics(&settings, &*registry.read().await, false),
+                );
                 tokio::spawn(async move {
                     for topic in subscriptions {
                         if let Err(e) = subscriber.subscribe(topic, rumqttc::QoS::AtLeastOnce).await
@@ -273,7 +312,13 @@ pub async fn run(
                 }
             }
             Ok(Event::Incoming(Incoming::Publish(publish))) => {
-                persist_publish(&settings, &publish, &mut client, &registry, &bus, &stats).await?;
+                // Durable channels belong to the persistent session; a stale
+                // control subscription from an older release must not store
+                // them twice.
+                if !crate::topics::durable(&publish.topic, &settings.topics) {
+                    persist_publish(&settings, &publish, &mut client, &registry, &bus, &stats)
+                        .await?;
+                }
                 acknowledge(mqtt_client.clone(), publish);
             }
             Ok(_) => {}
@@ -338,13 +383,27 @@ fn session_topics(
 ) -> Vec<String> {
     let mut topics = settings.topics.subscribe_topics();
     topics.extend(registry.bindings().iter().map(|b| b.topic.clone()));
+    // The platform never subscribes to its own gwl/v1 downlink.
     topics.retain(|topic| {
-        (crate::topics::classify(topic, &settings.topics) == crate::topics::MessageKind::Reading)
-            == telemetry
+        !crate::topics::downlink(topic)
+            && crate::topics::durable(topic, &settings.topics) == telemetry
     });
     topics.sort();
     topics.dedup();
     topics
+}
+
+/// Topics not yet subscribed in this session. Re-subscribing an existing
+/// filter makes the broker resend every retained message on it (MQTT 3.1.1
+/// §3.8.4), so the registry refresh only subscribes what is new.
+fn new_topics(
+    subscribed: &mut std::collections::HashSet<String>,
+    topics: Vec<String>,
+) -> Vec<String> {
+    topics
+        .into_iter()
+        .filter(|topic| subscribed.insert(topic.clone()))
+        .collect()
 }
 
 fn acknowledge(client: AsyncClient, publish: rumqttc::Publish) {
@@ -364,16 +423,23 @@ async fn telemetry_run(
     bus: EventBus,
     stats: Arc<tokio::sync::Mutex<IngestStats>>,
     registry: SharedRegistry,
+    reloaded: Arc<tokio::sync::Notify>,
 ) -> Result<(), String> {
     let (subscriber, mut events) = AsyncClient::new(mqtt_options(&mqtt, true)?, 10);
     let mut client = worker_database(&settings, &stats, false).await?;
     let mut refresh = tokio::time::interval(Duration::from_secs(REGISTRY_REFRESH_SECONDS));
     let mut connected = false;
+    let mut subscribed = std::collections::HashSet::new();
     loop {
         let event = tokio::select! {
             event = events.poll() => event,
-            _ = refresh.tick(), if connected => {
-                let topics = session_topics(&settings, &*registry.read().await, true);
+            _ = async {
+                tokio::select! {
+                    _ = refresh.tick() => {},
+                    _ = reloaded.notified() => {},
+                }
+            }, if connected => {
+                let topics = new_topics(&mut subscribed, session_topics(&settings, &*registry.read().await, true));
                 let sender = subscriber.clone();
                 tokio::spawn(async move { for topic in topics {
                     if let Err(e) = sender.subscribe(topic, rumqttc::QoS::AtLeastOnce).await {
@@ -385,10 +451,16 @@ async fn telemetry_run(
             _ = homelab_common::shutdown_signal() => return Ok(()),
         };
         match event {
-            Ok(Event::Incoming(Incoming::ConnAck(_))) => {
+            Ok(Event::Incoming(Incoming::ConnAck(ack))) => {
                 connected = true;
                 stats.lock().await.telemetry_connected = true;
-                let topics = session_topics(&settings, &*registry.read().await, true);
+                if !ack.session_present {
+                    subscribed.clear();
+                }
+                let topics = new_topics(
+                    &mut subscribed,
+                    session_topics(&settings, &*registry.read().await, true),
+                );
                 let sender = subscriber.clone();
                 tokio::spawn(async move {
                     for topic in topics {
@@ -405,9 +477,7 @@ async fn telemetry_run(
             Ok(Event::Incoming(Incoming::Publish(publish))) => {
                 // Discard any pre-upgrade control subscription from a resumed
                 // telemetry session rather than allowing it to open a window.
-                if crate::topics::classify(&publish.topic, &settings.topics)
-                    == crate::topics::MessageKind::Reading
-                {
+                if crate::topics::durable(&publish.topic, &settings.topics) {
                     persist_publish(&settings, &publish, &mut client, &registry, &bus, &stats)
                         .await?;
                 }
@@ -553,6 +623,9 @@ pub async fn handle_publish(
         received_at,
     };
     let registry = registry.read().await.clone();
+    if let Some(route) = rev2_route(topic, payload, &registry) {
+        return handle_rev2(&delivery, retained, &route, topic_map, client, bus, stats).await;
+    }
     let evaluation = adapter::evaluate(&delivery, &registry, topic_map);
 
     let tx = client.transaction().await.map_err(|e| e.to_string())?;
@@ -707,6 +780,165 @@ pub async fn handle_publish(
     Ok(())
 }
 
+/// A trusted `gwl/v1` delivery that carries protocol revision 2.
+pub struct Rev2Route {
+    pub device_id: String,
+    pub channel: String,
+    pub binding_key: String,
+    pub profile: crate::profiles::ProfileId,
+}
+
+/// Selects the revision 2 path: an attributed `gwl/v1/<DEV>/<channel>`
+/// binding (V21 or V22 enrollment) whose payload is revision 2. Everything
+/// else, including untrusted or unbound revision 2 traffic, takes the
+/// revision 1 adapter and is quarantined there with the usual reasons.
+pub fn rev2_route(topic: &str, payload: &[u8], registry: &EnrollmentRegistry) -> Option<Rev2Route> {
+    let (_, channel) = crate::topics::device_channel(topic)?;
+    if !crate::rev2::UPLINK_CHANNELS.contains(&channel) {
+        return None;
+    }
+    let binding = crate::scheduler::attributed(registry, topic)?;
+    if !matches!(
+        binding.profile,
+        crate::profiles::ProfileId::V21 | crate::profiles::ProfileId::V22
+    ) || !crate::rev2::is_rev2_payload(channel, payload)
+    {
+        return None;
+    }
+    Some(Rev2Route {
+        device_id: binding.device_id.to_ascii_uppercase(),
+        channel: channel.to_owned(),
+        binding_key: binding.key.clone(),
+        profile: binding.profile,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_rev2(
+    delivery: &Delivery<'_>,
+    retained: bool,
+    route: &Rev2Route,
+    topic_map: &TopicMap,
+    client: &mut Client,
+    bus: &EventBus,
+    stats: &Arc<tokio::sync::Mutex<IngestStats>>,
+) -> Result<(), String> {
+    let tx = client.transaction().await.map_err(|e| e.to_string())?;
+    let binary = matches!(route.channel.as_str(), "data/stream" | "data/file");
+    let text = std::str::from_utf8(delivery.payload).ok();
+    let mut record = adapter::DeliveryRecord {
+        received_at: delivery.received_at,
+        topic: delivery.topic.to_string(),
+        qos: delivery.qos,
+        kind: crate::topics::classify(delivery.topic, topic_map),
+        payload_text: match text {
+            Some(text) if !binary => text.replace('\0', "\\u0000"),
+            // The hex fallback is readable text; raw binary is not.
+            Some(text) if text.trim_end().bytes().all(|b| b.is_ascii_hexdigit()) => text.to_owned(),
+            _ => format!(
+                "[binary {} payload, {} bytes; raw bytes in stream_batches]",
+                route.channel,
+                delivery.payload.len()
+            ),
+        },
+        payload_size: delivery.payload.len(),
+        payload_digest: adapter::sha256_hex(delivery.payload),
+        payload_json: if binary {
+            None
+        } else {
+            serde_json::from_slice(delivery.payload).ok()
+        },
+        profile: Some(route.profile),
+        binding_key: Some(route.binding_key.clone()),
+        device_id: Some(route.device_id.clone()),
+        claimed_device_id: None,
+        state: adapter::DeliveryState::Accepted,
+        quarantine_reason: None,
+        quarantine_detail: None,
+        time_quality: None,
+        duplicate: Some(adapter::DuplicateDecision::fresh("protocol revision 2")),
+    };
+    if record
+        .payload_json
+        .as_ref()
+        .is_some_and(|v| v.to_string().contains("\\u0000"))
+    {
+        record.payload_json = None;
+    }
+    let key = db::intake_key(&record);
+    if db::existing_intake(&tx, &key).await?.is_some() {
+        return Ok(());
+    }
+    if retained
+        && crate::rev2_store::retained_unchanged(
+            &tx,
+            &route.device_id,
+            &route.channel,
+            delivery.payload,
+        )
+        .await?
+    {
+        // A retained status/info re-sent on subscription that says nothing new.
+        return Ok(());
+    }
+    let intake = adapter::Intake {
+        outcome: IntakeOutcome::Accepted {
+            observation: None,
+            duplicate: adapter::DuplicateDecision::fresh("protocol revision 2"),
+        },
+        record,
+    };
+    let delivery_id = db::record_intake_in(&tx, &intake).await?;
+    let context = crate::rev2_store::Context {
+        device_id: &route.device_id,
+        channel: &route.channel,
+        received_at: delivery.received_at,
+        retained,
+        delivery_id,
+        policy: crate::config::rev2_policy(),
+    };
+    let outcome = crate::rev2_store::store(&tx, &context, delivery.payload).await?;
+    if let Some(reason) = &outcome.rejected {
+        tx.execute(
+            "UPDATE deliveries SET state='quarantined',reason='rev2-invalid',detail=$2 WHERE id=$1",
+            &[&delivery_id, reason],
+        )
+        .await
+        .map_err(|e| format!("rev2 rejection: {e}"))?;
+    } else if let Some(detail) = &outcome.detail {
+        tx.execute(
+            "UPDATE deliveries SET detail=$2 WHERE id=$1",
+            &[&delivery_id, detail],
+        )
+        .await
+        .map_err(|e| format!("rev2 detail: {e}"))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit rev2 intake: {e}"))?;
+    {
+        let mut guard = stats.lock().await;
+        guard.deliveries += 1;
+        if let Some(reason) = &outcome.rejected {
+            guard.quarantined += 1;
+            guard.last_quarantine_reason = Some("rev2-invalid".into());
+            eprintln!(
+                "groundwater: rejected revision 2 {} from {}: {reason}",
+                route.channel, route.device_id
+            );
+        }
+        guard.observations += outcome
+            .events
+            .iter()
+            .filter(|e| matches!(e, LiveEvent::Observation { .. }))
+            .count() as u64;
+    }
+    for event in outcome.events {
+        bus.emit(event);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -723,10 +955,25 @@ mod tests {
         bus.emit(LiveEvent::Observation {
             device_id: "ABC".to_string(),
             recorded_at: Some(chrono::Utc::now()),
-            gwl: 1.0,
+            gwl: Some(1.0),
         });
         let event = receiver.try_recv().expect("event delivered");
         assert!(matches!(event, LiveEvent::Observation { .. }));
+    }
+
+    #[test]
+    fn refresh_subscribes_only_new_topics() {
+        let mut subscribed = std::collections::HashSet::new();
+        assert_eq!(
+            new_topics(&mut subscribed, vec!["a".into(), "b".into()]).len(),
+            2
+        );
+        assert_eq!(
+            new_topics(&mut subscribed, vec!["a".into(), "b".into(), "c".into()]),
+            vec!["c".to_string()]
+        );
+        subscribed.clear();
+        assert_eq!(new_topics(&mut subscribed, vec!["a".into()]).len(), 1);
     }
 
     #[test]

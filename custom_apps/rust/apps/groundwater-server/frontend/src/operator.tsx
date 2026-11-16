@@ -6,7 +6,7 @@ import {
   useStore,
   type QRL,
 } from "@builder.io/qwik";
-import { buildConfig, CONFIG_FIELDS, emptyConfig } from "./config";
+import { ackOutcome, buildConfig, CONFIG_FIELDS, emptyConfig } from "./config";
 import { errorText, request, stamp } from "./api";
 import type { Command, Device } from "./types";
 
@@ -377,6 +377,15 @@ export const CommandQueue = component$<{
                   <td>
                     {stamp(command.sent_at)}
                     <small>Ack: {stamp(command.acked_at)}</small>
+                    {(() => {
+                      const outcome = ackOutcome(command.ack_payload);
+                      return outcome ? (
+                        <small class={outcome.problem ? "error-text" : ""}>
+                          Firmware: {outcome.status}
+                          {outcome.detail ? ` (${outcome.detail})` : ""}
+                        </small>
+                      ) : null;
+                    })()}
                   </td>
                   <td>
                     <details>

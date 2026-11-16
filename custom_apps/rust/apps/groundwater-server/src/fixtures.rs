@@ -303,10 +303,13 @@ pub fn page_view() -> crate::ui::FleetView {
                 recorded_at: observation
                     .recorded_at
                     .expect("fixture clock is interpretable"),
-                gwl: observation.gwl,
+                gwl: observation.gwl.expect("fixture levels are numeric"),
+                raw_gwl: observation.gwl.expect("fixture levels are numeric"),
                 gwl_text: Some(observation.gwl_text.clone()),
                 battery_v: observation.battery_v,
+                solar_v: observation.solar_v,
                 rssi: observation.rssi,
+                csq: None,
                 sample_count: 1,
                 conflict: false,
             });
@@ -346,6 +349,7 @@ pub fn page_view() -> crate::ui::FleetView {
         conflict_count: 0,
         latest_received,
         latest_plausible,
+        ..DeviceSummary::default()
     };
 
     let other =
@@ -374,6 +378,7 @@ pub fn page_view() -> crate::ui::FleetView {
             conflict_count: 0,
             latest_received: None,
             latest_plausible: None,
+            ..DeviceSummary::default()
         };
 
     let mut view = crate::ui::FleetView::new(
@@ -393,7 +398,7 @@ fn summary_of(observation: &crate::adapter::Observation) -> crate::db::Observati
         recorded_at: observation.recorded_at,
         received_at: observation.received_at,
         gwl: observation.gwl,
-        gwl_text: observation.gwl_text.clone(),
+        gwl_text: Some(observation.gwl_text.clone()),
         rssi: observation.rssi,
         battery_v: observation.battery_v,
         solar_v: observation.solar_v,

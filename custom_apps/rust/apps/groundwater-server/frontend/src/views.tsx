@@ -8,6 +8,8 @@ import { errorText, lag, number, query, request, stamp } from "./api";
 import { HistoryChart } from "./chart";
 import { latestRequest } from "./live";
 import type { Alert, Delivery, Device, Series } from "./types";
+import { datumLabel, datumUnit } from "./ops";
+import { ALERT_KIND_LABEL, alertValue } from "./alerts";
 
 export const Fleet = component$<{ devices: Device[] }>((props) => {
   const search = useSignal("");
@@ -148,8 +150,8 @@ export const AlertList = component$<{ alerts: Alert[]; compact?: boolean }>(
           )}
         </div>
         <p class="muted">
-          Read-only. Alerts resolve automatically when the level returns to
-          normal with 0.5 m hysteresis.
+          Alerts resolve automatically. Acknowledge or resolve them on the
+          Alerts tab.
         </p>
         {alerts.length === 0 ? (
           <p class="empty">No {props.compact ? "open" : state.value} alerts.</p>
@@ -176,13 +178,14 @@ export const AlertList = component$<{ alerts: Alert[]; compact?: boolean }>(
                       <strong
                         class={alert.state === "open" ? "error-text" : ""}
                       >
-                        {alert.kind.replaceAll("_", " ")}
+                        {ALERT_KIND_LABEL[alert.kind] ||
+                          alert.kind.replaceAll("_", " ")}
                       </strong>
                       <small>
                         #{alert.id} · {alert.state}
                       </small>
                     </td>
-                    <td>{number(alert.trigger_value)} m</td>
+                    <td>{alertValue(alert)}</td>
                     <td>{stamp(alert.opened_at)}</td>
                     <td>{stamp(alert.resolved_at)}</td>
                   </tr>
@@ -204,34 +207,59 @@ export const History = component$<{
   to: string;
 }>((props) => {
   const reading = props.device.latest_received;
-  const interval = props.device.desired_config?.lf?.split(":").map(Number);
+  const lf = props.device.desired_config?.lf?.split(":").map(Number);
   const expected =
-    interval?.length === 2 && interval.every(Number.isFinite)
-      ? interval[0] * 60 + interval[1]
-      : null;
-  const gap = Math.max(props.series?.bucket_minutes || 0, expected || 3) * 2;
+    lf?.length === 2 && lf.every(Number.isFinite) ? lf[0] * 60 + lf[1] : null;
+  const readS = props.device.settings?.read_s;
+  const rev2Interval =
+    typeof readS === "number" && readS > 0 ? Math.ceil(readS / 60) : null;
+  const interval = expected ?? rev2Interval;
+  const gap = Math.max(props.series?.bucket_minutes || 0, interval || 3) * 2;
+  const datum = props.series?.datum || "raw";
+  const converted = datum !== "raw";
+  const low = converted
+    ? (props.series?.limits?.min ?? null)
+    : props.device.min_limit;
+  const high = converted
+    ? (props.series?.limits?.max ?? null)
+    : props.device.max_limit;
+  const points = props.series?.points || [];
+  const hasSolar = points.some((p) => p.solar_v != null);
+  const hasCsq = points.some((p) => p.csq != null);
+  const hasRssi = points.some((p) => p.rssi != null);
   return (
     <>
       {props.series && (
         <section aria-label="Device history">
           <HistoryChart
-            title="Groundwater level"
-            unit="metres · raw datum"
+            title={converted ? datumLabel(datum) : "Groundwater level"}
+            unit={datumUnit(datum)}
             metric="gwl"
             points={props.series.points}
             from={props.from}
             to={props.to}
             gapMinutes={gap}
-            min={props.device.min_limit}
-            max={props.device.max_limit}
-            alerts={props.alerts}
+            min={low}
+            max={high}
+            alerts={props.alerts.filter((a) =>
+              ["above_max", "below_min"].includes(a.kind),
+            )}
+            inverted={!!props.series.inverted}
           />
           <p class="chart-key">
-            Shaded band: configured limits {props.device.min_limit ?? "unset"}{" "}
-            to {props.device.max_limit ?? "unset"} m. Dashed vertical lines:
-            alert opened. Line breaks: intervals longer than {gap} min
-            {expected ? "" : " (3 min assumed; logging interval unavailable)"}.
+            Shaded band: configured limits {low ?? "unset"} to {high ?? "unset"}
+            {converted ? " (converted with the latest datum)" : " m"}. Dashed
+            vertical lines: alert opened. Line breaks: intervals longer than{" "}
+            {gap} min
+            {interval ? "" : " (3 min assumed; logging interval unavailable)"}.
           </p>
+          {converted && (props.series.unconverted || 0) > 0 && (
+            <p class="notice">
+              {props.series.unconverted} reading
+              {props.series.unconverted === 1 ? " predates" : "s predate"} the
+              first installation datum and are not shown in this view.
+            </p>
+          )}
           {props.series.truncated && (
             <p class="notice">
               Oldest points were truncated by the server. Choose a shorter range
@@ -249,14 +277,36 @@ export const History = component$<{
               gapMinutes={gap}
             />
             <HistoryChart
-              title="Signal strength"
-              unit="RSSI · 0–100, not dBm"
-              metric="rssi"
+              title="Solar"
+              unit={hasSolar ? "V" : "V · not reported in this range"}
+              metric="solar_v"
               points={props.series.points}
               from={props.from}
               to={props.to}
               gapMinutes={gap}
             />
+            {(hasRssi || !hasCsq) && (
+              <HistoryChart
+                title="Signal strength"
+                unit="RSSI · 0–100, not dBm"
+                metric="rssi"
+                points={props.series.points}
+                from={props.from}
+                to={props.to}
+                gapMinutes={gap}
+              />
+            )}
+            {hasCsq && (
+              <HistoryChart
+                title="Signal quality"
+                unit="CSQ · 0–31"
+                metric="csq"
+                points={props.series.points}
+                from={props.from}
+                to={props.to}
+                gapMinutes={gap}
+              />
+            )}
           </div>
           <details>
             <summary>
@@ -275,9 +325,9 @@ export const History = component$<{
                   <thead>
                     <tr>
                       <th>Recorded</th>
-                      <th>GWL (m)</th>
-                      <th>Battery (V)</th>
-                      <th>RSSI</th>
+                      <th>{converted ? datumLabel(datum) : "GWL (m)"}</th>
+                      <th>Battery / solar (V)</th>
+                      <th>{hasCsq ? "CSQ" : "RSSI"}</th>
                       <th>Samples / quality</th>
                     </tr>
                   </thead>
@@ -285,9 +335,16 @@ export const History = component$<{
                     {props.series.points.map((point, index) => (
                       <tr key={`${point.recorded_at}-${index}`}>
                         <td>{stamp(point.recorded_at)}</td>
-                        <td>{number(point.gwl)}</td>
-                        <td>{number(point.battery_v)}</td>
-                        <td>{number(point.rssi, 0)}</td>
+                        <td>
+                          {number(point.gwl, converted ? 3 : 2)}
+                          {converted && point.raw_gwl != null && (
+                            <small>raw {number(point.raw_gwl, 3)} m</small>
+                          )}
+                        </td>
+                        <td>
+                          {number(point.battery_v)} / {number(point.solar_v)}
+                        </td>
+                        <td>{number(hasCsq ? point.csq : point.rssi, 0)}</td>
                         <td>
                           {point.sample_count}
                           {point.conflict ? " · conflicting samples" : ""}

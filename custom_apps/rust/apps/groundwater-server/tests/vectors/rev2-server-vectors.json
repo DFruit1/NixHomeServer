@@ -1,0 +1,482 @@
+{
+ "generator": "tests/vectors/gen_rev2_vectors.py",
+ "records": [
+  {
+   "name": "type0 routine",
+   "type": 0,
+   "seq": 101,
+   "frame_hex": "A55A0009650000000200D2043930000000F0",
+   "expect": {
+    "record": "routine",
+    "sample_index": 2,
+    "sensor.sensor_mv": 1234,
+    "sensor.level_milli": 12345,
+    "sensor.sensor_status": 0
+   }
+  },
+  {
+   "name": "type0 not read",
+   "type": 0,
+   "seq": 102,
+   "frame_hex": "A55A0009660000000300FFFF0000008004F0",
+   "expect": {
+    "record": "routine",
+    "sample_index": 3,
+    "sensor.sensor_mv": null,
+    "sensor.level_milli": null,
+    "sensor.sensor_status": 4
+   }
+  },
+  {
+   "name": "type1 anchor",
+   "type": 1,
+   "seq": 100,
+   "frame_hex": "A55A011664000000A0D219690304000000030184030000B0043CF6FFFF00BD",
+   "expect": {
+    "record": "timestamped",
+    "time.time": 1763300000,
+    "time.flags": 3,
+    "settings_gen": 4,
+    "reason": 3,
+    "flags": 1,
+    "interval_s": 900,
+    "sensor.level_milli": -2500
+   }
+  },
+  {
+   "name": "type2 position",
+   "type": 2,
+   "seq": 103,
+   "frame_hex": "A55A021E67000000A0D21969030400000001023B07D0EB1BB5205A0C000B080F00ECFFEA030067",
+   "expect": {
+    "record": "position",
+    "settings_gen": 4,
+    "reason": 1,
+    "fix": 2,
+    "lat": -33.8688197,
+    "lon": 151.2092955,
+    "alt_m": 12,
+    "hdop": 1.1,
+    "satellites": 8,
+    "accel_x_mg": 15,
+    "accel_y_mg": -20,
+    "accel_z_mg": 1002,
+    "accel_status": 0
+   }
+  },
+  {
+   "name": "type2 no fix",
+   "type": 2,
+   "seq": 104,
+   "frame_hex": "A55A021E68000000A0D219690304000000010000000080000000800080FF00000000000000016D",
+   "expect": {
+    "record": "position",
+    "fix": 0,
+    "lat": null,
+    "lon": null,
+    "alt_m": null,
+    "hdop": null,
+    "accel_status": 1
+   }
+  },
+  {
+   "name": "type3 snapshot",
+   "type": 3,
+   "seq": 105,
+   "frame_hex": "A55A03286900000005000000010001001A007BB25B980104840300000204805101000B04000028410E06426F72652037E6",
+   "expect": {
+    "record": "snapshot",
+    "backup": false,
+    "settings_gen": 5,
+    "settings_schema": 1,
+    "fragment_index": 0,
+    "fragment_count": 1,
+    "total_len": 26,
+    "snapshot_crc32": 2556146299
+   }
+  },
+  {
+   "name": "type4 snapshot backup",
+   "type": 4,
+   "seq": 106,
+   "frame_hex": "A55A04286A00000005000000010001001A007BB25B980104840300000204805101000B04000028410E06426F7265203774",
+   "expect": {
+    "record": "snapshot",
+    "backup": true,
+    "settings_gen": 5
+   }
+  },
+  {
+   "name": "type5 test",
+   "type": 5,
+   "seq": 107,
+   "frame_hex": "A55A051C6B000000A0D219690304000000022A000000F41C001415D2043930000000FF0355",
+   "expect": {
+    "record": "test",
+    "trigger": 2,
+    "req_id": 42,
+    "battery_mv": 7412,
+    "solar_mv": 5120,
+    "csq": 21,
+    "status": 1023,
+    "sensor.sensor_mv": 1234
+   }
+  },
+  {
+   "name": "type5 unknown csq",
+   "type": 5,
+   "seq": 108,
+   "frame_hex": "A55A051C6C000000A0D2196903040000000100000000FFFFFFFF63D204393000000000004F",
+   "expect": {
+    "record": "test",
+    "trigger": 1,
+    "req_id": 0,
+    "battery_mv": null,
+    "solar_mv": null,
+    "csq": null
+   }
+  },
+  {
+   "name": "type6 sd flush",
+   "type": 6,
+   "seq": 109,
+   "frame_hex": "A55A060F6D000000A0D2196903881300006C0000000300E3",
+   "expect": {
+    "record": "sd_flush",
+    "saved_end": 5000,
+    "last_seq_saved": 108,
+    "segment_no": 3
+   }
+  },
+  {
+   "name": "type7 mqtt flush",
+   "type": 7,
+   "seq": 110,
+   "frame_hex": "A55A070F6E000000A0D2196903EC1300006D0000000400DA",
+   "expect": {
+    "record": "mqtt_flush",
+    "saved_end": 5100,
+    "last_seq_saved": 109,
+    "batch_count": 4
+   }
+  },
+  {
+   "name": "type8 alarm enter",
+   "type": 8,
+   "seq": 111,
+   "frame_hex": "A55A08126F000000A0D21969030400000001D43000000429000095",
+   "expect": {
+    "record": "alarm",
+    "enter": true,
+    "limit": 1,
+    "level_milli": 12500,
+    "threshold_milli": 10500
+   }
+  },
+  {
+   "name": "type9 alarm exit",
+   "type": 9,
+   "seq": 112,
+   "frame_hex": "A55A091270000000A0D219690304000000021C0C0000B80B0000C5",
+   "expect": {
+    "record": "alarm",
+    "enter": false,
+    "limit": 2,
+    "level_milli": 3100
+   }
+  },
+  {
+   "name": "type10 gps moved",
+   "type": 10,
+   "seq": 113,
+   "frame_hex": "A55A0A0D71000000A0D2196903F00000009600000018",
+   "expect": {
+    "record": "gps_moved",
+    "distance_m": 240,
+    "threshold_m": 150
+   }
+  },
+  {
+   "name": "type11 impact",
+   "type": 11,
+   "seq": 114,
+   "frame_hex": "A55A0B0872000000A0D2196903018214BE",
+   "expect": {
+    "record": "impact",
+    "source": 1,
+    "peak_mg": 5250
+   }
+  },
+  {
+   "name": "type12 orientation",
+   "type": 12,
+   "seq": 115,
+   "frame_hex": "A55A0C0773000000A0D21969037B001A",
+   "expect": {
+    "record": "orientation",
+    "tilt_change": 123
+   }
+  },
+  {
+   "name": "type13 tail lock",
+   "type": 13,
+   "seq": 116,
+   "frame_hex": "A55A0D1674000000A0D219690328230000E8030000200300008403000001AC",
+   "expect": {
+    "record": "tail_lock",
+    "head": 9000,
+    "tail": 1000,
+    "sd_saved_end": 800,
+    "mqtt_saved_end": 900,
+    "reason": 1
+   }
+  },
+  {
+   "name": "type14 log start",
+   "type": 14,
+   "seq": 1,
+   "frame_hex": "A55A0E2501000000A0D21969033D2C1B6A0000006A020002020701010005000000101112131415161718191A1B7B",
+   "expect": {
+    "record": "log_start",
+    "log_id": 1780165693,
+    "previous_log_id": 1778384896,
+    "reason": 2,
+    "firmware_version": [
+     0,
+     2,
+     2,
+     7
+    ],
+    "envelope_version": 1,
+    "payload_schema": 1,
+    "settings_gen": 5,
+    "mcu_uid": "101112131415161718191A1B"
+   }
+  },
+  {
+   "name": "type15 clock set",
+   "type": 15,
+   "seq": 117,
+   "frame_hex": "A55A0F0E750000002A00000000A0D21969072A000000D7",
+   "expect": {
+    "record": "clock_set",
+    "old.time": 42,
+    "old.flags": 0,
+    "new_time": 1763300000,
+    "new_flags": 7,
+    "uptime_s": 42
+   }
+  },
+  {
+   "name": "type16 data gap",
+   "type": 16,
+   "seq": 118,
+   "frame_hex": "A55A10107600000090C4196903A0D219690400000001000243",
+   "expect": {
+    "record": "data_gap",
+    "start.time": 1763296400,
+    "gap_end": 1763300000,
+    "missed_readings": 4,
+    "missed_events": 1,
+    "reason": 2
+   }
+  },
+  {
+   "name": "type17 sensor fault",
+   "type": 17,
+   "seq": 119,
+   "frame_hex": "A55A110D77000000A0D2196903040000000101000038",
+   "expect": {
+    "record": "sensor_fault",
+    "state": 1,
+    "sensor_status": 1,
+    "sensor_mv": 0
+   }
+  },
+  {
+   "name": "type18 power critical",
+   "type": 18,
+   "seq": 120,
+   "frame_hex": "A55A120A78000000A0D219690301961900004F",
+   "expect": {
+    "record": "power_critical",
+    "kind": 1,
+    "battery_mv": 6550,
+    "solar_mv": 0
+   }
+  },
+  {
+   "name": "type19 storage warning",
+   "type": 19,
+   "seq": 121,
+   "frame_hex": "A55A130E79000000A0D2196903018066010000DE01002B",
+   "expect": {
+    "record": "storage_warning",
+    "kind": 1,
+    "unsaved_bytes": 91776,
+    "usable_bytes": 122368
+   }
+  },
+  {
+   "name": "type20 tail unlocked",
+   "type": 20,
+   "seq": 122,
+   "frame_hex": "A55A14157A000000A0D2196903D00700006C070000D007000080510100E6",
+   "expect": {
+    "record": "tail_unlocked",
+    "new_tail": 2000,
+    "sd_saved_end": 1900,
+    "mqtt_saved_end": 2000,
+    "locked_seconds": 86400
+   }
+  },
+  {
+   "name": "type21 tilt",
+   "type": 21,
+   "seq": 123,
+   "frame_hex": "A55A15157B000000A0D219690304000000010F00ECFFEA030C00DEFF0089",
+   "expect": {
+    "record": "tilt",
+    "reason": 1,
+    "accel_x_mg": 15,
+    "accel_y_mg": -20,
+    "accel_z_mg": 1002,
+    "pitch_decideg": 12,
+    "roll_decideg": -34,
+    "accel_status": 0
+   }
+  },
+  {
+   "name": "type30 reserved",
+   "type": 30,
+   "seq": 124,
+   "frame_hex": "A55A1E037C00000001020304",
+   "expect": {
+    "record": "reserved",
+    "record_type": 30
+   }
+  }
+ ],
+ "batches": [
+  {
+   "name": "six frames",
+   "encoding": "bin",
+   "payload_hex": "47574231200101003D2C1B6A650000006900000000100000C210000006000000A55A0009650000000200D2043930000000F0A55A0009660000000300FFFF0000008004F0A55A011664000000A0D219690304000000030184030000B0043CF6FFFF00BDA55A021E67000000A0D21969030400000001023B07D0EB1BB5205A0C000B080F00ECFFEA030067A55A021E68000000A0D219690304000000010000000080000000800080FF00000000000000016DA55A03286900000005000000010001001A007BB25B980104840300000204805101000B04000028410E06426F72652037E62EE534B0",
+   "mqtt_payload": null,
+   "expect": {
+    "ok": true,
+    "log_id": 1780165693,
+    "start_pos": 4096,
+    "frame_seqs": [
+     101,
+     102,
+     100,
+     103,
+     104,
+     105
+    ],
+    "positions_valid": true
+   }
+  },
+  {
+   "name": "hex form",
+   "encoding": "hex",
+   "payload_hex": "47574231200101003D2C1B6A6A0000006C000000000000007B00000003000100A55A04286A00000005000000010001001A007BB25B980104840300000204805101000B04000028410E06426F7265203774A55A051C6B000000A0D219690304000000022A000000F41C001415D2043930000000FF0355A55A051C6C000000A0D2196903040000000100000000FFFFFFFF63D204393000000000004FCB6997E0",
+   "mqtt_payload": "47574231200101003D2C1B6A6A0000006C000000000000007B00000003000100A55A04286A00000005000000010001001A007BB25B980104840300000204805101000B04000028410E06426F7265203774A55A051C6B000000A0D219690304000000022A000000F41C001415D2043930000000FF0355A55A051C6C000000A0D2196903040000000100000000FFFFFFFF63D204393000000000004FCB6997E0",
+   "expect": {
+    "ok": true,
+    "frame_seqs": [
+     106,
+     107,
+     108
+    ],
+    "resend": true
+   }
+  },
+  {
+   "name": "bad batch crc",
+   "encoding": "bin",
+   "payload_hex": "47574231200101003D2C1B6A650000006900000000100000C210000006000000A55A0009650000000200D2043930000000F0A55A0009660000000300FFFF0000008004F0A55A011664000000A0D219690304000000030184030000B0043CF6FFFF00BDA55A021E67000000A0D21969030400000001023B07D0EB1BB5205A0C000B080F00ECFFEA030067A55A021E68000000A0D219690304000000010000000080000000800080FF00000000000000016DA55A03286900000005000000010001001A007BB25B980104840300000204805101000B04000028410E06426F72652037E62EE534E5",
+   "mqtt_payload": null,
+   "expect": {
+    "ok": false,
+    "error": "bad-crc32"
+   }
+  },
+  {
+   "name": "bad frame crc8",
+   "encoding": "bin",
+   "payload_hex": "47574231200101003D2C1B6A6D0000006F000000282300007323000003000000A55A060F6D000000A0D2196903881300006C0000000300E3A55A070F6E000000A0D3196903EC1300006D0000000400DAA55A08126F000000A0D21969030400000001D43000000429000095C85FE3BF",
+   "mqtt_payload": null,
+   "expect": {
+    "ok": true,
+    "frame_seqs": [
+     109,
+     111
+    ],
+    "issues": [
+     "bad-crc8"
+    ]
+   }
+  },
+  {
+   "name": "every type",
+   "encoding": "bin",
+   "payload_hex": "47574231200101003D2C1B6A650000007C000000204E0000FF5000001A000000A55A0009650000000200D2043930000000F0A55A0009660000000300FFFF0000008004F0A55A011664000000A0D219690304000000030184030000B0043CF6FFFF00BDA55A021E67000000A0D21969030400000001023B07D0EB1BB5205A0C000B080F00ECFFEA030067A55A021E68000000A0D219690304000000010000000080000000800080FF00000000000000016DA55A03286900000005000000010001001A007BB25B980104840300000204805101000B04000028410E06426F72652037E6A55A04286A00000005000000010001001A007BB25B980104840300000204805101000B04000028410E06426F7265203774A55A051C6B000000A0D219690304000000022A000000F41C001415D2043930000000FF0355A55A051C6C000000A0D2196903040000000100000000FFFFFFFF63D204393000000000004FA55A060F6D000000A0D2196903881300006C0000000300E3A55A070F6E000000A0D2196903EC1300006D0000000400DAA55A08126F000000A0D21969030400000001D43000000429000095A55A091270000000A0D219690304000000021C0C0000B80B0000C5A55A0A0D71000000A0D2196903F00000009600000018A55A0B0872000000A0D2196903018214BEA55A0C0773000000A0D21969037B001AA55A0D1674000000A0D219690328230000E8030000200300008403000001ACA55A0E2501000000A0D21969033D2C1B6A0000006A020002020701010005000000101112131415161718191A1B7BA55A0F0E750000002A00000000A0D21969072A000000D7A55A10107600000090C4196903A0D219690400000001000243A55A110D77000000A0D2196903040000000101000038A55A120A78000000A0D219690301961900004FA55A130E79000000A0D2196903018066010000DE01002BA55A14157A000000A0D2196903D00700006C070000D007000080510100E6A55A15157B000000A0D219690304000000010F00ECFFEA030C00DEFF0089A55A1E037C00000001020304FF68369C",
+   "mqtt_payload": null,
+   "expect": {
+    "ok": true,
+    "frame_seqs": [
+     101,
+     102,
+     100,
+     103,
+     104,
+     105,
+     106,
+     107,
+     108,
+     109,
+     110,
+     111,
+     112,
+     113,
+     114,
+     115,
+     116,
+     1,
+     117,
+     118,
+     119,
+     120,
+     121,
+     122,
+     123,
+     124
+    ]
+   }
+  }
+ ],
+ "file_chunks": [
+  {
+   "name": "five bytes at 2048",
+   "payload_hex": "475746314D0000000008000088130000050068656C6C6F6F88F970",
+   "expect": {
+    "command_id": 77,
+    "offset": 2048,
+    "total_size": 5000,
+    "data_hex": "68656C6C6F"
+   }
+  }
+ ],
+ "tlv": {
+  "payload_hex": "0104840300000204805101000B04000028410E06426F72652037",
+  "expect": {
+   "read_s": 900,
+   "send_s": 86400,
+   "hi": 10.5,
+   "loc": "Bore 7",
+   "tap_sens": 5
+  }
+ }
+}

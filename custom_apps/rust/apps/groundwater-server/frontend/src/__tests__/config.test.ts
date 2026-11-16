@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildConfig, emptyConfig } from "../config";
+import { ackOutcome, buildConfig, emptyConfig } from "../config";
 
 const valid = () => ({
   NA: "3",
@@ -92,5 +92,33 @@ describe("firmware configuration safety", () => {
     });
     expect(result.bytes).toBeGreaterThan(150);
     expect(result.errors.payload).toBeTruthy();
+  });
+});
+
+describe("firmware acknowledgment outcome", () => {
+  it("summarises structured gwl/v1 acks and ignores legacy ones", () => {
+    expect(ackOutcome({ kind: "project-settings", status: "ok" })).toEqual({
+      status: "ok",
+      detail: "",
+      problem: false,
+    });
+    expect(
+      ackOutcome({
+        kind: "cfg",
+        status: "partial",
+        results: { Get_Status: "ok", Flush_sd: "unsupported" },
+      }),
+    ).toEqual({
+      status: "partial",
+      detail: "Flush_sd: unsupported",
+      problem: true,
+    });
+    expect(
+      ackOutcome({ kind: "danger", status: "rejected", reason: "no-action" }),
+    ).toEqual({ status: "rejected", detail: "no-action", problem: true });
+    expect(ackOutcome({ Get_Status: "1" })).toBeNull();
+    expect(ackOutcome("Danger Acknowledge")).toBeNull();
+    expect(ackOutcome(["~ sensor OK"])).toBeNull();
+    expect(ackOutcome(null)).toBeNull();
   });
 });

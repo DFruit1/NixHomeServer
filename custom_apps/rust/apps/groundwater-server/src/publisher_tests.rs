@@ -621,3 +621,148 @@ async fn owner_reconcile_preserves_tracked_inflight_and_puback_across_database_l
         config()
     );
 }
+
+async fn setup_v1() -> Client {
+    let db = db::connect(&std::env::var("GROUNDWATER_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    db::migrate(&db).await.unwrap();
+    db.batch_execute("TRUNCATE devices,device_bindings,observations,deliveries,alerts,commands,command_events,device_permissions RESTART IDENTITY CASCADE").await.unwrap();
+    db.execute("INSERT INTO devices(device_id,source_profile,clock_policy,presence_status,last_ready_at) VALUES($1,'V21','utc','awake',now())",&[&DEVICE]).await.unwrap();
+    for channel in [
+        "config/set",
+        "config/desired",
+        "cmd/danger",
+        "cmd/test",
+        "config/applied",
+        "cmd/ack",
+        "status",
+    ] {
+        let topic = format!("gwl/v1/{DEVICE}/{channel}");
+        db.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES($1,$2,$1,'V21')",&[&topic,&DEVICE]).await.unwrap();
+    }
+    crate::fixtures::implemented_handlers_for_protocol_fixture(&db).await;
+    db
+}
+
+fn v1(channel: &str) -> String {
+    format!("gwl/v1/{DEVICE}/{channel}")
+}
+
+async fn device_config(db: &Client) -> (Option<Value>, Option<f64>, Option<Value>) {
+    let row = db
+        .query_one(
+            "SELECT project_config,max_limit,applied_config FROM devices WHERE device_id=$1",
+            &[&DEVICE],
+        )
+        .await
+        .unwrap();
+    (row.get(0), row.get(1), row.get(2))
+}
+
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn v1_structured_acks_confirm_settings_reboot_and_cfg_results() {
+    let mut db = setup_v1().await;
+    let bus = EventBus::new();
+    let settings = queued(&db, "project-settings", config()).await;
+    let reboot = queued(&db, "danger", json!({"Reboot":"1"})).await;
+    let cfg = queued(&db, "cfg", json!({"Get_Status":"1","Flush_sd":"0"})).await;
+    let mut changed = config();
+    changed["MG"] = json!("8");
+    let rejected = queued(&db, "project-settings", changed).await;
+    for c in [&settings, &reboot, &cfg, &rejected] {
+        assert!(c.firmware_ack_expected, "gwl/v1 firmware acks {}", c.kind);
+    }
+    // Dispatch, not queue time, is authoritative: the topic used decides.
+    db.execute(
+        "UPDATE commands SET firmware_ack_expected=false WHERE id=$1",
+        &[&reboot.id],
+    )
+    .await
+    .unwrap();
+    let (mqtt, _event_loop) = transport();
+    let mut publisher = tracker();
+
+    // Settings count as applied only once the logger says so.
+    scheduler::tick(&mut db, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
+    publisher.outgoing(&mut db, 41, &bus).await.unwrap();
+    publisher.puback(&mut db, 41, &bus).await.unwrap();
+    assert_eq!(command(&db, settings.id).await.state, "sent");
+    assert!(device_config(&db).await.0.is_none());
+    ack(
+        &db,
+        &v1("config/applied"),
+        r#"{"kind":"project-settings","status":"ok"}"#,
+    )
+    .await;
+    let acked = command(&db, settings.id).await;
+    assert_eq!(acked.state, "acked");
+    assert_eq!(
+        acked.ack_payload,
+        Some(json!({"kind":"project-settings","status":"ok"}))
+    );
+    assert_eq!(device_config(&db).await.0, Some(config()));
+
+    // Reboot acknowledges before it resets; the ack may beat the PUBACK.
+    elapsed(&db).await;
+    scheduler::tick(&mut db, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
+    assert!(command(&db, reboot.id).await.firmware_ack_expected);
+    publisher.outgoing(&mut db, 42, &bus).await.unwrap();
+    ack(
+        &db,
+        &v1("cmd/ack"),
+        r#"{"kind":"danger","status":"ok","results":{"Reboot":"ok"}}"#,
+    )
+    .await;
+    assert_eq!(command(&db, reboot.id).await.state, "queued");
+    publisher.puback(&mut db, 42, &bus).await.unwrap();
+    assert_eq!(command(&db, reboot.id).await.state, "acked");
+
+    // cfg records only the toggles the logger reports as done. An ack for
+    // another kind does not confirm it.
+    ready(&db).await;
+    elapsed(&db).await;
+    scheduler::tick(&mut db, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
+    publisher.outgoing(&mut db, 43, &bus).await.unwrap();
+    publisher.puback(&mut db, 43, &bus).await.unwrap();
+    ack(
+        &db,
+        &v1("cmd/ack"),
+        r#"{"kind":"danger","status":"ok","results":{}}"#,
+    )
+    .await;
+    assert_eq!(command(&db, cfg.id).await.state, "sent");
+    ack(
+        &db,
+        &v1("config/applied"),
+        r#"{"kind":"cfg","status":"partial","results":{"Get_Status":"ok","Flush_sd":"unsupported"}}"#,
+    )
+    .await;
+    assert_eq!(command(&db, cfg.id).await.state, "acked");
+    assert_eq!(device_config(&db).await.2, Some(json!({"Get_Status":"1"})));
+
+    // A rejected settings payload is acknowledged but changes nothing.
+    elapsed(&db).await;
+    scheduler::tick(&mut db, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
+    publisher.outgoing(&mut db, 44, &bus).await.unwrap();
+    ack(
+        &db,
+        &v1("config/applied"),
+        r#"{"kind":"project-settings","status":"rejected","reason":"too-long"}"#,
+    )
+    .await;
+    publisher.puback(&mut db, 44, &bus).await.unwrap();
+    assert_eq!(command(&db, rejected.id).await.state, "acked");
+    let (project, max, _) = device_config(&db).await;
+    assert_eq!(project, Some(config()));
+    assert_eq!(max, Some(9.));
+}
