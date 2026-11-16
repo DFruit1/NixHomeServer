@@ -734,7 +734,7 @@ export const CredentialsPanel = component$<Props>((props) => {
                 flash the firmware:
               </p>
               <pre>{`umask 077; printf '%s\\n' '<password>' > ~/.config/gwl/${secret.username}.mqtt-password
-tools/net-config.py --profile server --user ${secret.username} \\
+tools/net-config.py --user ${secret.username} \\
   --password-file ~/.config/gwl/${secret.username}.mqtt-password
 tools/build.sh --profile release && tools/flash.sh`}</pre>
               <button

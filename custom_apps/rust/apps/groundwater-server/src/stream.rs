@@ -27,6 +27,9 @@ pub const MAX_FILE_CHUNK_DATA: usize = 1024;
 pub const FILE_HEADER_LEN: usize = 18;
 pub const FRAME_MAGIC: [u8; 2] = [0xA5, 0x5A];
 pub const FRAME_OVERHEAD: usize = 9;
+/// Largest damaged item the firmware sends (contract: CRC-invalid bytes go
+/// in chunks of at most 264 bytes, one maximum frame).
+pub const DAMAGED_ITEM_MAX: usize = 264;
 /// Envelope (frame format) version this decoder understands.
 pub const ENVELOPE_VERSION: u8 = 1;
 /// Payload schemas this decoder understands (`records.rs`).
@@ -281,12 +284,18 @@ pub fn parse_batch(bytes: &[u8]) -> Result<Batch, StreamError> {
             frame.pos = Some(header.start_pos.wrapping_add(frame.offset as u32));
         }
     }
-    if frames.len() + issues.len() != usize::from(header.frame_count) {
+    // The firmware sends a damaged run in items of at most
+    // DAMAGED_ITEM_MAX bytes, and counts each item in frame_count.
+    let damaged_items: usize = issues
+        .iter()
+        .map(|issue| issue.length.div_ceil(DAMAGED_ITEM_MAX).max(1))
+        .sum();
+    if frames.len() + damaged_items != usize::from(header.frame_count) {
         warnings.push(format!(
             "header says {} frames, found {} valid and {} damaged",
             header.frame_count,
             frames.len(),
-            issues.len()
+            damaged_items
         ));
     }
     if let (Some(first), Some(last)) = (frames.first(), frames.last())

@@ -9,7 +9,20 @@ server only through the legacy parsers the server already has.
 Sources: the Rev2 design document (`Documents/GW Logger Design Document_Rev2.docx`,
 text extract in `docs/protocol/rev2-design-extract.txt`, called **Rev2** below)
 and the 2026-11-15 topic decisions. Where this file and Rev2 differ on wire
-details, this file wins; the MRAM, record and SD formats are exactly Rev2's.
+details, this file wins. The MRAM, record and SD layouts are Rev2's, with
+these recovery corrections:
+
+- Format and sequence rollover start at sequence 1. Wipe/factory reset and
+  recovery continue above the previous reserved/observed sequence range, so
+  reclaimed frames cannot be mistaken for new records after a power cut.
+  A Type 14 record identifies a new log; its sequence need not be 1. Identity
+  remains `(device, log_id, sequence)`; decoders must allow non-1 first sequences.
+- The ring can retain several logs. Each archive segment/batch is limited to
+  one log, following Type 14 boundaries.
+- CRC-invalid bytes are transferred unchanged in chunks of at most 264 bytes,
+  ending at the next CRC-valid frame. They count as damaged items (sequence 0)
+  in batch counts; parsers resynchronise using magic and CRC, not damaged lengths.
+  Adjacent damaged bytes form one item up to the chunk limit.
 
 ## 1. Transport
 
@@ -58,11 +71,13 @@ revision 1 forms for V2.1 units. The broker ACL must allow the new channels.
 3. Subscribe `config/set`, `cmd/basic`, `cmd/danger` (QoS 1). Queued commands
    may arrive at any point from CONNACK on; they are queued locally (§6.1).
 4. Publish `health`.
-5. Execute queued commands in arrival order, acking each.
+5. Execute queued commands in arrival order, acking each. Hold a destructive
+   command and subsequent queued commands until the initial upload completes,
+   so its unsaved-data challenge describes the post-upload state.
 6. Upload: publish pending `alerts`, then flush unsaved ring frames as
    `data/stream` batches (Rev2 "MQTT data/stream"). In fallback mode publish
    the SD backlog on `reading` / `gps` instead.
-7. Publish `status` `ready` with `win` = listen window seconds, and keep
+7. Release the held commands, then publish `status` `ready` with `win` = listen window seconds, and keep
    listening for commands for `win` seconds (setting `listen_s`, default 60).
    A pending nonce challenge extends the window up to its expiry.
 8. Publish `status` `sleep` (retained), disconnect cleanly, sleep the modem.
@@ -136,6 +151,13 @@ next connection forward (subject to the 10 % rule).
 `reading` lines (V2.1 SD backlog: `{"DeviceID":..,"GWL":"..",...}`).
 
 ### data/stream and data/file
+Type 14 (log start) `firmware_version`: the u32 value is
+`major << 16 | minor << 8 | patch` with the build number in bits 24-31, so
+the little-endian bytes on the wire are patch, minor, major, build
+(firmware 2.2.0 = `0x00020200`, bytes `00 02 02 00`). Rev2's "(major, minor,
+patch, build bytes)" names the fields, not their byte order; the server
+decodes it this way.
+
 `data/stream` payload = one Rev2 MQTT batch, byte-exact: `"GWB1"` header
 (32 bytes), whole frames (≤1,464 bytes), CRC-32. See Rev2 "MQTT data/stream".
 The server verifies the batch CRC-32 and every frame's CRC-8, stores the raw

@@ -29,12 +29,14 @@ device's **Installation** tab).
    when the deployed firmware actually writes UTC; `unknown` preserves the
    timestamp without pretending that its timezone is known. A timezone carried
    in the payload takes precedence over this policy.
-3. Rebuild the firmware for the right broker endpoint and provision the
+3. Build the firmware with the logger password (`tools/net-config.py
+   --password-file ...` in the firmware repository) and provision the
    existing `groundwater-logger` account through the secret-management path.
-   On-site units can use plain MQTT on port 1883, which stays LAN/NetBird-only.
-   Cellular field units (Quectel EC21) connect over the internet to the
-   GL.iNet Flint 2 router's DDNS name (`<id>.glddns.com`) on port 8883 with
-   TLS 1.2 or later:
+   Every logger, on-site or cellular (Quectel EC21), connects through the
+   router: the firmware's committed broker default is the GL.iNet Flint 2
+   router's DDNS name (`<id>.glddns.com`) on port 8883 with TLS 1.2 or later.
+   Plain MQTT on port 1883 stays LAN/NetBird-only for the platform and bench
+   tools; firmware 2.2 has no option to use it.
    - The router keeps that DDNS name pointed at the home's public IPv4, and
      its port forward sends public TCP 8883 to the server at
      `192.168.8.12:8883`. The owner manages both by hand; they are not in this
@@ -352,7 +354,7 @@ may publish as any DeviceID. Per-device accounts are opt-in, unit by unit:
    overriding a static account) and reloads Mosquitto. Mode `dual`: the unit
    may use its own or the shared account.
 3. On the firmware build host, store the password in a 0600 file and rebuild:
-   `tools/net-config.py --profile server --user <DeviceID> --password-file
+   `tools/net-config.py --user <DeviceID> --password-file
    ~/.config/gwl/<DeviceID>.mqtt-password`, then `tools/build.sh --profile
    release` and flash. The client ID stays the DeviceID.
 4. After the unit has connected with its own account (raw deliveries keep
