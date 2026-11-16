@@ -31,14 +31,16 @@ const observation = (rev2) => ({
   received_at: now(),
   gwl: rev2 ? 12.345 : 4.23,
   gwl_text: rev2 ? "12.345" : "04.23",
-  battery_v: rev2 ? 7.41 : 3.72,
+  // Firmware 2.2 ring readings carry no power or signal values: those come
+  // from health (observations hold them only for the fallback reading).
+  battery_v: rev2 ? null : 3.72,
   rssi: rev2 ? null : 68,
-  solar_v: rev2 ? 5.12 : 3,
+  solar_v: rev2 ? null : 3,
   time_quality: "plausible",
   time_reason: rev2
     ? "anchor at seq 412 + 3 x 900 s"
     : "Device-local timestamp normalized with enrollment offset.",
-  quality_reasons: [],
+  quality_reasons: rev2 && mode === "fault" ? ["sensor-over-range"] : [],
   duplicate_outcome: "first",
   interpretation_version: rev2 ? "gw-adapter/2+v22" : "v21-1",
 });
@@ -228,6 +230,14 @@ for (const deviceId of [V22, ...V21])
 
 const deviceView = (d) => ({
   ...d,
+  ...(d.device_id === V22 && d.latest_received
+    ? {
+        latest_received: observation(true),
+        latest_plausible: observation(true),
+        health:
+          mode === "fault" ? { ...d.health, mram: "locked", err: 7 } : d.health,
+      }
+    : {}),
   pending_challenge_count: commands.filter(
     (c) => c.device_id === d.device_id && c.state === "challenge",
   ).length,
@@ -351,13 +361,27 @@ const deviceEvents = [
     "record",
     "sensor_fault",
     {
-      state: "exit",
-      sensor_status: 0,
-      sensor_status_name: "ok",
-      sensor_mv: 1234,
+      state: "enter",
+      sensor_status: 3,
+      sensor_status_name: "over-range",
+      sensor_mv: 2150,
+      settings_gen: 5,
     },
-    70,
-    360,
+    40,
+    370,
+  ],
+  [
+    "record",
+    "sensor_fault",
+    {
+      state: "exit",
+      sensor_status: 3,
+      sensor_status_name: "over-range",
+      sensor_mv: 1234,
+      settings_gen: 5,
+    },
+    30,
+    375,
   ],
   [
     "record",
@@ -503,6 +527,24 @@ const tests = [
       mram: "ok",
       warn: [],
     },
+  },
+  {
+    id: 4,
+    source: "json",
+    trigger: "scheduled",
+    command_id: null,
+    recorded_at: ago(35 * HOUR),
+    received_at: ago(35 * HOUR),
+    battery_mv: 7390,
+    solar_mv: 4100,
+    csq: 20,
+    sensor_mv: 2150,
+    sensor_ma: 21.5,
+    level: 25.104,
+    sensor_status: 3,
+    status_bits: 1022,
+    ok: false,
+    details: { sd: "ok", mram: "ok", warn: ["Sensor over-range"] },
   },
   {
     id: 2,
@@ -949,6 +991,59 @@ commands.push(
     origin: "auto-gap",
   }),
   command(V22, {
+    id: 63,
+    kind: "config",
+    op: "settings",
+    args: { read_s: 900, hi: 15, foo_s: 3 },
+    state: "acked",
+    final_status: "partial",
+    sent_at: ago(2 * DAY),
+    acked_at: ago(2 * DAY),
+    publish_count: 1,
+    last_published_at: ago(2 * DAY),
+    ack_payload: {
+      v: 2,
+      id: 63,
+      op: "settings",
+      status: "partial",
+      gen: 5,
+      results: { read_s: "ok", hi: "ok", foo_s: "unsupported" },
+      settings: { ...rev2Settings },
+    },
+  }),
+  command(V22, {
+    id: 64,
+    op: "get_status",
+    state: "acked",
+    final_status: "ok",
+    sent_at: ago(DAY),
+    acked_at: ago(DAY),
+    publish_count: 1,
+    last_published_at: ago(DAY),
+    ack_payload: {
+      v: 2,
+      id: 64,
+      op: "get_status",
+      status: "ok",
+      data: {
+        t: Math.floor(Date.now() / 1000) - 86400,
+        tv: 1,
+        bat_mv: 7412,
+        sol_mv: 5120,
+        csq: 21,
+        sd: "ok",
+        mram: "ok",
+        unsaved: 1234,
+        usable: 122368,
+        boot: 17,
+        head: 4120,
+        tail: 2896,
+        log_id: 1761000001,
+        last_seq: 431,
+      },
+    },
+  }),
+  command(V22, {
     id: 50,
     kind: "danger",
     op: "disable_logging",
@@ -989,12 +1084,12 @@ function series(url, deviceId) {
           return {
             recorded_at: new Date(from + ((to - from) * i) / 95).toISOString(),
             gwl: value,
-            raw_gwl: datum === "raw" ? null : raw,
+            raw_gwl: raw,
             gwl_text: null,
-            battery_v: rev2 ? 7.4 - i / 1000 : 3.6 + i / 1000,
-            solar_v: Math.max(0, 5 * Math.sin(i / 8)),
+            battery_v: rev2 ? null : 3.6 + i / 1000,
+            solar_v: rev2 ? null : Math.max(0, 5 * Math.sin(i / 8)),
             rssi: rev2 ? null : 65 + Math.sin(i / 4) * 10,
-            csq: rev2 ? 18 + Math.round(Math.sin(i / 5) * 3) : null,
+            csq: null,
             sample_count: 5,
             conflict: i === 10,
           };
@@ -1019,14 +1114,13 @@ function series(url, deviceId) {
     max_gwl: 4.7,
     bucket_minutes: Number(url.searchParams.get("bucket")),
     truncated: false,
-    ...(datum === "raw"
-      ? {}
-      : {
-          datum,
-          inverted: datum === "dtw_bgl",
-          unconverted: 3,
-          limits: limits && { min: limits[0], max: limits[1] },
-        }),
+    // The real API always sends these (raw: limits in raw metres).
+    datum,
+    inverted: datum === "dtw_bgl",
+    unconverted: datum === "raw" ? 0 : 3,
+    limits: limits
+      ? { min: limits[0], max: limits[1] }
+      : { min: d.min_limit, max: d.max_limit },
   };
 }
 
@@ -1115,10 +1209,14 @@ async function deviceRoute(req, res, url, deviceId, rest) {
   }
   if (rest === "health") return json(res, { health: rev2 ? health : [] });
   if (rest === "events") {
-    const source = url.searchParams.get("source");
+    const source = url.searchParams.get("source"),
+      event = url.searchParams.get("event");
     return json(res, {
       events: rev2
-        ? deviceEvents.filter((e) => !source || e.source === source)
+        ? deviceEvents.filter(
+            (e) =>
+              (!source || e.source === source) && (!event || e.event === event),
+          )
         : [],
     });
   }
@@ -1155,6 +1253,16 @@ async function deviceRoute(req, res, url, deviceId, rest) {
         expires_at: ahead((body.expires_in_s || 604800) * 1000),
       });
       commands.unshift(c);
+      setTimeout(
+        () =>
+          Object.assign(c, {
+            state: "sent",
+            sent_at: now(),
+            publish_count: 1,
+            last_published_at: now(),
+          }),
+        1000,
+      );
       return json(res, { command: c }, 201);
     }
     return json(res, {
@@ -1301,14 +1409,35 @@ async function deviceRoute(req, res, url, deviceId, rest) {
       return json(res, { command: c });
     }
     if (c.state !== "challenge")
-      return json(res, { error: "no challenge is waiting" }, 409);
+      return json(
+        res,
+        { error: `command is ${c.state}, not awaiting confirmation` },
+        409,
+      );
+    if (Date.parse(c.challenge_expires_at) <= Date.now())
+      return json(
+        res,
+        {
+          error: "the challenge expired (nexp passed); queue the command again",
+        },
+        409,
+      );
+    if (
+      commands.some(
+        (k) => k.parent_id === c.id && ["queued", "sent"].includes(k.state),
+      )
+    )
+      return json(res, { error: "a confirmation is already pending" }, 409);
     if ((c.challenge.unsaved_frames || 0) !== (body.confirm_unsaved ?? 0))
       return json(
         res,
-        { error: "confirm_unsaved must equal the reported unsaved frames" },
+        {
+          error: `the logger reported ${c.challenge.unsaved_frames} unsaved frames; confirm_unsaved must equal ${c.challenge.unsaved_frames}`,
+        },
         400,
       );
-    Object.assign(c, { state: "acked", final_status: "ok", acked_at: now() });
+    // As on the server: the parent stays in challenge until the logger acks
+    // the confirmation (the fixture logger does so after five seconds).
     const confirm = command(deviceId, {
       kind: "danger",
       op: "confirm",
@@ -1319,8 +1448,26 @@ async function deviceRoute(req, res, url, deviceId, rest) {
         confirm_unsaved: body.confirm_unsaved,
       },
       origin: "operator",
+      expires_at: c.challenge_expires_at,
     });
     commands.unshift(confirm);
+    setTimeout(() => (confirm.state = "sent"), 1000);
+    setTimeout(() => {
+      const ack = {
+        v: 2,
+        id: confirm.id,
+        op: c.op,
+        ref: c.id,
+        status: "ok",
+      };
+      for (const target of [confirm, c])
+        Object.assign(target, {
+          state: "acked",
+          final_status: "ok",
+          acked_at: now(),
+          ack_payload: ack,
+        });
+    }, 5000);
     return json(res, { command: confirm }, 201);
   }
   if (rest === "alert-policy") {
@@ -1709,10 +1856,13 @@ const server = createServer(async (req, res) => {
       commands: commands.filter((c) => !device || c.device_id === device),
     });
   }
-  if (path === "/api/series")
+  if (path === "/api/series") {
+    if (!devices.has(url.searchParams.get("device") || ""))
+      return json(res, { error: "device not found" }, 404);
     return json(res, {
-      series: series(url, url.searchParams.get("device") || V21[0]),
+      series: series(url, url.searchParams.get("device")),
     });
+  }
   if (path === "/api/messages") {
     if (role !== "operator")
       return json(res, { error: "operator required" }, 403);
@@ -1746,8 +1896,9 @@ const server = createServer(async (req, res) => {
   }
   return json(res, { error: "not found" }, 404);
 });
-server.listen(5188, "127.0.0.1", () =>
-  process.stdout.write("Development fixture API on 127.0.0.1:5188\n"),
+const port = Number(process.env.FIXTURE_PORT || 5188);
+server.listen(port, "127.0.0.1", () =>
+  process.stdout.write(`Development fixture API on 127.0.0.1:${port}\n`),
 );
 for (const signal of ["SIGINT", "SIGTERM"])
   process.on(signal, () => server.close(() => process.exit()));
