@@ -44,7 +44,7 @@ these recovery corrections:
 | Client ID | the 24-hex `DeviceID` |
 | Session | **persistent** (`clean_session = 0`). The broker queues QoS 1 commands while the logger sleeps and delivers them on the next connect. |
 | Keepalive | 120 s |
-| Last Will | topic `gwl/v1/<DEV>/status`, QoS 1, **retained**, payload `{"v":2,"state":"offline","reason":"lwt"}` |
+| Last Will | topic `gwl/v1/<DEV>/status`, QoS 1, **retained**, payload `{"v":2,"state":"offline","reason":"lwt"}` (set with `AT+QMTCFG="willex"`). A modem firmware that takes neither `willex` nor quotes gets the plain-text payload `offline` (no JSON); the server accepts both |
 | QoS | 1 for everything. Only `status` and `info` are retained. Downlink is never retained. |
 | Prefix | `gwl/v1/<DEV>/<channel>`; `<DEV>` is 24 uppercase hex characters |
 
@@ -100,6 +100,17 @@ revision 1 forms for V2.1 units. The broker ACL must allow the new channels.
 Rev2's "upload only if ≥10 % of the send interval passed" rule applies to
 connections triggered by events, not to scheduled sends.
 
+**Back-off.** A connection that fails (no network, no SIM, broker refused or
+unreachable, or an upload or alert not acknowledged) is retried after 30 min,
+then 1 h, 2 h, … doubling up to 24 h and never later than `send_s`; the next
+scheduled send comes first when it is earlier. A successful connection
+clears it. Within one connection a missing SIM or a CONNACK refusal (2, 4, 5)
+ends the attempts at once; other failures are retried up to `attempts` times.
+From the second unclean reset in a row (watchdog, fault) the boot connection
+is replaced by the same back-off (30 min for the second, then doubling). While
+Tail Locked the logger connects at least every min(`send_s`, 6 h). `status`
+`next` always gives the planned next connection.
+
 ## 4. Device → server payloads
 
 ### status
@@ -117,7 +128,9 @@ scheduled connection (omitted if unknown). `win` only with `ready`.
  "net":"bench","stream":"bin","reset":"wdg"}
 ```
 `stream`: `bin` when `AT+QMTPUBEX` works, `hex` when the fallback encoding is in
-use (§5). `reset`: last reset cause `por` | `pin` | `wdg` | `sw` | `bor` | `other`.
+use (§5). `reset`: last reset cause `por` | `pin` | `wdg` | `sw` | `other`
+(`bor` is reserved: the STM32G070 has no brown-out reset, a supply collapse
+reads as `por`).
 
 ### health
 ```json
@@ -125,6 +138,11 @@ use (§5). `reset`: last reset cause `por` | `pin` | `wdg` | `sw` | `bor` | `oth
  "sd":"ok","sd_free_mb":7400,"mram":"ok","unsaved":1234,"usable":122368,
  "log":"on","gen":4,"next":1763904800,"err":0}
 ```
+**Values not read are left out** (health, `test/result`, `reading`, alerts):
+`bat_mv`, `sol_mv` and `mv` are omitted when that ADC reading failed (never sent
+as 65535); `sd_free_mb` is present only when the card's free space was read in
+this session and `sd` is `ok` or `full` (never a stale value, never 0 for
+"unknown"). `csq` 99 means "not known" (3GPP), as before.
 `sd`: `ok` | `missing` | `error` | `full`. `mram`: `ok` | `absent` | `fault` |
 `locked` (Tail Lock) | `recovery`. `log`: `on` | `off`. `gen`: active settings
 generation. `err`: latched error code (Rev2 metadata `last_error`, 0 = none;
@@ -149,12 +167,18 @@ Common fields `{"v":2,"t":..,"tv":..,"ev":"<event>","seq":<ring seq or omitted>}
 | `gps_moved` | `"dist_m":..,"thr_m":..` | 10 |
 
 Alerts are a notification copy. The authoritative record arrives in
-`data/stream`. Alerts raised while asleep are published at the next connection;
+`data/stream`. Alerts are best effort: the logger keeps at most 8 unsent
+alerts in RAM (the oldest is dropped when a ninth arrives) and loses them at a
+reset; the records stay in the ring. Alerts raised while asleep are published at the next connection;
 an alarm entry, impact, sensor fault, power critical, MRAM almost full or Tail
 Lock brings the next connection forward (subject to the 10 % rule). A
 `gps_moved` or `orientation` alert connects at once: it is not held by the
 send schedule, the 10 % rule or the back-off after failed connections (owner
-decision 2026-11-16; both are latched, so one occurrence asks once).
+decision 2026-11-16). Both are latched with a re-arm margin, so a value
+hovering at the limit raises one alarm, not one per reading: `orientation`
+enters above 10.0° from the reference and re-arms only at ≤ 8.0°;
+`gps_moved` enters above `thr_m` and re-arms only at ≤ `thr_m` / 2 (integer
+metres, rounded down). A test re-references both and clears the latches.
 
 `ss` (sensor status, also in Type 0/1/5/17 records and `reading` /
 `test/result`): 0 ok, 1 no sensor / open loop (< 3.5 mA), 2 under-range
@@ -171,6 +195,10 @@ urgent. `ss` in a `sensor_fault` enter is the new fault's status; in an exit
 it is the status that ended. A change from one fault status to another
 (say under-range to over-range) is an exit for the old status followed by an
 enter for the new one, so enter and exit always alternate.
+After a Type 11 (impact) or a Type 12 (orientation) the logger writes a Type 2
+(reason 2, alarm) at once with the accelerometer only (`fix` none, position
+not available), and, unless `gps_mode` is 3 (off), a second Type 2 with the
+GPS fix (and the accelerometer again) just before the next connection.
 Impacts are rate limited: at most one Type 11 record and `impact` alert per
 10 minutes. Taps inside that hold-off are not recorded on their own; the
 highest of their peaks is recorded at the first wake after it, with that time.
@@ -183,7 +211,15 @@ highest of their peaks is recorded at the first wake after it, with that time.
  "warn":["Low battery"]}
 ```
 `id`: the command id when remote, else omitted. `trigger`: `button` | `remote` |
-`power_on` | `scheduled`. `status`: Rev2 Type 5 bitfield.
+`power_on` (`scheduled` is reserved: firmware 2.2 has no scheduled test and
+never sends it). `status`: Rev2 Type 5 bitfield. `ok` is true when the
+sensor, SD, SIM, network, MQTT, display, accelerometer and MRAM bits are set;
+GNSS fix and solar are reported but not required. A button or power-on test
+whose connection fails is recorded (Type 5, display) but its `test/result`
+is not published later; the Type 5 record reaches the server with the data. Components: `sd`
+`ok` | `missing` | `error` | `full`; `sim`, `net`, `epd`, `acc` `ok` | `fail`;
+`mqtt` `ok`; `gps` `fix` | `nofix`, or `off` when `gps_mode` is 3 (off: then
+no "No GPS" warning); `mram` `ok` | `absent` | `fault`.
 
 ### reading / gps (fallback mode only)
 ```json
@@ -206,6 +242,14 @@ decodes it this way.
 The server verifies the batch CRC-32 and every frame's CRC-8, stores the raw
 batch, and deduplicates frames by `(DEVICE, log_id, seq)`.
 
+**Payload schema per log.** One log never mixes payload layouts: a firmware
+whose `GWL_PAYLOAD_SCHEMA` differs from the schema of the log it finds in
+MRAM starts a new log at boot (Type 14 reason 6, sequences from 1). The batch
+header's `payload_schema` (and an SD segment header's) is the schema of the
+log its frames belong to, not the running firmware's (`info.schema`): frames
+of an older log sent or resent after the change keep their own schema.
+Decode each batch with its header's schema.
+
 `data/file` payload, little-endian:
 
 | Off | Type | Field |
@@ -219,7 +263,10 @@ batch, and deduplicates frames by `(DEVICE, log_id, seq)`.
 | 18+n | u32 | CRC-32 over bytes 0 … 17+n |
 
 **Encoding.** Binary payloads are sent with `AT+QMTPUBEX` (length-delimited,
-binary-safe). If the modem rejects `AT+QMTPUBEX` (probed at boot), the firmware
+binary-safe), else with `AT+QMTPUB` with a length (the same bytes, also
+binary). The forms are probed at every modem power-up; a form rejected twice
+in a row while connected is dropped until the next power-up. If neither binary
+form works, the firmware
 sends the same bytes as uppercase ASCII hex through `AT+QMTPUB`, halving the
 batch size (≤ 714 bytes of frames, so the hex text of the whole batch stays
 within 1,500 characters; servers accept up to 732). The server accepts both: a payload starting
@@ -238,7 +285,15 @@ is hex.
 - `ok`: done. `partial`: some parts done (see `results`). `failed`: not done.
 - `rejected`: not accepted (`reason`: `malformed`, `unknown-op`, `bad-args`,
   `busy`, `locked`, `time-invalid`, `bad-nonce`, `no-challenge`,
-  `unsaved-mismatch`, `unsupported`, `logging-off`, …).
+  `unsaved-mismatch`, `unsupported`, `no-space` (settings: not enough
+  ordinary MRAM space), `mram-fault` (MRAM absent or faulted),
+  `wrong-state` (e.g. `wipe_mram` outside its state, a ring in read-only
+  RECOVERY); `logging-off` is reserved and never sent: while logging is
+  disabled commands and settings run normally).
+- `failed` may carry `reason`: `io-error`, `not-found` (file or log not on
+  the card), `sd-missing`, `no-space`, `mram-fault`, `bad-args` (`sync_time`
+  outside 2024–2099). `partial` or `ok` may carry `data-truncated` (the
+  `data` or `results` did not fit in one ack).
 - `expired`: `exp` had passed on the logger's valid clock.
 - `duplicate`: this `id` was already executed (§6.2); `prev` repeats its status.
 - `challenge`: first step of a danger command (§7).
@@ -275,7 +330,7 @@ Keys in `args` (Rev2 TLV settings plus three firmware settings). A missing key k
 | `tap` | 0/1 | 1 | 0x07 |
 | `tap_sens` | 1 … 10 | 5 | 0x08 |
 | `gps_sens` | 0 … 10 (0 off) | 5 | 0x09 |
-| `lo` / `hi` | float or `null` (unset) | unset | 0x0A / 0x0B |
+| `lo` / `hi` | float or `null` (unset); when both are set, `lo` ≤ `hi` (else `bad-args`, `results` names the keys sent, both when neither was sent) | unset | 0x0A / 0x0B |
 | `lo_hys` / `hi_hys` | float ≥ 0 | 0 | 0x0C / 0x0D |
 | `loc` | string ≤ 32 bytes | "" | 0x0E |
 | `proj` | string ≤ 32 bytes | "" | 0x0F |
@@ -295,7 +350,10 @@ Rule: the whole request is validated first. Any present key with an invalid
 value → `rejected` (`reason":"bad-args"`, `results` names it), nothing changes.
 Unknown keys → `unsupported` in `results`, the rest is applied, status `partial`.
 A change follows Rev2 "Applying a settings change" and the ack carries the new
-`gen` and the full effective `settings` object. While Tail Locked: `rejected`,
+`gen` and the full effective `settings` object. In fallback mode (MRAM absent
+or faulted) settings are held in RAM only: the ack adds `"persist":false`
+after `gen` (counting from 1 per boot), and the next reset returns to the V2.1
+page or the defaults. While Tail Locked: `rejected`,
 `reason":"locked"`.
 
 ### cmd/basic
@@ -305,12 +363,12 @@ A change follows Rev2 "Applying a settings change" and the ack carries the new
 | `self_test` | — | ack `ok`, then `test/result` with this `id`; Type 5 record (trigger 2, req_id = id) |
 | `get_status` | — | the `health` object plus `boot`, `head`, `tail`, `sd_saved`, `mqtt_saved`, `log_id`, `last_seq`, `flags` |
 | `get_settings` | — | `{"gen":..,"settings":{...}}` |
-| `get_debug` | — | firmware/runtime details: `info` fields, reset cause, watchdog resets, `last_error`, modem `csq`/`creg`, free RAM. `reset_flags`: bits 31–23 the MCU reset flags, bit 8 set when the 32.768 kHz crystal did not start at this boot (the RTC runs from the internal LSI, about ±5 %, corrected at each connection; switching to it invalidates the clock until it is set again), bits 7–0 the reset-loop guard |
+| `get_debug` | — | firmware/runtime details: `info` fields, reset cause, watchdog resets, `last_error`, modem `csq`/`creg`, free RAM. `reset_flags`: bits 31–23 the MCU reset flags, bit 8 set when the 32.768 kHz crystal did not start at this boot (the RTC runs from the internal LSI, about ±5 %, corrected at each connection; switching to it invalidates the clock until it is set again), bits 7–0 the reset-loop guard (3–0 consecutive unclean resets, 4 next reset commanded, 5 a flash ECC double error was seen, 6 a HardFault reset the MCU since the last cold start; a HardFault reset reports `reset:"sw"`). Also `mram_size`, `rx_dropped`, `rx_errors`, `cmd` {`dropped`,`malformed`,`busy`,`lost`} and `boot_report`: the last MRAM ring boot (Rev2 boot steps 3/6), bits 0 chip formatted, 1/2 settings slot A/B failed its check, 3/4 checkpoint A/B invalid, 5 a committed settings change was activated, 6 settings rolled back to the older slot, 7 settings restored from a snapshot, 8 settings lost, 9 read-only RECOVERY, 10 power gap recorded, 11 Tail Locked, 12 frames found past the checkpoint head, 13 an interrupted factory reset was completed, 14 a new log was started because the payload schema changed. `info` fields not known yet (IMEI, ICCID, modem firmware before the modem was identified) are omitted |
 | `flush_mqtt` | optional `{"log_id":L,"from_seq":A,"to_seq":B}` | without args: send unsaved frames now. With args: **resend** that range from MRAM (or from the SD archive when MRAM no longer holds it; batch flag bit2). `data`: `{"frames":n,"batches":m,"first_seq":..,"last_seq":..,"missing":k}` |
 | `flush_sd` | — | save unsaved frames to the SD archive now; `data`: `{"frames":n,"segment":s}` |
-| `file_list` | `{"path":"/GWL","page":0}` | `{"path":..,"files":[["B0000001.BIN",123456],["SUBDIR/",0]],"more":false}` (≤ 16 entries per page). `file_list` and `file_chunk` take any absolute 8.3 path on the card, not only `/GWL` (e.g. `/` or a V2.1 `/String.txt`); both only read. `.`, `..`, `\`, `:` and control characters are refused |
+| `file_list` | `{"path":"/GWL","page":0}` | `{"path":..,"files":[["B0000001.BIN",123456],["SUBDIR/",0]],"more":false}` (≤ 16 entries per page). `file_list` and `file_chunk` take any absolute 8.3 path on the card, not only `/GWL` (e.g. `/` or a V2.1 `/String.txt`); both only read. `.`, `..`, `\`, `:` and control characters are refused; `path` is at most 63 bytes (longer: `rejected`/`bad-args`) |
 | `file_chunk` | `{"path":"/GWL/6A1B2C3D/B0000001.BIN","off":0,"len":1024}` | publishes `data/file`; ack `data` `{"off":..,"len":..,"size":..,"crc32":"…"}` |
-| `clear_error_latch` | — | clears `err` and latched SD/MRAM fault states |
+| `clear_error_latch` | — | clears `err` and latched SD/MRAM fault states; in fallback mode after a boot-time MRAM fault it retries the MRAM ring at once (the logger also retries at most hourly at a connection); a clean ring boot replaces the RAM-only settings with the ring's (a new `config/applied` is not sent; `get_settings` shows them) |
 | `enable_logging` | — | resumes logging (Type 16 gap reason 4, anchor) |
 | `sync_time` | `{"t":<UTC s>}` | sets the RTC (source 3) when invalid or > 2 s off; Type 15. `t` is advanced by the time the command waited in the logger's queue. `data`: `{"t":..,"tv":..,"set":true\|false}` (the clock afterwards; `set` false when it was already within 2 s). A `t` outside 2024–2099 → `failed`/`bad-args` |
 
@@ -337,7 +395,12 @@ Every other danger `op` uses the handshake in §7:
    re-sends it after the next `sleep`.
 2. **At most once.** The logger remembers the last 16 `(id, op, status)`
    results in RAM; a repeated `id` is acked `duplicate` with `prev`, never re-run.
+   This holds also for a copy turned away on arrival (queue full, damaged
+   JSON): an executed `id` never gets a later `rejected`/`busy` or `malformed`.
    The list survives a warm reset (`reboot`, watchdog) but not a loss of power.
+   An id is recorded as `failed` just before its handler starts: a command
+   whose handler was cut by a watchdog or fault reset is acked `duplicate`
+   with `"prev":"failed"` when re-sent after that reset, and is not run again.
 3. **Order.** Commands run in arrival order. `reboot` and `enter_bootloader`
    are deferred to the end of the window.
 4. Every received command gets exactly one final ack (plus the challenge for
