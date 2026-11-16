@@ -483,7 +483,7 @@ async fn cancel(
     let db = s.db.get().await.map_err(database)?;
     let user = operator(&h)?;
     let device = authorize(&s, &h, &device).await?;
-    let command = platform::cancel(&db, &device, id, &user.username)
+    let (command, warning) = platform::cancel_command(&db, &device, id, &user.username)
         .await
         .map_err(database)?
         .ok_or_else(|| {
@@ -493,7 +493,7 @@ async fn cancel(
             )
         })?;
     s.bus.emit(LiveEvent::Command { device_id: device });
-    Ok(Json(json!({"command":command})).into_response())
+    Ok(Json(json!({"command":command,"warning":warning})).into_response())
 }
 async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>) -> ApiResult {
     let device = authorize(&s, &h, &q.device).await?;

@@ -220,6 +220,10 @@ pub async fn next_publish<C: GenericClient + Sync>(
                AND (c.expires_at IS NULL OR c.expires_at>now())
                AND (NOT c.live_only OR (d.link_state IN ('online','ready') AND NOT d.link_retained
                     AND d.link_state_at>now()-make_interval(secs=>COALESCE(d.listen_window_s,60)+180)))
+               -- A confirmation runs its parent's destructive op: never
+               -- publish one for a parent no longer awaiting it (cancelled,
+               -- expired, already acked).
+               AND (c.op<>'confirm' OR EXISTS(SELECT 1 FROM commands p WHERE p.id=c.parent_id AND p.state='challenge'))
                AND (c.op='confirm' OR c.live_only OR NOT EXISTS(SELECT 1 FROM commands h WHERE h.device_id=c.device_id
                     AND h.protocol=2 AND h.state='queued' AND h.hold_until_sleep AND h.id<c.id))
                AND (c.op='confirm' OR (SELECT count(*) FROM commands o WHERE o.device_id=c.device_id AND o.protocol=2
@@ -1869,6 +1873,95 @@ mod db_tests {
         ack(&client, "cmd/ack", challenge(wanted)).await;
         assert_eq!(state(&client, wanted).await.0, "challenge");
         assert_eq!(confirms(&client).await, 1);
+    }
+
+    // R2 (independent review): cancelling a challenged wipe left its queued
+    // confirm, which the scheduler then published, so the logger ran the
+    // wipe the operator withdrew. A cancel withdraws every confirm of the
+    // command, warns when one was already sent, and no confirm is published
+    // for a parent that is not awaiting it.
+    #[tokio::test]
+    #[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+    async fn a_cancelled_danger_command_never_publishes_its_confirm() {
+        let client = setup().await;
+        let policy = Rev2Policy::default();
+        client.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES('k2',$1,'gwl/v1/'||$1||'/cmd/danger','V22')", &[&DEV]).await.unwrap();
+        let nexp = (Utc::now() + chrono::Duration::seconds(120)).timestamp();
+        let challenge = |id: i64| json!({"v":2,"id":id,"op":"wipe_sd","status":"challenge","nonce":"0BADF00D","nexp":nexp});
+        let confirm_of = |parent: i64| {
+            let client = &client;
+            async move {
+                client
+                    .query_one("SELECT id FROM commands WHERE parent_id=$1", &[&parent])
+                    .await
+                    .unwrap()
+                    .get::<_, i64>(0)
+            }
+        };
+        // Queued confirm: withdrawn with its wipe, nothing published.
+        let wipe = queue_sent(&client, "wipe_sd", true).await;
+        ack(&client, "cmd/ack", challenge(wipe)).await;
+        let confirm = confirm_of(wipe).await;
+        let (cancelled, warning) = crate::platform::cancel_command(&client, DEV, wipe, "operator")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cancelled.state, "cancelled");
+        assert_eq!(warning, None);
+        assert_eq!(state(&client, confirm).await.0, "cancelled");
+        assert!(next_publish(&client, &policy).await.unwrap().is_none());
+
+        // Already published confirm: withdrawn too, and the operator is told.
+        let wipe = queue_sent(&client, "wipe_sd", true).await;
+        ack(&client, "cmd/ack", challenge(wipe)).await;
+        let confirm = confirm_of(wipe).await;
+        client
+            .execute(
+                "UPDATE commands SET state='sent',publish_count=1,last_published_at=now() WHERE id=$1",
+                &[&confirm],
+            )
+            .await
+            .unwrap();
+        let (_, warning) = crate::platform::cancel_command(&client, DEV, wipe, "operator")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(warning.is_some_and(|w| w.contains("already sent")));
+        // If it ran anyway, its ack shows the truth on both rows.
+        ack(
+            &client,
+            "cmd/ack",
+            json!({"v":2,"id":confirm,"op":"wipe_sd","status":"ok"}),
+        )
+        .await;
+        assert_eq!(
+            state(&client, wipe).await,
+            ("acked".into(), Some("ok".into()))
+        );
+
+        // A confirm whose parent stopped awaiting it is never published.
+        let wipe = queue_sent(&client, "wipe_sd", true).await;
+        ack(&client, "cmd/ack", challenge(wipe)).await;
+        client
+            .execute("UPDATE commands SET state='expired' WHERE id=$1", &[&wipe])
+            .await
+            .unwrap();
+        assert!(next_publish(&client, &policy).await.unwrap().is_none());
+
+        // Reverse: cancelling the confirm leaves the wipe awaiting a new one.
+        let wipe = queue_sent(&client, "wipe_sd", true).await;
+        ack(&client, "cmd/ack", challenge(wipe)).await;
+        let confirm = confirm_of(wipe).await;
+        let (_, warning) = crate::platform::cancel_command(&client, DEV, confirm, "operator")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(warning, None);
+        assert_eq!(state(&client, wipe).await.0, "challenge");
+        let again = super::confirm(&client, DEV, wipe, None, "operator", &policy)
+            .await
+            .unwrap();
+        assert!(again.is_ok(), "{again:?}");
     }
 
     #[tokio::test]
