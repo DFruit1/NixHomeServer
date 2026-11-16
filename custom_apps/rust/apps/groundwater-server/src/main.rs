@@ -9,6 +9,7 @@
 
 mod acks;
 mod adapter;
+mod alerting;
 mod api;
 mod api_rev2;
 mod clock;
@@ -20,6 +21,12 @@ mod db;
 mod fixtures;
 mod identity;
 mod ingest;
+mod metrics;
+mod mqtt_auth;
+mod notify;
+mod ops_api;
+#[cfg(test)]
+mod ops_tests;
 mod platform;
 #[cfg(test)]
 mod platform_tests;
@@ -100,12 +107,28 @@ async fn run() -> Result<(), String> {
         db::connect(&settings.database_url).await?,
     );
     let alert_bus = bus.clone();
+    let stale_margin_min = (settings.rev2.stale_margin_seconds / 60).clamp(5, 10_080) as i32;
     tokio::spawn(async move {
         let mut timer = tokio::time::interval(Duration::from_secs(1));
+        let mut tick: u64 = 0;
         loop {
             timer.tick().await;
+            tick += 1;
+            // Missed connections are a clock event: check once a minute.
+            let stale = tick % 60 == 1;
             let result = match alert_db.get().await {
-                Ok(db) => platform::refresh_alerts(&db).await,
+                Ok(db) => {
+                    let mut changed = platform::refresh_alerts(&db).await;
+                    if stale && let Ok(ids) = &mut changed {
+                        match alerting::evaluate_stale(&db, chrono::Utc::now(), stale_margin_min)
+                            .await
+                        {
+                            Ok(more) => ids.extend(more),
+                            Err(e) => eprintln!("groundwater stale alerts: {e}"),
+                        }
+                    }
+                    changed
+                }
                 Err(e) => Err(e),
             };
             match result {
@@ -118,6 +141,30 @@ async fn run() -> Result<(), String> {
             }
         }
     });
+
+    // Notifications run whether or not ntfy is configured: without it the
+    // outbox rows are marked skipped, so nothing accumulates as pending.
+    tokio::spawn(notify::run(
+        settings.database_url.clone(),
+        settings.ops.clone(),
+    ));
+    match &settings.ops.ntfy {
+        Some(target) => eprintln!("groundwater: notifications to {}", target.topic_url()),
+        None => eprintln!(
+            "groundwater: GROUNDWATER_NTFY_URL is unset; notifications are recorded, not sent"
+        ),
+    }
+    // Per-device MQTT accounts: rewrite the broker's view from the database
+    // on start, so a restored database and the files cannot disagree.
+    if let Some(dir) = &settings.ops.mqtt_auth_dir {
+        match mqtt_auth::publish(&client, dir).await {
+            Ok(count) => eprintln!(
+                "groundwater: {count} per-device MQTT account(s) published to {}",
+                dir.display()
+            ),
+            Err(e) => eprintln!("groundwater: per-device MQTT accounts not published: {e}"),
+        }
+    }
 
     match &settings.mqtt {
         Some(mqtt) => eprintln!(
@@ -142,7 +189,21 @@ async fn run() -> Result<(), String> {
         loop {
             tokio::time::sleep(PRUNE_INTERVAL).await;
             let result = match prune_client.get().await {
-                Ok(db) => db::prune_deliveries(&db, retention_days).await,
+                Ok(db) => {
+                    // Delivered or skipped notifications are history, not
+                    // audit; alerts and the device audit keep the facts.
+                    if let Err(e) = db
+                        .execute(
+                            "DELETE FROM notification_outbox WHERE state<>'pending'
+                             AND created_at < now() - ($1::BIGINT * INTERVAL '1 day')",
+                            &[&retention_days],
+                        )
+                        .await
+                    {
+                        eprintln!("groundwater: notification prune failed: {e}");
+                    }
+                    db::prune_deliveries(&db, retention_days).await
+                }
                 Err(e) => Err(e),
             };
             match result {

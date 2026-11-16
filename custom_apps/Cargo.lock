@@ -2318,10 +2318,14 @@ name = "groundwater-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "chrono",
  "form_urlencoded",
  "futures-util",
+ "hmac 0.12.1",
  "homelab-common",
+ "rand 0.8.7",
+ "reqwest",
  "rumqttc",
  "serde",
  "serde_json",

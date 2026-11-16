@@ -438,16 +438,20 @@ BEGIN
 END $$;
 
 -- Rev2: battery and solar alerts are raised by the server from health and
--- test data. Thresholds are per device (NULL = defaults): battery low below
--- 7.0 V on the 2S pack (critical is the logger's own 6.6 V), cleared at
--- +0.2 V; solar low after three consecutive samples below 1.0 V, cleared by
--- one sample at or above it.
+-- test data. Thresholds come from the alert policy (ops.sql: device ->
+-- project -> fleet -> defaults): battery low below 7.0 V on the 2S pack
+-- (critical is the logger's own 6.6 V), cleared at the threshold plus the
+-- hysteresis (0.2 V); solar low after N (3) consecutive samples below 1.0 V,
+-- cleared by one sample at or above it. A hand-resolved alert is closed;
+-- a later low sample opens a new one.
 CREATE OR REPLACE FUNCTION groundwater_power_alerts(target TEXT) RETURNS void LANGUAGE plpgsql AS $$
-DECLARE low INTEGER; solar_low INTEGER; open_id BIGINT;
+DECLARE low INTEGER; hys INTEGER; solar_low INTEGER; samples INTEGER; open_id BIGINT;
     bat_at TIMESTAMPTZ; bat INTEGER; dark BOOLEAN; sol_at TIMESTAMPTZ; sol_min INTEGER; sol_latest INTEGER;
 BEGIN
-    SELECT COALESCE(battery_low_mv,7000),COALESCE(solar_low_mv,1000) INTO low,solar_low
-        FROM devices WHERE device_id=target FOR UPDATE;
+    PERFORM 1 FROM devices WHERE device_id=target FOR UPDATE;
+    SELECT p.battery_low_mv,p.battery_hys_mv,p.solar_low_mv,p.solar_samples INTO low,hys,solar_low,samples
+        FROM groundwater_alert_policy(target) p;
+    IF low IS NULL THEN RETURN; END IF;
     SELECT at,mv INTO bat_at,bat FROM (
         SELECT recorded_at AS at,bat_mv AS mv,id FROM device_health WHERE device_id=target AND bat_mv IS NOT NULL
         UNION ALL SELECT COALESCE(recorded_at,received_at),battery_mv,id FROM device_tests WHERE device_id=target AND battery_mv IS NOT NULL
@@ -455,23 +459,25 @@ BEGIN
     IF bat IS NOT NULL THEN
         SELECT id INTO open_id FROM alerts WHERE device_id=target AND kind='battery_low' AND state='open' AND NOT superseded;
         IF open_id IS NULL AND bat<low THEN
-            INSERT INTO alerts(device_id,kind,state,trigger_value,opened_at) VALUES(target,'battery_low','open',bat/1000.0,bat_at)
+            INSERT INTO alerts(device_id,kind,state,trigger_value,opened_at,detail)
+                VALUES(target,'battery_low','open',bat/1000.0,bat_at,jsonb_build_object('threshold_mv',low,'clear_mv',low+hys))
                 ON CONFLICT(device_id,kind,opened_at) DO NOTHING;
-        ELSIF open_id IS NOT NULL AND bat>=low+200 THEN
+        ELSIF open_id IS NOT NULL AND bat>=low+hys THEN
             UPDATE alerts SET state='resolved',resolved_at=bat_at WHERE id=open_id;
         END IF;
     END IF;
-    SELECT count(*)=3 AND bool_and(mv<solar_low),max(at),min(mv),(array_agg(mv ORDER BY at DESC,id DESC))[1]
+    SELECT count(*)=samples AND bool_and(mv<solar_low),max(at),min(mv),(array_agg(mv ORDER BY at DESC,id DESC))[1]
         INTO dark,sol_at,sol_min,sol_latest FROM (
         SELECT at,mv,id FROM (
             SELECT recorded_at AS at,sol_mv AS mv,id FROM device_health WHERE device_id=target AND sol_mv IS NOT NULL
             UNION ALL SELECT COALESCE(recorded_at,received_at),solar_mv,id FROM device_tests WHERE device_id=target AND solar_mv IS NOT NULL
-        ) s ORDER BY at DESC,id DESC LIMIT 3) last3;
+        ) s ORDER BY at DESC,id DESC LIMIT samples) recent;
     IF sol_latest IS NULL THEN RETURN; END IF;
     open_id:=NULL;
     SELECT id INTO open_id FROM alerts WHERE device_id=target AND kind='solar_low' AND state='open' AND NOT superseded;
     IF open_id IS NULL AND dark THEN
-        INSERT INTO alerts(device_id,kind,state,trigger_value,opened_at) VALUES(target,'solar_low','open',sol_min/1000.0,sol_at)
+        INSERT INTO alerts(device_id,kind,state,trigger_value,opened_at,detail)
+            VALUES(target,'solar_low','open',sol_min/1000.0,sol_at,jsonb_build_object('threshold_mv',solar_low,'samples',samples))
             ON CONFLICT(device_id,kind,opened_at) DO NOTHING;
     ELSIF open_id IS NOT NULL AND sol_latest>=solar_low THEN
         UPDATE alerts SET state='resolved',resolved_at=sol_at WHERE id=open_id;

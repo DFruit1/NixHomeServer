@@ -180,6 +180,7 @@ impl Harness {
             mqtt: None,
             retention_days: 90,
             rev2: Default::default(),
+            ops: Default::default(),
         };
         api::router(api::AppState {
             settings: Arc::new(settings),
@@ -1353,6 +1354,7 @@ async fn rev2_profile_detection_and_legacy_fault_readings() {
             from: Utc::now() - Duration::days(1),
             to: Utc::now() + Duration::days(1),
             bucket_minutes: 0,
+            datum: Default::default(),
         },
     )
     .await

@@ -42,6 +42,137 @@ pub struct Settings {
     pub mqtt: Option<MqttSettings>,
     pub retention_days: i64,
     pub rev2: Rev2Policy,
+    pub ops: OpsSettings,
+}
+
+/// Notifications, per-device MQTT credentials and metrics. All optional:
+/// an unset value disables that feature without affecting ingest.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpsSettings {
+    /// ntfy server and default topic (GROUNDWATER_NTFY_URL, a topic URL such
+    /// as `http://127.0.0.1:8099/groundwater`). Loopback only: ntfy topics are
+    /// unauthenticated and the message names the device and its location.
+    pub ntfy: Option<NtfyTarget>,
+    /// Base URL of this app for links in notifications (GROUNDWATER_PUBLIC_URL).
+    pub public_url: Option<String>,
+    /// Fleet-wide notification cap (GROUNDWATER_NOTIFY_MAX_PER_HOUR).
+    pub notify_max_per_hour: i64,
+    /// Directory the server writes Mosquitto device accounts into
+    /// (GROUNDWATER_MQTT_AUTH_DIR). Unset: per-device credentials are off.
+    pub mqtt_auth_dir: Option<PathBuf>,
+    /// Bearer token for `/metrics` scrapers (GROUNDWATER_METRICS_TOKEN_FILE).
+    pub metrics_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NtfyTarget {
+    /// `http://host:port`, no trailing slash.
+    pub server: String,
+    pub topic: String,
+}
+
+pub const DEFAULT_NTFY_TOPIC: &str = "groundwater";
+
+/// ntfy topic names: what ntfy itself accepts, minus nothing.
+pub fn valid_topic(topic: &str) -> bool {
+    (1..=64).contains(&topic.len())
+        && topic
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+impl NtfyTarget {
+    /// Parses `http://<loopback>[:port][/topic]`.
+    pub fn parse(url: &str) -> Result<Self, String> {
+        let rest = url
+            .trim()
+            .strip_prefix("http://")
+            .ok_or("GROUNDWATER_NTFY_URL must be an http:// URL of the local ntfy server")?;
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let host = authority
+            .strip_prefix('[')
+            .and_then(|h| h.split_once(']'))
+            .map(|(h, _)| h)
+            .unwrap_or_else(|| authority.rsplit_once(':').map_or(authority, |(h, _)| h));
+        let loopback = host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback());
+        if authority.is_empty() || authority.contains('@') || !loopback {
+            return Err(
+                "GROUNDWATER_NTFY_URL must name a loopback ntfy server: its topics are unauthenticated"
+                    .into(),
+            );
+        }
+        let topic = path.trim_end_matches('/');
+        let topic = if topic.is_empty() {
+            DEFAULT_NTFY_TOPIC
+        } else {
+            topic
+        };
+        if !valid_topic(topic) {
+            return Err("GROUNDWATER_NTFY_URL topic must match [A-Za-z0-9_-]{1,64}".into());
+        }
+        Ok(Self {
+            server: format!("http://{authority}"),
+            topic: topic.to_owned(),
+        })
+    }
+
+    pub fn topic_url(&self) -> String {
+        format!("{}/{}", self.server, self.topic)
+    }
+}
+
+impl OpsSettings {
+    pub fn from_env() -> Result<Self, String> {
+        let var = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty())
+        };
+        let ntfy = var("GROUNDWATER_NTFY_URL")
+            .map(|url| NtfyTarget::parse(&url))
+            .transpose()?;
+        let public_url = var("GROUNDWATER_PUBLIC_URL")
+            .map(|url| {
+                if url.starts_with("https://") || url.starts_with("http://") {
+                    Ok(url.trim_end_matches('/').to_owned())
+                } else {
+                    Err("GROUNDWATER_PUBLIC_URL must be an http(s) URL".to_owned())
+                }
+            })
+            .transpose()?;
+        let notify_max_per_hour = match var("GROUNDWATER_NOTIFY_MAX_PER_HOUR") {
+            None => 30,
+            Some(text) => text
+                .parse::<i64>()
+                .ok()
+                .filter(|v| (1..=10_000).contains(v))
+                .ok_or("GROUNDWATER_NOTIFY_MAX_PER_HOUR must be a whole number in 1..10000")?,
+        };
+        let metrics_token = match var("GROUNDWATER_METRICS_TOKEN_FILE") {
+            None => None,
+            Some(path) => {
+                let token = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("GROUNDWATER_METRICS_TOKEN_FILE {path}: {e}"))?
+                    .trim()
+                    .to_owned();
+                if token.len() < 16 {
+                    return Err("the metrics token must be at least 16 characters".into());
+                }
+                Some(token)
+            }
+        };
+        Ok(Self {
+            ntfy,
+            public_url,
+            notify_max_per_hour,
+            mqtt_auth_dir: var("GROUNDWATER_MQTT_AUTH_DIR").map(PathBuf::from),
+            metrics_token,
+        })
+    }
 }
 
 /// Protocol revision 2 command and data-recovery policy. Every value has an
@@ -209,6 +340,7 @@ impl Settings {
                 .parse()
                 .map_err(|_| "GROUNDWATER_RETENTION_DAYS must be whole days".to_string())?,
             rev2: Rev2Policy::from_env()?,
+            ops: OpsSettings::from_env()?,
         })
     }
 }
@@ -459,6 +591,35 @@ mod tests {
                 tls: true,
             }
         );
+    }
+
+    #[test]
+    fn ntfy_url_is_a_loopback_topic_url() {
+        let target = NtfyTarget::parse("http://127.0.0.1:8099/groundwater").unwrap();
+        assert_eq!(target.server, "http://127.0.0.1:8099");
+        assert_eq!(target.topic, "groundwater");
+        assert_eq!(target.topic_url(), "http://127.0.0.1:8099/groundwater");
+        assert_eq!(
+            NtfyTarget::parse("http://localhost:8099/").unwrap().topic,
+            DEFAULT_NTFY_TOPIC
+        );
+        assert_eq!(
+            NtfyTarget::parse("http://[::1]:8099/alerts_1")
+                .unwrap()
+                .server,
+            "http://[::1]:8099"
+        );
+        for bad in [
+            "https://127.0.0.1:8099/x",
+            "http://ntfy.example.org/x",
+            "http://192.168.8.12:8099/x",
+            "http://user@127.0.0.1/x",
+            "http://127.0.0.1:8099/a/b",
+            "http://127.0.0.1:8099/bad topic",
+            "ntfy",
+        ] {
+            assert!(NtfyTarget::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

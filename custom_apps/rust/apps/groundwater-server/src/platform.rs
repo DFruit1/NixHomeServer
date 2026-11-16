@@ -15,7 +15,11 @@ pub async fn migrate(client: &Client) -> Result<(), String> {
     client
         .batch_execute(include_str!("rev2.sql"))
         .await
-        .map_err(|e| format!("protocol revision 2 migration: {e:?}"))
+        .map_err(|e| format!("protocol revision 2 migration: {e:?}"))?;
+    client
+        .batch_execute(include_str!("ops.sql"))
+        .await
+        .map_err(|e| format!("operations migration: {e:?}"))
 }
 
 pub async fn allowed(
@@ -159,6 +163,8 @@ pub async fn cancel(
     // Single SQL statement serializes against the publisher's reservation.
     client.query_opt("WITH changed AS (UPDATE commands SET state='cancelled',cancelled_at=now(),cancelled_by=$3 WHERE id=$2 AND device_id=$1 AND (state IN ('queued','sent') OR (protocol=2 AND state='challenge')) AND active_publish_attempt IS NULL RETURNING *), audit AS (INSERT INTO command_events(command_id,event,actor) SELECT id,'cancelled',$3 FROM changed) SELECT * FROM changed", &[&device,&id,&username]).await.map(|r|r.map(command)).map_err(|e|e.to_string())
 }
+/// Level alert rows as the revision 1 tests read them.
+#[cfg(test)]
 pub async fn alerts(
     client: &Client,
     ids: &[String],

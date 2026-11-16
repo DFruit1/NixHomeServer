@@ -593,6 +593,16 @@ pub struct DeviceSummary {
     pub open_gap_count: i64,
     /// Danger commands awaiting operator confirmation.
     pub pending_challenge_count: i64,
+    /// Level alarm hysteresis (NULL: the historical fixed 0.5 m).
+    pub min_hysteresis: Option<f64>,
+    pub max_hysteresis: Option<f64>,
+    /// Provisioning: project ("" = none), notes, enrollment and retirement.
+    pub project: String,
+    pub notes: String,
+    pub enrolled_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    /// MQTT account: `shared`, `dual` (own + shared) or `device` (own only).
+    pub mqtt_auth: String,
 }
 
 impl DeviceSummary {
@@ -627,13 +637,17 @@ pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<Devic
             (SELECT count(*) FROM alerts a WHERE a.device_id=d.device_id AND a.state='open' AND NOT a.superseded) AS open_alert_count,
             (SELECT count(*) FROM stream_gaps g WHERE g.device_id=d.device_id AND g.state IN ('open','requested')) AS open_gap_count,
             (SELECT count(*) FROM commands c WHERE c.device_id=d.device_id AND c.protocol=2 AND c.state='challenge') AS pending_challenge_count,
+            COALESCE((SELECT c.mode FROM device_mqtt_credentials c WHERE c.device_id=d.device_id),'shared') AS mqtt_auth,
+            (SELECT p.stale_margin_min FROM groundwater_alert_policy(d.device_id,$2) p) AS stale_margin_min,
             to_jsonb(received) AS latest_received,to_jsonb(plausible) AS latest_plausible
          FROM devices d
          LEFT JOIN LATERAL (SELECT {columns} FROM observations WHERE id=d.latest_received_id) received ON true
          LEFT JOIN LATERAL (SELECT {columns} FROM observations WHERE id=d.latest_plausible_id) plausible ON true
          WHERE d.device_id=ANY($1) ORDER BY d.device_id");
+    let default_margin_min =
+        (crate::config::rev2_policy().stale_margin_seconds / 60).clamp(5, 10_080) as i32;
     let rows = client
-        .query(&sql, &[&ids])
+        .query(&sql, &[&ids, &default_margin_min])
         .await
         .map_err(|e| db_context("device summaries", e))?;
     let mut devices = Vec::with_capacity(rows.len());
@@ -661,7 +675,13 @@ pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<Devic
                 listen_window_s: row.get("listen_window_s"),
                 next_contact_at: row.get("next_contact_at"),
                 send_interval_s: send_interval,
-                margin_s: crate::config::rev2_policy().stale_margin_seconds,
+                // The device's alert policy margin, so presence and stale
+                // alerts agree.
+                margin_s: row
+                    .get::<_, Option<i32>>("stale_margin_min")
+                    .map_or(crate::config::rev2_policy().stale_margin_seconds, |m| {
+                        i64::from(m) * 60
+                    }),
             },
         );
         let summary = |column: &str| -> Result<Option<ObservationSummary>, String> {
@@ -719,6 +739,13 @@ pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<Devic
             settings_at: row.get("settings_at"),
             open_gap_count: row.get("open_gap_count"),
             pending_challenge_count: row.get("pending_challenge_count"),
+            min_hysteresis: row.get("min_hysteresis"),
+            max_hysteresis: row.get("max_hysteresis"),
+            project: row.get("project"),
+            notes: row.get("notes"),
+            enrolled_at: row.get("enrolled_at"),
+            revoked_at: row.get("revoked_at"),
+            mqtt_auth: row.get("mqtt_auth"),
         });
     }
     Ok(devices)
@@ -804,14 +831,28 @@ pub async fn filtered_deliveries(
 #[derive(Debug, Clone, Serialize)]
 pub struct SeriesPoint {
     pub recorded_at: DateTime<Utc>,
+    /// The level in the series' datum (raw metres of water above the sensor
+    /// when `datum` is `raw`).
     pub gwl: f64,
+    /// The firmware's raw level, before any datum conversion.
+    pub raw_gwl: f64,
     /// Firmware text for a raw point; absent on an averaged bucket.
     pub gwl_text: Option<String>,
     pub battery_v: Option<f64>,
+    pub solar_v: Option<f64>,
     pub rssi: Option<i16>,
+    /// Revision 2 modem CSQ (0-31).
+    pub csq: Option<f64>,
     pub sample_count: i64,
     /// True when any sample in the bucket was a same-time conflict.
     pub conflict: bool,
+}
+
+/// Level limits expressed in the series' datum, ascending.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+pub struct SeriesLimits {
+    pub min: Option<f64>,
+    pub max: Option<f64>,
 }
 
 /// A chart series plus the window it covers.
@@ -825,6 +866,86 @@ pub struct Series {
     pub bucket_minutes: i64,
     /// True when the cap truncated the oldest points.
     pub truncated: bool,
+    /// `raw`, `dtw_bgl` (depth to water below ground) or `rl_ahd`.
+    pub datum: &'static str,
+    /// Depth axes grow downwards.
+    pub inverted: bool,
+    /// Readings in the window without a datum to convert them.
+    pub unconverted: i64,
+    pub limits: SeriesLimits,
+}
+
+/// Installation datum conversion of a raw level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DatumMode {
+    #[default]
+    Raw,
+    /// Depth to water below ground level (m bgl, positive down).
+    DepthBelowGround,
+    /// Reduced level in metres AHD.
+    ReducedLevel,
+}
+
+impl DatumMode {
+    pub fn parse(text: &str) -> Option<Self> {
+        Some(match text {
+            "raw" | "" => Self::Raw,
+            "dtw_bgl" => Self::DepthBelowGround,
+            "rl_ahd" => Self::ReducedLevel,
+            _ => return None,
+        })
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Raw => "raw",
+            Self::DepthBelowGround => "dtw_bgl",
+            Self::ReducedLevel => "rl_ahd",
+        }
+    }
+}
+
+/// One installation datum (see `ops.sql` `device_datums`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Datum {
+    pub sensor_depth_m: f64,
+    pub casing_height_m: f64,
+    pub ground_elevation_m: Option<f64>,
+}
+
+impl Datum {
+    /// Mirrors SQL `groundwater_datum_value`: `h` is metres of water above
+    /// the sensor.
+    pub fn convert(self, mode: DatumMode, h: f64) -> Option<f64> {
+        let depth = self.sensor_depth_m - self.casing_height_m - h;
+        match mode {
+            DatumMode::Raw => Some(h),
+            DatumMode::DepthBelowGround => Some(depth),
+            DatumMode::ReducedLevel => self.ground_elevation_m.map(|ground| ground - depth),
+        }
+    }
+}
+
+/// Raw limits in the requested datum, sorted so `min <= max` (a depth axis
+/// swaps them).
+pub fn convert_limits(
+    min: Option<f64>,
+    max: Option<f64>,
+    mode: DatumMode,
+    datum: Option<Datum>,
+) -> SeriesLimits {
+    let convert = |value: Option<f64>| match (value, mode, datum) {
+        (Some(v), DatumMode::Raw, _) => Some(v),
+        (Some(v), _, Some(datum)) => datum.convert(mode, v),
+        _ => None,
+    };
+    let (a, b) = (convert(min), convert(max));
+    match (a, b) {
+        (Some(a), Some(b)) if a > b => SeriesLimits {
+            min: Some(b),
+            max: Some(a),
+        },
+        _ => SeriesLimits { min: a, max: b },
+    }
 }
 
 /// Query bounds, clamped by the API before they reach here.
@@ -834,6 +955,7 @@ pub struct SeriesQuery {
     pub to: DateTime<Utc>,
     /// Downsampling bucket in minutes. `0` returns raw rows.
     pub bucket_minutes: i64,
+    pub datum: DatumMode,
 }
 
 /// Default chart window when the caller does not supply one.
@@ -843,12 +965,27 @@ pub const DEFAULT_WINDOW_HOURS: i64 = 24;
 /// return an unbounded payload to the browser.
 pub const MAX_SERIES_POINTS: usize = 2000;
 
+/// Plausible-time water observations of one device in a window, with the
+/// datum effective at each reading's time. `$1` device, `$2`/`$3` window,
+/// `$4` datum mode.
+const SERIES_SOURCE: &str = "
+    SELECT o.recorded_at,o.gwl AS raw,o.gwl_text,o.battery_v,o.solar_v,o.rssi,o.csq,o.duplicate_outcome,
+        CASE WHEN $4='raw' THEN o.gwl ELSE groundwater_datum_value($4,o.gwl,dt.sensor_depth_m,
+            dt.casing_height_m,dt.ground_elevation_m) END AS value
+    FROM observations o
+    LEFT JOIN LATERAL (SELECT sensor_depth_m,casing_height_m,ground_elevation_m FROM device_datums
+        WHERE $4<>'raw' AND device_id=o.device_id AND effective_from<=o.recorded_at
+        ORDER BY effective_from DESC LIMIT 1) dt ON true
+    WHERE o.device_id = $1 AND o.kind = 'water' AND o.time_quality = 'plausible' AND o.recorded_at IS NOT NULL
+      AND o.gwl IS NOT NULL AND o.recorded_at >= $2 AND o.recorded_at <= $3";
+
 /// Returns chart data for one device.
 ///
 /// On plain PostgreSQL the bucket is `to_timestamp(floor(epoch / width) *
 /// width)`: no `time_bucket`, no extension. Averaged buckets keep the sample
 /// count and a conflict flag, so downsampling cannot hide a same-time
-/// value disagreement.
+/// value disagreement. Datum conversion happens per reading before
+/// averaging; readings without a datum are counted, not plotted.
 pub async fn device_series(
     client: &Client,
     device_id: &str,
@@ -857,39 +994,34 @@ pub async fn device_series(
     let device_id = canonical_device_id(device_id);
     let bucket_minutes = query.bucket_minutes.max(0);
     let limit = (MAX_SERIES_POINTS + 1) as i64;
+    let mode = query.datum.as_str();
 
     let rows = if bucket_minutes == 0 {
         client
             .query(
-                "SELECT recorded_at, gwl, gwl_text, battery_v, rssi, 1::BIGINT AS sample_count,
-                        duplicate_outcome = 'conflict' AS conflict
-                 FROM observations
-                 WHERE device_id = $1 AND kind = 'water' AND time_quality = 'plausible' AND recorded_at IS NOT NULL
-                   AND gwl IS NOT NULL AND recorded_at >= $2 AND recorded_at <= $3
-                 ORDER BY recorded_at DESC
-                 LIMIT $4",
-                &[&device_id, &query.from, &query.to, &limit],
+                &format!(
+                    "WITH src AS ({SERIES_SOURCE})
+                     SELECT recorded_at, value, raw, gwl_text, battery_v, solar_v, rssi, csq::DOUBLE PRECISION,
+                            1::BIGINT AS sample_count, duplicate_outcome = 'conflict' AS conflict
+                     FROM src WHERE value IS NOT NULL ORDER BY recorded_at DESC LIMIT $5"
+                ),
+                &[&device_id, &query.from, &query.to, &mode, &limit],
             )
             .await
     } else {
         let width_seconds = (bucket_minutes * 60) as f64;
         client
             .query(
-                "SELECT to_timestamp(floor(extract(epoch FROM recorded_at) / $4::DOUBLE PRECISION)
-                                    * $4::DOUBLE PRECISION) AS bucket,
-                        AVG(gwl) AS gwl,
-                        NULL::TEXT AS gwl_text,
-                        AVG(battery_v) AS battery_v,
-                        AVG(rssi)::SMALLINT AS rssi,
-                        count(*)::BIGINT AS sample_count,
-                        bool_or(duplicate_outcome = 'conflict') AS conflict
-                 FROM observations
-                 WHERE device_id = $1 AND kind = 'water' AND time_quality = 'plausible' AND recorded_at IS NOT NULL
-                   AND gwl IS NOT NULL AND recorded_at >= $2 AND recorded_at <= $3
-                 GROUP BY bucket
-                 ORDER BY bucket DESC
-                 LIMIT $5",
-                &[&device_id, &query.from, &query.to, &width_seconds, &limit],
+                &format!(
+                    "WITH src AS ({SERIES_SOURCE})
+                     SELECT to_timestamp(floor(extract(epoch FROM recorded_at) / $6::DOUBLE PRECISION)
+                                        * $6::DOUBLE PRECISION) AS bucket,
+                            AVG(value), AVG(raw), NULL::TEXT, AVG(battery_v), AVG(solar_v), AVG(rssi)::SMALLINT,
+                            AVG(csq)::DOUBLE PRECISION, count(*)::BIGINT, bool_or(duplicate_outcome = 'conflict')
+                     FROM src WHERE value IS NOT NULL
+                     GROUP BY bucket ORDER BY bucket DESC LIMIT $5"
+                ),
+                &[&device_id, &query.from, &query.to, &mode, &limit, &width_seconds],
             )
             .await
     }
@@ -901,11 +1033,14 @@ pub async fn device_series(
         points.push(SeriesPoint {
             recorded_at: row.get(0),
             gwl: row.get(1),
-            gwl_text: row.get(2),
-            battery_v: row.get(3),
-            rssi: row.get(4),
-            sample_count: row.get(5),
-            conflict: row.get(6),
+            raw_gwl: row.get(2),
+            gwl_text: row.get(3),
+            battery_v: row.get(4),
+            solar_v: row.get(5),
+            rssi: row.get(6),
+            csq: row.get(7),
+            sample_count: row.get(8),
+            conflict: row.get(9),
         });
     }
     // The query returned newest-first so the cap keeps the newest end.
@@ -922,6 +1057,26 @@ pub async fn device_series(
         max_gwl = Some(max_gwl.map_or(point.gwl, |current: f64| current.max(point.gwl)));
     }
 
+    let extra = client
+        .query_one(
+            &format!(
+                "SELECT (SELECT count(*) FROM ({SERIES_SOURCE}) src WHERE value IS NULL),
+                    d.min_limit,d.max_limit,dt.sensor_depth_m,dt.casing_height_m,dt.ground_elevation_m
+                 FROM devices d LEFT JOIN LATERAL (SELECT sensor_depth_m,casing_height_m,ground_elevation_m
+                     FROM device_datums WHERE device_id=d.device_id AND effective_from<=$3
+                     ORDER BY effective_from DESC LIMIT 1) dt ON true
+                 WHERE d.device_id=$1"
+            ),
+            &[&device_id, &query.from, &query.to, &mode],
+        )
+        .await
+        .map_err(|err| db_context("series datum", err))?;
+    let datum = extra.get::<_, Option<f64>>(3).map(|sensor_depth_m| Datum {
+        sensor_depth_m,
+        casing_height_m: extra.get(4),
+        ground_elevation_m: extra.get(5),
+    });
+
     Ok(Series {
         device_id,
         points,
@@ -929,6 +1084,10 @@ pub async fn device_series(
         max_gwl,
         bucket_minutes,
         truncated,
+        datum: query.datum.as_str(),
+        inverted: query.datum == DatumMode::DepthBelowGround,
+        unconverted: extra.get(0),
+        limits: convert_limits(extra.get(1), extra.get(2), query.datum, datum),
     })
 }
 
@@ -1181,6 +1340,7 @@ mod tests {
                 from: recorded_at - chrono::Duration::days(1),
                 to: recorded_at + chrono::Duration::days(1),
                 bucket_minutes: 0,
+                datum: Default::default(),
             },
         )
         .await
@@ -1196,6 +1356,7 @@ mod tests {
                 from: recorded_at - chrono::Duration::days(1),
                 to: recorded_at + chrono::Duration::days(1),
                 bucket_minutes: 60,
+                datum: Default::default(),
             },
         )
         .await

@@ -304,9 +304,12 @@ pub fn page_view() -> crate::ui::FleetView {
                     .recorded_at
                     .expect("fixture clock is interpretable"),
                 gwl: observation.gwl.expect("fixture levels are numeric"),
+                raw_gwl: observation.gwl.expect("fixture levels are numeric"),
                 gwl_text: Some(observation.gwl_text.clone()),
                 battery_v: observation.battery_v,
+                solar_v: observation.solar_v,
                 rssi: observation.rssi,
+                csq: None,
                 sample_count: 1,
                 conflict: false,
             });

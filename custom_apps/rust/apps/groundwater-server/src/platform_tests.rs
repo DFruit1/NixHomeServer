@@ -422,6 +422,7 @@ async fn firmware_clock_and_atomic_presence_safety() {
             mqtt: None,
             retention_days: 90,
             rev2: Default::default(),
+            ops: Default::default(),
         }),
         db: Arc::new(db::Database::new(
             url.clone(),
@@ -911,6 +912,7 @@ async fn platform_database_api_and_scheduler_regressions() {
             mqtt: None,
             retention_days: 90,
             rev2: Default::default(),
+            ops: Default::default(),
         }),
         db: Arc::new(db::Database::new(url.clone(), db)),
         bus: bus.clone(),
@@ -947,7 +949,9 @@ async fn platform_database_api_and_scheduler_regressions() {
     for (method, path, body, expected) in [
         ("GET", "/api/series?bucket=invalid", "", 400),
         ("GET", "/api/missing", "", 404),
-        ("POST", "/api/devices", "{}", 405),
+        // POST /api/devices enrolls; an empty body misses required fields.
+        ("POST", "/api/devices", "{}", 422),
+        ("PUT", "/api/devices", "{}", 405),
         ("POST", "/api/devices/A/commands", "{", 400),
     ] {
         let (status, value) = request(app.clone(), method, path, "operator", body).await;

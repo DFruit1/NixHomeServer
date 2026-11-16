@@ -307,13 +307,18 @@ BEGIN
             END IF;
             IF next_kind IS DISTINCT FROM current_kind THEN
                 IF active_id IS NOT NULL THEN
-                    UPDATE alerts SET state='resolved',resolved_at=sample.recorded_at WHERE id=active_id;
+                    -- A hand-resolved episode keeps its operator resolution.
+                    UPDATE alerts SET state='resolved',resolved_at=sample.recorded_at
+                        WHERE id=active_id AND state='open';
                 END IF;
                 active_id:=NULL;
                 IF next_kind IS NOT NULL THEN
                     INSERT INTO alerts(device_id,kind,state,trigger_value,opened_at,superseded)
                     VALUES(target,next_kind,'open',sample.gwl,sample.recorded_at,false)
-                    ON CONFLICT(device_id,kind,opened_at) DO UPDATE SET state='open',resolved_at=NULL,trigger_value=EXCLUDED.trigger_value,superseded=false
+                    ON CONFLICT(device_id,kind,opened_at) DO UPDATE SET
+                        state=CASE WHEN alerts.resolved_by IS NOT NULL THEN alerts.state ELSE 'open' END,
+                        resolved_at=CASE WHEN alerts.resolved_by IS NOT NULL THEN alerts.resolved_at END,
+                        trigger_value=EXCLUDED.trigger_value,superseded=false
                     RETURNING id INTO active_id;
                 END IF;
                 current_kind:=next_kind;
