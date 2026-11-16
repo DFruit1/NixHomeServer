@@ -861,12 +861,11 @@ async fn rev2_command_lifecycle_handshake_and_republish() {
         h.command(queued[1]).await.final_status.as_deref(),
         Some("duplicate")
     );
-    // Two slots freed by the duplicate ack and the busy hold.
-    assert!(h.send_next().await.is_some());
-    assert!(h.send_next().await.is_some());
+    // Slots are free, but the later commands keep their order behind the
+    // busy one, which waits for the next sleep.
     assert!(
         h.send_next().await.is_none(),
-        "busy command waits for sleep"
+        "busy command waits for sleep, and the rest wait behind it"
     );
 
     // Sleep without a final ack: re-publish (at most three times).
