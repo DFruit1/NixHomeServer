@@ -190,10 +190,36 @@ pub fn parse_status(object: &Map<String, Value>) -> Result<Status, String> {
         time: DeviceTime::from(object),
         up: u32_field(object, "up"),
         boot: u32_field(object, "boot"),
-        next: u32_field(object, "next").filter(|&n| n > 0),
+        next: next_contact(object),
         win: u32_field(object, "win"),
         reason: str_field(object, "reason").map(str::to_owned),
     })
+}
+
+/// Earliest instant a logger clock can report as valid (2024-01-01, SQL
+/// `groundwater_time_quality` "reset" below it).
+pub const PLAUSIBLE_EPOCH: u32 = 1_704_067_200;
+
+/// `next` (UTC of the next connection) of a `status`/`health`. The firmware
+/// omits it while its clock is not set; a value from a message whose own
+/// `tv` is 0, or one before 2024, is uptime-based or garbage and would make
+/// the logger look overdue since 1970, so it is dropped.
+fn next_contact(object: &Map<String, Value>) -> Option<u32> {
+    if DeviceTime::from(object).is_some_and(|t| !t.valid) {
+        return None;
+    }
+    u32_field(object, "next").filter(|&n| n >= PLAUSIBLE_EPOCH)
+}
+
+/// A millivolt reading; the firmware sends 65535 (`GWL_MV_NA`) when the
+/// ADC was not read.
+pub fn mv_field(object: &Map<String, Value>, key: &str) -> Option<i64> {
+    i64_field(object, key).filter(|v| (0..0xFFFF).contains(v))
+}
+
+/// Modem CSQ (0-31); 99 (`GWL_CSQ_NA`) means unknown.
+pub fn csq_field(object: &Map<String, Value>, key: &str) -> Option<i64> {
+    i64_field(object, key).filter(|v| (0..=31).contains(v))
 }
 
 /// `health` fields that are stored as columns. The whole object is kept too.
@@ -217,20 +243,23 @@ pub struct Health {
 
 pub fn parse_health(object: &Map<String, Value>) -> Health {
     let text = |key| str_field(object, key).map(str::to_owned);
+    let sd = text("sd");
     Health {
         time: DeviceTime::from(object),
         up: u32_field(object, "up"),
-        csq: i64_field(object, "csq"),
-        bat_mv: i64_field(object, "bat_mv"),
-        sol_mv: i64_field(object, "sol_mv"),
-        sd: text("sd"),
-        sd_free_mb: i64_field(object, "sd_free_mb"),
+        csq: csq_field(object, "csq"),
+        bat_mv: mv_field(object, "bat_mv"),
+        sol_mv: mv_field(object, "sol_mv"),
+        // Free space is read only from a working card: after a removal the
+        // logger repeats the last value, and a card never read reports 0.
+        sd_free_mb: i64_field(object, "sd_free_mb").filter(|_| sd.as_deref() == Some("ok")),
+        sd,
         mram: text("mram"),
         unsaved: i64_field(object, "unsaved"),
         usable: i64_field(object, "usable"),
         log: text("log"),
         settings_gen: i64_field(object, "gen"),
-        next: u32_field(object, "next").filter(|&n| n > 0),
+        next: next_contact(object),
         err: i64_field(object, "err"),
     }
 }

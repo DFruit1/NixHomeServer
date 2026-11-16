@@ -614,3 +614,55 @@ SELECT setval(pg_get_serial_sequence('commands','id'),
              COALESCE(pg_sequence_last_value(pg_get_serial_sequence('commands','id')::regclass),0),
              (extract(epoch FROM now())::bigint-1735689600)*2,
              1));
+
+-- A self test reaches the server twice: test/result JSON (component detail,
+-- `ma`, `warn`) and its Type 5 ring record (authoritative values). Both rows
+-- are kept; `paired_id` links them so the API shows one test. A remote test
+-- pairs by command id; otherwise the same trigger at the same device time
+-- (valid UTC within 2 minutes, or the same seconds-since-boot within 2
+-- minutes of each other, received within an hour, which is the same boot
+-- and connection).
+ALTER TABLE device_tests ADD COLUMN IF NOT EXISTS paired_id BIGINT;
+CREATE OR REPLACE FUNCTION groundwater_pair_test(target BIGINT) RETURNS BIGINT LANGUAGE plpgsql AS $$
+DECLARE t device_tests%ROWTYPE; other BIGINT;
+BEGIN
+    SELECT * INTO t FROM device_tests WHERE id=target;
+    IF t.id IS NULL OR t.paired_id IS NOT NULL OR t.source NOT IN ('json','record') THEN RETURN NULL; END IF;
+    PERFORM 1 FROM devices WHERE device_id=t.device_id FOR UPDATE;
+    SELECT o.id INTO other FROM device_tests o
+    WHERE o.device_id=t.device_id AND o.id<>t.id AND o.paired_id IS NULL
+      AND o.source IN ('json','record') AND o.source<>t.source
+      AND (o.trigger=t.trigger OR 'other' IN (o.trigger,t.trigger))
+      AND CASE WHEN o.command_id IS NOT NULL OR t.command_id IS NOT NULL THEN
+                o.command_id=t.command_id AND abs(extract(epoch FROM o.received_at-t.received_at))<=30*86400
+            WHEN o.time_valid AND t.time_valid THEN
+                abs(extract(epoch FROM o.recorded_at-t.recorded_at))<=120
+            WHEN o.time_valid IS FALSE AND t.time_valid IS FALSE THEN
+                abs(o.time_rel_s-t.time_rel_s)<=120 AND abs(extract(epoch FROM o.received_at-t.received_at))<=3600
+            ELSE false END
+    ORDER BY abs(extract(epoch FROM COALESCE(o.recorded_at,o.received_at)-COALESCE(t.recorded_at,t.received_at))),o.id
+    LIMIT 1;
+    IF other IS NULL THEN RETURN NULL; END IF;
+    UPDATE device_tests SET paired_id=other WHERE id=t.id;
+    UPDATE device_tests SET paired_id=t.id WHERE id=other;
+    RETURN other;
+END $$;
+
+-- Settings-lost RECOVERY (health mram "recovery", err not 3): the logger
+-- stops logging until it receives settings. The server re-sends the last
+-- settings the logger acknowledged, once per episode (rev2_commands.rs
+-- `maybe_restore_settings`); the episode ends at the first health that no
+-- longer reports the state.
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS settings_lost_since TIMESTAMPTZ;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS settings_restore_command_id BIGINT;
+
+-- "Not read" markers stored as values by earlier versions: 65535 mV
+-- (GWL_MV_NA) and CSQ 99 (unknown). The raw payloads keep them.
+UPDATE device_health SET bat_mv=NULLIF(bat_mv,65535),sol_mv=NULLIF(sol_mv,65535),csq=NULLIF(csq,99)
+    WHERE bat_mv=65535 OR sol_mv=65535 OR csq=99;
+UPDATE device_tests SET battery_mv=NULLIF(battery_mv,65535),solar_mv=NULLIF(solar_mv,65535),csq=NULLIF(csq,99),
+        sensor_mv=NULLIF(sensor_mv,65535),sensor_ma=CASE WHEN sensor_mv=65535 THEN NULL ELSE sensor_ma END
+    WHERE battery_mv=65535 OR solar_mv=65535 OR csq=99 OR sensor_mv=65535;
+UPDATE observations SET battery_v=NULLIF(battery_v,65.535),solar_v=NULLIF(solar_v,65.535),csq=NULLIF(csq,99),
+        sensor_mv=NULLIF(sensor_mv,65535)
+    WHERE source='json' AND (battery_v=65.535 OR solar_v=65.535 OR csq=99 OR sensor_mv=65535);

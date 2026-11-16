@@ -33,7 +33,7 @@ use crate::rev2_store::{dberr, Context, Outcome};
 pub struct QueueOptions<'a> {
     pub requested_by: &'a str,
     /// `operator`, `auto-gap`, `auto-clock`, `auto-settings`,
-    /// `auto-confirm`, `download`.
+    /// `auto-restore`, `auto-confirm`, `download`.
     pub origin: &'a str,
     pub expires_at: DateTime<Utc>,
     pub preconfirmed: bool,
@@ -914,10 +914,17 @@ async fn effects<C: GenericClient + Sync>(
         }
         "sync_time" if success => {
             // `data`: the clock afterwards and whether this command set it.
+            // `"set":false`: the clock was already within 2 s, nothing was
+            // stepped, so it is not a clock sync.
+            let set = data.get("set").and_then(Value::as_bool) != Some(false);
             server_event(
                 client,
                 ctx.device_id,
-                "clock_synced",
+                if set {
+                    "clock_synced"
+                } else {
+                    "clock_sync_unchanged"
+                },
                 ctx.received_at,
                 json!({"command_id":command.id,"t":data.get("t"),"tv":data.get("tv"),
                     "set":data.get("set")}),
@@ -1199,6 +1206,198 @@ pub async fn maybe_fetch_settings<C: GenericClient + Sync>(
             .await?
             .is_some(),
     )
+}
+
+/// Whether a `health` reports settings-lost RECOVERY: `mram:"recovery"`
+/// with any latched error but 3. The firmware (`gwl_ring.c` boot and
+/// `recover_mram`) enters it when both settings slots are invalid and no
+/// snapshot restores them (err 4), stops logging, and leaves it as soon as
+/// a `config/set` is applied. err 3 is the read-only metadata RECOVERY,
+/// which refuses settings and needs `recover_mram`/`wipe_mram` instead; an
+/// operator's `clear_error_latch` can reset err to 0 while the state stays.
+pub fn settings_lost(health: &rev2::Health) -> bool {
+    health.mram.as_deref() == Some("recovery") && health.err != Some(3)
+}
+
+/// The arguments that restore acknowledged settings with `replace`. The
+/// logger echoes every key; a delayed `start` that has already passed is
+/// sent as 0 (none), which is the same schedule and passes validation.
+pub fn restore_args(settings: &Value, now: DateTime<Utc>) -> Result<Value, String> {
+    let mut args = settings
+        .as_object()
+        .cloned()
+        .ok_or("acknowledged settings are not an object")?;
+    if args
+        .get("start")
+        .and_then(Value::as_i64)
+        .is_some_and(|start| start <= now.timestamp())
+    {
+        args.insert("start".into(), json!(0));
+    }
+    let args = Value::Object(args);
+    prepare("settings", &args, true, now)
+}
+
+/// Settings-lost RECOVERY (contract §8): re-sends the device's last
+/// acknowledged settings as `settings` with `replace`, once per episode
+/// (the episode lasts until a `health` no longer reports the state, so a
+/// logger that keeps reporting it is never sent them again). With no
+/// acknowledged settings, or once that command has ended and the logger
+/// still reports the state, the `settings_lost` alert asks the operator to
+/// send settings.
+pub async fn maybe_restore_settings<C: GenericClient + Sync>(
+    client: &C,
+    ctx: &Context<'_>,
+    health: &rev2::Health,
+) -> Result<bool, String> {
+    let lost = settings_lost(health);
+    let row = client
+        .query_one(
+            "SELECT settings_lost_since,settings_restore_command_id FROM devices WHERE device_id=$1 FOR UPDATE",
+            &[&ctx.device_id],
+        )
+        .await
+        .map_err(dberr("settings recovery state"))?;
+    let since: Option<DateTime<Utc>> = row.get(0);
+    let mut command: Option<i64> = row.get(1);
+    let alert = |active: Option<bool>, detail: Value| async move {
+        client
+            .execute(
+                "SELECT groundwater_condition_alert($1,'settings_lost',$2,$3,$4,$5)",
+                &[
+                    &ctx.device_id,
+                    &active,
+                    &(health.err.unwrap_or(0) as f64),
+                    &ctx.received_at,
+                    &detail,
+                ],
+            )
+            .await
+            .map_err(dberr("settings lost alert"))
+    };
+    if !lost {
+        if since.is_some() {
+            client
+                .execute(
+                    "UPDATE devices SET settings_lost_since=NULL,settings_restore_command_id=NULL WHERE device_id=$1",
+                    &[&ctx.device_id],
+                )
+                .await
+                .map_err(dberr("settings recovery end"))?;
+            server_event(
+                client,
+                ctx.device_id,
+                "settings_recovery_ended",
+                ctx.received_at,
+                json!({"since":since,"command_id":command,"gen":health.settings_gen}),
+            )
+            .await?;
+            alert(Some(false), json!({})).await?;
+        }
+        return Ok(false);
+    }
+    let mut queued = false;
+    if since.is_none() {
+        let previous = client
+            .query_opt(
+                "SELECT settings_gen,settings,source,command_id,received_at FROM device_settings_history
+                 WHERE device_id=$1 AND source IN ('ack','get_settings') AND settings_gen IS NOT NULL
+                 ORDER BY received_at DESC,id DESC LIMIT 1",
+                &[&ctx.device_id],
+            )
+            .await
+            .map_err(dberr("acknowledged settings"))?;
+        let mut why = "the server has no settings this logger acknowledged".to_owned();
+        if let Some(previous) = &previous {
+            let generation: i64 = previous.get(0);
+            match restore_args(&previous.get(1), ctx.received_at) {
+                Ok(args) => {
+                    let options = QueueOptions {
+                        requested_by: "auto-restore",
+                        origin: "auto-restore",
+                        replace: true,
+                        ..QueueOptions::new(ctx.policy, ctx.received_at)
+                    };
+                    command = queue(client, ctx.device_id, "settings", &args, &options).await?;
+                    match command {
+                        Some(id) => {
+                            queued = true;
+                            server_event(
+                                client,
+                                ctx.device_id,
+                                "settings_restore_requested",
+                                ctx.received_at,
+                                json!({"command_id":id,"gen":generation,"source":previous.get::<_, String>(2),
+                                    "acknowledged_at":previous.get::<_, DateTime<Utc>>(4),"err":health.err}),
+                            )
+                            .await?;
+                        }
+                        None => why = "the logger does not take revision 2 commands".into(),
+                    }
+                }
+                Err(error) => {
+                    why = format!("the acknowledged settings (generation {generation}) are not valid now: {error}")
+                }
+            }
+        }
+        client
+            .execute(
+                "UPDATE devices SET settings_lost_since=$2,settings_restore_command_id=$3 WHERE device_id=$1",
+                &[&ctx.device_id, &ctx.received_at, &command],
+            )
+            .await
+            .map_err(dberr("settings recovery start"))?;
+        if command.is_none() {
+            server_event(
+                client,
+                ctx.device_id,
+                "settings_restore_unavailable",
+                ctx.received_at,
+                json!({"reason":why,"err":health.err}),
+            )
+            .await?;
+            alert(
+                Some(true),
+                json!({"reason":why,"err":health.err,"action":"send settings"}),
+            )
+            .await?;
+        }
+        return Ok(queued);
+    }
+    // A later health in the same episode: the restore is still on its way,
+    // or it ended and the logger still has no settings.
+    let pending = match command {
+        Some(id) => client
+            .query_opt(
+                "SELECT state IN ('queued','sent','challenge'),state,final_status,status_reason FROM commands WHERE id=$1",
+                &[&id],
+            )
+            .await
+            .map_err(dberr("restore command"))?,
+        None => None,
+    };
+    match pending {
+        Some(row) if row.get::<_, bool>(0) => {}
+        Some(row) => {
+            alert(
+                Some(true),
+                json!({"reason":"the automatic settings restore ended and the logger still has no settings",
+                    "command_id":command,"state":row.get::<_, String>(1),
+                    "final_status":row.get::<_, Option<String>>(2),
+                    "status_reason":row.get::<_, Option<String>>(3),"err":health.err,"action":"send settings"}),
+            )
+            .await?;
+        }
+        None => {
+            alert(
+                Some(true),
+                json!({"reason":"the server has no settings this logger acknowledged","err":health.err,
+                    "action":"send settings"}),
+            )
+            .await?;
+        }
+    }
+    Ok(false)
 }
 
 /// Starts an SD download: one `file_chunk` at a time, the next issued as

@@ -80,6 +80,9 @@ pub struct Command {
     pub challenge_expires_at: Option<DateTime<Utc>>,
     pub origin: String,
     pub download_id: Option<i64>,
+    /// `settings` sent with `"replace":true` (unlisted keys reset to the
+    /// firmware defaults), e.g. the automatic restore of lost settings.
+    pub replace_settings: bool,
 }
 fn command(row: Row) -> Command {
     Command {
@@ -114,6 +117,7 @@ fn command(row: Row) -> Command {
         challenge_expires_at: row.try_get("challenge_expires_at").unwrap_or_default(),
         origin: row.try_get("origin").unwrap_or_else(|_| "operator".into()),
         download_id: row.try_get("download_id").unwrap_or_default(),
+        replace_settings: row.try_get("replace_settings").unwrap_or_default(),
     }
 }
 
