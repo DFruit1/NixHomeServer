@@ -2420,28 +2420,32 @@ Plain broad queries of up to 256 characters use rank fusion over the leading
 - **Paging and counts.** Results continue past the ranked candidates into the
   remaining keyword matches, so the library total and **Load more** cover
   every keyword match. Facet counts remain keyword counts.
-- **Delivery.** The browser requests `rank=keyword` first and shows those
-  matches at once, then requests the reranked order and applies it when it
-  arrives. Matches already on screen are kept and move below the reranked
-  ones. **Load more** waits for that order. The CLI and other clients omit
-  `rank` and wait for the reranked order.
-- **Reuse.** One ranked answer is kept for ten minutes per query, filters and
-  source sync state, so later pages and repeats do not rerank again. Query
-  vectors are kept for an hour. A connected source's complete answer is kept
-  for five minutes: the archives per query and match mode, Paperless per
-  query and filters. Answers with a warning are never kept. All of this is
-  in-memory state of `search-ui` and is lost on restart.
+- **Delivery.** The browser waits for the reranked answer and draws the first
+  page once, so results never reorder after they appear. The status line reads
+  "Searching your library…" while that answer is pending, connected-source
+  results are held and interleaved once it exists, and **Load more** waits for
+  it too. The CLI and other clients use the same order.
+- **Reuse.** The reranker's relevance for one query and one passage is kept
+  for an hour, so changing a filter, changing the page size or searching the
+  same words again settles from earlier scores instead of reading the same
+  evidence again; the log line reports those as `reused`. One ranked answer is
+  kept for ten minutes per query, filters and source sync state, so later
+  pages and repeats do not rank again. Query vectors are kept for an hour. A
+  connected source's complete answer is kept for five minutes: the archives
+  per query and match mode, Paperless per query and filters. Answers with a
+  warning are never kept. All of this is in-memory state of `search-ui` and is
+  lost on restart.
 
 Exact identifiers/titles retain priority in the shared UI/CLI ordering.
 Quotes, operators, All words and Newest retain their existing keyword semantics.
-An inference or passage-core failure, or a reranker that returns nothing
-within its budget, falls back to ordinary keyword search with a visible
-warning. An empty passage core still reranks keyword matches. Connected sources
-keep their existing search.
+An inference or passage-core failure falls back to ordinary keyword search with
+a visible warning, as does a reranker that returns nothing when no relevance was
+reused for the query. An empty passage core still reranks keyword matches.
+Connected sources keep their existing search.
 
 `search-ui` logs one line per library query with its duration, order and hit
-count, and one per ranked answer with retrieval and reranking times and how
-many passages were read. Query text is never logged:
+count, and one per ranked answer with retrieval and reranking times, how many
+passages were read and how many were reused. Query text is never logged:
 
 ```bash
 journalctl -u search-ui --since -1h | grep 'search: '

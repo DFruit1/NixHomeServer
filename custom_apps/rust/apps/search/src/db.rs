@@ -397,6 +397,45 @@ pub(crate) async fn documents_by_ids(
         .map_err(|e| e.to_string())
 }
 
+/// What the reranker reads from a document: its title, the checksum that ties
+/// cached passage spans to the current text, and the body.
+#[derive(Debug, Clone)]
+pub(crate) struct RerankDocument {
+    pub title: String,
+    pub checksum: String,
+    pub body_text: String,
+}
+
+/// Titles, checksums and bodies for the documents a query may rerank. The
+/// reranker never reads metadata, source links or incidental text, so this
+/// avoids transferring and decoding those columns for every candidate.
+pub(crate) async fn rerank_documents(
+    client: &Client,
+    ids: &[String],
+) -> Result<HashMap<String, RerankDocument>, String> {
+    client
+        .query(
+            "SELECT id, title, checksum, body_text FROM documents WHERE id = ANY($1)",
+            &[&ids],
+        )
+        .await
+        .map(|rows| {
+            rows.into_iter()
+                .map(|row| {
+                    (
+                        row.get(0),
+                        RerankDocument {
+                            title: row.get(1),
+                            checksum: row.get(2),
+                            body_text: row.get(3),
+                        },
+                    )
+                })
+                .collect()
+        })
+        .map_err(|e| e.to_string())
+}
+
 /// Body text and metadata for one already-indexed document. Loaded after a Solr
 /// query so the authoritative body copy is only ever read from Postgres; Solr
 /// holds the inverted index, not a second stored copy of the text.

@@ -69,6 +69,10 @@ pub(crate) struct Semantic {
     /// Embeddings are deterministic, so a repeated query never pays twice.
     vectors: Arc<TtlCache<Arc<Vec<f32>>>>,
     windows: Arc<TtlCache<Arc<Window>>>,
+    /// The reranker's relevance for one query and passage. A filter change, a
+    /// new page size or a repeated answer re-ranks the same documents, and
+    /// reading the same evidence again is the expensive part of a search.
+    scores: Arc<TtlCache<f64>>,
 }
 
 impl Semantic {
@@ -105,6 +109,7 @@ impl Semantic {
             ),
             vectors: Arc::new(TtlCache::new(Duration::from_secs(3600), 256)),
             windows: Arc::new(TtlCache::new(Duration::from_secs(600), 32)),
+            scores: Arc::new(TtlCache::new(Duration::from_secs(3600), 4096)),
         }))
     }
 
@@ -237,6 +242,30 @@ fn passage_input(title: &str, body: &str) -> String {
         "{}\n\n{body}",
         &title[..title.floor_char_boundary(title.len().min(256))]
     )
+}
+
+/// One reranker answer for one query and passage. Titles up to the 256 bytes
+/// `passage_input` keeps are compared whole, so a longer title cannot reuse a
+/// score measured on a truncated one.
+fn score_key(query: &str, title: &str, text: &str) -> String {
+    crate::timeutil::sha256_hex(&[query, title, text])
+}
+
+/// Keeps a document's strongest passage score and that passage's snippet.
+fn record_score(
+    reranked: &mut HashMap<String, f64>,
+    snippets: &mut HashMap<String, String>,
+    query: &str,
+    id: &str,
+    text: &str,
+    score: f64,
+) {
+    if reranked.get(id).is_none_or(|previous| score > *previous) {
+        reranked.insert(id.into(), score);
+        if let Some(snippet) = crate::text::result_snippet(text, query) {
+            snippets.insert(id.into(), snippet);
+        }
+    }
 }
 
 /// The windows of a document that best cover the query's words, including
@@ -904,10 +933,7 @@ impl Semantic {
             .take(RERANK_DOCS)
             .map(|h| h.id.clone())
             .collect();
-        let documents: HashMap<_, _> = db::documents_by_ids(database, &head)
-            .await?
-            .into_iter()
-            .collect();
+        let documents = db::rerank_documents(database, &head).await?;
         // Every document's strongest evidence is read before any document's
         // second passage, so a deadline costs depth rather than coverage.
         let mut evidence: [Vec<(&String, &str)>; 2] = [Vec::new(), Vec::new()];
@@ -945,40 +971,53 @@ impl Semantic {
         let deadline = tokio::time::Instant::now() + RERANK_BUDGET;
         let reranking = Instant::now();
         let mut scored: u32 = 0;
+        let mut reused: u32 = 0;
         let mut reranked: HashMap<String, f64> = HashMap::new();
         let mut snippets = HashMap::new();
-        for chunk in queue.chunks(RERANK_CHUNK) {
+        // Every passage already read for this query is scored before the
+        // reranker is asked anything, so a filter change, a new page size or a
+        // repeated answer can settle from earlier relevance.
+        let mut unresolved: Vec<(usize, String)> = Vec::new();
+        for (index, (id, text)) in queue.iter().enumerate() {
+            let title = documents[*id].title.as_str();
+            match self.scores.get(&score_key(query, title, text)) {
+                Some(score) => {
+                    reused += 1;
+                    record_score(&mut reranked, &mut snippets, query, id, text, score);
+                }
+                None => unresolved.push((index, passage_input(title, text))),
+            }
+        }
+        for chunk in unresolved.chunks(RERANK_CHUNK) {
             // A request that cannot finish in time would only delay the answer.
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if scored > 0 && remaining < reranking.elapsed() / scored * chunk.len() as u32 {
                 break;
             }
-            let titled: Vec<String> = chunk
-                .iter()
-                .map(|(id, text)| passage_input(&documents[*id].title, text))
-                .collect();
+            let titled: Vec<String> = chunk.iter().map(|(_, text)| text.clone()).collect();
             let relevance =
                 match tokio::time::timeout_at(deadline, self.rerank(query, &titled)).await {
                     Ok(Ok(relevance)) => relevance,
-                    // Scores are per passage, so those already returned stand.
-                    Ok(Err(error)) if scored > 0 => {
+                    // Scores are per passage, so those already returned or
+                    // reused stand.
+                    Ok(Err(error)) if scored > 0 || reused > 0 => {
                         eprintln!("search: reranking stopped early: {error}");
                         break;
                     }
                     Ok(Err(error)) => return Err(error),
                     Err(_) => break,
                 };
-            for ((id, text), score) in chunk.iter().zip(relevance) {
+            for ((index, _), score) in chunk.iter().zip(relevance) {
                 scored += 1;
-                if reranked.get(*id).is_none_or(|previous| score > *previous) {
-                    reranked.insert((*id).clone(), score);
-                    if let Some(snippet) = crate::text::result_snippet(text, query) {
-                        snippets.insert((*id).clone(), snippet);
-                    }
-                }
+                let (id, text) = queue[*index];
+                self.scores
+                    .insert(&score_key(query, &documents[id].title, text), score);
+                record_score(&mut reranked, &mut snippets, query, id, text, score);
             }
         }
-        if scored == 0 && !queue.is_empty() {
+        // Relevance reused from earlier searches is still a real answer even
+        // when the reranker itself is unavailable now.
+        if scored == 0 && reused == 0 && !queue.is_empty() {
             return Err("the reranker did not answer within its budget".into());
         }
         let candidates = hits.len();
@@ -1027,7 +1066,7 @@ impl Semantic {
         }
         // Durations and counts only: queries are private.
         eprintln!(
-            "search: ranked library results retrieval_ms={} keyword={consumed} related={} rerank_ms={} passages={scored}/{} results={}",
+            "search: ranked library results retrieval_ms={} keyword={consumed} related={} rerank_ms={} passages={scored}/{} reused={reused} results={}",
             retrieved.as_millis(),
             candidates - consumed,
             reranking.elapsed().as_millis(),

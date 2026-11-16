@@ -273,10 +273,6 @@ pub(crate) struct SearchParams {
     /// hold up indexed results. Older clients retain the combined response.
     #[serde(default)]
     scope: SearchScope,
-    /// The browser shows keyword matches at once, then asks for the reranked
-    /// order. Other clients wait for the best available ranking.
-    #[serde(default)]
-    rank: RankMode,
     /// Set by the interpreter for "latest …" queries; never a wire parameter.
     #[serde(skip)]
     prefer_recent: bool,
@@ -289,16 +285,6 @@ enum SearchScope {
     All,
     Indexed,
     Live,
-}
-
-#[derive(Clone, Copy, Default, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-enum RankMode {
-    /// Reranked when available, keyword order otherwise.
-    #[default]
-    Auto,
-    /// Keyword order only; the response says whether a reranked order exists.
-    Keyword,
 }
 
 impl SearchParams {
@@ -742,7 +728,6 @@ async fn execute_search_plan(
         let mut warning = None;
         if let Some(semantic) = &state.inner.semantic
             && rerankable
-            && params.rank != RankMode::Keyword
         {
             match semantic
                 .search(crate::semantic::Request {
@@ -862,8 +847,6 @@ async fn execute_search_plan(
                 "warnings": warnings,
                 "semantic": semantic,
                 "semanticLimited": semantic,
-                // A reranked order exists for this query and was not asked for.
-                "refinable": rerankable && params.rank == RankMode::Keyword,
                 "facetScope": if semantic { "keyword" } else { "all" },
                 "sourceFacets": facet_json(&response.source_facets),
                 "kindFacets": facet_json(&response.kind_facets),

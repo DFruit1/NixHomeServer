@@ -203,6 +203,7 @@ test('retrying a failed library request retains the submitted query and successf
 
 test('a refreshed live result updates the existing row when its title or metadata changes', async () => {
   const h=harness();h.elements.get('query').value='Topic';h.run('runSearch()');
+  indexed(h)[0].resolve({hits:[],total:0});
   h.pending.find(r=>r.url.includes('scope=live')).resolve({hits:[{id:'d1',source:'docs',title:'Old title',metadata:{}}]});await flush();
   const original=h.elements.get('results').children[0];
   h.elements.get('retryLive').listeners.click[0]();
