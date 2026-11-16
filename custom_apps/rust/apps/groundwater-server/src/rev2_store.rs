@@ -33,6 +33,20 @@ pub const INTERPRETATION: &str = "gw-adapter/2+v22";
 const RESOLVE_BATCH_BUDGET: i32 = 5_000;
 /// Readings one re-run call dates (the re-run repeats it until done).
 const RESOLVE_RERUN_BUDGET: i32 = 50_000;
+/// Longest a batch's derived work may take (and any one of its
+/// statements), in ms; capped at a third of the session's statement
+/// timeout so the raw rows and the commit always fit in what is left.
+const DERIVE_BUDGET_MS: i64 = 10_000;
+
+/// Whether a failed derived step leaves the transaction usable: it carries
+/// a SQLSTATE (a statement timeout, deadlock or lock timeout included), so
+/// rolling back its savepoint keeps the raw rows already stored and the
+/// message is acknowledged with the step flagged for the re-run. Without
+/// one the connection is gone with the raw rows, and only then is the
+/// message retried.
+fn derived_retry(error: &str) -> bool {
+    sqlstate(error).is_none()
+}
 
 /// One attributed revision 2 delivery.
 pub struct Context<'a> {
@@ -1300,23 +1314,73 @@ async fn store_stream<C: GenericClient + Sync>(
     let gap_seqs = new_seqs.iter().chain(&positioned);
     let gaps = gap_seqs.clone().min().copied().zip(gap_seqs.max().copied());
     if gaps.is_some() {
-        let derived = derive_frames(client, ctx, log_id, &to_derive, false).await?;
-        let log_error = derive_log(
-            client,
-            ctx,
-            log_id,
-            gaps,
-            !new_seqs.is_empty(),
-            &derived.generations,
-            derived.tests,
-            false,
-        )
-        .await?;
+        // Derived work runs under a time budget: past it, or when one of
+        // its statements times out, the rest is flagged for the re-run and
+        // the message is still acknowledged. It must never hold up the
+        // shared session for every logger.
+        let session_ms: i64 = client
+            .query_one(
+                "SELECT setting::bigint FROM pg_settings WHERE name='statement_timeout'",
+                &[],
+            )
+            .await
+            .map_err(dberr("statement timeout"))?
+            .get(0);
+        let budget_ms = if session_ms > 0 {
+            DERIVE_BUDGET_MS.min(session_ms / 3).max(1)
+        } else {
+            DERIVE_BUDGET_MS
+        };
+        client
+            .execute(
+                "SELECT set_config('statement_timeout',$1,true)",
+                &[&budget_ms.to_string()],
+            )
+            .await
+            .map_err(dberr("statement timeout"))?;
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(budget_ms as u64);
+        let derived = derive_frames(client, ctx, log_id, &to_derive, false, Some(deadline)).await?;
+        let log_error = if derived.deferred || std::time::Instant::now() >= deadline {
+            // Not scanned for gaps: no reading of the log is paired until
+            // the re-run has scanned it whole.
+            client
+                .execute(
+                    "UPDATE stream_logs SET resolve_pending=true,gaps_pending=true WHERE device_id=$1 AND log_id=$2",
+                    &[&ctx.device_id, &log_id],
+                )
+                .await
+                .map_err(dberr("resolve pending"))?;
+            outcome_note(
+                &mut outcome,
+                "derived work passed its time budget; the rest is left to the re-run",
+            );
+            None
+        } else {
+            derive_log(
+                client,
+                ctx,
+                log_id,
+                gaps,
+                !new_seqs.is_empty(),
+                &derived.generations,
+                derived.tests,
+                false,
+            )
+            .await?
+        };
+        client
+            .execute(
+                "SELECT set_config('statement_timeout',$1,true)",
+                &[&session_ms.to_string()],
+            )
+            .await
+            .map_err(dberr("statement timeout"))?;
         let mut errors = derived.failures.clone();
         errors.extend(log_error.map(|e| format!("log: {e}")));
         if !errors.is_empty() {
             let text = format!(
-                "derived data failed ({}); raw frames kept and flagged for re-derivation at the next start",
+                "derived data failed ({}); raw frames kept and flagged for the re-run",
                 errors.join("; ")
             );
             client
@@ -1353,9 +1417,19 @@ async fn store_stream<C: GenericClient + Sync>(
     Ok(outcome)
 }
 
+fn outcome_note(outcome: &mut Outcome, note: &str) {
+    if let Some(detail) = &mut outcome.detail {
+        detail.push_str("; ");
+        detail.push_str(note);
+    }
+}
+
 /// What deriving records from stored frames produced.
 #[derive(Default)]
 struct Derived {
+    /// The time budget ran out: the frames not derived yet were flagged
+    /// `derive_pending` for the re-run.
+    deferred: bool,
     generations: Vec<i64>,
     tests: bool,
     events: Vec<String>,
@@ -1374,9 +1448,24 @@ async fn derive_frames<C: GenericClient + Sync>(
     log_id: i64,
     frames: &[&stream::Frame],
     rerun: bool,
+    deadline: Option<std::time::Instant>,
 ) -> Result<Derived, String> {
     let mut derived = Derived::default();
-    for frame in frames {
+    for (done, frame) in frames.iter().enumerate() {
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            let rest: Vec<i64> = frames[done..].iter().map(|f| i64::from(f.seq)).collect();
+            client
+                .execute(
+                    "UPDATE stream_frames SET derive_pending=true,
+                        derive_error='deferred: the batch passed its time budget before this frame'
+                     WHERE device_id=$1 AND log_id=$2 AND seq=ANY($3)",
+                    &[&ctx.device_id, &log_id, &rest],
+                )
+                .await
+                .map_err(dberr("derive pending"))?;
+            derived.deferred = true;
+            break;
+        }
         let seq = i64::from(frame.seq);
         let record = match records::decode(frame.record_type, &frame.payload) {
             Ok(record) => record,
@@ -1413,7 +1502,7 @@ async fn derive_frames<C: GenericClient + Sync>(
                         .map_err(dberr("derive pending"))?;
                 }
             }
-            Err(error) if transient_error(&error) => return Err(error),
+            Err(error) if derived_retry(&error) => return Err(error),
             Err(error) => {
                 end_savepoint(client, "rev2_frame", false).await?;
                 client
@@ -1476,7 +1565,7 @@ async fn derive_log<C: GenericClient + Sync>(
         .await;
         match scanned {
             Ok(()) => end_savepoint(client, "rev2_gaps", true).await?,
-            Err(error) if transient_error(&error) => return Err(error),
+            Err(error) if derived_retry(&error) => return Err(error),
             Err(error) => {
                 end_savepoint(client, "rev2_gaps", false).await?;
                 client
@@ -1504,7 +1593,7 @@ async fn derive_log<C: GenericClient + Sync>(
         .await;
         match result {
             Ok(()) => end_savepoint(client, "rev2_settings", true).await?,
-            Err(error) if transient_error(&error) => return Err(error),
+            Err(error) if derived_retry(&error) => return Err(error),
             Err(error) => {
                 end_savepoint(client, "rev2_settings", false).await?;
                 failed.push(error);
@@ -1578,7 +1667,7 @@ async fn derive_log<C: GenericClient + Sync>(
         .await;
         match result {
             Ok(()) => end_savepoint(client, "rev2_log", true).await?,
-            Err(error) if transient_error(&error) => return Err(error),
+            Err(error) if derived_retry(&error) => return Err(error),
             Err(error) => {
                 end_savepoint(client, "rev2_log", false).await?;
                 failed.push(error);
@@ -1666,7 +1755,7 @@ pub async fn rederive_pending(
             let Some(frame) = stream::split_frames(&raw).0.into_iter().next() else {
                 continue;
             };
-            let derived = derive_frames(&tx, &ctx, log_id, &[&frame], true).await?;
+            let derived = derive_frames(&tx, &ctx, log_id, &[&frame], true, None).await?;
             still |= !derived.failures.is_empty();
         }
         let bounds = tx

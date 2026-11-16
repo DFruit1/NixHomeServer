@@ -740,3 +740,242 @@ async fn a_batch_dates_a_bounded_number_of_readings_and_the_rerun_the_rest() {
     );
     assert!(!log_flags(&h, 21).await.0);
 }
+
+// V1 (c): a statement timeout (or deadlock, lock timeout) in a batch's
+// derived work was classed transient: the whole message was retried every
+// second for ever and nothing behind it on the session was stored. The raw
+// rows are already stored; the step is flagged for the re-run and the
+// message acknowledged.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn a_timeout_in_derived_work_keeps_the_raw_rows_and_acknowledges() {
+    use crate::stream::encode::batch;
+    let mut h = Harness::new().await;
+    fail_on(&h, "stream_gaps", "true", "57014").await;
+    h.client
+        .batch_execute(
+            "CREATE OR REPLACE FUNCTION gw_probe_fail2() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN IF current_setting('gw.test_fail',true)='on' AND NEW.seq=3 THEN
+                 RAISE EXCEPTION 'probe failure' USING ERRCODE='57014'; END IF; RETURN NEW; END $$;
+             DROP TRIGGER IF EXISTS gw_probe_fail2 ON observations;
+             CREATE TRIGGER gw_probe_fail2 BEFORE INSERT ON observations FOR EACH ROW EXECUTE FUNCTION gw_probe_fail2();",
+        )
+        .await
+        .unwrap();
+    set_fail(&h, true).await;
+    let a1 = damaged_anchor(1, 1_763_300_000, 900);
+    let alen = a1.len() as u32;
+    // seq 2 missing: the gap scan runs and times out.
+    let result = h.publish("data/stream", &batch(5, 0, 0, &[a1])).await.and(
+        h.publish(
+            "data/stream",
+            &batch(5, 2 * alen, 0, &[routine(3, 0), routine(4, 1)]),
+        )
+        .await,
+    );
+    set_fail(&h, false).await;
+    drop_fail(&h, "stream_gaps").await;
+    h.client
+        .batch_execute("DROP TRIGGER gw_probe_fail2 ON observations")
+        .await
+        .unwrap();
+    result.unwrap();
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM deliveries WHERE state='accepted'")
+            .await,
+        2
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM stream_frames").await,
+        3
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM stream_frames WHERE derive_pending")
+            .await,
+        1
+    );
+    let (pending, gaps_pending, _) = log_flags(&h, 5).await;
+    assert!(pending && gaps_pending);
+    assert_eq!(
+        anchor_of(&h, 5, 4).await,
+        None,
+        "paired across an unscanned range"
+    );
+    crate::rev2_store::rederive_pending(&mut h.client, crate::config::rev2_policy())
+        .await
+        .unwrap();
+    assert_eq!(log_flags(&h, 5).await, (false, false, None));
+    assert_eq!(
+        h.scalar::<String>("SELECT from_seq||'-'||to_seq FROM stream_gaps")
+            .await,
+        "2-2"
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM observations WHERE log_id=5")
+            .await,
+        3
+    );
+}
+
+// V1 (c): derived work runs under a time budget (a third of the session's
+// statement timeout, at most 10 s); what is left is flagged for the re-run.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn a_batch_s_derived_work_stops_at_its_time_budget() {
+    use crate::stream::encode::batch;
+    let mut h = Harness::new().await;
+    h.client
+        .batch_execute(
+            "CREATE OR REPLACE FUNCTION gw_probe_slow() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN PERFORM pg_sleep(0.05); RETURN NEW; END $$;
+             DROP TRIGGER IF EXISTS gw_probe_slow ON observations;
+             CREATE TRIGGER gw_probe_slow BEFORE INSERT ON observations FOR EACH ROW EXECUTE FUNCTION gw_probe_slow();
+             SET statement_timeout='600ms'",
+        )
+        .await
+        .unwrap();
+    let frames: Vec<Vec<u8>> = std::iter::once(damaged_anchor(1, 1_763_300_000, 900))
+        .chain((2..41).map(|s| routine(s, (s - 1) as u16)))
+        .collect();
+    let started = std::time::Instant::now();
+    let result = h.publish("data/stream", &batch(6, 0, 0, &frames)).await;
+    let took = started.elapsed();
+    h.client
+        .batch_execute("RESET statement_timeout; DROP TRIGGER gw_probe_slow ON observations")
+        .await
+        .unwrap();
+    result.unwrap();
+    assert!(
+        took < std::time::Duration::from_millis(600),
+        "batch took {took:?}"
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM stream_frames").await,
+        40
+    );
+    let deferred: i64 = h
+        .scalar("SELECT count(*) FROM stream_frames WHERE derive_pending AND derive_error LIKE 'deferred%'")
+        .await;
+    assert!(deferred > 0);
+    crate::rev2_store::rederive_pending(&mut h.client, crate::config::rev2_policy())
+        .await
+        .unwrap();
+    assert_eq!(
+        h.scalar::<i64>(
+            "SELECT count(*) FROM observations WHERE log_id=6 AND recorded_at IS NOT NULL"
+        )
+        .await,
+        40
+    );
+}
+
+// V1 (c): a delivery whose raw rows cannot be stored (a transient error)
+// was retried every second in place, so nothing behind it on the session
+// was stored. It is now held with back-off; the same logger's later
+// messages queue behind it, other loggers' messages are stored meanwhile.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn a_held_delivery_blocks_only_its_own_logger() {
+    use rumqttc::{AsyncClient, MqttOptions, Publish, QoS};
+    let mut h = Harness::new().await;
+    const D2: &str = "8A1B2C3D4E5F60718293A4B6";
+    h.client
+        .execute(
+            "INSERT INTO devices(device_id,display_name,source_profile,clock_policy) VALUES($1,'b','V22','utc')",
+            &[&D2],
+        )
+        .await
+        .unwrap();
+    for (device, channel) in [(D2, "health"), (D2, "info")] {
+        let topic = format!("gwl/v1/{device}/{channel}");
+        h.client
+            .execute(
+                "INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES($1,$2,$1,'V22')",
+                &[&topic, &device],
+            )
+            .await
+            .unwrap();
+    }
+    *h.registry.write().await = db::load_registry(&h.client).await.unwrap();
+    let url = std::env::var("GROUNDWATER_TEST_DATABASE_URL").unwrap();
+    let settings = crate::config::Settings {
+        database_url: url,
+        address: "127.0.0.1".into(),
+        port: 0,
+        topics: TopicMap::default(),
+        mqtt: None,
+        retention_days: 90,
+        rev2: Default::default(),
+        ops: Default::default(),
+    };
+    let (mqtt, _events) = AsyncClient::new(MqttOptions::new("t", "127.0.0.1", 1), 10);
+    let message = |device: &str, channel: &str, body: &str, id: u16| {
+        let mut p = Publish::new(
+            format!("gwl/v1/{device}/{channel}"),
+            QoS::AtLeastOnce,
+            body.to_owned(),
+        );
+        p.pkid = id;
+        p
+    };
+    fail_on(&h, "deliveries", &format!("NEW.device_id='{D}'"), "40P01").await;
+    set_fail(&h, true).await;
+    let mut backlog = crate::ingest::Backlog::default();
+    let health = r#"{"v":2,"t":1763300000,"tv":1,"bat_mv":7400}"#;
+    let info = r#"{"v":2,"fw":"2.2.0","proto":2,"stream":"bin"}"#;
+    for (device, channel, body, id) in [
+        (D, "health", health, 1),
+        (D, "info", info, 2),
+        (D2, "health", health, 3),
+    ] {
+        backlog
+            .intake(
+                message(device, channel, body, id),
+                &settings,
+                &mut h.client,
+                &h.registry,
+                &h.bus,
+                &h.stats,
+                &mqtt,
+            )
+            .await;
+    }
+    assert_eq!(backlog.len(), 2);
+    assert_eq!(
+        h.scalar::<i64>(&format!(
+            "SELECT count(*) FROM deliveries WHERE device_id='{D2}'"
+        ))
+        .await,
+        1,
+        "another logger's message waited behind the failing one"
+    );
+    set_fail(&h, false).await;
+    drop_fail(&h, "deliveries").await;
+    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+    backlog
+        .retry(
+            &settings,
+            &mut h.client,
+            &h.registry,
+            &h.bus,
+            &h.stats,
+            &mqtt,
+        )
+        .await;
+    assert_eq!(backlog.len(), 0);
+    let order: Vec<String> = h
+        .client
+        .query(
+            &format!("SELECT topic FROM deliveries WHERE device_id='{D}' ORDER BY id"),
+            &[],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    assert_eq!(
+        order,
+        [format!("gwl/v1/{D}/health"), format!("gwl/v1/{D}/info")]
+    );
+}
