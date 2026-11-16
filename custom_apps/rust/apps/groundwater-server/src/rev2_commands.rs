@@ -703,6 +703,16 @@ async fn handle_challenge<C: GenericClient + Sync>(
         outcome.rejected = Some(format!("{} does not use the nonce handshake", command.op));
         return Ok(());
     }
+    // The confirm must carry the nonce back; one the contract cannot carry
+    // would fail queue() with an error that is not the database's, and
+    // ingest would retry this message for ever.
+    if nonce.is_empty() || nonce.len() > 16 {
+        outcome.rejected = Some(format!(
+            "challenge nonce must be 1-16 characters, got {}",
+            nonce.len()
+        ));
+        return Ok(());
+    }
     // A cancelled or lapsed command reaches the logger anyway when it was
     // already in the persistent session. Its challenge is recorded but never
     // reopened, so nobody (and no auto-confirm) can confirm a destructive
@@ -2115,6 +2125,27 @@ mod db_tests {
         ack(&client, "cmd/ack", challenge(wanted)).await;
         assert_eq!(state(&client, wanted).await.0, "challenge");
         assert_eq!(confirms(&client).await, 1);
+    }
+
+    // A challenge ack is logger input: a nonce the confirm cannot carry
+    // (empty, or longer than 16 characters) made queue() fail with a
+    // non-database error, which ingest retries for ever without acking,
+    // stalling the shared MQTT session for every logger.
+    #[tokio::test]
+    #[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+    async fn a_malformed_challenge_nonce_is_rejected_not_retried() {
+        let client = setup().await;
+        let nexp = (Utc::now() + chrono::Duration::seconds(120)).timestamp();
+        let wipe = queue_sent(&client, "wipe_sd", true).await;
+        let outcome = ack(
+            &client,
+            "cmd/ack",
+            json!({"v":2,"id":wipe,"op":"wipe_sd","status":"challenge",
+            "nonce":"0123456789ABCDEF0","nexp":nexp}),
+        )
+        .await;
+        assert!(outcome.rejected.is_some());
+        assert_eq!(confirms(&client).await, 0);
     }
 
     // R5 (independent review): `sleep` (control session) processed before
