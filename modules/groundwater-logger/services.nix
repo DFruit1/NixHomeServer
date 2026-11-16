@@ -19,21 +19,29 @@ let
     "readwrite cmd/#"
     "readwrite cfg/#"
   ];
+  # gwl/v1 protocol revision 2 (firmware 2.2, docs/gwl-v1-rev2.md in the
+  # groundwater-server app) adds health, data/stream, data/file and
+  # cmd/basic. Revision 1 channels (storage, motion, config/desired,
+  # cmd/test) stay until no V2.1 unit uses them.
   loggerAcl = [
-    "write gwl/v1/+/reading"
     "write gwl/v1/+/status"
-    "write gwl/v1/+/gps"
-    "write gwl/v1/+/storage"
-    "write gwl/v1/+/motion"
+    "write gwl/v1/+/info"
+    "write gwl/v1/+/health"
+    "write gwl/v1/+/data/stream"
+    "write gwl/v1/+/data/file"
     "write gwl/v1/+/alerts"
     "write gwl/v1/+/test/result"
+    "write gwl/v1/+/reading"
+    "write gwl/v1/+/gps"
     "write gwl/v1/+/config/applied"
     "write gwl/v1/+/cmd/ack"
-    "write gwl/v1/+/info"
+    "write gwl/v1/+/storage"
+    "write gwl/v1/+/motion"
     "read gwl/v1/+/config/set"
+    "read gwl/v1/+/cmd/basic"
+    "read gwl/v1/+/cmd/danger"
     "read gwl/v1/+/config/desired"
     "read gwl/v1/+/cmd/test"
-    "read gwl/v1/+/cmd/danger"
     "readwrite azman1/feeds/#"
     "readwrite testtopic/9"
     "read requesttesta"
@@ -81,8 +89,25 @@ in
 
     services.mosquitto = {
       enable = true;
+      # Loggers and the platform's -telemetry client use persistent sessions:
+      # the broker queues commands for sleeping loggers and data for the
+      # platform while it restarts. Persistence keeps both across a broker
+      # restart.
       persistence = true;
       dataDir = paths.brokerStateDir;
+      settings = {
+        # A logger may sleep up to 27 days (send_s <= 2,332,800); keep its
+        # session, subscriptions and queued commands well beyond that.
+        persistent_client_expiration = "60d";
+        # Per client. A logger holds at most a few commands; the platform's
+        # durable session may hold a fleet's uploads during a long outage.
+        max_queued_messages = 20000;
+        max_queued_bytes = 67108864;
+        # data/stream batches are <= 1,500 bytes binary or ~1.5 KiB hex;
+        # JSON acks/status <= 4 KiB. 16 KiB leaves room for the topic and
+        # MQTT framing while bounding abuse.
+        max_packet_size = 16384;
+      };
       listeners = [
         {
           address = listenAddress;
