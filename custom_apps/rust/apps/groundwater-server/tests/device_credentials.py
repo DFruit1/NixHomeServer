@@ -232,7 +232,9 @@ def main():
             assert connects(APP, "app-secret")
             assert connects(DEVICE, password)
 
-            request(f"/api/devices/{DEVICE}/mqtt-credentials", method="DELETE")
+            request(f"/api/devices/{DEVICE}/mqtt-credentials", method="DELETE", expected=400)
+            assert connects(DEVICE, password), "an unconfirmed removal changes nothing"
+            request(f"/api/devices/{DEVICE}/mqtt-credentials", {"confirm": "REMOVE"}, method="DELETE")
             merge_and_reload(broker)
             assert not connects(DEVICE, password), "revoked account refused"
             assert delivered(shared, observer, f"gwl/v1/{DEVICE}/status"), "back on the shared account"

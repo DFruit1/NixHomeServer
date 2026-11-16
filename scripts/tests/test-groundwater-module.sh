@@ -26,9 +26,15 @@ settings="$(flake_eval_json '
       age.secrets = {
         groundwaterAppMqttPassword.path = "/run/agenix/groundwaterAppMqttPassword";
         groundwaterLoggerMqttPassword.path = "/run/agenix/groundwaterLoggerMqttPassword";
+        groundwaterMqttTlsKey = {
+          path = "/run/agenix/groundwaterMqttTlsKey";
+          file = ./secrets/groundwaterMqttTlsKey.age;
+        };
       };
       repo.authGateway = { enable = true; mode = "gateway"; };
       services.postgresql.dataDir = "/var/lib/postgresql/17";
+      services.mosquitto.package = pkgs.mosquitto;
+      systemd.package = pkgs.systemd;
     };
   };
   evaluate = modules: (lib.evalModules {
@@ -43,6 +49,26 @@ settings="$(flake_eval_json '
     repo.groundwaterLogger.enable = false;
   } ];
   removed = evaluate [];
+  deviceCreds = evaluate [ ./modules/groundwater-logger {
+    repo.groundwaterLogger.deviceCredentials.enable = true;
+  } ];
+  deviceOnly = evaluate [ ./modules/groundwater-logger {
+    repo.groundwaterLogger.deviceCredentials = { enable = true; tlsDeviceAccountsOnly = true; };
+  } ];
+  deviceOnlyWithoutAccounts = evaluate [ ./modules/groundwater-logger {
+    repo.groundwaterLogger.deviceCredentials.tlsDeviceAccountsOnly = true;
+  } ];
+  broker = cfg: {
+    listeners = map (l: {
+      inherit (l) address port;
+      users = builtins.attrNames l.users;
+      settings = l.settings or {};
+      acl = l.acl or [];
+      plugins = map (p: p.options.password_file or null) (l.authPlugins or []);
+    }) cfg.services.mosquitto.listeners;
+    settings = cfg.services.mosquitto.settings;
+    unit = cfg.systemd.services.mosquitto.serviceConfig or {};
+  };
   noGateway = evaluate [ ./modules/groundwater-logger {
     repo.authGateway.enable = lib.mkForce false;
   } ];
@@ -67,6 +93,10 @@ settings="$(flake_eval_json '
   };
 in {
   inherit (enabled) services users;
+  mosquitto = broker enabled;
+  devices = broker deviceCreds;
+  deviceOnly = broker deviceOnly;
+  rejectsDeviceOnlyWithoutAccounts = lib.any (entry: !entry.assertion) deviceOnlyWithoutAccounts.assertions;
   unit = enabled.systemd.services.groundwater-server;
   backup = enabled.repo.backups;
   gateway = enabled.repo.authGateway.protectedApps.groundwater;
@@ -96,6 +126,9 @@ jq -e '
   and (.unit.serviceConfig.Group == "groundwater")
   and (.unit.serviceConfig.ExecStart == "/groundwater-package/bin/groundwater-server")
   and (.unit.requires | sort == ["mosquitto.service", "postgresql.service"])
+  and (.unit.unitConfig.StartLimitIntervalSec == 0)
+  and (.unit.serviceConfig.Restart == "on-failure" and .unit.serviceConfig.RestartMaxDelaySec == "5min")
+  and (.unit.serviceConfig.MemoryHigh != null and .unit.serviceConfig.MemoryMax != null)
   and (.unit.after | index("postgresql.service") != null)
   and (.unit.environment.GROUNDWATER_DATABASE_URL == "postgresql:///?host=/run/postgresql&user=groundwater&dbname=groundwater")
   and (.unit.environment.GROUNDWATER_ADDRESS == "127.0.0.1")
@@ -110,13 +143,32 @@ jq -e '
   and (.unit.serviceConfig.ProtectSystem == "strict")
   and (.unit.serviceConfig.ProtectKernelModules and .unit.serviceConfig.ProtectKernelTunables and .unit.serviceConfig.RestrictSUIDSGID)
   and (.unit.serviceConfig.RestrictAddressFamilies | sort == ["AF_INET", "AF_INET6", "AF_UNIX"])
-  and (.unit.serviceConfig | has("ReadWritePaths") | not)
+  and (.unit.serviceConfig.ReadWritePaths == [])
   and (.services.postgresql.ensureDatabases == ["groundwater"])
   and (.services.postgresql.ensureUsers == [{name:"groundwater",ensureDBOwnership:true}])
   and (.services.postgresql | has("settings") | not)
-  and ((.services.mosquitto.listeners | map(.address) | sort) == (.mqttAddresses | sort))
-  and (all(.services.mosquitto.listeners[]; .port == 1883 and (.users | keys == ["groundwater-app", "groundwater-logger"])))
-  and (.firewall.interfaces[.lanIface].allowedTCPPorts == [1883])
+  and ((.mosquitto.listeners | map(.address) | unique | sort) == (.mqttAddresses | sort))
+  and ([.mosquitto.listeners[] | select(.port == 1883) | .users] == [
+    ["groundwater-app", "groundwater-logger"], ["groundwater-app", "groundwater-logger"],
+    ["groundwater-app", "groundwater-logger"]])
+  and ([.mosquitto.listeners[] | select(.port == 8883)] | length == 1
+    and .[0].users == ["groundwater-logger"] and .[0].settings.tls_version == "tlsv1.2"
+    and (.[0].settings | has("use_username_as_clientid") | not))
+  and .services.mosquitto.persistence
+  and (.mosquitto.settings.max_packet_size >= 1600)
+  and (.mosquitto.settings.memory_limit > 0 and .mosquitto.settings.autosave_interval <= 60)
+  and (.mosquitto.unit.MemoryMax != null)
+  and (.services.mosquitto.listeners | all(has("acl") | not))
+  and ([.devices.listeners[] | .plugins] == [[], [
+    "/var/lib/groundwater-mosquitto/passwd-merged-1"], ["/var/lib/groundwater-mosquitto/passwd-merged-2"],
+    ["/var/lib/groundwater-mosquitto/passwd-merged-3"]])
+  and (.devices.listeners[0].acl == [])
+  and (.devices.listeners[1:] | all(.acl | length > 0 and all(startswith("pattern ") and contains("gwl/v1/%u/"))))
+  and (.devices.listeners[3].users == ["groundwater-logger"])
+  and (.deviceOnly.listeners[3].users == [] and .deviceOnly.listeners[3].settings.use_username_as_clientid)
+  and (.deviceOnly.listeners[1].users == ["groundwater-app", "groundwater-logger"])
+  and .rejectsDeviceOnlyWithoutAccounts
+  and (.firewall.interfaces[.lanIface].allowedTCPPorts == [1883, 8883])
   and (.firewall.interfaces[.netbirdIface].allowedTCPPorts == [1883])
   and (.firewall | has("allowedTCPPorts") | not)
   and (.gateway.allowedGroups | sort == ["app-admin", "groundwater-user"])
@@ -129,7 +181,7 @@ jq -e '
   and (.paths.database == "/var/lib/groundwater-logger/state/messages.sqlite")
   and (.users.users | has("groundwater-logger"))
   and (.catalog.guardedServices | sort == ["groundwater-server", "mosquitto"])
-  and (.catalog.secrets | sort == ["groundwaterAppMqttPassword", "groundwaterLoggerMqttPassword"])
+  and (.catalog.secrets | sort == ["groundwaterAppMqttPassword", "groundwaterLoggerMqttPassword", "groundwaterMqttTlsKey"])
   and (all(.disabled, .removed; .services == [] and .groups == [] and .users == [] and .gateway == [] and .backups == {} and .firewall == {} and .database == []))
 ' <<<"$settings" >/dev/null
 
@@ -146,6 +198,7 @@ jq -e '
     and ($acl | index("read gwl/v1/+/config/desired") != null)
     and ($acl | index("read gwl/v1/+/cmd/test") != null)
     and ($acl | index("read gwl/v1/+/cmd/danger") != null)
+    and ($acl | index("read gwl/v1/+/cmd/basic") != null)
     and ([$acl[] | select(startswith("write ") or startswith("readwrite "))] | sort == ([
       "readwrite azman1/feeds/#", "readwrite testtopic/9",
       "write cfg/danger_ack", "write cfg/desired/applied",
@@ -153,7 +206,8 @@ jq -e '
       "write gwl/v1/+/gps", "write gwl/v1/+/storage",
       "write gwl/v1/+/motion", "write gwl/v1/+/alerts",
       "write gwl/v1/+/test/result", "write gwl/v1/+/config/applied",
-      "write gwl/v1/+/cmd/ack", "write gwl/v1/+/info"
+      "write gwl/v1/+/cmd/ack", "write gwl/v1/+/info",
+      "write gwl/v1/+/health", "write gwl/v1/+/data/stream", "write gwl/v1/+/data/file"
     ] | sort)))
 ' <<<"$settings" >/dev/null || {
   echo '❌ Device MQTT ACLs must retain command reads and only approved telemetry/test/ACK writes for both firmware protocols.' >&2

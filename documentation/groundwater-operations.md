@@ -44,7 +44,9 @@ device's **Installation** tab).
      (a DNS-only CNAME to the DDNS name, or later a VPS relay), so a future
      move needs a DNS change rather than a firmware change.
    - The server opens 8883 only on the LAN interface. That listener accepts
-     only the `groundwater-logger` account and its logger ACL. The
+     only logger accounts: `groundwater-logger` with its logger ACL (unless
+     `tlsDeviceAccountsOnly`, see "Per-device MQTT accounts") and per-device
+     accounts limited to their own topics. The
      `groundwater-app` account is rejected there and stays loopback/LAN/NetBird
      only. The listener does not use client certificates.
    - The server certificate (`modules/groundwater-logger/mqtt-tls/server.pem`,
@@ -360,18 +362,33 @@ may publish as any DeviceID. Per-device accounts are opt-in, unit by unit:
 4. After the unit has connected with its own account (raw deliveries keep
    arriving), type DEVICE to **Enforce own account** (mode `device`): the
    shared account is denied this unit's topics. **Remove own account**
-   returns it to the shared account; **Rotate password** replaces the hash
-   immediately, so a unit in mode `device` stays offline until reflashed.
+   (type REMOVE) returns it to the shared account; **Rotate password** (type
+   ROTATE) replaces the hash immediately. Either leaves a unit already
+   flashed with its own account offline until it is reflashed: the firmware
+   cannot change its credentials remotely. The server refuses both without
+   the typed confirmation.
+5. Once every field unit has its own account, set
+   `repo.groundwaterLogger.deviceCredentials.tlsDeviceAccountsOnly = true`
+   and deploy. The internet-facing 8883 listener then refuses the shared
+   account and pins each client ID to its DeviceID; the shared account
+   remains on the LAN and NetBird listeners only.
 
-The username is authenticated; the client ID is not. Another holder of the
-shared account could still take over the unit's session ID (denial of
-service) but cannot read or publish its topics once it is in mode `device`.
+On the 1883 listeners (and on 8883 until step 5) the username is
+authenticated but the client ID is not. A holder of the shared account who
+connects with a unit's DeviceID as client ID takes over that unit's
+persistent session: in mode `dual` it receives the unit's queued commands,
+and in mode `device` it cannot read them but the takeover still discards
+them (verified against Mosquitto 2.1.2). The platform re-publishes an
+unacknowledged revision 2 command after the unit's next sleep, within its
+republish limit.
 The auth directory is tmpfs and rewritten from the database whenever the
 server starts.
 
 ## Health, retention and recovery
 
-Use `/healthz` (503 when the database is unavailable), the authenticated `/api/status` and
+Use `/healthz` (503 when the database is unavailable), the authenticated `/api/status`
+(`broker.connected`, and for operators `ingest.lastDeliveryAt`, the newest
+inbound MQTT delivery: compare it with the fleet's contact schedule) and
 `journalctl -u groundwater-server` for service and MQTT diagnostics. The event
 stream sends a 15-second heartbeat; browsers reconnect and fetch current state
 after a `resync` event. Polling covers interrupted event connections. Event

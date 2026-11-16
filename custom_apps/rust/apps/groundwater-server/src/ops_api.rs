@@ -1609,10 +1609,18 @@ fn auth_dir(s: &AppState) -> Result<std::path::PathBuf, Response> {
     })
 }
 
+/// Typed confirmation for credential changes that can strand a unit.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialConfirm {
+    confirm: Option<String>,
+}
+
 async fn generate_credentials(
     State(s): State<AppState>,
     h: HeaderMap,
     Path(device): Path<String>,
+    body: Option<Json<CredentialConfirm>>,
 ) -> ApiResult {
     let user = operator(&h)?;
     let device = authorize(&s, &h, &device).await?;
@@ -1621,7 +1629,8 @@ async fn generate_credentials(
     let row = check
         .query_one(
             "SELECT revoked_at IS NOT NULL,EXISTS(SELECT 1 FROM device_bindings b WHERE b.device_id=d.device_id
-                AND b.revoked_at IS NULL AND b.topic='gwl/v1/'||d.device_id||'/status')
+                AND b.revoked_at IS NULL AND b.topic='gwl/v1/'||d.device_id||'/status'),
+                EXISTS(SELECT 1 FROM device_mqtt_credentials c WHERE c.device_id=d.device_id)
              FROM devices d WHERE d.device_id=$1",
             &[&device],
         )
@@ -1629,6 +1638,14 @@ async fn generate_credentials(
         .map_err(db_err)?;
     if row.get::<_, bool>(0) {
         return Err(error(StatusCode::CONFLICT, "this enrollment is retired"));
+    }
+    // A unit flashed with its own password cannot connect after a rotation
+    // until it is reflashed: the firmware has no remote credential change.
+    let rotating = row.get::<_, bool>(2);
+    if rotating && body.and_then(|Json(b)| b.confirm).as_deref() != Some("ROTATE") {
+        return Err(bad(
+            "type ROTATE to replace this unit's password; a unit already using its own account stays offline until reflashed",
+        ));
     }
     if !row.get::<_, bool>(1) {
         return Err(bad(
@@ -1751,10 +1768,17 @@ async fn delete_credentials(
     State(s): State<AppState>,
     h: HeaderMap,
     Path(device): Path<String>,
+    body: Option<Json<CredentialConfirm>>,
 ) -> ApiResult {
     let user = operator(&h)?;
     let device = authorize(&s, &h, &device).await?;
     let dir = auth_dir(&s)?;
+    // A unit flashed with its own account cannot fall back to the shared one.
+    if body.and_then(|Json(b)| b.confirm).as_deref() != Some("REMOVE") {
+        return Err(bad(
+            "type REMOVE to delete this unit's own account; a unit flashed with it stays offline until reflashed with the shared account",
+        ));
+    }
     let mut db = connect_tx(&s).await?;
     let tx = db.transaction().await.map_err(db_err)?;
     let deleted = tx

@@ -65,6 +65,9 @@ pub fn router(state: AppState) -> Router {
         ))
         .with_state(state)
 }
+/// Set once the process is stopping; ends open event streams.
+static SHUTDOWN: std::sync::LazyLock<tokio::sync::watch::Sender<bool>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::channel(false).0);
 pub async fn serve(state: AppState) -> Result<(), String> {
     let endpoint = format!("{}:{}", state.settings.address, state.settings.port);
     let listener = tokio::net::TcpListener::bind(&endpoint)
@@ -72,7 +75,13 @@ pub async fn serve(state: AppState) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     homelab_common::log_server_started("groundwater-server", &endpoint);
     axum::serve(listener, router(state))
-        .with_graceful_shutdown(homelab_common::shutdown_signal())
+        .with_graceful_shutdown(async {
+            homelab_common::shutdown_signal().await;
+            // Event streams never end on their own; graceful shutdown waits
+            // for every connection, so an open tab held the stop until
+            // systemd's SIGKILL.
+            SHUTDOWN.send_replace(true);
+        })
         .await
         .map_err(|e| e.to_string())
 }
@@ -141,6 +150,29 @@ async fn ids(s: &AppState, h: &HeaderMap) -> Result<Vec<String>, Response> {
         .await
         .map_err(database)
 }
+/// True when a browser marks an unsafe request as coming from another
+/// origin. The gateway's session cookie is `SameSite=Lax` on the parent
+/// domain, so a page on any sibling host is "same-site": its form post or
+/// `no-cors` fetch carries the operator's session, and body-less routes
+/// (cancel, confirm, rotate, reinstate) need no JSON preflight. Browsers send
+/// `Sec-Fetch-Site`, or at least `Origin`, on every unsafe request; a client
+/// sending neither (curl, scripts) cannot hold a browser's cookie.
+pub(crate) fn cross_origin(headers: &HeaderMap) -> bool {
+    if let Some(site) = headers.get("sec-fetch-site") {
+        return !matches!(site.as_bytes(), b"same-origin" | b"none");
+    }
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return false;
+    };
+    let host = headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get(header::HOST))
+        .and_then(|h| h.to_str().ok());
+    match (origin.to_str().ok().and_then(|o| o.split_once("://")), host) {
+        (Some((_, authority)), Some(host)) => !authority.eq_ignore_ascii_case(host.trim()),
+        _ => true,
+    }
+}
 /// Authenticate before extraction; normalize JSON/query/path/body-limit and
 /// method rejections so every API failure is a JSON envelope.
 async fn boundary(State(s): State<AppState>, request: Request, next: Next) -> Response {
@@ -161,14 +193,21 @@ async fn boundary(State(s): State<AppState>, request: Request, next: Next) -> Re
     {
         return e;
     }
+    let unsafe_method = !matches!(
+        *request.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+    );
     if api
-        && !matches!(
-            *request.method(),
-            axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
-        )
+        && unsafe_method
         && let Err(e) = operator(request.headers())
     {
         return e;
+    }
+    if api && unsafe_method && cross_origin(request.headers()) {
+        return error(
+            StatusCode::FORBIDDEN,
+            "cross-origin requests may not change state",
+        );
     }
     let mut response = next.run(request).await;
     if api
@@ -212,7 +251,23 @@ async fn status(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
     let (i, r) = gate(&h)?;
     let stats = s.stats.lock().await.clone();
     let visible = ids(&s, &h).await?;
-    Ok(Json(json!({"service":"groundwater-server","user":{"username":i.username,"role":if r==Role::Operator{"operator"}else{"viewer"}},"broker":{"configured":s.settings.mqtt.is_some(),"connected":stats.connected && stats.telemetry_connected,"endpoint":s.settings.mqtt.as_ref().map(|m|format!("{}:{}",m.host,m.port)),"lastError":if r==Role::Operator{stats.last_error}else{None}},"ingest":{"deliveries":stats.deliveries,"observations":stats.observations,"redeliveryCandidates":stats.redelivery_candidates,"conflicts":stats.conflicts,"quarantined":stats.quarantined},"adapter":{"profiles":crate::profiles::ALL_PROFILES.iter().map(|p|json!({"id":p.as_str(),"label":p.label(),"carriesDeviceId":p.carries_device_id()})).collect::<Vec<_>>()},"devices":visible.len(),"retentionDays":s.settings.retention_days})).into_response())
+    // Loggers connect rarely, so "connected" alone cannot show a stalled
+    // ingest: the newest stored delivery can (operators only).
+    let last_delivery_at: Option<DateTime<Utc>> = if r == Role::Operator {
+        s.db.get()
+            .await
+            .map_err(database)?
+            .query_one(
+                "SELECT max(received_at) FROM deliveries WHERE direction='in'",
+                &[],
+            )
+            .await
+            .map_err(|e| database(e.to_string()))?
+            .get(0)
+    } else {
+        None
+    };
+    Ok(Json(json!({"service":"groundwater-server","user":{"username":i.username,"role":if r==Role::Operator{"operator"}else{"viewer"}},"broker":{"configured":s.settings.mqtt.is_some(),"connected":stats.connected && stats.telemetry_connected,"endpoint":s.settings.mqtt.as_ref().map(|m|format!("{}:{}",m.host,m.port)),"lastError":if r==Role::Operator{stats.last_error}else{None}},"ingest":{"deliveries":stats.deliveries,"observations":stats.observations,"redeliveryCandidates":stats.redelivery_candidates,"conflicts":stats.conflicts,"quarantined":stats.quarantined,"lastDeliveryAt":last_delivery_at},"adapter":{"profiles":crate::profiles::ALL_PROFILES.iter().map(|p|json!({"id":p.as_str(),"label":p.label(),"carriesDeviceId":p.carries_device_id()})).collect::<Vec<_>>()},"devices":visible.len(),"retentionDays":s.settings.retention_days})).into_response())
 }
 async fn devices(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
     let db = s.db.get().await.map_err(database)?;
@@ -441,12 +496,27 @@ async fn cancel(
     Ok(Json(json!({"command":command})).into_response())
 }
 async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>) -> ApiResult {
-    let db = s.db.get().await.map_err(database)?;
     let device = authorize(&s, &h, &q.device).await?;
     let (from, to) = q.bounds()?;
     if q.format.as_deref().is_some_and(|f| f != "csv") {
         return Err(bad("format must be csv"));
     }
+    // A streamed export runs on its own connection: tokio-postgres stops
+    // reading a connection while any one result stream is not consumed, so a
+    // slow or paused download on the shared connection stalled every other
+    // API request until the 30 s statement timeout cut the export short.
+    let permit = EXPORTS.try_acquire().map_err(|_| {
+        error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "other exports are running; try again shortly",
+        )
+    })?;
+    let db = db::connect(&s.settings.database_url)
+        .await
+        .map_err(database)?;
+    db.batch_execute("SET statement_timeout = '15min'")
+        .await
+        .map_err(|e| database(e.to_string()))?;
     let params: [&(dyn tokio_postgres::types::ToSql + Sync); 3] = [&device, &from, &to];
     // Revision 2 fields and the installation datum are appended, so existing
     // consumers of the first nine columns are unaffected.
@@ -494,7 +564,11 @@ async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
                 + "\r\n"
         })
         .map_err(std::io::Error::other),
-    );
+    )
+    // The stream ends when the connection does: keep it and the slot alive.
+    .inspect(move |_| {
+        let _ = (&db, &permit);
+    });
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "text/csv; charset=utf-8")
         .header(
@@ -504,6 +578,8 @@ async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
         .body(axum::body::Body::from_stream(body))
         .unwrap())
 }
+/// Concurrent CSV exports, each on its own database connection.
+static EXPORTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 /// CSV header: the original nine columns, then revision 2 and datum fields.
 pub(crate) const EXPORT_COLUMNS: [&str; 20] = [
     "device_id",
@@ -582,6 +658,10 @@ async fn events(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
             }
         },
     );
+    let mut stopping = SHUTDOWN.subscribe();
+    let stream = stream.take_until(async move {
+        let _ = stopping.wait_for(|stop| *stop).await;
+    });
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
@@ -666,6 +746,49 @@ mod tests {
             assert!(!safe_path(bad))
         }
         assert!(safe_path("/build/q-abc.js"));
+    }
+    #[test]
+    fn cross_origin_writes_are_recognised() {
+        let headers = |pairs: &[(&'static str, &'static str)]| {
+            let mut h = HeaderMap::new();
+            for (k, v) in pairs {
+                h.insert(*k, HeaderValue::from_static(v));
+            }
+            h
+        };
+        // The app's own pages, and clients without browser headers.
+        for ok in [
+            headers(&[("sec-fetch-site", "same-origin")]),
+            headers(&[]),
+            headers(&[
+                ("origin", "https://groundwater.example.org"),
+                ("x-forwarded-host", "groundwater.example.org"),
+            ]),
+            headers(&[
+                ("origin", "https://groundwater.example.org"),
+                ("host", "Groundwater.example.org"),
+            ]),
+        ] {
+            assert!(!cross_origin(&ok), "{ok:?}");
+        }
+        // A sibling host shares the SameSite=Lax gateway cookie.
+        for refused in [
+            headers(&[("sec-fetch-site", "same-site")]),
+            headers(&[("sec-fetch-site", "cross-site")]),
+            headers(&[
+                ("sec-fetch-site", "same-site"),
+                ("origin", "https://groundwater.example.org"),
+                ("x-forwarded-host", "groundwater.example.org"),
+            ]),
+            headers(&[
+                ("origin", "https://archives.example.org"),
+                ("x-forwarded-host", "groundwater.example.org"),
+            ]),
+            headers(&[("origin", "null"), ("host", "groundwater.example.org")]),
+            headers(&[("origin", "https://groundwater.example.org")]),
+        ] {
+            assert!(cross_origin(&refused), "{refused:?}");
+        }
     }
     #[test]
     fn csv_quotes_values() {

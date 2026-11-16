@@ -1168,15 +1168,48 @@ async fn per_device_credentials_write_broker_files() {
     )
     .await;
     assert_eq!(device["device"]["mqtt_auth"], "device");
+    // Rotation strands a unit flashed with its own password until it is
+    // reflashed, so the server insists on a typed confirmation; an
+    // unconfirmed request changes nothing.
+    for body in [json!({}), Value::Null, json!({"confirm":"rotate"})] {
+        let (status, value) = call(
+            &app,
+            "POST",
+            &format!("/api/devices/{D}/mqtt-credentials"),
+            "operator",
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+    }
+    assert!(crate::mqtt_auth::verify(
+        &password,
+        std::fs::read_to_string(dir.path().join("devices.passwd"))
+            .unwrap()
+            .trim()
+            .split_once(':')
+            .unwrap()
+            .1
+    ));
+    let (status, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/devices/{D}/mqtt-credentials"),
+        "operator",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     // Rotation replaces the hash; the old password stops working.
-    let (_, rotated) = call(
+    let (status, rotated) = call(
         &app,
         "POST",
         &format!("/api/devices/{D}/mqtt-credentials"),
         "operator",
-        json!({}),
+        json!({"confirm":"ROTATE"}),
     )
     .await;
+    assert_eq!(status, StatusCode::CREATED, "{rotated}");
     let passwd = std::fs::read_to_string(dir.path().join("devices.passwd")).unwrap();
     let hash = passwd.trim().split_once(':').unwrap().1.to_owned();
     assert!(!crate::mqtt_auth::verify(&password, &hash));
@@ -1507,4 +1540,72 @@ async fn metrics_need_an_operator_or_the_scraper_token() {
         StatusCode::OK
     );
     assert_eq!(scrape("Bearer wrong").await, StatusCode::UNAUTHORIZED);
+}
+
+/// Regression: the gateway cookie is SameSite=Lax on the parent domain, so a
+/// page on any sibling host could post to body-less routes (danger confirm,
+/// cancel, credential rotation, reinstate) with an operator's session.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn cross_origin_writes_are_refused() {
+    let (url, client) = setup().await;
+    let app = app(&url, OpsSettings::default()).await;
+    enroll_v22(&app).await;
+    let send = |site: Option<&'static str>, origin: Option<&'static str>| {
+        let app = app.clone();
+        async move {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri(format!("/api/devices/{D}/retire"))
+                .header("content-type", "application/json")
+                .header("host", "groundwater.example.org")
+                .header("x-auth-request-preferred-username", "operator")
+                .header("x-auth-request-groups", "app-admin");
+            if let Some(site) = site {
+                request = request.header("sec-fetch-site", site);
+            }
+            if let Some(origin) = origin {
+                request = request.header("origin", origin);
+            }
+            let body = Body::from(json!({"confirm":"RETIRE"}).to_string());
+            app.oneshot(request.body(body).unwrap())
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    for (site, origin) in [
+        (Some("same-site"), Some("https://archives.example.org")),
+        (Some("cross-site"), None),
+        (None, Some("https://archives.example.org")),
+        (None, Some("null")),
+    ] {
+        assert_eq!(
+            send(site, origin).await,
+            StatusCode::FORBIDDEN,
+            "{site:?} {origin:?}"
+        );
+        assert_eq!(
+            scalar::<i64>(
+                &client,
+                "SELECT count(*) FROM devices WHERE revoked_at IS NOT NULL"
+            )
+            .await,
+            0
+        );
+    }
+    // Reads stay available to cross-site navigation (links, downloads).
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("/api/devices/{D}"),
+        "operator",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        send(Some("same-origin"), Some("https://groundwater.example.org")).await,
+        StatusCode::OK
+    );
 }
