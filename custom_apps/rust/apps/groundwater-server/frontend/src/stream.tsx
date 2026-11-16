@@ -81,6 +81,15 @@ const LOG_START_TEXT: Record<string, string> = {
 export const logStartText = (reason: string | null | undefined) =>
   !reason ? "start unknown" : LOG_START_TEXT[reason] || reason;
 
+/** When the server's background re-run (rev2_store.rs) tries the log
+ *  again: every few minutes, backing off from 1 min to 1 day while a log's
+ *  re-run keeps failing, which `resolve_error` then names. The next retry
+ *  time is not served. */
+export const rerunText = (l: Pick<StreamLog, "resolve_error">) =>
+  l.resolve_error?.startsWith("re-run attempt")
+    ? "the server retries automatically, waiting longer after each failed re-run (at most a day)"
+    : "the server re-runs it automatically within minutes";
+
 export const StreamView = component$<Props>((props) => {
   const rev = useComputed$(() => props.revision);
   const hours = useSignal(720);
@@ -215,16 +224,16 @@ export const StreamView = component$<Props>((props) => {
                         <small class="error-text">
                           {l.derive_pending} frame
                           {l.derive_pending === 1 ? "" : "s"} kept raw: their
-                          readings and events could not be derived yet; the
-                          server retries at its next start
+                          readings and events are not derived yet;{" "}
+                          {rerunText(l)}
                         </small>
                       )}
                       {l.resolve_pending && (
                         <small class="error-text">
-                          Reading times and settings of this log could not be
-                          worked out
-                          {l.resolve_error ? ` (${l.resolve_error})` : ""}; the
-                          server retries at its next start
+                          Reading times and settings of this log are not worked
+                          out yet
+                          {l.resolve_error ? ` (${l.resolve_error})` : ""};{" "}
+                          {rerunText(l)}
                         </small>
                       )}
                       <small>{l.decode_errors} decode errors</small>

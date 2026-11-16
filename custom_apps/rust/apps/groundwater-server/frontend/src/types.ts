@@ -384,12 +384,15 @@ export interface StreamLog {
   unrecoverable_gaps: number;
   pending_readings: number;
   pending_reasons?: PendingReason[];
-  /** Frames whose derived data failed and is re-run at the next start. */
+  /** Frames whose derived data failed; the server's background re-run
+   *  (every few minutes, backing off for a log that keeps failing) retries. */
   derive_pending?: number;
   /** Frames of a payload schema this server has no decoder for (kept raw). */
   undecodable?: number;
   decoder_available?: boolean | null;
-  /** Time resolution and settings assembly for the log failed. */
+  /** Time resolution and settings assembly for the log wait for the re-run
+   *  (deferred or failed); `resolve_error` then starts "re-run attempt N
+   *  failed:" once the re-run itself has failed. */
   resolve_pending?: boolean;
   resolve_error?: string | null;
 }
@@ -572,6 +575,8 @@ export interface Delivery {
 }
 export interface Status {
   user: { username: string; role: "operator" | "viewer" };
+  /** Days before deliveries and released raw content are pruned. */
+  retentionDays?: number;
   service: string;
   broker: {
     connected: boolean;
@@ -582,6 +587,20 @@ export interface Status {
   ingest: {
     /** Newest stored inbound delivery (operators only; null otherwise). */
     lastDeliveryAt?: string | null;
+    /** Uplinks held unacknowledged because storing them failed (retried). */
+    held?: number;
+    /** Logs waiting for the background re-run; `failingLogs` have failed it
+     *  at least once (operators only; null otherwise). */
+    rerun?: { pendingLogs: number; failingLogs: number } | null;
+    /** Acknowledged content kept only as raw bytes, exempt from retention
+     *  until re-ingested or dismissed (operators only; null otherwise). */
+    salvaged?: Salvaged | null;
     [key: string]: unknown;
   };
+}
+export interface Salvaged {
+  rawBatches: number;
+  oldestRawBatchAt: string | null;
+  storeFailedMessages: number;
+  oldestStoreFailedAt: string | null;
 }
