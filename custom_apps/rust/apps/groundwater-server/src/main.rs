@@ -10,9 +10,11 @@
 mod acks;
 mod adapter;
 mod api;
+mod api_rev2;
 mod clock;
 mod commands;
 mod config;
+mod crc;
 mod db;
 #[cfg(test)]
 mod fixtures;
@@ -21,15 +23,26 @@ mod ingest;
 mod platform;
 #[cfg(test)]
 mod platform_tests;
+mod presence;
 mod profiles;
 mod publisher;
 #[cfg(test)]
 mod publisher_tests;
+mod records;
+mod rev2;
+mod rev2_commands;
+mod rev2_store;
+#[cfg(test)]
+mod rev2_tests;
 mod scheduler;
+mod settings;
+mod stream;
 mod telemetry;
 mod topics;
 #[cfg(test)]
 mod ui;
+#[cfg(test)]
+mod vectors_tests;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -64,6 +77,7 @@ fn main() -> ExitCode {
 
 async fn run() -> Result<(), String> {
     let settings = Arc::new(Settings::from_env()?);
+    config::install_rev2_policy(settings.rev2.clone());
     let client = db::connect(&settings.database_url).await?;
     db::migrate(&client).await?;
 

@@ -172,7 +172,7 @@ fn render_device(device: &DeviceSummary, history: &[SeriesPoint], html: &mut Str
             html.push_str(&format!(
                 "<tr><td>{}</td><td>{} m{}</td><td>{}</td><td>{}</td><td class=\"caveat\">{}</td></tr>\n",
                 escape(&point.recorded_at.to_rfc3339()),
-                format_level(point.gwl),
+                format_level(Some(point.gwl)),
                 match &point.gwl_text {
                     Some(text) => format!(" <span class=\"caveat\">(<code>{}</code>)</span>", escape(text)),
                     None => String::new(),
@@ -199,7 +199,7 @@ fn latest_row(label: &str, observation: &ObservationSummary) -> String {
          <td>{}</td><td>{}</td><td>{}</td></tr>\n",
         escape(label),
         format_level(observation.gwl),
-        escape(&observation.gwl_text),
+        escape(observation.gwl_text.as_deref().unwrap_or("")),
         escape(
             &observation
                 .recorded_at
@@ -230,8 +230,8 @@ fn observation_caveats(observation: &ObservationSummary) -> String {
     caveats.join(" \u{00b7} ")
 }
 
-fn format_level(gwl: f64) -> String {
-    format!("{gwl:.2}")
+fn format_level(gwl: Option<f64>) -> String {
+    gwl.map_or_else(|| "fault".to_string(), |gwl| format!("{gwl:.2}"))
 }
 
 /// Escapes text for HTML element content and quoted attributes.

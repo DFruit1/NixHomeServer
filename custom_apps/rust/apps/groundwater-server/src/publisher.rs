@@ -184,7 +184,7 @@ async fn accept(
     acked_at: DateTime<Utc>,
 ) -> Result<Option<String>, String> {
     let tx = db.transaction().await.map_err(|e| e.to_string())?;
-    let row=tx.query_one("SELECT a.state,c.id,c.device_id,c.kind,c.payload,c.firmware_ack_expected,a.ready_at,a.dispatched_at,a.firmware_acked_at,a.firmware_ack_payload,a.delivery_id,c.state FROM command_publish_attempts a JOIN commands c ON c.id=a.command_id WHERE a.id=$1 FOR UPDATE OF a,c",&[&id]).await.map_err(|e|format!("PUBACK lookup: {e:?}"))?;
+    let row=tx.query_one("SELECT a.state,c.id,c.device_id,c.kind,c.payload,c.firmware_ack_expected,a.ready_at,a.dispatched_at,a.firmware_acked_at,a.firmware_ack_payload,a.delivery_id,c.state,c.protocol FROM command_publish_attempts a JOIN commands c ON c.id=a.command_id WHERE a.id=$1 FOR UPDATE OF a,c",&[&id]).await.map_err(|e|format!("PUBACK lookup: {e:?}"))?;
     if row.get::<_, String>(0) == "accepted" {
         return Ok(None);
     }
@@ -207,7 +207,19 @@ async fn accept(
     )
     .await
     .map_err(|e| e.to_string())?;
-    if row.get::<_, String>(11) != "cancelled" {
+    let protocol: i16 = row.get(12);
+    if protocol == 2 {
+        // Revision 2: acks are matched by id directly on the command row and
+        // may precede this PUBACK; acceptance only records the publish.
+        crate::rev2_commands::accepted(
+            &tx,
+            command_id,
+            dispatched,
+            acked_at,
+            crate::config::rev2_policy(),
+        )
+        .await?;
+    } else if row.get::<_, String>(11) != "cancelled" {
         let state = if expects_ack && firmware_at.is_some() {
             "acked"
         } else {

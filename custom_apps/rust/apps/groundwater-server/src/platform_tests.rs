@@ -421,6 +421,7 @@ async fn firmware_clock_and_atomic_presence_safety() {
             topics: TopicMap::default(),
             mqtt: None,
             retention_days: 90,
+            rev2: Default::default(),
         }),
         db: Arc::new(db::Database::new(
             url.clone(),
@@ -909,6 +910,7 @@ async fn platform_database_api_and_scheduler_regressions() {
             topics: TopicMap::default(),
             mqtt: None,
             retention_days: 90,
+            rev2: Default::default(),
         }),
         db: Arc::new(db::Database::new(url.clone(), db)),
         bus: bus.clone(),
@@ -1007,7 +1009,7 @@ async fn platform_database_api_and_scheduler_regressions() {
     bus.emit(LiveEvent::Observation {
         device_id: B.into(),
         recorded_at: Some(now),
-        gwl: 99.,
+        gwl: Some(99.),
     });
     bus.emit(LiveEvent::Quarantine {
         topic: "secret".into(),
@@ -1016,7 +1018,7 @@ async fn platform_database_api_and_scheduler_regressions() {
     bus.emit(LiveEvent::Observation {
         device_id: A.into(),
         recorded_at: Some(now),
-        gwl: 1.,
+        gwl: Some(1.),
     });
     let data = loop {
         let bytes = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())

@@ -8,6 +8,14 @@
 //! | `V21`   | `GWL_Firmware_V2.1` | 24-hex `DeviceID` | float | int-truncated |
 //! | `V20`   | `GWL_Firmware_V2.00` | absent | float | int-truncated |
 //! | `ML`    | `MQTT-Logger-main` | absent | int-truncated | int-truncated |
+//! | `V22`   | firmware 2.2, `gwl/v1` protocol revision 2 | topic path (`gwl/v1/<DEV>/…`) | integer mV | integer mV |
+//!
+//! `V22` speaks `docs/gwl-v1-rev2.md`: `"v":2` JSON, `data/stream` ring
+//! batches and `{v,id,exp,op,args}` command envelopes. A unit enrolled as
+//! `V21` on `gwl/v1` bindings is promoted to `V22` when its retained `info`
+//! reports `proto:2`, because the same topics then carry the new contract
+//! (see `rev2_store::detect_profile`); identity still comes only from the
+//! binding.
 //!
 //! Directory labels are compatibility profiles, not authoritative deployed
 //! semantic versions (`GW-001-source-review.md` §1). The firmware sends no
@@ -53,10 +61,17 @@ pub enum ProfileId {
     V20,
     /// `MQTT-Logger-main`: no identity, and the ADC values are truncated too.
     Ml,
+    /// Firmware 2.2, `gwl/v1` protocol revision 2.
+    V22,
 }
 
 /// Every supported profile, in assessment order.
-pub const ALL_PROFILES: [ProfileId; 3] = [ProfileId::V21, ProfileId::V20, ProfileId::Ml];
+pub const ALL_PROFILES: [ProfileId; 4] = [
+    ProfileId::V21,
+    ProfileId::V20,
+    ProfileId::Ml,
+    ProfileId::V22,
+];
 
 impl ProfileId {
     /// Stable name persisted with deliveries and observations.
@@ -65,6 +80,7 @@ impl ProfileId {
             Self::V21 => "V21",
             Self::V20 => "V20",
             Self::Ml => "ML",
+            Self::V22 => "V22",
         }
     }
 
@@ -74,6 +90,7 @@ impl ProfileId {
             Self::V21 => "GWL firmware V2.1",
             Self::V20 => "GWL firmware V2.00",
             Self::Ml => "MQTT-Logger",
+            Self::V22 => "GWL firmware 2.2 (gwl/v1 revision 2)",
         }
     }
 
@@ -87,6 +104,7 @@ impl ProfileId {
             "V21" | "2.1" | "GWL_FIRMWARE_V2.1" => Some(Self::V21),
             "V20" | "2.0" | "2.00" | "GWL_FIRMWARE_V2.00" => Some(Self::V20),
             "ML" | "MQTT-LOGGER" | "MQTT_LOGGER" => Some(Self::Ml),
+            "V22" | "2.2" | "GWL_FIRMWARE_V2.2" => Some(Self::V22),
             _ => None,
         }
     }
@@ -115,6 +133,7 @@ impl ProfileId {
             Self::V21 => "gw-adapter/1+v21",
             Self::V20 => "gw-adapter/1+v20",
             Self::Ml => "gw-adapter/1+ml",
+            Self::V22 => "gw-adapter/2+v22",
         }
     }
 
@@ -190,8 +209,9 @@ mod tests {
         assert_eq!(ProfileId::parse(" v21 "), Some(ProfileId::V21));
         assert_eq!(ProfileId::parse("2.00"), Some(ProfileId::V20));
         assert_eq!(ProfileId::parse("mqtt-logger"), Some(ProfileId::Ml));
+        assert_eq!(ProfileId::parse("2.2"), Some(ProfileId::V22));
         // An unknown profile must not silently become a default.
-        assert_eq!(ProfileId::parse("V22"), None);
+        assert_eq!(ProfileId::parse("V23"), None);
         assert_eq!(ProfileId::parse(""), None);
     }
 
@@ -200,6 +220,8 @@ mod tests {
         assert!(ProfileId::V21.carries_device_id());
         assert!(!ProfileId::V20.carries_device_id());
         assert!(!ProfileId::Ml.carries_device_id());
+        // Revision 2 names the device in the topic path, not the payload.
+        assert!(!ProfileId::V22.carries_device_id());
     }
 
     #[test]
@@ -221,9 +243,13 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            vec!["gw-adapter/1+v21", "gw-adapter/1+v20", "gw-adapter/1+ml"]
+            vec![
+                "gw-adapter/1+v21",
+                "gw-adapter/1+v20",
+                "gw-adapter/1+ml",
+                "gw-adapter/2+v22"
+            ]
         );
-        assert_eq!(versions.len(), 3);
     }
 
     #[test]

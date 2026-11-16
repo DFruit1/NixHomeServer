@@ -108,7 +108,7 @@ pub async fn ancillary<C: tokio_postgres::GenericClient + Sync>(
         "WITH candidate AS (
             SELECT c.id,a.id AS attempt_id FROM commands c JOIN devices d ON d.device_id=c.device_id
             LEFT JOIN command_publish_attempts a ON a.id=c.active_publish_attempt AND a.state='inflight'
-            WHERE c.device_id=$1 AND c.kind=$2 AND c.firmware_ack_expected
+            WHERE c.device_id=$1 AND c.kind=$2 AND c.firmware_ack_expected AND c.protocol=1
               AND (c.state IN ('queued','sent') OR ($2='test' AND c.state='acked'))
               AND d.presence_status='awake' AND d.last_ready_at>$3::timestamptz-interval '8 minutes'
               AND ((a.dispatched_at<=$3::timestamptz AND a.ready_at=d.last_ready_at)
@@ -158,6 +158,9 @@ pub async fn tick(
     publisher: &mut Publisher,
 ) -> Result<(), String> {
     publisher.reconcile(db, bus).await?;
+    for device_id in crate::rev2_commands::expire(&*db).await? {
+        bus.emit(LiveEvent::Command { device_id });
+    }
     if !publisher.connected || publisher.busy() {
         return Ok(());
     }
@@ -165,14 +168,14 @@ pub async fn tick(
     let rows=tx.query(
         "SELECT c.id,c.device_id,c.kind,c.wire_payload,d.last_ready_at
          FROM commands c JOIN devices d ON d.device_id=c.device_id
-         WHERE c.active_publish_attempt IS NULL
+         WHERE c.active_publish_attempt IS NULL AND c.protocol=1
            AND (c.state='queued' OR (c.state='sent' AND (c.firmware_ack_expected OR c.broker_acked_at IS NULL)))
            AND d.revoked_at IS NULL AND d.presence_status='awake'
            AND groundwater_command_supported(d.source_profile,c.kind,c.payload,d.clock_policy,d.local_offset_min,d.clock_change_unverified) IS TRUE
            AND d.last_ready_at<=now() AND d.last_ready_at>now()-interval '8 minutes'
            AND (d.last_downlink_at IS NULL OR d.last_downlink_at<=now()-interval '5 seconds')
            AND (c.broker_acked_at IS NULL OR c.last_ready_at IS NULL OR c.last_ready_at<d.last_ready_at)
-           AND NOT EXISTS(SELECT 1 FROM commands prior WHERE prior.device_id=c.device_id AND prior.id<c.id
+           AND NOT EXISTS(SELECT 1 FROM commands prior WHERE prior.device_id=c.device_id AND prior.id<c.id AND prior.protocol=1
                AND (prior.state='queued' OR (prior.state='sent' AND (prior.firmware_ack_expected OR prior.broker_acked_at IS NULL)))
                AND groundwater_command_supported(d.source_profile,prior.kind,prior.payload,d.clock_policy,d.local_offset_min,d.clock_change_unverified) IS TRUE)
          ORDER BY c.id LIMIT 32 FOR UPDATE OF c,d SKIP LOCKED", &[])
@@ -237,6 +240,14 @@ pub async fn tick(
         .map_err(|e| e.to_string())?;
         prepared = Some((attempt, topic, wire));
         break;
+    }
+    // Protocol revision 2: no wake window. The logger's persistent session
+    // queues the command until its next connection.
+    if prepared.is_none()
+        && let Some(next) =
+            crate::rev2_commands::next_publish(&tx, crate::config::rev2_policy()).await?
+    {
+        prepared = Some((next.attempt_id, next.topic, next.wire));
     }
     tx.commit().await.map_err(|e| e.to_string())?;
     if let Some((attempt, topic, wire)) = prepared {

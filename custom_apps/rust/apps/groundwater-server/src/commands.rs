@@ -29,11 +29,22 @@ pub const DANGER_KEYS: [&str; 6] = [
 /// receipt; gwl/v1 firmware reports them as unsupported (see acks.rs). Keep
 /// this display contract aligned with groundwater_command_supported in SQL.
 pub fn capabilities(profile: &str, policy: &str, offset: Option<i32>, unverified: bool) -> Value {
+    if profile == "V22" {
+        // Protocol revision 2: every contract operation; the logger reports
+        // what it does not implement (`UNSUPPORTED_BY_FIRMWARE`).
+        return json!({"test":false,"project_settings":false,"cfg_keys":[],"danger_commands":[],
+            "protocol":2,"settings":true,"basic_ops":crate::rev2::BASIC_OPS,
+            "danger_ops":crate::rev2::DANGER_OPS,
+            "unsupported_by_firmware":crate::rev2::UNSUPPORTED_BY_FIRMWARE,
+            "handshake_ops":crate::rev2::DANGER_OPS.iter().filter(|op| crate::rev2::needs_handshake(op)).collect::<Vec<_>>(),
+            "downloads":true});
+    }
     let known = matches!(profile, "V21" | "V20" | "ML");
     let clock = policy == "utc"
         || (policy == "local-offset" && offset.is_some_and(|n| (0..1440).contains(&n)));
     json!({"test":known,"project_settings":known && clock && !unverified,
-        "cfg_keys":[],"danger_commands":if matches!(profile,"V21"|"V20"){vec!["Reboot"]}else{vec![]}})
+        "cfg_keys":[],"danger_commands":if matches!(profile,"V21"|"V20"){vec!["Reboot"]}else{vec![]},
+        "protocol":1})
 }
 
 /// Construct in explicit order; serde's sorted-map order puts `lf` before `l`.

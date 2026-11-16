@@ -36,7 +36,6 @@ use crate::adapter::{
     IntakeOutcome, Observation, PriorObservation,
 };
 use crate::clock::{ClockPolicy, TimeQuality};
-use crate::config::STALE_AFTER_MINUTES;
 use crate::profiles::ProfileId;
 
 /// Reconnect on the next operation without replaying an uncertain write.
@@ -521,8 +520,9 @@ pub async fn prior_observations<C: GenericClient + Sync>(
 pub struct ObservationSummary {
     pub recorded_at: Option<DateTime<Utc>>,
     pub received_at: DateTime<Utc>,
-    pub gwl: f64,
-    pub gwl_text: String,
+    /// `None` for a fault reading (sensor not read).
+    pub gwl: Option<f64>,
+    pub gwl_text: Option<String>,
     pub rssi: Option<i16>,
     pub battery_v: Option<f64>,
     pub solar_v: Option<f64>,
@@ -534,7 +534,7 @@ pub struct ObservationSummary {
 }
 
 /// A device row as presented to the UI.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct DeviceSummary {
     pub device_id: String,
     pub display_name: String,
@@ -564,6 +564,35 @@ pub struct DeviceSummary {
     pub clock_change_unverified: bool,
     pub capabilities: serde_json::Value,
     pub open_alert_count: i64,
+    /// Protocol revision 2 state (all absent for revision 1 units).
+    pub protocol_rev: Option<i16>,
+    /// `status` channel: `online`, `ready`, `sleep` or `offline` (Last Will).
+    pub link_state: Option<String>,
+    pub link_state_at: Option<DateTime<Utc>>,
+    pub link_reason: Option<String>,
+    /// The state came from a retained message replayed on subscription.
+    pub link_retained: bool,
+    /// The logger's own announced next connection (`next`).
+    pub next_contact_at: Option<DateTime<Utc>>,
+    /// When the next contact is expected and when the device turns stale.
+    pub expected_contact_at: Option<DateTime<Utc>>,
+    pub stale_after: Option<DateTime<Utc>>,
+    pub listen_window_s: Option<i32>,
+    pub boot_count: Option<i64>,
+    /// Retained `info`: fw, build, hw, proto, schema, uid, imei, iccid,
+    /// modem, net, stream, reset.
+    pub info: Option<serde_json::Value>,
+    pub info_at: Option<DateTime<Utc>>,
+    /// Latest `health` object.
+    pub health: Option<serde_json::Value>,
+    pub health_at: Option<DateTime<Utc>>,
+    /// Effective logger settings from the latest ack/get_settings/snapshot.
+    pub settings_gen: Option<i64>,
+    pub settings: Option<serde_json::Value>,
+    pub settings_at: Option<DateTime<Utc>>,
+    pub open_gap_count: i64,
+    /// Danger commands awaiting operator confirmation.
+    pub pending_challenge_count: i64,
 }
 
 impl DeviceSummary {
@@ -596,6 +625,8 @@ pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<Devic
     let sql = format!(
         "SELECT d.*,d.revoked_at IS NOT NULL AS revoked,
             (SELECT count(*) FROM alerts a WHERE a.device_id=d.device_id AND a.state='open' AND NOT a.superseded) AS open_alert_count,
+            (SELECT count(*) FROM stream_gaps g WHERE g.device_id=d.device_id AND g.state IN ('open','requested')) AS open_gap_count,
+            (SELECT count(*) FROM commands c WHERE c.device_id=d.device_id AND c.protocol=2 AND c.state='challenge') AS pending_challenge_count,
             to_jsonb(received) AS latest_received,to_jsonb(plausible) AS latest_plausible
          FROM devices d
          LEFT JOIN LATERAL (SELECT {columns} FROM observations WHERE id=d.latest_received_id) received ON true
@@ -609,24 +640,30 @@ pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<Devic
     for row in rows {
         let revoked: bool = row.get("revoked");
         let last_received_at: Option<DateTime<Utc>> = row.get("last_seen");
-        let (mut status, mut status_reason) = availability(last_received_at, revoked);
-        let presence: Option<String> = row.get("presence_status");
+        let presence_status: Option<String> = row.get("presence_status");
         let ready: Option<DateTime<Utc>> = row.get("last_ready_at");
-        if !revoked {
-            if crate::platform::awake(Utc::now(), ready, presence.as_deref().unwrap_or("")) {
-                status = "awake".into();
-                status_reason = "explicitly bound Ready; command window open".into();
-            } else if presence.is_some() {
-                status = "asleep".into();
-                status_reason = "sleep received or Ready window expired".into();
-            }
-            if last_received_at
-                .is_some_and(|t| Utc::now() - t > chrono::Duration::minutes(STALE_AFTER_MINUTES))
-            {
-                status = "stale".into();
-                status_reason = "no attributed traffic within stale threshold".into();
-            }
-        }
+        let link_state: Option<String> = row.get("link_state");
+        let settings: Option<serde_json::Value> = row.get("settings");
+        let project: Option<serde_json::Value> = row.get("project_config");
+        let send_interval = settings
+            .as_ref()
+            .and_then(crate::settings::send_interval_s)
+            .or_else(|| crate::presence::legacy_send_interval_s(project.as_ref()));
+        let presence = crate::presence::evaluate(
+            Utc::now(),
+            &crate::presence::PresenceInput {
+                revoked,
+                last_seen: last_received_at,
+                legacy_status: presence_status.as_deref(),
+                legacy_ready_at: ready,
+                link_state: link_state.as_deref(),
+                link_state_at: row.get("link_state_at"),
+                listen_window_s: row.get("listen_window_s"),
+                next_contact_at: row.get("next_contact_at"),
+                send_interval_s: send_interval,
+                margin_s: crate::config::rev2_policy().stale_margin_seconds,
+            },
+        );
         let summary = |column: &str| -> Result<Option<ObservationSummary>, String> {
             row.get::<_, Option<serde_json::Value>>(column)
                 .map(serde_json::from_value)
@@ -639,8 +676,8 @@ pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<Devic
             profile: row.get("source_profile"),
             clock_policy: row.get("clock_policy"),
             revoked,
-            status,
-            status_reason,
+            status: presence.status,
+            status_reason: presence.reason,
             last_received_at,
             observation_count: row.get("observation_count"),
             conflict_count: row.get("conflict_count"),
@@ -654,7 +691,7 @@ pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<Devic
             last_ready_at: ready,
             desired_config: row.get("desired_config"),
             applied_config: row.get("applied_config"),
-            project_config: row.get("project_config"),
+            project_config: project,
             clock_change_unverified: row.get("clock_change_unverified"),
             capabilities: crate::commands::capabilities(
                 row.get("source_profile"),
@@ -663,38 +700,28 @@ pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<Devic
                 row.get("clock_change_unverified"),
             ),
             open_alert_count: row.get("open_alert_count"),
+            protocol_rev: row.get("protocol_rev"),
+            link_state,
+            link_state_at: row.get("link_state_at"),
+            link_reason: row.get("link_reason"),
+            link_retained: row.get("link_retained"),
+            next_contact_at: row.get("next_contact_at"),
+            expected_contact_at: presence.expected_contact_at,
+            stale_after: presence.stale_after,
+            listen_window_s: row.get("listen_window_s"),
+            boot_count: row.get("boot_count"),
+            info: row.get("info"),
+            info_at: row.get("info_at"),
+            health: row.get("health"),
+            health_at: row.get("health_at"),
+            settings_gen: row.get("settings_gen"),
+            settings,
+            settings_at: row.get("settings_at"),
+            open_gap_count: row.get("open_gap_count"),
+            pending_challenge_count: row.get("pending_challenge_count"),
         });
     }
     Ok(devices)
-}
-
-/// Traffic recency without an explicit Ready/sleep status. The caller overlays
-/// the separately attributed wake state when one is available.
-fn availability(last_received_at: Option<DateTime<Utc>>, revoked: bool) -> (String, String) {
-    if revoked {
-        return (
-            "revoked".to_string(),
-            "enrollment revoked; new traffic is quarantined".to_string(),
-        );
-    }
-    let Some(last) = last_received_at else {
-        return (
-            "never".to_string(),
-            "no accepted observation or other attributed traffic yet".to_string(),
-        );
-    };
-    let silent = (Utc::now() - last).num_minutes();
-    if silent > STALE_AFTER_MINUTES {
-        (
-            "stale".to_string(),
-            format!("no attributed traffic for {silent} min (threshold {STALE_AFTER_MINUTES} min)"),
-        )
-    } else {
-        (
-            "receiving".to_string(),
-            "attributed traffic arriving; wake state needs device-status".to_string(),
-        )
-    }
 }
 
 /// A recent delivery (raw log) row.
@@ -838,7 +865,7 @@ pub async fn device_series(
                         duplicate_outcome = 'conflict' AS conflict
                  FROM observations
                  WHERE device_id = $1 AND kind = 'water' AND time_quality = 'plausible' AND recorded_at IS NOT NULL
-                   AND recorded_at >= $2 AND recorded_at <= $3
+                   AND gwl IS NOT NULL AND recorded_at >= $2 AND recorded_at <= $3
                  ORDER BY recorded_at DESC
                  LIMIT $4",
                 &[&device_id, &query.from, &query.to, &limit],
@@ -858,7 +885,7 @@ pub async fn device_series(
                         bool_or(duplicate_outcome = 'conflict') AS conflict
                  FROM observations
                  WHERE device_id = $1 AND kind = 'water' AND time_quality = 'plausible' AND recorded_at IS NOT NULL
-                   AND recorded_at >= $2 AND recorded_at <= $3
+                   AND gwl IS NOT NULL AND recorded_at >= $2 AND recorded_at <= $3
                  GROUP BY bucket
                  ORDER BY bucket DESC
                  LIMIT $5",
@@ -1025,27 +1052,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn availability_never_claims_wake_state() {
-        let now = Utc::now();
-        let (status, reason) = availability(Some(now), false);
-        assert_eq!(status, "receiving");
-        assert!(reason.contains("wake state needs device-status"));
-
-        let (status, _) = availability(
-            Some(now - chrono::Duration::minutes(STALE_AFTER_MINUTES + 1)),
-            false,
-        );
-        assert_eq!(status, "stale");
-
-        let (status, reason) = availability(None, false);
-        assert_eq!(status, "never");
-        assert!(reason.contains("no accepted observation"));
-
-        let (status, _) = availability(Some(now), true);
-        assert_eq!(status, "revoked");
-    }
-
     /// Round-trips the schema against a real PostgreSQL.
     ///
     /// Ignored by default because the lean gate has no database; run with
@@ -1148,8 +1154,13 @@ mod tests {
         assert!(summary.latest_received.is_some());
         assert!(summary.headline().is_some());
         assert_eq!(
-            summary.latest_received.as_ref().expect("latest").gwl_text,
-            "01.25"
+            summary
+                .latest_received
+                .as_ref()
+                .expect("latest")
+                .gwl_text
+                .as_deref(),
+            Some("01.25")
         );
 
         let series = device_series(

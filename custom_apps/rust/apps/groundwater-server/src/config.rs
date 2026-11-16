@@ -23,9 +23,10 @@ use crate::topics::TopicMap;
 /// device's own session.
 pub const DEFAULT_CLIENT_ID: &str = "groundwater-platform";
 
-/// After this long without an accepted reading a device is reported as
-/// `stale`: the firmware has no LWT and simply stops publishing while it
-/// sleeps between cycles.
+/// Fallback staleness threshold for a device whose send interval is unknown
+/// (revision 1 firmware without commissioned project settings). Devices that
+/// report their next connection (`status`/`health` `next`) or a configured
+/// send interval are judged against that instead; see `presence.rs`.
 pub const STALE_AFTER_MINUTES: i64 = 30;
 
 /// MQTT keepalive interval. The firmware's modem keeps its own default; this
@@ -40,6 +41,129 @@ pub struct Settings {
     pub topics: TopicMap,
     pub mqtt: Option<MqttSettings>,
     pub retention_days: i64,
+    pub rev2: Rev2Policy,
+}
+
+/// Protocol revision 2 command and data-recovery policy. Every value has an
+/// environment override so a fleet change needs no rebuild.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rev2Policy {
+    /// `exp` for `cmd/basic` and `config/set` (GROUNDWATER_COMMAND_EXPIRY_HOURS).
+    pub basic_expiry_seconds: i64,
+    /// `exp` for `cmd/danger` (GROUNDWATER_DANGER_EXPIRY_HOURS).
+    pub danger_expiry_seconds: i64,
+    /// Re-publishes after a `sleep`/`offline` without a final ack.
+    pub max_republish: i32,
+    /// Unacknowledged commands in flight per device.
+    pub max_in_flight: i64,
+    /// Minimum spacing of automatic `flush_mqtt` gap requests per device
+    /// (GROUNDWATER_GAP_REQUEST_MINUTES).
+    pub gap_request_interval_seconds: i64,
+    /// Requests per gap before it is marked unrecoverable.
+    pub max_gap_attempts: i32,
+    /// Largest sequence range asked for in one `flush_mqtt`.
+    pub max_gap_range: i64,
+    /// Device clock error that triggers `sync_time` (GROUNDWATER_CLOCK_TOLERANCE_SECONDS).
+    pub clock_tolerance_seconds: i64,
+    /// Minimum spacing of automatic `sync_time` per device.
+    pub clock_request_interval_seconds: i64,
+    /// Added to the expected next connection before a device is stale
+    /// (GROUNDWATER_STALE_MARGIN_MINUTES).
+    pub stale_margin_seconds: i64,
+    /// Largest SD file the download API assembles (GROUNDWATER_MAX_DOWNLOAD_MIB).
+    pub max_download_bytes: i64,
+}
+
+impl Default for Rev2Policy {
+    fn default() -> Self {
+        Self {
+            basic_expiry_seconds: 7 * 24 * 3600,
+            danger_expiry_seconds: 24 * 3600,
+            max_republish: 3,
+            max_in_flight: 4,
+            gap_request_interval_seconds: 30 * 60,
+            max_gap_attempts: 3,
+            max_gap_range: 1024,
+            clock_tolerance_seconds: 120,
+            clock_request_interval_seconds: 3600,
+            stale_margin_seconds: 30 * 60,
+            max_download_bytes: 8 * 1024 * 1024,
+        }
+    }
+}
+
+static REV2_POLICY: std::sync::OnceLock<Rev2Policy> = std::sync::OnceLock::new();
+
+/// The process-wide revision 2 policy (defaults until `main` installs the
+/// environment's values). Workers read it rather than threading it through
+/// every MQTT and SQL helper.
+pub fn rev2_policy() -> &'static Rev2Policy {
+    REV2_POLICY.get_or_init(Rev2Policy::default)
+}
+
+pub fn install_rev2_policy(policy: Rev2Policy) {
+    let _ = REV2_POLICY.set(policy);
+}
+
+impl Rev2Policy {
+    pub fn from_env() -> Result<Self, String> {
+        let mut policy = Self::default();
+        let read = |name: &str, scale: i64, min: i64, max: i64, target: &mut i64| {
+            match std::env::var(name).ok().filter(|v| !v.trim().is_empty()) {
+                None => Ok(()),
+                Some(text) => text
+                    .trim()
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|v| (min..=max).contains(v))
+                    .map(|v| *target = v * scale)
+                    .ok_or_else(|| format!("{name} must be a whole number in {min}..{max}")),
+            }
+        };
+        read(
+            "GROUNDWATER_COMMAND_EXPIRY_HOURS",
+            3600,
+            1,
+            24 * 60,
+            &mut policy.basic_expiry_seconds,
+        )?;
+        read(
+            "GROUNDWATER_DANGER_EXPIRY_HOURS",
+            3600,
+            1,
+            24 * 60,
+            &mut policy.danger_expiry_seconds,
+        )?;
+        read(
+            "GROUNDWATER_GAP_REQUEST_MINUTES",
+            60,
+            1,
+            7 * 24 * 60,
+            &mut policy.gap_request_interval_seconds,
+        )?;
+        read(
+            "GROUNDWATER_CLOCK_TOLERANCE_SECONDS",
+            1,
+            5,
+            86_400,
+            &mut policy.clock_tolerance_seconds,
+        )?;
+        read(
+            "GROUNDWATER_STALE_MARGIN_MINUTES",
+            60,
+            1,
+            7 * 24 * 60,
+            &mut policy.stale_margin_seconds,
+        )?;
+        read(
+            "GROUNDWATER_MAX_DOWNLOAD_MIB",
+            1024 * 1024,
+            1,
+            1024,
+            &mut policy.max_download_bytes,
+        )?;
+        Ok(policy)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +208,7 @@ impl Settings {
             retention_days: homelab_common::env_or("GROUNDWATER_RETENTION_DAYS", "90")
                 .parse()
                 .map_err(|_| "GROUNDWATER_RETENTION_DAYS must be whole days".to_string())?,
+            rev2: Rev2Policy::from_env()?,
         })
     }
 }
@@ -97,11 +222,12 @@ fn load_mqtt() -> Result<Option<MqttSettings>, String> {
     };
     let endpoint = MqttEndpoint::parse(&url)?;
     if endpoint.tls {
-        // The logger firmware speaks plaintext MQTT (`AT+QMTPUB`, no SSL
-        // configuration), so a TLS listener would connect the platform but
-        // never the devices. Fail loudly rather than appearing to work.
+        // Loggers reach Mosquitto over TLS on 8883 (LAN listener behind the
+        // router's port forward); the platform itself connects to the
+        // broker's plaintext loopback listener and is built without an MQTT
+        // TLS client configuration. Refuse rather than appear to connect.
         return Err(
-            "GROUNDWATER_MQTT_URL uses a TLS scheme, but the logger firmware connects over plaintext MQTT; terminate TLS in front of the broker instead"
+            "GROUNDWATER_MQTT_URL uses a TLS scheme; the platform connects to the broker's local plaintext listener (loggers use the separate TLS listener on 8883), so use mqtt://<loopback>:<port>"
                 .to_string(),
         );
     }
@@ -144,8 +270,8 @@ fn load_mqtt() -> Result<Option<MqttSettings>, String> {
 pub struct MqttEndpoint {
     pub host: String,
     pub port: u16,
-    /// Always false for a runnable service: a TLS scheme is rejected at
-    /// startup because the firmware cannot connect over TLS.
+    /// Always false for a runnable service: the platform uses the broker's
+    /// local plaintext listener; only loggers use the TLS listener.
     pub tls: bool,
 }
 
@@ -333,6 +459,15 @@ mod tests {
                 tls: true,
             }
         );
+    }
+
+    #[test]
+    fn rev2_policy_defaults_match_the_documented_contract() {
+        let policy = Rev2Policy::default();
+        assert_eq!(policy.basic_expiry_seconds, 7 * 86_400);
+        assert_eq!(policy.danger_expiry_seconds, 86_400);
+        assert_eq!(policy.max_republish, 3);
+        assert_eq!(policy.max_in_flight, 4);
     }
 
     #[test]

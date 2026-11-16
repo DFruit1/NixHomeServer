@@ -30,7 +30,7 @@ pub struct AppState {
     pub bus: EventBus,
     pub stats: Arc<tokio::sync::Mutex<IngestStats>>,
 }
-type ApiResult = Result<Response, Response>;
+pub(crate) type ApiResult = Result<Response, Response>;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health))
@@ -50,6 +50,7 @@ pub fn router(state: AppState) -> Router {
             "/api/devices/{device_id}/commands/{command_id}/cancel",
             post(cancel),
         )
+        .merge(crate::api_rev2::routes())
         .fallback(frontend)
         .with_state(state)
         .layer(axum::middleware::from_fn(boundary))
@@ -71,13 +72,13 @@ async fn health(State(s): State<AppState>) -> Response {
         _ => error(StatusCode::SERVICE_UNAVAILABLE, "database unavailable"),
     }
 }
-fn error(code: StatusCode, message: &str) -> Response {
+pub(crate) fn error(code: StatusCode, message: &str) -> Response {
     (code, Json(json!({"error":message}))).into_response()
 }
-fn bad(message: &str) -> Response {
+pub(crate) fn bad(message: &str) -> Response {
     error(StatusCode::BAD_REQUEST, message)
 }
-fn database(e: String) -> Response {
+pub(crate) fn database(e: String) -> Response {
     eprintln!("groundwater API: {e}");
     error(StatusCode::INTERNAL_SERVER_ERROR, "database request failed")
 }
@@ -100,14 +101,18 @@ fn gate(headers: &HeaderMap) -> Result<(Identity, Role), Response> {
     clippy::result_large_err,
     reason = "Return the existing Axum error response directly at the HTTP boundary"
 )]
-fn operator(headers: &HeaderMap) -> Result<Identity, Response> {
+pub(crate) fn operator(headers: &HeaderMap) -> Result<Identity, Response> {
     let (i, r) = gate(headers)?;
     if r != Role::Operator {
         return Err(error(StatusCode::FORBIDDEN, "operator role required"));
     }
     Ok(i)
 }
-async fn authorize(s: &AppState, h: &HeaderMap, device: &str) -> Result<String, Response> {
+pub(crate) async fn authorize(
+    s: &AppState,
+    h: &HeaderMap,
+    device: &str,
+) -> Result<String, Response> {
     let db = s.db.get().await.map_err(database)?;
     let (i, r) = gate(h)?;
     let device = crate::adapter::canonical_device_id(device);
@@ -347,13 +352,20 @@ async fn configure(
     s.bus.emit(LiveEvent::Command { device_id: device });
     Ok((StatusCode::CREATED, Json(json!({"command":command}))).into_response())
 }
+/// Revision 1: `{kind,payload,confirm}`. Revision 2 (V22 units):
+/// `{op,args,confirm,auto_confirm,expires_in_s}`; see the frontend README.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommandRequest {
-    kind: String,
+    kind: Option<String>,
     #[serde(default = "empty_payload")]
     payload: Value,
     confirm: Option<String>,
+    op: Option<String>,
+    args: Option<Value>,
+    #[serde(default)]
+    auto_confirm: bool,
+    expires_in_s: Option<i64>,
 }
 fn empty_payload() -> Value {
     json!({})
@@ -367,16 +379,34 @@ async fn enqueue(
     let db = s.db.get().await.map_err(database)?;
     let user = operator(&h)?;
     let device = authorize(&s, &h, &device).await?;
-    let (payload, wire) =
-        crate::commands::command_payload(&q.kind, &q.payload, q.confirm.as_deref())
-            .map_err(|e| bad(&e))?;
-    if !platform::command_supported(&db, &device, &q.kind, &payload)
+    if let Some(op) = &q.op {
+        if q.kind.is_some() || q.payload != empty_payload() {
+            return Err(bad(
+                "send either {op,args} (revision 2) or {kind,payload} (revision 1)",
+            ));
+        }
+        let request = crate::api_rev2::Rev2Request {
+            op,
+            args: q.args.clone().unwrap_or_else(empty_payload),
+            confirm: q.confirm.as_deref(),
+            auto_confirm: q.auto_confirm,
+            expires_in_s: q.expires_in_s,
+            replace: false,
+        };
+        return crate::api_rev2::queue_command(&s, &db, &device, &user.username, request).await;
+    }
+    let Some(kind) = q.kind.as_deref() else {
+        return Err(bad("kind (revision 1) or op (revision 2) is required"));
+    };
+    let (payload, wire) = crate::commands::command_payload(kind, &q.payload, q.confirm.as_deref())
+        .map_err(|e| bad(&e))?;
+    if !platform::command_supported(&db, &device, kind, &payload)
         .await
         .map_err(database)?
     {
-        return Err(bad("This firmware does not implement the requested action. Incremental configuration and wipe/reset handlers only acknowledge receipt. Supported actions are self-test and, for V2.x, Reboot."));
+        return Err(bad("This firmware does not implement the requested action. Incremental configuration and wipe/reset handlers only acknowledge receipt. Supported actions are self-test and, for V2.x, Reboot. Firmware 2.2 (V22) units take {op,args} commands."));
     }
-    let command = platform::queue(&db, &device, &q.kind, payload, &wire, &user.username)
+    let command = platform::queue(&db, &device, kind, payload, &wire, &user.username)
         .await
         .map_err(database)?;
     s.bus.emit(LiveEvent::Command { device_id: device });
@@ -412,7 +442,7 @@ async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
     let params: [&(dyn tokio_postgres::types::ToSql + Sync); 3] = [&device, &from, &to];
     let rows=db.query_raw("SELECT device_id,recorded_at,received_at,gwl,rssi,battery_v,solar_v,time_quality,duplicate_outcome FROM observations WHERE device_id=$1 AND recorded_at >= $2 AND recorded_at <= $3 ORDER BY recorded_at,id",params).await.map_err(|e|database(e.to_string()))?;
     let body=futures_util::stream::once(async{Ok::<_,std::io::Error>("device_id,recorded_at,received_at,gwl,rssi,battery_v,solar_v,time_quality,duplicate_outcome\r\n".to_owned())}).chain(rows.map_ok(|r|{
-        let fields=vec![r.get::<_,String>(0),r.get::<_,DateTime<Utc>>(1).to_rfc3339(),r.get::<_,DateTime<Utc>>(2).to_rfc3339(),r.get::<_,f64>(3).to_string(),r.get::<_,Option<i16>>(4).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,Option<f64>>(5).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,Option<f64>>(6).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,String>(7),r.get::<_,String>(8)];fields.iter().map(|v|csv_field(v)).collect::<Vec<_>>().join(",")+"\r\n"
+        let fields=vec![r.get::<_,String>(0),r.get::<_,DateTime<Utc>>(1).to_rfc3339(),r.get::<_,DateTime<Utc>>(2).to_rfc3339(),r.get::<_,Option<f64>>(3).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,Option<i16>>(4).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,Option<f64>>(5).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,Option<f64>>(6).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,String>(7),r.get::<_,String>(8)];fields.iter().map(|v|csv_field(v)).collect::<Vec<_>>().join(",")+"\r\n"
     }).map_err(std::io::Error::other));
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "text/csv; charset=utf-8")
@@ -433,7 +463,11 @@ fn event_device(e: &LiveEvent) -> Option<&str> {
         | LiveEvent::Conflict { device_id }
         | LiveEvent::Presence { device_id }
         | LiveEvent::Alert { device_id }
-        | LiveEvent::Command { device_id } => Some(device_id),
+        | LiveEvent::Command { device_id }
+        | LiveEvent::Health { device_id }
+        | LiveEvent::DeviceEvent { device_id, .. }
+        | LiveEvent::Stream { device_id, .. }
+        | LiveEvent::Download { device_id } => Some(device_id),
         _ => None,
     }
 }
