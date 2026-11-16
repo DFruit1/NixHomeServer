@@ -441,15 +441,25 @@ END $$;
 -- test data. Thresholds come from the alert policy (ops.sql: device ->
 -- project -> fleet -> defaults): battery low below 7.0 V on the 2S pack
 -- (critical is the logger's own 6.6 V), cleared at the threshold plus the
--- hysteresis (0.2 V); solar low after N (3) consecutive samples below 1.0 V,
--- cleared by one sample at or above it. A hand-resolved alert is closed;
--- a later low sample opens a new one.
+-- hysteresis (0.2 V). A hand-resolved battery alert is closed; a later low
+-- sample opens a new one.
+--
+-- Solar low is about days, not samples: samples are taken whenever the
+-- logger connects, which can be at night (0 V on any panel). It opens when
+-- no sample in the last N days (policy `solar_samples`, read as days,
+-- default 3) reached the threshold, at least one of them was taken in local
+-- daylight (09:00-15:00 at the logger's UTC offset), and the device has
+-- samples older than that window (a new unit is not judged on one cloudy
+-- day). Night samples alone never open it. Any sample at or above the
+-- threshold resolves it; a hand-resolved one stays quiet for N days.
+-- "Not read" markers are stored as NULL (rev2.rs), so they never count.
 CREATE OR REPLACE FUNCTION groundwater_power_alerts(target TEXT) RETURNS void LANGUAGE plpgsql AS $$
-DECLARE low INTEGER; hys INTEGER; solar_low INTEGER; samples INTEGER; open_id BIGINT;
-    bat_at TIMESTAMPTZ; bat INTEGER; dark BOOLEAN; sol_at TIMESTAMPTZ; sol_min INTEGER; sol_latest INTEGER;
+DECLARE low INTEGER; hys INTEGER; solar_low INTEGER; days INTEGER; open_id BIGINT; open_at TIMESTAMPTZ;
+    bat_at TIMESTAMPTZ; bat INTEGER; ref TIMESTAMPTZ; first_at TIMESTAMPTZ; lit_at TIMESTAMPTZ; sol_max INTEGER;
+    daylight INTEGER; off_min INTEGER;
 BEGIN
     PERFORM 1 FROM devices WHERE device_id=target FOR UPDATE;
-    SELECT p.battery_low_mv,p.battery_hys_mv,p.solar_low_mv,p.solar_samples INTO low,hys,solar_low,samples
+    SELECT p.battery_low_mv,p.battery_hys_mv,p.solar_low_mv,p.solar_samples INTO low,hys,solar_low,days
         FROM groundwater_alert_policy(target) p;
     IF low IS NULL THEN RETURN; END IF;
     SELECT at,mv INTO bat_at,bat FROM (
@@ -466,21 +476,35 @@ BEGIN
             UPDATE alerts SET state='resolved',resolved_at=bat_at WHERE id=open_id;
         END IF;
     END IF;
-    SELECT count(*)=samples AND bool_and(mv<solar_low),max(at),min(mv),(array_agg(mv ORDER BY at DESC,id DESC))[1]
-        INTO dark,sol_at,sol_min,sol_latest FROM (
-        SELECT at,mv,id FROM (
-            SELECT recorded_at AS at,sol_mv AS mv,id FROM device_health WHERE device_id=target AND sol_mv IS NOT NULL
-            UNION ALL SELECT COALESCE(recorded_at,received_at),solar_mv,id FROM device_tests WHERE device_id=target AND solar_mv IS NOT NULL
-        ) s ORDER BY at DESC,id DESC LIMIT samples) recent;
-    IF sol_latest IS NULL THEN RETURN; END IF;
-    open_id:=NULL;
-    SELECT id INTO open_id FROM alerts WHERE device_id=target AND kind='solar_low' AND state='open' AND NOT superseded;
-    IF open_id IS NULL AND dark THEN
+
+    days:=GREATEST(COALESCE(days,3),1);
+    SELECT COALESCE((settings->>'utc_off')::int,local_offset_min,0) INTO off_min FROM devices WHERE device_id=target;
+    WITH s AS (
+        SELECT recorded_at AS at,sol_mv AS mv FROM device_health WHERE device_id=target AND sol_mv IS NOT NULL
+        UNION ALL SELECT COALESCE(recorded_at,received_at),solar_mv FROM device_tests
+            WHERE device_id=target AND solar_mv IS NOT NULL),
+    r AS (SELECT max(at) AS ref,min(at) AS first_at FROM s)
+    SELECT r.ref,r.first_at,
+        max(s.at) FILTER (WHERE s.at>r.ref-make_interval(days=>days) AND s.mv>=solar_low),
+        max(s.mv) FILTER (WHERE s.at>r.ref-make_interval(days=>days)),
+        count(*) FILTER (WHERE s.at>r.ref-make_interval(days=>days)
+            AND extract(hour FROM (s.at AT TIME ZONE 'UTC')+make_interval(mins=>off_min)) BETWEEN 9 AND 14)
+        INTO ref,first_at,lit_at,sol_max,daylight
+    FROM r CROSS JOIN s GROUP BY r.ref,r.first_at;
+    IF ref IS NULL THEN RETURN; END IF;
+    SELECT id,opened_at INTO open_id,open_at FROM alerts WHERE device_id=target AND kind='solar_low' AND state='open'
+        AND NOT superseded;
+    IF open_id IS NOT NULL THEN
+        IF lit_at IS NOT NULL AND lit_at>=open_at THEN
+            UPDATE alerts SET state='resolved',resolved_at=lit_at WHERE id=open_id;
+        END IF;
+    ELSIF lit_at IS NULL AND daylight>0 AND first_at<=ref-make_interval(days=>days)
+        AND NOT EXISTS(SELECT 1 FROM alerts WHERE device_id=target AND kind='solar_low' AND NOT superseded
+            AND resolved_at>ref-make_interval(days=>days)) THEN
         INSERT INTO alerts(device_id,kind,state,trigger_value,opened_at,detail)
-            VALUES(target,'solar_low','open',sol_min/1000.0,sol_at,jsonb_build_object('threshold_mv',solar_low,'samples',samples))
+            VALUES(target,'solar_low','open',sol_max/1000.0,ref,
+                jsonb_build_object('threshold_mv',solar_low,'days',days,'daylight_samples',daylight,'max_mv',sol_max))
             ON CONFLICT(device_id,kind,opened_at) DO NOTHING;
-    ELSIF open_id IS NOT NULL AND sol_latest>=solar_low THEN
-        UPDATE alerts SET state='resolved',resolved_at=sol_at WHERE id=open_id;
     END IF;
 END $$;
 
