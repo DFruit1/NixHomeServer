@@ -10,30 +10,46 @@ immutable caching to content-hashed assets; revalidate HTML. Routes use hashes,
 so Rust does not need per-device fallback routes. Authentication and permission
 enforcement stay on the API; unknown session roles expose no write controls.
 
-`pnpm dev` proxies `/api` to `127.0.0.1:8091`. For isolated UI review, run
-`node dev/fixture-api.mjs`, then
-`GROUNDWATER_DEV_API=http://127.0.0.1:5188 pnpm dev` in another terminal.
-Fixtures are development tooling and are never imported by production source.
-`http://127.0.0.1:5188/__fixture?role=viewer&mode=normal` changes the fixture
-session; modes `empty` and `error` exercise the corresponding states, and
-`fault` gives the firmware 2.2 unit an over-range latest reading and a locked
-MRAM ring. `FIXTURE_PORT` moves the fixture off 5188 (then
-`pnpm exec vite --port <free>` with `GROUNDWATER_DEV_API` pointing at it).
-Fixture shapes follow the real handlers: firmware 2.2 ring readings carry no
-battery, solar or signal; the series always carries datum, limits and
-`raw_gwl`; a confirmed danger command stays in `challenge` until the logger
-acknowledges the confirmation.
+## What it shows
 
-Configuration validation follows firmware `8278b61` and the server's
-`commands.rs`: eleven ordered string keys, extraction simulation, 150-byte
-limit, bounded intervals/integers, two-digit calibration fractions with
-negative `.00` only. Fields start empty. The operator explicitly types DANGER
-for project settings and danger commands. Project settings have no firmware
-acknowledgement. The last full project payload is displayed separately from
-historical requested toggles/received echoes. Device capabilities expose only
-implemented actions (self-test and V2.x Reboot); stub toggles/wipes cannot be
-queued. Full settings preserve the commissioned UTC offset because zoneless
-SD records cannot establish a clock transition.
+- **Devices**: the fleet table with a "Needs attention" list per logger
+  (missed connection, open alerts by name, sensor out of range, SD/MRAM/
+  logging/latched error from health, waiting danger confirmations, open
+  gaps); loggers needing attention sort first.
+- **Device workspace**, tabs by capability. Firmware 2.2 (protocol 2):
+  Overview, History, Health, Events, Location, Tests, Settings, Commands,
+  Files, Data stream, Alerts, Installation, Audit, Raw log. Firmware V2.1 and
+  older keep their revision 1 tabs plus Installation.
+- **Alerts** (fleet and device), **Gaps**, **Admin** (enrollment, alert
+  policies, notifications, audit) and **Raw deliveries** (operators).
+
+Times show in the browser's zone. Any instant before 2001 comes from a
+logger clock that was never set and reads "clock not set".
+
+## API notes the UI depends on
+
+- Errors are `{"error":"…"}`. 401 asks for a reload; 403 is a missing role.
+- Writes must come from the app's own origin: the API refuses a write the
+  browser marks as cross-origin (`Sec-Fetch-Site`, else `Origin` against
+  the host) with 403 `cross-origin requests may not change state`, shown as
+  such. Every write is a same-origin `fetch` to a relative `/api/…` path.
+- `POST …/mqtt-credentials` needs `{"confirm":"ROTATE"}` once the unit has
+  its own account, and `DELETE …/mqtt-credentials` always needs
+  `{"confirm":"REMOVE"}`. Firmware 2.2 has its MQTT account compiled in, so
+  either change leaves a unit that uses its own account offline until it is
+  reflashed on site; the typed confirmation says so.
+- `/api/export` (CSV) allows four at once and answers 429 otherwise. The UI
+  fetches it and saves the file, so a refusal shows "try again shortly" in
+  place.
+- `/api/status` `ingest.lastDeliveryAt` (operators only) is shown in the
+  header as "last delivery … ago": a stalled ingest is visible even while
+  the broker is connected.
+- Danger commands default to expire one hour after the logger's announced
+  next connection (24 hours when it is unknown or the logger is awake),
+  shown as a time; a weekly logger never sees a one-day command.
+- Alerts: see "Alerts" below for the kinds, units and `detail` keys.
+
+## Live updates and charts
 
 SSE uses native EventSource reconnect. Messages and `resync` schedule a refetch
 after 300 ms. Active requests finish while further events coalesce into one
@@ -46,8 +62,36 @@ The table exposes exact plotted values; CSV exports underlying observations.
 The header's operator-only raw-delivery view includes unattributed quarantines;
 the device log links to that same view and filter implementation.
 
-Hardware wake-window delivery, gateway roles and real ingest require the
-parent's integrated backend checks; fixture rendering does not prove them.
+## Development fixture
+
+`pnpm dev` proxies `/api` to `127.0.0.1:8091`. For isolated UI review, run
+`node dev/fixture-api.mjs`, then
+`GROUNDWATER_DEV_API=http://127.0.0.1:5188 pnpm dev` in another terminal.
+Fixtures are development tooling and are never imported by production source.
+`http://127.0.0.1:5188/__fixture?role=viewer&mode=normal` changes the fixture
+session; modes `empty` and `error` exercise those states, and `fault` gives
+the firmware 2.2 unit an over-range latest reading, a locked MRAM ring, a
+latched error and logging off (with the server alerts they raise). `busy=1`
+makes the CSV export answer 429; `crossorigin=1` refuses every write as a
+cross-origin one. `FIXTURE_PORT` moves the fixture off 5188 (then
+`pnpm exec vite --port <free>` with `GROUNDWATER_DEV_API` pointing at it).
+Fixture shapes follow the real handlers (api.rs, api_rev2.rs, ops_api.rs,
+alerting.sql); fixture rendering does not prove hardware wake-window
+delivery, gateway roles or real ingest.
+
+## Firmware V2.1 configuration (protocol revision 1)
+
+Configuration validation follows firmware `8278b61` and the server's
+Configuration validation follows firmware `8278b61` and the server's
+`commands.rs`: eleven ordered string keys, extraction simulation, 150-byte
+limit, bounded intervals/integers, two-digit calibration fractions with
+negative `.00` only. Fields start empty. The operator explicitly types DANGER
+for project settings and danger commands. Project settings have no firmware
+acknowledgement. The last full project payload is displayed separately from
+historical requested toggles/received echoes. Device capabilities expose only
+implemented actions (self-test and V2.x Reboot); stub toggles/wipes cannot be
+queued. Full settings preserve the commissioned UTC offset because zoneless
+SD records cannot establish a clock transition.
 
 ## Versioned per-device MQTT topics
 
@@ -236,7 +280,7 @@ config/applied cmd/ack config/set cmd/basic cmd/danger`.
 `status` values: `awake` (status `online`/`ready` within the listen window),
 `asleep`, `offline` (Last Will: unclean disconnect), `stale` (missed the
 announced `next` connection, or last contact + `send_s`, by more than
-`GROUNDWATER_STALE_MARGIN_MINUTES`, default 30), plus the revision 1 values
+`GROUNDWATER_STALE_MARGIN_MINUTES`, default 30, never below 40), plus the revision 1 values
 `receiving`, `never`, `revoked`. Observation `gwl`/`gwl_text` can be `null`
 for a fault reading (sensor not read; legacy `"GWL":"nan"`); charts skip it.
 
@@ -382,15 +426,34 @@ POST /api/alerts/{id}/resolve      {"note":"…"}               → {"alert":{�
 }
 ```
 
-Kinds and severities: `above_max`/`below_min` warning (level, metres),
-`battery_low` warning (V), `solar_low` info (V), `stale` warning
-(`trigger_value` = hours overdue, `detail` = `{"expected_at","stale_after","margin_min"}`).
-Acknowledging records who/when and keeps the alert open (use it for a
-known condition). Resolving closes it by hand (`resolved_by` set) and the
-engine never reopens that alert, including on a level-history replay. If
-the condition persists, battery/solar alerts open a new alert at the next
-low sample; level and stale alerts at the next crossing or missed
-connection. Retiring a device resolves its open alerts.
+Kinds (`trigger_value` unit; severity info/warning/critical as
+`groundwater_alert_severity`):
+
+- Server, from readings and presence: `above_max`/`below_min` (m; V20/V21/ML
+  only, the V22 logger raises its own `gwl_alarm`), `battery_low` (V),
+  `solar_low` (V, info), `stale` (hours overdue; `detail`
+  `{expected_at,stale_after,margin_min}`).
+- Logger events (alerting.sql; `detail` holds the event's own fields plus
+  `subject`, `event`, `source`, `seq`, `log_id`, `time_estimated`,
+  `received_at`): `gwl_alarm` (m; `subject` high/low, `threshold`|`thr`),
+  `sensor_fault` (sensor mV; `sensor_status`|`ss`), `power_critical` (V,
+  critical), `mram_almost_full` (unsaved bytes), `sd_card`, `mram_fault`
+  (critical), `tail_lock` (critical), and the latched `impact` (mg),
+  `orientation` (degrees) and `gps_moved` (m; `distance_m`|`dist_m`,
+  `threshold_m`|`thr_m`). Copies and ring records name some fields
+  differently; the UI reads both. Latched alerts stay open until an
+  operator resolves them; repeats add `repeats` and `last_at`.
+- Server, from health and boot events: `sd_card`, `mram_fault`, `tail_lock`,
+  `logger_error` (code), `logging_off`, `clock_invalid`, `signal_low` (CSQ,
+  info), `watchdog_resets` (count in 7 days).
+
+`opened_at` is the event's own time (receipt time when `time_estimated`);
+the UI says "reported N later" when `detail.received_at` is more than
+15 minutes after it, as notifications do. `detail.resolution` is `logger`
+or `health` for automatic closes; `resolved_by` names a hand resolve.
+Acknowledging records who/when and keeps the alert open. Resolving closes
+it by hand; a condition alert is not reopened until it has cleared once.
+Retiring a device resolves its open alerts.
 
 Thresholds resolve device → project → fleet → built-in default, per field:
 
@@ -474,14 +537,14 @@ POST /api/notifications/test {}                         → {"sent":true} | 502 
 }
 ```
 
-Kinds: server alerts `above_max below_min battery_low solar_low stale`;
-logger events `gwl_alarm` (warning; exit info), `power_critical`
-(critical; exit info), `sensor_fault` (warning; exit info), `storage`
-(`tail_lock`/`mram_fault`/`sd_error` critical, `sd_full`/`mram_almost_full`/
-`sd_missing` warning, restored kinds info) and `tamper` (`impact`,
-`orientation`, `gps_moved`: warning). Severities: `info` < `warning` <
-`critical`. `priority` is ntfy's 1–5. `topic` overrides the default topic
-(`[A-Za-z0-9_-]{1,64}`).
+Rule kinds (`notify.rs` KINDS, 11): `above_max below_min battery_low
+solar_low stale gwl_alarm power_critical sensor_fault`, `storage` (SD and
+MRAM alert kinds), `tamper` (`impact`, `orientation`, `gps_moved`) and
+`health` (`logger_error`, `logging_off`, `clock_invalid`, `signal_low`,
+`watchdog_resets`; priority 3, 12 h cooldown). Every notification belongs to
+an alert transition (`open`/`resolved`); `kind` is the alert kind.
+Severities: `info` < `warning` < `critical`. `priority` is ntfy's 1–5.
+`topic` overrides the default topic (`[A-Za-z0-9_-]{1,64}`).
 
 ```json
 {"notifications":[{"id":3,"device_id":"…","display_name":"Bore 7","kind":"battery_low",
@@ -491,9 +554,9 @@ logger events `gwl_alarm` (warning; exit info), `power_critical`
   "attempts":1,"alert_id":7,"event_id":null,"suppressed_count":0,"created_at":"…","sent_at":"…"}]}
 ```
 
-Dedup and rate limiting: one outbox row per alert transition or logger
-event (an `alerts` copy and its ring record count once; events older than
-24 h and replayed history never notify). Per device and kind, a message
+Dedup and rate limiting: one outbox row per alert transition (an `alerts`
+copy and its ring record raise one alert; an episode reported late and
+already over notifies once as ended, or not at all after a day). Per device and kind, a message
 is sent at most once per `cooldown_min`; the next one sent reports how
 many were suppressed. A resolution is sent only when its opening was.
 `GROUNDWATER_NOTIFY_MAX_PER_HOUR` (30) caps the whole fleet.
@@ -531,9 +594,9 @@ once (the 60 s refresh remains for SQL changes). For V22 units the logger's
 
 ```text
 GET    /api/devices/{id}/mqtt-credentials
-POST   /api/devices/{id}/mqtt-credentials          {}                    → 201 {"username","password","credentials":{…}}
+POST   /api/devices/{id}/mqtt-credentials          {} | {"confirm":"ROTATE"} → 201 {"username","password","credentials":{…}}
 POST   /api/devices/{id}/mqtt-credentials/mode     {"mode":"dual"|"device","confirm":"DEVICE"}
-DELETE /api/devices/{id}/mqtt-credentials
+DELETE /api/devices/{id}/mqtt-credentials          {"confirm":"REMOVE"}
 ```
 
 ```json
@@ -548,7 +611,10 @@ otherwise). POST generates (or rotates) a random password,
 shown once and stored only as a Mosquitto PBKDF2-SHA512 hash; the mode
 becomes `dual` (own account and shared account both accepted). `device`
 (requires `"confirm":"DEVICE"`) denies the shared account on this unit's
-topics. DELETE returns the unit to `shared`.
+topics. DELETE returns the unit to `shared`. Replacing an existing password
+needs `"confirm":"ROTATE"` and DELETE needs `"confirm":"REMOVE"` (400
+otherwise): the firmware has no remote credential change, so a unit flashed
+with its own account stays offline after either until it is reflashed.
 
 ### Installation datum and exports
 
@@ -558,7 +624,7 @@ POST   /api/devices/{id}/datums {"effective_from":"…","sensor_depth_m":42.0,"c
                                  "ground_elevation_m":21.3|null,"note":""}   → 201 {"datum":{…}}
 DELETE /api/devices/{id}/datums/{datum_id}
 GET    /api/series?…&datum=raw|dtw_bgl|rl_ahd
-GET    /api/export?device&from&to&format=csv
+GET    /api/export?device&from&to&format=csv              (429 while four exports run)
 GET    /api/devices/{id}/events/export?from&to                    → JSON attachment
 GET    /api/devices/{id}/positions/export?from&to&format=json|geojson
 GET    /api/gaps/report?from&to                                   → fleet (scoped)
