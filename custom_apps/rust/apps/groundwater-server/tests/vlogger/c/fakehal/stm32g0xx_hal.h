@@ -101,6 +101,10 @@ void HAL_RTCEx_BKUPWrite(RTC_HandleTypeDef *h, uint32_t reg, uint32_t value);
 #define PWR_LOWPOWERREGULATOR_ON 1u
 #define PWR_STOPENTRY_WFI 1u
 void HAL_PWR_EnterSTOPMode(uint32_t regulator, uint8_t entry);
+typedef struct { volatile uint32_t CR1; } PWR_TypeDef; /* only the bits the application sets */
+extern PWR_TypeDef vl_pwr;
+#define PWR (&vl_pwr)
+#define PWR_CR1_FPD_STOP (1u << 3)
 
 /* ---- ADC (sensors.c runs for real on this) ---- */
 typedef struct { uint32_t unused; } ADC_HandleTypeDef;
@@ -126,6 +130,11 @@ HAL_StatusTypeDef HAL_ADC_Stop(ADC_HandleTypeDef *h);
 /* ---- other handles main.c defines ---- */
 typedef struct { uint32_t unused; } I2C_HandleTypeDef;
 typedef struct { uint32_t unused; } SPI_HandleTypeDef;
+
+/* ---- flash: page 63 (the V2.1 settings page) is vl_flash_page ---- */
+#define FLASH_PAGE_SIZE 2048u
+extern uint8_t vl_flash_page[FLASH_PAGE_SIZE];
+#define FLASH_BASE ((uintptr_t)vl_flash_page - 63u * FLASH_PAGE_SIZE)
 
 /* ---- MCU unique ID: the simulated unit's 96-bit UID (vl_board.c) ---- */
 extern uint32_t vl_uid[3];

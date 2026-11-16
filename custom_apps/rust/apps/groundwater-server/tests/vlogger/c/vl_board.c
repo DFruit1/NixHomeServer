@@ -8,8 +8,6 @@
  *                   to the file, so killing the process is a power cut)
  *   adxl345_app.c   Accel_* API from vl_cfg (tilt) and injected taps
  *   display_ui.c    the panel: renders succeed, nothing is drawn
- *   flash_config.c  the V2.1 settings page from a 2 KiB file, decoded by the
- *                   firmware's own GWL_DecodeSettings + gwl_legacy_settings
  *   user_diskio.c / fatfs_sd_card.c   FatFs disk_* on a card image file
  *   app_fatfs.c     get_fattime() -> App_FatTime(), as the firmware does */
 #include <fcntl.h>
@@ -197,14 +195,8 @@ bool GWL_Display_Render(const gwl_display_model_t *m, gwl_display_mode_t mode) {
 
 /* ------------------------------------------------------- V2.1 flash page */
 
-static uint8_t flash_page[2048];
-static bool flash_present;
-bool Legacy_ReadSettings(gwl_settings_t *out) {
-    char json[GWL_SETTINGS_MAX + 1];
-    if (!flash_present) return false;
-    size_t n = GWL_DecodeSettings(flash_page, sizeof flash_page, json, sizeof json);
-    return n && gwl_legacy_settings(json, n, out);
-}
+/* flash_config.c runs for real on this page (erased unless --flash FILE) */
+uint8_t vl_flash_page[FLASH_PAGE_SIZE];
 
 /* ------------------------------------------------------------- SD card */
 
@@ -279,11 +271,11 @@ void vl_board_init(const char *mram_file, const char *sd_file, const char *flash
             sd_format();
         }
     }
+    memset(vl_flash_page, 0xFF, sizeof vl_flash_page);
     if (flash_file && flash_file[0]) {
-        memset(flash_page, 0xFF, sizeof flash_page);
         FILE *f = fopen(flash_file, "rb");
         if (f) {
-            flash_present = fread(flash_page, 1, sizeof flash_page, f) > 0;
+            if (fread(vl_flash_page, 1, sizeof vl_flash_page, f) == 0) perror("flash page");
             fclose(f);
         }
     }

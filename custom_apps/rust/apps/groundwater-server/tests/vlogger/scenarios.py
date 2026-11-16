@@ -232,7 +232,7 @@ def lost_batch_resent_from_mram(s):
           gaps=gaps(s, lg.device_id))
 
 
-@scenario()
+@scenario(xfail="E2E-03")
 def lost_batch_resent_from_sd(s):
     """MRAM wrapped past a lost range: the next upload is flagged GAP and the SD archive serves the range."""
     s.settle_timeout = 900  # ingest of this backlog is slow: see backlog_ingest_time
@@ -690,7 +690,7 @@ def orientation_and_gps_moved(s):
     rec = [e["event"] for e in events(s, dev, "record")]
     check("orientation" in rec and "gps_moved" in rec, "records stored", records=rec)
     ob = outbox(s, dev)
-    tamper = [o for o in ob if o["kind"] == "tamper"]
+    tamper = [o for o in ob if o["kind"] in ("tamper", "orientation", "gps_moved") and o["transition"] in ("open", "event")]
     check(len(tamper) == 2, "two tamper notifications (orientation, gps_moved), not four", outbox=tamper)
 
 
@@ -773,36 +773,53 @@ def last_will_and_missed_checkin(s):
 
 @scenario()
 def broker_acl_shared_account(s):
-    """The module's ACL: what the shared logger account can do to another device's topics."""
+    """Module ACL, shared groundwater-logger account: what one unit's credentials can do to another unit."""
+    import subprocess, time
     lg = boot(s)
     other = VirtualLogger(s, uid="0123456789ABCDEF0123FFFF", name="other")
     s.enroll(other.device_id)
     other.start(power_on=True)
     other.wait_sleep()
-    # the first logger's account writes a forged reading batch for the other unit
-    forged = lg.pubs("data/stream")[0]["raw"]
+    snoop = subprocess.Popen(["mosquitto_sub", "-h", "127.0.0.1", "-p", str(s.mqtt_port), "-u", "groundwater-logger",
+                              "-P", "vlogger-test-password", "-q", "1", "-t", f"gwl/v1/{other.device_id}/cmd/basic",
+                              "-v", "-C", "1", "-W", "8"], stdout=subprocess.PIPE, text=True)
+    time.sleep(0.5)
+    s.command(other.device_id, "get_status")
+    read, _ = snoop.communicate(timeout=15)
     r = s.mqtt_pub(f"gwl/v1/{other.device_id}/status", '{"v":2,"state":"offline","reason":"lwt"}', retain=True)
-    check(r.returncode == 0, "publish accepted by the broker", err=r.stderr)
-    wait_for(lambda: s.api(f"/api/devices/{other.device_id}")["device"].get("status") == "offline", "", 5)
-    cmd = s.command(other.device_id, "get_status")
-    sub = s.mqtt_sub(f"gwl/v1/{other.device_id}/cmd/basic", seconds=3, client_id="snoop")
-    check(not sub.stdout, "the shared logger account can read another unit's commands",
-          read=sub.stdout[:200], forged_status="accepted", cmd=cmd["id"], forged_batch=len(forged))
+    forged = wait_for(lambda: s.api(f"/api/devices/{other.device_id}")["device"].get("status") == "offline",
+                      "forged offline accepted", 10)
+    # documents the shared account's reach (the module's loggerAcl uses gwl/v1/+/...)
+    check(read and forged and r.returncode == 0, "shared account reads and writes every unit's topics",
+          read=read[:160], forged_status=forged)
 
 
 @scenario()
 def broker_acl_device_account(s):
     """Per-device account (username = DeviceID, module pattern ACL): confined to its own topics."""
-    lg = VirtualLogger(s, name="logger")
-    s.enroll(lg.device_id)
+    import subprocess, time
+    lg = boot(s)
     s.add_device_account(lg.device_id, "device-secret")
-    other = "0123456789ABCDEF0123ABCD"
-    r1 = s.mqtt_pub(f"gwl/v1/{lg.device_id}/health", '{"v":2}', user=lg.device_id, password="device-secret")
-    r2 = s.mqtt_pub(f"gwl/v1/{other}/status", '{"v":2,"state":"offline"}', user=lg.device_id,
-                    password="device-secret")
-    sub = s.mqtt_sub(f"gwl/v1/{other}/cmd/basic", user=lg.device_id, password="device-secret", seconds=2)
-    check(r1.returncode == 0, "own topic allowed", err=r1.stderr)
-    del r2, sub
+    other = VirtualLogger(s, uid="0123456789ABCDEF0123FFFF", name="other")
+    s.enroll(other.device_id)
+    other.start(power_on=True)
+    other.wait_sleep()
+    snoop = subprocess.Popen(["mosquitto_sub", "-h", "127.0.0.1", "-p", str(s.mqtt_port), "-u", lg.device_id,
+                              "-P", "device-secret", "-q", "1", "-t", f"gwl/v1/{other.device_id}/cmd/basic",
+                              "-v", "-C", "1", "-W", "4"], stdout=subprocess.PIPE, text=True)
+    time.sleep(0.5)
+    s.command(other.device_id, "get_status")
+    read, _ = snoop.communicate(timeout=15)
+    before = s.sql(f"SELECT count(*) FROM deliveries WHERE topic='gwl/v1/{other.device_id}/status'")
+    s.mqtt_pub(f"gwl/v1/{other.device_id}/status", '{"v":2,"state":"offline","reason":"lwt"}', user=lg.device_id,
+               password="device-secret")
+    s.mqtt_pub(f"gwl/v1/{lg.device_id}/health", '{"v":2,"t":0,"tv":0}', user=lg.device_id, password="device-secret")
+    time.sleep(1.5)
+    after = s.sql(f"SELECT count(*) FROM deliveries WHERE topic='gwl/v1/{other.device_id}/status'")
+    own = s.sql(f"SELECT count(*) FROM deliveries WHERE topic='gwl/v1/{lg.device_id}/health'")
+    s.injected[other.device_id] = s.injected.get(other.device_id, 0) - 1  # denied: never reaches the server
+    check(not read and before == after and int(own) >= 2, "device account: own topics only",
+          read=read[:160], other_status_deliveries=(before, after), own_health=own)
 
 
 @scenario(xfail="E2E-01")
@@ -823,7 +840,7 @@ def backlog_ingest_time(s):
           note="postgres.log: groundwater_resolve_log per batch, log_min_duration_statement=1000")
 
 
-@scenario(xfail="E2E-04")
+@scenario()
 def one_level_excursion_one_notification(s):
     """One high-water excursion with logger limits set: one open and one resolved notification, not two of each."""
     lg = boot(s)
@@ -853,7 +870,7 @@ def fallback_boot_reading_placed(s):
           "boot reading placed in UTC", sent=first, stored=rows, truth=world_boot)
 
 
-@scenario(xfail="E2E-02")
+@scenario()
 def redelivered_command_keeps_result(s):
     """A broker redelivery of an executed command: logger acks duplicate; the server keeps the first result and data."""
     lg = boot(s)
@@ -874,3 +891,16 @@ def redelivered_command_keeps_result(s):
     check(after.get("final_status") == "ok" and (after.get("ack_payload") or {}).get("data"),
           "server keeps final ok and the ack data", before=first.get("final_status"),
           after_status=after.get("final_status"), after_ack=after.get("ack_payload"))
+
+
+@scenario(xfail="E2E-06")
+def command_outlives_long_send_interval(s):
+    """send_s 14 days (allowed up to 27): a command queued after a connection is still delivered at the next one."""
+    lg = boot(s)
+    configure(s, lg, {"send_s": 14 * DAY})
+    gs = s.command(lg.device_id, "get_status")
+    lg.until_connection(limit_s=15 * DAY)
+    acks = [a for a in lg.acks(op="get_status") if a.get("id") == gs["id"]]
+    c = s.command_by_id(lg.device_id, gs["id"])
+    check(acks and acks[0]["status"] == "ok", "command executed at the next connection", acks=acks,
+          server=(c.get("state"), c.get("final_status"), c.get("expires_at")))

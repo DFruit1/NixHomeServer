@@ -51,7 +51,7 @@ Firmware 2.2, compiled unchanged from the snapshot (`build.sh`):
 
 | Real | Files |
 |---|---|
-| Application | `app_core.c` (boot, wake/sleep, readings, events, alerts, self test), `app_cmd.c` (every command handler), `gsm_mqtt_app.c` (connection routine, publishing, GNSS, registration), `sd_card_app.c`, `rtc_alarm.c`, `sensors.c` |
+| Application | `app_core.c` (boot, wake/sleep, readings, events, alerts, self test), `app_cmd.c` (every command handler), `gsm_mqtt_app.c` (connection routine, publishing, GNSS, registration), `sd_card_app.c`, `rtc_alarm.c`, `sensors.c`, `flash_config.c` (on an emulated flash page 63) |
 | HAL-free modules | `gwl_ring`, `gwl_records`, `gwl_settings`, `gwl_app_store`, `gwl_batch`, `gwl_proto`, `gwl_json`, `gwl_app_sched`, `gwl_app_events`, `gwl_sdarchive`, `sensor_math`, `accel_math`, `gwl_display_layout`/`gwl_gfx` |
 | Drivers | the Quectel EC21 AT driver `Quectel_EC21.c` (every byte of every AT exchange), `sd_archive_fatfs.c` with the real FatFs `ff.c` |
 | Target libc detail | firmware objects use `gwl_snprintf.c`'s formatter, as the target links it |
@@ -65,7 +65,7 @@ Emulated (`c/`), with the behaviour the firmware relies on:
 | EC21 modem (`vl_modem.c`) | an AT emulator answering the commands the driver sends; QMTOPEN/QMTCONN/QMTSUB/QMTPUB/QMTPUBEX/QMTDISC/QMTCLOSE, `+QMTRECV`, `+QMTSTAT`, will/willex, session and keepalive are mapped onto a real **libmosquitto** client (client id = DeviceID, `clean_session` 0, QoS 1, retained Last Will). TLS, the CA upload, radio registration, signal, NITZ (`AT+QLTS`) and GNSS (`AT+QGPSLOC`) answers are simulated. Fault injection drops, fails, duplicates or cuts the n-th publish, or resets / power-cuts the MCU right after it |
 | MR25H10 MRAM | `MRAM_*` API on a 128 KiB file (the SPI driver is not run) |
 | SD card | FatFs `disk_*` on a 128 MiB image file (the SPI SD driver is not run); a new card is formatted FAT32 by FatFs |
-| ADXL345, e-ink panel, watchdog, SPI2 bus, LED, V2.1 flash page | API-level stand-ins (`vl_board.c`) |
+| ADXL345, e-ink panel, watchdog, SPI2 bus, LED | API-level stand-ins (`vl_board.c`) |
 
 Services: a disposable PostgreSQL 16, a Mosquitto with persistence and the
 broker ACL parsed from `modules/groundwater-logger/services.nix`

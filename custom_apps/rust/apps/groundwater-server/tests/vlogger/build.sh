@@ -18,7 +18,7 @@ cc="${CC:-cc}"
 # Firmware 2.2 sources that run for real (see README.md).
 fw_src=(
   Core/Src/app_core.c Core/Src/app_cmd.c Core/Src/gsm_mqtt_app.c Core/Src/sd_card_app.c
-  Core/Src/rtc_alarm.c Core/Src/sensors.c Core/Src/sensor_math.c Core/Src/accel_math.c
+  Core/Src/rtc_alarm.c Core/Src/sensors.c Core/Src/flash_config.c Core/Src/sensor_math.c Core/Src/accel_math.c
   Core/Src/gwl_app_events.c Core/Src/gwl_app_sched.c Core/Src/gwl_app_store.c Core/Src/gwl_batch.c
   Core/Src/gwl_json.c Core/Src/gwl_proto.c Core/Src/gwl_records.c Core/Src/gwl_ring.c
   Core/Src/gwl_sdarchive.c Core/Src/gwl_settings.c Core/Src/sd_archive_fatfs.c

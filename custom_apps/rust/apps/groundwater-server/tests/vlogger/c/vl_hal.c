@@ -14,6 +14,7 @@
 #include "vl.h"
 
 GPIO_TypeDef vl_gpioa = {0}, vl_gpiob = {1}, vl_gpioc = {2}, vl_gpiod = {3};
+PWR_TypeDef vl_pwr;
 const uint16_t vl_vrefint_cal = 1655; /* VREFINT 1.212 V at VDDA 3.000 V */
 
 /* ------------------------------------------------------------------ clock */
