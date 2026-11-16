@@ -288,6 +288,11 @@ BEGIN
         FOR sample IN
             SELECT o.recorded_at,min(o.gwl) AS gwl FROM observations o
             WHERE o.device_id=target AND o.recorded_at IS NOT NULL
+              -- A 4-20 mA reading outside the sensor's range (or any sensor
+              -- fault) means failure, risk of failure or a level beyond the
+              -- range: it is reported as a sensor fault and leaves the level
+              -- alarm state unchanged (owner decision 2026-11-16).
+              AND COALESCE(o.sensor_status,0)=0
               AND o.recorded_at<=d.latest_plausible_at
               AND o.recorded_at>CASE WHEN replay_all THEN '-infinity'::timestamptz ELSE d.alerts_cursor END
             GROUP BY o.recorded_at

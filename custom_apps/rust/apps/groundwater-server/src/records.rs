@@ -54,6 +54,15 @@ impl SensorBlock {
     }
 }
 
+/// What an out-of-range 4-20 mA reading means to an operator.
+pub fn sensor_status_meaning(status: u8) -> Option<&'static str> {
+    match status {
+        2 => Some("below the 4 mA range: sensor failure, risk of failure or level below the sensor's range"),
+        3 => Some("above the 20 mA range: sensor failure, risk of failure or level above the sensor's range"),
+        _ => None,
+    }
+}
+
 pub fn sensor_status_name(status: u8) -> &'static str {
     match status {
         0 => "ok",

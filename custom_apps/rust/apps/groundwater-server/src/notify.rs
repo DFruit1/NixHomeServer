@@ -203,13 +203,22 @@ pub fn headline(item: &Item) -> String {
             fixed(num(d, "bat_mv").map(|mv| mv / 1000.0), 2, "V battery")
         ),
         ("power_critical", true) => "power recovered".into(),
-        ("sensor_fault", false) => format!(
-            "sensor fault{}",
-            text(d, "sensor_status_name")
-                .map(|s| format!(" ({s})"))
-                .or_else(|| num(d, "ss").map(|s| format!(" (status {s})")))
-                .unwrap_or_default()
-        ),
+        ("sensor_fault", false) => {
+            let status = num(d, "ss").or_else(|| num(d, "sensor_status"));
+            match status
+                .and_then(|s| u8::try_from(s as i64).ok())
+                .and_then(crate::records::sensor_status_meaning)
+            {
+                Some(meaning) => format!("sensor reading {meaning}"),
+                None => format!(
+                    "sensor fault{}",
+                    text(d, "sensor_status_name")
+                        .map(|s| format!(" ({s})"))
+                        .or_else(|| status.map(|s| format!(" (status {s})")))
+                        .unwrap_or_default()
+                ),
+            }
+        }
         ("sensor_fault", true) => "sensor fault cleared".into(),
         ("storage", _) => match (item.event.as_str(), text(d, "kind")) {
             ("tail_lock", _) | (_, Some("tail_lock")) => {
@@ -825,7 +834,7 @@ mod tests {
                 "open",
                 json!({"ss":3,"mv":12})
             ),
-            "sensor fault (status 3)"
+            "sensor reading above the 20 mA range: sensor failure, risk of failure or level above the sensor's range"
         );
         assert_eq!(
             h(

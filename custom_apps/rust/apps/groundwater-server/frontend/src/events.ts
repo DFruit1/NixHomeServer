@@ -103,8 +103,11 @@ export function eventSummary(event: Pick<DeviceEvent, "event" | "details">) {
       return `Tail unlocked after ${d.locked_seconds ?? "?"} s`;
     case "data_gap":
       return `Logger gap: ${d.missed_readings ?? "?"} readings, ${d.missed_events ?? "?"} events missed (${d.reason ?? "unknown"})`;
-    case "sensor_fault":
-      return `Sensor ${d.state ?? ""} · ${d.sensor_status_name ?? d.ss ?? "?"} · ${d.sensor_mv ?? d.mv ?? "?"} mV`;
+    case "sensor_fault": {
+      const status = d.sensor_status ?? d.ss;
+      const meaning = SENSOR_STATUS_MEANING[status as number];
+      return `Sensor ${d.state ?? ""} · ${d.sensor_status_name ?? d.ss ?? "?"} · ${d.sensor_mv ?? d.mv ?? "?"} mV${meaning ? ` · ${meaning}` : ""}`;
+    }
     case "power_critical":
       return `Power ${d.state ?? ""} · battery ${mv(d.bat_mv)}, solar ${mv(d.sol_mv)}`;
     case "storage_warning":
@@ -191,5 +194,11 @@ export const SENSOR_STATUS = [
   "adc-fault",
   "factors-invalid",
 ];
+// A 4-20 mA loop outside its range usually means a failed or failing
+// sensor, or a level beyond the sensor's range.
+export const SENSOR_STATUS_MEANING: Record<number, string> = {
+  2: "below 4 mA: sensor failure, risk of failure or level below range",
+  3: "above 20 mA: sensor failure, risk of failure or level above range",
+};
 export const sensorStatusName = (status: number | null | undefined) =>
   status == null ? "—" : SENSOR_STATUS[status] || `unknown (${status})`;
