@@ -282,8 +282,15 @@ BEGIN
     -- into alerts: the logger is authoritative there, so one crossing is one
     -- alert with the logger's thresholds. The server replay below applies to
     -- the older profiles only; its earlier V22 level alerts are superseded.
+    -- An episode still open when the unit moved to 2.2 stays visible (the
+    -- server no longer evaluates it, so an operator resolves it by hand).
     IF groundwater_profile_id(d.source_profile)='V22' THEN
-        UPDATE alerts SET superseded=true WHERE device_id=target AND kind IN ('above_max','below_min') AND NOT superseded;
+        UPDATE alerts SET superseded=true WHERE device_id=target AND kind IN ('above_max','below_min') AND NOT superseded
+            AND state<>'open';
+        UPDATE alerts SET detail=COALESCE(detail,'{}'::jsonb)||jsonb_build_object('server_replay_stopped',now(),
+                'note','firmware 2.2 raises level alarms itself; the server no longer clears this one: resolve it by hand')
+            WHERE device_id=target AND kind IN ('above_max','below_min') AND NOT superseded AND state='open'
+              AND NOT COALESCE(detail,'{}'::jsonb) ? 'server_replay_stopped';
         UPDATE devices SET alerts_dirty=false,alerts_replay_all=false,alerts_dirty_from=NULL,
             alerts_cursor=d.latest_plausible_at,alerts_active_id=NULL WHERE device_id=target;
         RETURN;
