@@ -358,11 +358,24 @@ binary batch or the bare Last Will:
   (gaps, settings assembly, time resolution, power alerts) in another. A
   failure there keeps the raw rows and flags the frame (`derive_pending`)
   or log (`resolve_pending`, `resolve_error`); the batch records
-  `derive_error`. Flagged work is re-run once at each service start, before
-  ingest resumes. The Data stream tab shows both states in words.
+  `derive_error`. Gap detection, settings and times have separate
+  savepoints; a failed gap scan sets `gaps_pending`, and no reading of that
+  log is paired until the whole log has been scanned again. A batch's
+  derived work has a time budget (a third of the statement timeout, at most
+  10 s) and dates at most 5,000 readings; past either, or on any database
+  error with a SQLSTATE in it (a statement timeout included), the rest is
+  flagged and the message is still acknowledged. Flagged work is re-run per
+  log in short transactions: at most 20 s at start, then in the background
+  every 5 minutes and a few seconds after a batch left work to it. A log
+  whose re-run fails is retried after a back-off (1 minute doubling to 1
+  day; `resolve_error` names the attempt). Only that whole-log re-run
+  clears the flags, never a later batch. The Data stream tab shows both
+  states in words.
 - **Error classes.** A database error with no SQLSTATE or class 08, 40, 53,
-  55, 57 or 58 is transient: the message is not acknowledged and is
-  retried. Invalid content (SQLSTATE 22021, 22P05, class 54, or a payload
+  55, 57 or 58 while storing the raw rows is transient: the message is not
+  acknowledged and is held for retry with back-off (1 s doubling to 60 s).
+  The logger's later messages wait behind it (order is kept per logger);
+  other loggers' messages are stored meanwhile. Invalid content (SQLSTATE 22021, 22P05, class 54, or a payload
   the decoder refuses) quarantines the delivery as `rev2-invalid`; any other
   error as `rev2-store-failed`. In both cases a binary payload is kept raw
   in `stream_batches`.
@@ -482,8 +495,12 @@ survives restarts and is audited with `requested_by` and `origin`.
   device are in flight (sent or awaiting a challenge; confirmations go
   first).
 - **Retries:** when a live `sleep` or `offline` follows a publish with no
-  final ack, the command is queued again and re-published at the next
-  connection; after three re-publishes it ends `unacknowledged`. A `busy` or
+  final ack, the command is queued again and re-published once the logger
+  connects again (not into its queue while it sleeps: the ack of the window
+  that closed may still be behind an upload on the durable session). A
+  publish whose broker confirmation was lost with the connection counts as
+  sent. An original ack that arrives after the logger's `duplicate` answer
+  to a re-published copy is applied; after three re-publishes it ends `unacknowledged`. A `busy` or
   `time-invalid` rejection holds the command until the next sleep, unless the
   ack arrived after that window had closed; `time-invalid` also queues a
   `sync_time`. The logger runs each `id` at most once, so a re-publish never
@@ -492,8 +509,10 @@ survives restarts and is audited with `requested_by` and `origin`.
   server at the same instant. It counts from creation: 7 days for basic
   commands and settings (`GROUNDWATER_COMMAND_EXPIRY_HOURS`), 24 hours for
   danger commands (`GROUNDWATER_DANGER_EXPIRY_HOURS`); an operator may set
-  60 s to 30 days (`expires_in_s`). Automatic commands are extended to at
-  least the logger's next connection + its listen window + the stale margin.
+  60 s to 30 days (`expires_in_s`, kept exactly). Every default lifetime is
+  extended to at least the logger's next connection + its listen window +
+  the stale margin: the announced one when it is still ahead, and in any
+  case one send interval (`send_s`) from now.
   The UI proposes "next connection + 1 hour" for a danger command when the
   next connection is known (§13.24).
 - **Danger handshake (contract §7):** the API requires `confirm:"DANGER"`.
@@ -588,7 +607,10 @@ fault readings are listed separately.
 
 Every 6 hours: raw deliveries older than `retention.days` (default 90) are
 deleted (rows that referred to them keep their data), the raw bytes of
-`stream_batches` of the same age are dropped, and sent or skipped
+`stream_batches` of the same age are dropped (except salvaged content that
+exists nowhere else: raw bytes of a message whose rows could not be stored
+or of a data/file chunk whose download could not advance, and
+`rev2-store-failed` deliveries; they stay until re-ingested or dismissed), and sent or skipped
 notification rows of that age are deleted; download chunks are dropped once
 a file is complete. Everything else is kept: observations, ring frames
 (byte-exact), events, health, positions, tests, alerts, commands and the
