@@ -4027,7 +4027,10 @@ components:
           type: integer
           minimum: 0
           maximum: 100
-          description: The engine's own decoded position in the current stage, when it reports one.
+          description: Progress within the current phase, when available. Encoding uses approximate completed-layer progress; decoding uses the audio position.
+        progressPhase:
+          enum: [preparing, encoding, decoding]
+          description: Optional transcription phase; encoding percentages approximate completed encoder layers, not elapsed time.
         outputDir: {type: string}
         error: {type: string}
         ignored:

@@ -47,6 +47,7 @@ type ProcessingJob = {
   label: string;
   stage: string;
   percent?: number | null;
+  approximate?: boolean;
   waiting?: boolean;
   cancelId?: string;
 };
@@ -81,7 +82,11 @@ const JobProgress = component$<{
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={percent ?? undefined}
-              aria-valuetext={percent === null ? job.stage : `${percent}%`}
+              aria-valuetext={
+                percent === null
+                  ? job.stage
+                  : `${job.approximate ? "Approximately " : ""}${percent}%`
+              }
             >
               <span
                 class={percent === null ? "progress-track__moving" : undefined}
@@ -95,7 +100,10 @@ const JobProgress = component$<{
             <div class="progress-meta">
               <span>{job.stage}</span>
               {percent !== null && (
-                <strong class="tabular">{percent.toFixed(0)}%</strong>
+                <strong class="tabular">
+                  {job.approximate ? "~" : ""}
+                  {percent.toFixed(0)}%
+                </strong>
               )}
             </div>
           </>
@@ -565,8 +573,18 @@ export const ConversionsView = component$<{
       name: job.name,
       icon: "mic" as const,
       label: "Transcription / subtitles",
-      stage: `${backendLabel(job)} · ${TRANSCRIPT_STAGES[job.state]}`,
-      percent: job.progress,
+      stage: `${backendLabel(job)} · ${
+        job.state === "transcribing" && job.progressPhase
+          ? {
+              preparing: "Preparing audio analysis",
+              encoding: "Analysing audio (approx.)",
+              decoding: "Decoding speech",
+            }[job.progressPhase]
+          : TRANSCRIPT_STAGES[job.state]
+      }`,
+      percent: job.progressPhase === "preparing" ? null : job.progress,
+      approximate:
+        job.state === "transcribing" && job.progressPhase === "encoding",
       waiting: job.state === "queued",
     })),
     ...(conv.videos?.jobs ?? [])

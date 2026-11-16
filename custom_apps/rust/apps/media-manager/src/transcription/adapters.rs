@@ -13,6 +13,7 @@ use tokio::{
 
 /// The engine's own position in the audio it is decoding, as a percentage.
 pub type Progress<'a> = &'a mut dyn FnMut(u8);
+pub type TranscriptionProgress<'a> = &'a mut dyn FnMut(&'static str, u8);
 
 pub struct Runtime {
     pub ffmpeg: PathBuf,
@@ -164,7 +165,7 @@ impl Runtime {
         request: &Request,
         wav: &Path,
         directory: &Path,
-        progress: Progress<'_>,
+        progress: TranscriptionProgress<'_>,
     ) -> Result<Transcript, String> {
         let mut command = Command::new(match backend {
             Backend::Parakeet => &self.parakeet,
@@ -183,7 +184,12 @@ impl Runtime {
             .arg("-pp");
         let mut report = |line: &str| {
             if let Some(percent) = engine_progress(line) {
-                progress(percent);
+                let phase = if line.starts_with("parakeet_encoder_print_progress_callback:") {
+                    "encoding"
+                } else {
+                    "decoding"
+                };
+                progress(phase, percent);
             }
         };
         match backend {

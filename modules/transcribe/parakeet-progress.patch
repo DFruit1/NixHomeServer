@@ -2,12 +2,12 @@
 +++ b/examples/parakeet-cli/parakeet-cli.cpp
 @@ -16,6 +16,7 @@
      int32_t gpu_device = 0;
- 
+
      bool print_segments = false;
 +    bool print_progress = false;
      bool output_txt     = false;
      bool no_prints      = false;
- 
+
 @@ -60,6 +61,7 @@
          else if (arg == "-ng"   || arg == "--no-gpu")          { params.use_gpu           = false; }
          else if (arg == "-dev"  || arg == "--device")          { params.gpu_device        = std::stoi(ARGV_NEXT); }
@@ -16,7 +16,7 @@
          else if (arg == "-otxt" || arg == "--output-txt")      { params.output_txt        = true; }
          else if (arg == "-of"   || arg == "--output-file")     { params.output_file       = ARGV_NEXT; }
          else if (arg == "-np"   || arg == "--no-prints")       { params.no_prints         = true; }
-@@ -86,22 +88,42 @@
+@@ -86,22 +88,52 @@
      fprintf(stderr, "  -ng,    --no-gpu            [%-7s] disable GPU\n",                                 params.use_gpu ? "false" : "true");
      fprintf(stderr, "  -dev N, --device N          [%-7d] GPU device to use\n",                           params.gpu_device);
      fprintf(stderr, "  -ps,    --print-segments    [%-7s] print segment information\n",                   params.print_segments ? "true" : "false");
@@ -26,7 +26,7 @@
      fprintf(stderr, "  -np,    --no-prints         [%-7s] do not print anything other than the results\n", params.no_prints ? "true" : "false");
      fprintf(stderr, "\n");
  }
- 
+
 +struct parakeet_progress {
 +    bool * is_first;
 +    bool print_progress;
@@ -34,17 +34,27 @@
 +    int progress_prev;
 +};
 +
++static void encoder_progress_callback(parakeet_context *, parakeet_state *, int percent, void * user_data) {
++    auto * progress = (parakeet_progress *) user_data;
++    if (progress->print_progress) {
++        fprintf(stderr, "parakeet_encoder_print_progress_callback: progress = %3d%%\n", percent);
++        if (percent == 100) {
++            fprintf(stderr, "parakeet_print_progress_callback: progress =   0%%\n");
++        }
++    }
++}
++
  void token_callback(parakeet_context * ctx, parakeet_state * state, const parakeet_token_data * token_data, void * user_data) {
 -    bool * is_first = (bool *) user_data;
 +    parakeet_progress * progress = (parakeet_progress *) user_data;
- 
+
      const char * token_str = parakeet_token_to_str(ctx, token_data->id);
      char text_buf[256];
 -    parakeet_token_to_text(token_str, *is_first, text_buf, sizeof(text_buf));
 +    parakeet_token_to_text(token_str, *progress->is_first, text_buf, sizeof(text_buf));
      printf("%s", text_buf);
      fflush(stdout);
- 
+
 -    *is_first = false;
 +    *progress->is_first = false;
 +
@@ -60,11 +70,11 @@
 +        }
 +    }
  }
- 
+
  static void cb_log_disable(enum ggml_log_level , const char * , void * ) { }
-@@ -165,10 +187,19 @@
+@@ -165,10 +197,20 @@
          }
- 
+
          bool is_first = true;
 +        struct parakeet_progress progress = {
 +            &is_first,
@@ -74,23 +84,140 @@
 +        };
          struct parakeet_full_params full_params = parakeet_full_default_params(PARAKEET_SAMPLING_GREEDY);
          full_params.n_threads           = params.n_threads;
++        if (params.print_progress) {
++            full_params.progress_callback = encoder_progress_callback;
++            full_params.progress_callback_user_data = &progress;
++        }
          full_params.new_token_callback  = token_callback;
 -        full_params.new_token_callback_user_data = &is_first;
 +        full_params.new_token_callback_user_data = &progress;
-+        if (params.print_progress) {
-+            fprintf(stderr, "parakeet_print_progress_callback: progress =   0%%\n");
-+        }
- 
+
          const int mel_frames = (int)(pcmf32.size() / PARAKEET_HOP_LENGTH);
          int ret = parakeet_full(pctx, full_params, pcmf32.data(), pcmf32.size());
-@@ -178,6 +209,10 @@
+@@ -176,6 +218,10 @@
+         if (ret != 0) {
+             fprintf(stderr, "error: failed to process audio file '%s'\n", fname.c_str());
              continue;
-         }
- 
-+        if (params.print_progress) {
-+            fprintf(stderr, "parakeet_print_progress_callback: progress = 100%%\n");
 +        }
 +
++        if (params.print_progress) {
++            fprintf(stderr, "parakeet_print_progress_callback: progress = 100%%\n");
+         }
+
          printf("\n");
- 
-         if (params.output_txt) {
+--- a/src/parakeet.cpp
++++ b/src/parakeet.cpp
+@@ -1976,13 +1976,42 @@
+     return gf;
+ }
+
++// Observe only completed layer boundaries, retaining backend batching within
++// each layer. Layer count approximates work, not elapsed time or decoded audio.
++struct parakeet_encode_progress {
++    parakeet_context * ctx;
++    parakeet_state * state;
++    parakeet_progress_callback callback;
++    void * user_data;
++    int n_layers;
++};
++
++static bool parakeet_encode_eval(struct ggml_tensor * tensor, bool ask, void * user_data) {
++    auto * progress = (parakeet_encode_progress *) user_data;
++    int layer = -1;
++    int end = 0;
++    const char * name = ggml_get_name(tensor);
++    const bool boundary = sscanf(name, "enc_%d_ffn_res%n", &layer, &end) == 1
++        && end > 0 && name[end] == '\0' && layer >= 0 && layer < progress->n_layers;
++    if (ask) {
++        return boundary;
++    }
++    if (boundary) {
++        const int percent = std::min(99, (layer + 1) * 100 / progress->n_layers);
++        progress->callback(progress->ctx, progress->state, percent, progress->user_data);
++    }
++    return true;
++}
++
+ static bool parakeet_encode_internal(
+         parakeet_context & pctx,
+           parakeet_state & pstate,
+               const int   mel_offset,
+               const int   n_threads,
+     ggml_abort_callback   abort_callback,
+-                   void * abort_callback_data) {
++                   void * abort_callback_data,
++    parakeet_progress_callback progress_callback = nullptr,
++                   void * progress_user_data = nullptr) {
+     const int64_t t_start_us = ggml_time_us();
+
+     auto & sched = pstate.sched_encode.sched;
+@@ -2094,8 +2123,21 @@
+         ggml_backend_tensor_set(rel_pos_t, pos.data(), 0, pos.size() * sizeof(float));
+     }
+
+-    if (!ggml_graph_compute_helper(sched, gf, n_threads)) {
++    parakeet_encode_progress progress = {
++        &pctx, &pstate, progress_callback, progress_user_data, pctx.model.hparams.n_audio_layer,
++    };
++    if (progress_callback) {
++        progress_callback(&pctx, &pstate, 0, progress_user_data);
++        ggml_backend_sched_set_eval_callback(sched, parakeet_encode_eval, &progress);
++    }
++    const bool success = ggml_graph_compute_helper(sched, gf, n_threads);
++    // The callback data is stack-local and must never outlive this computation.
++    ggml_backend_sched_set_eval_callback(sched, nullptr, nullptr);
++    if (!success) {
+         return false;
++    }
++    if (progress_callback) {
++        progress_callback(&pctx, &pstate, 100, progress_user_data);
+     }
+
+     pstate.t_encode_us += ggml_time_us() - t_start_us;
+@@ -3598,9 +3640,6 @@
+     const int n_audio_ctx = ctx->model.hparams.n_audio_ctx;
+
+     if (n_mel_total <= n_audio_ctx) {
+-        if (params.progress_callback) {
+-            params.progress_callback(ctx, state, 0, params.progress_callback_user_data);
+-        }
+         return parakeet_chunk_with_state(ctx, state, params);
+     }
+
+@@ -3614,9 +3653,6 @@
+         }
+     }
+
+-    if (params.progress_callback) {
+-        params.progress_callback(ctx, state, 0, params.progress_callback_user_data);
+-    }
+
+     if (!parakeet_ensure_encode_sched(*ctx, *state, n_mel_total)) {
+         PARAKEET_LOG_ERROR("%s: failed to allocate dynamic encoder graph for %d mel frames\n",
+@@ -3627,14 +3663,12 @@
+     state->n_audio_ctx = n_mel_total;
+
+     if (!parakeet_encode_internal(*ctx, *state, 0, params.n_threads,
+-                                  params.abort_callback, params.abort_callback_user_data)) {
++                                  params.abort_callback, params.abort_callback_user_data,
++                                  params.progress_callback, params.progress_callback_user_data)) {
+         PARAKEET_LOG_ERROR("%s: failed to encode\n", __func__);
+         return -6;
+     }
+
+-    if (params.progress_callback) {
+-        params.progress_callback(ctx, state, 100, params.progress_callback_user_data);
+-    }
+
+     const size_t tokens_before = state->decoded_tokens.size();
+
+@@ -3727,7 +3761,8 @@
+             return -6;
+         }
+     }
+-    if (!parakeet_encode_internal(*ctx, *state, 0, params.n_threads, params.abort_callback, params.abort_callback_user_data)) {
++    if (!parakeet_encode_internal(*ctx, *state, 0, params.n_threads, params.abort_callback, params.abort_callback_user_data,
++                                  params.progress_callback, params.progress_callback_user_data)) {
+         PARAKEET_LOG_ERROR("%s: failed to encode\n", __func__);
+         return -6;
+     }
