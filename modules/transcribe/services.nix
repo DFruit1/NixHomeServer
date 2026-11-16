@@ -50,7 +50,7 @@ in {
         ReadWritePaths = [ cfg.stateDir vars.usersRoot "${vars.dataRoot}/transcribe/work" ];
         DevicePolicy = "closed";
         DeviceAllow = [ "/dev/dri/renderD128 rw" "/dev/dri/renderD129 rw" ];
-        MemoryHigh = "4G"; MemoryMax = "8G"; MemorySwapMax = 0;
+        MemoryHigh = "12G"; MemoryMax = "16G"; MemorySwapMax = 0;
         OOMPolicy = "stop"; LimitCORE = 0;
         LimitFSIZE = "4G";
         CacheDirectory = "transcribe";
