@@ -1185,6 +1185,13 @@ a:focus-visible {
   font-size: var(--title-sm);
   font-weight: 500;
 }
+.editor-read-only-note {
+  max-width: 52ch;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
 .editor-file {
   min-width: 0;
   display: flex;

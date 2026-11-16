@@ -48,6 +48,10 @@
   font-size: 0;
   padding: 4px;
 }
+/* A producer folder shows its own symbol instead of borrowing item artwork. */
+.library-selection-hero .media-image-symbol .cover-thumbnail-empty {
+  color: var(--accent);
+}
 .library-selection-copy {
   grid-column: 2;
   grid-row: 1;

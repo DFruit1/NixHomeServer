@@ -1317,7 +1317,7 @@ describe("Media Manager library browser", () => {
       {
         id: "movie-1",
         rootId: "shared-videos",
-        relativePath: "_Movies/Example Movie (2020).mkv",
+        relativePath: "Movies/Example Movie (2020).mkv",
         mediaKind: "video",
         sizeBytes: 1024,
       },
@@ -1331,7 +1331,7 @@ describe("Media Manager library browser", () => {
       {
         id: "cover-1",
         rootId: "shared-videos",
-        relativePath: "_Movies/cover.jpg",
+        relativePath: "Movies/cover.jpg",
         mediaKind: "artwork",
         sizeBytes: 8192,
       },
@@ -1374,7 +1374,7 @@ describe("Media Manager library browser", () => {
       Array.from(sharedPane?.querySelectorAll(".tree-row.folder") ?? []).find(
         (row) => row.querySelector(".tree-name")?.textContent === name,
       );
-    const movieBranch = folderRow("_Movies")?.closest(".tree-branch");
+    const movieBranch = folderRow("Movies")?.closest(".tree-branch");
     const showBranch = folderRow("_Shows")?.closest(".tree-branch");
     expect(movieBranch?.getAttribute("aria-expanded")).toBe("true");
 
@@ -1387,13 +1387,11 @@ describe("Media Manager library browser", () => {
 
     expect(showBranch?.getAttribute("aria-expanded")).toBe("true");
     expect(movieBranch?.getAttribute("aria-expanded")).toBe("false");
-    expect(folderRow("_Movies")?.classList.contains("sibling-muted")).toBe(
-      true,
-    );
+    expect(folderRow("Movies")?.classList.contains("sibling-muted")).toBe(true);
     expect(tree.scrollTop).toBe(0);
 
     await userEvent(
-      folderRow("_Movies")?.querySelector(".tree-folder-name") ?? null,
+      folderRow("Movies")?.querySelector(".tree-folder-name") ?? null,
       "click",
     );
 
@@ -1402,13 +1400,73 @@ describe("Media Manager library browser", () => {
     );
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining(
-        "/api/v1/folders/metadata?rootId=shared-videos&relativePath=_Movies",
+        "/api/v1/folders/metadata?rootId=shared-videos&relativePath=Movies",
       ),
       expect.objectContaining({ credentials: "same-origin" }),
     );
     expect(
       screen.querySelector<HTMLImageElement>(".media-image img")?.src,
     ).toContain("/items/movie-1/image");
+  });
+
+  it("uses a producer symbol and read-only metadata for a server folder", async () => {
+    const items = [
+      {
+        id: "yt-1",
+        rootId: "shared-videos",
+        relativePath: "_YouTube/ThunderScott/Example.mkv",
+        mediaKind: "video",
+        sizeBytes: 4096,
+      },
+      {
+        id: "yt-2",
+        rootId: "shared-videos",
+        relativePath: "_YouTube/Another Channel/Second.mkv",
+        mediaKind: "video",
+        sizeBytes: 2048,
+      },
+    ];
+    const libraryFetch = libraryFetchMock(items, true);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/folders/metadata?"))
+        return new Response(
+          wireJson({
+            mediaType: "collection",
+            title: "YouTube",
+            sources: ["folder"],
+          }),
+        );
+      return libraryFetch(input);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+
+    const serverFolder = Array.from(
+      screen.querySelectorAll(".shared-pane .tree-folder-name"),
+    ).find((button) => button.textContent?.trim() === "_YouTube");
+    await userEvent(serverFolder ?? null, "click");
+
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".editor-card")).toBeDefined(),
+    );
+    expect(
+      screen
+        .querySelector(".media-image-symbol")
+        ?.getAttribute("data-folder-symbol"),
+    ).toBe("youtube");
+    expect(screen.querySelector(".media-image img")).toBeUndefined();
+
+    const editor = screen.querySelector(".editor-card") as HTMLElement;
+    expect(
+      Array.from(editor.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Edit",
+      ),
+    ).toBe(false);
+    expect(
+      editor.querySelector(".editor-read-only-note")?.textContent,
+    ).toContain("Managed by the server");
   });
 
   it("replaces the opposite library pane with details and focuses the selected folder", async () => {

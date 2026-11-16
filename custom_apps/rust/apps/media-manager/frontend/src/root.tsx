@@ -28,6 +28,7 @@ import {
   type EditorCommandAction,
 } from "./item-editor";
 import { isLibraryKind, supportsMediaAction } from "./media-capabilities";
+import { serverFolderSymbol } from "./server-folders";
 import { PlayerView } from "./player-view";
 import { VideosView } from "./videos-view";
 import { ImagesView } from "./images-view";
@@ -2177,12 +2178,19 @@ const LibraryDetailPane = component$<{
     !props.state.items.some((item) => item.id === props.selectedItem?.id)
       ? [...props.state.items, props.selectedItem]
       : props.state.items;
-  const imageId = artworkCandidateId(
-    props.state.status,
-    artworkItems,
-    props.state.selectedItemId,
-    props.activeFolder,
-  );
+  const folderSymbol = props.selectedItem
+    ? undefined
+    : serverFolderSymbol(props.activeFolder);
+  // Producer folders get their own symbol; showing the first catalog item's
+  // artwork would suggest the folder is a collection of that item.
+  const imageId = folderSymbol
+    ? ""
+    : artworkCandidateId(
+        props.state.status,
+        artworkItems,
+        props.state.selectedItemId,
+        props.activeFolder,
+      );
   const imageItem = artworkItems.find((item) => item.id === imageId);
   const canEditCover =
     Boolean(selectedMediaItem) &&
@@ -2248,17 +2256,29 @@ const LibraryDetailPane = component$<{
         aria-label="Selected library item"
       >
         <div class="root-picker-image">
-          <MediaImage
-            imageId={imageId}
-            item={imageItem}
-            state={props.state}
-            title={props.imageTitle}
-            canEditCover={canEditCover}
-            onEditCover$={() => (coverEditing.value = !coverEditing.value)}
-            onPalette$={(id, colors) => {
-              palette.value = { imageId: id, colors };
-            }}
-          />
+          {folderSymbol ? (
+            <div
+              class="media-image media-image-symbol"
+              data-folder-symbol={folderSymbol}
+              aria-hidden="true"
+            >
+              <span class="cover-thumbnail-empty">
+                <Icon name={folderSymbol} size={28} />
+              </span>
+            </div>
+          ) : (
+            <MediaImage
+              imageId={imageId}
+              item={imageItem}
+              state={props.state}
+              title={props.imageTitle}
+              canEditCover={canEditCover}
+              onEditCover$={() => (coverEditing.value = !coverEditing.value)}
+              onPalette$={(id, colors) => {
+                palette.value = { imageId: id, colors };
+              }}
+            />
+          )}
         </div>
         <div class="library-selection-copy">
           <span class="library-selection-context">{selectionContext}</span>
@@ -2267,7 +2287,10 @@ const LibraryDetailPane = component$<{
               "library-selection-title--long": props.imageTitle.length > 48,
             }}
           >
-            <Icon name={props.selectedItem ? "file" : "folder"} size={16} />
+            <Icon
+              name={props.selectedItem ? "file" : (folderSymbol ?? "folder")}
+              size={16}
+            />
             <span>{props.imageTitle || "Choose a title or folder"}</span>
           </h2>
           {selectionParent && <p>{selectionParent}</p>}
@@ -2323,6 +2346,7 @@ const LibraryDetailPane = component$<{
               rootId: props.activeFolderRootId,
               relativePath: props.activeFolder,
             }}
+            readOnly={Boolean(folderSymbol)}
             close$={props.closeFolderEditor$}
           />
         )}
