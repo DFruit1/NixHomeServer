@@ -608,10 +608,12 @@ BEGIN
         WHERE r.device_id=target AND r.log_id=target_log AND r.record_type=0 AND r.anchor_seq IS NULL
           AND NOT EXISTS(SELECT 1 FROM stream_gaps g WHERE g.device_id=target AND g.log_id=target_log
               AND g.state<>'filled' AND g.from_seq<r.seq AND g.to_seq>a.seq)
-          -- A stored frame whose record is not derived yet may be the
-          -- reading's real anchor: wait for it as for a gap.
+          -- A stored Type 1 frame whose record is not derived yet may be
+          -- the reading's real anchor: wait for it as for a gap. Only a
+          -- Type 1 record can be an anchor (Rev2 "Time, anchors and
+          -- readings"); a pending frame of another type blocks nothing.
           AND NOT EXISTS(SELECT 1 FROM stream_frames p WHERE p.device_id=target AND p.log_id=target_log
-              AND p.derive_pending AND p.seq<r.seq AND p.seq>a.seq)
+              AND p.derive_pending AND p.record_type=1 AND p.seq<r.seq AND p.seq>a.seq)
           AND NOT EXISTS(SELECT 1 FROM stream_logs l WHERE l.device_id=target AND l.log_id=target_log
               AND l.gaps_pending)
     ) UPDATE observations o SET anchor_seq=pairs.anchor_seq FROM pairs WHERE o.id=pairs.id;

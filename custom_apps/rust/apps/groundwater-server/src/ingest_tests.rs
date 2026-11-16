@@ -605,3 +605,38 @@ async fn a_refused_settings_snapshot_costs_neither_the_gap_nor_the_times() {
     assert_eq!(rerun, (0, 1), "the snapshot still fails and stays flagged");
     assert!(log_flags(&h, 7).await.0);
 }
+
+// V4: a frame of any type whose derivation failed for good blocked the
+// dating of every later reading up to the next anchor, although only a
+// Type 1 record can be an anchor.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn only_a_pending_type_1_frame_blocks_later_readings() {
+    use crate::stream::encode::batch;
+    let mut h = Harness::new().await;
+    fail_on(&h, "observations", "NEW.sensor_mv=4242", "P0001").await;
+    set_fail(&h, true).await;
+    let frames: Vec<Vec<u8>> = std::iter::once(damaged_anchor(1, 1_763_300_000, 900))
+        .chain(std::iter::once(reading_mv(2, 1, 4242)))
+        .chain((3..50).map(|s| routine(s, (s - 1) as u16)))
+        .collect();
+    h.publish("data/stream", &batch(8, 0, 0, &frames))
+        .await
+        .unwrap();
+    crate::rev2_store::rederive_pending(&mut h.client, crate::config::rev2_policy())
+        .await
+        .unwrap();
+    set_fail(&h, false).await;
+    drop_fail(&h, "observations").await;
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM stream_frames WHERE derive_pending AND seq=2")
+            .await,
+        1
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM observations WHERE recorded_at IS NULL")
+            .await,
+        0
+    );
+    assert_eq!(anchor_of(&h, 8, 49).await, Some(1));
+}
