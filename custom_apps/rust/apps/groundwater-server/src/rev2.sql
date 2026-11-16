@@ -176,6 +176,12 @@ ALTER TABLE stream_frames ADD COLUMN IF NOT EXISTS derive_error TEXT;
 ALTER TABLE stream_logs ADD COLUMN IF NOT EXISTS resolve_pending BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE stream_logs ADD COLUMN IF NOT EXISTS resolve_error TEXT;
 CREATE INDEX IF NOT EXISTS stream_frames_derive_pending_idx ON stream_frames(device_id,log_id,seq) WHERE derive_pending;
+-- Gap detection of the log failed for some range: no reading of the log is
+-- paired with an anchor (a missing anchor could lie in the unscanned range)
+-- until the re-run has scanned the whole log. Only that re-run clears
+-- resolve_pending/gaps_pending; a later batch's success does not redo the
+-- failed batch's work.
+ALTER TABLE stream_logs ADD COLUMN IF NOT EXISTS gaps_pending BOOLEAN NOT NULL DEFAULT false;
 
 -- Holes between received frames. A sequence jump whose positions are
 -- contiguous is the firmware's reserved-number skip after a reboot, not a gap.
@@ -606,6 +612,8 @@ BEGIN
           -- reading's real anchor: wait for it as for a gap.
           AND NOT EXISTS(SELECT 1 FROM stream_frames p WHERE p.device_id=target AND p.log_id=target_log
               AND p.derive_pending AND p.seq<r.seq AND p.seq>a.seq)
+          AND NOT EXISTS(SELECT 1 FROM stream_logs l WHERE l.device_id=target AND l.log_id=target_log
+              AND l.gaps_pending)
     ) UPDATE observations o SET anchor_seq=pairs.anchor_seq FROM pairs WHERE o.id=pairs.id;
 
     -- A damaged anchor (CRC-8 passes 1 in 256 damaged frames) can carry any

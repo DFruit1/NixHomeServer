@@ -445,3 +445,163 @@ async fn a_failed_derivation_keeps_the_raw_frames_and_reruns() {
         0
     );
 }
+
+// ---- second independent review (V1-V6) ----
+// Injects a database error with SQLSTATE `code` on writes to `table` that
+// match `cond`, while `gw.test_fail` is on for the session.
+async fn fail_on(h: &Harness, table: &str, cond: &str, code: &str) {
+    h.client
+        .batch_execute(&format!(
+            "CREATE OR REPLACE FUNCTION gw_probe_fail() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN IF current_setting('gw.test_fail',true)='on' AND ({cond}) THEN
+                 RAISE EXCEPTION 'probe failure' USING ERRCODE='{code}'; END IF; RETURN NEW; END $$;
+             DROP TRIGGER IF EXISTS gw_probe_fail ON {table};
+             CREATE TRIGGER gw_probe_fail BEFORE INSERT OR UPDATE ON {table} FOR EACH ROW EXECUTE FUNCTION gw_probe_fail();"
+        ))
+        .await
+        .unwrap();
+}
+async fn set_fail(h: &Harness, on: bool) {
+    h.client
+        .batch_execute(if on {
+            "SET gw.test_fail='on'"
+        } else {
+            "SET gw.test_fail='off'"
+        })
+        .await
+        .unwrap();
+}
+async fn drop_fail(h: &Harness, table: &str) {
+    h.client
+        .batch_execute(&format!("DROP TRIGGER IF EXISTS gw_probe_fail ON {table}"))
+        .await
+        .unwrap();
+}
+
+async fn log_flags(h: &Harness, log: i64) -> (bool, bool, Option<String>) {
+    let r = h
+        .client
+        .query_one(
+            "SELECT resolve_pending,gaps_pending,resolve_error FROM stream_logs WHERE device_id=$1 AND log_id=$2",
+            &[&D, &log],
+        )
+        .await
+        .unwrap();
+    (r.get(0), r.get(1), r.get(2))
+}
+
+async fn anchor_of(h: &Harness, log: i64, seq: i64) -> Option<i64> {
+    h.client
+        .query_one(
+            "SELECT anchor_seq FROM observations WHERE device_id=$1 AND log_id=$2 AND seq=$3",
+            &[&D, &log, &seq],
+        )
+        .await
+        .unwrap()
+        .get(0)
+}
+
+// V2: a batch whose gap scan failed was flagged, and the next batch's
+// success cleared the flag without redoing that scan. The gap before seq 3
+// was never recorded or requested, and seq 3 was dated from anchor 1 for
+// good although the missing seq 2 may be its real anchor.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn a_failed_gap_scan_is_redone_by_the_rerun_not_cleared_by_the_next_batch() {
+    use crate::stream::encode::batch;
+    let mut h = Harness::new().await;
+    fail_on(&h, "stream_gaps", "true", "P0001").await;
+    let a1 = damaged_anchor(1, 1_763_300_000, 900);
+    let alen = a1.len() as u32;
+    h.publish("data/stream", &batch(7, 0, 0, &[a1]))
+        .await
+        .unwrap();
+    // seq 2 (an anchor of the same size) is lost in transit.
+    set_fail(&h, true).await;
+    let r3 = routine(3, 0);
+    let rlen = r3.len() as u32;
+    h.publish("data/stream", &batch(7, 2 * alen, 0, &[r3]))
+        .await
+        .unwrap();
+    set_fail(&h, false).await;
+    h.publish(
+        "data/stream",
+        &batch(7, 2 * alen + rlen, 0, &[routine(4, 1)]),
+    )
+    .await
+    .unwrap();
+    drop_fail(&h, "stream_gaps").await;
+    let (pending, gaps_pending, _) = log_flags(&h, 7).await;
+    assert!(pending && gaps_pending, "the next batch cleared the flag");
+    assert_eq!(
+        anchor_of(&h, 7, 3).await,
+        None,
+        "paired across an unscanned range"
+    );
+    assert_eq!(anchor_of(&h, 7, 4).await, None);
+    let rerun = crate::rev2_store::rederive_pending(&mut h.client, crate::config::rev2_policy())
+        .await
+        .unwrap();
+    assert_eq!(rerun, (1, 0));
+    assert_eq!(
+        h.scalar::<String>("SELECT from_seq||'-'||to_seq||' '||state FROM stream_gaps")
+            .await,
+        "2-2 open"
+    );
+    assert_eq!(log_flags(&h, 7).await, (false, false, None));
+    assert_eq!(anchor_of(&h, 7, 3).await, None, "seq 2 may be its anchor");
+}
+
+fn nul_snapshot(seq: u32, generation: u32) -> Vec<u8> {
+    let data = vec![0x0E, 3, b'a', 0, b'b']; // loc "a\0b": valid UTF-8, refused by JSONB
+    let mut p = generation.to_le_bytes().to_vec();
+    p.extend_from_slice(&[1, 0, 1, 0]);
+    p.extend_from_slice(&(data.len() as u16).to_le_bytes());
+    p.extend_from_slice(&crate::crc::crc32(&data).to_le_bytes());
+    p.extend_from_slice(&data);
+    crate::stream::encode::frame(3, seq, &p)
+}
+
+// V2 with real content: a settings snapshot JSONB refuses (22P05) rolled
+// back the batch's gap scan and times with it, and the next batch cleared
+// the flag. The settings failure must cost neither, and stay flagged.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn a_refused_settings_snapshot_costs_neither_the_gap_nor_the_times() {
+    use crate::stream::encode::batch;
+    let mut h = Harness::new().await;
+    let a1 = damaged_anchor(1, 1_763_300_000, 900);
+    let alen = a1.len() as u32;
+    h.publish("data/stream", &batch(7, 0, 0, &[a1, routine(2, 1)]))
+        .await
+        .unwrap();
+    let rlen = routine(2, 1).len() as u32;
+    // seq 3 (an anchor) is missing; seq 4 a reading, seq 5 the bad snapshot.
+    let b1 = [routine(4, 0), nul_snapshot(5, 5)];
+    let b1len: u32 = b1.iter().map(|f| f.len() as u32).sum();
+    h.publish("data/stream", &batch(7, 2 * alen + rlen, 0, &b1))
+        .await
+        .unwrap();
+    let (pending, gaps_pending, error) = log_flags(&h, 7).await;
+    assert!(pending && !gaps_pending);
+    assert!(error.unwrap_or_default().contains("22P05"));
+    assert_eq!(
+        h.scalar::<String>("SELECT from_seq||'-'||to_seq FROM stream_gaps")
+            .await,
+        "3-3"
+    );
+    assert_eq!(anchor_of(&h, 7, 2).await, Some(1));
+    assert_eq!(anchor_of(&h, 7, 4).await, None);
+    h.publish(
+        "data/stream",
+        &batch(7, 2 * alen + rlen + b1len, 0, &[routine(6, 1)]),
+    )
+    .await
+    .unwrap();
+    assert!(log_flags(&h, 7).await.0, "the next batch cleared the flag");
+    let rerun = crate::rev2_store::rederive_pending(&mut h.client, crate::config::rev2_policy())
+        .await
+        .unwrap();
+    assert_eq!(rerun, (0, 1), "the snapshot still fails and stays flagged");
+    assert!(log_flags(&h, 7).await.0);
+}

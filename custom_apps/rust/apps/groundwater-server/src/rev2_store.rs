@@ -1302,6 +1302,7 @@ async fn store_stream<C: GenericClient + Sync>(
             !new_seqs.is_empty(),
             &derived.generations,
             derived.tests,
+            false,
         )
         .await?;
         let mut errors = derived.failures.clone();
@@ -1427,9 +1428,16 @@ async fn derive_frames<C: GenericClient + Sync>(
 
 /// Log-level derived work: gaps around `gaps` (min, max seq of new or newly
 /// positioned frames) and, when `resolve` (new frames), settings snapshots,
-/// record times and power alerts. Returns the error when it
-/// failed for a reason in the data; the log is then flagged
-/// `resolve_pending` and re-derived at the next start.
+/// record times and power alerts. Gap detection runs in its own savepoint,
+/// so a failure in the later steps never costs this range's gap scan.
+/// Returns the error when a step failed for a reason in the data; the log is
+/// then flagged `resolve_pending` (and `gaps_pending` when the gap scan
+/// failed: no reading is paired until the whole log has been scanned).
+///
+/// Only a `whole` run (the re-run over the log's full seq range and every
+/// settings generation) clears the flags: a later batch's success covers
+/// its own range only, not the work the failed batch lost.
+#[allow(clippy::too_many_arguments)]
 async fn derive_log<C: GenericClient + Sync>(
     client: &C,
     ctx: &Context<'_>,
@@ -1438,32 +1446,99 @@ async fn derive_log<C: GenericClient + Sync>(
     resolve: bool,
     generations: &[i64],
     tests: bool,
+    whole: bool,
 ) -> Result<Option<String>, String> {
-    savepoint(client, "rev2_log").await?;
-    let result = async {
-        if let Some((min, max)) = gaps {
+    let mut failed: Vec<String> = Vec::new();
+    if let Some((min, max)) = gaps {
+        savepoint(client, "rev2_gaps").await?;
+        let scanned = async {
             detect_gaps(client, ctx.device_id, log_id, min, max, ctx.received_at).await?;
+            if whole {
+                client
+                    .execute(
+                        "UPDATE stream_logs SET gaps_pending=false WHERE device_id=$1 AND log_id=$2 AND gaps_pending",
+                        &[&ctx.device_id, &log_id],
+                    )
+                    .await
+                    .map_err(dberr("gaps pending"))?;
+            }
+            Ok::<(), String>(())
         }
-        if !resolve {
-            return Ok(());
+        .await;
+        match scanned {
+            Ok(()) => end_savepoint(client, "rev2_gaps", true).await?,
+            Err(error) if transient_error(&error) => return Err(error),
+            Err(error) => {
+                end_savepoint(client, "rev2_gaps", false).await?;
+                client
+                    .execute(
+                        "UPDATE stream_logs SET gaps_pending=true WHERE device_id=$1 AND log_id=$2",
+                        &[&ctx.device_id, &log_id],
+                    )
+                    .await
+                    .map_err(dberr("gaps pending"))?;
+                failed.push(error);
+            }
         }
-        for generation in generations {
-            assemble_settings(client, ctx, *generation).await?;
+    }
+    if resolve {
+        // Settings and times in separate savepoints: a snapshot the database
+        // refuses (a NUL in a text setting) must not cost the times.
+        savepoint(client, "rev2_settings").await?;
+        let result = async {
+            for generation in generations {
+                assemble_settings(client, ctx, *generation).await?;
+            }
+            activate_snapshot_settings(client, ctx).await
         }
+        .await;
+        match result {
+            Ok(()) => end_savepoint(client, "rev2_settings", true).await?,
+            Err(error) if transient_error(&error) => return Err(error),
+            Err(error) => {
+                end_savepoint(client, "rev2_settings", false).await?;
+                failed.push(error);
+            }
+        }
+        savepoint(client, "rev2_log").await?;
+        let result = async {
+            client
+                .execute(
+                    "SELECT groundwater_resolve_log($1,$2)",
+                    &[&ctx.device_id, &log_id],
+                )
+                .await
+                .map_err(dberr("time resolution"))?;
+            if tests {
+                client
+                    .execute("SELECT groundwater_power_alerts($1)", &[&ctx.device_id])
+                    .await
+                    .map_err(dberr("power alerts"))?;
+            }
+            Ok::<(), String>(())
+        }
+        .await;
+        match result {
+            Ok(()) => end_savepoint(client, "rev2_log", true).await?,
+            Err(error) if transient_error(&error) => return Err(error),
+            Err(error) => {
+                end_savepoint(client, "rev2_log", false).await?;
+                failed.push(error);
+            }
+        }
+    }
+    if !failed.is_empty() {
+        let error = failed.join("; ");
         client
             .execute(
-                "SELECT groundwater_resolve_log($1,$2)",
-                &[&ctx.device_id, &log_id],
+                "UPDATE stream_logs SET resolve_pending=true,resolve_error=$3 WHERE device_id=$1 AND log_id=$2",
+                &[&ctx.device_id, &log_id, &error],
             )
             .await
-            .map_err(dberr("time resolution"))?;
-        activate_snapshot_settings(client, ctx).await?;
-        if tests {
-            client
-                .execute("SELECT groundwater_power_alerts($1)", &[&ctx.device_id])
-                .await
-                .map_err(dberr("power alerts"))?;
-        }
+            .map_err(dberr("resolve pending"))?;
+        return Ok(Some(error));
+    }
+    if whole && resolve {
         client
             .execute(
                 "UPDATE stream_logs SET resolve_pending=false,resolve_error=NULL
@@ -1472,27 +1547,8 @@ async fn derive_log<C: GenericClient + Sync>(
             )
             .await
             .map_err(dberr("resolve pending"))?;
-        Ok::<(), String>(())
     }
-    .await;
-    match result {
-        Ok(()) => {
-            end_savepoint(client, "rev2_log", true).await?;
-            Ok(None)
-        }
-        Err(error) if transient_error(&error) => Err(error),
-        Err(error) => {
-            end_savepoint(client, "rev2_log", false).await?;
-            client
-                .execute(
-                    "UPDATE stream_logs SET resolve_pending=true,resolve_error=$3 WHERE device_id=$1 AND log_id=$2",
-                    &[&ctx.device_id, &log_id, &error],
-                )
-                .await
-                .map_err(dberr("resolve pending"))?;
-            Ok(Some(error))
-        }
-    }
+    Ok(None)
 }
 
 /// Re-runs derived work that failed for a reason in the data (frames
@@ -1572,6 +1628,7 @@ pub async fn rederive_pending(
                 Some((min, max)),
                 true,
                 &generations,
+                true,
                 true,
             )
             .await?
