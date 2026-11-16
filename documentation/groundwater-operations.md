@@ -7,9 +7,13 @@ The [design contract](groundwater.md#13-resolved-decisions) records the scope.
 
 ## Commission a logger
 
-Enrollment is an operator SQL action. The server never creates devices from
-untrusted MQTT traffic, and never attributes an identity-free message to the
-last logger that sent a reading.
+Enrollment is an operator action in the app (**Admin → Enroll device**, or
+`POST /api/devices`); legacy shared-topic units remain an SQL action. The
+server never creates devices from untrusted MQTT traffic, and never
+attributes an identity-free message to the last logger that sent a reading.
+Every enrollment, edit, retirement, viewer grant, policy change and
+credential action is recorded in the device audit (**Admin → Audit**, the
+device's **Installation** tab).
 
 1. Record the physical unit's 24-character uppercase hexadecimal DeviceID and
    firmware profile (`V22`, `V21`, `V20` or `ML`). Profile labels describe the
@@ -72,17 +76,27 @@ last logger that sent a reading.
      Deploy both files together. Mosquitto restarts when either changes.
      Never copy the CA private key into this repository. Rotating the CA
      itself means reflashing every logger.
-4. Enroll the unit and its exact trusted topics using a template below: the
-   per-device `gwl/v1` template for V2.1/2.2 units, the legacy template only
-   for older trees.
-5. Add viewer permission rows for each account that should see this device.
-   `app-admin` has global access. Membership of `groundwater-user` alone grants
-   no device access.
-6. Verify a telemetry delivery, its interpreted UTC time and receive lag, then
+4. Enroll the unit: **Admin → Enroll device** with the DeviceID, name,
+   profile (`V22` or `V21`), clock policy, location/sensor/project and
+   viewers. "gwl/v1 topics" creates the per-device bindings below in the
+   same transaction; the ingest loop subscribes them at once. The SQL
+   templates below remain for review and for legacy V2.00/MQTT-Logger units.
+5. Grant viewers on the device's **Installation** tab (or at enrollment).
+   `app-admin` has global access. Membership of `groundwater-user` alone
+   grants no device access.
+6. Optionally record the installation datum (Installation tab) so history,
+   charts and exports can show depth to water below ground and level in
+   m AHD; see "Use the platform".
+7. Verify a telemetry delivery, its interpreted UTC time and receive lag, then
    an attributed `Ready` / `sleep` cycle (V22: `online`, `ready`, `sleep` on
    `status`, a `health` row and `data/stream` batches with `ok` and new
    frames). Check raw deliveries for quarantine reasons (`rev2-invalid` for a
    refused revision 2 payload) before changing clock or topic policy.
+
+Retiring a unit (Installation tab, type RETIRE) revokes its enrollment and
+bindings, cancels queued/sent/challenged commands, cancels active downloads,
+resolves its open alerts and removes its own MQTT account; observations and
+audit history stay. **Reinstate** revives its own `gwl/v1` bindings.
 
 ### Enrollment SQL: per-device `gwl/v1` topics (V2.1 and 2.2)
 
@@ -173,10 +187,66 @@ trusted destination remains pending rather than guessing a destination.
 
 ## Use the platform
 
-Viewers can inspect their granted fleet, history, automatically resolved alerts
-and CSV observations. Operators can additionally inspect raw deliveries, queue
-configuration and commands, and cancel pending commands. Alerts are read-only;
-there is no acknowledgment action or external notification channel in v1.
+Viewers can inspect their granted fleet, history, health, events, positions,
+tests, settings, the data stream and alerts, and export CSV and JSON.
+Operators can additionally inspect raw deliveries and raw batches, queue
+settings and commands, confirm danger challenges, cancel pending commands,
+acknowledge/resolve alerts, edit thresholds, notifications, enrollments,
+viewers, datums and MQTT credentials.
+
+### Alerts and notifications
+
+Server alerts: `above_max`/`below_min` (level against the device limits and
+hysteresis), `battery_low`, `solar_low` and `stale` (missed the expected
+connection by more than the margin). Battery/solar thresholds, battery
+hysteresis, solar sample count and the stale margin come from alert
+policies resolved per field device → project → fleet → defaults (7.0 V,
+0.2 V, 1.0 V, 3 samples, `GROUNDWATER_STALE_MARGIN_MINUTES`); edit them on
+**Admin → Alert policies** and on a device's **Alerts** tab. The device
+status uses the same margin. Level limits: revision 1 units are edited on the
+server; for V22 units the edit queues a `settings` command (`lo`, `hi`,
+`lo_hys`, `hi_hys`) and the server follows the logger's acknowledged values.
+
+**Acknowledge** records who and when and keeps the alert open; **Resolve**
+closes it by hand with an optional note. A hand-resolved alert is never
+reopened; a persisting condition opens a new one.
+
+Alert transitions and the logger's own urgent events (level alarm, power
+critical, sensor fault, storage, impact/orientation/GPS movement) are sent to
+the private ntfy server when `repo.ntfy` is enabled
+(`notify_groundwater_alerts_through_ntfy`, topic `groundwater` on ntfy's
+loopback listener; subscribe from the ntfy app on the LAN or NetBird with
+`https://ntfy.<domain>/groundwater`). Rules per kind (**Admin →
+Notifications**): enabled, minimum severity, ntfy priority, cooldown,
+resolution messages and an optional topic. A device and kind notify at most
+once per cooldown (the next message counts the suppressed ones); a
+resolution goes out only if its opening did; at most
+`notifications.maxPerHour` (30) per hour fleet-wide, critical messages
+exempt. Replayed history and events older than a day never notify. Messages
+carry the device name, DeviceID, location, project and a link to the device.
+**Send test notification** checks the path. ntfy is unauthenticated; anyone
+on the LAN/NetBird who knows the topic can read it.
+
+### Data, datum and exports
+
+The installation datum converts the raw level `h` (metres of water above the
+sensor): depth below ground = sensor depth below top of casing − casing
+height above ground − `h`; level in m AHD = ground elevation − depth. Each
+reading uses the latest datum effective at its time; earlier readings stay
+unconverted. History can plot either; the CSV export appends `source`,
+`log_id`, `seq`, `record_type`, `sensor_mv`, `sensor_status`,
+`settings_gen`, `csq`, `time_source`, `depth_bgl_m` and `level_ahd_m` after
+the original columns. Events and positions export as JSON (positions also as
+GeoJSON). **Gaps** shows open/requested sequence gaps per device and the
+filled/unrecoverable ones in a window; the device's **Data stream** tab can
+request a resend of any gap now.
+
+`/metrics` (Prometheus text, same loopback port) needs an operator session
+through the gateway, or `Authorization: Bearer <token>` with the token from
+`repo.groundwaterLogger.metrics.tokenFile` for a scraper on this host. It
+exposes fleet presence counts, per-DeviceID last-seen and next-contact ages,
+ingest counters and last-hour rates, command states, open alerts, gap
+states and notification states; names and locations are not exported.
 
 `GWL` is the firmware's raw value in metres. Its datum and sign are
 uncommissioned until checked against the actual installation. Thresholds must
@@ -265,6 +335,38 @@ Reboot require typing `DANGER` in the console. The configuration record separate
 the last broker-accepted project payload from historical requested toggles and
 received toggle echoes; these different protocols are never compared as one state.
 
+## Per-device MQTT accounts
+
+By default every logger uses the shared `groundwater-logger` account, which
+may publish as any DeviceID. Per-device accounts are opt-in, unit by unit:
+
+1. Enable `repo.groundwaterLogger.deviceCredentials.enable` and deploy. This
+   alone changes no unit's access: the LAN, NetBird and TLS listeners gain a
+   pattern ACL (`gwl/v1/%u/<channel>`) that only matches usernames that are
+   DeviceIDs, and their password plugin reads `passwd-merged-N` (the module's
+   file plus the server's device accounts).
+2. On the unit's **Installation** tab, **Generate credentials**. The password
+   is shown once; the server stores only the Mosquitto `$7$` hash, writes
+   `/run/groundwater-mqtt-auth/devices.passwd`, and
+   `groundwater-mqtt-auth.service` merges it (validating every line and never
+   overriding a static account) and reloads Mosquitto. Mode `dual`: the unit
+   may use its own or the shared account.
+3. On the firmware build host, store the password in a 0600 file and rebuild:
+   `tools/net-config.py --profile server --user <DeviceID> --password-file
+   ~/.config/gwl/<DeviceID>.mqtt-password`, then `tools/build.sh --profile
+   release` and flash. The client ID stays the DeviceID.
+4. After the unit has connected with its own account (raw deliveries keep
+   arriving), type DEVICE to **Enforce own account** (mode `device`): the
+   shared account is denied this unit's topics. **Remove own account**
+   returns it to the shared account; **Rotate password** replaces the hash
+   immediately, so a unit in mode `device` stays offline until reflashed.
+
+The username is authenticated; the client ID is not. Another holder of the
+shared account could still take over the unit's session ID (denial of
+service) but cannot read or publish its topics once it is in mode `device`.
+The auth directory is tmpfs and rewritten from the database whenever the
+server starts.
+
 ## Health, retention and recovery
 
 Use `/healthz` (503 when the database is unavailable), the authenticated `/api/status` and
@@ -303,7 +405,9 @@ required. `observations` preserves interpreted measurements and provenance;
 `deliveries` is the raw MQTT audit log. Raw-log pruning defaults to 90 days and
 never deletes observations. The raw bytes of `data/stream`/`data/file` messages
 are dropped with it; decoded ring frames stay byte-exact in `stream_frames`. Commands and alerts remain for audit. The module
-backs up the application state, broker state and a `pg_dump` of `groundwater`.
+backs up the application state, broker state and a `pg_dump` of `groundwater`
+(which includes alert policies, the device audit, datums and MQTT password
+hashes). Sent/skipped notification rows follow the raw-log retention.
 Historical SQLite files are retained state, not a database migration source.
 
 Restore into a separate database first, inspect the device enrollments,
@@ -325,7 +429,20 @@ python3 custom_apps/rust/apps/groundwater-server/tests/smoke.py \
 ```
 
 It exercises disposable PostgreSQL and Mosquitto instances without contacting
-hardware or the deployed server. Run only the affected module checks for Nix integration. These checks
+hardware or the deployed server. The per-device account check runs the real
+merge script against Mosquitto 2.1:
+
+```bash
+nix shell nixpkgs#postgresql_16 nixpkgs#mosquitto -c python3 \
+  custom_apps/rust/apps/groundwater-server/tests/device_credentials.py \
+  custom_apps/target/debug/groundwater-server \
+  --merge modules/groundwater-logger/mqtt-auth-merge.sh \
+  --plugin-dir "$(nix eval --raw nixpkgs#mosquitto.lib)/lib"
+```
+
+Database tests: `GROUNDWATER_TEST_DATABASE_URL=<disposable> cargo test -p
+groundwater-server -- --include-ignored --test-threads=1` (Mosquitto on
+`PATH` for the publisher tests). Run only the affected module checks for Nix integration. These checks
 do not authorize a deployment or a full repository test suite.
 
 Hardware commissioning remains a separate firsthand check: verify the network

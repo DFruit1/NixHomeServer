@@ -266,8 +266,10 @@ since boot and `recorded_at` stays null until a clock-set record converts it
 (`time_source:"clock-set"`).
 
 New `alerts` kinds from the server: `battery_low` (below 7.0 V, cleared at
-7.2 V; per-device `battery_low_mv`) and `solar_low` (three consecutive
-samples below 1.0 V; `solar_low_mv`). `trigger_value` is volts.
+7.2 V) and `solar_low` (three consecutive samples below 1.0 V).
+`trigger_value` is volts. Thresholds, hysteresis and the sample count
+come from the alert policy (see "Operations API"); the former per-device
+`battery_low_mv`/`solar_low_mv` columns were moved into device policies.
 
 ### Commands (operator)
 
@@ -330,3 +332,286 @@ a settings ack was truncated.
 New `type` values: `health` `{device_id}`, `device-event`
 `{device_id,event}`, `stream` `{device_id,new_frames}`, `download`
 `{device_id}`. `observation.gwl` may be `null`.
+
+## Operations API (alerts, notifications, provisioning, credentials, data)
+
+All routes keep the existing rules: gateway identity on every request,
+operator role for every non-GET method, device routes scoped by
+`device_permissions` (operators see everything), errors as `{"error":"…"}`
+(400 validation, 403 viewer, 404 unknown/invisible device, 409 state
+conflict). Every operator change to a device is written to `device_audit`.
+
+### Device summary additions
+
+`GET /api/devices[/{id}]` rows add `project` (string, `""` = none),
+`notes`, `enrolled_at`, `revoked_at` and `mqtt_auth`
+(`shared` | `dual` | `device`, see credentials below).
+
+### Alerts
+
+```text
+GET  /api/alerts?device&state=open|resolved|all&kind&limit   (viewer, scoped; default state=all, limit 1000)
+POST /api/alerts/{id}/acknowledge  {"note":"…"}               → {"alert":{…}}
+POST /api/alerts/{id}/resolve      {"note":"…"}               → {"alert":{…}} (409 unless open)
+```
+
+```json
+{
+  "id": 7,
+  "device_id": "6A1B…",
+  "display_name": "Bore 7",
+  "kind": "battery_low",
+  "severity": "warning",
+  "state": "open",
+  "trigger_value": 6.91,
+  "opened_at": "…",
+  "resolved_at": null,
+  "acknowledged_at": null,
+  "acknowledged_by": null,
+  "ack_note": null,
+  "resolved_by": null,
+  "resolve_note": null,
+  "detail": {}
+}
+```
+
+Kinds and severities: `above_max`/`below_min` warning (level, metres),
+`battery_low` warning (V), `solar_low` info (V), `stale` warning
+(`trigger_value` = hours overdue, `detail` = `{"expected_at","stale_after","margin_min"}`).
+Acknowledging records who/when and keeps the alert open (use it for a
+known condition). Resolving closes it by hand (`resolved_by` set) and the
+engine never reopens that alert, including on a level-history replay. If
+the condition persists, battery/solar alerts open a new alert at the next
+low sample; level and stale alerts at the next crossing or missed
+connection. Retiring a device resolves its open alerts.
+
+Thresholds resolve device → project → fleet → built-in default, per field:
+
+```text
+GET    /api/devices/{id}/alert-policy                      (viewer)
+GET    /api/alert-policies                                 (operator)
+PUT    /api/alert-policies  {"scope":"fleet"|"project"|"device","target":null|"North"|"<DeviceID>",
+                             "battery_low_mv":6900,"battery_hys_mv":null,"solar_low_mv":null,
+                             "solar_samples":null,"stale_enabled":true,"stale_margin_min":45}
+DELETE /api/alert-policies?scope=project&target=North
+```
+
+`null` inherits. Ranges: `battery_low_mv` 3000–9000, `battery_hys_mv`
+0–2000, `solar_low_mv` 0–30000, `solar_samples` 1–10, `stale_margin_min`
+5–10080. Built-in defaults: 7000 / 200 / 1000 / 3 / true /
+`GROUNDWATER_STALE_MARGIN_MINUTES` (30).
+
+```json
+{"effective":{"battery_low_mv":7000,"battery_hys_mv":200,"solar_low_mv":1000,"solar_samples":3,
+              "stale_enabled":true,"stale_margin_min":30},
+ "sources":{"battery_low_mv":"device","battery_hys_mv":"default","…":"fleet"},
+ "levels":{"device":{…}|null,"project":{…}|null,"fleet":{…}|null},
+ "project":"North","defaults":{…}}
+```
+
+GWL level limits and hysteresis (the level alarm):
+
+```text
+PUT /api/devices/{id}/limits {"min_limit":1.5,"max_limit":9.0,"min_hysteresis":0.2,"max_hysteresis":0.2,"expires_in_s":604800}
+```
+
+Revision 1 units: updates the server limits → `200 {"device":{…}}`.
+V22 units: the logger is the authority, so this queues a `settings`
+command with `lo`/`hi`/`lo_hys`/`hi_hys` → `201 {"command":{…}}`; the
+server limits follow when the logger acks its effective settings.
+`null` limit = unset. `min_limit < max_limit`, hysteresis ≥ 0.
+
+### Notifications (operator)
+
+Delivered as JSON (`POST /` with the topic in the body) to the local ntfy
+server. `GROUNDWATER_NTFY_URL` is a loopback topic URL such as
+`http://127.0.0.1:8099/groundwater` (the server refuses any other host:
+ntfy topics are unauthenticated); links use `GROUNDWATER_PUBLIC_URL`.
+Without `GROUNDWATER_NTFY_URL` rows are recorded and marked
+`skipped`/`not-configured`. Failed deliveries retry with backoff up to
+five attempts, then `failed`.
+
+```text
+GET  /api/notifications/rules
+PUT  /api/notifications/rules/{kind} {"enabled":true,"min_severity":"warning","priority":4,
+                                      "cooldown_min":60,"notify_resolved":true,"topic":null}
+GET  /api/notifications?device&limit
+POST /api/notifications/test {}                         → {"sent":true} | 502 {"error":"…"}
+```
+
+```json
+{
+  "rules": [
+    {
+      "kind": "battery_low",
+      "label": "Battery low",
+      "source": "alert",
+      "severities": ["warning"],
+      "enabled": true,
+      "min_severity": "warning",
+      "priority": 4,
+      "cooldown_min": 60,
+      "notify_resolved": true,
+      "topic": null,
+      "updated_by": null,
+      "updated_at": null
+    }
+  ],
+  "delivery": {
+    "configured": true,
+    "server": "http://127.0.0.1:8099",
+    "topic": "groundwater",
+    "public_url": "https://groundwater.example",
+    "max_per_hour": 30
+  }
+}
+```
+
+Kinds: server alerts `above_max below_min battery_low solar_low stale`;
+logger events `gwl_alarm` (warning; exit info), `power_critical`
+(critical; exit info), `sensor_fault` (warning; exit info), `storage`
+(`tail_lock`/`mram_fault`/`sd_error` critical, `sd_full`/`mram_almost_full`/
+`sd_missing` warning, restored kinds info) and `tamper` (`impact`,
+`orientation`, `gps_moved`: warning). Severities: `info` < `warning` <
+`critical`. `priority` is ntfy's 1–5. `topic` overrides the default topic
+(`[A-Za-z0-9_-]{1,64}`).
+
+```json
+{"notifications":[{"id":3,"device_id":"…","display_name":"Bore 7","kind":"battery_low",
+  "severity":"warning","transition":"open"|"resolved"|"event","title":"…","message":"…",
+  "state":"pending"|"sent"|"suppressed"|"failed"|"skipped",
+  "reason":null|"cooldown"|"rate-limit"|"disabled"|"below-severity"|"not-configured"|"resolved-unsent",
+  "attempts":1,"alert_id":7,"event_id":null,"suppressed_count":0,"created_at":"…","sent_at":"…"}]}
+```
+
+Dedup and rate limiting: one outbox row per alert transition or logger
+event (an `alerts` copy and its ring record count once; events older than
+24 h and replayed history never notify). Per device and kind, a message
+is sent at most once per `cooldown_min`; the next one sent reports how
+many were suppressed. A resolution is sent only when its opening was.
+`GROUNDWATER_NOTIFY_MAX_PER_HOUR` (30) caps the whole fleet.
+
+### Provisioning (operator)
+
+```text
+POST  /api/devices {"device_id":"6A1B…","display_name":"Bore 7","profile":"V22"|"V21",
+                    "clock_policy":"utc"|"local-offset"|"unknown","local_offset_min":null,
+                    "location_id":"A7","sensor_id":"S-12","project":"North","notes":"",
+                    "bindings":"gwl/v1"|"none","viewers":["alice"]}      → 201 {"device":{…}}
+PATCH /api/devices/{id} {"display_name","location_id","sensor_id","project","notes"} → {"device":{…}}
+POST  /api/devices/{id}/retire    {"confirm":"RETIRE","reason":"…"}     → {"device":{…}}
+POST  /api/devices/{id}/reinstate {}                                     → {"device":{…}}
+GET   /api/devices/{id}/bindings                                         → {"bindings":[{binding_key,topic,source_profile,established_at,revoked_at}]}
+GET   /api/devices/{id}/permissions                                      → {"permissions":[{"username","granted_at","granted_by"}]}
+POST  /api/devices/{id}/permissions {"username":"alice"}                 → 201 {"permission":{…}}
+DELETE /api/devices/{id}/permissions/{username}
+GET   /api/devices/{id}/audit   GET /api/audit?limit                     → {"audit":[{"id","device_id","actor","action","detail","created_at"}]}
+```
+
+`device_id` is 24 hex characters (stored uppercase). V22 forces
+`clock_policy` `utc`; `local-offset` needs `local_offset_min` (−720…840).
+`bindings:"gwl/v1"` creates every `gwl/v1/<DeviceID>/<channel>` binding
+of the operations template (both protocol revisions). Legacy shared-topic
+units (V20/ML) stay an SQL procedure. Usernames match
+`[A-Za-z0-9._@-]{1,128}`. Retiring revokes the enrollment and its
+bindings, cancels queued/sent/challenged commands and removes per-device
+MQTT credentials; history is kept. Enroll, retire and reinstate signal the
+ingest loop, which reloads the registry and subscribes the unit's topics at
+once (the 60 s refresh remains for SQL changes). For V22 units the logger's
+`loc` setting, once acknowledged, overrides `location_id`.
+
+### Per-device MQTT credentials (operator)
+
+```text
+GET    /api/devices/{id}/mqtt-credentials
+POST   /api/devices/{id}/mqtt-credentials          {}                    → 201 {"username","password","credentials":{…}}
+POST   /api/devices/{id}/mqtt-credentials/mode     {"mode":"dual"|"device","confirm":"DEVICE"}
+DELETE /api/devices/{id}/mqtt-credentials
+```
+
+```json
+{"available":true,"mode":"shared"|"dual"|"device","username":"6A1B…","created_at":null,
+ "created_by":null,"rotated_at":null,"mode_changed_at":null,"published_at":null}
+```
+
+`available` is false when the server has no `GROUNDWATER_MQTT_AUTH_DIR`
+(NixOS `repo.groundwaterLogger.deviceCredentials.enable`; POST then
+answers 409). A unit needs live `gwl/v1/<DeviceID>/` bindings (400
+otherwise). POST generates (or rotates) a random password,
+shown once and stored only as a Mosquitto PBKDF2-SHA512 hash; the mode
+becomes `dual` (own account and shared account both accepted). `device`
+(requires `"confirm":"DEVICE"`) denies the shared account on this unit's
+topics. DELETE returns the unit to `shared`.
+
+### Installation datum and exports
+
+```text
+GET    /api/devices/{id}/datums                                   → {"datums":[…]}
+POST   /api/devices/{id}/datums {"effective_from":"…","sensor_depth_m":42.0,"casing_height_m":0.6,
+                                 "ground_elevation_m":21.3|null,"note":""}   → 201 {"datum":{…}}
+DELETE /api/devices/{id}/datums/{datum_id}
+GET    /api/series?…&datum=raw|dtw_bgl|rl_ahd
+GET    /api/export?device&from&to&format=csv
+GET    /api/devices/{id}/events/export?from&to                    → JSON attachment
+GET    /api/devices/{id}/positions/export?from&to&format=json|geojson
+GET    /api/gaps/report?from&to                                   → fleet (scoped)
+GET    /api/devices/{id}/gaps/report?from&to
+GET    /metrics                                                   → Prometheus text
+```
+
+Datum: `sensor_depth_m` is the sensor depth below the top of casing,
+`casing_height_m` the top of casing above ground (negative when below),
+`ground_elevation_m` the ground level in m AHD. With raw level `h` (metres
+of water above the sensor): depth to water below ground
+`dtw_bgl = sensor_depth_m − casing_height_m − h`; reduced level
+`rl_ahd = ground_elevation_m − dtw_bgl`. A reading uses the latest datum
+whose `effective_from` ≤ its time; readings before the first datum have no
+converted value.
+
+Series with `datum` add `"datum":"dtw_bgl","inverted":true,"unconverted":12,
+"limits":{"min":…,"max":…}` (limits converted with the latest datum, or
+null); every point adds `raw_gwl`, `solar_v` and `csq`. `gwl` holds the
+converted value. CSV export appends `source,log_id,seq,record_type,
+sensor_mv,sensor_status,settings_gen,csq,time_source,depth_bgl_m,level_ahd_m`
+to the existing columns.
+
+Gap report row:
+
+```json
+{
+  "device_id": "…",
+  "display_name": "…",
+  "protocol_rev": 2,
+  "logs": 1,
+  "frames": 412,
+  "open": 0,
+  "requested": 1,
+  "unrecoverable": 0,
+  "filled": 3,
+  "missing_open": 2,
+  "missing_unrecoverable": 0,
+  "oldest_open_at": "…",
+  "last_gap_at": "…",
+  "data_gap_events": 0,
+  "last_stream_at": "…"
+}
+```
+
+`{"from","to","devices":[row…],"totals":{same counters}}`; the device route
+returns `{"report":row,"gaps":[…]}` (open/requested gaps plus those
+detected in the window). `open`, `requested`, `missing_open` and
+`oldest_open_at` describe the current state; `unrecoverable`, `filled`,
+`missing_unrecoverable`, `last_gap_at`, `frames` (received) and
+`data_gap_events` (logger records) count inside the window. `missing_*`
+sums `to_seq − from_seq + 1`. Exports are capped at 100,000 rows
+(`truncated:true`).
+
+`/metrics` needs either an operator session (through the gateway) or
+`Authorization: Bearer <token>` matching `GROUNDWATER_METRICS_TOKEN_FILE`
+(for a loopback scraper). Families: `groundwater_devices{status}`,
+`groundwater_device_last_seen_age_seconds{device_id}`,
+`groundwater_device_next_contact_seconds{device_id}`,
+`groundwater_ingest_*_total`, `groundwater_deliveries_last_hour`,
+`groundwater_frames_last_hour`, `groundwater_commands{protocol,state}`,
+`groundwater_alerts_open{kind}`, `groundwater_stream_gaps{state}`,
+`groundwater_notifications_total{state}`, `groundwater_broker_connected`.
