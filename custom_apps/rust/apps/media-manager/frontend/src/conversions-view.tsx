@@ -380,22 +380,25 @@ export const ConversionsView = component$<{
     }
   });
 
-  useTask$(({ cleanup, track }) => {
+  // Poll only in a visible browser: mobile browsers suspend background requests.
+  // eslint-disable-next-line qwik/no-use-visible-task -- browser visibility owns polling
+  useVisibleTask$(({ cleanup, track }) => {
     const transcribe = track(() => props.transcriptionAvailable);
     let stopped = false;
-    const load = async () => {
+    const load = async (signal: AbortSignal) => {
+      const request = <T,>(path: string) => api<T>(path, { signal });
       const [inputs, conversions, inbox, transcription, videos, plans] =
         await Promise.allSettled([
-          api<ConversionInputs>("/conversions/jobs"),
-          api<ConversionEnvelope>("/conversions"),
-          api<ConversionInbox>("/conversions/inbox"),
+          request<ConversionInputs>("/conversions/jobs"),
+          request<ConversionEnvelope>("/conversions"),
+          request<ConversionInbox>("/conversions/inbox"),
           transcribe
-            ? api<TranscriptionEnvelope>("/transcriptions")
+            ? request<TranscriptionEnvelope>("/transcriptions")
             : Promise.resolve(undefined),
-          api<VideoConversionList>("/video-conversions"),
-          api<PlanListResponse>("/plans"),
+          request<VideoConversionList>("/video-conversions"),
+          request<PlanListResponse>("/plans"),
         ]);
-      if (stopped) return;
+      if (stopped || signal.aborted) return;
       if (videos.status === "fulfilled") conv.videos = videos.value;
       if (plans.status === "fulfilled") {
         conv.plans = plans.value;
@@ -412,20 +415,23 @@ export const ConversionsView = component$<{
         ].filter((id) => !(id in conv.itemNames));
         await Promise.allSettled(
           ids.map(async (id) => {
-            const item = await api<CatalogItem>(
+            const item = await request<CatalogItem>(
               `/items/${encodeURIComponent(id)}`,
             );
-            if (!stopped)
+            if (!stopped && !signal.aborted)
               conv.itemNames[id] =
                 item.relativePath.split("/").at(-1) ?? item.relativePath;
           }),
         );
       }
-      conv.jobError = [videos, plans]
-        .flatMap((result) =>
-          result.status === "rejected" ? [readableError(result.reason)] : [],
-        )
-        .join(" ");
+      if (stopped || signal.aborted) return;
+      conv.jobError = [
+        ...new Set(
+          [videos, plans].flatMap((result) =>
+            result.status === "rejected" ? [readableError(result.reason)] : [],
+          ),
+        ),
+      ].join(" ");
       if (inputs.status === "fulfilled") {
         conv.inputs = inputs.value;
         conv.inputError = "";
@@ -433,11 +439,13 @@ export const ConversionsView = component$<{
       if (conversions.status === "fulfilled")
         conv.conversions = conversions.value;
       if (inbox.status === "fulfilled") conv.inbox = inbox.value;
-      conv.error = [conversions, inbox]
-        .flatMap((result) =>
-          result.status === "rejected" ? [readableError(result.reason)] : [],
-        )
-        .join(" ");
+      conv.error = [
+        ...new Set(
+          [conversions, inbox].flatMap((result) =>
+            result.status === "rejected" ? [readableError(result.reason)] : [],
+          ),
+        ),
+      ].join(" ");
       if (transcription.status === "fulfilled") {
         conv.transcriptions = transcription.value;
         conv.transcriptionError = "";
@@ -450,15 +458,36 @@ export const ConversionsView = component$<{
       } else conv.transcriptionError = readableError(transcription.reason);
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const tick = async () => {
-      await load();
-      if (!stopped && typeof window !== "undefined")
-        timer = setTimeout(tick, 5000);
+    let active: AbortController | undefined;
+    const pause = () => {
+      clearTimeout(timer);
+      active?.abort();
+      active = undefined;
     };
+    const tick = async () => {
+      if (stopped || document.hidden || active) return;
+      const controller = new AbortController();
+      active = controller;
+      try {
+        await load(controller.signal);
+      } finally {
+        // A cancelled round must not schedule over a newer foreground round.
+        if (active === controller) {
+          active = undefined;
+          if (!stopped && !document.hidden) timer = setTimeout(tick, 5000);
+        }
+      }
+    };
+    const visibility = () => {
+      pause();
+      if (!document.hidden) void tick();
+    };
+    document.addEventListener("visibilitychange", visibility);
     void tick();
     cleanup(() => {
       stopped = true;
-      clearTimeout(timer);
+      pause();
+      document.removeEventListener("visibilitychange", visibility);
     });
   });
 
@@ -786,7 +815,13 @@ export const ConversionsView = component$<{
                   : "Idle"}
             </span>
           </header>
-          {[conv.transcriptionError, conv.jobError, conv.inputError]
+          {[
+            ...new Set([
+              conv.transcriptionError,
+              conv.jobError,
+              conv.inputError,
+            ]),
+          ]
             .filter(Boolean)
             .map((error) => (
               <p key={error} class="message error" role="alert">
