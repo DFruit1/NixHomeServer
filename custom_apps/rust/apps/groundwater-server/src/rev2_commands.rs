@@ -41,10 +41,13 @@ pub struct QueueOptions<'a> {
     pub parent_id: Option<i64>,
     pub download_id: Option<i64>,
     pub replace: bool,
-    /// Extend `expires_at` past the device's announced next connection
-    /// (plus its listen window and the stale margin). Automatic commands
-    /// use it so a weekly logger does not receive them already expired;
-    /// an operator's explicit expiry and window-bound commands do not.
+    /// Extend `expires_at` past the device's next connection (plus its
+    /// listen window and the stale margin): the one it announced when that
+    /// is still ahead, and in any case one send interval (`send_s` of its
+    /// effective settings) from now, so a logger reporting every 27 days
+    /// never receives a command already expired. Every default lifetime
+    /// uses it; an operator's explicit expiry and window-bound commands do
+    /// not.
     pub cover_next_contact: bool,
 }
 
@@ -65,11 +68,12 @@ impl<'a> QueueOptions<'a> {
         }
     }
     /// Operator defaults for `op`'s channel: basic/settings expire after
-    /// `basic_expiry_seconds`, danger after `danger_expiry_seconds`, exactly
-    /// (the operator chooses the lifetime).
+    /// `basic_expiry_seconds`, danger after `danger_expiry_seconds`, and in
+    /// either case not before the device's next connection has passed. An
+    /// operator who gives a lifetime gets exactly that (the API clears
+    /// `cover_next_contact`).
     pub fn for_op(op: &str, policy: &Rev2Policy, now: DateTime<Utc>) -> Self {
         let mut options = Self::new(policy, now);
-        options.cover_next_contact = false;
         if rev2::kind_of(op) == Some(rev2::CommandKind::Danger) {
             options.expires_at = now + chrono::Duration::seconds(policy.danger_expiry_seconds);
         }
@@ -149,8 +153,11 @@ pub async fn queue<C: GenericClient + Sync>(
             "INSERT INTO commands(device_id,kind,payload,wire_payload,requested_by,firmware_ack_expected,protocol,op,args,
                 replace_settings,expires_at,preconfirmed,live_only,origin,parent_id,download_id)
              SELECT d.device_id,$2,$3,'',$4,true,2,$5,$6,$7,
-                CASE WHEN $14 AND d.next_contact_at>now() THEN GREATEST($8::timestamptz,
-                    d.next_contact_at+make_interval(secs=>COALESCE(d.listen_window_s,60)+$15::double precision))
+                CASE WHEN $14 THEN GREATEST($8::timestamptz,
+                    CASE WHEN d.next_contact_at>now() THEN d.next_contact_at END
+                        +make_interval(secs=>COALESCE(d.listen_window_s,60)+$15::double precision),
+                    now()+make_interval(secs=>COALESCE(groundwater_send_interval(d.settings),0)
+                        +COALESCE(d.listen_window_s,60)+$15::double precision))
                     ELSE $8::timestamptz END,
                 $9,$10,$11,$12,$13 FROM devices d
              WHERE d.device_id=$1 AND d.revoked_at IS NULL

@@ -933,9 +933,9 @@ async fn rev2_command_lifecycle_handshake_and_republish() {
     let wipe = body["command"]["id"].as_i64().unwrap();
     let (topic, wire) = h.send_next().await.unwrap();
     assert_eq!(topic, format!("gwl/v1/{D}/cmd/danger"));
-    assert!(
-        (wire["exp"].as_i64().unwrap() - (Utc::now() + Duration::days(1)).timestamp()).abs() < 60
-    );
+    // At least the danger default (24 h); longer when the device's next
+    // connection is further away (E2E-06).
+    assert!(wire["exp"].as_i64().unwrap() >= (Utc::now() + Duration::days(1)).timestamp() - 60);
     let nexp = (Utc::now() + Duration::seconds(120)).timestamp();
     h.json("status", json!({"v":2,"state":"ready","win":60}))
         .await;

@@ -772,6 +772,14 @@ BEGIN
     RETURN NULL;
 END $$;
 
+-- The send interval of a device's effective settings in seconds, or NULL
+-- when unknown or not a sane value (the contract allows up to 27 days).
+CREATE OR REPLACE FUNCTION groundwater_send_interval(settings JSONB) RETURNS DOUBLE PRECISION
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN jsonb_typeof(settings->'send_s')='number' AND (settings->>'send_s')::numeric BETWEEN 1 AND 2332800
+        THEN (settings->>'send_s')::double precision END
+$$;
+
 -- Revision 2 command ids (commands.id is the wire id) must never repeat for a
 -- device: the logger answers a remembered id `duplicate` without running it,
 -- and an ack for an old id would be matched to the new command. A database

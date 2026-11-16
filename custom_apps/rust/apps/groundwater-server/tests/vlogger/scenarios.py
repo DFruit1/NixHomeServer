@@ -893,7 +893,7 @@ def redelivered_command_keeps_result(s):
           after_status=after.get("final_status"), after_ack=after.get("ack_payload"))
 
 
-@scenario(xfail="E2E-06")
+@scenario()
 def command_outlives_long_send_interval(s):
     """send_s 14 days (allowed up to 27): a command queued after a connection is still delivered at the next one."""
     lg = boot(s)

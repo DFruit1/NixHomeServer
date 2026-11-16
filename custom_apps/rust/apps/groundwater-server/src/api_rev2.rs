@@ -658,6 +658,7 @@ pub async fn queue_command(
             return Err(bad("expires_in_s must be 60 .. 2592000"));
         }
         options.expires_at = now + chrono::Duration::seconds(seconds);
+        options.cover_next_contact = false;
     }
     options.requested_by = user;
     options.preconfirmed = request.auto_confirm;

@@ -979,3 +979,60 @@ async fn a_held_delivery_blocks_only_its_own_logger() {
         [format!("gwl/v1/{D}/health"), format!("gwl/v1/{D}/info")]
     );
 }
+
+// E2E-06: operator commands expired exactly 7 days after queueing, and the
+// automatic extension needed an announced next connection still ahead. A
+// logger with send_s 14 days received the command already expired.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn a_default_command_lifetime_covers_the_next_connection() {
+    use crate::rev2_commands::{queue, QueueOptions};
+    let h = Harness::new().await;
+    h.client
+        .execute(
+            "UPDATE devices SET settings='{\"send_s\":1209600}',next_contact_at=now()-interval '1 day' WHERE device_id=$1",
+            &[&D],
+        )
+        .await
+        .unwrap();
+    let policy = crate::config::rev2_policy();
+    let now = Utc::now();
+    let lifetime = |id: i64| {
+        let client = &h.client;
+        async move {
+            client
+                .query_one(
+                    "SELECT extract(epoch FROM expires_at-created_at)::bigint FROM commands WHERE id=$1",
+                    &[&id],
+                )
+                .await
+                .unwrap()
+                .get::<_, i64>(0)
+        }
+    };
+    for op in ["get_status", "reboot"] {
+        let id = queue(
+            &h.client,
+            D,
+            op,
+            &serde_json::json!({}),
+            &QueueOptions::for_op(op, policy, now),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            lifetime(id).await >= 14 * 86_400,
+            "{op} expires before the next connection"
+        );
+    }
+    // An operator's explicit lifetime is kept exactly.
+    let mut options = QueueOptions::for_op("get_status", policy, now);
+    options.expires_at = now + chrono::Duration::hours(1);
+    options.cover_next_contact = false;
+    let id = queue(&h.client, D, "get_status", &serde_json::json!({}), &options)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(lifetime(id).await <= 3_600);
+}
