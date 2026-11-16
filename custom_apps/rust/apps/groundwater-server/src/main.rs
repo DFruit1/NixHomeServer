@@ -121,12 +121,24 @@ async fn run() -> Result<(), String> {
         let mut timer = tokio::time::interval(RERUN_INTERVAL);
         let mut db: Option<tokio_postgres::Client> = None;
         loop {
-            timer.tick().await;
+            tokio::select! {
+                _ = timer.tick() => {}
+                // A batch left work to the re-run: let its transaction
+                // commit (and the rest of the upload arrive), then run.
+                _ = rev2_store::RERUN_WAKE.notified() => {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
             if db.as_ref().is_none_or(tokio_postgres::Client::is_closed) {
                 db = db::connect(&rerun_url).await.ok();
             }
             if let Some(db) = db.as_mut() {
                 rerun_pass(db, &rerun_policy, RERUN_PASS).await;
+                // Skipped (a batch held the log's lock) or cut short: again
+                // in a moment, not at the next timed pass.
+                if rev2_store::rerun_due(db).await.unwrap_or(false) {
+                    rev2_store::RERUN_WAKE.notify_one();
+                }
             }
         }
     });

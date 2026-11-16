@@ -1271,3 +1271,44 @@ async fn a_lost_puback_is_not_republished_and_the_late_ack_is_recorded() {
         "acked ok 1024"
     );
 }
+
+// E2E-03: a long gap is asked for 1,024 frames at a time, and each request
+// counted against the whole gap. The remainder inherited the spent
+// attempts and was never asked for again (seq 3089-3157 stayed open after
+// six connections), although the logger's SD archive still held it.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn the_rest_of_a_partly_filled_gap_gets_its_own_attempts() {
+    use crate::stream::encode::batch;
+    let mut h = Harness::new().await;
+    let len = routine(1, 1).len() as u32;
+    h.publish("data/stream", &batch(9, 0, 0, &[routine(1, 1)]))
+        .await
+        .unwrap();
+    h.publish(
+        "data/stream",
+        &batch(9, 2000 * len, 0, &[routine(2001, 2001)]),
+    )
+    .await
+    .unwrap();
+    h.client
+        .execute("UPDATE stream_gaps SET attempts=2", &[])
+        .await
+        .unwrap();
+    let resent: Vec<Vec<u8>> = (2..=1025).map(|s| routine(s, s as u16)).collect();
+    for (i, chunk) in resent.chunks(80).enumerate() {
+        h.publish(
+            "data/stream",
+            &batch(9, (1 + 80 * i as u32) * len, 0x05, chunk),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        h.scalar::<String>(
+            "SELECT from_seq||'-'||to_seq||' '||state||' '||attempts FROM stream_gaps WHERE state<>'filled'"
+        )
+        .await,
+        "1026-2000 open 0"
+    );
+}

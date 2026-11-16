@@ -1362,6 +1362,7 @@ async fn store_stream<C: GenericClient + Sync>(
                 )
                 .await
                 .map_err(dberr("resolve pending"))?;
+            RERUN_WAKE.notify_one();
             outcome_note(
                 &mut outcome,
                 "derived work passed its time budget; the rest is left to the re-run",
@@ -1646,6 +1647,7 @@ async fn derive_log<C: GenericClient + Sync>(
             )
             .await
             .map_err(dberr("resolve pending"))?;
+        RERUN_WAKE.notify_one();
     }
     Ok(error)
 }
@@ -1661,6 +1663,27 @@ async fn settle_settings<C: GenericClient + Sync>(
         assemble_settings(client, ctx, *generation).await?;
     }
     activate_snapshot_settings(client, ctx).await
+}
+
+/// Wakes the background re-run when a batch left work to it, so deferred
+/// times are filled in within seconds rather than at the next timed pass.
+pub static RERUN_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// Whether a log is flagged for the re-run and due (not backed off): a
+/// pass that skipped it (a live batch held its lock) or ran out of time
+/// runs again soon instead of at the next timed pass.
+pub async fn rerun_due(client: &tokio_postgres::Client) -> Result<bool, String> {
+    client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM stream_logs l
+                WHERE (l.resolve_pending OR EXISTS(SELECT 1 FROM stream_frames f
+                       WHERE f.device_id=l.device_id AND f.log_id=l.log_id AND f.derive_pending))
+                  AND (l.rerun_after IS NULL OR l.rerun_after<=now()))",
+            &[],
+        )
+        .await
+        .map(|row| row.get(0))
+        .map_err(dberr("re-run due"))
 }
 
 /// The advisory lock that keeps a log's re-run and a live batch's
@@ -2407,15 +2430,26 @@ pub async fn detect_gaps<C: GenericClient + Sync>(
         {
             continue;
         }
-        // A part of an earlier gap inherits its request history.
+        // A part of an earlier gap inherits its request history, unless
+        // frames of that gap arrived: the request made progress (a long gap
+        // is asked for 1,024 frames at a time), so the rest gets its full
+        // attempts. Inheriting them closed the remainder of a long gap the
+        // SD archive could still serve (E2E-03).
         let inherited = existing
             .iter()
             .filter(|row| row.get::<_, i64>(1) <= to && row.get::<_, i64>(2) >= from);
-        let attempts = inherited
+        let progressed = inherited
             .clone()
-            .map(|row| row.get::<_, i32>(4))
-            .max()
-            .unwrap_or(0);
+            .any(|row| row.get::<_, i64>(1) < from || row.get::<_, i64>(2) > to);
+        let attempts = if progressed {
+            0
+        } else {
+            inherited
+                .clone()
+                .map(|row| row.get::<_, i32>(4))
+                .max()
+                .unwrap_or(0)
+        };
         let unrecoverable = inherited
             .clone()
             .any(|row| row.get::<_, String>(3) == "unrecoverable");
