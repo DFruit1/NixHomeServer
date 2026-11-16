@@ -26,9 +26,9 @@ Central persistence retains `/var/lib/bonsai`; backups exclude GGUF weights.
 
 ## Server profile
 
-The Arc Pro B60 profile uses Vulkan, two inference slots over one shared 48K
-KV pool (`--kv-unified`, Q8_0 K and V) with a 36K per-slot cap
-(`--kv-unified-per-slot`). A single request may use up to 36K while the
+The Arc Pro B60 profile uses Vulkan, two inference slots over one shared 64K
+KV pool (`--kv-unified`, Q8_0 K and V) with a 52K per-slot cap
+(`--kv-unified-per-slot`). A single request may use up to 52K while the
 remaining 12K stays available to concurrent background requests, instead of
 the context being split into fixed halves. Idle slots are saved to the prompt
 cache and cleared when a new task starts, so a paused chat does not hold

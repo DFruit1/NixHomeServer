@@ -24,7 +24,9 @@ const INDEX_BATCH_SIZE: usize = 1;
 /// passage (a median 268 tokens) costs ~0.35s and a full indexed passage
 /// ~0.7s. Reranking 40 documents on two full passages each held every search
 /// for 22-47s. The reranker now reads each document's strongest evidence in
-/// rank order, in small requests, and stops at a deadline.
+/// rank order, in small requests, and stops at a deadline. The 4B reranker
+/// that replaced it is slower per token, so the same deadline reads fewer
+/// documents; re-measure before changing these numbers.
 const RERANK_DOCS: usize = 30;
 const RERANK_CHUNK: usize = 3;
 const RERANK_BUDGET: Duration = Duration::from_secs(5);
@@ -399,52 +401,17 @@ pub(crate) async fn run_index() -> Result<(), String> {
         eprintln!("search semantic: all active documents are up to date");
         return Ok(());
     }
-    // Child lifetime is exactly this pass, including errors and cancellation.
-    // The query embedder is a different, permanently GPU-resident process.
-    let binary =
-        std::env::var("SEARCH_LLAMA_SERVER").map_err(|_| "SEARCH_LLAMA_SERVER is required")?;
-    let model =
-        std::env::var("SEARCH_EMBED_MODEL").map_err(|_| "SEARCH_EMBED_MODEL is required")?;
-    let port = std::env::var("SEARCH_EMBED_INDEX_PORT")
-        .map_err(|_| "SEARCH_EMBED_INDEX_PORT is required")?;
-    let layers = std::env::var("SEARCH_EMBED_GPU_LAYERS").unwrap_or_else(|_| "1".into());
+    // The resident query embedder also embeds the library: the same weights and
+    // flags give the same vectors, and a second GPU copy held about 5.8 GiB
+    // while a pass ran. A search that arrives mid-pass waits behind at most one
+    // passage, since the pass yields to other GPU work between passages.
+    let endpoint = semantic.query_url.clone();
     let gpu = GpuYield::from_env()?;
-    let mut child = tokio::process::Command::new(binary)
-        .args([
-            "--model",
-            &model,
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port,
-            "--embedding",
-            "--pooling",
-            "last",
-            "--n-gpu-layers",
-            &layers,
-            "--ctx-size",
-            "2048",
-            "--batch-size",
-            "2048",
-            "--ubatch-size",
-            "2048",
-            "--parallel",
-            "1",
-            "--threads",
-            "4",
-            "--flash-attn",
-            "on",
-        ])
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("start indexing embedder: {e}"))?;
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let result = async {
+    async {
         let started = Instant::now();
         loop {
-            if child.try_wait().map_err(|e| e.to_string())?.is_some() { return Err("indexing embedder exited before readiness; check GPU capacity and logs".into()); }
             if semantic.http.get(format!("{endpoint}/health")).timeout(Duration::from_secs(2)).send().await.is_ok_and(|r| r.status().is_success()) { break; }
-            if started.elapsed() > Duration::from_secs(180) { return Err("indexing embedder readiness timed out".into()); }
+            if started.elapsed() > Duration::from_secs(180) { return Err("query embedder is not ready; check search-embedding-query".into()); }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
         // Take turns with the photo-tag reviewer on the one card. A pass holds
@@ -527,17 +494,14 @@ pub(crate) async fn run_index() -> Result<(), String> {
             }
         }
         Ok(())
-    }.await;
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-    result
+    }.await
 }
 
 /// Lets interactive GPU work go first. With every layer offloaded a passage
 /// takes ~0.6s instead of ~9s, but measured side by side the backfill halved
 /// chat generation (19 to 9 tokens/s) and more than doubled reranking time.
-/// The indexing embedder is idle between requests, so a busy GPU at that
-/// moment is someone else's work: chat, a search being reranked,
+/// The pass sends nothing between passages, so a busy GPU at that moment is
+/// someone else's work: chat, a search being embedded or reranked,
 /// transcription. The pass then waits for the GPU to stay quiet before the
 /// next passage, so the most it adds to anyone else is one passage in flight.
 struct GpuYield {

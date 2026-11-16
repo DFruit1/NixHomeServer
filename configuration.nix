@@ -43,19 +43,19 @@ in
       bonsai = {
         enable = true;
         gpu.enable = true;
-        # One shared 48K KV pool with a 36K per-slot cap: a single request may
-        # use up to 36K while 12K stays available for the photo-tag reviewer,
+        # One shared 64K KV pool with a 52K per-slot cap: a single request may
+        # use up to 52K while 12K stays available for the photo-tag reviewer,
         # DVD menus or a Paperless request. Q8_0 is near-lossless at about
-        # 1.60 GiB for 48K, where q4_0 was 1.13 GiB for 64K. Weights are
+        # 2.13 GiB for 64K (1.60 GiB at the previous 48K). Weights are
         # 7.10 GiB, the projector 0.59 GiB, plus the slots' state and vision
-        # buffers. The Q8 query embedder (~5.7 GiB), the reranker (~1.3 GiB)
-        # and the search backfill (~5.8 GiB while a pass runs) share the
-        # rest, leaving about 1.2 GiB, so measure before adding another
-        # resident model.
-        contextSize = 49152;
+        # buffers: about 10.2 GiB in all. The Q8 embedder (~5.8 GiB, shared
+        # by queries and the search backfill) and the 4B reranker (~5 GiB)
+        # share the rest, leaving roughly 2.5 GiB for transcription, so
+        # measure before adding another resident model.
+        contextSize = 65536;
         parallel = 2;
         kvUnified = true;
-        kvUnifiedPerSlot = 36864;
+        kvUnifiedPerSlot = 53248;
         kvCacheType = "q8_0";
         # Medium effort and a bounded thinking phase leave room for metadata
         # JSON answers. The gate still admits one background request at a

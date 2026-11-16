@@ -2381,14 +2381,15 @@ embedded again by `search-embed`.
 
 Search combines the keyword index with a separate `search-passages-v1` Solr
 core. Qwen3-Embedding-4B Q8_0 produces normalized 2,560-dimensional vectors;
-Qwen3-Reranker-0.6B Q8_0 reorders the leading candidate documents. Text stays
+Qwen3-Reranker-4B Q8_0 reorders the leading candidate documents. Text stays
 in PostgreSQL; the vector core stores offsets, vectors and filter metadata.
 Passages overlap, respect paragraph boundaries where possible, and cover the
 whole document. Input byte limits leave room for titles and the model's
 query/reranking templates.
 
-The embedding weights are Q8_0 rather than F16 so the query embedder can stay
-resident on the same card as Bonsai. The file hash is part of the `VERSION`
+The embedding weights are Q8_0 rather than F16 so the embedder can stay
+resident on the same card as Bonsai. One resident copy serves both queries and
+the library backfill. The file hash is part of the `VERSION`
 constant in `semantic.rs`; changing it re-embeds every document on the next
 backfill pass and prunes the old generations as new ones commit. Until a
 document is re-embedded its old vectors no longer match the expected
@@ -2407,9 +2408,10 @@ Plain broad queries of up to 256 characters use rank fusion over the leading
 - **Reranking budget.** The reranker reads one passage per document in rank
   order, three per request, for at most five seconds, then a second passage
   per document if time remains. Keyword matches are judged on their densest
-  640-byte window, related documents on the matched passage. It manages about
-  730 tokens a second while indexing shares the GPU, so 12–18 documents are
-  typically reordered; the rest keep their fused order. A query embedding has
+  640-byte window, related documents on the matched passage. The earlier
+  0.6B reranker managed about 730 tokens a second while indexing shared the
+  GPU, reordering 12–18 documents; the 4B is slower per token, so fewer fit
+  the same budget until it is re-measured. The rest keep their fused order. A query embedding has
   its own five-second budget and otherwise finishes in the background for the
   next search.
 - **Order.** Documents the reranker read come first, by relevance. Those it
@@ -2458,48 +2460,49 @@ disabled/removed, and follow the global GGUF backup exclusion. The reranker
 conversion must contain `cls.output.weight`, rank pooling, `[yes, no]` labels
 and a reranking template; an ordinary causal-language-model GGUF is not enough.
 Upstream contracts: [Qwen embedding](https://huggingface.co/Qwen/Qwen3-Embedding-4B),
-[Qwen reranker](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B),
-[reranker conversion](https://huggingface.co/Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp),
+[Qwen reranker](https://huggingface.co/Qwen/Qwen3-Reranker-4B),
+[reranker conversion](https://huggingface.co/Voodisss/Qwen3-Reranker-4B-GGUF-llama_cpp),
 [Solr vectors](https://solr.apache.org/guide/solr/9_10/query-guide/dense-vector-search.html).
 
 After guarded activation:
 
 - `search-embedding-query` keeps the 4B Q8 embedder resident on the GPU
-  (`--n-gpu-layers all`) on loopback port 18093. Queries share the card with
-  Bonsai, with a bounded one-hour in-memory vector cache.
+  (`--n-gpu-layers all`) on loopback port 18093. It embeds both queries and
+  library passages, with a bounded one-hour in-memory query-vector cache. A
+  search that arrives during a backfill pass waits behind at most the one
+  passage in flight (about 0.6 seconds).
 - The Search inference units use a llama.cpp build without OpenBLAS
   (`useBlas = false` in `lib/llama-cpp-runtime.nix`). OpenBLAS takes over CPU
   matrix products for inputs of 32 or more tokens and converts half-float
   weights on every call; while the query embedder ran on the CPU a 36-token
   query took 69 seconds against 1.3 without it, and a 300-token passage 78
   seconds against 9. The GPU-resident Q8 embedder no longer depends on that
-  path, but the build remains shared with the backfill.
-- `search-reranker` keeps the 0.6B Q8_0 model on GPU, loopback port 18095. Its batch
-  is 1024 with a 512-token micro-batch: a 4096-token batch sized the output
-  buffer for the full vocabulary and held about 4.1 GiB, while a search request
-  reranks at most three passages of about 200 tokens.
+  path, but the build remains shared with the reranker.
+- `search-reranker` keeps the 4B Q8_0 model on GPU, loopback port 18095. Its batch
+  is 1024 with a 512-token micro-batch and a 2048-token context: a 4096-token
+  batch sized the output buffer for the full vocabulary and held about 4.1 GiB
+  on the 0.6B, while a search request reranks at most three passages of about
+  200 tokens. The 4B weights are about 4.0 GiB.
 - `search-embed.timer` starts a background passage-indexing pass 15 minutes
   after boot, then 30 minutes after each pass finishes. It processes new or
   changed PostgreSQL documents without extracting source files again,
-  shortest first, so most documents are covered before whole books. It loads
-  an indexing embedder on loopback port 18094 only when work is pending and
-  unloads it on completion or failure.
+  shortest first, so most documents are covered before whole books. It sends
+  passages to the resident `search-embedding-query` embedder, so a pass loads
+  no model of its own and holds no VRAM.
 - Library embedding sends one passage per request with a ten-minute request
   budget, independently of the 90-second interactive inference deadline.
   Completed passages are published progressively while document checkpoints
   wait for the complete document.
-- The indexing embedder runs with every layer on the GPU
-  (`repo.search.semantic.indexingGpuLayers = "all"`). The Q8 weights are about
-  4.0 GiB, and the pass needs about 5.8 GiB of VRAM beside Bonsai (about
-  9.9 GiB with the shared 48K Q8 pool, 36K cap, two slots and the projector
-  on the GPU), the query embedder (about 5.7 GiB) and the reranker (about
-  1.3 GiB).
-  That leaves about 1.2 GiB of the 23.9 GiB card while a pass runs, measured
-  on the live card; unloading the pass raises it to about 7 GiB, so re-measure
-  before adding another resident GPU model. A pass measures 0.6 seconds a
-  passage against 9 with one layer. It holds about 0.1 GiB of RAM.
-  ggml-vulkan cannot spill a failed allocation to host RAM: a pass that cannot
-  load fails and is retried by the timer.
+- Card budget on the 23.9 GiB Arc Pro B60: Bonsai about 10.2 GiB (shared 64K
+  Q8 pool, 52K cap, two slots and the projector), the embedder about 5.8 GiB
+  and the 4B reranker about 5 GiB (estimated from its 4.0 GiB weights and
+  2048-token cache; measure after activation). Until 2026-11-17 the backfill
+  loaded a second embedder copy of about 5.8 GiB, which left about 1.2 GiB
+  while a pass ran. The same resident set now leaves roughly 2.5 GiB at all
+  times. ggml-vulkan cannot spill a failed allocation to host RAM, so
+  re-measure before adding another resident GPU model. A fully offloaded
+  passage takes about 0.6 seconds. If the embedder is not answering, a pass
+  waits up to three minutes, then fails and is retried by the timer.
 - Two bulk jobs share the card. The backfill and the Media Manager photo-tag
   reviewer each hold `/run/ai-gpu-bulk.lease` for a 30-second slice, then wait
   three seconds before trying again, so neither starves the other and the
