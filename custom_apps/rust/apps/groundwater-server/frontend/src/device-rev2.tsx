@@ -12,6 +12,7 @@ import {
   sensorProblem,
   sensorStatusName,
   testStatusFlags,
+  latchedErrorText,
 } from "./events";
 import {
   bytes,
@@ -111,9 +112,7 @@ export const HealthFacts = component$<{
         </div>
         <div>
           <dt>Latched error</dt>
-          <dd class={h.err ? "error-text" : ""}>
-            {h.err ? `code ${String(h.err)}` : h.err === 0 ? "none" : "—"}
-          </dd>
+          <dd class={h.err ? "error-text" : ""}>{latchedErrorText(h.err)}</dd>
         </div>
         <div>
           <dt>Health received</dt>

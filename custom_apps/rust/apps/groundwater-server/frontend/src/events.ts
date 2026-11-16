@@ -203,6 +203,22 @@ export const SENSOR_STATUS = [
   "adc-fault",
   "factors-invalid",
 ];
+// health.err / Rev2 last_error codes (contract §4 health).
+export const LATCHED_ERRORS: Record<number, string> = {
+  1: "MRAM I/O error",
+  2: "MRAM read-back mismatch (fault)",
+  3: "both checkpoints invalid: read-only recovery",
+  4: "settings lost (no slot, no snapshot)",
+  5: "one settings slot failed its check",
+  6: "newer settings slot lost (rolled back)",
+  7: "V2.1 settings not migrated: defaults in use, send settings",
+};
+export const latchedErrorText = (code: number | null | undefined) =>
+  code == null
+    ? "—"
+    : code === 0
+      ? "none"
+      : `${code}: ${LATCHED_ERRORS[code] ?? "unknown"}`;
 export const sensorStatusName = (status: number | null | undefined) =>
   status == null ? "—" : SENSOR_STATUS[status] || `unknown (${status})`;
 
