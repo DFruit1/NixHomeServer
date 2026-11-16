@@ -213,8 +213,8 @@ export const LATCHED_ERRORS: Record<number, string> = {
   6: "newer settings slot lost (rolled back)",
   7: "V2.1 settings not migrated: defaults in use, send settings",
 };
-export const latchedErrorText = (code: number | null | undefined) =>
-  code == null
+export const latchedErrorText = (code: unknown) =>
+  typeof code !== "number"
     ? "—"
     : code === 0
       ? "none"
