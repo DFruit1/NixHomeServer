@@ -57,9 +57,16 @@ There is no API credential on loopback; neither listener is exposed directly.
 Qwen remains disabled on this host. Its optional background-job integration
 still stops Bonsai while Qwen runs if both applications are enabled later.
 
-## Paperless-GPT
+## Paperless-GPT (currently disabled)
 
-The separately removable `paperless-gpt` app provides the upstream v0.31.0 UI
+The optional `paperless-gpt` app is **disabled on this host** while we operate
+without it. It remains in the catalog: re-add `paperless-gpt` to
+`applications.enabled` in `vars.nix` to restore the container, route and
+provisioning. Disabling it retains `/var/lib/paperless-gpt` and the Paperless
+`paperless-gpt-service` identity/token; the unused token stays valid until it
+is revoked manually.
+
+When enabled, the separately removable app provides the upstream v0.31.0 UI
 at `https://paperless-gpt.<domain>`, restricted to the configured owner's
 `paperless-gpt-users` Kanidm group. Its upstream release container is pinned
 by digest. It connects to Bonsai through the concurrency gate and reads the
@@ -96,7 +103,7 @@ provisioning and routing.
 ## Operations
 
 ```bash
-sudo systemctl status bonsai-model-prepare bonsai-llama bonsai-gate paperless-gpt
+sudo systemctl status bonsai-model-prepare bonsai-llama bonsai-gate
 sudo journalctl -u bonsai-model-prepare -u bonsai-llama -n 80 --no-pager
 curl --fail http://127.0.0.1:8086/health
 curl --fail http://127.0.0.1:8094/v1/models
