@@ -43,9 +43,9 @@ in
       bonsai = {
         enable = true;
         gpu.enable = true;
-        # One shared 48K KV pool: --kv-unified lets a single request use the
-        # whole context while the two slots draw from the same buffer instead
-        # of splitting it into fixed halves. Q8_0 is near-lossless at about
+        # One shared 48K KV pool with a 36K per-slot cap: a single request may
+        # use up to 36K while 12K stays available for the photo-tag reviewer,
+        # DVD menus or a Paperless request. Q8_0 is near-lossless at about
         # 1.60 GiB for 48K, where q4_0 was 1.13 GiB for 64K. Weights are
         # 7.10 GiB, the projector 0.59 GiB, plus the slots' state and vision
         # buffers. The Q8 query embedder (~4.3 GiB), the trimmed reranker
@@ -55,6 +55,7 @@ in
         contextSize = 49152;
         parallel = 2;
         kvUnified = true;
+        kvUnifiedPerSlot = 36864;
         kvCacheType = "q8_0";
         # Medium effort and a bounded thinking phase leave room for metadata
         # JSON answers. The gate still admits one background request at a

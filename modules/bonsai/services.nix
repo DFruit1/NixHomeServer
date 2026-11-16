@@ -59,6 +59,7 @@ let
         ${lib.optionalString (cfg.gpu.enable && cfg.arcLoaderFlags) "--load-mode none --no-host --no-op-offload"} \
         ${lib.optionalString (cfg.imageMaxTokens > 0) "--image-max-tokens ${toString cfg.imageMaxTokens}"} \
         ${lib.optionalString cfg.kvUnified "--kv-unified"} \
+        ${lib.optionalString (cfg.kvUnifiedPerSlot > 0) "--kv-unified-per-slot ${toString cfg.kvUnifiedPerSlot}"} \
         ${lib.optionalString (cfg.kvCacheType != "f16") "--cache-type-k ${cfg.kvCacheType} --cache-type-v ${cfg.kvCacheType}"} \
         ${lib.escapeShellArgs cfg.extraArgs}
     '';
@@ -116,6 +117,18 @@ in
         whole pool while concurrent requests share it. llama.cpp saves idle
         slots to the prompt cache and clears them when a new task starts, so a
         paused request does not hold tokens against a background job.
+      '';
+    };
+
+    kvUnifiedPerSlot = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      default = 0;
+      description = ''
+        Maximum tokens one request may use when `kvUnified` is enabled; zero
+        leaves the whole `contextSize` pool available to a single request. The
+        difference between `contextSize` and this cap stays available to
+        concurrent requests, so a long chat cannot deny a smaller background
+        job. Requires `kvUnified`.
       '';
     };
 
@@ -239,6 +252,14 @@ in
       {
         assertion = cfg.imageMaxTokens <= 4096;
         message = "repo.bonsai.imageMaxTokens cannot exceed the model's approximate 4096 vision-token limit.";
+      }
+      {
+        assertion = cfg.kvUnifiedPerSlot == 0 || cfg.kvUnified;
+        message = "repo.bonsai.kvUnifiedPerSlot requires repo.bonsai.kvUnified = true.";
+      }
+      {
+        assertion = cfg.kvUnifiedPerSlot == 0 || cfg.contextSize == 0 || cfg.kvUnifiedPerSlot <= cfg.contextSize;
+        message = "repo.bonsai.kvUnifiedPerSlot cannot exceed repo.bonsai.contextSize.";
       }
     ];
 

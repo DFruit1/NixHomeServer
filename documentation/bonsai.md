@@ -27,19 +27,20 @@ Central persistence retains `/var/lib/bonsai`; backups exclude GGUF weights.
 ## Server profile
 
 The Arc Pro B60 profile uses Vulkan, two inference slots over one shared 48K
-KV pool (`--kv-unified`, Q8_0 K and V). A single request may use the whole
-pool while concurrent requests share it, instead of each slot being capped at
-half. Idle slots are saved to the prompt cache and cleared when a new task
-starts, so a paused chat does not hold tokens against a background review.
-Vision processing is on the GPU. The model releases its GPU allocations after
-15 idle minutes and reloads on demand.
+KV pool (`--kv-unified`, Q8_0 K and V) with a 36K per-slot cap
+(`--kv-unified-per-slot`). A single request may use up to 36K while the
+remaining 12K stays available to concurrent background requests, instead of
+the context being split into fixed halves. Idle slots are saved to the prompt
+cache and cleared when a new task starts, so a paused chat does not hold
+tokens against a background review. Vision processing is on the GPU. The model
+releases its GPU allocations after 15 idle minutes and reloads on demand.
 
 The two slots share the card, so they do not double throughput. They keep an
 interactive request from waiting behind a long background review: the gate
 still admits one background request at a time, so the other slot stays free.
-The pool is not reserved per slot: background requests use well under 1K
-tokens, and only a chat generating near the full 48K can leave a simultaneous
-review without room.
+The 12K reserve covers the photo-tag reviewer, DVD menus and Paperless v3's
+8K prompts. A Paperless-GPT request of up to 20K needs the chat to be idle
+(its slot is then saved and cleared) or a larger pool.
 
 Bonsai 2 reasons by default. The server uses medium reasoning effort and a
 1,024-token thinking budget so document metadata requests have time to return
