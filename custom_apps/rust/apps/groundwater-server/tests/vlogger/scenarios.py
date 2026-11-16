@@ -866,7 +866,7 @@ def one_level_excursion_one_notification(s):
           limits=s.sql_rows(f"SELECT min_limit, max_limit FROM devices WHERE device_id='{lg.device_id}'"))
 
 
-@scenario(xfail="E2E-05")
+@scenario()
 def fallback_boot_reading_placed(s):
     """No MRAM: the reading taken at boot before the clock is set still gets its UTC time on the server."""
     lg = boot(s, sets=["mram=1"])
