@@ -488,7 +488,7 @@ async fn cancel(
     let db = s.db.get().await.map_err(database)?;
     let user = operator(&h)?;
     let device = authorize(&s, &h, &device).await?;
-    let command = platform::cancel(&db, &device, id, &user.username)
+    let (command, warning) = platform::cancel_command(&db, &device, id, &user.username)
         .await
         .map_err(database)?
         .ok_or_else(|| {
@@ -498,7 +498,7 @@ async fn cancel(
             )
         })?;
     s.bus.emit(LiveEvent::Command { device_id: device });
-    Ok(Json(json!({"command":command})).into_response())
+    Ok(Json(json!({"command":command,"warning":warning})).into_response())
 }
 async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>) -> ApiResult {
     let device = authorize(&s, &h, &q.device).await?;
@@ -534,6 +534,11 @@ async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
         LEFT JOIN LATERAL (SELECT sensor_depth_m,casing_height_m,ground_elevation_m FROM device_datums
             WHERE device_id=o.device_id AND effective_from<=o.recorded_at ORDER BY effective_from DESC LIMIT 1) dt ON true
         WHERE o.device_id=$1 AND o.recorded_at >= $2 AND o.recorded_at <= $3 ORDER BY o.recorded_at,o.id",params).await.map_err(|e|database(e.to_string()))?;
+    // When a chunk was last handed to hyper without it asking for the next
+    // one (i64::MAX while it waits on the database instead).
+    let handed = Arc::new(std::sync::atomic::AtomicI64::new(i64::MAX));
+    let mark = Arc::clone(&handed);
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
     let body = futures_util::stream::once(async {
         Ok::<_, std::io::Error>(format!("{}\r\n", EXPORT_COLUMNS.join(",")))
     })
@@ -577,10 +582,39 @@ async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
                 + "\r\n"
         })
         .map_err(std::io::Error::other),
-    )
-    // The stream ends when the connection does: keep it and the slot alive.
-    .inspect(move |_| {
-        let _ = (&db, &permit);
+    );
+    let mut inner = Box::pin(body);
+    let body = futures_util::stream::poll_fn(move |cx| {
+        // The sender's drop (body finished or dropped) ends the watchdog.
+        let _ = &done_tx;
+        mark.store(i64::MAX, std::sync::atomic::Ordering::Relaxed);
+        let next = futures_util::Stream::poll_next(inner.as_mut(), cx);
+        if next.is_ready() {
+            mark.store(unix_now(), std::sync::atomic::Ordering::Relaxed);
+        }
+        next
+    });
+    // A client that stops reading stops hyper polling this body, so a
+    // timeout inside the stream would never fire. The slot and the
+    // connection live in a watchdog instead: after EXPORT_IDLE_SECONDS
+    // without progress it cancels the query and releases both.
+    let watched = handed;
+    tokio::spawn(async move {
+        let cancel = db.cancel_token();
+        let mut done_rx = done_rx;
+        loop {
+            tokio::select! {
+                _ = &mut done_rx => break,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                    let since = watched.load(std::sync::atomic::Ordering::Relaxed);
+                    if since != i64::MAX && unix_now() - since > EXPORT_IDLE_SECONDS {
+                        let _ = cancel.cancel_query(tokio_postgres::NoTls).await;
+                        break;
+                    }
+                }
+            }
+        }
+        drop((db, permit));
     });
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "text/csv; charset=utf-8")
@@ -593,6 +627,13 @@ async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
 }
 /// Concurrent CSV exports, each on its own database connection.
 static EXPORTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+/// An export whose client did not take the next chunk for this long gives
+/// up its slot.
+const EXPORT_IDLE_SECONDS: i64 = 60;
+
+fn unix_now() -> i64 {
+    Utc::now().timestamp()
+}
 /// CSV header: the original nine columns, then revision 2 and datum fields,
 /// then the readable sensor status, whether `gwl` is a valid level (false
 /// for any sensor fault status, including out of range) and why a reading

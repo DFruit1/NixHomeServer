@@ -166,6 +166,17 @@ CREATE TABLE IF NOT EXISTS stream_logs (
     PRIMARY KEY(device_id,log_id)
 );
 
+-- Derived work (records -> observations/events, gaps, settings, times) runs
+-- after the raw batch and its frames are stored. A failure there never
+-- costs the raw data: the frame or log is flagged with the error and
+-- re-derived at the next start (rev2_store::rederive_pending).
+ALTER TABLE stream_batches ADD COLUMN IF NOT EXISTS derive_error TEXT;
+ALTER TABLE stream_frames ADD COLUMN IF NOT EXISTS derive_pending BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE stream_frames ADD COLUMN IF NOT EXISTS derive_error TEXT;
+ALTER TABLE stream_logs ADD COLUMN IF NOT EXISTS resolve_pending BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE stream_logs ADD COLUMN IF NOT EXISTS resolve_error TEXT;
+CREATE INDEX IF NOT EXISTS stream_frames_derive_pending_idx ON stream_frames(device_id,log_id,seq) WHERE derive_pending;
+
 -- Holes between received frames. A sequence jump whose positions are
 -- contiguous is the firmware's reserved-number skip after a reboot, not a gap.
 CREATE TABLE IF NOT EXISTS stream_gaps (
@@ -508,6 +519,17 @@ BEGIN
     END IF;
 END $$;
 
+-- base + secs, or NULL when the result is not a plausible logger instant
+-- (before 1970 or after 2200). The operands come from logger records (a
+-- damaged anchor can carry any interval_s), so this must never raise: a
+-- timestamp/interval overflow would fail the whole batch.
+CREATE OR REPLACE FUNCTION groundwater_offset_time(base TIMESTAMPTZ, secs NUMERIC)
+RETURNS TIMESTAMPTZ LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN base IS NULL OR secs IS NULL OR base IN ('infinity','-infinity') THEN NULL
+        WHEN extract(epoch FROM base)+secs BETWEEN 0 AND 7258118400
+            THEN to_timestamp((extract(epoch FROM base)+secs)::double precision) END
+$$;
+
 -- Rebuilds the derived times of one log: relative (tv=0) records of a boot
 -- once a Type 15 clock set pairs uptime with UTC (Rev2 "Time, anchors and
 -- readings"), Type 0 anchor assignment
@@ -552,22 +574,22 @@ BEGIN
               AND NOT EXISTS(SELECT 1 FROM stream_frames p
                   WHERE p.device_id=target AND p.log_id=target_log AND p.seq=f.seq-1);
         shift:=cs.new_time-cs.uptime_s;
-        UPDATE observations SET recorded_at=to_timestamp(time_rel_s+shift),time_source='clock-set',
-            time_quality=groundwater_time_quality(to_timestamp(time_rel_s+shift),received_at),
+        UPDATE observations SET recorded_at=groundwater_offset_time('epoch',time_rel_s+shift),time_source='clock-set',
+            time_quality=groundwater_time_quality(groundwater_offset_time('epoch',time_rel_s+shift),received_at),
             time_reason='seconds since boot converted by the clock-set record at seq '||cs.seq
         WHERE device_id=target AND log_id=target_log AND record_type<>0 AND time_valid IS FALSE
           AND recorded_at IS NULL AND time_rel_s IS NOT NULL AND seq>=boundary AND seq<cs.seq;
         GET DIAGNOSTICS n = ROW_COUNT; changed:=changed+n;
-        UPDATE device_events SET recorded_at=to_timestamp(time_rel_s+shift),time_source='clock-set'
+        UPDATE device_events SET recorded_at=groundwater_offset_time('epoch',time_rel_s+shift),time_source='clock-set'
         WHERE device_id=target AND log_id=target_log AND time_valid IS FALSE AND recorded_at IS NULL
           AND time_rel_s IS NOT NULL AND seq>=boundary AND seq<cs.seq;
-        UPDATE device_positions SET recorded_at=to_timestamp(time_rel_s+shift),time_source='clock-set'
+        UPDATE device_positions SET recorded_at=groundwater_offset_time('epoch',time_rel_s+shift),time_source='clock-set'
         WHERE device_id=target AND log_id=target_log AND time_valid IS FALSE AND recorded_at IS NULL
           AND time_rel_s IS NOT NULL AND seq>=boundary AND seq<cs.seq;
-        UPDATE device_tilt SET recorded_at=to_timestamp(time_rel_s+shift),time_source='clock-set'
+        UPDATE device_tilt SET recorded_at=groundwater_offset_time('epoch',time_rel_s+shift),time_source='clock-set'
         WHERE device_id=target AND log_id=target_log AND time_valid IS FALSE AND recorded_at IS NULL
           AND time_rel_s IS NOT NULL AND seq>=boundary AND seq<cs.seq;
-        UPDATE device_tests SET recorded_at=to_timestamp(time_rel_s+shift),time_source='clock-set'
+        UPDATE device_tests SET recorded_at=groundwater_offset_time('epoch',time_rel_s+shift),time_source='clock-set'
         WHERE device_id=target AND log_id=target_log AND time_valid IS FALSE AND recorded_at IS NULL
           AND time_rel_s IS NOT NULL AND seq>=boundary AND seq<cs.seq;
     END LOOP;
@@ -580,22 +602,31 @@ BEGIN
         WHERE r.device_id=target AND r.log_id=target_log AND r.record_type=0 AND r.anchor_seq IS NULL
           AND NOT EXISTS(SELECT 1 FROM stream_gaps g WHERE g.device_id=target AND g.log_id=target_log
               AND g.state<>'filled' AND g.from_seq<r.seq AND g.to_seq>a.seq)
+          -- A stored frame whose record is not derived yet may be the
+          -- reading's real anchor: wait for it as for a gap.
+          AND NOT EXISTS(SELECT 1 FROM stream_frames p WHERE p.device_id=target AND p.log_id=target_log
+              AND p.derive_pending AND p.seq<r.seq AND p.seq>a.seq)
     ) UPDATE observations o SET anchor_seq=pairs.anchor_seq FROM pairs WHERE o.id=pairs.id;
 
+    -- A damaged anchor (CRC-8 passes 1 in 256 damaged frames) can carry any
+    -- interval_s: an instant outside 1970-2200 leaves the reading's time
+    -- unresolved with the reason, it never fails the batch.
     UPDATE observations r SET
-        recorded_at=a.recorded_at+make_interval(secs=>r.sample_index::double precision*a.interval_s),
+        recorded_at=groundwater_offset_time(a.recorded_at,r.sample_index::numeric*a.interval_s),
         time_rel_s=a.time_rel_s+r.sample_index::bigint*a.interval_s,
         time_valid=a.time_valid,
         settings_gen=a.settings_gen,
         interval_s=a.interval_s,
         time_source='anchor',
-        time_quality=groundwater_time_quality(a.recorded_at+make_interval(secs=>r.sample_index::double precision*a.interval_s),r.received_at),
+        time_quality=groundwater_time_quality(groundwater_offset_time(a.recorded_at,r.sample_index::numeric*a.interval_s),r.received_at),
         time_reason=CASE WHEN a.recorded_at IS NULL THEN 'anchor at seq '||a.seq||' has no UTC time yet'
+            WHEN groundwater_offset_time(a.recorded_at,r.sample_index::numeric*a.interval_s) IS NULL
+                THEN 'anchor at seq '||a.seq||' + '||r.sample_index||' x '||a.interval_s||' s is outside 1970-2200 (damaged anchor?); time unresolved'
             ELSE 'anchor at seq '||a.seq||' + '||r.sample_index||' x '||a.interval_s||' s' END
     FROM observations a
     WHERE r.device_id=target AND r.log_id=target_log AND r.record_type=0 AND r.anchor_seq IS NOT NULL
       AND a.device_id=r.device_id AND a.log_id=r.log_id AND a.seq=r.anchor_seq
-      AND (r.recorded_at IS DISTINCT FROM a.recorded_at+make_interval(secs=>r.sample_index::double precision*a.interval_s)
+      AND (r.recorded_at IS DISTINCT FROM groundwater_offset_time(a.recorded_at,r.sample_index::numeric*a.interval_s)
         OR r.time_rel_s IS DISTINCT FROM a.time_rel_s+r.sample_index::bigint*a.interval_s
         OR r.settings_gen IS DISTINCT FROM a.settings_gen OR r.time_source IS DISTINCT FROM 'anchor');
     GET DIAGNOSTICS n = ROW_COUNT; changed:=changed+n;
@@ -605,15 +636,30 @@ END $$;
 -- Revision 2 command ids (commands.id is the wire id) must never repeat for a
 -- device: the logger answers a remembered id `duplicate` without running it,
 -- and an ack for an old id would be matched to the new command. A database
--- restored from a backup rewinds the sequence, so at every start it is raised
+-- restored from a backup rewinds the sequence, so at every start it is set
 -- to a clock-derived floor (2 ids per second since 2025-01-01, which stays
 -- below 2^32 until 2093) that exceeds every id issued before the restore at
--- up to that average rate.
-SELECT setval(pg_get_serial_sequence('commands','id'),
-    GREATEST((SELECT COALESCE(max(id),0) FROM commands),
-             COALESCE(pg_sequence_last_value(pg_get_serial_sequence('commands','id')::regclass),0),
-             (extract(epoch FROM now())::bigint-1735689600)*2,
-             1));
+-- up to that average rate, or to the highest stored id when that is higher
+-- (command rows are never deleted, so every id that reached a logger is
+-- either stored or below the floor).
+-- The clock only counts up to a year past the newest stored traffic and the
+-- floor stays 2^26 below 2^32: one start with a wildly wrong clock must not
+-- push every later id out of the protocol's u32 range. The floor is
+-- recomputed at each start (not only raised), so such a start heals at the
+-- next one.
+DO $$
+DECLARE latest TIMESTAMPTZ; clock TIMESTAMPTZ; stored BIGINT; floor_id BIGINT;
+BEGIN
+    SELECT GREATEST((SELECT max(created_at) FROM commands),(SELECT max(received_at) FROM deliveries)) INTO latest;
+    clock:=LEAST(now(),COALESCE(latest,now())+interval '365 days');
+    IF clock<now() THEN
+        RAISE WARNING 'groundwater: system clock % is more than a year past the newest stored traffic %; command id floor uses %',
+            now(),latest,clock;
+    END IF;
+    SELECT COALESCE(max(id),0) INTO stored FROM commands;
+    floor_id:=GREATEST(stored,LEAST((extract(epoch FROM clock)::bigint-1735689600)*2,4294967296-67108864),1);
+    PERFORM setval(pg_get_serial_sequence('commands','id'),floor_id);
+END $$;
 
 -- A self test reaches the server twice: test/result JSON (component detail,
 -- `ma`, `warn`) and its Type 5 ring record (authoritative values). Both rows

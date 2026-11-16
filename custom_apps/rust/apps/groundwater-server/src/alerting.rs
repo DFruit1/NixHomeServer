@@ -256,6 +256,125 @@ mod db_tests {
             .get(0)
     }
 
+    // R3 (independent review): a hand resolution stamps resolved_at with
+    // the server's clock, and every event older than that was filed as
+    // history: a new 2500 mg impact and a level alarm still active after
+    // the click raised no alert and no notification.
+    #[tokio::test]
+    #[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+    async fn a_hand_resolution_silences_only_the_occurrence_on_screen() {
+        let client = setup().await;
+        let now = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
+        let t = |minutes: i64| now - Duration::minutes(minutes);
+        let high = |s: &str| json!({"limit":"high","state":s,"level":12.0,"threshold":10.5});
+        event(
+            &client,
+            "record",
+            "impact",
+            Some(1),
+            Some(7),
+            t(300),
+            json!({"peak_mg":900}),
+        )
+        .await;
+        event(
+            &client,
+            "record",
+            "gwl_alarm_enter",
+            Some(2),
+            Some(7),
+            t(300),
+            high("enter"),
+        )
+        .await;
+        client
+            .execute(
+                "UPDATE alerts SET state='resolved',resolved_at=now(),resolved_by='op' WHERE state='open'",
+                &[],
+            )
+            .await
+            .unwrap();
+        // The same occurrences reported again (a resend under another log)
+        // stay silenced.
+        event(
+            &client,
+            "record",
+            "impact",
+            Some(1),
+            Some(8),
+            t(300),
+            json!({"peak_mg":900}),
+        )
+        .await;
+        event(
+            &client,
+            "record",
+            "gwl_alarm_enter",
+            Some(2),
+            Some(8),
+            t(300),
+            high("enter"),
+        )
+        .await;
+        assert_eq!(
+            alerts(&client, "impact").await,
+            vec![("resolved".into(), t(300))]
+        );
+        assert_eq!(
+            alerts(&client, "gwl_alarm").await,
+            vec![("resolved".into(), t(300))]
+        );
+        // Next connection: a new impact, and the level fell and rose again
+        // before the click; it is above the limit now.
+        event(
+            &client,
+            "record",
+            "impact",
+            Some(3),
+            Some(7),
+            t(60),
+            json!({"peak_mg":2500}),
+        )
+        .await;
+        event(
+            &client,
+            "record",
+            "gwl_alarm_exit",
+            Some(4),
+            Some(7),
+            t(200),
+            high("exit"),
+        )
+        .await;
+        event(
+            &client,
+            "record",
+            "gwl_alarm_enter",
+            Some(5),
+            Some(7),
+            t(100),
+            high("enter"),
+        )
+        .await;
+        assert_eq!(
+            alerts(&client, "impact").await,
+            vec![("resolved".into(), t(300)), ("open".into(), t(60))]
+        );
+        assert_eq!(
+            alerts(&client, "gwl_alarm").await,
+            vec![("resolved".into(), t(300)), ("open".into(), t(100))]
+        );
+        assert_eq!(openings(&client, "impact").await, 2);
+        assert_eq!(openings(&client, "gwl_alarm").await, 2);
+        // The exit closed the hand-resolved episode in logger time.
+        let role: String = client
+            .query_one("SELECT role FROM alert_event_links l JOIN device_events e ON e.id=l.event_id WHERE e.seq=4", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(role, "close");
+    }
+
     #[tokio::test]
     #[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
     async fn logger_events_raise_one_alert_whichever_copy_arrives() {
@@ -509,13 +628,100 @@ mod db_tests {
             .iter()
             .map(|r| (r.get(0), r.get(1), r.get(2)))
             .collect();
+        // The resolution is enqueued (the opening was still pending) and
+        // folded into the skipped opening.
         assert_eq!(
             states,
-            [("open".into(), "skipped".into(), Some("history".into()))]
+            [
+                ("open".into(), "skipped".into(), Some("history".into())),
+                ("resolved".into(), "skipped".into(), Some("history".into()))
+            ]
         );
         assert!(matches!(
             crate::notify::late(now, days(3), now, Some(now - Duration::hours(2))),
             crate::notify::Late::Ended(_)
         ));
+    }
+
+    // R6 (independent review): an alarm notified as current whose exit the
+    // logger reports more than a day later never got its all-clear (the
+    // ops.sql trigger dropped resolutions older than 24 h), and a late
+    // opening was sent after 120 s although its connection was still
+    // uploading and could carry its exit.
+    #[tokio::test]
+    #[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+    async fn a_notified_alarm_always_gets_its_all_clear() {
+        let client = setup().await;
+        let now = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
+        let days = |d: i64| now - Duration::days(d);
+        let low = |state: &str| json!({"limit":"low","state":state,"level":0.4,"threshold":0.5});
+        event(
+            &client,
+            "record",
+            "gwl_alarm_enter",
+            Some(1),
+            Some(7),
+            days(3),
+            low("enter"),
+        )
+        .await;
+        // The logger is still in the connection that reported it.
+        client
+            .execute(
+                "UPDATE devices SET link_state='online',link_state_at=now(),link_retained=false WHERE device_id=$1",
+                &[&D],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "UPDATE notification_outbox SET created_at=now()-interval '5 minutes',next_attempt_at=now()",
+                &[],
+            )
+            .await
+            .unwrap();
+        let ops = crate::config::OpsSettings::default();
+        crate::notify::process(&client, &ops, &crate::notify::http_client())
+            .await
+            .unwrap();
+        let state: String = client
+            .query_one(
+                "SELECT state FROM notification_outbox WHERE transition='open'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            state, "pending",
+            "held while the connection is still uploading"
+        );
+        // It went out; the exit arrives in a later connection.
+        client
+            .execute(
+                "UPDATE notification_outbox SET state='sent',sent_at=now()",
+                &[],
+            )
+            .await
+            .unwrap();
+        event(
+            &client,
+            "record",
+            "gwl_alarm_exit",
+            Some(2),
+            Some(7),
+            days(2),
+            low("exit"),
+        )
+        .await;
+        let resolved: i64 = client
+            .query_one(
+                "SELECT count(*) FROM notification_outbox WHERE transition='resolved' AND state='pending'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(resolved, 1);
     }
 }

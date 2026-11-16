@@ -180,7 +180,9 @@ pub async fn queue<C: GenericClient + Sync>(
     let id: i64 = row.get(0);
     let expires_at: DateTime<Utc> = row.get(1);
     if id > i64::from(u32::MAX) {
-        return Err("command id exceeds the protocol's u32 range".into());
+        // [22003]: a value out of range, kept visible (not retried for
+        // ever by ingest) when it happens while storing a message.
+        return Err("command id exceeds the protocol's u32 range [22003]".into());
     }
     client
         .execute(
@@ -220,6 +222,10 @@ pub async fn next_publish<C: GenericClient + Sync>(
                AND (c.expires_at IS NULL OR c.expires_at>now())
                AND (NOT c.live_only OR (d.link_state IN ('online','ready') AND NOT d.link_retained
                     AND d.link_state_at>now()-make_interval(secs=>COALESCE(d.listen_window_s,60)+180)))
+               -- A confirmation runs its parent's destructive op: never
+               -- publish one for a parent no longer awaiting it (cancelled,
+               -- expired, already acked).
+               AND (c.op<>'confirm' OR EXISTS(SELECT 1 FROM commands p WHERE p.id=c.parent_id AND p.state='challenge'))
                AND (c.op='confirm' OR c.live_only OR NOT EXISTS(SELECT 1 FROM commands h WHERE h.device_id=c.device_id
                     AND h.protocol=2 AND h.state='queued' AND h.hold_until_sleep AND h.id<c.id))
                AND (c.op='confirm' OR (SELECT count(*) FROM commands o WHERE o.device_id=c.device_id AND o.protocol=2
@@ -600,6 +606,21 @@ async fn finalize<C: GenericClient + Sync>(
         AckStatus::Duplicate => ack.prev.clone().map(|prev| format!("previously {prev}")),
         _ => ack.reason.clone(),
     };
+    let mut hold = hold;
+    let mut reason = reason;
+    // The ack (telemetry session) and `sleep` (control session) are
+    // processed in either order. A `busy` ack processed after a fresh sleep
+    // came from the window that already ended: no later sleep in this cycle
+    // would release the hold, and every command queued behind it would wait
+    // a whole connection cycle. Re-send it in the next window instead. A
+    // confirm keeps its hold: its nonce dies with the window.
+    if hold && command.op != "confirm" && window_closed(client, ctx).await? {
+        hold = false;
+        reason = Some(format!(
+            "{} in the window that has just closed; re-sent in the next window",
+            reason.as_deref().unwrap_or("rejected")
+        ));
+    }
     if hold && command.publish_count > ctx.policy.max_republish {
         state = "unacknowledged";
     }
@@ -647,6 +668,25 @@ async fn finalize<C: GenericClient + Sync>(
     Ok(())
 }
 
+/// Whether the device's last live status is a `sleep`/`offline` processed
+/// at most one listen window (plus 3 minutes) before this message: the
+/// message was produced in the window that status closed.
+async fn window_closed<C: GenericClient + Sync>(
+    client: &C,
+    ctx: &Context<'_>,
+) -> Result<bool, String> {
+    Ok(client
+        .query_one(
+            "SELECT COALESCE(bool_or(link_state IN ('sleep','offline') AND NOT link_retained AND link_state_at<=$2
+                AND link_state_at>$2::timestamptz-make_interval(secs=>COALESCE(listen_window_s,60)+180)),false)
+             FROM devices WHERE device_id=$1",
+            &[&ctx.device_id, &ctx.received_at],
+        )
+        .await
+        .map_err(dberr("window check"))?
+        .get(0))
+}
+
 async fn handle_challenge<C: GenericClient + Sync>(
     client: &C,
     ctx: &Context<'_>,
@@ -661,6 +701,16 @@ async fn handle_challenge<C: GenericClient + Sync>(
     };
     if !rev2::needs_handshake(&command.op) {
         outcome.rejected = Some(format!("{} does not use the nonce handshake", command.op));
+        return Ok(());
+    }
+    // The confirm must carry the nonce back; one the contract cannot carry
+    // would fail queue() with an error that is not the database's, and
+    // ingest would retry this message for ever.
+    if nonce.is_empty() || nonce.len() > 16 {
+        outcome.rejected = Some(format!(
+            "challenge nonce must be 1-16 characters, got {}",
+            nonce.len()
+        ));
         return Ok(());
     }
     // A cancelled or lapsed command reaches the logger anyway when it was
@@ -1929,7 +1979,7 @@ mod db_tests {
             channel,
             received_at: Utc::now(),
             retained: false,
-            delivery_id: 0,
+            delivery_id: Some(0),
             policy: &policy,
         };
         let object = rev2::object(value.to_string().as_bytes()).unwrap();
@@ -2075,6 +2125,181 @@ mod db_tests {
         ack(&client, "cmd/ack", challenge(wanted)).await;
         assert_eq!(state(&client, wanted).await.0, "challenge");
         assert_eq!(confirms(&client).await, 1);
+    }
+
+    // A challenge ack is logger input: a nonce the confirm cannot carry
+    // (empty, or longer than 16 characters) made queue() fail with a
+    // non-database error, which ingest retries for ever without acking,
+    // stalling the shared MQTT session for every logger.
+    #[tokio::test]
+    #[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+    async fn a_malformed_challenge_nonce_is_rejected_not_retried() {
+        let client = setup().await;
+        let nexp = (Utc::now() + chrono::Duration::seconds(120)).timestamp();
+        let wipe = queue_sent(&client, "wipe_sd", true).await;
+        let outcome = ack(
+            &client,
+            "cmd/ack",
+            json!({"v":2,"id":wipe,"op":"wipe_sd","status":"challenge",
+            "nonce":"0123456789ABCDEF0","nexp":nexp}),
+        )
+        .await;
+        assert!(outcome.rejected.is_some());
+        assert_eq!(confirms(&client).await, 0);
+    }
+
+    // R5 (independent review): `sleep` (control session) processed before
+    // the logger's busy ack (telemetry session) left the command held with
+    // no sleep to release it, and every command behind it waited a whole
+    // connection cycle (a week on a weekly logger).
+    #[tokio::test]
+    #[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+    async fn a_busy_ack_after_the_sleep_does_not_cost_a_cycle() {
+        let client = setup().await;
+        let policy = Rev2Policy::default();
+        client.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES('k1',$1,'gwl/v1/'||$1||'/cmd/basic','V22')", &[&DEV]).await.unwrap();
+        let a = queue_sent(&client, "get_status", false).await;
+        client
+            .execute(
+                "UPDATE devices SET link_state='sleep',link_state_at=now(),link_retained=false WHERE device_id=$1",
+                &[&DEV],
+            )
+            .await
+            .unwrap();
+        on_status(
+            &client,
+            DEV,
+            rev2::PresenceState::Sleep,
+            Utc::now(),
+            &policy,
+        )
+        .await
+        .unwrap();
+        ack(
+            &client,
+            "cmd/ack",
+            json!({"v":2,"id":a,"op":"get_status","status":"rejected","reason":"busy"}),
+        )
+        .await;
+        let held: bool = client
+            .query_one("SELECT hold_until_sleep FROM commands WHERE id=$1", &[&a])
+            .await
+            .unwrap()
+            .get(0);
+        assert!(!held);
+        client.execute("UPDATE devices SET link_state='online',link_state_at=now(),link_retained=false WHERE device_id=$1", &[&DEV]).await.unwrap();
+        let next = next_publish(&client, &policy).await.unwrap();
+        assert!(next.is_some_and(|p| p.wire.contains(&format!("\"id\":{a},"))));
+        // A busy ack while the logger is awake still holds until its sleep.
+        client
+            .execute(
+                "UPDATE commands SET active_publish_attempt=NULL,state='acked' WHERE id=$1",
+                &[&a],
+            )
+            .await
+            .unwrap();
+        let b = queue_sent(&client, "get_status", false).await;
+        ack(
+            &client,
+            "cmd/ack",
+            json!({"v":2,"id":b,"op":"get_status","status":"rejected","reason":"busy"}),
+        )
+        .await;
+        let held: bool = client
+            .query_one("SELECT hold_until_sleep FROM commands WHERE id=$1", &[&b])
+            .await
+            .unwrap()
+            .get(0);
+        assert!(held);
+    }
+
+    // R2 (independent review): cancelling a challenged wipe left its queued
+    // confirm, which the scheduler then published, so the logger ran the
+    // wipe the operator withdrew. A cancel withdraws every confirm of the
+    // command, warns when one was already sent, and no confirm is published
+    // for a parent that is not awaiting it.
+    #[tokio::test]
+    #[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+    async fn a_cancelled_danger_command_never_publishes_its_confirm() {
+        let client = setup().await;
+        let policy = Rev2Policy::default();
+        client.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES('k2',$1,'gwl/v1/'||$1||'/cmd/danger','V22')", &[&DEV]).await.unwrap();
+        let nexp = (Utc::now() + chrono::Duration::seconds(120)).timestamp();
+        let challenge = |id: i64| json!({"v":2,"id":id,"op":"wipe_sd","status":"challenge","nonce":"0BADF00D","nexp":nexp});
+        let confirm_of = |parent: i64| {
+            let client = &client;
+            async move {
+                client
+                    .query_one("SELECT id FROM commands WHERE parent_id=$1", &[&parent])
+                    .await
+                    .unwrap()
+                    .get::<_, i64>(0)
+            }
+        };
+        // Queued confirm: withdrawn with its wipe, nothing published.
+        let wipe = queue_sent(&client, "wipe_sd", true).await;
+        ack(&client, "cmd/ack", challenge(wipe)).await;
+        let confirm = confirm_of(wipe).await;
+        let (cancelled, warning) = crate::platform::cancel_command(&client, DEV, wipe, "operator")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cancelled.state, "cancelled");
+        assert_eq!(warning, None);
+        assert_eq!(state(&client, confirm).await.0, "cancelled");
+        assert!(next_publish(&client, &policy).await.unwrap().is_none());
+
+        // Already published confirm: withdrawn too, and the operator is told.
+        let wipe = queue_sent(&client, "wipe_sd", true).await;
+        ack(&client, "cmd/ack", challenge(wipe)).await;
+        let confirm = confirm_of(wipe).await;
+        client
+            .execute(
+                "UPDATE commands SET state='sent',publish_count=1,last_published_at=now() WHERE id=$1",
+                &[&confirm],
+            )
+            .await
+            .unwrap();
+        let (_, warning) = crate::platform::cancel_command(&client, DEV, wipe, "operator")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(warning.is_some_and(|w| w.contains("already sent")));
+        // If it ran anyway, its ack shows the truth on both rows.
+        ack(
+            &client,
+            "cmd/ack",
+            json!({"v":2,"id":confirm,"op":"wipe_sd","status":"ok"}),
+        )
+        .await;
+        assert_eq!(
+            state(&client, wipe).await,
+            ("acked".into(), Some("ok".into()))
+        );
+
+        // A confirm whose parent stopped awaiting it is never published.
+        let wipe = queue_sent(&client, "wipe_sd", true).await;
+        ack(&client, "cmd/ack", challenge(wipe)).await;
+        client
+            .execute("UPDATE commands SET state='expired' WHERE id=$1", &[&wipe])
+            .await
+            .unwrap();
+        assert!(next_publish(&client, &policy).await.unwrap().is_none());
+
+        // Reverse: cancelling the confirm leaves the wipe awaiting a new one.
+        let wipe = queue_sent(&client, "wipe_sd", true).await;
+        ack(&client, "cmd/ack", challenge(wipe)).await;
+        let confirm = confirm_of(wipe).await;
+        let (_, warning) = crate::platform::cancel_command(&client, DEV, confirm, "operator")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(warning, None);
+        assert_eq!(state(&client, wipe).await.0, "challenge");
+        let again = super::confirm(&client, DEV, wipe, None, "operator", &policy)
+            .await
+            .unwrap();
+        assert!(again.is_ok(), "{again:?}");
     }
 
     #[tokio::test]

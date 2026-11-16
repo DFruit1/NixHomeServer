@@ -166,14 +166,49 @@ pub async fn command_supported(
     client.query_one("SELECT groundwater_command_supported(source_profile,$2,$3,clock_policy,local_offset_min,clock_change_unverified) IS TRUE FROM devices WHERE device_id=$1", &[&device,&kind,&payload])
         .await.map(|row| row.get(0)).map_err(|e| e.to_string())
 }
+/// [`cancel_command`] without the warning, as the tests use it.
+#[cfg(test)]
 pub async fn cancel(
     client: &Client,
     device: &str,
     id: i64,
     username: &str,
 ) -> Result<Option<Command>, String> {
-    // Single SQL statement serializes against the publisher's reservation.
-    client.query_opt("WITH changed AS (UPDATE commands SET state='cancelled',cancelled_at=now(),cancelled_by=$3 WHERE id=$2 AND device_id=$1 AND (state IN ('queued','sent') OR (protocol=2 AND state='challenge')) AND active_publish_attempt IS NULL RETURNING *), audit AS (INSERT INTO command_events(command_id,event,actor) SELECT id,'cancelled',$3 FROM changed) SELECT * FROM changed", &[&device,&id,&username]).await.map(|r|r.map(command)).map_err(|e|e.to_string())
+    Ok(cancel_command(client, device, id, username)
+        .await?
+        .map(|(command, _)| command))
+}
+
+/// Cancels a command and, in the same statement, every danger confirmation
+/// that refers to it (queued, held or already published): a confirm left
+/// behind would still run the withdrawn destructive operation. The second
+/// value warns when this command or one of its confirmations had already
+/// been published: the logger holds it in its session and may run it.
+pub async fn cancel_command(
+    client: &Client,
+    device: &str,
+    id: i64,
+    username: &str,
+) -> Result<Option<(Command, Option<String>)>, String> {
+    // Single SQL statement serializes against the publisher's reservation
+    // (it locks the rows it reserves; a reserved confirm counts as sent).
+    let row = client.query_opt("WITH target AS (SELECT id,state='sent' AND op IS NOT NULL AS was_sent FROM commands WHERE id=$2 AND device_id=$1 AND (state IN ('queued','sent') OR (protocol=2 AND state='challenge')) AND active_publish_attempt IS NULL FOR UPDATE), confirms AS (SELECT k.id,k.state='sent' OR k.active_publish_attempt IS NOT NULL OR k.publish_count>0 AS was_sent FROM commands k JOIN target t ON k.parent_id=t.id WHERE k.op='confirm' AND k.state IN ('queued','sent') FOR UPDATE OF k), changed AS (UPDATE commands SET state='cancelled',cancelled_at=now(),cancelled_by=$3 WHERE id IN (SELECT id FROM target) RETURNING *), withdrawn AS (UPDATE commands SET state='cancelled',cancelled_at=now(),cancelled_by=$3,status_reason='withdrawn with the cancelled command '||$2 WHERE id IN (SELECT id FROM confirms) RETURNING id), audit AS (INSERT INTO command_events(command_id,event,actor) SELECT id,'cancelled',$3 FROM changed UNION ALL SELECT id,'cancelled',$3 FROM withdrawn) SELECT changed.*,(SELECT was_sent FROM target) AS was_sent,ARRAY(SELECT id FROM confirms WHERE was_sent ORDER BY id) AS confirms_sent FROM changed", &[&device,&id,&username]).await.map_err(|e|e.to_string())?;
+    Ok(row.map(|row| {
+        let was_sent: bool = row.get("was_sent");
+        let confirms: Vec<i64> = row.get("confirms_sent");
+        let op: Option<String> = row.get("op");
+        let warning = if !confirms.is_empty() {
+            Some(format!(
+                "cancelled, but confirmation {} was already sent to the logger: the operation may still run; its ack will show the outcome",
+                confirms.iter().map(i64::to_string).collect::<Vec<_>>().join(", ")
+            ))
+        } else if was_sent && matches!(op.as_deref(), Some("confirm")) {
+            Some("cancelled, but this confirmation was already sent to the logger: the operation may still run; its ack will show the outcome".to_owned())
+        } else {
+            None
+        };
+        (command(row), warning)
+    }))
 }
 /// Level alert rows as the revision 1 tests read them.
 #[cfg(test)]

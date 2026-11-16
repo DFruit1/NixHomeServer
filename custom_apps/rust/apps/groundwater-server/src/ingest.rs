@@ -894,16 +894,20 @@ async fn handle_rev2(
         channel: &route.channel,
         received_at: delivery.received_at,
         retained,
-        delivery_id,
+        delivery_id: Some(delivery_id),
         policy: crate::config::rev2_policy(),
     };
     // A message PostgreSQL refuses for its content fails the same way on
     // every retry; persist_publish would retry it forever without acking,
-    // stalling the session for every logger. Keep it as a rejection.
+    // stalling the session for every logger. Only transient failures are
+    // retried. Derived work for data/stream and data/file runs in its own
+    // savepoints inside rev2_store and never costs the raw rows; this outer
+    // savepoint only catches what is left.
     let stored = tx
         .savepoint("rev2_store")
         .await
         .map_err(|e| format!("rev2 savepoint: {e}"))?;
+    let mut failed = None;
     let outcome = match crate::rev2_store::store(&stored, &context, delivery.payload).await {
         Ok(outcome) => {
             stored
@@ -912,16 +916,48 @@ async fn handle_rev2(
                 .map_err(|e| format!("rev2 savepoint release: {e}"))?;
             outcome
         }
-        Err(error) if content_error(&error) => {
+        Err(error) if crate::rev2_store::transient_error(&error) => return Err(error),
+        Err(error) => {
             stored
                 .rollback()
                 .await
                 .map_err(|e| format!("rev2 savepoint rollback: {e}"))?;
-            crate::rev2_store::Outcome::rejected(format!("not storable: {error}"))
+            if binary {
+                // Whatever failed, the verified bytes the logger is about to
+                // free are kept.
+                tx.execute(
+                    "INSERT INTO stream_batches(device_id,delivery_id,received_at,channel,encoding,raw,size,ok,error)
+                     VALUES($1,$2,$3,$4,'raw',$5,$6,false,$7)",
+                    &[
+                        &route.device_id,
+                        &delivery_id,
+                        &delivery.received_at,
+                        &route.channel,
+                        &delivery.payload,
+                        &(delivery.payload.len() as i32),
+                        &format!("not stored: {error}"),
+                    ],
+                )
+                .await
+                .map_err(|e| format!("rev2 raw salvage: {e}"))?;
+            }
+            if content_error(&error) {
+                crate::rev2_store::Outcome::rejected(format!("not storable: {error}"))
+            } else {
+                failed = Some(format!("storing failed: {error}"));
+                crate::rev2_store::Outcome::default()
+            }
         }
-        Err(error) => return Err(error),
     };
-    if let Some(reason) = &outcome.rejected {
+    if let Some(reason) = &failed {
+        // Not the message's fault: kept visible apart from invalid content.
+        tx.execute(
+            "UPDATE deliveries SET state='quarantined',reason='rev2-store-failed',detail=$2 WHERE id=$1",
+            &[&delivery_id, reason],
+        )
+        .await
+        .map_err(|e| format!("rev2 store failure: {e}"))?;
+    } else if let Some(reason) = &outcome.rejected {
         tx.execute(
             "UPDATE deliveries SET state='quarantined',reason='rev2-invalid',detail=$2 WHERE id=$1",
             &[&delivery_id, reason],
@@ -942,6 +978,14 @@ async fn handle_rev2(
     {
         let mut guard = stats.lock().await;
         guard.deliveries += 1;
+        if let Some(reason) = &failed {
+            guard.quarantined += 1;
+            guard.last_quarantine_reason = Some("rev2-store-failed".into());
+            eprintln!(
+                "groundwater: revision 2 {} from {} kept but not stored: {reason}",
+                route.channel, route.device_id
+            );
+        }
         if let Some(reason) = &outcome.rejected {
             guard.quarantined += 1;
             guard.last_quarantine_reason = Some("rev2-invalid".into());
@@ -962,15 +1006,15 @@ async fn handle_rev2(
     Ok(())
 }
 
-/// Whether a storage error names an SQLSTATE that depends only on the
-/// message content (`rev2_store::dberr` appends `[CODE]`): class 22 data
-/// exceptions (a NUL in text or JSONB, a value out of range) and 54 program
-/// limits. Connection, lock and constraint races stay retryable.
+/// Whether a storage error is caused by the message content itself, so the
+/// message is invalid: text or JSON the database cannot hold (22021 a NUL
+/// or bad encoding, 22P05 an untranslatable character) or a program limit
+/// (54). Every other non-transient error (a value out of range computed
+/// from stored state, a constraint) is a storing failure, not invalid
+/// content: see `handle_rev2`.
 fn content_error(error: &str) -> bool {
-    error
-        .rsplit_once('[')
-        .and_then(|(_, code)| code.strip_suffix(']'))
-        .is_some_and(|code| code.len() == 5 && (code.starts_with("22") || code.starts_with("54")))
+    crate::rev2_store::sqlstate(error)
+        .is_some_and(|code| matches!(code, "22021" | "22P05") || code.starts_with("54"))
 }
 
 #[cfg(test)]
@@ -982,10 +1026,23 @@ mod tests {
         assert!(content_error(
             "info update: invalid byte sequence for encoding \"UTF8\": 0x00 [22021]"
         ));
-        assert!(content_error("x: integer out of range [22003]"));
+        // Out of range is usually computed from stored state (R1): a
+        // storing failure, not invalid content.
+        assert!(!content_error("x: integer out of range [22003]"));
+        assert!(!content_error("x: timestamp out of range [22008]"));
         assert!(!content_error("x: deadlock detected [40P01]"));
         assert!(!content_error("x: duplicate key [23505]"));
         assert!(!content_error("x: connection closed"));
+        assert!(crate::rev2_store::transient_error(
+            "x: deadlock detected [40P01]"
+        ));
+        assert!(crate::rev2_store::transient_error("x: connection closed"));
+        assert!(!crate::rev2_store::transient_error(
+            "x: timestamp out of range [22008]"
+        ));
+        assert!(!crate::rev2_store::transient_error(
+            "x: duplicate key [23505]"
+        ));
     }
 
     #[test]

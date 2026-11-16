@@ -174,7 +174,12 @@ BEGIN
     IF TG_OP='INSERT' AND NEW.state='open' THEN tr:='open'; at:=NEW.opened_at;
     ELSIF TG_OP='UPDATE' AND NEW.state='resolved' AND OLD.state='open' THEN tr:='resolved'; at:=COALESCE(NEW.resolved_at,now());
     ELSE RETURN NEW; END IF;
-    IF at < now()-interval '24 hours' THEN RETURN NEW; END IF;
+    -- An operator who was told (or is about to be told) about an alarm is
+    -- always told when it cleared, however late the logger reported it.
+    IF at < now()-interval '24 hours' AND NOT (tr='resolved' AND EXISTS(SELECT 1 FROM notification_outbox o
+            WHERE o.alert_id=NEW.id AND o.transition='open' AND o.state IN ('pending','sent'))) THEN
+        RETURN NEW;
+    END IF;
     BEGIN
         INSERT INTO notification_outbox(device_id,kind,severity,transition,alert_id,event,occurred_at,details,dedupe_key)
         VALUES(NEW.device_id,NEW.kind,groundwater_alert_severity(NEW.kind),tr,NEW.id,NEW.kind,GREATEST(at,NEW.opened_at),
