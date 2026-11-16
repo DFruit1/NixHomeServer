@@ -18,7 +18,7 @@ assigned checkout. Skills supply procedures within the authorized task scope.
 | Coding, debugging and focused application checks | [nixhomeserver-development](.agents/skills/nixhomeserver-development/SKILL.md) |
 | Scoped code review and bounded re-review | [review-loop](.agents/skills/review-loop/SKILL.md) |
 | Validation, builds, deployment or recovery | [nixhomeserver-safe-change](.agents/skills/nixhomeserver-safe-change/SKILL.md) |
-| Gather unfinished work, complete and integrate it, then deploy | [nixhomeserver-finish-and-switch](.agents/skills/nixhomeserver-finish-and-switch/SKILL.md) |
+| Commit finished uncommitted work and deploy it | [nixhomeserver-finish-and-switch](.agents/skills/nixhomeserver-finish-and-switch/SKILL.md) |
 | Application module boundaries, integrations or removal | [nixhomeserver-module-change](.agents/skills/nixhomeserver-module-change/SKILL.md) |
 | Rendered frontend implementation or review | [frontend-design](.agents/skills/frontend-design/SKILL.md) |
 
