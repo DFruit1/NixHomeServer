@@ -129,8 +129,27 @@ Common fields `{"v":2,"t":..,"tv":..,"ev":"<event>","seq":<ring seq or omitted>}
 
 Alerts are a notification copy. The authoritative record arrives in
 `data/stream`. Alerts raised while asleep are published at the next connection;
-an alarm entry, impact, sensor fault, power critical or Tail Lock brings the
-next connection forward (subject to the 10 % rule).
+an alarm entry, impact, sensor fault, power critical, MRAM almost full or Tail
+Lock brings the next connection forward (subject to the 10 % rule). A
+`gps_moved` or `orientation` alert connects at once: it is not held by the
+send schedule, the 10 % rule or the back-off after failed connections (owner
+decision 2026-11-16; both are latched, so one occurrence asks once).
+
+`ss` (sensor status, also in Type 0/1/5/17 records and `reading` /
+`test/result`): 0 ok, 1 no sensor / open loop (< 3.5 mA), 2 under-range
+(3.5–3.9 mA), 3 over-range (> 20.5 mA), 4 ADC fault, 5 level factors invalid.
+Statuses 1–4 are sensor faults. Owner decision 2026-11-16: a reading with
+status 2 or 3 usually means a failed or failing sensor, or a level outside
+the sensor's range; show it as "out of range: possible sensor failure",
+saying under- or over-range. Such a reading keeps its status (and the level
+computed from the out-of-range current, which is not trustworthy) in its
+record, and level alarms are **not evaluated** on any reading with status 1–4:
+no `gwl_alarm` enter or exit, the alarm state is frozen until an in-range
+reading. The fault itself is reported by `sensor_fault` (Type 17), which is
+urgent. `ss` in a `sensor_fault` enter is the new fault's status; in an exit
+it is the status that ended. A change from one fault status to another
+(say under-range to over-range) is an exit for the old status followed by an
+enter for the new one, so enter and exit always alternate.
 Impacts are rate limited: at most one Type 11 record and `impact` alert per
 10 minutes. Taps inside that hold-off are not recorded on their own; the
 highest of their peaks is recorded at the first wake after it, with that time.
@@ -245,6 +264,11 @@ Keys in `args` (Rev2 TLV settings plus three firmware settings). A missing key k
 | `attempts` | int 1 … 10 (MQTT connect attempts) | 3 | 0x14 |
 | `listen_s` | int 10 … 600 (command window) | 60 | 0x15 |
 
+Floats in `settings` objects (acks, `get_settings`) carry 7 significant
+digits. A request whose values all match the current settings (floats within
+16 units in the last place, so an echo of those 7-digit values matches) is
+acked `ok` with the current `gen`; no new generation is made.
+
 Rule: the whole request is validated first. Any present key with an invalid
 value → `rejected` (`reason":"bad-args"`, `results` names it), nothing changes.
 Unknown keys → `unsupported` in `results`, the rest is applied, status `partial`.
@@ -266,7 +290,7 @@ A change follows Rev2 "Applying a settings change" and the ack carries the new
 | `file_chunk` | `{"path":"/GWL/6A1B2C3D/B0000001.BIN","off":0,"len":1024}` | publishes `data/file`; ack `data` `{"off":..,"len":..,"size":..,"crc32":"…"}` |
 | `clear_error_latch` | — | clears `err` and latched SD/MRAM fault states |
 | `enable_logging` | — | resumes logging (Type 16 gap reason 4, anchor) |
-| `sync_time` | `{"t":<UTC s>}` | sets the RTC (source 3) when invalid or > 2 s off; Type 15 |
+| `sync_time` | `{"t":<UTC s>}` | sets the RTC (source 3) when invalid or > 2 s off; Type 15. `t` is advanced by the time the command waited in the logger's queue. `data`: `{"t":..,"tv":..,"set":true\|false}` (the clock afterwards; `set` false when it was already within 2 s). A `t` outside 2024–2099 → `failed`/`bad-args` |
 
 ### cmd/danger
 `reboot` needs no nonce (ack `ok` is published before the reset).

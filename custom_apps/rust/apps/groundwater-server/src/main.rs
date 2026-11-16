@@ -21,6 +21,8 @@ mod db;
 mod fixtures;
 mod identity;
 mod ingest;
+#[cfg(test)]
+mod ingest_tests;
 mod metrics;
 mod mqtt_auth;
 mod notify;

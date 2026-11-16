@@ -518,6 +518,15 @@ BEGIN
             UNION ALL SELECT seq FROM device_tests WHERE device_id=target AND log_id=target_log AND seq<a_seq
                 AND (time_valid IS NOT FALSE OR time_rel_s>a_rel)
         ) earlier;
+        -- A boot resumes numbering at the reserved block end, so the
+        -- previous boot normally ends at a sequence skip. A boot that died
+        -- within seconds has relative times no later than this anchor's;
+        -- the skip keeps its records out. (A frame not received yet also
+        -- ends the run: those records are converted when it arrives.)
+        SELECT GREATEST(boundary,COALESCE(max(f.seq),0)) INTO boundary FROM stream_frames f
+            WHERE f.device_id=target AND f.log_id=target_log AND f.seq BETWEEN boundary AND a_seq
+              AND NOT EXISTS(SELECT 1 FROM stream_frames p
+                  WHERE p.device_id=target AND p.log_id=target_log AND p.seq=f.seq-1);
         shift:=cs.new_time-cs.uptime_s;
         UPDATE observations SET recorded_at=to_timestamp(time_rel_s+shift),time_source='clock-set',
             time_quality=groundwater_time_quality(to_timestamp(time_rel_s+shift),received_at),
