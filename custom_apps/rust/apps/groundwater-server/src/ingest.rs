@@ -823,7 +823,7 @@ async fn handle_rev2(
     bus: &EventBus,
     stats: &Arc<tokio::sync::Mutex<IngestStats>>,
 ) -> Result<(), String> {
-    let tx = client.transaction().await.map_err(|e| e.to_string())?;
+    let mut tx = client.transaction().await.map_err(|e| e.to_string())?;
     let binary = matches!(route.channel.as_str(), "data/stream" | "data/file");
     let text = std::str::from_utf8(delivery.payload).ok();
     let mut record = adapter::DeliveryRecord {
@@ -897,7 +897,30 @@ async fn handle_rev2(
         delivery_id,
         policy: crate::config::rev2_policy(),
     };
-    let outcome = crate::rev2_store::store(&tx, &context, delivery.payload).await?;
+    // A message PostgreSQL refuses for its content fails the same way on
+    // every retry; persist_publish would retry it forever without acking,
+    // stalling the session for every logger. Keep it as a rejection.
+    let stored = tx
+        .savepoint("rev2_store")
+        .await
+        .map_err(|e| format!("rev2 savepoint: {e}"))?;
+    let outcome = match crate::rev2_store::store(&stored, &context, delivery.payload).await {
+        Ok(outcome) => {
+            stored
+                .commit()
+                .await
+                .map_err(|e| format!("rev2 savepoint release: {e}"))?;
+            outcome
+        }
+        Err(error) if content_error(&error) => {
+            stored
+                .rollback()
+                .await
+                .map_err(|e| format!("rev2 savepoint rollback: {e}"))?;
+            crate::rev2_store::Outcome::rejected(format!("not storable: {error}"))
+        }
+        Err(error) => return Err(error),
+    };
     if let Some(reason) = &outcome.rejected {
         tx.execute(
             "UPDATE deliveries SET state='quarantined',reason='rev2-invalid',detail=$2 WHERE id=$1",
@@ -939,9 +962,31 @@ async fn handle_rev2(
     Ok(())
 }
 
+/// Whether a storage error names an SQLSTATE that depends only on the
+/// message content (`rev2_store::dberr` appends `[CODE]`): class 22 data
+/// exceptions (a NUL in text or JSONB, a value out of range) and 54 program
+/// limits. Connection, lock and constraint races stay retryable.
+fn content_error(error: &str) -> bool {
+    error
+        .rsplit_once('[')
+        .and_then(|(_, code)| code.strip_suffix(']'))
+        .is_some_and(|code| code.len() == 5 && (code.starts_with("22") || code.starts_with("54")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_content_errors_are_permanent() {
+        assert!(content_error(
+            "info update: invalid byte sequence for encoding \"UTF8\": 0x00 [22021]"
+        ));
+        assert!(content_error("x: integer out of range [22003]"));
+        assert!(!content_error("x: deadlock detected [40P01]"));
+        assert!(!content_error("x: duplicate key [23505]"));
+        assert!(!content_error("x: connection closed"));
+    }
 
     #[test]
     fn event_bus_delivers_to_subscribers_and_survives_no_listeners() {
