@@ -512,6 +512,17 @@ details .table-scroll {
   padding-block: var(--space-5);
   border-block-end: 1px solid var(--border);
 }
+.typed-action + .typed-action,
+.command-section > button + .typed-action {
+  margin-block-start: var(--space-5);
+}
+.typed-action .field {
+  flex: 0 1 18rem;
+}
+.typed-action > p {
+  margin-block: 0 var(--space-2);
+  max-inline-size: 70ch;
+}
 .state {
   display: inline-block;
   font-size: var(--text-small);

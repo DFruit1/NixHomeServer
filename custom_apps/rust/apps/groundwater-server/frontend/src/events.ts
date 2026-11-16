@@ -114,7 +114,11 @@ export function eventSummary(event: Pick<DeviceEvent, "event" | "details">) {
       return `Sensor fault ${d.state === "exit" ? "ended" : "started"} · ${what} · ${d.sensor_mv ?? d.mv ?? "?"} mV`;
     }
     case "power_critical":
-      return `Power ${d.state ?? ""} · battery ${mv(d.bat_mv)}, solar ${mv(d.sol_mv)}`;
+      return `Power critical ${d.state === "exit" ? "ended" : "started"} · battery ${mv(d.bat_mv)}, solar ${mv(d.sol_mv)}`;
+    case "gap_requested":
+      return `Asked the logger to resend seq ${d.from_seq ?? "?"}–${d.to_seq ?? "?"} of log ${d.log_id ?? "?"} (command #${d.command_id ?? "?"})`;
+    case "challenge_held":
+      return `Danger command #${d.command_id ?? "?"} waiting for an operator's confirmation (${d.unsaved_frames ?? 0} unsaved frames)`;
     case "storage_warning":
       return `${String(d.kind ?? "storage").replaceAll("_", " ")}${typeof d.unsaved === "number" ? ` · ${d.unsaved} of ${d.usable ?? "?"} bytes unsaved` : ""}`;
     case "clock_set":

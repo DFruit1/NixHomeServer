@@ -38,6 +38,7 @@ import {
 import { deviceProblems } from "./attention";
 import { devicePath, useJson, useNow } from "./hooks";
 import type {
+  Alert,
   Device,
   DeviceEvent,
   HealthSample,
@@ -48,6 +49,8 @@ import type {
 import { LoadState, Meter, TableRegion, When, WindowPicker } from "./widgets";
 
 type ViewProps = { device: Device; revision: number; operator: boolean };
+/** `openAlerts`: this device's open alerts, named in "Needs attention". */
+type OverviewProps = ViewProps & { openAlerts?: Alert[] };
 
 const viewHref = (device: string, view: string) =>
   `#${query({ device, view })}`;
@@ -129,13 +132,13 @@ export const HealthFacts = component$<{
   );
 });
 
-export const Overview = component$<ViewProps>((props) => {
+export const Overview = component$<OverviewProps>((props) => {
   const now = useNow(1000);
   const d = props.device;
   const info = (d.info || {}) as Record<string, unknown>;
   const expected = d.expected_contact_at || d.next_contact_at;
   const left = secondsLeft(expected, now.value);
-  const problems = deviceProblems(d);
+  const problems = deviceProblems(d, props.openAlerts);
   return (
     <>
       {problems.length > 0 && (
@@ -278,6 +281,20 @@ export const Overview = component$<ViewProps>((props) => {
 
 const toV = (mv: number | null) => (mv == null ? null : mv / 1000);
 
+/** SD or MRAM state across a window of health samples (newest first): the
+ * states the charts cannot show. */
+export function storageText(
+  label: string,
+  rows: { recorded_at: string; state: string | null | undefined }[],
+) {
+  const known = rows.filter((r) => r.state);
+  if (known.length === 0) return `${label} not reported`;
+  const bad = known.filter((r) => r.state !== "ok");
+  if (bad.length === 0) return `${label} ok in every sample`;
+  const states = [...new Set(bad.map((r) => r.state))].join("/");
+  return `${label} ${states} in ${bad.length} of ${known.length} samples, last ${stamp(bad[0].recorded_at)}; latest ${known[0].state}`;
+}
+
 export const HealthView = component$<ViewProps>((props) => {
   const hours = useSignal(168);
   const url = useComputed$(() => {
@@ -316,6 +333,17 @@ export const HealthView = component$<ViewProps>((props) => {
       />
       {rows.length > 0 && (
         <>
+          <p>
+            {storageText(
+              "SD",
+              rows.map((r) => ({ recorded_at: r.recorded_at, state: r.sd })),
+            )}
+            {" · "}
+            {storageText(
+              "MRAM",
+              rows.map((r) => ({ recorded_at: r.recorded_at, state: r.mram })),
+            )}
+          </p>
           <div class="secondary-charts">
             <TimeChart
               title="Battery"
@@ -330,6 +358,7 @@ export const HealthView = component$<ViewProps>((props) => {
               from={from}
               to={to}
               gapMinutes={gap}
+              nonNegative
             />
             <TimeChart
               title="Solar"
@@ -344,6 +373,7 @@ export const HealthView = component$<ViewProps>((props) => {
               from={from}
               to={to}
               gapMinutes={gap}
+              nonNegative
             />
             <TimeChart
               title="Signal"
@@ -360,6 +390,7 @@ export const HealthView = component$<ViewProps>((props) => {
               from={from}
               to={to}
               gapMinutes={gap}
+              nonNegative
               digits={0}
             />
             <TimeChart
@@ -384,6 +415,7 @@ export const HealthView = component$<ViewProps>((props) => {
               from={from}
               to={to}
               gapMinutes={gap}
+              nonNegative
               digits={0}
             />
           </div>
@@ -443,9 +475,13 @@ export const HealthView = component$<ViewProps>((props) => {
 });
 
 function eventTime(e: DeviceEvent) {
-  if (e.recorded_at) return stamp(e.recorded_at);
+  if (e.recorded_at) {
+    // Loggers report at their next connection; say when it arrived if late.
+    const lag = Date.parse(e.received_at) - Date.parse(e.recorded_at);
+    return `${stamp(e.recorded_at)}${lag > 15 * 60000 ? ` · reported ${duration(lag)} later` : ""}`;
+  }
   if (e.time_valid === false && e.time_rel_s != null)
-    return `Clock not set · ${duration(e.time_rel_s * 1000)} after boot`;
+    return `Clock not set · ${duration(e.time_rel_s * 1000)} after boot · received ${stamp(e.received_at)}`;
   return `Received ${stamp(e.received_at)}`;
 }
 
@@ -567,7 +603,20 @@ export const EventsView = component$<ViewProps>((props) => {
   );
 });
 
-const FIX_TEXT = ["no fix", "no fix", "2D", "3D"];
+/** Ring records (Type 3) code the fix 0 none, 1 2D, 2 3D; the `gps` JSON
+ * sends that plus one (NMEA style, 3 = 3D). The API stores both as sent. */
+/** Type 4 tilt record reason (design extract). */
+const TILT_REASON: Record<number, string> = {
+  1: "scheduled",
+  2: "test",
+  3: "commanded",
+};
+
+export function fixText(p: Pick<Position, "fix" | "source">) {
+  if (p.fix == null) return "fix unknown";
+  const fix = p.source === "json" ? p.fix - 1 : p.fix;
+  return ["no fix", "2D", "3D"][fix] ?? `fix ${p.fix}`;
+}
 const PLOT_W = 640,
   PLOT_H = 360;
 
@@ -597,7 +646,16 @@ export const LocationView = component$<ViewProps>((props) => {
         )
         .join(" ")
     : "";
-  const first = fixes[fixes.length - 1];
+  // Whether it moved: the fix in this list farthest from the latest one.
+  const farthest = latest
+    ? fixes.reduce<{ fix: (typeof fixes)[number]; m: number } | null>(
+        (best, f) => {
+          const m = distanceM(f, latest as Fix);
+          return !best || m > best.m ? { fix: f, m } : best;
+        },
+        null,
+      )
+    : null;
   const tiltRows = tilt.state.data?.tilt || [];
   const tiltOrdered = [...tiltRows].reverse().filter((r) => r.recorded_at);
   const tFrom = tiltOrdered.length
@@ -653,15 +711,16 @@ export const LocationView = component$<ViewProps>((props) => {
               <div>
                 <dt>Quality</dt>
                 <dd>
-                  {FIX_TEXT[latest.fix ?? 0] || latest.fix} · HDOP{" "}
-                  {number(latest.hdop, 1)} · {latest.satellites ?? "?"}{" "}
-                  satellites
+                  {fixText(latest)} · HDOP {number(latest.hdop, 1)} ·{" "}
+                  {latest.satellites ?? "?"} satellites
                 </dd>
               </div>
               <div>
-                <dt>Drift from first fix shown</dt>
+                <dt>Farthest earlier fix</dt>
                 <dd>
-                  {first ? formatDistance(distanceM(first, latest)) : "—"}
+                  {farthest && farthest.m > 0
+                    ? `${formatDistance(farthest.m)} away, ${stamp(farthest.fix.recorded_at || farthest.fix.received_at)}`
+                    : "—"}
                 </dd>
               </div>
             </dl>
@@ -771,8 +830,8 @@ export const LocationView = component$<ViewProps>((props) => {
                             : "no position"}
                         </td>
                         <td>
-                          {FIX_TEXT[p.fix ?? 0] || p.fix} / {number(p.hdop, 1)}{" "}
-                          / {p.satellites ?? "—"}
+                          {fixText(p)} / {number(p.hdop, 1)} /{" "}
+                          {p.satellites ?? "—"}
                         </td>
                         <td>{p.alt_m != null ? `${p.alt_m} m` : "—"}</td>
                         <td>
@@ -838,7 +897,7 @@ export const LocationView = component$<ViewProps>((props) => {
                   <th>Recorded</th>
                   <th>Pitch / roll</th>
                   <th>Acceleration x / y / z (mg)</th>
-                  <th>Status / reason</th>
+                  <th>Accelerometer / reason</th>
                 </tr>
               </thead>
               <tbody>
@@ -856,7 +915,12 @@ export const LocationView = component$<ViewProps>((props) => {
                       {r.accel_z_mg ?? "—"}
                     </td>
                     <td>
-                      {show(r.accel_status)} / {show(r.reason)}
+                      {r.accel_status === 0
+                        ? "ok"
+                        : r.accel_status === 1
+                          ? "no response"
+                          : show(r.accel_status)}{" "}
+                      / {TILT_REASON[r.reason ?? -1] ?? show(r.reason)}
                     </td>
                   </tr>
                 ))}

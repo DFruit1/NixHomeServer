@@ -18,12 +18,15 @@ import type {
   SeriesPoint,
 } from "./types";
 import { datumLabel, datumUnit } from "./ops";
-import { ALERT_KIND_LABEL, alertValue } from "./alerts";
+import { alertLabel, alertValue } from "./alerts";
 import { deviceProblems } from "./attention";
 import { observationProblem } from "./events";
 import { csqText, millivolts } from "./format";
 
-export const Fleet = component$<{ devices: Device[] }>((props) => {
+export const Fleet = component$<{
+  devices: Device[];
+  openAlerts?: Alert[];
+}>((props) => {
   const search = useSignal("");
   // Loggers that need attention come first; the order is otherwise stable.
   const devices = props.devices
@@ -32,7 +35,13 @@ export const Fleet = component$<{ devices: Device[] }>((props) => {
         .toLowerCase()
         .includes(search.value.toLowerCase()),
     )
-    .map((device) => ({ device, problems: deviceProblems(device) }))
+    .map((device) => ({
+      device,
+      problems: deviceProblems(
+        device,
+        props.openAlerts?.filter((a) => a.device_id === device.device_id),
+      ),
+    }))
     .sort(
       (a, b) => Number(b.problems.length > 0) - Number(a.problems.length > 0),
     );
@@ -244,8 +253,7 @@ export const AlertList = component$<{ alerts: Alert[]; compact?: boolean }>(
                       <strong
                         class={alert.state === "open" ? "error-text" : ""}
                       >
-                        {ALERT_KIND_LABEL[alert.kind] ||
-                          alert.kind.replaceAll("_", " ")}
+                        {alertLabel(alert)}
                       </strong>
                       <small>
                         #{alert.id} · {alert.state}
@@ -596,10 +604,9 @@ export const RawLog = component$<{ device: string; revision: number }>(
             </a>
           </p>
         )}
-        <p>
-          Operator-only evidence. The latest 100 matching deliveries are shown.
-          Unattributed and rejected messages appear in the all-deliveries view.
-          Self-test output appears on the testresults topic.
+        <p class="muted">
+          The latest 100 matching deliveries, newest first
+          {props.device ? "" : ", including unattributed and quarantined ones"}.
         </p>
         <form
           class="toolbar"
@@ -646,7 +653,16 @@ export const RawLog = component$<{ device: string; revision: number }>(
             <details key={`${delivery.received_at}-${index}`}>
               <summary>
                 {stamp(delivery.received_at)} · {delivery.topic}
-                <span class="state">{delivery.state}</span>
+                <span
+                  class={
+                    delivery.state === "accepted" ? "state" : "state error-text"
+                  }
+                >
+                  {delivery.state}
+                </span>
+                {delivery.state !== "accepted" && delivery.reason && (
+                  <small class="error-text">{delivery.reason}</small>
+                )}
               </summary>
               <dl class="facts">
                 <div>

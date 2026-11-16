@@ -7,7 +7,7 @@ import {
   type QRL,
   type Signal,
 } from "@builder.io/qwik";
-import { errorText, stamp } from "./api";
+import { CLOCK_FLOOR_MS, errorText, stamp } from "./api";
 import { ackOutcome } from "./config";
 import {
   EXPIRY_PRESETS,
@@ -43,7 +43,8 @@ export const Rev2Console = component$<ConsoleProps>((props) => {
     len: "1024",
   });
   const basicExpiry = useSignal(7 * 86400),
-    dangerExpiry = useSignal(86400),
+    // 0: the logger's next connection plus one hour (see dangerDefault).
+    dangerExpiry = useSignal(0),
     customBasic = useSignal(""),
     customDanger = useSignal("");
   const confirm = useSignal(""),
@@ -73,8 +74,15 @@ export const Rev2Console = component$<ConsoleProps>((props) => {
   const expiryValue = (preset: number, custom: string) =>
     custom.trim() ? Number(custom.trim()) : preset;
   const basicArgs = opArgs(basic.value, args);
+  const now = useNow(30000);
   const basicSeconds = expiryValue(basicExpiry.value, customBasic.value);
-  const dangerSeconds = expiryValue(dangerExpiry.value, customDanger.value);
+  const untilNext = (at: number) => nextConnectionExpiry(props.device, at);
+  const dangerSecondsAt = (at: number) =>
+    expiryValue(
+      dangerExpiry.value === 0 ? (untilNext(at) ?? 86400) : dangerExpiry.value,
+      customDanger.value,
+    );
+  const dangerSeconds = dangerSecondsAt(now.value);
   const handshake = (caps.handshake_ops || []).includes(danger.value);
   return (
     <section aria-labelledby="console-heading">
@@ -232,7 +240,7 @@ export const Rev2Console = component$<ConsoleProps>((props) => {
               op: danger.value,
               confirm: "DANGER",
               auto_confirm: handshake && autoConfirm.value,
-              expires_in_s: dangerSeconds,
+              expires_in_s: dangerSecondsAt(Date.now()),
             },
             danger.value,
           );
@@ -269,8 +277,20 @@ export const Rev2Console = component$<ConsoleProps>((props) => {
             id="danger"
             preset={dangerExpiry}
             custom={customDanger}
+            next={untilNext(now.value) != null}
           />
         </div>
+        {!expiryError(dangerSeconds) && (
+          <p class="muted">
+            Expires{" "}
+            {stamp(new Date(now.value + dangerSeconds * 1000).toISOString())}
+            {dangerExpiry.value === 0 && !customDanger.value.trim()
+              ? untilNext(now.value) != null
+                ? ", one hour after the logger's announced next connection."
+                : ": the next connection is not known, so one day."
+              : "."}
+          </p>
+        )}
         {danger.value && <p class="muted">{OP_HELP[danger.value]}</p>}
         {unsupported.length > 0 && (
           <p class="muted">
@@ -326,22 +346,42 @@ export const Rev2Console = component$<ConsoleProps>((props) => {
   );
 });
 
+/** Seconds from `now` until one hour after the logger's announced next
+ * connection, or null when that is unknown or not in the future. A weekly
+ * logger never sees a danger command that expires after a day. */
+export function nextConnectionExpiry(device: Device, now: number) {
+  if (device.status === "awake") return null;
+  const at = Date.parse(
+    device.expected_contact_at || device.next_contact_at || "",
+  );
+  if (!Number.isFinite(at) || at < CLOCK_FLOOR_MS || at <= now) return null;
+  return Math.min(
+    2592000,
+    Math.max(60, Math.ceil((at + 3600000 - now) / 1000)),
+  );
+}
+
+/** `preset` 0 is "next connection + 1 h"; offered only when `next`. */
 export const ExpiryField = component$<{
   id: string;
   preset: Signal<number>;
   custom: Signal<string>;
+  next?: boolean;
 }>((props) => (
   <>
     <label class="field" for={`${props.id}-expiry`}>
       Expires after
       <select
         id={`${props.id}-expiry`}
-        value={String(props.preset.value)}
+        value={String(
+          props.preset.value === 0 && !props.next ? 86400 : props.preset.value,
+        )}
         onChange$={(_, el) => {
           props.preset.value = Number(el.value);
           props.custom.value = "";
         }}
       >
+        {props.next && <option value="0">Next connection + 1 hour</option>}
         {EXPIRY_PRESETS.map(([seconds, label]) => (
           <option key={seconds} value={String(seconds)}>
             {label}
@@ -355,7 +395,7 @@ export const ExpiryField = component$<{
         id={`${props.id}-expiry-custom`}
         inputMode="numeric"
         value={props.custom.value}
-        placeholder={String(props.preset.value)}
+        placeholder={props.preset.value ? String(props.preset.value) : ""}
         onInput$={(_, el) => {
           props.custom.value = el.value;
         }}
