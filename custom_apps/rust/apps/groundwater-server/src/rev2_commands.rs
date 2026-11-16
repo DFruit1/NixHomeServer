@@ -1723,7 +1723,7 @@ mod db_tests {
             channel,
             received_at: Utc::now(),
             retained: false,
-            delivery_id: 0,
+            delivery_id: Some(0),
             policy: &policy,
         };
         let object = rev2::object(value.to_string().as_bytes()).unwrap();

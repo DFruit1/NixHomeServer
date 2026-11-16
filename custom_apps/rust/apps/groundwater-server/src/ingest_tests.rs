@@ -297,3 +297,151 @@ async fn a_clock_set_converts_only_its_own_boot() {
     );
     assert_eq!(at(1).await, None, "the earlier boot has no clock");
 }
+
+fn damaged_anchor(seq: u32, t: u32, interval: u32) -> Vec<u8> {
+    let mut p = t.to_le_bytes().to_vec();
+    p.push(0x03); // valid UTC
+    p.extend_from_slice(&1u32.to_le_bytes());
+    p.extend_from_slice(&[3, 1]);
+    p.extend_from_slice(&interval.to_le_bytes());
+    p.extend_from_slice(&1200u16.to_le_bytes());
+    p.extend_from_slice(&5000i32.to_le_bytes());
+    p.push(0);
+    crate::stream::encode::frame(1, seq, &p)
+}
+
+// R1 (independent review): one CRC-8-valid but damaged anchor
+// (interval_s 0xEE000384) made time resolution overflow for every later
+// batch that paired readings with it. The SQL error was classed "content":
+// the batch was rolled back (raw bytes included), quarantined and acked,
+// so the logger freed it from MRAM. Now the raw rows are always stored,
+// and an impossible time leaves the reading unresolved with the reason.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn a_damaged_anchor_never_costs_later_batches() {
+    use crate::stream::encode::batch;
+    let mut h = Harness::new().await;
+    let b1 = [damaged_anchor(1, 1_763_300_000, 0xEE00_0384), routine(2, 1)];
+    h.publish("data/stream", &batch(4, 0, 0, &b1))
+        .await
+        .unwrap();
+    let start = b1.iter().map(Vec::len).sum::<usize>() as u32;
+    let b2: Vec<Vec<u8>> = (3..43).map(|s| routine(s, (s * 70) as u16)).collect();
+    h.publish("data/stream", &batch(4, start, 0, &b2))
+        .await
+        .unwrap();
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM deliveries WHERE state='quarantined'")
+            .await,
+        0
+    );
+    assert_eq!(
+        h.scalar::<i64>(
+            "SELECT count(*) FROM stream_batches WHERE first_seq=3 AND raw IS NOT NULL"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM stream_frames").await,
+        42
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM observations").await,
+        42
+    );
+    // seq 2 (index 1) is representable; seq 42 (index 2940) is not.
+    assert_eq!(
+        h.scalar::<i64>(
+            "SELECT count(*) FROM observations WHERE seq=42 AND recorded_at IS NULL
+                AND time_reason LIKE '%outside 1970-2200%'"
+        )
+        .await,
+        1
+    );
+}
+
+fn reading_mv(seq: u32, index: u16, mv: u16) -> Vec<u8> {
+    let mut payload = index.to_le_bytes().to_vec();
+    payload.extend_from_slice(&mv.to_le_bytes());
+    payload.extend_from_slice(&5000i32.to_le_bytes());
+    payload.push(0);
+    crate::stream::encode::frame(0, seq, &payload)
+}
+
+// R1: any failure in derived work (here a database error raised while
+// storing one reading's observation) must keep the raw batch and frames,
+// record the failure where an operator sees it, acknowledge the message
+// and leave the frame flagged so the derivation re-runs at the next start.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn a_failed_derivation_keeps_the_raw_frames_and_reruns() {
+    use crate::stream::encode::batch;
+    let mut h = Harness::new().await;
+    // Fires only for the magic sensor value used here.
+    h.client
+        .batch_execute(
+            "CREATE OR REPLACE FUNCTION gw_test_fail() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN IF NEW.sensor_mv=4242 AND current_setting('gw.test_fail',true)='on' THEN
+                 RAISE EXCEPTION 'test failure' USING ERRCODE='P0001'; END IF; RETURN NEW; END $$;
+             DROP TRIGGER IF EXISTS gw_test_fail ON observations;
+             CREATE TRIGGER gw_test_fail BEFORE INSERT ON observations FOR EACH ROW EXECUTE FUNCTION gw_test_fail();
+             SET gw.test_fail='on';",
+        )
+        .await
+        .unwrap();
+    let frames = [
+        damaged_anchor(1, 1_763_300_000, 900),
+        reading_mv(2, 1, 4242),
+        routine(3, 2),
+    ];
+    let result = h.publish("data/stream", &batch(5, 0, 0, &frames)).await;
+    h.client
+        .batch_execute("SET gw.test_fail='off'")
+        .await
+        .unwrap();
+    result.unwrap();
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM stream_frames").await,
+        3
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM observations").await,
+        2
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM stream_frames WHERE derive_pending AND seq=2")
+            .await,
+        1
+    );
+    assert!(
+        h.scalar::<String>("SELECT detail FROM deliveries")
+            .await
+            .contains("test failure"),
+        "the delivery says what failed"
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM stream_batches WHERE derive_error IS NOT NULL")
+            .await,
+        1
+    );
+    // The reading after the failed one waits instead of pairing across it.
+    let rerun = crate::rev2_store::rederive_pending(&mut h.client, crate::config::rev2_policy())
+        .await
+        .unwrap();
+    h.client
+        .batch_execute("DROP TRIGGER gw_test_fail ON observations; DROP FUNCTION gw_test_fail()")
+        .await
+        .unwrap();
+    assert_eq!(rerun, (1, 0));
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM observations WHERE recorded_at IS NOT NULL")
+            .await,
+        3
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM stream_frames WHERE derive_pending")
+            .await,
+        0
+    );
+}

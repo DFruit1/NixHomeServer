@@ -263,12 +263,14 @@ async fn logs(State(s): State<AppState>, h: HeaderMap, Path(device): Path<String
             'firmware_version',l.firmware_version,'mcu_uid',l.mcu_uid,
             'frames',f.frames,'min_seq',f.min_seq,'max_seq',f.max_seq,'decode_errors',f.decode_errors,
             'conflicting_copies',f.conflicting,'resent_copies',f.resent,
+            'derive_pending',f.derive_pending,'resolve_error',l.resolve_error,
             'open_gaps',(SELECT count(*) FROM stream_gaps g WHERE g.device_id=l.device_id AND g.log_id=l.log_id AND g.state IN ('open','requested')),
             'unrecoverable_gaps',(SELECT count(*) FROM stream_gaps g WHERE g.device_id=l.device_id AND g.log_id=l.log_id AND g.state='unrecoverable'),
             'pending_readings',(SELECT count(*) FROM observations o WHERE o.device_id=l.device_id AND o.log_id=l.log_id AND o.recorded_at IS NULL))
          FROM stream_logs l
          CROSS JOIN LATERAL (SELECT count(*) AS frames,min(seq) AS min_seq,max(seq) AS max_seq,
              count(*) FILTER (WHERE decode_error IS NOT NULL) AS decode_errors,
+             count(*) FILTER (WHERE derive_pending) AS derive_pending,
              COALESCE(sum(conflicting_copies),0) AS conflicting,COALESCE(sum(copies-1),0) AS resent
              FROM stream_frames sf WHERE sf.device_id=l.device_id AND sf.log_id=l.log_id) f
          WHERE l.device_id=$1 ORDER BY l.last_received_at DESC",
@@ -327,7 +329,7 @@ async fn batches(
             'start_pos',start_pos,'end_pos',end_pos,'frame_count',frame_count,'flags',flags,
             'resend',(flags & 1)<>0,'gap_before',(flags & 2)<>0,'from_sd',(flags & 4)<>0,
             'frames_valid',frames_valid,'frames_new',frames_new,'frames_duplicate',frames_duplicate,
-            'issues',issues,'warnings',warnings,'raw_retained',raw IS NOT NULL)
+            'issues',issues,'warnings',warnings,'raw_retained',raw IS NOT NULL,'derive_error',derive_error)
          FROM stream_batches WHERE device_id=$1 ORDER BY received_at DESC,id DESC LIMIT $2",
         &[&device, &q.limit(100)],
     )

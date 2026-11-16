@@ -87,8 +87,16 @@ fn main() -> ExitCode {
 async fn run() -> Result<(), String> {
     let settings = Arc::new(Settings::from_env()?);
     config::install_rev2_policy(settings.rev2.clone());
-    let client = db::connect(&settings.database_url).await?;
+    let mut client = db::connect(&settings.database_url).await?;
     db::migrate(&client).await?;
+    // Derived work that failed for a reason in the data (raw frames kept).
+    match rev2_store::rederive_pending(&mut client, &settings.rev2).await {
+        Ok((0, 0)) => {}
+        Ok((done, failing)) => {
+            eprintln!("groundwater: re-derived {done} stream log(s); {failing} still failing")
+        }
+        Err(err) => eprintln!("groundwater: re-derivation failed: {err}"),
+    }
 
     // Trust state is loaded once so the first message is decided against real
     // enrollments; the ingest loop refreshes it on its own timer.

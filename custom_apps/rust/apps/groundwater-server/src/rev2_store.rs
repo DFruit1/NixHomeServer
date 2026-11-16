@@ -33,7 +33,9 @@ pub struct Context<'a> {
     pub channel: &'a str,
     pub received_at: DateTime<Utc>,
     pub retained: bool,
-    pub delivery_id: i64,
+    /// `None` only when derived work is re-run after the delivery row was
+    /// pruned by retention.
+    pub delivery_id: Option<i64>,
     pub policy: &'a Rev2Policy,
 }
 
@@ -62,6 +64,53 @@ pub(crate) fn dberr(label: &'static str) -> impl Fn(tokio_postgres::Error) -> St
         Some(db) => format!("{label}: {} [{}]", db.message(), db.code().code()),
         None => format!("{label}: {e}"),
     }
+}
+
+/// The SQLSTATE that [`dberr`] appended to a storage error, if any.
+pub(crate) fn sqlstate(error: &str) -> Option<&str> {
+    error
+        .rsplit_once('[')
+        .and_then(|(_, code)| code.strip_suffix(']'))
+        .filter(|code| code.len() == 5)
+}
+
+/// Whether a storage error says nothing about the data and the whole message
+/// must be tried again (not acknowledged): no SQLSTATE (the connection
+/// dropped), connection exceptions (08), transaction rollback (40:
+/// serialization failure, deadlock), insufficient resources (53), object
+/// state (55: lock not available), operator intervention (57: shutdown,
+/// statement timeout) and system errors (58).
+pub(crate) fn transient_error(error: &str) -> bool {
+    sqlstate(error).is_none_or(|code| {
+        ["08", "40", "53", "55", "57", "58"]
+            .iter()
+            .any(|class| code.starts_with(class))
+    })
+}
+
+/// Runs `SAVEPOINT name`; [`end_savepoint`] releases or rolls it back.
+async fn savepoint<C: GenericClient + Sync>(client: &C, name: &str) -> Result<(), String> {
+    client
+        .batch_execute(&format!("SAVEPOINT {name}"))
+        .await
+        .map_err(dberr("savepoint"))
+}
+
+/// Ends a [`savepoint`]: kept when `ok`, otherwise rolled back.
+async fn end_savepoint<C: GenericClient + Sync>(
+    client: &C,
+    name: &str,
+    ok: bool,
+) -> Result<(), String> {
+    let sql = if ok {
+        format!("RELEASE SAVEPOINT {name}")
+    } else {
+        format!("ROLLBACK TO SAVEPOINT {name}; RELEASE SAVEPOINT {name}")
+    };
+    client
+        .batch_execute(&sql)
+        .await
+        .map_err(dberr("savepoint end"))
 }
 
 pub fn utc(seconds: i64) -> DateTime<Utc> {
@@ -919,7 +968,7 @@ async fn store_reading<C: GenericClient + Sync>(
     let id = insert_observation(
         client,
         ctx.device_id,
-        Some(ctx.delivery_id),
+        ctx.delivery_id,
         ctx.received_at,
         &row,
     )
@@ -1115,10 +1164,11 @@ async fn store_stream<C: GenericClient + Sync>(
     let mut fresh = 0i32;
     let mut duplicates = 0i32;
     let mut conflicts = 0;
-    let mut touched_gens = Vec::new();
-    let mut stored_tests = false;
     let mut new_seqs: Vec<i64> = Vec::new();
-    let mut events = Vec::new();
+    let mut to_derive: Vec<&stream::Frame> = Vec::new();
+    // Raw first: every CRC-valid frame is stored byte-exact before anything
+    // is derived from it. The logger frees its MRAM once the broker has this
+    // message, so nothing derived below may cost these rows.
     for frame in &batch.frames {
         let seq = i64::from(frame.seq);
         let row = client
@@ -1154,28 +1204,8 @@ async fn store_stream<C: GenericClient + Sync>(
         }
         fresh += 1;
         new_seqs.push(seq);
-        if !supported {
-            continue;
-        }
-        match records::decode(frame.record_type, &frame.payload) {
-            Ok(record) => {
-                let kind = store_record(client, ctx, log_id, frame, &record).await?;
-                match kind {
-                    Stored::SettingsFragment(generation) => touched_gens.push(generation),
-                    Stored::Test => stored_tests = true,
-                    Stored::Event(name) => events.push(name),
-                    Stored::Other => {}
-                }
-            }
-            Err(error) => {
-                client
-                    .execute(
-                        "UPDATE stream_frames SET decode_error=$4 WHERE device_id=$1 AND log_id=$2 AND seq=$3",
-                        &[&ctx.device_id, &log_id, &seq, &error.to_string()],
-                    )
-                    .await
-                    .map_err(dberr("decode error"))?;
-            }
+        if supported {
+            to_derive.push(frame);
         }
     }
     if conflicts > 0 {
@@ -1215,11 +1245,159 @@ async fn store_stream<C: GenericClient + Sync>(
         ..Outcome::default()
     };
     if let (Some(min), Some(max)) = (new_seqs.iter().min(), new_seqs.iter().max()) {
-        detect_gaps(client, ctx.device_id, log_id, *min, *max, ctx.received_at).await?;
-        touched_gens.sort_unstable();
-        touched_gens.dedup();
-        for generation in touched_gens {
-            assemble_settings(client, ctx, generation).await?;
+        let derived = derive_frames(client, ctx, log_id, &to_derive, false).await?;
+        let log_error = derive_log(
+            client,
+            ctx,
+            log_id,
+            (*min, *max),
+            &derived.generations,
+            derived.tests,
+        )
+        .await?;
+        let mut errors = derived.failures.clone();
+        errors.extend(log_error.map(|e| format!("log: {e}")));
+        if !errors.is_empty() {
+            let text = format!(
+                "derived data failed ({}); raw frames kept and flagged for re-derivation at the next start",
+                errors.join("; ")
+            );
+            client
+                .execute(
+                    "UPDATE stream_batches SET derive_error=$2 WHERE id=$1",
+                    &[&batch_id, &text],
+                )
+                .await
+                .map_err(dberr("derive error"))?;
+            if let Some(detail) = &mut outcome.detail {
+                detail.push_str("; ");
+                detail.push_str(&text);
+            }
+        }
+        if derived.tests {
+            outcome.events.push(LiveEvent::Alert {
+                device_id: ctx.device_id.to_owned(),
+            });
+        }
+        outcome.events.push(LiveEvent::Stream {
+            device_id: ctx.device_id.to_owned(),
+            new_frames: fresh as u32,
+        });
+        for event in derived.events {
+            outcome.events.push(LiveEvent::DeviceEvent {
+                device_id: ctx.device_id.to_owned(),
+                event,
+            });
+        }
+    }
+    Ok(outcome)
+}
+
+/// What deriving records from stored frames produced.
+#[derive(Default)]
+struct Derived {
+    generations: Vec<i64>,
+    tests: bool,
+    events: Vec<String>,
+    /// `seq N: error` for frames whose derived rows could not be stored.
+    failures: Vec<String>,
+}
+
+/// Decodes stored frames into observations, events and the other record
+/// tables, each in its own savepoint. A frame whose derived rows fail for a
+/// reason in the data keeps its raw row, flagged `derive_pending` with the
+/// error; a transient failure (connection, deadlock) fails the message so
+/// it is retried. `rerun` clears the flag of frames that now succeed.
+async fn derive_frames<C: GenericClient + Sync>(
+    client: &C,
+    ctx: &Context<'_>,
+    log_id: i64,
+    frames: &[&stream::Frame],
+    rerun: bool,
+) -> Result<Derived, String> {
+    let mut derived = Derived::default();
+    for frame in frames {
+        let seq = i64::from(frame.seq);
+        let record = match records::decode(frame.record_type, &frame.payload) {
+            Ok(record) => record,
+            Err(error) => {
+                client
+                    .execute(
+                        "UPDATE stream_frames SET decode_error=$4,derive_pending=false WHERE device_id=$1 AND log_id=$2 AND seq=$3",
+                        &[&ctx.device_id, &log_id, &seq, &error.to_string()],
+                    )
+                    .await
+                    .map_err(dberr("decode error"))?;
+                continue;
+            }
+        };
+        savepoint(client, "rev2_frame").await?;
+        let stored = store_record(client, ctx, log_id, frame, &record).await;
+        match stored {
+            Ok(kind) => {
+                end_savepoint(client, "rev2_frame", true).await?;
+                match kind {
+                    Stored::SettingsFragment(generation) => derived.generations.push(generation),
+                    Stored::Test => derived.tests = true,
+                    Stored::Event(name) => derived.events.push(name),
+                    Stored::Other => {}
+                }
+                if rerun {
+                    client
+                        .execute(
+                            "UPDATE stream_frames SET derive_pending=false,derive_error=NULL
+                             WHERE device_id=$1 AND log_id=$2 AND seq=$3",
+                            &[&ctx.device_id, &log_id, &seq],
+                        )
+                        .await
+                        .map_err(dberr("derive pending"))?;
+                }
+            }
+            Err(error) if transient_error(&error) => return Err(error),
+            Err(error) => {
+                end_savepoint(client, "rev2_frame", false).await?;
+                client
+                    .execute(
+                        "UPDATE stream_frames SET derive_pending=true,derive_error=$4
+                         WHERE device_id=$1 AND log_id=$2 AND seq=$3",
+                        &[&ctx.device_id, &log_id, &seq, &error],
+                    )
+                    .await
+                    .map_err(dberr("derive pending"))?;
+                derived.failures.push(format!("seq {seq}: {error}"));
+            }
+        }
+    }
+    derived.generations.sort_unstable();
+    derived.generations.dedup();
+    Ok(derived)
+}
+
+/// Log-level derived work after new frames `seqs` (min, max): gaps,
+/// settings snapshots, record times, power alerts. Returns the error when it
+/// failed for a reason in the data; the log is then flagged
+/// `resolve_pending` and re-derived at the next start.
+async fn derive_log<C: GenericClient + Sync>(
+    client: &C,
+    ctx: &Context<'_>,
+    log_id: i64,
+    seqs: (i64, i64),
+    generations: &[i64],
+    tests: bool,
+) -> Result<Option<String>, String> {
+    savepoint(client, "rev2_log").await?;
+    let result = async {
+        detect_gaps(
+            client,
+            ctx.device_id,
+            log_id,
+            seqs.0,
+            seqs.1,
+            ctx.received_at,
+        )
+        .await?;
+        for generation in generations {
+            assemble_settings(client, ctx, *generation).await?;
         }
         client
             .execute(
@@ -1229,27 +1407,125 @@ async fn store_stream<C: GenericClient + Sync>(
             .await
             .map_err(dberr("time resolution"))?;
         activate_snapshot_settings(client, ctx).await?;
-        if stored_tests {
+        if tests {
             client
                 .execute("SELECT groundwater_power_alerts($1)", &[&ctx.device_id])
                 .await
                 .map_err(dberr("power alerts"))?;
-            outcome.events.push(LiveEvent::Alert {
-                device_id: ctx.device_id.to_owned(),
-            });
         }
-        outcome.events.push(LiveEvent::Stream {
-            device_id: ctx.device_id.to_owned(),
-            new_frames: fresh as u32,
-        });
-        for event in events {
-            outcome.events.push(LiveEvent::DeviceEvent {
-                device_id: ctx.device_id.to_owned(),
-                event,
-            });
+        client
+            .execute(
+                "UPDATE stream_logs SET resolve_pending=false,resolve_error=NULL
+                 WHERE device_id=$1 AND log_id=$2 AND resolve_pending",
+                &[&ctx.device_id, &log_id],
+            )
+            .await
+            .map_err(dberr("resolve pending"))?;
+        Ok::<(), String>(())
+    }
+    .await;
+    match result {
+        Ok(()) => {
+            end_savepoint(client, "rev2_log", true).await?;
+            Ok(None)
+        }
+        Err(error) if transient_error(&error) => Err(error),
+        Err(error) => {
+            end_savepoint(client, "rev2_log", false).await?;
+            client
+                .execute(
+                    "UPDATE stream_logs SET resolve_pending=true,resolve_error=$3 WHERE device_id=$1 AND log_id=$2",
+                    &[&ctx.device_id, &log_id, &error],
+                )
+                .await
+                .map_err(dberr("resolve pending"))?;
+            Ok(Some(error))
         }
     }
-    Ok(outcome)
+}
+
+/// Re-runs derived work that failed for a reason in the data (frames
+/// flagged `derive_pending`, logs flagged `resolve_pending`), one log per
+/// transaction. Called at start, before ingest runs. Returns (logs
+/// re-derived, logs that still fail).
+pub async fn rederive_pending(
+    client: &mut tokio_postgres::Client,
+    policy: &Rev2Policy,
+) -> Result<(usize, usize), String> {
+    let logs = client
+        .query(
+            "SELECT device_id,log_id FROM stream_frames WHERE derive_pending
+             UNION SELECT device_id,log_id FROM stream_logs WHERE resolve_pending",
+            &[],
+        )
+        .await
+        .map_err(dberr("pending derivations"))?;
+    let (mut done, mut failing) = (0, 0);
+    for row in logs {
+        let device: String = row.get(0);
+        let log_id: i64 = row.get(1);
+        let tx = client
+            .transaction()
+            .await
+            .map_err(dberr("re-derive transaction"))?;
+        let frames = tx
+            .query(
+                "SELECT f.raw,f.received_at,b.delivery_id FROM stream_frames f
+                 LEFT JOIN stream_batches b ON b.id=f.batch_id
+                 WHERE f.device_id=$1 AND f.log_id=$2 AND f.derive_pending ORDER BY f.seq",
+                &[&device, &log_id],
+            )
+            .await
+            .map_err(dberr("pending frames"))?;
+        let mut still = false;
+        for frame_row in frames {
+            let raw: Vec<u8> = frame_row.get(0);
+            let ctx = Context {
+                device_id: &device,
+                channel: "data/stream",
+                received_at: frame_row.get(1),
+                retained: false,
+                delivery_id: frame_row.get(2),
+                policy,
+            };
+            let Some(frame) = stream::split_frames(&raw).0.into_iter().next() else {
+                continue;
+            };
+            let derived = derive_frames(&tx, &ctx, log_id, &[&frame], true).await?;
+            still |= !derived.failures.is_empty();
+        }
+        let bounds = tx
+            .query_one(
+                "SELECT min(seq),max(seq),ARRAY(SELECT DISTINCT settings_gen FROM settings_fragments
+                    WHERE device_id=$1 AND log_id=$2 ORDER BY 1)
+                 FROM stream_frames WHERE device_id=$1 AND log_id=$2",
+                &[&device, &log_id],
+            )
+            .await
+            .map_err(dberr("log bounds"))?;
+        let (min, max): (Option<i64>, Option<i64>) = (bounds.get(0), bounds.get(1));
+        let generations: Vec<i64> = bounds.get(2);
+        if let (Some(min), Some(max)) = (min, max) {
+            let ctx = Context {
+                device_id: &device,
+                channel: "data/stream",
+                received_at: Utc::now(),
+                retained: false,
+                delivery_id: None,
+                policy,
+            };
+            still |= derive_log(&tx, &ctx, log_id, (min, max), &generations, true)
+                .await?
+                .is_some();
+        }
+        tx.commit().await.map_err(dberr("re-derive commit"))?;
+        if still {
+            failing += 1;
+        } else {
+            done += 1;
+        }
+    }
+    Ok((done, failing))
 }
 
 enum Stored {
@@ -1322,7 +1598,7 @@ async fn store_record<C: GenericClient + Sync>(
             insert_observation(
                 client,
                 ctx.device_id,
-                Some(ctx.delivery_id),
+                ctx.delivery_id,
                 ctx.received_at,
                 &row,
             )
@@ -1364,7 +1640,7 @@ async fn store_record<C: GenericClient + Sync>(
             insert_observation(
                 client,
                 ctx.device_id,
-                Some(ctx.delivery_id),
+                ctx.delivery_id,
                 ctx.received_at,
                 &row,
             )
@@ -2026,7 +2302,7 @@ async fn store_file_chunk<C: GenericClient + Sync>(
             )
         })
     });
-    insert_batch_row(
+    let batch_id = insert_batch_row(
         client,
         ctx,
         encoding.as_str(),
@@ -2040,7 +2316,41 @@ async fn store_file_chunk<C: GenericClient + Sync>(
     if let Some(reason) = mismatch {
         return Ok(Outcome::rejected(reason));
     }
-    crate::rev2_commands::file_chunk_received(client, ctx, &chunk).await
+    // The verified chunk stays stored whatever advancing the download does.
+    savepoint(client, "rev2_chunk").await?;
+    match crate::rev2_commands::file_chunk_received(client, ctx, &chunk).await {
+        Ok(outcome) => {
+            end_savepoint(client, "rev2_chunk", true).await?;
+            Ok(outcome)
+        }
+        Err(error) if transient_error(&error) => Err(error),
+        Err(error) => {
+            end_savepoint(client, "rev2_chunk", false).await?;
+            let text = format!("download not advanced: {error}; the chunk is kept raw");
+            client
+                .execute(
+                    "UPDATE stream_batches SET derive_error=$2 WHERE id=$1",
+                    &[&batch_id, &text],
+                )
+                .await
+                .map_err(dberr("derive error"))?;
+            client
+                .execute(
+                    "UPDATE file_downloads f SET state='failed',error=$3,updated_at=now() FROM commands c
+                     WHERE c.id=$1 AND c.device_id=$2 AND f.id=c.download_id AND f.state='active'",
+                    &[&i64::from(chunk.command_id), &ctx.device_id, &text],
+                )
+                .await
+                .map_err(dberr("download failure"))?;
+            Ok(Outcome {
+                detail: Some(text),
+                events: vec![LiveEvent::Download {
+                    device_id: ctx.device_id.to_owned(),
+                }],
+                ..Outcome::default()
+            })
+        }
+    }
 }
 
 #[cfg(test)]
