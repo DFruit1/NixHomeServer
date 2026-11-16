@@ -141,6 +141,29 @@ async fn ids(s: &AppState, h: &HeaderMap) -> Result<Vec<String>, Response> {
         .await
         .map_err(database)
 }
+/// True when a browser marks an unsafe request as coming from another
+/// origin. The gateway's session cookie is `SameSite=Lax` on the parent
+/// domain, so a page on any sibling host is "same-site": its form post or
+/// `no-cors` fetch carries the operator's session, and body-less routes
+/// (cancel, confirm, rotate, reinstate) need no JSON preflight. Browsers send
+/// `Sec-Fetch-Site`, or at least `Origin`, on every unsafe request; a client
+/// sending neither (curl, scripts) cannot hold a browser's cookie.
+pub(crate) fn cross_origin(headers: &HeaderMap) -> bool {
+    if let Some(site) = headers.get("sec-fetch-site") {
+        return !matches!(site.as_bytes(), b"same-origin" | b"none");
+    }
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return false;
+    };
+    let host = headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get(header::HOST))
+        .and_then(|h| h.to_str().ok());
+    match (origin.to_str().ok().and_then(|o| o.split_once("://")), host) {
+        (Some((_, authority)), Some(host)) => !authority.eq_ignore_ascii_case(host.trim()),
+        _ => true,
+    }
+}
 /// Authenticate before extraction; normalize JSON/query/path/body-limit and
 /// method rejections so every API failure is a JSON envelope.
 async fn boundary(State(s): State<AppState>, request: Request, next: Next) -> Response {
@@ -161,14 +184,21 @@ async fn boundary(State(s): State<AppState>, request: Request, next: Next) -> Re
     {
         return e;
     }
+    let unsafe_method = !matches!(
+        *request.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+    );
     if api
-        && !matches!(
-            *request.method(),
-            axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
-        )
+        && unsafe_method
         && let Err(e) = operator(request.headers())
     {
         return e;
+    }
+    if api && unsafe_method && cross_origin(request.headers()) {
+        return error(
+            StatusCode::FORBIDDEN,
+            "cross-origin requests may not change state",
+        );
     }
     let mut response = next.run(request).await;
     if api
@@ -666,6 +696,49 @@ mod tests {
             assert!(!safe_path(bad))
         }
         assert!(safe_path("/build/q-abc.js"));
+    }
+    #[test]
+    fn cross_origin_writes_are_recognised() {
+        let headers = |pairs: &[(&'static str, &'static str)]| {
+            let mut h = HeaderMap::new();
+            for (k, v) in pairs {
+                h.insert(*k, HeaderValue::from_static(v));
+            }
+            h
+        };
+        // The app's own pages, and clients without browser headers.
+        for ok in [
+            headers(&[("sec-fetch-site", "same-origin")]),
+            headers(&[]),
+            headers(&[
+                ("origin", "https://groundwater.example.org"),
+                ("x-forwarded-host", "groundwater.example.org"),
+            ]),
+            headers(&[
+                ("origin", "https://groundwater.example.org"),
+                ("host", "Groundwater.example.org"),
+            ]),
+        ] {
+            assert!(!cross_origin(&ok), "{ok:?}");
+        }
+        // A sibling host shares the SameSite=Lax gateway cookie.
+        for refused in [
+            headers(&[("sec-fetch-site", "same-site")]),
+            headers(&[("sec-fetch-site", "cross-site")]),
+            headers(&[
+                ("sec-fetch-site", "same-site"),
+                ("origin", "https://groundwater.example.org"),
+                ("x-forwarded-host", "groundwater.example.org"),
+            ]),
+            headers(&[
+                ("origin", "https://archives.example.org"),
+                ("x-forwarded-host", "groundwater.example.org"),
+            ]),
+            headers(&[("origin", "null"), ("host", "groundwater.example.org")]),
+            headers(&[("origin", "https://groundwater.example.org")]),
+        ] {
+            assert!(cross_origin(&refused), "{refused:?}");
+        }
     }
     #[test]
     fn csv_quotes_values() {

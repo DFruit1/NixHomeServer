@@ -1508,3 +1508,71 @@ async fn metrics_need_an_operator_or_the_scraper_token() {
     );
     assert_eq!(scrape("Bearer wrong").await, StatusCode::UNAUTHORIZED);
 }
+
+/// Regression: the gateway cookie is SameSite=Lax on the parent domain, so a
+/// page on any sibling host could post to body-less routes (danger confirm,
+/// cancel, credential rotation, reinstate) with an operator's session.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn cross_origin_writes_are_refused() {
+    let (url, client) = setup().await;
+    let app = app(&url, OpsSettings::default()).await;
+    enroll_v22(&app).await;
+    let send = |site: Option<&'static str>, origin: Option<&'static str>| {
+        let app = app.clone();
+        async move {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri(format!("/api/devices/{D}/retire"))
+                .header("content-type", "application/json")
+                .header("host", "groundwater.example.org")
+                .header("x-auth-request-preferred-username", "operator")
+                .header("x-auth-request-groups", "app-admin");
+            if let Some(site) = site {
+                request = request.header("sec-fetch-site", site);
+            }
+            if let Some(origin) = origin {
+                request = request.header("origin", origin);
+            }
+            let body = Body::from(json!({"confirm":"RETIRE"}).to_string());
+            app.oneshot(request.body(body).unwrap())
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    for (site, origin) in [
+        (Some("same-site"), Some("https://archives.example.org")),
+        (Some("cross-site"), None),
+        (None, Some("https://archives.example.org")),
+        (None, Some("null")),
+    ] {
+        assert_eq!(
+            send(site, origin).await,
+            StatusCode::FORBIDDEN,
+            "{site:?} {origin:?}"
+        );
+        assert_eq!(
+            scalar::<i64>(
+                &client,
+                "SELECT count(*) FROM devices WHERE revoked_at IS NOT NULL"
+            )
+            .await,
+            0
+        );
+    }
+    // Reads stay available to cross-site navigation (links, downloads).
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("/api/devices/{D}"),
+        "operator",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        send(Some("same-origin"), Some("https://groundwater.example.org")).await,
+        StatusCode::OK
+    );
+}
