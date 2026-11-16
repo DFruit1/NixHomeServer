@@ -944,6 +944,17 @@ pub async fn prune_deliveries(client: &Client, retention_days: i64) -> Result<u6
         )
         .await
         .map_err(|err| db_context("delivery prune failed", err))?;
+    // Raw data/stream and data/file bytes follow the same retention. Every
+    // valid frame is kept byte-exact in stream_frames, so nothing decodable
+    // is lost; the batch row keeps its header and counters.
+    client
+        .execute(
+            "UPDATE stream_batches SET raw=NULL
+             WHERE raw IS NOT NULL AND received_at < now() - ($1::BIGINT * INTERVAL '1 day')",
+            &[&retention_days],
+        )
+        .await
+        .map_err(|err| db_context("raw batch prune failed", err))?;
     Ok(removed)
 }
 
