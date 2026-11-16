@@ -1,54 +1,111 @@
 import { component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
-import type { Alert, DeviceEvent, SeriesPoint } from "./types";
+import type { Alert, Series, SeriesPoint } from "./types";
 import { number, stamp } from "./api";
 import { sensorProblem } from "./events";
 import { alertLabel, alertValue } from "./alert-text";
 
-/** A span in which the logger reported a sensor fault (Type 17 enter until
- * its exit). Levels inside it come from an out-of-range or failed loop and
- * are never plotted as valid (owner decision 2026-11-16). */
-export interface FaultSpan {
-  from: number;
-  /** Infinity while the fault is still open. */
-  to: number;
+/** Fault readings at one place on the time axis, from the series' own
+ * `faults` list (owner decision 2026-11-16: an out-of-range or failed
+ * reading is "possible sensor failure", never a level). `valid` > 0 marks a
+ * bucket whose plotted average comes from its valid samples only. */
+export interface FaultMark {
+  /** Epoch ms: the reading, or the bucket start. */
+  at: number;
+  count: number;
+  valid: number;
   text: string;
 }
 
-/** Fault spans from `sensor_fault` ring records (any order). Enter and exit
- * alternate; a status change is an exit followed by an enter. */
-export function faultSpans(
-  events: Pick<DeviceEvent, "event" | "recorded_at" | "details" | "seq">[],
-): FaultSpan[] {
-  const ordered = events
-    .filter((e) => e.event === "sensor_fault" && e.recorded_at)
-    .map((e) => ({ at: Date.parse(e.recorded_at!), e }))
-    .filter(({ at }) => Number.isFinite(at))
-    .sort((a, b) => a.at - b.at || (a.e.seq ?? 0) - (b.e.seq ?? 0));
-  const spans: FaultSpan[] = [];
-  let open: FaultSpan | undefined;
-  for (const { at, e } of ordered) {
-    const d = e.details || {};
-    const status = (d.sensor_status ?? d.ss) as number | undefined;
-    if (d.state === "exit") {
-      if (open) open.to = at;
-      open = undefined;
-    } else if (!open) {
-      open = {
-        from: at,
-        to: Infinity,
-        text: sensorProblem(typeof status === "number" ? status : 4),
-      };
-      spans.push(open);
-    }
-  }
-  return spans;
+/** A run of fault readings with no valid level between them, drawn as one
+ * shaded span. */
+export interface FaultSpan {
+  from: number;
+  to: number;
+  count: number;
+  text: string;
 }
 
-/** The fault covering a sample at `time` (or its bucket of `bucketMs`). */
-export function faultAt(spans: FaultSpan[], time: number, bucketMs = 0) {
-  return spans.find(
-    (span) => time < span.to && time + Math.max(bucketMs, 1) > span.from,
-  );
+const RANGE_KINDS = ["under-range", "over-range"];
+
+/** Operator wording for fault kinds (`over-range`, `no-sensor`, …) or a raw
+ * reading's status: out of range is "possible sensor failure". */
+export function faultText(kinds: string[], status?: number | null): string {
+  if (status != null && status !== 0) return sensorProblem(status);
+  const range = kinds.filter((k) => RANGE_KINDS.includes(k));
+  const other = kinds.filter((k) => !RANGE_KINDS.includes(k));
+  return [
+    range.length
+      ? `out of range: possible sensor failure (${range.join(", ")})`
+      : "",
+    other.length ? `sensor fault: ${other.join(", ")}` : "",
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
+/** A point that is not a valid level: a raw reading with a fault status
+ * (the firmware still sends its untrustworthy level). Buckets never are:
+ * their level is the average of valid samples. */
+export const isFaultPoint = (p: Pick<SeriesPoint, "sensor_status">) =>
+  p.sensor_status != null && p.sensor_status !== 0;
+
+/** The level series as chart input: fault points become breaks, so a fault
+ * is never drawn or scaled as a level; each fault entry becomes a mark. */
+export function levelSeries(
+  series: Pick<Series, "points" | "faults" | "bucket_minutes">,
+) {
+  const samples: Sample[] = series.points.map((p) => [
+    Date.parse(p.recorded_at),
+    isFaultPoint(p) ? null : p.gwl,
+  ]);
+  const marks: FaultMark[] = (series.faults || [])
+    .map((f) => ({
+      at: Date.parse(f.recorded_at),
+      count: f.fault_count,
+      valid: f.valid_count,
+      text: faultText(f.fault_kinds, f.sensor_status),
+    }))
+    .filter((m) => Number.isFinite(m.at))
+    .sort((a, b) => a.at - b.at);
+  return { samples, marks };
+}
+
+/** Spans of fault marks without a valid level (`valid` 0), merged while no
+ * valid sample lies between them and they are at most `gapMinutes` apart
+ * (a longer silence stays a gap). A bucket span covers its width. */
+export function faultSpans(
+  marks: FaultMark[],
+  samples: Sample[],
+  bucketMinutes: number,
+  gapMinutes: number,
+): FaultSpan[] {
+  const valid = samples
+    .filter(([, v]) => v != null)
+    .map(([t]) => t)
+    .sort((a, b) => a - b);
+  const width = bucketMinutes * 60000;
+  const spans: FaultSpan[] = [];
+  let i = 0,
+    lastAt = -Infinity;
+  for (const mark of marks.filter((m) => m.valid === 0)) {
+    // Index of the first valid sample after this mark.
+    while (i < valid.length && valid[i] <= mark.at) i++;
+    const last = spans[spans.length - 1];
+    const validBetween = i > 0 && valid[i - 1] > lastAt;
+    if (last && !validBetween && mark.at - lastAt <= gapMinutes * 60000) {
+      last.to = mark.at + width;
+      last.count += mark.count;
+      if (!last.text.includes(mark.text)) last.text += `; ${mark.text}`;
+    } else
+      spans.push({
+        from: mark.at,
+        to: mark.at + width,
+        count: mark.count,
+        text: mark.text,
+      });
+    lastAt = mark.at;
+  }
+  return spans;
 }
 
 /** Local time labels across the axis, as many as fit the width. */
@@ -127,7 +184,11 @@ export function chartGeometry(
   inverted = false,
 ) {
   return seriesGeometry(
-    points.map((p) => [Date.parse(p.recorded_at), p[metric] ?? null]),
+    points.map((p) => [
+      Date.parse(p.recorded_at),
+      // A raw fault reading keeps the firmware's level: never a level here.
+      metric === "gwl" && isFaultPoint(p) ? null : (p[metric] ?? null),
+    ]),
     from,
     to,
     gapMinutes,
@@ -314,7 +375,10 @@ export const HistoryChart = component$<{
   max?: number | null;
   alerts?: Alert[];
   inverted?: boolean;
+  /** Fault readings without a valid level (shaded). */
   faults?: FaultSpan[];
+  /** Buckets whose valid average is drawn but that also held faults. */
+  mixed?: FaultMark[];
 }>((props) => {
   const figure = useSignal<HTMLElement>();
   const width = useSignal(960);
@@ -339,7 +403,14 @@ export const HistoryChart = component$<{
     width.value,
     props.inverted,
   );
-  const count = props.points.filter((p) => p[props.metric] != null).length;
+  const levels = new Map(
+    props.points.map((p) => [Date.parse(p.recorded_at), p[props.metric]]),
+  );
+  const count = props.points.filter(
+    (p) =>
+      p[props.metric] != null && !(props.metric === "gwl" && isFaultPoint(p)),
+  ).length;
+  const empty = count === 0 && !(props.faults || []).length;
   return (
     <figure
       ref={figure}
@@ -354,7 +425,7 @@ export const HistoryChart = component$<{
             : ""}
         </span>
       </figcaption>
-      {count === 0 ? (
+      {empty ? (
         <p class="empty">
           No {props.title.toLowerCase()} measurements in this range.
         </p>
@@ -417,7 +488,7 @@ export const HistoryChart = component$<{
               ),
           )}
           {(props.faults || [])
-            .filter((f) => f.to > start && f.from < end)
+            .filter((f) => f.to >= start && f.from <= end)
             .map((f) => {
               const x1 = geo.x(Math.max(f.from, start)),
                 x2 = geo.x(Math.min(f.to, end));
@@ -425,12 +496,12 @@ export const HistoryChart = component$<{
                 <rect
                   key={f.from}
                   class="fault-band"
-                  x={x1}
+                  x={Math.min(x1, width.value - 33)}
                   y="22"
-                  width={Math.max(2, x2 - x1)}
+                  width={Math.max(3, x2 - x1)}
                   height="200"
                 >
-                  <title>{`Sensor ${f.text} from ${stamp(new Date(f.from).toISOString())}${Number.isFinite(f.to) ? ` to ${stamp(new Date(f.to).toISOString())}` : " (still open)"}`}</title>
+                  <title>{`${f.count} reading${f.count === 1 ? "" : "s"}, ${stamp(new Date(f.from).toISOString())}${f.to > f.from ? ` to ${stamp(new Date(f.to).toISOString())}` : ""}: ${f.text}. No level.`}</title>
                 </rect>
               );
             })}
@@ -463,7 +534,8 @@ export const HistoryChart = component$<{
             ))}
           <path class={`series-line metric-${props.metric}`} d={geo.path} />
           {props.points.length === 1 &&
-            props.points[0][props.metric] != null && (
+            props.points[0][props.metric] != null &&
+            count === 1 && (
               <circle
                 class="single-point"
                 cx={geo.x(Date.parse(props.points[0].recorded_at))}
@@ -471,6 +543,20 @@ export const HistoryChart = component$<{
                 r="3"
               />
             )}
+          {(props.mixed || []).map((m) => {
+            const value = levels.get(m.at);
+            return value == null ? null : (
+              <circle
+                key={m.at}
+                class="fault-point"
+                cx={geo.x(m.at)}
+                cy={geo.y(value)}
+                r="4"
+              >
+                <title>{`${stamp(new Date(m.at).toISOString())}: average of ${m.valid} valid sample${m.valid === 1 ? "" : "s"}; the bucket also held ${m.count} fault reading${m.count === 1 ? "" : "s"} (${m.text})`}</title>
+              </circle>
+            );
+          })}
           <TimeAxis from={start} to={end} width={width.value} />
         </svg>
       )}

@@ -1,27 +1,24 @@
 import {
   component$,
-  useComputed$,
   useSignal,
   useStore,
   useVisibleTask$,
 } from "@builder.io/qwik";
 import { errorText, lag, number, query, request, stamp } from "./api";
-import { HistoryChart, faultAt, faultSpans } from "./chart";
-import { devicePath, useJson } from "./hooks";
+import {
+  HistoryChart,
+  faultSpans,
+  faultText,
+  isFaultPoint,
+  levelSeries,
+} from "./chart";
 import { latestRequest } from "./live";
-import type {
-  Alert,
-  Delivery,
-  Device,
-  DeviceEvent,
-  Series,
-  SeriesPoint,
-} from "./types";
+import type { Alert, Delivery, Device, Series, SeriesPoint } from "./types";
 import { datumLabel, datumUnit } from "./ops";
 import { alertLabel, alertValue } from "./alerts";
 import { deviceProblems } from "./attention";
-import { observationProblem } from "./events";
-import { csqText, millivolts } from "./format";
+import { observationProblem, sensorProblem } from "./events";
+import { csqText, millivolts, readHealth } from "./format";
 
 export const Fleet = component$<{
   devices: Device[];
@@ -93,7 +90,7 @@ export const Fleet = component$<{
                 const latest = device.latest_received;
                 const fault = observationProblem(reading);
                 const rev2 = device.capabilities?.protocol === 2;
-                const health = (device.health || {}) as Record<string, unknown>;
+                const health = readHealth(device.health);
                 const expected =
                   device.expected_contact_at || device.next_contact_at;
                 return (
@@ -281,22 +278,6 @@ export const History = component$<{
   to: string;
   revision: number;
 }>((props) => {
-  // The series carries no sensor status: out-of-range and fault spans come
-  // from the logger's sensor_fault ring records (firmware 2.2 only).
-  const faultUrl = useComputed$(() =>
-    props.device.capabilities?.protocol === 2
-      ? devicePath(
-          props.device.device_id,
-          `/events?${query({ source: "record", event: "sensor_fault", to: props.to, limit: 1000 })}`,
-        )
-      : "",
-  );
-  const rev = useComputed$(() => props.revision);
-  const faultEvents = useJson<{ events: DeviceEvent[] }>(faultUrl, rev);
-  const faults = faultSpans(faultEvents.state.data?.events || []);
-  const bucketMs = (props.series?.bucket_minutes || 0) * 60000;
-  const faultOf = (point: SeriesPoint) =>
-    faultAt(faults, Date.parse(point.recorded_at), bucketMs);
   const reading = props.device.latest_received;
   const lf = props.device.desired_config?.lf?.split(":").map(Number);
   const expected =
@@ -315,11 +296,38 @@ export const History = component$<{
     ? (props.series?.limits?.max ?? null)
     : props.device.max_limit;
   const points = props.series?.points || [];
-  const levelPoints = points.map((point) =>
-    faultOf(point) ? { ...point, gwl: null as unknown as number } : point,
+  // Fault readings come from the series itself: raw fault points and
+  // fault-only buckets are never drawn as a level (chartGeometry), and
+  // buckets that mixed valid and fault samples are marked.
+  const level = levelSeries({
+    points,
+    faults: props.series?.faults,
+    bucket_minutes: props.series?.bucket_minutes || 0,
+  });
+  const spans = faultSpans(
+    level.marks,
+    level.samples,
+    props.series?.bucket_minutes || 0,
+    gap,
   );
-  const faultCount =
-    points.length - levelPoints.filter((p) => p.gwl != null).length;
+  const mixed = level.marks.filter((m) => m.valid > 0);
+  const faultReadings = level.marks.reduce((sum, m) => sum + m.count, 0);
+  const faultSummary = faultText(
+    [
+      ...new Set((props.series?.faults || []).flatMap((f) => f.fault_kinds)),
+    ].sort(),
+  );
+  const bucketed = (props.series?.bucket_minutes || 0) > 0;
+  // Table rows: every point, plus faults that have no point (no level, or a
+  // bucket of faults only), in time order.
+  const pointTimes = new Set(points.map((p) => Date.parse(p.recorded_at)));
+  const rows = [
+    ...points.map((point) => ({ at: Date.parse(point.recorded_at), point })),
+    ...(props.series?.faults || [])
+      .filter((f) => !pointTimes.has(Date.parse(f.recorded_at)))
+      .map((fault) => ({ at: Date.parse(fault.recorded_at), fault })),
+  ].sort((a, b) => a.at - b.at);
+  const faultOf = (at: number) => level.marks.find((m) => m.at === at);
   const hasSolar = points.some((p) => p.solar_v != null);
   const hasBattery = points.some((p) => p.battery_v != null);
   const rev2 = props.device.capabilities?.protocol === 2;
@@ -333,8 +341,9 @@ export const History = component$<{
             title={converted ? datumLabel(datum) : "Groundwater level"}
             unit={datumUnit(datum)}
             metric="gwl"
-            points={levelPoints}
-            faults={faults}
+            points={points}
+            faults={spans}
+            mixed={mixed}
             from={props.from}
             to={props.to}
             gapMinutes={gap}
@@ -351,22 +360,24 @@ export const History = component$<{
             vertical lines: alert opened. Line breaks: intervals longer than{" "}
             {gap} min
             {interval ? "" : " (3 min assumed; logging interval unavailable)"}.
-            {faults.length > 0 &&
-              " Red dotted spans: the logger reported a sensor fault or an out-of-range reading; levels there are not plotted."}
+            {spans.length > 0 &&
+              " Red dotted spans: sensor fault readings, no level."}
+            {mixed.length > 0 &&
+              " Ringed points: average of the valid samples in a bucket that also held fault readings."}
           </p>
-          {faultEvents.state.error && (
-            <p class="notice error-text" role="alert">
-              Sensor fault records could not be loaded (
-              {faultEvents.state.error}): out-of-range readings cannot be marked
-              on this chart.
+          {faultReadings > 0 && (
+            <p class="notice error-text">
+              {faultReadings} reading{faultReadings === 1 ? "" : "s"} in this
+              range {faultReadings === 1 ? "was" : "were"} not a valid level and{" "}
+              {faultReadings === 1 ? "is" : "are"} left out of the line
+              {bucketed ? ", the averages" : ""} and the axis: {faultSummary}.
             </p>
           )}
-          {faultCount > 0 && (
-            <p class="notice error-text">
-              {faultCount} point{faultCount === 1 ? "" : "s"} in this range{" "}
-              {faultCount === 1 ? "falls" : "fall"} inside a sensor fault and{" "}
-              {faultCount === 1 ? "is" : "are"} not plotted as a level: out of
-              range, possible sensor failure.
+          {props.series.faults_truncated && (
+            <p class="notice">
+              The fault list was cut with the points: older fault readings in
+              this range are not marked. Choose a shorter range or a larger
+              bucket.
             </p>
           )}
           {converted && (props.series.unconverted || 0) > 0 && (
@@ -438,10 +449,8 @@ export const History = component$<{
             </div>
           )}
           <details>
-            <summary>
-              Measurement data ({props.series.points.length} points)
-            </summary>
-            {props.series.points.length === 0 ? (
+            <summary>Measurement data ({rows.length} rows)</summary>
+            {rows.length === 0 ? (
               <p>No plausible-time observations in this range.</p>
             ) : (
               <div
@@ -461,37 +470,74 @@ export const History = component$<{
                     </tr>
                   </thead>
                   <tbody>
-                    {props.series.points.map((point, index) => (
-                      <tr key={`${point.recorded_at}-${index}`}>
-                        <td>{stamp(point.recorded_at)}</td>
-                        <td>
-                          {faultOf(point) ? (
-                            <>
-                              <span class="error-text">
-                                {faultOf(point)!.text}
-                              </span>
-                              <small>
-                                untrusted reading{" "}
-                                {number(point.gwl, converted ? 3 : 2)}
+                    {rows.map((row, index) => {
+                      const mark = faultOf(row.at);
+                      if ("fault" in row && row.fault) {
+                        const f = row.fault;
+                        return (
+                          <tr key={`${f.recorded_at}-f${index}`}>
+                            <td>{stamp(f.recorded_at)}</td>
+                            <td>
+                              <span class="error-text">{mark?.text}</span>
+                              <small>no level</small>
+                            </td>
+                            <td>—</td>
+                            <td>—</td>
+                            <td>
+                              {bucketed
+                                ? `0 valid · ${f.fault_count} fault${f.fault_count === 1 ? "" : "s"}`
+                                : "fault reading"}
+                            </td>
+                          </tr>
+                        );
+                      }
+                      const point = (row as { point: SeriesPoint }).point;
+                      const fault = isFaultPoint(point);
+                      return (
+                        <tr key={`${point.recorded_at}-${index}`}>
+                          <td>{stamp(point.recorded_at)}</td>
+                          <td>
+                            {fault ? (
+                              <>
+                                <span class="error-text">
+                                  {sensorProblem(point.sensor_status)}
+                                </span>
+                                <small>
+                                  untrusted reading{" "}
+                                  {number(point.gwl, converted ? 3 : 2)}
+                                </small>
+                              </>
+                            ) : (
+                              number(point.gwl, converted ? 3 : 2)
+                            )}
+                            {converted && point.raw_gwl != null && (
+                              <small>raw {number(point.raw_gwl, 3)} m</small>
+                            )}
+                          </td>
+                          <td>
+                            {number(point.battery_v)} / {number(point.solar_v)}
+                          </td>
+                          <td>{number(hasCsq ? point.csq : point.rssi, 0)}</td>
+                          <td>
+                            {fault
+                              ? "fault reading"
+                              : bucketed
+                                ? `${point.sample_count} valid`
+                                : point.sample_count}
+                            {!fault && mark && (
+                              <small class="error-text">
+                                {mark.count} fault
+                                {mark.count === 1 ? "" : "s"} left out:{" "}
+                                {mark.text}
                               </small>
-                            </>
-                          ) : (
-                            number(point.gwl, converted ? 3 : 2)
-                          )}
-                          {converted && point.raw_gwl != null && (
-                            <small>raw {number(point.raw_gwl, 3)} m</small>
-                          )}
-                        </td>
-                        <td>
-                          {number(point.battery_v)} / {number(point.solar_v)}
-                        </td>
-                        <td>{number(hasCsq ? point.csq : point.rssi, 0)}</td>
-                        <td>
-                          {point.sample_count}
-                          {point.conflict ? " · conflicting samples" : ""}
-                        </td>
-                      </tr>
-                    ))}
+                            )}
+                            {point.conflict ? (
+                              <small>conflicting samples</small>
+                            ) : null}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

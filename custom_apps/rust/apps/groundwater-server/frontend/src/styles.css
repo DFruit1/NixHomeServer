@@ -320,8 +320,15 @@ td small {
   border-radius: var(--radius);
   margin-block: var(--space-4);
 }
-.notice.error-text {
+.notice.error-text,
+.notice.danger {
   background: var(--danger-soft);
+}
+.notice > p:first-child {
+  margin-top: 0;
+}
+.notice > :last-child {
+  margin-bottom: 0;
 }
 .notice button {
   margin-inline-start: var(--space-2);
@@ -427,6 +434,11 @@ td small {
 }
 .single-point {
   fill: var(--accent);
+}
+.fault-point {
+  fill: var(--panel);
+  stroke: var(--danger);
+  stroke-width: 2;
 }
 .metric-battery_v {
   stroke: var(--warning);
@@ -827,4 +839,12 @@ tfoot td {
   * {
     scroll-behavior: auto;
   }
+}
+
+.export-note {
+  flex-basis: 100%;
+  margin-block: 0;
+}
+.export-note small {
+  display: block;
 }

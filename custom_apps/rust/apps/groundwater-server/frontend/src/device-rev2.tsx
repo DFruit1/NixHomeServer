@@ -22,6 +22,7 @@ import {
   humanize,
   millivolts,
   percent,
+  readHealth,
   relative,
   secondsLeft,
   show,
@@ -47,7 +48,15 @@ import type {
   TestResult,
   TiltSample,
 } from "./types";
-import { LoadState, Meter, TableRegion, When, WindowPicker } from "./widgets";
+import {
+  ExportButton,
+  LoadState,
+  Meter,
+  TableRegion,
+  When,
+  WindowPicker,
+} from "./widgets";
+import { settingsLost } from "./settings";
 
 type ViewProps = { device: Device; revision: number; operator: boolean };
 /** `openAlerts`: this device's open alerts, named in "Needs attention". */
@@ -71,7 +80,7 @@ export const HealthFacts = component$<{
   health: Record<string, unknown> | null | undefined;
   at: string | null | undefined;
 }>((props) => {
-  const h = props.health || {};
+  const h = readHealth(props.health);
   const unsaved = fraction(h.unsaved, h.usable);
   return (
     <>
@@ -99,7 +108,11 @@ export const HealthFacts = component$<{
         <div>
           <dt>MRAM ring</dt>
           <dd class={h.mram && h.mram !== "ok" ? "error-text" : ""}>
-            {h.mram === "locked" ? "locked (Tail Lock)" : show(h.mram)}
+            {h.mram === "locked"
+              ? "locked (Tail Lock)"
+              : settingsLost(h)
+                ? "recovery: settings lost, not logging"
+                : show(h.mram)}
           </dd>
         </div>
         <div>
@@ -508,15 +521,12 @@ export const EventsView = component$<ViewProps>((props) => {
     <section aria-labelledby="events-heading">
       <div class="section-heading">
         <h2 id="events-heading">Events</h2>
-        <a
-          class="button"
-          href={devicePath(
-            props.device.device_id,
-            `/events/export?${query({ from: exportFrom })}`,
-          )}
-        >
-          Export JSON
-        </a>
+        <ExportButton
+          path={devicePath(props.device.device_id, "/events/export")}
+          from={exportFrom}
+          label="Export JSON"
+          fileName="events.json"
+        />
       </div>
       <div class="toolbar">
         <label class="field" for="event-category">
@@ -673,18 +683,16 @@ export const LocationView = component$<ViewProps>((props) => {
         <div class="section-heading">
           <h2 id="position-heading">Positions</h2>
           <div class="toolbar">
-            <a
-              class="button"
-              href={devicePath(id, "/positions/export?format=geojson")}
-            >
-              GeoJSON
-            </a>
-            <a
-              class="button"
-              href={devicePath(id, "/positions/export?format=json")}
-            >
-              JSON
-            </a>
+            <ExportButton
+              path={devicePath(id, "/positions/export?format=geojson")}
+              label="GeoJSON"
+              fileName="positions.geojson"
+            />
+            <ExportButton
+              path={devicePath(id, "/positions/export?format=json")}
+              label="JSON"
+              fileName="positions.json"
+            />
           </div>
         </div>
         <LoadState
@@ -934,6 +942,19 @@ export const LocationView = component$<ViewProps>((props) => {
 
 const DETAIL_KEYS = ["sd", "sim", "net", "mqtt", "gps", "epd", "acc", "mram"];
 
+/** Where a test row came from: the ring record, the test/result JSON, or
+ * both merged into one row by the server. */
+const testSources = (t: TestResult) => {
+  const sources = t.sources?.length ? t.sources : [t.source];
+  return sources.includes("record") && sources.includes("json")
+    ? "ring record and test report"
+    : sources.includes("record")
+      ? "ring record only"
+      : sources.includes("json")
+        ? "test report only"
+        : sources.join(", ");
+};
+
 export const TestsView = component$<ViewProps>((props) => {
   const rev = useComputed$(() => props.revision);
   const url = useComputed$(() =>
@@ -984,7 +1005,17 @@ export const TestsView = component$<ViewProps>((props) => {
                         {t.trigger || "—"}
                         {t.command_id != null && ` · command #${t.command_id}`}
                       </small>
-                      <small>{t.source}</small>
+                      <small>{testSources(t)}</small>
+                      {t.json_ok != null &&
+                        t.ok != null &&
+                        t.json_ok !== t.ok && (
+                          <small>
+                            logger reported {t.json_ok ? "passed" : "failed"};
+                            the server checks sensor, SD, SIM, network, MQTT,
+                            display, accelerometer and MRAM (GNSS and solar only
+                            warn)
+                          </small>
+                        )}
                     </td>
                     <td>
                       {sensorProblem(t.sensor_status) ? (
@@ -997,7 +1028,10 @@ export const TestsView = component$<ViewProps>((props) => {
                         `${number(t.level, 3)} m`
                       )}
                       <small>
-                        {t.sensor_mv ?? "—"} mV · {number(t.sensor_ma, 2)} mA
+                        {t.sensor_mv == null ? "—" : `${t.sensor_mv} mV`} ·{" "}
+                        {t.sensor_ma == null
+                          ? "—"
+                          : `${number(t.sensor_ma, 2)} mA`}
                       </small>
                       {!sensorProblem(t.sensor_status) && (
                         <small>

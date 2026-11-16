@@ -8,6 +8,7 @@ import {
   useVisibleTask$,
 } from "@builder.io/qwik";
 import { errorText, query, stamp } from "./api";
+import { originText } from "./commands";
 import { nextContactText } from "./console";
 import { EXPIRY_PRESETS, expiryError, show } from "./format";
 import { devicePath, send, useJson } from "./hooks";
@@ -15,15 +16,23 @@ import {
   SETTING_DEFAULTS,
   SETTING_FIELDS,
   changedSettings,
+  restoreDrafts,
   sameSetting,
+  settingsLost,
   settingText,
   settingsDiff,
   validateSettings,
 } from "./settings";
-import type { Command, Device, SettingsResponse } from "./types";
+import type { Alert, Command, Device, SettingsResponse } from "./types";
 import { Feedback, LoadState, TableRegion } from "./widgets";
 
-type Props = { device: Device; revision: number; operator: boolean };
+type Props = {
+  device: Device;
+  revision: number;
+  operator: boolean;
+  /** The device's alerts (open settings_lost explains a restore). */
+  alerts?: Alert[];
+};
 
 const GROUPS = [...new Set(SETTING_FIELDS.map((f) => f.group))];
 
@@ -37,13 +46,18 @@ export const SettingsView = component$<Props>((props) => {
   const replace = useSignal(false);
   const expiry = useSignal(7 * 86400);
   const action = useStore({ pending: false, message: "", failed: false });
-  const effective = (state.data?.effective.settings ||
-    props.device.settings ||
-    {}) as Record<string, unknown>;
+  // A logger that lost its settings runs on firmware defaults whatever
+  // generation it last acknowledged: edits compare against the defaults.
+  const lost = settingsLost(props.device.health);
+  const effective = (
+    lost ? {} : state.data?.effective.settings || props.device.settings || {}
+  ) as Record<string, unknown>;
   const changes = useComputed$(() => {
-    const base = (state.data?.effective.settings ||
-      props.device.settings ||
-      {}) as Record<string, unknown>;
+    const base = (
+      settingsLost(props.device.health)
+        ? {}
+        : state.data?.effective.settings || props.device.settings || {}
+    ) as Record<string, unknown>;
     const edited = Object.fromEntries(
       Object.entries(drafts).filter(([, v]) => v !== undefined),
     );
@@ -122,13 +136,27 @@ export const SettingsView = component$<Props>((props) => {
   const waiting = requests.filter((c) => ["queued", "sent"].includes(c.state));
   const history = state.data?.history || [];
   const changedKeys = Object.keys(changes.value.diff);
+  const lostAlert = (props.alerts || []).find(
+    (a) => a.kind === "settings_lost" && a.state === "open",
+  );
+  const acknowledged = history
+    .filter(
+      (r) =>
+        ["ack", "get_settings"].includes(r.source) && r.settings_gen != null,
+    )
+    .sort((a, b) => Date.parse(b.received_at) - Date.parse(a.received_at))[0];
+  const restore = requests.find((c) => c.origin === "auto-restore");
+  const restoring =
+    !!restore && ["queued", "sent"].includes(restore.state) && !lostAlert;
   return (
     <>
       <section aria-labelledby="settings-heading">
         <div class="section-heading">
           <h2 id="settings-heading">Logger settings</h2>
           <span class="muted">
-            Generation{" "}
+            {lost
+              ? "Running firmware defaults · last known generation"
+              : "Generation"}{" "}
             {show(
               state.data?.effective.settings_gen ?? props.device.settings_gen,
             )}{" "}
@@ -147,6 +175,55 @@ export const SettingsView = component$<Props>((props) => {
           <p class="notice">
             Your viewer account has read-only access to settings.
           </p>
+        )}
+        {(lost || lostAlert) && (
+          <div class="notice danger" role="status">
+            <p>
+              <strong class="error-text">
+                Settings lost: the logger is not logging.
+              </strong>{" "}
+              {lost
+                ? `It reports MRAM recovery with latched error ${String(props.device.health?.err ?? "?")}: both settings copies were lost, it runs on the firmware defaults shown below and stores no readings until it receives settings.`
+                : "The server raised this alert from the logger's last health report."}
+            </p>
+            {restoring ? (
+              <p>
+                The server re-sends the settings this logger last acknowledged
+                with Replace (command #{restore!.id}, {restore!.state}). It is
+                delivered at the next connection
+                {(props.device.expected_contact_at ||
+                  props.device.next_contact_at) &&
+                  `, expected ${stamp(props.device.expected_contact_at || props.device.next_contact_at)}`}
+                . No action is needed unless this alert stays open after that.
+              </p>
+            ) : (
+              <p>
+                {typeof lostAlert?.detail?.reason === "string"
+                  ? `${lostAlert.detail.reason[0].toUpperCase()}${lostAlert.detail.reason.slice(1)}. `
+                  : ""}
+                To restore logging, send the full settings: check every value
+                below, tick Replace and queue.
+                {acknowledged &&
+                  ` The last generation it acknowledged is ${acknowledged.settings_gen} (${stamp(acknowledged.received_at)}).`}
+              </p>
+            )}
+            {props.operator && acknowledged && !restoring && (
+              <button
+                type="button"
+                onClick$={() => {
+                  const filled = restoreDrafts(
+                    acknowledged.settings,
+                    Math.floor(Date.now() / 1000),
+                  );
+                  for (const [key, value] of Object.entries(filled))
+                    drafts[key] = value;
+                  replace.value = true;
+                }}
+              >
+                Fill in generation {acknowledged.settings_gen} with Replace
+              </button>
+            )}
+          </div>
         )}
         <SettingsRequests
           requests={requests.slice(0, 3)}
@@ -460,7 +537,8 @@ export const SettingsRequests = component$<{
                 {c.final_status ? `: ${c.final_status}` : ""}
               </strong>{" "}
               <small>
-                requested {stamp(c.created_at)} by {c.requested_by}
+                requested {stamp(c.created_at)} by{" "}
+                {originText(c.origin) || c.requested_by}
                 {c.expires_at ? ` · expires ${stamp(c.expires_at)}` : ""}
               </small>
             </p>

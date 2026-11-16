@@ -115,3 +115,17 @@ export function expiryError(seconds: number): string {
 
 export const humanize = (value: string) =>
   value.replaceAll("_", " ").replaceAll("-", " ");
+
+/** The device's latest `health` object is the logger's JSON as sent, so it
+ * still carries the firmware's "not read" markers (65535 mV, CSQ 99) and a
+ * stale free-space figure while the SD card is not ok. They become null,
+ * which every formatter shows as "—", as the stored health rows already do. */
+export function readHealth(
+  health: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const h = { ...(health || {}) };
+  for (const key of ["bat_mv", "sol_mv"]) if (h[key] === 65535) h[key] = null;
+  if (h.csq === 99) h.csq = null;
+  if (h.sd !== "ok") h.sd_free_mb = null;
+  return h;
+}

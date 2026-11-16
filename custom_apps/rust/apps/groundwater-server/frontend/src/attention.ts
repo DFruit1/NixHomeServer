@@ -2,6 +2,8 @@
 // the device list already returns. Each item names the view that explains it.
 import { alertLabel } from "./alert-text";
 import { observationProblem } from "./events";
+import { readHealth } from "./format";
+import { settingsLost } from "./settings";
 import type { Alert, Device } from "./types";
 
 export interface Problem {
@@ -22,6 +24,7 @@ const COVERED: Record<string, (device: Device) => boolean> = {
     !["ok", "locked"].includes(d.health.mram),
   logging_off: (d) => d.health?.log === "off",
   logger_error: (d) => typeof d.health?.err === "number" && d.health.err !== 0,
+  settings_lost: (d) => settingsLost(d.health),
 };
 
 /** `openAlerts` (this device's open alerts, when loaded) names each alert;
@@ -57,7 +60,13 @@ export function deviceProblems(
   const sensor = observationProblem(device.latest_received);
   if (sensor)
     problems.push({ text: `latest reading ${sensor}`, view: "history" });
-  const h = (device.health || {}) as Record<string, unknown>;
+  const h = readHealth(device.health);
+  const lost = settingsLost(device.health);
+  if (rev2 && lost)
+    problems.push({
+      text: "settings lost: not logging until settings are sent",
+      view: "settings",
+    });
   if (rev2 && device.health) {
     if (typeof h.sd === "string" && h.sd !== "ok")
       problems.push({ text: `SD card ${h.sd}`, view: "health" });
@@ -66,10 +75,11 @@ export function deviceProblems(
         text: "MRAM ring locked (Tail Lock): logging stops until data is saved",
         view: "health",
       });
-    else if (typeof h.mram === "string" && h.mram !== "ok")
+    else if (typeof h.mram === "string" && h.mram !== "ok" && !lost)
       problems.push({ text: `MRAM ${h.mram}`, view: "health" });
-    if (h.log === "off") problems.push({ text: "logging off", view: "health" });
-    if (typeof h.err === "number" && h.err !== 0)
+    if (h.log === "off" && !lost)
+      problems.push({ text: "logging off", view: "health" });
+    if (typeof h.err === "number" && h.err !== 0 && !lost)
       problems.push({ text: `latched error ${h.err}`, view: "health" });
   }
   if ((device.pending_challenge_count || 0) > 0)

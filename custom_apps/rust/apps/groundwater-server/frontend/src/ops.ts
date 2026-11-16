@@ -89,9 +89,16 @@ export const POLICY_FIELDS = [
   ["battery_low_mv", "Battery low (mV)", 3000, 9000],
   ["battery_hys_mv", "Battery clear hysteresis (mV)", 0, 2000],
   ["solar_low_mv", "Solar low (mV)", 0, 30000],
-  ["solar_samples", "Solar low samples in a row", 1, 10],
+  // Days, despite the name: the server reuses the column (rev2.sql
+  // groundwater_power_alerts).
+  ["solar_samples", "Days without solar before alert", 1, 10],
   ["stale_margin_min", "Missed-connection margin (min)", 5, 10080],
 ] as const;
+/** What a threshold means where the label alone cannot say it. */
+export const POLICY_HINTS: Partial<Record<string, string>> = {
+  solar_samples:
+    "Alert when no solar reading (health or self-test) in this many days reached Solar low and at least one of them was taken between 09:00 and 15:00 logger local time.",
+};
 export type PolicyKey = (typeof POLICY_FIELDS)[number][0] | "stale_enabled";
 export const POLICY_KEYS: PolicyKey[] = [
   ...POLICY_FIELDS.map(([key]) => key),

@@ -17,7 +17,7 @@ import {
   secondsLeft,
   show,
 } from "./format";
-import { OP_HELP, opArgs } from "./commands";
+import { OP_HELP, TRUNCATED_COMMANDS, opArgs, originText } from "./commands";
 import { devicePath, send, useNow } from "./hooks";
 import type { Command, Device } from "./types";
 import { Feedback, TableRegion } from "./widgets";
@@ -590,6 +590,8 @@ export const Rev2Queue = component$<{
   audit?: boolean;
   /** When the logger is expected to connect next (commands wait for it). */
   expected?: string | null;
+  /** The server cut the list at its newest 500 commands. */
+  truncated?: boolean;
 }>((props) => {
   const now = useNow(30000);
   const pending = useSignal(0),
@@ -608,6 +610,7 @@ export const Rev2Queue = component$<{
           {error.value}
         </p>
       )}
+      {props.truncated && <p class="notice">{TRUNCATED_COMMANDS}</p>}
       {props.commands.length === 0 ? (
         <p class="empty">No commands recorded for this device.</p>
       ) : (
@@ -635,11 +638,13 @@ export const Rev2Queue = component$<{
                         #{c.id} {c.op || c.kind}
                       </strong>
                       <small>
-                        {c.requested_by}
-                        {c.origin && c.origin !== "operator"
-                          ? ` · ${c.origin}`
-                          : ""}
+                        {originText(c.origin) ||
+                          originText(c.requested_by) ||
+                          c.requested_by}
                       </small>
+                      {c.replace_settings && (
+                        <small>replace: other keys reset to defaults</small>
+                      )}
                       {c.parent_id != null && (
                         <small>confirms #{c.parent_id}</small>
                       )}

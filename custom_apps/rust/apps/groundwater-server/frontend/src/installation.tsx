@@ -417,10 +417,11 @@ export const DatumPanel = component$<Props>((props) => {
   const touched = useSignal(false);
   const action = useStore({ pending: false, message: "", failed: false });
   const built = useComputed$(() => buildDatum(draft));
+  // A fault reading's level is not a level: no preview from it.
   const rawLevel =
-    props.device.latest_plausible?.gwl ??
-    props.device.latest_received?.gwl ??
-    null;
+    [props.device.latest_plausible, props.device.latest_received].find(
+      (o) => o?.gwl != null && !o.sensor_status,
+    )?.gwl ?? null;
   const add = $(async () => {
     touched.value = true;
     if (action.pending || Object.keys(built.value.errors).length) return;

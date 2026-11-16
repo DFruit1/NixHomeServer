@@ -449,3 +449,32 @@ export function settingsDiff(
     .sort()
     .map((key) => ({ key, before: previous?.[key], after: current[key] }));
 }
+
+/** Settings-lost RECOVERY as the server detects it (rev2_commands.rs
+ * `settings_lost`): `mram:"recovery"` with any latched error but 3. The
+ * logger runs on firmware defaults and does not log until it is sent
+ * settings. err 3 is the read-only RECOVERY that refuses settings. */
+export function settingsLost(
+  health: Record<string, unknown> | null | undefined,
+): boolean {
+  return health?.mram === "recovery" && health.err !== 3;
+}
+
+/** Editor drafts holding every key of `settings` (a generation the logger
+ * acknowledged), with a delayed start that has already passed sent as 0,
+ * as the server's automatic restore does. */
+export function restoreDrafts(
+  settings: Record<string, unknown>,
+  now: number,
+): Record<string, string> {
+  const drafts: Record<string, string> = {};
+  for (const field of SETTING_FIELDS) {
+    if (!(field.key in settings)) continue;
+    const value = settings[field.key];
+    drafts[field.key] =
+      field.key === "start" && typeof value === "number" && value <= now
+        ? "0"
+        : settingText(value);
+  }
+  return drafts;
+}

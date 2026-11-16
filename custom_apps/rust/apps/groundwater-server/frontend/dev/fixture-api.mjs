@@ -5,6 +5,9 @@ import { createServer } from "node:http";
 
 const V21 = ["8F3A21C04B9E77A1D25C01FE", "A13A21C04B9E77A1D25C01AB"];
 const V22 = "6A1B2C3D4E5F60718293A4B5";
+// mode: normal | fault (sensor over-range, ring locked, err 7) | lost
+// (settings-lost RECOVERY after an automatic restore that expired, health
+// with not-read markers) | empty | error.
 let role = "operator",
   mode = "normal",
   // busy: the CSV export answers 429 as when four exports already run.
@@ -12,6 +15,8 @@ let role = "operator",
   // browser marks as sent from another origin.
   busy = false,
   crossOrigin = false,
+  // cut: JSON exports and the command list come back truncated.
+  cut = false,
   commands = [],
   nextId = 100;
 const now = () => new Date().toISOString();
@@ -46,6 +51,7 @@ const observation = (rev2) => ({
     ? "anchor at seq 412 + 3 x 900 s"
     : "Device-local timestamp normalized with enrollment offset.",
   quality_reasons: rev2 && mode === "fault" ? ["sensor-over-range"] : [],
+  sensor_status: rev2 ? (mode === "fault" ? 3 : 0) : null,
   duplicate_outcome: "first",
   interpretation_version: rev2 ? "gw-adapter/2+v22" : "v21-1",
 });
@@ -242,7 +248,20 @@ const deviceView = (d) => ({
         health:
           mode === "fault"
             ? { ...d.health, mram: "locked", err: 7, log: "off" }
-            : d.health,
+            : mode === "lost"
+              ? {
+                  ...d.health,
+                  // Settings lost (err 4), with the logger's not-read
+                  // markers as sent: the API passes this object through.
+                  mram: "recovery",
+                  err: 4,
+                  log: "off",
+                  gen: 0,
+                  bat_mv: 65535,
+                  csq: 99,
+                  sd: "error",
+                }
+              : d.health,
       }
     : {}),
   open_alert_count: allAlerts().filter(
@@ -258,7 +277,7 @@ const deviceView = (d) => ({
 // level/threshold/sensor_status/sensor_mv/distance_m/threshold_m) plus
 // subject, event, source, seq, log_id, time_estimated and received_at.
 const severity = (kind) =>
-  ["power_critical", "tail_lock", "mram_fault"].includes(kind)
+  ["power_critical", "tail_lock", "mram_fault", "settings_lost"].includes(kind)
     ? "critical"
     : ["solar_low", "signal_low"].includes(kind)
       ? "info"
@@ -302,6 +321,23 @@ let alerts = [
     acknowledged_at: ago(4 * HOUR),
     acknowledged_by: "fixture-user",
     ack_note: "Battery swap booked for Thursday",
+  },
+  {
+    id: 6,
+    device_id: V22,
+    kind: "solar_low",
+    state: "resolved",
+    // rev2.sql groundwater_power_alerts: the highest solar reading (V).
+    trigger_value: 0.31,
+    opened_at: ago(6 * DAY),
+    resolved_at: ago(5 * DAY),
+    detail: {
+      threshold_mv: 1000,
+      days: 3,
+      daylight_samples: 4,
+      max_mv: 310,
+      resolution: "health",
+    },
   },
   {
     id: 4,
@@ -505,28 +541,49 @@ let alerts = [
 // Fault mode: what the server raises from that state (health err 7, ring
 // locked) on top of the logger's own alerts.
 const faultAlerts = () =>
-  mode !== "fault"
-    ? []
-    : [
+  (mode === "fault"
+    ? [
         ["logger_error", 7, { err: 7 }],
         ["tail_lock", 1234, { mram: "locked", unsaved: 1234, usable: 122368 }],
         ["logging_off", 0, { log: "off" }],
-      ].map(([kind, value, detail], i) => ({
-        id: 200 + i,
-        device_id: V22,
-        kind,
-        severity: severity(kind),
-        state: "open",
-        trigger_value: value,
-        opened_at: ago(4 * HOUR),
-        resolved_at: null,
-        acknowledged_at: null,
-        acknowledged_by: null,
-        ack_note: null,
-        resolved_by: null,
-        resolve_note: null,
-        detail: { ...detail, source: "server" },
-      }));
+      ]
+    : mode === "lost"
+      ? [
+          // rev2_commands.rs maybe_restore_settings, restore ended.
+          [
+            "settings_lost",
+            4,
+            {
+              reason:
+                "the automatic settings restore ended and the logger still has no settings",
+              command_id: 66,
+              state: "expired",
+              final_status: null,
+              status_reason: "expired before the logger received it",
+              err: 4,
+              action: "send settings",
+            },
+          ],
+          ["logger_error", 4, { err: 4 }],
+          ["logging_off", 0, { log: "off" }],
+        ]
+      : []
+  ).map(([kind, value, detail], i) => ({
+    id: 200 + i,
+    device_id: V22,
+    kind,
+    severity: severity(kind),
+    state: "open",
+    trigger_value: value,
+    opened_at: ago(4 * HOUR),
+    resolved_at: null,
+    acknowledged_at: null,
+    acknowledged_by: null,
+    ack_note: null,
+    resolved_by: null,
+    resolve_note: null,
+    detail: { ...detail, source: "server" },
+  }));
 const allAlerts = () => [...alerts, ...faultAlerts()];
 
 const health = Array.from({ length: 30 }, (_, i) => ({
@@ -537,11 +594,13 @@ const health = Array.from({ length: 30 }, (_, i) => ({
   time_valid: true,
   received_at: ago(i * 6 * HOUR + 4 * HOUR - 2000),
   uptime_s: 5120 + i,
-  csq: i === 5 ? 99 : 18 + (i % 6),
-  bat_mv: 7412 - i * 12,
-  sol_mv: i % 4 === 0 ? 300 : 5120 - i * 30,
+  // Not read: the server stores null (65535 mV, CSQ 99, free space
+  // unless the SD card is ok).
+  csq: i === 5 ? null : 18 + (i % 6),
+  bat_mv: i === 9 ? null : 7412 - i * 12,
+  sol_mv: i === 9 ? null : i % 4 === 0 ? 300 : 5120 - i * 30,
   sd: i === 8 ? "error" : "ok",
-  sd_free_mb: 7400 - i,
+  sd_free_mb: i === 8 ? null : 7400 - i,
   mram: "ok",
   unsaved: 1234 + i * 1500,
   usable: 122368,
@@ -663,6 +722,38 @@ const deviceEvents = [
     30,
     null,
   ],
+  [
+    "server",
+    "clock_sync_unchanged",
+    {
+      command_id: 58,
+      t: Math.floor(Date.now() / 1000) - 20 * 3600,
+      tv: 1,
+      set: false,
+    },
+    20,
+    null,
+  ],
+  [
+    "server",
+    "settings_restore_requested",
+    {
+      command_id: 49,
+      gen: 4,
+      source: "ack",
+      acknowledged_at: ago(21 * DAY),
+      err: 4,
+    },
+    240,
+    null,
+  ],
+  [
+    "server",
+    "settings_recovery_ended",
+    { since: ago(10 * DAY), command_id: 49, gen: 5 },
+    216,
+    null,
+  ],
 ].map(([source, event, details, hours, seq], i) => ({
   id: i + 1,
   source,
@@ -702,11 +793,12 @@ const positions = Array.from({ length: 8 }, (_, i) => ({
   settings_gen: 5,
   reason: 1,
   // Records code 0 none, 1 2D, 2 3D; the gps JSON adds one (3 = 3D).
-  fix: i === 7 ? 3 : i === 4 ? 1 : 2,
-  lat: -33.8688197 + (i === 2 ? 0.00037 : i * 0.000004),
-  lon: 151.2092955 + (i === 2 ? 0.00012 : -i * 0.000003),
-  alt_m: 12 + i,
-  hdop: 1.1 + i / 10,
+  fix: i === 7 ? 3 : i === 5 ? 0 : i === 4 ? 1 : 2,
+  // i 5: no fix; lat/lon/alt/hdop not read (null).
+  lat: i === 5 ? null : -33.8688197 + (i === 2 ? 0.00037 : i * 0.000004),
+  lon: i === 5 ? null : 151.2092955 + (i === 2 ? 0.00012 : -i * 0.000003),
+  alt_m: i === 5 ? null : 12 + i,
+  hdop: i === 5 ? null : 1.1 + i / 10,
   satellites: 8 - (i % 3),
   accel_x_mg: 15,
   accel_y_mg: -20,
@@ -733,8 +825,12 @@ const tilt = Array.from({ length: 12 }, (_, i) => ({
 }));
 const tests = [
   {
+    // api_rev2.rs tests: a Type 5 record and its test/result JSON merged.
     id: 3,
-    source: "json",
+    source: "record",
+    sources: ["record", "json"],
+    json_id: 41,
+    json_ok: true,
     trigger: "remote",
     command_id: 42,
     recorded_at: ago(DAY),
@@ -758,11 +854,60 @@ const tests = [
       acc: "ok",
       mram: "ok",
       warn: [],
+      up: 30,
+      status_flags: [
+        "sensor",
+        "sd",
+        "sim",
+        "network",
+        "mqtt",
+        "gnss_fix",
+        "display",
+        "accelerometer",
+        "mram",
+        "solar",
+      ],
+    },
+  },
+  {
+    // The logger's JSON said ok, but MRAM failed: the server's rule
+    // (sensor, SD, SIM, network, MQTT, display, accelerometer, MRAM) fails it.
+    id: 5,
+    source: "record",
+    sources: ["record", "json"],
+    json_id: 44,
+    json_ok: true,
+    trigger: "power_on",
+    command_id: null,
+    recorded_at: ago(30 * HOUR),
+    received_at: ago(30 * HOUR),
+    battery_mv: null,
+    solar_mv: null,
+    csq: null,
+    sensor_mv: 1230,
+    sensor_ma: 8.2,
+    level: 12.3,
+    sensor_status: 0,
+    status_bits: 0b1011111111,
+    ok: false,
+    details: {
+      sd: "ok",
+      sim: "ok",
+      net: "ok",
+      mqtt: "ok",
+      gps: "nofix",
+      epd: "ok",
+      acc: "ok",
+      mram: "fail",
+      warn: ["No solar"],
     },
   },
   {
     id: 4,
     source: "json",
+    sources: ["json"],
+    json_id: 4,
+    json_ok: false,
     trigger: "scheduled",
     command_id: null,
     recorded_at: ago(35 * HOUR),
@@ -781,6 +926,9 @@ const tests = [
   {
     id: 2,
     source: "record",
+    sources: ["record"],
+    json_id: null,
+    json_ok: null,
     trigger: "button",
     command_id: null,
     recorded_at: ago(9 * DAY),
@@ -869,7 +1017,24 @@ const logs = [
     resent_copies: 3,
     open_gaps: 1,
     unrecoverable_gaps: 1,
-    pending_readings: 0,
+    pending_readings: 14,
+    // api_rev2.rs logs: readings with no time, by reason.
+    pending_reasons: [
+      {
+        reason: "no anchor follows the unrecoverable gap at seq 101-140",
+        state: "gap_unrecoverable",
+        count: 10,
+        min_seq: 141,
+        max_seq: 150,
+      },
+      {
+        reason: "awaiting the anchor before this reading",
+        state: "awaiting_anchor",
+        count: 4,
+        min_seq: 429,
+        max_seq: 432,
+      },
+    ],
   },
 ];
 let gaps = [
@@ -1054,9 +1219,9 @@ const RULES = [
   ["tamper", "Impact, orientation or movement", "alert", ["warning"]],
   [
     "health",
-    "Logger health (errors, logging off, clock, signal, resets)",
+    "Logger health (errors, settings lost, logging off, clock, signal, resets)",
     "alert",
-    ["info", "warning"],
+    ["info", "warning", "critical"],
   ],
 ];
 let rules = RULES.map(([kind, label, source, severities]) => ({
@@ -1221,6 +1386,7 @@ const command = (deviceId, extra) => ({
   challenge_expires_at: null,
   origin: "operator",
   download_id: null,
+  replace_settings: false,
   ...extra,
 });
 commands.push(
@@ -1299,6 +1465,26 @@ commands.push(
       },
     },
   }),
+  // The automatic re-send of lost settings (rev2_commands.rs
+  // maybe_restore_settings); expires in mode=lost (see /api/commands).
+  command(V22, {
+    id: 66,
+    kind: "config",
+    op: "settings",
+    args: { ...rev2Settings },
+    replace_settings: true,
+    state: "acked",
+    final_status: "ok",
+    requested_by: "auto-restore",
+    origin: "auto-restore",
+    created_at: ago(10 * DAY),
+    sent_at: ago(10 * DAY),
+    acked_at: ago(10 * DAY),
+    publish_count: 1,
+    last_published_at: ago(10 * DAY),
+    expires_at: ago(3 * DAY),
+    ack_payload: { v: 2, id: 66, op: "settings", status: "ok", gen: 5 },
+  }),
   command(V22, {
     id: 50,
     kind: "danger",
@@ -1325,31 +1511,81 @@ function series(url, deviceId) {
   const from = Date.parse(url.searchParams.get("from")),
     to = Date.parse(url.searchParams.get("to"));
   const datum = url.searchParams.get("datum") || "raw";
+  const bucket = Number(url.searchParams.get("bucket")) || 0;
   const rev2 = deviceId === V22;
-  const points =
-    mode === "empty"
-      ? []
-      : Array.from({ length: 96 }, (_, i) => {
-          const raw = rev2 ? 12 + Math.sin(i / 10) : 3.7 + Math.sin(i / 10);
-          const value =
-            datum === "dtw_bgl"
-              ? 42 - 0.6 - raw
-              : datum === "rl_ahd"
-                ? 21.3 - (42 - 0.6 - raw)
-                : raw;
-          return {
-            recorded_at: new Date(from + ((to - from) * i) / 95).toISOString(),
-            gwl: value,
-            raw_gwl: raw,
-            gwl_text: null,
-            battery_v: rev2 ? null : 3.6 + i / 1000,
-            solar_v: rev2 ? null : Math.max(0, 5 * Math.sin(i / 8)),
-            rssi: rev2 ? null : 65 + Math.sin(i / 4) * 10,
-            csq: null,
-            sample_count: 5,
-            conflict: i === 10,
-          };
-        }).filter((_, i) => i < 40 || i > 48);
+  const toDatum = (raw) =>
+    datum === "dtw_bgl"
+      ? 42 - 0.6 - raw
+      : datum === "rl_ahd"
+        ? 21.3 - (42 - 0.6 - raw)
+        : raw;
+  // db.rs device_series. Firmware 2.2 faults: raw mode has over-range
+  // readings that keep the firmware's 25.1 m (points with sensor_status 3)
+  // and no-sensor readings without a level (faults only); bucketed mode has
+  // a bucket mixing valid and fault samples (a point plus a fault entry)
+  // and buckets of faults only (fault entries, no point).
+  const fault = (i) =>
+    !rev2
+      ? null
+      : bucket === 0
+        ? i >= 20 && i <= 22
+          ? { status: 3, kinds: ["over-range"], level: 25.1 }
+          : i >= 60 && i <= 63
+            ? { status: 1, kinds: ["no-sensor"], level: null }
+            : null
+        : i === 20
+          ? { valid: 3, count: 2, kinds: ["over-range"] }
+          : i >= 60 && i <= 63
+            ? { valid: 0, count: 4, kinds: ["no-sensor"] }
+            : i === 70
+              ? { valid: 0, count: 1, kinds: ["adc-fault", "under-range"] }
+              : null;
+  const points = [],
+    faults = [];
+  if (mode !== "empty")
+    for (let i = 0; i < 96; i++) {
+      if (i > 40 && i < 48) continue;
+      const recorded_at = new Date(from + ((to - from) * i) / 95).toISOString();
+      const f = fault(i);
+      const raw = rev2 ? 12 + Math.sin(i / 10) : 3.7 + Math.sin(i / 10);
+      if (f && bucket === 0) {
+        faults.push({
+          recorded_at,
+          sensor_status: f.status,
+          fault_count: 1,
+          fault_kinds: f.kinds,
+          valid_count: 0,
+        });
+        if (f.level == null) continue;
+      } else if (f) {
+        faults.push({
+          recorded_at,
+          sensor_status: null,
+          fault_count: f.count,
+          fault_kinds: f.kinds,
+          valid_count: f.valid,
+        });
+        if (f.valid === 0) continue;
+      }
+      const level = f && bucket === 0 ? f.level : raw;
+      points.push({
+        recorded_at,
+        gwl: toDatum(level),
+        raw_gwl: level,
+        gwl_text: null,
+        battery_v: rev2 ? null : 3.6 + i / 1000,
+        solar_v: rev2 ? null : Math.max(0, 5 * Math.sin(i / 8)),
+        rssi: rev2 ? null : 65 + Math.sin(i / 4) * 10,
+        csq: null,
+        // Valid samples only; a raw point is 1.
+        sample_count: bucket === 0 ? 1 : f ? f.valid : 5,
+        conflict: i === 10,
+        sensor_status: bucket > 0 || !rev2 ? null : f ? f.status : 0,
+        fault_count: f ? (bucket === 0 ? 1 : f.count) : 0,
+        fault_kinds: f ? f.kinds : [],
+      });
+    }
+  const valid = points.filter((p) => !p.sensor_status).map((p) => p.gwl);
   const d = devices.get(deviceId);
   const convert = (v) =>
     v == null
@@ -1366,10 +1602,12 @@ function series(url, deviceId) {
   return {
     device_id: deviceId,
     points,
-    min_gwl: 2.7,
-    max_gwl: 4.7,
-    bucket_minutes: Number(url.searchParams.get("bucket")),
+    min_gwl: valid.length ? Math.min(...valid) : null,
+    max_gwl: valid.length ? Math.max(...valid) : null,
+    bucket_minutes: bucket,
     truncated: false,
+    faults,
+    faults_truncated: false,
     // The real API always sends these (raw: limits in raw metres).
     datum,
     inverted: datum === "dtw_bgl",
@@ -1485,18 +1723,66 @@ async function deviceRoute(req, res, url, deviceId, rest) {
       JSON.stringify({
         device_id: deviceId,
         exported_at: now(),
-        events: deviceEvents,
+        from: url.searchParams.get("from"),
+        to: null,
+        // ops_api.rs: oldest first, 20,000 rows at most.
+        // Cut once; a continuation from the newest row's time is not.
+        truncated:
+          cut &&
+          !(
+            Date.parse(url.searchParams.get("from") || "") >
+            Date.now() - 3 * HOUR
+          ),
+        limit: 20000,
+        events: [...deviceEvents].sort(
+          (a, b) =>
+            Date.parse(a.recorded_at || a.received_at) -
+            Date.parse(b.recorded_at || b.received_at),
+        ),
       }),
     );
   }
   if (rest === "positions")
     return json(res, { positions: rev2 ? positions : [] });
   if (rest === "positions/export") {
+    const geojson = url.searchParams.get("format") === "geojson";
+    const rows = [...(rev2 ? positions : [])].reverse();
+    const truncated = cut && !url.searchParams.get("from");
     res.writeHead(200, {
-      "Content-Type": "application/json",
-      "Content-Disposition": "attachment",
+      "Content-Type": geojson ? "application/geo+json" : "application/json",
+      "Content-Disposition": `attachment; filename="${deviceId}-positions.${geojson ? "geojson" : "json"}"`,
     });
-    return res.end(JSON.stringify({ type: "FeatureCollection", features: [] }));
+    return res.end(
+      JSON.stringify(
+        geojson
+          ? {
+              type: "FeatureCollection",
+              features: rows
+                .filter((p) => p.lat != null && p.lon != null)
+                .map(({ lat, lon, alt_m, ...properties }) => ({
+                  type: "Feature",
+                  geometry: {
+                    type: "Point",
+                    coordinates: alt_m == null ? [lon, lat] : [lon, lat, alt_m],
+                  },
+                  properties,
+                })),
+              properties: {
+                device_id: deviceId,
+                exported_at: now(),
+                truncated,
+                limit: 20000,
+              },
+            }
+          : {
+              device_id: deviceId,
+              exported_at: now(),
+              truncated,
+              limit: 20000,
+              positions: rows,
+            },
+      ),
+    );
   }
   if (rest === "tilt") return json(res, { tilt: rev2 ? tilt : [] });
   if (rest === "tests") return json(res, { tests: rev2 ? tests : [] });
@@ -1925,7 +2211,8 @@ const server = createServer(async (req, res) => {
     mode = url.searchParams.get("mode") || "normal";
     busy = url.searchParams.get("busy") === "1";
     crossOrigin = url.searchParams.get("crossorigin") === "1";
-    return json(res, { role, mode, busy, crossOrigin });
+    cut = url.searchParams.get("cut") === "1";
+    return json(res, { role, mode, busy, crossOrigin, cut });
   }
   if (url.pathname === "/api/events") {
     res.writeHead(200, {
@@ -2151,9 +2438,25 @@ const server = createServer(async (req, res) => {
   }
   if (path === "/api/commands") {
     const device = url.searchParams.get("device");
-    return json(res, {
-      commands: commands.filter((c) => !device || c.device_id === device),
-    });
+    const list = commands
+      .filter((c) => !device || c.device_id === device)
+      .map((c) =>
+        mode === "lost" && c.id === 66
+          ? {
+              ...c,
+              state: "expired",
+              final_status: null,
+              status_reason: "expired before the logger received it",
+              created_at: ago(2 * DAY),
+              sent_at: ago(2 * DAY),
+              acked_at: null,
+              ack_payload: null,
+              expires_at: ago(DAY),
+            }
+          : c,
+      );
+    // api.rs commands: the newest 500, `truncated` when there were more.
+    return json(res, { commands: list, truncated: cut });
   }
   if (path === "/api/series") {
     if (!devices.has(url.searchParams.get("device") || ""))

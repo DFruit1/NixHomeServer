@@ -59,6 +59,15 @@ export const GapReportFacts = component$<{ row: GapReportRow }>((props) => {
   );
 });
 
+/** Why readings of a log have no time yet (api_rev2.rs pending_reasons). */
+const PENDING_TEXT: Record<string, string> = {
+  awaiting_anchor: "waiting for the anchor record that dates them",
+  gap_unrecoverable:
+    "can never be dated: readings between them and their anchor were lost in an unrecoverable gap",
+  awaiting_clock_set: "waiting for the logger's clock to be set",
+  no_time: "no time information",
+};
+
 export const StreamView = component$<Props>((props) => {
   const rev = useComputed$(() => props.revision);
   const hours = useSignal(720);
@@ -182,7 +191,26 @@ export const StreamView = component$<Props>((props) => {
                       <small>{l.decode_errors} decode errors</small>
                       <small>{l.conflicting_copies} conflicting copies</small>
                       <small>{l.resent_copies} resent copies</small>
-                      <small>{l.pending_readings} readings awaiting time</small>
+                      {(l.pending_reasons?.length ?? 0) > 0 ? (
+                        l.pending_reasons!.map((r) => (
+                          <small
+                            key={`${r.state}-${r.min_seq}`}
+                            class={
+                              r.state === "gap_unrecoverable"
+                                ? "error-text"
+                                : ""
+                            }
+                          >
+                            {r.count} reading{r.count === 1 ? "" : "s"} without
+                            time (seq {r.min_seq ?? "?"}–{r.max_seq ?? "?"}):{" "}
+                            {PENDING_TEXT[r.state] || r.reason}
+                          </small>
+                        ))
+                      ) : (
+                        <small>
+                          {l.pending_readings} readings awaiting time
+                        </small>
+                      )}
                     </td>
                     <td>{stamp(l.last_received_at)}</td>
                   </tr>

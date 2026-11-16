@@ -58,6 +58,10 @@ Recent ranges roll on refresh; explicit ranges stay fixed. Resource requests
 are aborted on selection changes and late responses are discarded.
 Charts use plausible UTC device time, with local browser labels, configured
 threshold bands, alert-opening markers and line breaks for missing intervals.
+Sensor faults come from the series itself: a raw point with a non-zero
+`sensor_status` and every `faults` entry without valid samples are shaded
+spans (never a level, never in the axis range); a bucket that also held
+faults keeps its valid average and is ringed.
 The table exposes exact plotted values; CSV exports underlying observations.
 The header's operator-only raw-delivery view includes unattributed quarantines;
 the device log links to that same view and filter implementation.
@@ -71,7 +75,12 @@ Fixtures are development tooling and are never imported by production source.
 `http://127.0.0.1:5188/__fixture?role=viewer&mode=normal` changes the fixture
 session; modes `empty` and `error` exercise those states, and `fault` gives
 the firmware 2.2 unit an over-range latest reading, a locked MRAM ring, a
-latched error and logging off (with the server alerts they raise). `busy=1`
+latched error and logging off (with the server alerts they raise); `lost`
+gives it settings-lost RECOVERY (err 4, an expired `auto-restore`, the
+`settings_lost` alert) and a health object with not-read markers. The
+series always has raw over-range and no-sensor readings, a mixed bucket and
+fault-only buckets. `cut=1` truncates the command list and the JSON
+exports. `busy=1`
 makes the CSV export answer 429; `crossorigin=1` refuses every write as a
 cross-origin one. `FIXTURE_PORT` moves the fixture off 5188 (then
 `pnpm exec vite --port <free>` with `GROUNDWATER_DEV_API` pointing at it).
@@ -645,8 +654,31 @@ Series with `datum` add `"datum":"dtw_bgl","inverted":true,"unconverted":12,
 "limits":{"min":…,"max":…}` (limits converted with the latest datum, or
 null); every point adds `raw_gwl`, `solar_v` and `csq`. `gwl` holds the
 converted value. CSV export appends `source,log_id,seq,record_type,
-sensor_mv,sensor_status,settings_gen,csq,time_source,depth_bgl_m,level_ahd_m`
-to the existing columns.
+sensor_mv,sensor_status,settings_gen,csq,time_source,depth_bgl_m,level_ahd_m,
+sensor_status_text,level_valid,time_reason` to the existing columns.
+
+Sensor faults in the series: points add `sensor_status` (raw point only),
+`fault_count` and `fault_kinds` (`no-sensor`, `under-range`, `over-range`,
+`adc-fault`, `factors-invalid`, `unknown`); `sample_count` counts valid
+samples. Bucket averages and `min_gwl`/`max_gwl` use valid readings only.
+`"faults":[{"recorded_at","sensor_status","fault_count","fault_kinds",
+"valid_count"}]` lists raw fault readings and buckets that held faults;
+readings without a level and fault-only buckets appear only there.
+`faults_truncated` follows the point cap. Device summaries'
+`latest_received`/`latest_plausible` carry `sensor_status`.
+
+Other fields the UI reads: `/api/commands` `truncated` (newest 500) and
+per-command `replace_settings`; origin `auto-restore` (settings re-sent after
+settings-lost RECOVERY, `mram:"recovery"` with `err` ≠ 3); alert kind
+`settings_lost` (`detail.reason`, `command_id`, `state`, `final_status`,
+`status_reason`, `action`); `solar_low` detail `{threshold_mv, days,
+daylight_samples, max_mv}` and policy `solar_samples` meaning days (1–10);
+`/tests` merged rows with `sources`, `json_id`, `json_ok`; `/logs`
+`pending_reasons[{reason,state,count,min_seq,max_seq}]`; JSON exports
+`truncated` and `limit` (20,000, oldest first; GeoJSON in `properties`).
+Not-read health, test and position values are null. The device's `health`
+object is the logger's JSON as sent, so the UI maps 65535 mV and CSQ 99 to
+"—" itself (`readHealth`).
 
 Gap report row:
 

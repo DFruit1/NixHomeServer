@@ -9,6 +9,7 @@ import {
 import { ackOutcome, buildConfig, CONFIG_FIELDS, emptyConfig } from "./config";
 import { errorText, request, stamp } from "./api";
 import type { Command, Device } from "./types";
+import { TRUNCATED_COMMANDS } from "./commands";
 
 type Props = { device: Device; refresh: QRL<() => void> };
 export const ConfigEditor = component$<Props>(({ device, refresh }) => {
@@ -317,6 +318,7 @@ export const CommandQueue = component$<{
   operator: boolean;
   refresh: QRL<() => void>;
   audit?: boolean;
+  truncated?: boolean;
 }>((props) => {
   const pending = useSignal<number | null>(null),
     error = useSignal("");
@@ -332,6 +334,7 @@ export const CommandQueue = component$<{
           {error.value}
         </p>
       )}
+      {props.truncated && <p class="notice">{TRUNCATED_COMMANDS}</p>}
       {props.commands.length === 0 ? (
         <p class="empty">No commands recorded for this device.</p>
       ) : (
