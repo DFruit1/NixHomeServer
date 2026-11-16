@@ -159,6 +159,8 @@ pub async fn command_supported(
     client.query_one("SELECT groundwater_command_supported(source_profile,$2,$3,clock_policy,local_offset_min,clock_change_unverified) IS TRUE FROM devices WHERE device_id=$1", &[&device,&kind,&payload])
         .await.map(|row| row.get(0)).map_err(|e| e.to_string())
 }
+/// [`cancel_command`] without the warning, as the tests use it.
+#[cfg(test)]
 pub async fn cancel(
     client: &Client,
     device: &str,
