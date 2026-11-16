@@ -6,6 +6,13 @@ commands). The decisions in §13 supersede earlier proposals. See the
 [operator runbook](groundwater-operations.md) for enrollment and commissioning.
 Live deployment and hardware commissioning remain separate operations.
 
+**Firmware 2.2 (protocol revision 2):** §3 and §11 below describe the V2.1
+firmware, which the server still accepts. Firmware 2.2 (branch `feat/fw-rev2`)
+speaks the contract in
+[`gwl-v1-rev2.md`](../custom_apps/rust/apps/groundwater-server/docs/gwl-v1-rev2.md)
+(profile `V22`), and always connects through the router endpoint: the Flint 2
+DDNS name on TLS 8883 (§4.1).
+
 **Firmware source:** private repo `MuhammadAli1132001/Ground-Water-Level`,
 commit `8278b61` ("ack and desired applied"), active tree
 `GWL_Firmware_V2.1/GWL_Firmware_V2.1/` (referred to below as *the firmware*).
@@ -632,6 +639,12 @@ below is the implementation guide.
 ---
 
 ## 11. Known firmware limitations (out of scope here, tracked for later)
+
+These apply to V2.1. Firmware 2.2 resolves 1–5, 7, 9 and 10: DeviceID client
+ID, `gwl/v1/<DeviceID>/…` topics, verified TLS with credentials, a retained
+Last Will, a ring that keeps unsent records, UTC times with a validity flag,
+no heap use and no Adafruit token. It publishes alerts and millivolt
+voltages, which addresses 6 and 8.
 
 1. **Shared client ID `"azz"`** — session takeovers between devices; QoS-1
    redelivery can land on the wrong unit. Fix: derive client ID from
