@@ -43,10 +43,7 @@ export default component$(() => {
     state.open = state.open === id ? '' : id;
   });
 
-  const complete = $(async (id: string, nextId: string) => {
-    if (!state.done.includes(id)) {
-      await saveDone([...state.done, id]);
-    }
+  const advance = $((id: string, nextId: string) => {
     state.open = nextId;
     // The button that was just clicked disappears with the step body, so hand
     // focus to the step that opens now (or to this step's own toggle after the
@@ -71,6 +68,13 @@ export default component$(() => {
     state.focus = '';
   });
 
+  const complete = $(async (id: string, nextId: string) => {
+    if (!state.done.includes(id)) {
+      await saveDone([...state.done, id]);
+    }
+    await advance(id, nextId);
+  });
+
   const reopen = $(async (id: string) => {
     await saveDone(state.done.filter((doneId) => doneId !== id));
   });
@@ -89,7 +93,7 @@ export default component$(() => {
       <header class="doc-head">
         <h1>Getting started</h1>
         <p class="doc-lead">
-          {steps.length} steps to set up your account and devices. Do them in order the first time; step progress is saved only in this browser profile.
+          {steps.length} steps to set up your account and devices. Progress stays in this browser.
         </p>
       </header>
 
@@ -123,12 +127,17 @@ export default component$(() => {
               </h2>
               <div class="start-step__body doc-prose" id={`step-${stepId}-body`} hidden={!open}>
                 {step.content}
-                <div class="start-step__foot">
+                <div class="start-step__foot doc-actions">
                   {done ? (
                     <button type="button" class="doc-btn doc-btn--quiet" onClick$={() => reopen(stepId)}>Mark as not done</button>
                   ) : (
                     <button type="button" class="doc-btn doc-btn--primary" onClick$={() => complete(stepId, nextId)}>
-                      {next ? `Done, next: ${next.label}` : 'Done'}
+                      {next ? 'Done & continue' : 'Done'}
+                    </button>
+                  )}
+                  {step.optional && !done && (
+                    <button type="button" class="doc-btn doc-btn--quiet" onClick$={() => advance(stepId, nextId)}>
+                      Skip for now
                     </button>
                   )}
                 </div>
@@ -144,21 +153,20 @@ export default component$(() => {
           <li>
             <div>
               <strong>Detailed Guide</strong>
-              <span>What each app does, where its files go, and what to check when something fails.</span>
+              <span>App guides, file locations and troubleshooting.</span>
             </div>
             <Link class="doc-btn" href="/uploads">Open the guide</Link>
           </li>
           <li>
             <div>
               <strong>Keys &amp; Secrets</strong>
-              <span>Passwords and keys for reader apps and devices that cannot use your normal sign-in.</span>
+              <span>App passwords and device keys.</span>
             </div>
             <Link class="doc-btn" href="/keys">Open Keys &amp; Secrets</Link>
           </li>
         </ul>
         <p class="doc-note">
-          <strong>Asking for help?</strong> Say which app, when, which network you were on and the exact error. Never include a password, link or code.{' '}
-          <Link href={guideHref('help')}>Troubleshooting</Link>
+          Need help? <Link href={guideHref('help')}>Troubleshooting and contacting an admin</Link>.
         </p>
       </footer>
     </section>

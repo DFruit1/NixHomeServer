@@ -87,6 +87,8 @@ export const VaultKavitaCard = component$(({ feature, username }: { feature: Vau
                 <code class={{ 'vault-secret__value': true, 'vault-secret__value--hidden': revealedId.value !== key.id }}>
                   {revealedId.value === key.id ? key.key : '••••••••'}
                 </code>
+                {confirmRotateId.value === key.id && <p>The old key stops working immediately.</p>}
+                {confirmDeleteId.value === key.id && <p>This key stops working immediately.</p>}
                 <div class="vault-secret__actions">
                   <button type="button" class="doc-btn doc-btn--small" onClick$={() => {
                     revealedId.value = revealedId.value === key.id ? 0 : key.id;
@@ -104,7 +106,7 @@ export const VaultKavitaCard = component$(({ feature, username }: { feature: Vau
                         disabled={busy.value}
                         onClick$={() => mutate({ action: 'rotate', authKeyId: key.id }, `Key ${key.name} regenerated.`)}
                       >
-                        Confirm rotate
+                        Confirm regeneration
                       </button>
                       <button type="button" class="doc-btn doc-btn--small doc-btn--quiet" onClick$={() => {
                         confirmRotateId.value = 0;

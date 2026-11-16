@@ -3,7 +3,6 @@ import { HomepageContext } from '../../shared/homepage-context.js';
 import type { AdminDashboardResponse, AdminDashboardWidget } from '../../shared/types.js';
 import { WidgetCard } from '../../components/dashboard/WidgetCard.js';
 import { RecentErrors } from '../../components/dashboard/RecentErrors.js';
-import { dashboardWidgetDefinitions } from '../../components/dashboard/registry.js';
 
 // Timestamps render from the ISO string so server and client markup agree.
 const formatCollectedAt = (iso: string): string => {
@@ -68,8 +67,7 @@ export default component$(() => {
         <div>
           <h1>Admin dashboard</h1>
           <p class="admin-dashboard__intro">
-            Read-only health for this server. Widgets read status files written by scheduled
-            server checks, so opening this page never starts expensive or privileged work.
+            Read-only server health from scheduled checks.
           </p>
         </div>
         {status.value?.available && status.value.generatedAt && (
@@ -102,12 +100,6 @@ export default component$(() => {
       )}
 
       <RecentErrors />
-
-      <p class="admin-dashboard__footer">
-        Widgets whose backing service is disabled are left out rather than shown as healthy.
-        Configured widgets: {dashboardWidgetDefinitions.map((definition) => definition.title).join(', ')}.
-        This view is read-only; actions arrive in later slices with confirmations and an audit log.
-      </p>
     </section>
   );
 });

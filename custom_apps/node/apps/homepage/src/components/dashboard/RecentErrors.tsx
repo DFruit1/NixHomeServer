@@ -58,7 +58,7 @@ export const RecentErrors = component$(() => {
       <div class="recent-errors__heading">
         <div>
           <h2 id="recent-errors-title">Recent errors</h2>
-          <p>Priority 0–3 journal events in the past hour, with message content withheld.</p>
+          <p>Errors and higher-severity events from the past hour. Messages are hidden.</p>
         </div>
         {summary.value?.generatedAt && <span class="recent-errors__stamp">Checked {formatTimestamp(summary.value.generatedAt)}</span>}
       </div>
@@ -74,7 +74,7 @@ export const RecentErrors = component$(() => {
                 <span class="recent-errors__service">{unit.label}</span>
                 <span class={`recent-errors__status is-${unit.state}`}>
                   {unit.state === 'available'
-                    ? unit.count === 0 ? 'No events observed' : `${unit.count}${unit.lowerBound ? '+' : ''} retained`
+                    ? unit.count === 0 ? 'No events observed' : `${unit.count}${unit.lowerBound ? '+' : ''} events`
                     : stateLabel(unit.state)}
                 </span>
               </li>
@@ -143,7 +143,7 @@ export const RecentErrors = component$(() => {
             </p>
           )}
           {result.value.state === 'available' && result.value.entries.length === 0 && (
-            <p class="recent-errors__state" role="status">No priority 0–3 events observed in this time range.</p>
+            <p class="recent-errors__state" role="status">No errors or higher-severity events observed in this time range.</p>
           )}
           {result.value.state === 'available' && result.value.entries.length > 0 && (
             <>

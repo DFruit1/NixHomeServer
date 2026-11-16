@@ -52,9 +52,6 @@ export const buildSteps = ({ username, kanidmUrl, serverLanHost, services, folde
   const fileTransferAvailable = Boolean(files) || sftpAvailable;
   const folders = folderGuides.filter((guide) => guide.enabled && (guide.personalPath || guide.sharedPath));
   const clients = clientSetupsFor(services);
-  const provisioned = ['documents', 'books', 'feeds']
-    .map((id) => service(id)?.name)
-    .filter((name): name is string => Boolean(name));
 
   return [
     {
@@ -62,7 +59,7 @@ export const buildSteps = ({ username, kanidmUrl, serverLanHost, services, folde
       label: 'Install a password manager',
       content: (
         <>
-          <p>The next steps hand you things to keep: a recovery code, an app password, a key for a device. Set up a password manager first so each one has a safe place to go.</p>
+          <p>Use a password manager to save the passwords, recovery codes and device keys from the next steps.</p>
           <ul class="doc-rows">
             <li>
               <div>
@@ -104,7 +101,7 @@ export const buildSteps = ({ username, kanidmUrl, serverLanHost, services, folde
       label: 'Protect your sign-in',
       content: (
         <>
-          <p>You are signed in as <strong>{username}</strong>. This one sign-in, managed by Kanidm, opens Homepage and most apps, so it is worth protecting properly.</p>
+          <p>You are signed in as <strong>{username}</strong>. Kanidm manages this sign-in for Homepage and most apps.</p>
           <ol class="doc-steps">
             <li><strong>Add a second way to sign in.</strong> In Kanidm, add a passkey on another device or an authenticator app, so one lost phone cannot lock you out.</li>
             <li><strong>Save your sign-in details</strong> in your password manager, along with any recovery codes Kanidm shows you.</li>
@@ -168,17 +165,7 @@ export const buildSteps = ({ username, kanidmUrl, serverLanHost, services, folde
             {serverLanHost && <>At home the server is <code>{serverLanHost}</code>. </>}
             Never click through a certificate warning.
           </p>
-          <details class="doc-more">
-            <summary>If an app does not open</summary>
-            <ul>
-              <li><strong>If access was just changed, sign out and back in.</strong> Your apps are decided when you sign in, so a change does not show up until the next sign-in.</li>
-              {provisioned.length > 0 && (
-                <li><strong>Some app accounts are created on first sign-in.</strong> {provisioned.join(', ')} can take a moment the first time. Try once more before reporting a problem.</li>
-              )}
-              <li><strong>Check which sign-in is failing.</strong> If an app has its own password, resetting your Kanidm password will not fix it.</li>
-              <li><Link href={guideHref('help')}>More troubleshooting, and what to send an admin</Link></li>
-            </ul>
-          </details>
+          <p><Link href={guideHref('help')}>App not opening? Try these checks.</Link></p>
         </>
       ),
     },
@@ -242,7 +229,12 @@ export const buildSteps = ({ username, kanidmUrl, serverLanHost, services, folde
       content: clients.length > 0 ? (
         <>
           <p>Set up only the ones you will use. Each app needs the server address shown with it.</p>
-          {clients.map(({ setup, service: app }) => <ClientSetupBlock key={setup.serviceId} setup={setup} service={app} />)}
+          {clients.map(({ setup, service: app }) => (
+            <details key={setup.serviceId} class="doc-more">
+              <summary>{setup.title}</summary>
+              <ClientSetupBlock setup={setup} service={app} showTitle={false} />
+            </details>
+          ))}
         </>
       ) : (
         <p class="doc-note">None of the apps assigned to your account has a phone or TV app to set up.</p>
@@ -254,7 +246,7 @@ export const buildSteps = ({ username, kanidmUrl, serverLanHost, services, folde
       optional: true,
       content: (
         <>
-          <p>At home everything works over Wi-Fi. Away from home, private apps are reachable only through NetBird, an encrypted private connection to the server. Skip this if you only use the server at home.</p>
+          <p>Use NetBird to reach private apps away from home. Skip this if you only use them on the home network.</p>
           <ol class="doc-steps">
             <li>Install NetBird on each device you want to use away from home.</li>
             <li>Ask an admin to enrol the device.</li>

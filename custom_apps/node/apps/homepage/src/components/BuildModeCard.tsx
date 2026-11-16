@@ -49,7 +49,7 @@ export const BuildModeCard = component$(() => {
       <div class="ops-tool__head">
         <div>
           <h3 id="build-mode-heading">Nix build mode</h3>
-          <p>Default build allocation for guarded deploys. A per-deploy --build-mode flag overrides it.</p>
+          <p>Build allocation for the next guarded deploy.</p>
         </div>
       </div>
       {status.value?.warning && <div class="notice">{status.value.warning}</div>}
@@ -82,8 +82,7 @@ export const BuildModeCard = component$(() => {
         </form>
       )}
       <p class="ops-tool__note">
-        Stored on the server and read by the next guarded deploy. Dry-runs ignore this and report the vars.nix
-        allocation.
+        Dry-runs report the vars.nix allocation instead.
       </p>
     </section>
   );

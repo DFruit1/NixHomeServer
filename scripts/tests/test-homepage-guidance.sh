@@ -226,13 +226,13 @@ for supported_client in 'Get Immich' 'Get Jellyfin' 'Get Inkita' 'Get Lissen' 'G
   require_fixed custom_apps/node/apps/homepage/src/shared/guide-data.ts "label: '${supported_client}'" \
     "New-user guidance must recommend the supported Android clients in one place."
 done
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'progress is saved only in this browser profile' \
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Progress stays in this browser.' \
   "New-user guidance must not imply that checklist progress is stored server-side."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Browser Files and SFTP/SSHFS are separate permissions.' \
   "New-user guidance must explain the separate browser and direct-file-transfer permissions."
 require_fixed custom_apps/node/apps/homepage/src/shared/guide-data.ts 'Kanidm checks your access, then Kopia asks for its own password' \
   "New-user guidance must distinguish Kanidm gateway access from the native Kopia login."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Some app accounts are created on first sign-in.' \
+require_fixed custom_apps/node/apps/homepage/src/components/guide/HelpTopic.tsx 'Some apps create your profile the first time you open them.' \
   "New-user guidance must explain first-login provisioning for apps that keep local accounts."
 require_fixed custom_apps/node/apps/homepage/src/shared/guide-data.ts 'Do not use a public photo-share link or the public share hostname' \
   "Mobile Photos guidance must distinguish the private app URL from public share links."

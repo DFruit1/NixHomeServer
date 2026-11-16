@@ -97,7 +97,7 @@ export const PowerScheduleCard = component$(() => {
             <span>Skip sleep for today</span>
           </label>
           <label class="power-schedule__field">
-            <span>Wake time (power on)</span>
+            <span>Wake time</span>
             <input
               type="time"
               required
@@ -106,7 +106,7 @@ export const PowerScheduleCard = component$(() => {
             />
           </label>
           <label class="power-schedule__field">
-            <span>Evening idle checks start</span>
+            <span>Evening sleep checks start</span>
             <select
               value={`${idleStart.value}`}
               onChange$={(event) => (idleStart.value = Number((event.target as HTMLSelectElement).value))}
@@ -115,7 +115,8 @@ export const PowerScheduleCard = component$(() => {
             </select>
           </label>
           <label class="power-schedule__field">
-            <span>Overnight forced cutoff ends</span>
+            <span>Overnight forced sleep ends</span>
+            <small>Can suspend even while busy.</small>
             <select
               value={`${forcedEnd.value}`}
               onChange$={(event) => (forcedEnd.value = Number((event.target as HTMLSelectElement).value))}
@@ -130,10 +131,13 @@ export const PowerScheduleCard = component$(() => {
           </div>
         </form>
       )}
-      <p class="ops-tool__note">
-        Sleep checks between the forced cutoff and evening start are skipped. “Skip sleep for today” expires at the
-        next calendar date, and a wake during an overnight window holds that window until the next evening.
-      </p>
+      <details class="doc-more">
+        <summary>How scheduling works</summary>
+        <p>
+          Sleep checks pause between the morning cutoff and evening start. “Skip sleep for today” expires at midnight.
+          Waking during an overnight window prevents sleep until the next evening.
+        </p>
+      </details>
     </section>
   );
 });

@@ -16,24 +16,24 @@ const adminSections: Array<{ id: string; title: string; intro: string; ordered?:
     id: 'deploy',
     title: 'Deploy a change',
     ordered: true,
-    intro: 'Run these in order. A test deploy activates the change on the live server without making it the boot default, so a reboot returns to the previous generation. Make it permanent only after checking that nothing failed.',
+    intro: 'Run in order. Test activates changes on the live server; rebooting restores the boot default. Switch only after a matching green test.',
   },
   {
     id: 'recover',
     title: 'Undo a bad deploy',
-    intro: 'For when the server is running a generation you need to leave. Both are run at the server itself, not over SSH.',
+    intro: 'Run at the server console, not over SSH, to leave a bad generation.',
   },
   {
     id: 'health',
     title: 'Find and fix a failing service',
     ordered: true,
-    intro: 'Start with what failed, read its log, then restart that one service. Restarting the whole host is rarely the fix.',
+    intro: 'Find the failure, read its log, then restart the affected service.',
   },
   {
     id: 'people',
     title: 'Add a person or change their access',
     ordered: true,
-    intro: 'Accounts live in Kanidm and access is granted by group. The person must sign out and back in before a change shows up for them.',
+    intro: 'Manage accounts and access groups in Kanidm. Ask the person to sign out and back in after access changes.',
   },
   {
     id: 'apps',
@@ -115,20 +115,26 @@ export default component$(() => {
   }
 
   const adminGuide = data.adminGuide ?? [];
-  const searching = searchQuery.value.trim().length > 0;
-  const visibleSteps = searching ? adminGuide.filter((step) => matchesSearch(searchQuery.value, step)) : adminGuide;
+  const needle = searchQuery.value.trim().toLocaleLowerCase();
+  const searching = needle.length > 0;
   const knownIds = new Set(adminSections.map((section) => section.id));
   const sections = [...adminSections, otherSection]
     .map((section) => ({
       ...section,
-      steps: visibleSteps.filter((step) => (
-        section.id === 'other' ? !step.section || !knownIds.has(step.section) : step.section === section.id
-      )),
+      steps: adminGuide.filter((step) => {
+        const belongs = section.id === 'other'
+          ? !step.section || !knownIds.has(step.section)
+          : step.section === section.id;
+        return belongs && (!searching || matchesSearch(needle, step) || section.title.toLocaleLowerCase().includes(needle));
+      }),
     }))
     .filter((section) => section.steps.length > 0);
 
-  const showCanary = data.user.username === data.canaryAdminUser;
-  const hasControls = showCanary || data.powerScheduleAvailable || data.buildModeAvailable;
+  const matchesControl = (text: string) => !searching || text.toLocaleLowerCase().includes(needle);
+  const showCanary = data.user.username === data.canaryAdminUser && matchesControl('Server controls Service access canary Run service checks sign-in');
+  const showPower = data.powerScheduleAvailable && matchesControl('Server controls Power schedule sleep suspend wake');
+  const showBuild = data.buildModeAvailable && matchesControl('Server controls Nix build mode allocation deploy');
+  const hasControls = showCanary || showPower || showBuild;
   const groups = data.kanidmGroups ?? [];
 
   return (
@@ -136,15 +142,15 @@ export default component$(() => {
       <header class="doc-head">
         <h1>For admins</h1>
         <p class="doc-lead">
-          Runbooks for the jobs that come up, with the commands for each.{' '}
-          {data.adminDashboardAvailable && <>Live health is on the <Link href="/admin-dashboard">Dashboard</Link>.</>}
+          Commands and server controls.{' '}
+          {data.adminDashboardAvailable && <>View health on the <Link href="/admin-dashboard">Dashboard</Link>.</>}
         </p>
       </header>
 
       <div class="ops-layout">
         <nav class="ops-nav" aria-label="Admin sections">
           <ul>
-            {hasControls && !searching && <li><a href="#ops-controls">Server controls</a></li>}
+            {hasControls && <li><a href="#ops-controls">Server controls</a></li>}
             {sections.map((section) => (
               <li key={section.id}><a href={`#ops-${section.id}`}>{section.title}</a></li>
             ))}
@@ -155,31 +161,38 @@ export default component$(() => {
           <div class="ops-search">
             <input
               type="search"
-              aria-label="Search commands"
+              aria-label="Search commands and controls"
               value={searchQuery.value}
               onInput$={(_, target) => {
                 searchQuery.value = target.value;
               }}
-              placeholder="Search commands, for example “snapshot” or “kanidm”"
+              placeholder="Search commands and controls"
             />
+            {searching && (
+              <button type="button" class="doc-btn doc-btn--quiet" onClick$={() => { searchQuery.value = ''; }}>Clear search</button>
+            )}
             <p class="doc-warn">
               <strong>These commands can change the live server.</strong> Replace highlighted placeholders such as <mark>USERNAME</mark> before running one.
             </p>
           </div>
 
-          {hasControls && !searching && (
+          {searching && sections.length > 0 && (
+            <p class="doc-note">Showing matching commands. Clear search to see each full runbook before running a procedure.</p>
+          )}
+
+          {hasControls && (
             <section id="ops-controls" class="ops-section" aria-labelledby="ops-controls-heading">
               <h2 id="ops-controls-heading">Server controls</h2>
               {showCanary && <CanaryPanel />}
-              {data.powerScheduleAvailable && <PowerScheduleCard />}
-              {data.buildModeAvailable && <BuildModeCard />}
+              {showPower && <PowerScheduleCard />}
+              {showBuild && <BuildModeCard />}
             </section>
           )}
 
           {sections.map((section) => (
             <section key={section.id} id={`ops-${section.id}`} class="ops-section" aria-labelledby={`ops-${section.id}-heading`}>
               <h2 id={`ops-${section.id}-heading`}>{section.title}</h2>
-              {section.intro && !searching && <p class="ops-section__intro">{section.intro}</p>}
+              {section.intro && <p class="ops-section__intro">{section.intro}</p>}
               <ol class={{ 'ops-cmds': true, 'ops-cmds--ordered': Boolean(section.ordered) && !searching }}>
                 {section.steps.map((step) => (
                   <li key={step.title} class="ops-cmd">
@@ -226,9 +239,9 @@ export default component$(() => {
             </section>
           ))}
 
-          {sections.length === 0 && (
+          {sections.length === 0 && !hasControls && (
             <p class="ops-empty">
-              {searching ? 'No commands match your search.' : 'No admin commands are available in the current configuration.'}
+              {searching ? 'No commands or controls match your search.' : 'No admin commands are available in the current configuration.'}
             </p>
           )}
         </div>

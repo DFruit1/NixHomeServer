@@ -7,10 +7,10 @@ export const HelpTopic = component$(({ serverLanHost }: { serverLanHost?: string
   <article id="guide-detail" class="guide-topic doc-prose">
     <header class="guide-topic__head">
       <div class="guide-topic__title">
-        <h1>When something does not work</h1>
+        <h1>Troubleshooting</h1>
       </div>
     </header>
-    <p class="doc-lead">Work down this list before asking for help. Most problems are one of the first three.</p>
+    <p class="doc-lead">Try these checks before asking for help.</p>
 
     <ol class="doc-steps">
       <li>

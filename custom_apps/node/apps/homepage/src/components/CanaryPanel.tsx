@@ -64,7 +64,7 @@ export const CanaryPanel = component$(() => {
       <div class="ops-tool__head">
         <div>
           <h3 id="canary-heading">Service access canary</h3>
-          <p>Signs in to every app as a test user and checks that signed-out visitors are blocked, Kanidm sign-in works, and each app renders a real page.</p>
+          <p>Checks app sign-in, page loading and blocking of signed-out visitors using a test account.</p>
         </div>
         <span class={{ 'canary-state': true, [`is-${current?.state ?? 'never-run'}`]: true }}>{stateLabel(current?.state ?? 'never-run')}</span>
       </div>
