@@ -180,7 +180,9 @@ pub async fn queue<C: GenericClient + Sync>(
     let id: i64 = row.get(0);
     let expires_at: DateTime<Utc> = row.get(1);
     if id > i64::from(u32::MAX) {
-        return Err("command id exceeds the protocol's u32 range".into());
+        // [22003]: a value out of range, kept visible (not retried for
+        // ever by ingest) when it happens while storing a message.
+        return Err("command id exceeds the protocol's u32 range [22003]".into());
     }
     client
         .execute(

@@ -612,12 +612,27 @@ END $$;
 -- Revision 2 command ids (commands.id is the wire id) must never repeat for a
 -- device: the logger answers a remembered id `duplicate` without running it,
 -- and an ack for an old id would be matched to the new command. A database
--- restored from a backup rewinds the sequence, so at every start it is raised
+-- restored from a backup rewinds the sequence, so at every start it is set
 -- to a clock-derived floor (2 ids per second since 2025-01-01, which stays
 -- below 2^32 until 2093) that exceeds every id issued before the restore at
--- up to that average rate.
-SELECT setval(pg_get_serial_sequence('commands','id'),
-    GREATEST((SELECT COALESCE(max(id),0) FROM commands),
-             COALESCE(pg_sequence_last_value(pg_get_serial_sequence('commands','id')::regclass),0),
-             (extract(epoch FROM now())::bigint-1735689600)*2,
-             1));
+-- up to that average rate, or to the highest stored id when that is higher
+-- (command rows are never deleted, so every id that reached a logger is
+-- either stored or below the floor).
+-- The clock only counts up to a year past the newest stored traffic and the
+-- floor stays 2^26 below 2^32: one start with a wildly wrong clock must not
+-- push every later id out of the protocol's u32 range. The floor is
+-- recomputed at each start (not only raised), so such a start heals at the
+-- next one.
+DO $$
+DECLARE latest TIMESTAMPTZ; clock TIMESTAMPTZ; stored BIGINT; floor_id BIGINT;
+BEGIN
+    SELECT GREATEST((SELECT max(created_at) FROM commands),(SELECT max(received_at) FROM deliveries)) INTO latest;
+    clock:=LEAST(now(),COALESCE(latest,now())+interval '365 days');
+    IF clock<now() THEN
+        RAISE WARNING 'groundwater: system clock % is more than a year past the newest stored traffic %; command id floor uses %',
+            now(),latest,clock;
+    END IF;
+    SELECT COALESCE(max(id),0) INTO stored FROM commands;
+    floor_id:=GREATEST(stored,LEAST((extract(epoch FROM clock)::bigint-1735689600)*2,4294967296-67108864),1);
+    PERFORM setval(pg_get_serial_sequence('commands','id'),floor_id);
+END $$;
