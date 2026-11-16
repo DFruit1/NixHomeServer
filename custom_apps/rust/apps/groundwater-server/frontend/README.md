@@ -44,7 +44,8 @@ parent's integrated backend checks; fixture rendering does not prove them.
 
 ## Versioned per-device MQTT topics
 
-Updated V2.1 firmware uses `gwl/v1/<DeviceID>/<channel>`, where DeviceID is
+This section describes protocol revision 1 on `gwl/v1` (firmware V2.1);
+revision 2 (firmware 2.2) is described below. Updated V2.1 firmware uses `gwl/v1/<DeviceID>/<channel>`, where DeviceID is
 24 uppercase hexadecimal characters. `v1` identifies the MQTT contract;
 firmware release numbers are independent. The MQTT client ID is DeviceID,
 which prevents the former shared `azz` client session from displacing another
@@ -115,7 +116,9 @@ SELECT 'v1-' || d.device_id || '-' || channel,d.device_id,
 FROM devices d CROSS JOIN (VALUES
   ('reading'),('status'),('gps'),('storage'),('motion'),('alerts'),
   ('test/result'),('config/applied'),('cmd/ack'),('info'),
-  ('config/set'),('config/desired'),('cmd/test'),('cmd/danger')
+  ('config/set'),('config/desired'),('cmd/test'),('cmd/danger'),
+  -- protocol revision 2 (firmware 2.2) channels:
+  ('health'),('data/stream'),('data/file'),('cmd/basic')
 ) channels(channel)
 WHERE d.device_id='8F3A21C04B9E77A1D25C01FE' AND d.revoked_at IS NULL;
 -- Cutover for this physically verified logger only:
@@ -137,3 +140,193 @@ The existing shared logger account receives directed v1 permissions. It still
 trusts all devices holding that account: topic routing is not cryptographic
 device authentication. Per-device credentials/ACL provisioning is separate work.
 No credentials or network listeners change in this migration.
+
+## Protocol revision 2 (firmware 2.2, profile `V22`)
+
+Wire contract: `../docs/gwl-v1-rev2.md`. Same `gwl/v1/<DeviceID>/` prefix;
+JSON payloads carry `"v":2`, ring data arrives as binary or hex `data/stream`
+batches, commands are `{v,id,exp,op,args}` envelopes. A `V21` unit bound only
+to its own `gwl/v1` topics is promoted to `V22` automatically when it sends
+`info` with `proto:2` (event `profile_detected`). Revision 1 units are
+unchanged; `capabilities.protocol` (1 or 2) tells the UI which controls apply.
+
+Bindings for a V22 unit (both directions; operator SQL as above):
+`status info health data/stream data/file alerts test/result reading gps
+config/applied cmd/ack config/set cmd/basic cmd/danger`.
+
+### Device summary additions (`GET /api/devices`, `GET /api/devices/{id}`)
+
+```json
+{
+  "status": "asleep",
+  "status_reason": "sleeping; next connection expected 2026-11-23T02:00:00+00:00 (announced next connection)",
+  "protocol_rev": 2,
+  "link_state": "sleep",
+  "link_state_at": "2026-11-16T02:01:10Z",
+  "link_reason": null,
+  "link_retained": false,
+  "next_contact_at": "2026-11-23T02:00:00Z",
+  "expected_contact_at": "2026-11-23T02:00:00Z",
+  "stale_after": "2026-11-23T02:30:00Z",
+  "listen_window_s": 60,
+  "boot_count": 17,
+  "info": {
+    "v": 2,
+    "fw": "2.2.0",
+    "build": "Nov 16 2026",
+    "hw": "V1.08",
+    "proto": 2,
+    "schema": 1,
+    "uid": "…",
+    "imei": "…",
+    "iccid": "…",
+    "modem": "EC21EFAR06A07M4G",
+    "net": "bench",
+    "stream": "bin",
+    "reset": "wdg"
+  },
+  "info_at": "…",
+  "health": {
+    "v": 2,
+    "t": 1763300000,
+    "tv": 1,
+    "up": 5120,
+    "csq": 21,
+    "bat_mv": 7412,
+    "sol_mv": 5120,
+    "sd": "ok",
+    "sd_free_mb": 7400,
+    "mram": "ok",
+    "unsaved": 1234,
+    "usable": 122368,
+    "log": "on",
+    "gen": 4,
+    "next": 1763904800,
+    "err": 0
+  },
+  "health_at": "…",
+  "settings_gen": 5,
+  "settings": { "read_s": 900, "send_s": 86400, "…": "…" },
+  "settings_at": "…",
+  "open_gap_count": 0,
+  "pending_challenge_count": 1,
+  "capabilities": {
+    "protocol": 2,
+    "settings": true,
+    "basic_ops": ["self_test", "get_status", "…"],
+    "danger_ops": ["reboot", "wipe_sd", "…"],
+    "handshake_ops": ["wipe_sd", "wipe_mram", "…"],
+    "unsupported_by_firmware": ["erase_keys", "rotate_keys", "firmware_update"],
+    "downloads": true,
+    "test": false,
+    "project_settings": false,
+    "cfg_keys": [],
+    "danger_commands": []
+  }
+}
+```
+
+`status` values: `awake` (status `online`/`ready` within the listen window),
+`asleep`, `offline` (Last Will: unclean disconnect), `stale` (missed the
+announced `next` connection, or last contact + `send_s`, by more than
+`GROUNDWATER_STALE_MARGIN_MINUTES`, default 30), plus the revision 1 values
+`receiving`, `never`, `revoked`. Observation `gwl`/`gwl_text` can be `null`
+for a fault reading (sensor not read; legacy `"GWL":"nan"`); charts skip it.
+
+### Read endpoints (viewer with a device grant)
+
+All lists are newest first. `from`/`to` (RFC 3339) and `limit` (default
+500, max 5000) apply where meaningful.
+
+| Endpoint                                                                  | Response                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/devices/{id}/health?from&to&limit`                              | `{"health":[{"id":1,"source":"health","recorded_at":"…","time_source":"device"\|"receipt","time_valid":true,"received_at":"…","uptime_s":5120,"csq":21,"bat_mv":7412,"sol_mv":5120,"sd":"ok","sd_free_mb":7400,"mram":"ok","unsaved":1234,"usable":122368,"log":"on","settings_gen":4,"next_contact_at":"…","err":0}]}`                                                            |
+| `GET /api/devices/{id}/events?from&to&event&source&limit`                 | `{"events":[{"id":9,"source":"record"\|"alert"\|"server","event":"gwl_alarm_enter","log_id":1761000001,"seq":6,"record_type":8,"recorded_at":"…","time_valid":true,"time_rel_s":null,"time_source":"gnss","received_at":"…","details":{"limit":"high","state":"enter","level":12.5,"threshold":10.5,"settings_gen":4,"type_name":"gwl_alarm_enter"},"confirmed_by_record":null}]}` |
+| `GET /api/devices/{id}/positions`                                         | `{"positions":[{"source":"record"\|"json","seq":24,"recorded_at":"…","fix":2,"lat":-33.8688197,"lon":151.2092955,"alt_m":12,"hdop":1.1,"satellites":8,"accel_x_mg":15,"accel_y_mg":-20,"accel_z_mg":1002,"accel_status":0,"reason":1,"settings_gen":5,…}]}`                                                                                                                        |
+| `GET /api/devices/{id}/tilt`                                              | `{"tilt":[{"seq":25,"recorded_at":"…","pitch_deg":1.2,"roll_deg":-3.4,"accel_x_mg":15,"accel_y_mg":-20,"accel_z_mg":1002,"accel_status":0,"reason":1,…}]}`                                                                                                                                                                                                                         |
+| `GET /api/devices/{id}/tests`                                             | `{"tests":[{"source":"record"\|"json","trigger":"button"\|"remote"\|"power_on"\|"scheduled","command_id":42,"battery_mv":7412,"solar_mv":5120,"csq":21,"sensor_mv":1234,"sensor_ma":8.23,"level":12.345,"sensor_status":0,"status_bits":1023,"ok":true,"details":{"sd":"ok","sim":"ok","warn":[]},…}]}`                                                                            |
+| `GET /api/devices/{id}/settings`                                          | `{"effective":{"settings_gen":5,"settings":{…},"settings_at":"…","defaults":{…}},"history":[{"settings_gen":5,"source":"snapshot"\|"snapshot-backup"\|"ack"\|"get_settings","settings":{…},"activated":true,"command_id":null,"log_id":…,"seq":…,"received_at":"…","warnings":[]}]}`                                                                                               |
+| `GET /api/devices/{id}/logs`                                              | `{"logs":[{"log_id":1761000001,"log_hex":"68F6A0E1","payload_schema":1,"start_reason":"blank-mram-formatted","started_at":"…","firmware_version":"2.2.0","frames":412,"min_seq":1,"max_seq":420,"decode_errors":0,"conflicting_copies":0,"resent_copies":3,"open_gaps":0,"unrecoverable_gaps":0,"pending_readings":0,…}],"gaps":[…]}`                                              |
+| `GET /api/devices/{id}/gaps?state=open\|requested\|unrecoverable\|filled` | `{"gaps":[{"id":1,"log_id":…,"from_seq":7,"to_seq":8,"state":"requested","attempts":1,"command_id":55,"detected_at":"…","resolved_at":null}]}`                                                                                                                                                                                                                                     |
+| `GET /api/devices/{id}/batches?limit` (operator)                          | `{"batches":[{"id":3,"channel":"data/stream","encoding":"bin"\|"hex","size":230,"ok":true,"error":null,"log_id":…,"first_seq":1,"last_seq":6,"frame_count":6,"resend":false,"gap_before":false,"from_sd":false,"frames_new":6,"frames_duplicate":0,"issues":[],"warnings":[],…}]}`                                                                                                 |
+| `GET /api/devices/{id}/files?path=/GWL`                                   | `{"listings":[{"path":"/GWL","page":0,"files":[["6A1B2C3D/",0],["EXPORT.DAT",12]],"more":false,"command_id":61,"received_at":"…"}]}`                                                                                                                                                                                                                                               |
+| `GET /api/devices/{id}/files/downloads` / `…/downloads/{did}`             | `{"downloads":[{"id":4,"path":"/GWL/…/B0000001.BIN","state":"active"\|"complete"\|"failed"\|"cancelled","size":123456,"received_bytes":4096,"next_offset":4096,"current_command_id":77,"crc32":"1A2B3C4D","error":null,…}]}` / `{"download":{…}}`                                                                                                                                  |
+| `GET /api/devices/{id}/files/downloads/{did}/content`                     | file bytes (`application/octet-stream`, 409 until complete)                                                                                                                                                                                                                                                                                                                        |
+
+Event names: record events `sd_flush mqtt_flush gwl_alarm_enter gwl_alarm_exit
+gps_moved impact orientation tail_lock log_start clock_set data_gap
+sensor_fault power_critical storage_warning tail_unlocked unknown_record`
+(also `position`/`tilt` only as live events); `alerts` copies use the same
+names (`source:"alert"`, `confirmed_by_record` once the ring record with the
+same `seq` arrived); server events `boot firmware_changed link_lost
+profile_detected gap_requested clock_sync_requested clock_synced
+challenge_held danger_executed file_downloaded unmatched_ack`. Times: when
+`time_valid` is false the device clock was not set; `time_rel_s` is seconds
+since boot and `recorded_at` stays null until a clock-set record converts it
+(`time_source:"clock-set"`).
+
+New `alerts` kinds from the server: `battery_low` (below 7.0 V, cleared at
+7.2 V; per-device `battery_low_mv`) and `solar_low` (three consecutive
+samples below 1.0 V; `solar_low_mv`). `trigger_value` is volts.
+
+### Commands (operator)
+
+```text
+POST /api/devices/{id}/commands   {"op":"get_status"}                              → 201 {"command":{…}}
+POST /api/devices/{id}/commands   {"op":"flush_mqtt","args":{"log_id":1761000001,"from_seq":7,"to_seq":8}}
+POST /api/devices/{id}/commands   {"op":"wipe_mram","confirm":"DANGER","auto_confirm":false,"expires_in_s":604800}
+POST /api/devices/{id}/settings   {"settings":{"read_s":900,"hi":10.5,"hi_hys":0.2},"replace":false}
+POST /api/devices/{id}/files      {"path":"/GWL","page":0}                         → queues file_list
+POST /api/devices/{id}/files/downloads {"path":"/GWL/6A1B2C3D/B0000001.BIN"}       → 201 {"download_id":4,"command_id":77}
+POST /api/devices/{id}/files/downloads/{did}/cancel
+POST /api/devices/{id}/commands/{cid}/confirm  {"confirm_unsaved":12}              → 201 {"command":{…the confirm…}}
+POST /api/devices/{id}/commands/{cid}/cancel                                       (queued/sent/challenge)
+```
+
+Errors are `{"error":"…"}`: 400 for an unknown op, bad args (the message
+names the key and range from the contract table), a missing `"confirm":"DANGER"`
+on a danger op, or a non-V22 device; 403 for viewers; 409 for an expired or
+absent challenge or a pending confirmation. `confirm` itself cannot be queued
+directly; `sync_time` takes no args (the server inserts `t` when it publishes).
+
+Revision 2 command rows add: `protocol:2`, `op`, `args`, `expires_at`,
+`publish_count`, `last_published_at`, `final_status`
+(`ok|partial|failed|rejected|expired|duplicate`), `status_reason` (logger
+`reason`, `previously ok` for duplicates, or a server explanation),
+`hold_until_sleep`, `parent_id` (confirm → challenged command), `preconfirmed`,
+`challenge` (`{nonce,nexp,unsaved_frames,unsaved_bytes,received_at}`),
+`challenge_expires_at`, `origin` (`operator`, `auto-gap`, `auto-clock`,
+`auto-settings`, `auto-confirm`, `download`), `download_id`.
+
+`state` lifecycle: `queued` → `sent` (broker PUBACK; the command waits in the
+logger's persistent session if it sleeps) → `acked` with `final_status`, or
+`challenge` (danger handshake) → `acked`/`expired`. Without a final ack, a
+`sleep`/`offline` after the publish re-queues it (`publish_count` ≤ 4, then
+`unacknowledged`); `rejected/busy` waits for the next sleep
+(`hold_until_sleep`); `exp` passing gives `expired`. Default `exp`: 7 days for
+`cmd/basic`/`config/set`, 1 day for `cmd/danger`
+(`GROUNDWATER_COMMAND_EXPIRY_HOURS`, `GROUNDWATER_DANGER_EXPIRY_HOURS`;
+`expires_in_s` overrides, 60 s … 30 days). At most four unacknowledged
+commands per device are in flight.
+
+Danger handshake (all danger ops but `reboot`): the logger answers
+`challenge` with a nonce valid ~120 s while it stays awake. With
+`auto_confirm:true` and no unsaved data the server confirms immediately;
+otherwise the command shows `state:"challenge"` with
+`challenge.unsaved_frames`, a `challenge_held` event is emitted, and the
+operator must `POST …/confirm` before `challenge_expires_at`, echoing
+`confirm_unsaved` exactly when `unsaved_frames` > 0. If the logger sleeps
+first, the command expires; queue it again.
+
+Automatic commands: `flush_mqtt` ranges for detected sequence gaps (on
+`ready`/`sleep`, ≤ 1,024 seqs, one outstanding, ≥ 30 min apart, 3 attempts,
+then `unrecoverable`), `sync_time` when a fresh `health` shows `tv=0` or a
+clock off by more than 120 s (only while awake, at most hourly), and
+`get_settings` when `health.gen` differs from the known effective settings or
+a settings ack was truncated.
+
+### Live events (SSE `/api/events`)
+
+New `type` values: `health` `{device_id}`, `device-event`
+`{device_id,event}`, `stream` `{device_id,new_frames}`, `download`
+`{device_id}`. `observation.gwl` may be `null`.

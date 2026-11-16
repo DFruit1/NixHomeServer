@@ -12,9 +12,15 @@ untrusted MQTT traffic, and never attributes an identity-free message to the
 last logger that sent a reading.
 
 1. Record the physical unit's 24-character uppercase hexadecimal DeviceID and
-   firmware profile (`V21`, `V20` or `ML`). Profile labels describe the source
-   tree, not a version reported by the device.
-2. Confirm the firmware clock policy. For the V2.1 default, GPS time plus
+   firmware profile (`V22`, `V21`, `V20` or `ML`). Profile labels describe the
+   source tree, not a version reported by the device. `V22` is firmware 2.2
+   speaking `gwl/v1` protocol revision 2
+   (`custom_apps/rust/apps/groundwater-server/docs/gwl-v1-rev2.md`); a `V21`
+   unit bound only to its own `gwl/v1` topics is switched to `V22`
+   automatically when its retained `info` reports `proto:2` (audited as a
+   `profile_detected` device event).
+2. Confirm the firmware clock policy. Firmware 2.2 sends UTC seconds with an
+   explicit validity flag, so `V22` units use `utc`. For the V2.1 default, GPS time plus
    `ltost=5:0` is `local-offset` with `local_offset_min=300`. Use `utc` only
    when the deployed firmware actually writes UTC; `unknown` preserves the
    timestamp without pretending that its timezone is known. A timezone carried
@@ -66,17 +72,59 @@ last logger that sent a reading.
      Deploy both files together. Mosquitto restarts when either changes.
      Never copy the CA private key into this repository. Rotating the CA
      itself means reflashing every logger.
-4. Enroll the unit and its exact trusted topics using the template below.
+4. Enroll the unit and its exact trusted topics using a template below: the
+   per-device `gwl/v1` template for V2.1/2.2 units, the legacy template only
+   for older trees.
 5. Add viewer permission rows for each account that should see this device.
    `app-admin` has global access. Membership of `groundwater-user` alone grants
    no device access.
 6. Verify a telemetry delivery, its interpreted UTC time and receive lag, then
-   an attributed `Ready` / `sleep` cycle. Check raw deliveries for quarantine
-   reasons before changing clock or topic policy.
+   an attributed `Ready` / `sleep` cycle (V22: `online`, `ready`, `sleep` on
+   `status`, a `health` row and `data/stream` batches with `ok` and new
+   frames). Check raw deliveries for quarantine reasons (`rev2-invalid` for a
+   refused revision 2 payload) before changing clock or topic policy.
 
-### Enrollment SQL
+### Enrollment SQL: per-device `gwl/v1` topics (V2.1 and 2.2)
 
 Run the schema migration by starting the service once before enrollment.
+Each unit gets its own topics under `gwl/v1/<DeviceID>/`; the binding set
+covers both protocol revisions, so a reflash from 2.1 to 2.2 needs no
+binding change (the profile follows automatically, see step 1).
+
+```sql
+BEGIN;
+
+INSERT INTO devices
+  (device_id, display_name, source_profile, clock_policy)
+VALUES
+  ('6A1B2C3D4E5F60718293A4B5', 'Bore 7', 'V22', 'utc');
+
+INSERT INTO device_bindings (binding_key, device_id, topic, source_profile)
+SELECT 'v1-' || d.device_id || '-' || channel, d.device_id,
+       'gwl/v1/' || d.device_id || '/' || channel, d.source_profile
+FROM devices d CROSS JOIN (VALUES
+  -- device -> server
+  ('status'),('info'),('health'),('data/stream'),('data/file'),('alerts'),
+  ('test/result'),('reading'),('gps'),('config/applied'),('cmd/ack'),
+  -- server -> device (revision 2)
+  ('config/set'),('cmd/basic'),('cmd/danger'),
+  -- revision 1 only (V2.1 units); harmless for 2.2
+  ('storage'),('motion'),('config/desired'),('cmd/test')
+) channels(channel)
+WHERE d.device_id = '6A1B2C3D4E5F60718293A4B5' AND d.revoked_at IS NULL;
+
+INSERT INTO device_permissions (device_id, username)
+VALUES ('6A1B2C3D4E5F60718293A4B5', 'viewer-account');
+COMMIT;
+```
+
+A unit whose only live bindings are its own `gwl/v1/<DeviceID>/` topics
+(with `status`) is outside the shared legacy cohort, so several such units
+coexist safely.
+
+### Enrollment SQL: legacy shared topics (V2.00, MQTT-Logger)
+
+Use this only for trees that cannot address their own topics.
 Connect as the database owner through the server's normal PostgreSQL operator
 path. Substitute identifiers from the physical unit; the values below are
 examples, not production inventory. Run this transaction only after verifying
@@ -146,6 +194,29 @@ from the header to inspect quarantines without a device attribution.
 
 ### Configuration and commands
 
+Firmware 2.2 (`V22`) units use `{v,id,exp,op,args}` commands on `config/set`,
+`cmd/basic` and `cmd/danger` (all contract operations; see the frontend
+README "Protocol revision 2"). They are published at once, QoS 1, never
+retained: the logger's persistent session holds them while it sleeps.
+Default expiry is 7 days for basic/settings and 1 day for danger commands
+(`GROUNDWATER_COMMAND_EXPIRY_HOURS`, `GROUNDWATER_DANGER_EXPIRY_HOURS`); a
+weekly logger therefore needs a longer `expires_in_s` for a danger command
+queued days before its next connection. A command without a final ack is
+re-published after the logger's next `sleep`/`offline` (at most three
+times); at most four are in flight per device. Destructive operations need
+typing DANGER and the logger's nonce handshake: confirmation is automatic
+only when the operator pre-confirmed and the logger reports no unsaved data;
+otherwise an operator confirms the reported unsaved count within the ~2 min
+challenge window. The server itself requests missing ring data
+(`flush_mqtt` ranges), corrects the logger clock (`sync_time`, only while
+awake) and fetches effective settings (`get_settings`). Battery and solar
+alerts (`battery_low`, `solar_low`) are raised by the server from `health`
+and test data; level alarms come from the logger's own events and its
+effective `lo`/`hi`/hysteresis settings are mirrored into the server's
+limits.
+
+The rest of this section describes revision 1 units.
+
 Project settings require all eleven firmware fields. The server validates
 compact JSON, byte length, key order, quoted strings, firmware formats and
 substring collisions before accepting a queue entry. Check the preview before
@@ -176,7 +247,7 @@ last inspected command in `clock_reviewed_through_command_id` when clearing
 `clock_change_unverified`, so a restart does not mistake already reviewed history
 for a new uncertain transition. Clearing a flag alone supplies no clock evidence.
 
-The scheduler waits for an attributed `Ready`, publishes QoS 1 without retain,
+Revision 1 units: the scheduler waits for an attributed `Ready`, publishes QoS 1 without retain,
 and waits for the broker's PUBACK before recording a command as `sent`. Broker
 acceptance is distinct from firmware application. Downlink messages are spaced
 by at least five seconds. Sleeping devices do not
@@ -208,8 +279,14 @@ Closed connections reconnect; non-idempotent HTTP writes are not blindly retried
 Raw deliveries, observations and ancillary state commit in one transaction before
 MQTT acknowledgment, with an ingest key protecting uncertain-commit retries.
 NUL-containing payloads are quarantined with escaped text rather than blocking
-subsequent traffic. Only readings use the durable `-telemetry` MQTT session.
-Readiness and acknowledgments use a clean live control session. Reconnects and
+subsequent traffic. The durable `-telemetry` MQTT session (clean_session=0)
+carries readings and every `gwl/v1` channel whose loss would lose data or an
+acknowledgment (`health`, `data/stream`, `data/file`, `alerts`,
+`test/result`, `reading`, `gps`, `config/applied`, `cmd/ack`). Legacy
+readiness/acknowledgments and the retained `gwl/v1` `status` and `info` use a
+clean live control session, which also publishes commands; a reconnect
+replays the retained `status`/`info`, and an unchanged retained message is not
+stored again. The platform never subscribes to its own downlink. Reconnects and
 control-loop database stalls invalidate old wake windows and discard buffered
 control packets; delayed Ready messages cannot authorize downlink after recovery.
 Workers retry initial database connection failures as well as later outages.
@@ -224,7 +301,8 @@ and alert checkpoints before serving reads. Truncation resets those summaries.
 PostgreSQL is plain PostgreSQL; no TimescaleDB extension or preload setting is
 required. `observations` preserves interpreted measurements and provenance;
 `deliveries` is the raw MQTT audit log. Raw-log pruning defaults to 90 days and
-never deletes observations. Commands and alerts remain for audit. The module
+never deletes observations. The raw bytes of `data/stream`/`data/file` messages
+are dropped with it; decoded ring frames stay byte-exact in `stream_frames`. Commands and alerts remain for audit. The module
 backs up the application state, broker state and a `pg_dump` of `groundwater`.
 Historical SQLite files are retained state, not a database migration source.
 
