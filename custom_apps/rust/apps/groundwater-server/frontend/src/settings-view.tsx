@@ -5,19 +5,22 @@ import {
   useComputed$,
   useSignal,
   useStore,
+  useVisibleTask$,
 } from "@builder.io/qwik";
-import { errorText, stamp } from "./api";
+import { errorText, query, stamp } from "./api";
+import { nextContactText } from "./console";
 import { EXPIRY_PRESETS, expiryError, show } from "./format";
 import { devicePath, send, useJson } from "./hooks";
 import {
   SETTING_DEFAULTS,
   SETTING_FIELDS,
   changedSettings,
+  sameSetting,
   settingText,
   settingsDiff,
   validateSettings,
 } from "./settings";
-import type { Device, SettingsResponse } from "./types";
+import type { Command, Device, SettingsResponse } from "./types";
 import { Feedback, LoadState, TableRegion } from "./widgets";
 
 type Props = { device: Device; revision: number; operator: boolean };
@@ -52,6 +55,37 @@ export const SettingsView = component$<Props>((props) => {
         : [],
     };
   });
+  const commandsUrl = useComputed$(
+    () => `/api/commands?${query({ device: props.device.device_id })}`,
+  );
+  const commands = useJson<{ commands: Command[] }>(commandsUrl, rev);
+  const dirty = Object.keys(changes.value.diff).length > 0;
+  const dirtySignal = useComputed$(
+    () => Object.keys(changes.value.diff).length > 0,
+  );
+  // Edits are lost on reload or when leaving the view; ask first.
+  useVisibleTask$(({ track, cleanup }) => {
+    if (!track(() => dirtySignal.value)) return;
+    const message = "Discard unsent settings edits?";
+    const unload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = message;
+    };
+    const click = (event: MouseEvent) => {
+      const link = (event.target as Element | null)?.closest?.("a[href]");
+      const href = link?.getAttribute("href") || "";
+      if (href.startsWith("#") && !window.confirm(message)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    window.addEventListener("beforeunload", unload);
+    document.addEventListener("click", click, true);
+    cleanup(() => {
+      window.removeEventListener("beforeunload", unload);
+      document.removeEventListener("click", click, true);
+    });
+  });
   const submit = $(async () => {
     const diff = changes.value.diff;
     if (
@@ -69,12 +103,12 @@ export const SettingsView = component$<Props>((props) => {
         replace: replace.value,
         expires_in_s: expiry.value,
       });
-      action.message =
-        "Settings queued. The logger receives them at its next connection; effective values change when it acknowledges.";
+      action.message = `Settings queued. ${nextContactText(props.device)} Effective values change only when the logger acknowledges.`;
       action.failed = false;
       for (const key of Object.keys(drafts)) delete drafts[key];
       replace.value = false;
       reload();
+      commands.reload();
     } catch (error) {
       action.message = errorText(error);
       action.failed = true;
@@ -82,6 +116,10 @@ export const SettingsView = component$<Props>((props) => {
       action.pending = false;
     }
   });
+  const requests = (commands.state.data?.commands || []).filter(
+    (c) => c.protocol === 2 && c.op === "settings",
+  );
+  const waiting = requests.filter((c) => ["queued", "sent"].includes(c.state));
   const history = state.data?.history || [];
   const changedKeys = Object.keys(changes.value.diff);
   return (
@@ -108,6 +146,18 @@ export const SettingsView = component$<Props>((props) => {
         {!props.operator && (
           <p class="notice">
             Your viewer account has read-only access to settings.
+          </p>
+        )}
+        <SettingsRequests
+          requests={requests.slice(0, 3)}
+          effective={effective}
+          device={props.device}
+          error={commands.state.error}
+        />
+        {dirty && (
+          <p class="notice" role="status">
+            Unsent edits: {Object.keys(changes.value.diff).join(", ")}. They are
+            discarded if you leave this view.
           </p>
         )}
         <form preventdefault:submit onSubmit$={submit}>
@@ -160,6 +210,32 @@ export const SettingsView = component$<Props>((props) => {
                               }}
                             />
                           )}
+                          {field.key === "start" &&
+                            /^\d+$/.test(value.trim()) &&
+                            Number(value) > 0 && (
+                              <small>
+                                ={" "}
+                                {stamp(
+                                  new Date(Number(value) * 1000).toISOString(),
+                                )}{" "}
+                                (your local time)
+                              </small>
+                            )}
+                          {waiting
+                            .filter(
+                              (c) =>
+                                // Qwik store proxies answer `has` for any
+                                // key: test the value (null = unset lo/hi).
+                                c.args?.[field.key] !== undefined,
+                            )
+                            .slice(0, 1)
+                            .map((c) => (
+                              <small key={c.id} class="changed">
+                                requested{" "}
+                                {settingText(c.args![field.key]) || "empty"} in
+                                #{c.id}, waiting for the logger
+                              </small>
+                            ))}
                           <small>
                             {field.hint} · default{" "}
                             {settingText(SETTING_DEFAULTS[field.key]) ||
@@ -336,5 +412,130 @@ export const SettingsView = component$<Props>((props) => {
         )}
       </section>
     </>
+  );
+});
+
+const STATE_TEXT: Record<string, string> = {
+  queued: "queued",
+  sent: "published to the broker",
+  acked: "answered by the logger",
+  expired: "expired",
+  cancelled: "cancelled",
+  unacknowledged: "no answer after repeated publishes",
+};
+
+/** The latest settings requests: per key what was asked, what the logger
+ * answered and what is in effect now. A logger answers only at its next
+ * connection, which can be days away. */
+export const SettingsRequests = component$<{
+  requests: Command[];
+  effective: Record<string, unknown>;
+  device: Device;
+  error: string;
+}>((props) => {
+  if (props.error)
+    return (
+      <p class="notice error-text" role="alert">
+        Settings requests could not be loaded: {props.error}
+      </p>
+    );
+  if (props.requests.length === 0) return null;
+  const expected =
+    props.device.expected_contact_at || props.device.next_contact_at;
+  return (
+    <div class="command-section">
+      <h3>Requested changes</h3>
+      {props.requests.map((c) => {
+        const ack = (c.ack_payload || {}) as Record<string, unknown>;
+        const results = (
+          ack.results && typeof ack.results === "object" ? ack.results : {}
+        ) as Record<string, unknown>;
+        const pending = ["queued", "sent"].includes(c.state);
+        const keys = Object.keys(c.args || {});
+        return (
+          <div key={c.id} class="settings-request">
+            <p>
+              <strong>
+                #{c.id} · {STATE_TEXT[c.state] || c.state}
+                {c.final_status ? `: ${c.final_status}` : ""}
+              </strong>{" "}
+              <small>
+                requested {stamp(c.created_at)} by {c.requested_by}
+                {c.expires_at ? ` · expires ${stamp(c.expires_at)}` : ""}
+              </small>
+            </p>
+            {pending && (
+              <p class={props.device.status === "stale" ? "error-text" : ""}>
+                {c.hold_until_sleep
+                  ? "The logger was busy; it is re-sent after its next sleep."
+                  : props.device.status === "awake"
+                    ? "The logger is awake now; waiting for its answer."
+                    : `Waiting for the logger's next connection${expected ? `, expected ${stamp(expected)}` : " (time unknown)"}. Nothing changes on the logger until then.`}
+              </p>
+            )}
+            {c.status_reason && <p class="muted">{c.status_reason}</p>}
+            {typeof ack.gen === "number" && (
+              <p class="muted">Logger settings generation {ack.gen}.</p>
+            )}
+            <TableRegion label={`Settings request ${c.id}`}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Key</th>
+                    <th>Requested</th>
+                    <th>Logger result</th>
+                    <th>In effect now</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {keys.map((key) => {
+                    const requested = c.args![key];
+                    const current = props.effective[key];
+                    const result = results[key];
+                    const applied =
+                      key in props.effective && sameSetting(requested, current);
+                    return (
+                      <tr key={key}>
+                        <td>
+                          <code>{key}</code>
+                        </td>
+                        <td>{settingText(requested) || "empty"}</td>
+                        <td
+                          class={result && result !== "ok" ? "error-text" : ""}
+                        >
+                          {result != null
+                            ? String(result)
+                            : pending
+                              ? "not answered yet"
+                              : c.final_status === "ok"
+                                ? "ok"
+                                : "—"}
+                        </td>
+                        <td
+                          class={
+                            !pending && !applied && c.final_status
+                              ? "error-text"
+                              : ""
+                          }
+                        >
+                          {key in props.effective
+                            ? settingText(current) || "empty"
+                            : "unknown"}
+                          {applied ? " (matches)" : ""}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </TableRegion>
+          </div>
+        );
+      })}
+      <p class="muted">
+        Cancel a waiting request on Commands. Cancelling cannot recall a request
+        the logger has already received.
+      </p>
+    </div>
   );
 });

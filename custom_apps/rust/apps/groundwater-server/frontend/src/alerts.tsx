@@ -1,4 +1,5 @@
 // Alert history with acknowledge/resolve, alert policies and level limits.
+import { nextContactText } from "./console";
 import {
   $,
   component$,
@@ -475,7 +476,7 @@ export const LimitsEditor = component$<{
         built.value.body,
       );
       action.message = result.command
-        ? `Settings command #${result.command.id} queued (lo/hi/lo_hys/hi_hys). The limits change when the logger acknowledges.`
+        ? `Settings command #${result.command.id} queued (lo/hi/lo_hys/hi_hys). ${nextContactText(d)} The limits change when the logger acknowledges; Settings shows the per-key result.`
         : "Limits saved; level alerts are replayed with the new thresholds.";
       action.failed = false;
       await props.refresh();

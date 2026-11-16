@@ -1,6 +1,7 @@
 // Event timeline categorisation and one-line summaries for revision 2
 // device events (ring records, `alerts` copies and server actions).
-import type { DeviceEvent } from "./types";
+import { CLOCK_FLOOR_MS, stamp } from "./api";
+import type { DeviceEvent, Observation } from "./types";
 
 export const EVENT_CATEGORIES = [
   ["alarm", "Level alarms"],
@@ -104,16 +105,20 @@ export function eventSummary(event: Pick<DeviceEvent, "event" | "details">) {
     case "data_gap":
       return `Logger gap: ${d.missed_readings ?? "?"} readings, ${d.missed_events ?? "?"} events missed (${d.reason ?? "unknown"})`;
     case "sensor_fault": {
-      const status = d.sensor_status ?? d.ss;
-      const meaning = SENSOR_STATUS_MEANING[status as number];
-      return `Sensor ${d.state ?? ""} · ${d.sensor_status_name ?? d.ss ?? "?"} · ${d.sensor_mv ?? d.mv ?? "?"} mV${meaning ? ` · ${meaning}` : ""}`;
+      // In an exit, ss is the status that ended (contract §4 alerts).
+      const status = (d.sensor_status ?? d.ss) as number | undefined;
+      const what =
+        typeof status === "number"
+          ? sensorProblem(status) || "ok"
+          : String(d.sensor_status_name ?? "?");
+      return `Sensor fault ${d.state === "exit" ? "ended" : "started"} · ${what} · ${d.sensor_mv ?? d.mv ?? "?"} mV`;
     }
     case "power_critical":
       return `Power ${d.state ?? ""} · battery ${mv(d.bat_mv)}, solar ${mv(d.sol_mv)}`;
     case "storage_warning":
       return `${String(d.kind ?? "storage").replaceAll("_", " ")}${typeof d.unsaved === "number" ? ` · ${d.unsaved} of ${d.usable ?? "?"} bytes unsaved` : ""}`;
     case "clock_set":
-      return `Clock set ${d.old_valid ? "" : "from uptime "}to ${typeof d.new_time === "number" ? new Date(d.new_time * 1000).toISOString() : "?"} (${d.new_source ?? "?"})`;
+      return `Clock set ${d.old_valid ? "" : "from uptime "}to ${typeof d.new_time === "number" && d.new_valid !== false ? stamp(new Date(d.new_time * 1000).toISOString()) : "an invalid time"} (${d.new_source ?? "?"})`;
     case "log_start":
       return `New log ${d.log_id ?? ""} (${d.reason ?? "?"}), firmware ${d.firmware_version ?? "?"}`;
     case "sd_flush":
@@ -140,7 +145,7 @@ export function eventDay(
 ) {
   const at = event.recorded_at || event.received_at;
   const date = new Date(at);
-  return Number.isFinite(date.getTime())
+  return Number.isFinite(date.getTime()) && date.getTime() >= CLOCK_FLOOR_MS
     ? date.toLocaleDateString(undefined, {
         weekday: "short",
         year: "numeric",
@@ -194,11 +199,33 @@ export const SENSOR_STATUS = [
   "adc-fault",
   "factors-invalid",
 ];
-// A 4-20 mA loop outside its range usually means a failed or failing
-// sensor, or a level beyond the sensor's range.
-export const SENSOR_STATUS_MEANING: Record<number, string> = {
-  2: "below 4 mA: sensor failure, risk of failure or level below range",
-  3: "above 20 mA: sensor failure, risk of failure or level above range",
-};
 export const sensorStatusName = (status: number | null | undefined) =>
   status == null ? "—" : SENSOR_STATUS[status] || `unknown (${status})`;
+
+/** Operator wording for a 4-20 mA reading outside the sensor's range (owner
+ * decision 2026-11-16): never presented as a valid level. */
+export const OUT_OF_RANGE: Record<number, string> = {
+  2: "out of range: possible sensor failure (under-range, below 4 mA)",
+  3: "out of range: possible sensor failure (over-range, above 20 mA)",
+};
+
+/** Why a sensor status 1–5 reading has no trustworthy level, or "". */
+export function sensorProblem(status: number | null | undefined): string {
+  if (status == null || status === 0) return "";
+  return OUT_OF_RANGE[status] || `sensor fault: ${sensorStatusName(status)}`;
+}
+
+/** The sensor problem an observation carries in its quality reasons
+ * (`sensor-under-range`, `sensor-no-sensor`, …), or "". */
+export function observationProblem(
+  observation: Pick<Observation, "quality_reasons"> | null | undefined,
+): string {
+  const reason = observation?.quality_reasons?.find((r) =>
+    r.startsWith("sensor-"),
+  );
+  if (!reason) return "";
+  const status = SENSOR_STATUS.indexOf(reason.slice("sensor-".length));
+  return status > 0
+    ? sensorProblem(status)
+    : `sensor fault: ${reason.slice(7)}`;
+}

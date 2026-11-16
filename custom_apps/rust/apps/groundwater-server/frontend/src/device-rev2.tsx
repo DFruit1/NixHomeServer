@@ -9,6 +9,7 @@ import {
   eventSummary,
   eventTone,
   groupByDay,
+  sensorProblem,
   sensorStatusName,
   testStatusFlags,
 } from "./events";
@@ -34,6 +35,7 @@ import {
   validFix,
   type Fix,
 } from "./geo";
+import { deviceProblems } from "./attention";
 import { devicePath, useJson, useNow } from "./hooks";
 import type {
   Device,
@@ -133,22 +135,24 @@ export const Overview = component$<ViewProps>((props) => {
   const info = (d.info || {}) as Record<string, unknown>;
   const expected = d.expected_contact_at || d.next_contact_at;
   const left = secondsLeft(expected, now.value);
+  const problems = deviceProblems(d);
   return (
     <>
-      {(d.open_gap_count || 0) > 0 && (
-        <p class="notice error-text">
-          {d.open_gap_count} open sequence gap
-          {d.open_gap_count === 1 ? "" : "s"} in the uploaded ring data.{" "}
-          <a href={viewHref(d.device_id, "stream")}>Review data stream</a>
-        </p>
-      )}
-      {(d.pending_challenge_count || 0) > 0 && (
-        <p class="notice error-text" role="alert">
-          {d.pending_challenge_count} danger command
-          {d.pending_challenge_count === 1 ? " is" : "s are"} waiting for
-          operator confirmation.{" "}
-          <a href={viewHref(d.device_id, "commands")}>Open commands</a>
-        </p>
+      {problems.length > 0 && (
+        <section aria-labelledby="attention-heading" class="challenge">
+          <h2 id="attention-heading" class="error-text">
+            Needs attention
+          </h2>
+          <ul class="problem-list">
+            {problems.map((problem) => (
+              <li key={problem.text}>
+                <a href={viewHref(d.device_id, problem.view || "overview")}>
+                  {problem.text}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
       <section aria-labelledby="presence-heading">
         <h2 id="presence-heading">Presence</h2>
@@ -920,13 +924,23 @@ export const TestsView = component$<ViewProps>((props) => {
                       <small>{t.source}</small>
                     </td>
                     <td>
-                      {number(t.level, 3)} m
+                      {sensorProblem(t.sensor_status) ? (
+                        <span class="error-text">
+                          {sensorProblem(t.sensor_status)}
+                        </span>
+                      ) : t.level == null ? (
+                        "level unknown"
+                      ) : (
+                        `${number(t.level, 3)} m`
+                      )}
                       <small>
                         {t.sensor_mv ?? "—"} mV · {number(t.sensor_ma, 2)} mA
                       </small>
-                      <small class={t.sensor_status ? "error-text" : ""}>
-                        {sensorStatusName(t.sensor_status)}
-                      </small>
+                      {!sensorProblem(t.sensor_status) && (
+                        <small>
+                          sensor {sensorStatusName(t.sensor_status)}
+                        </small>
+                      )}
                     </td>
                     <td>
                       {millivolts(t.battery_mv)} / {millivolts(t.solar_mv)}

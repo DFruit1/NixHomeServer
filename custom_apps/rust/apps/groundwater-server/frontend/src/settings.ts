@@ -383,6 +383,22 @@ export function parseSetting(field: SettingField, raw: string): unknown {
 const same = (a: unknown, b: unknown) =>
   JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
+/** Whether a requested value is in effect. The logger reports floats with
+ * 7 significant digits (contract §4), so floats compare relatively. */
+export function sameSetting(requested: unknown, effective: unknown): boolean {
+  if (typeof requested === "number" && typeof effective === "number")
+    return (
+      Math.abs(requested - effective) <=
+      1e-6 * Math.max(1, Math.abs(requested), Math.abs(effective))
+    );
+  if (Array.isArray(requested) && Array.isArray(effective))
+    return (
+      requested.length === effective.length &&
+      requested.every((value, i) => sameSetting(value, effective[i]))
+    );
+  return same(requested, effective);
+}
+
 /** The keys whose edited value differs from the effective settings, with
  * GPS/tilt mode and value always sent as a pair (their ranges depend on
  * each other). */
