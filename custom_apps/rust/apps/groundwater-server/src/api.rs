@@ -65,6 +65,9 @@ pub fn router(state: AppState) -> Router {
         ))
         .with_state(state)
 }
+/// Set once the process is stopping; ends open event streams.
+static SHUTDOWN: std::sync::LazyLock<tokio::sync::watch::Sender<bool>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::channel(false).0);
 pub async fn serve(state: AppState) -> Result<(), String> {
     let endpoint = format!("{}:{}", state.settings.address, state.settings.port);
     let listener = tokio::net::TcpListener::bind(&endpoint)
@@ -72,7 +75,13 @@ pub async fn serve(state: AppState) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     homelab_common::log_server_started("groundwater-server", &endpoint);
     axum::serve(listener, router(state))
-        .with_graceful_shutdown(homelab_common::shutdown_signal())
+        .with_graceful_shutdown(async {
+            homelab_common::shutdown_signal().await;
+            // Event streams never end on their own; graceful shutdown waits
+            // for every connection, so an open tab held the stop until
+            // systemd's SIGKILL.
+            SHUTDOWN.send_replace(true);
+        })
         .await
         .map_err(|e| e.to_string())
 }
@@ -242,7 +251,23 @@ async fn status(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
     let (i, r) = gate(&h)?;
     let stats = s.stats.lock().await.clone();
     let visible = ids(&s, &h).await?;
-    Ok(Json(json!({"service":"groundwater-server","user":{"username":i.username,"role":if r==Role::Operator{"operator"}else{"viewer"}},"broker":{"configured":s.settings.mqtt.is_some(),"connected":stats.connected && stats.telemetry_connected,"endpoint":s.settings.mqtt.as_ref().map(|m|format!("{}:{}",m.host,m.port)),"lastError":if r==Role::Operator{stats.last_error}else{None}},"ingest":{"deliveries":stats.deliveries,"observations":stats.observations,"redeliveryCandidates":stats.redelivery_candidates,"conflicts":stats.conflicts,"quarantined":stats.quarantined},"adapter":{"profiles":crate::profiles::ALL_PROFILES.iter().map(|p|json!({"id":p.as_str(),"label":p.label(),"carriesDeviceId":p.carries_device_id()})).collect::<Vec<_>>()},"devices":visible.len(),"retentionDays":s.settings.retention_days})).into_response())
+    // Loggers connect rarely, so "connected" alone cannot show a stalled
+    // ingest: the newest stored delivery can (operators only).
+    let last_delivery_at: Option<DateTime<Utc>> = if r == Role::Operator {
+        s.db.get()
+            .await
+            .map_err(database)?
+            .query_one(
+                "SELECT max(received_at) FROM deliveries WHERE direction='in'",
+                &[],
+            )
+            .await
+            .map_err(|e| database(e.to_string()))?
+            .get(0)
+    } else {
+        None
+    };
+    Ok(Json(json!({"service":"groundwater-server","user":{"username":i.username,"role":if r==Role::Operator{"operator"}else{"viewer"}},"broker":{"configured":s.settings.mqtt.is_some(),"connected":stats.connected && stats.telemetry_connected,"endpoint":s.settings.mqtt.as_ref().map(|m|format!("{}:{}",m.host,m.port)),"lastError":if r==Role::Operator{stats.last_error}else{None}},"ingest":{"deliveries":stats.deliveries,"observations":stats.observations,"redeliveryCandidates":stats.redelivery_candidates,"conflicts":stats.conflicts,"quarantined":stats.quarantined,"lastDeliveryAt":last_delivery_at},"adapter":{"profiles":crate::profiles::ALL_PROFILES.iter().map(|p|json!({"id":p.as_str(),"label":p.label(),"carriesDeviceId":p.carries_device_id()})).collect::<Vec<_>>()},"devices":visible.len(),"retentionDays":s.settings.retention_days})).into_response())
 }
 async fn devices(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
     let db = s.db.get().await.map_err(database)?;
@@ -633,6 +658,10 @@ async fn events(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
             }
         },
     );
+    let mut stopping = SHUTDOWN.subscribe();
+    let stream = stream.take_until(async move {
+        let _ = stopping.wait_for(|stop| *stop).await;
+    });
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
