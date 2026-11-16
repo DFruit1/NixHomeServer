@@ -1168,15 +1168,48 @@ async fn per_device_credentials_write_broker_files() {
     )
     .await;
     assert_eq!(device["device"]["mqtt_auth"], "device");
+    // Rotation strands a unit flashed with its own password until it is
+    // reflashed, so the server insists on a typed confirmation; an
+    // unconfirmed request changes nothing.
+    for body in [json!({}), Value::Null, json!({"confirm":"rotate"})] {
+        let (status, value) = call(
+            &app,
+            "POST",
+            &format!("/api/devices/{D}/mqtt-credentials"),
+            "operator",
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+    }
+    assert!(crate::mqtt_auth::verify(
+        &password,
+        std::fs::read_to_string(dir.path().join("devices.passwd"))
+            .unwrap()
+            .trim()
+            .split_once(':')
+            .unwrap()
+            .1
+    ));
+    let (status, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/devices/{D}/mqtt-credentials"),
+        "operator",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     // Rotation replaces the hash; the old password stops working.
-    let (_, rotated) = call(
+    let (status, rotated) = call(
         &app,
         "POST",
         &format!("/api/devices/{D}/mqtt-credentials"),
         "operator",
-        json!({}),
+        json!({"confirm":"ROTATE"}),
     )
     .await;
+    assert_eq!(status, StatusCode::CREATED, "{rotated}");
     let passwd = std::fs::read_to_string(dir.path().join("devices.passwd")).unwrap();
     let hash = passwd.trim().split_once(':').unwrap().1.to_owned();
     assert!(!crate::mqtt_auth::verify(&password, &hash));
