@@ -205,10 +205,22 @@ in
         # A logger may sleep up to 27 days (send_s <= 2,332,800); keep its
         # session, subscriptions and queued commands well beyond that.
         persistent_client_expiration = "60d";
-        # Per client. A logger holds at most a few commands; the platform's
-        # durable session may hold a fleet's uploads during a long outage.
-        max_queued_messages = 20000;
-        max_queued_bytes = 67108864;
+        # Per client (Mosquitto has no per-account value). A logger session
+        # holds a few commands; the platform's durable -telemetry session
+        # holds the fleet's uploads while the server is down. Past either
+        # limit Mosquitto drops a queued QoS 1 message although the logger
+        # already has its PUBACK and frees that ring space: permanent loss.
+        # Sized for a week-long server outage: 50 loggers (the fleet is
+        # tens), each sending a full ring (122 KiB = about 84 batches of
+        # 1.5 KB plus about 15 JSON messages) once a day, is 350 connections,
+        # about 35,000 messages and 47 MiB. A weekly logger sends at most one
+        # ring a week, so the daily case bounds it. Twice that, rounded up:
+        # 100,000 messages, 100 MiB. At about 250 bytes of broker overhead per
+        # message the full queue takes about 124 MiB, inside memory_limit
+        # below. A hostile logger account cannot exceed memory_limit with any
+        # number of sessions either.
+        max_queued_messages = 100000;
+        max_queued_bytes = 104857600;
         # data/stream batches are <= 1,500 bytes binary or ~1.5 KiB hex;
         # JSON acks/status <= 4 KiB. 16 KiB leaves room for the topic and
         # MQTT framing while bounding abuse.
@@ -219,7 +231,9 @@ in
         # publish and subscribe). Past the limit Mosquitto fails the
         # allocation instead of growing until the cgroup kills it (losing
         # every queued command); an upload it does not acknowledge stays in
-        # the logger's ring.
+        # the logger's ring. 192 MiB: the server session's full queue (about
+        # 124 MiB) plus logger sessions and connections, below MemoryHigh
+        # (256M) and MemoryMax (384M) of the unit.
         memory_limit = 201326592;
         # Write queued messages and sessions to disk every minute rather
         # than the default 30: a power cut while the platform is down then

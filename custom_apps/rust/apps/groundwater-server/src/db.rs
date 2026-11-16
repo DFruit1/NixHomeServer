@@ -531,6 +531,12 @@ pub struct ObservationSummary {
     pub quality_reasons: Vec<String>,
     pub duplicate_outcome: String,
     pub interpretation_version: String,
+    /// Firmware sensor status (0 ok; 1 no sensor, 2 under range, 3 over
+    /// range, 4 ADC fault, 5 factors invalid). A non-zero status is never a
+    /// valid level, even when `gwl` holds the firmware's value (2 and 3:
+    /// "out of range: possible sensor failure"). `None` before revision 2.
+    #[serde(default)]
+    pub sensor_status: Option<i16>,
 }
 
 /// A device row as presented to the UI.
@@ -631,7 +637,7 @@ pub async fn list_devices(client: &Client) -> Result<Vec<DeviceSummary>, String>
 }
 
 pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<DeviceSummary>, String> {
-    let columns = "recorded_at,received_at,gwl,gwl_text,rssi,battery_v,solar_v,time_quality,time_reason,quality_reasons,duplicate_outcome,interpretation_version";
+    let columns = "recorded_at,received_at,gwl,gwl_text,rssi,battery_v,solar_v,time_quality,time_reason,quality_reasons,duplicate_outcome,interpretation_version,sensor_status";
     let sql = format!(
         "SELECT d.*,d.revoked_at IS NOT NULL AS revoked,
             (SELECT count(*) FROM alerts a WHERE a.device_id=d.device_id AND a.state='open' AND NOT a.superseded) AS open_alert_count,
@@ -844,9 +850,50 @@ pub struct SeriesPoint {
     pub rssi: Option<i16>,
     /// Revision 2 modem CSQ (0-31).
     pub csq: Option<f64>,
+    /// Valid level samples behind the point (1 for a raw point).
     pub sample_count: i64,
     /// True when any sample in the bucket was a same-time conflict.
     pub conflict: bool,
+    /// Raw point: the reading's sensor status (`None` when the profile does
+    /// not report one). A raw point with a non-zero status carries the
+    /// firmware's untrustworthy level and is not a valid level. Always
+    /// `None` on a bucket.
+    pub sensor_status: Option<i16>,
+    /// Fault samples (sensor status other than 0) in the bucket, or 1 for a
+    /// raw fault point. They are never part of `gwl`/`raw_gwl` averages.
+    pub fault_count: i64,
+    /// Distinct fault kinds among them (`no-sensor`, `under-range`,
+    /// `over-range`, `adc-fault`, `factors-invalid`, `unknown`).
+    pub fault_kinds: Vec<String>,
+}
+
+/// A raw fault reading, or a bucket that held fault samples, including
+/// those with no level at all (no sensor, ADC fault) and buckets with only
+/// faults, which have no point.
+#[derive(Debug, Clone, Serialize)]
+pub struct SeriesFault {
+    /// The reading's time, or the bucket start.
+    pub recorded_at: DateTime<Utc>,
+    /// Raw reading only.
+    pub sensor_status: Option<i16>,
+    pub fault_count: i64,
+    pub fault_kinds: Vec<String>,
+    /// Valid level samples in the same bucket (0 for a raw fault).
+    pub valid_count: i64,
+}
+
+fn fault_kinds(statuses: &[i16]) -> Vec<String> {
+    let mut kinds: Vec<String> = statuses
+        .iter()
+        .map(|&s| {
+            u8::try_from(s)
+                .map_or("unknown", crate::records::sensor_status_name)
+                .to_owned()
+        })
+        .collect();
+    kinds.sort();
+    kinds.dedup();
+    kinds
 }
 
 /// Level limits expressed in the series' datum, ascending.
@@ -874,6 +921,10 @@ pub struct Series {
     /// Readings in the window without a datum to convert them.
     pub unconverted: i64,
     pub limits: SeriesLimits,
+    /// Fault readings or buckets in the window, oldest first (same cap as
+    /// `points`, newest kept).
+    pub faults: Vec<SeriesFault>,
+    pub faults_truncated: bool,
 }
 
 /// Installation datum conversion of a raw level.
@@ -967,10 +1018,12 @@ pub const DEFAULT_WINDOW_HOURS: i64 = 24;
 pub const MAX_SERIES_POINTS: usize = 2000;
 
 /// Plausible-time water observations of one device in a window, with the
-/// datum effective at each reading's time. `$1` device, `$2`/`$3` window,
-/// `$4` datum mode.
+/// datum effective at each reading's time: every reading with a level, and
+/// every fault reading (`ss` ≠ 0) even without one. `$1` device, `$2`/`$3`
+/// window, `$4` datum mode.
 const SERIES_SOURCE: &str = "
     SELECT o.recorded_at,o.gwl AS raw,o.gwl_text,o.battery_v,o.solar_v,o.rssi,o.csq,o.duplicate_outcome,
+        o.sensor_status,COALESCE(o.sensor_status,0::smallint) AS ss,
         CASE WHEN $4='raw' THEN o.gwl ELSE groundwater_datum_value($4,o.gwl,dt.sensor_depth_m,
             dt.casing_height_m,dt.ground_elevation_m) END AS value
     FROM observations o
@@ -978,7 +1031,7 @@ const SERIES_SOURCE: &str = "
         WHERE $4<>'raw' AND device_id=o.device_id AND effective_from<=o.recorded_at
         ORDER BY effective_from DESC LIMIT 1) dt ON true
     WHERE o.device_id = $1 AND o.kind = 'water' AND o.time_quality = 'plausible' AND o.recorded_at IS NOT NULL
-      AND o.gwl IS NOT NULL AND o.recorded_at >= $2 AND o.recorded_at <= $3";
+      AND (o.gwl IS NOT NULL OR COALESCE(o.sensor_status,0::smallint)<>0) AND o.recorded_at >= $2 AND o.recorded_at <= $3";
 
 /// Returns chart data for one device.
 ///
@@ -986,7 +1039,11 @@ const SERIES_SOURCE: &str = "
 /// width)`: no `time_bucket`, no extension. Averaged buckets keep the sample
 /// count and a conflict flag, so downsampling cannot hide a same-time
 /// value disagreement. Datum conversion happens per reading before
-/// averaging; readings without a datum are counted, not plotted.
+/// averaging; readings without a datum are counted, not plotted. A reading
+/// with a sensor fault status is never averaged (owner decision
+/// 2026-11-16: out of range is "possible sensor failure", not a level); each
+/// bucket says how many fault samples it held and of which kinds, and
+/// `faults` lists them, including buckets with no valid level.
 pub async fn device_series(
     client: &Client,
     device_id: &str,
@@ -997,14 +1054,17 @@ pub async fn device_series(
     let limit = (MAX_SERIES_POINTS + 1) as i64;
     let mode = query.datum.as_str();
 
+    // Columns: time, value, raw, text, battery, solar, rssi, csq, valid
+    // count, conflict, raw status, fault count, fault statuses.
     let rows = if bucket_minutes == 0 {
         client
             .query(
                 &format!(
                     "WITH src AS ({SERIES_SOURCE})
                      SELECT recorded_at, value, raw, gwl_text, battery_v, solar_v, rssi, csq::DOUBLE PRECISION,
-                            1::BIGINT AS sample_count, duplicate_outcome = 'conflict' AS conflict
-                     FROM src WHERE value IS NOT NULL ORDER BY recorded_at DESC LIMIT $5"
+                            (ss=0)::int::BIGINT AS sample_count, duplicate_outcome = 'conflict' AS conflict,
+                            sensor_status, (ss<>0)::int::BIGINT, CASE WHEN ss<>0 THEN ARRAY[ss] ELSE '{{}}'::smallint[] END
+                     FROM src WHERE value IS NOT NULL OR ss<>0 ORDER BY recorded_at DESC LIMIT $5"
                 ),
                 &[&device_id, &query.from, &query.to, &mode, &limit],
             )
@@ -1017,9 +1077,13 @@ pub async fn device_series(
                     "WITH src AS ({SERIES_SOURCE})
                      SELECT to_timestamp(floor(extract(epoch FROM recorded_at) / $6::DOUBLE PRECISION)
                                         * $6::DOUBLE PRECISION) AS bucket,
-                            AVG(value), AVG(raw), NULL::TEXT, AVG(battery_v), AVG(solar_v), AVG(rssi)::SMALLINT,
-                            AVG(csq)::DOUBLE PRECISION, count(*)::BIGINT, bool_or(duplicate_outcome = 'conflict')
-                     FROM src WHERE value IS NOT NULL
+                            AVG(value) FILTER (WHERE ss=0), AVG(raw) FILTER (WHERE ss=0), NULL::TEXT,
+                            AVG(battery_v), AVG(solar_v), AVG(rssi)::SMALLINT,
+                            AVG(csq)::DOUBLE PRECISION, count(value) FILTER (WHERE ss=0)::BIGINT,
+                            COALESCE(bool_or(duplicate_outcome = 'conflict') FILTER (WHERE ss=0),false),
+                            NULL::SMALLINT, count(*) FILTER (WHERE ss<>0)::BIGINT,
+                            COALESCE(array_agg(DISTINCT ss) FILTER (WHERE ss<>0),'{{}}'::smallint[])
+                     FROM src WHERE value IS NOT NULL OR ss<>0
                      GROUP BY bucket ORDER BY bucket DESC LIMIT $5"
                 ),
                 &[&device_id, &query.from, &query.to, &mode, &limit, &width_seconds],
@@ -1029,19 +1093,43 @@ pub async fn device_series(
     .map_err(|err| db_context("series query failed", err))?;
 
     let mut truncated = rows.len() > MAX_SERIES_POINTS;
+    let faults_truncated = truncated;
     let mut points: Vec<SeriesPoint> = Vec::with_capacity(rows.len().min(MAX_SERIES_POINTS));
-    for row in rows {
+    let mut faults: Vec<SeriesFault> = Vec::new();
+    for row in rows.iter().take(MAX_SERIES_POINTS) {
+        let fault_count: i64 = row.get(11);
+        let kinds = fault_kinds(&row.get::<_, Vec<i16>>(12));
+        let valid_count: i64 = row.get(8);
+        let sensor_status: Option<i16> = row.get(10);
+        if fault_count > 0 {
+            faults.push(SeriesFault {
+                recorded_at: row.get(0),
+                sensor_status,
+                fault_count,
+                fault_kinds: kinds.clone(),
+                valid_count,
+            });
+        }
+        // A bucket with only faults, or a fault with no level, has no point.
+        let (Some(gwl), Some(raw_gwl)) =
+            (row.get::<_, Option<f64>>(1), row.get::<_, Option<f64>>(2))
+        else {
+            continue;
+        };
         points.push(SeriesPoint {
             recorded_at: row.get(0),
-            gwl: row.get(1),
-            raw_gwl: row.get(2),
+            gwl,
+            raw_gwl,
             gwl_text: row.get(3),
             battery_v: row.get(4),
             solar_v: row.get(5),
             rssi: row.get(6),
             csq: row.get(7),
-            sample_count: row.get(8),
+            sample_count: valid_count.max(i64::from(bucket_minutes == 0)),
             conflict: row.get(9),
+            sensor_status,
+            fault_count,
+            fault_kinds: kinds,
         });
     }
     // The query returned newest-first so the cap keeps the newest end.
@@ -1050,10 +1138,12 @@ pub async fn device_series(
         truncated = true;
     }
     points.reverse();
+    faults.reverse();
 
     let mut min_gwl: Option<f64> = None;
     let mut max_gwl: Option<f64> = None;
-    for point in &points {
+    // A raw fault point is drawn as a fault, never as a level extreme.
+    for point in points.iter().filter(|p| p.sensor_status.unwrap_or(0) == 0) {
         min_gwl = Some(min_gwl.map_or(point.gwl, |current: f64| current.min(point.gwl)));
         max_gwl = Some(max_gwl.map_or(point.gwl, |current: f64| current.max(point.gwl)));
     }
@@ -1061,7 +1151,7 @@ pub async fn device_series(
     let extra = client
         .query_one(
             &format!(
-                "SELECT (SELECT count(*) FROM ({SERIES_SOURCE}) src WHERE value IS NULL),
+                "SELECT (SELECT count(*) FROM ({SERIES_SOURCE}) src WHERE value IS NULL AND ss=0),
                     d.min_limit,d.max_limit,dt.sensor_depth_m,dt.casing_height_m,dt.ground_elevation_m
                  FROM devices d LEFT JOIN LATERAL (SELECT sensor_depth_m,casing_height_m,ground_elevation_m
                      FROM device_datums WHERE device_id=d.device_id AND effective_from<=$3
@@ -1089,6 +1179,8 @@ pub async fn device_series(
         inverted: query.datum == DatumMode::DepthBelowGround,
         unconverted: extra.get(0),
         limits: convert_limits(extra.get(1), extra.get(2), query.datum, datum),
+        faults,
+        faults_truncated,
     })
 }
 

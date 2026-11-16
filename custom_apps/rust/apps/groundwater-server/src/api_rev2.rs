@@ -207,16 +207,25 @@ async fn tests(
 ) -> ApiResult {
     let device = authorize(&s, &h, &device).await?;
     let db = s.db.get().await.map_err(database)?;
+    // One entry per test: a Type 5 record with its paired test/result JSON
+    // (rev2.sql `groundwater_pair_test`) takes the record's values, which
+    // are authoritative, and keeps the JSON's component detail, `ma` and
+    // `warn`. An unpaired copy of either kind is listed as it is.
     let tests = query_json(
         &db,
-        "SELECT jsonb_build_object('id',id,'source',source,'log_id',log_id,'seq',seq,'recorded_at',recorded_at,
-            'time_valid',time_valid,'time_source',time_source,'received_at',received_at,'settings_gen',settings_gen,
-            'trigger',trigger,'command_id',command_id,'battery_mv',battery_mv,'solar_mv',solar_mv,'csq',csq,
-            'sensor_mv',sensor_mv,'sensor_ma',sensor_ma,'level',level,'sensor_status',sensor_status,
-            'status_bits',status_bits,'ok',ok,'details',details)
-         FROM device_tests WHERE device_id=$1 AND COALESCE(recorded_at,received_at)>=$2
-           AND COALESCE(recorded_at,received_at)<=$3
-         ORDER BY COALESCE(recorded_at,received_at) DESC,id DESC LIMIT $4",
+        "SELECT jsonb_build_object('id',t.id,'source',t.source,'log_id',t.log_id,'seq',t.seq,'recorded_at',t.recorded_at,
+            'time_valid',t.time_valid,'time_source',t.time_source,'received_at',LEAST(t.received_at,j.received_at),
+            'settings_gen',t.settings_gen,'trigger',COALESCE(NULLIF(t.trigger,'other'),j.trigger,t.trigger),
+            'command_id',COALESCE(t.command_id,j.command_id),'battery_mv',t.battery_mv,'solar_mv',t.solar_mv,'csq',t.csq,
+            'sensor_mv',t.sensor_mv,'sensor_ma',COALESCE(t.sensor_ma,j.sensor_ma),'level',t.level,
+            'sensor_status',t.sensor_status,'status_bits',t.status_bits,'ok',t.ok,
+            'details',COALESCE(j.details,'{}'::jsonb)||t.details,
+            'sources',CASE WHEN j.id IS NULL THEN jsonb_build_array(t.source) ELSE jsonb_build_array(t.source,j.source) END,
+            'json_id',j.id,'json_ok',j.ok)
+         FROM device_tests t LEFT JOIN device_tests j ON t.source='record' AND j.id=t.paired_id
+         WHERE t.device_id=$1 AND NOT (t.source='json' AND t.paired_id IS NOT NULL)
+           AND COALESCE(t.recorded_at,t.received_at)>=$2 AND COALESCE(t.recorded_at,t.received_at)<=$3
+         ORDER BY COALESCE(t.recorded_at,t.received_at) DESC,t.id DESC LIMIT $4",
         &[&device, &q.from(), &q.to(), &q.limit(100)],
     )
     .await?;
@@ -265,7 +274,21 @@ async fn logs(State(s): State<AppState>, h: HeaderMap, Path(device): Path<String
             'conflicting_copies',f.conflicting,'resent_copies',f.resent,
             'open_gaps',(SELECT count(*) FROM stream_gaps g WHERE g.device_id=l.device_id AND g.log_id=l.log_id AND g.state IN ('open','requested')),
             'unrecoverable_gaps',(SELECT count(*) FROM stream_gaps g WHERE g.device_id=l.device_id AND g.log_id=l.log_id AND g.state='unrecoverable'),
-            'pending_readings',(SELECT count(*) FROM observations o WHERE o.device_id=l.device_id AND o.log_id=l.log_id AND o.recorded_at IS NULL))
+            'pending_readings',(SELECT count(*) FROM observations o WHERE o.device_id=l.device_id AND o.log_id=l.log_id AND o.recorded_at IS NULL),
+            'pending_reasons',(SELECT COALESCE(jsonb_agg(jsonb_build_object('reason',r.reason,'state',r.state,'count',r.n,
+                    'min_seq',r.min_seq,'max_seq',r.max_seq) ORDER BY r.min_seq),'[]'::jsonb)
+                FROM (SELECT p.reason,p.state,count(*) AS n,min(p.seq) AS min_seq,max(p.seq) AS max_seq FROM (
+                    SELECT o.seq,o.time_reason AS reason,
+                        CASE WHEN o.record_type=0 AND EXISTS(SELECT 1 FROM stream_gaps g WHERE g.device_id=o.device_id
+                                AND g.log_id=o.log_id AND g.state='unrecoverable' AND g.to_seq<o.seq
+                                AND NOT EXISTS(SELECT 1 FROM observations a WHERE a.device_id=o.device_id AND a.log_id=o.log_id
+                                    AND a.anchor AND a.seq>g.to_seq AND a.seq<o.seq))
+                            THEN 'gap_unrecoverable'
+                            WHEN o.record_type=0 AND o.anchor_seq IS NULL THEN 'awaiting_anchor'
+                            WHEN o.time_rel_s IS NOT NULL THEN 'awaiting_clock_set'
+                            ELSE 'no_time' END AS state
+                    FROM observations o WHERE o.device_id=l.device_id AND o.log_id=l.log_id AND o.recorded_at IS NULL) p
+                    GROUP BY p.reason,p.state) r))
          FROM stream_logs l
          CROSS JOIN LATERAL (SELECT count(*) AS frames,min(seq) AS min_seq,max(seq) AS max_seq,
              count(*) FILTER (WHERE decode_error IS NOT NULL) AS decode_errors,
@@ -489,6 +512,9 @@ async fn start_download(
 ) -> ApiResult {
     let user = operator(&h)?;
     let device = authorize(&s, &h, &device).await?;
+    // Path errors are the operator's to fix; anything later is a database
+    // error, logged and answered generically.
+    rev2_commands::download_request(&q.path, Utc::now()).map_err(|e| bad(&e))?;
     let mut db = connect_tx(&s).await?;
     let tx = db
         .transaction()
@@ -497,13 +523,7 @@ async fn start_download(
     let started =
         rev2_commands::start_download(&tx, &device, &q.path, &user.username, &s.settings.rev2)
             .await
-            .map_err(|e| {
-                if e.contains("path") {
-                    bad(&e)
-                } else {
-                    database(e)
-                }
-            })?;
+            .map_err(database)?;
     let Some((download_id, command_id)) = started else {
         return Err(bad(
             "downloads need a firmware 2.2 (V22) unit with a live cmd/basic binding",
