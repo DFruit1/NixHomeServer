@@ -1,5 +1,5 @@
 import { component$, Slot, type Signal } from "@builder.io/qwik";
-import { stamp } from "./api";
+import { CLOCK_FLOOR_MS, stamp } from "./api";
 import { relative } from "./format";
 
 /** Status line for an operator action (polite on success, alert on error). */
@@ -69,13 +69,13 @@ export const WindowPicker = component$<{
 /** Absolute local time with a relative hint. */
 export const When = component$<{ at: string | null | undefined; now?: number }>(
   (props) =>
-    props.at ? (
+    props.at && Date.parse(props.at) >= CLOCK_FLOOR_MS ? (
       <span title={props.at}>
         {stamp(props.at)}{" "}
         <span class="muted">({relative(props.at, props.now)})</span>
       </span>
     ) : (
-      <span>—</span>
+      <span>{props.at ? "clock not set" : "—"}</span>
     ),
 );
 

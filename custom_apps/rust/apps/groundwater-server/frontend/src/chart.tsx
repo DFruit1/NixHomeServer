@@ -1,6 +1,64 @@
 import { component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
-import type { Alert, SeriesPoint } from "./types";
+import type { Alert, DeviceEvent, SeriesPoint } from "./types";
 import { number, stamp } from "./api";
+import { sensorProblem } from "./events";
+import { alertLabel, alertValue } from "./alert-text";
+
+/** A span in which the logger reported a sensor fault (Type 17 enter until
+ * its exit). Levels inside it come from an out-of-range or failed loop and
+ * are never plotted as valid (owner decision 2026-11-16). */
+export interface FaultSpan {
+  from: number;
+  /** Infinity while the fault is still open. */
+  to: number;
+  text: string;
+}
+
+/** Fault spans from `sensor_fault` ring records (any order). Enter and exit
+ * alternate; a status change is an exit followed by an enter. */
+export function faultSpans(
+  events: Pick<DeviceEvent, "event" | "recorded_at" | "details" | "seq">[],
+): FaultSpan[] {
+  const ordered = events
+    .filter((e) => e.event === "sensor_fault" && e.recorded_at)
+    .map((e) => ({ at: Date.parse(e.recorded_at!), e }))
+    .filter(({ at }) => Number.isFinite(at))
+    .sort((a, b) => a.at - b.at || (a.e.seq ?? 0) - (b.e.seq ?? 0));
+  const spans: FaultSpan[] = [];
+  let open: FaultSpan | undefined;
+  for (const { at, e } of ordered) {
+    const d = e.details || {};
+    const status = (d.sensor_status ?? d.ss) as number | undefined;
+    if (d.state === "exit") {
+      if (open) open.to = at;
+      open = undefined;
+    } else if (!open) {
+      open = {
+        from: at,
+        to: Infinity,
+        text: sensorProblem(typeof status === "number" ? status : 4),
+      };
+      spans.push(open);
+    }
+  }
+  return spans;
+}
+
+/** The fault covering a sample at `time` (or its bucket of `bucketMs`). */
+export function faultAt(spans: FaultSpan[], time: number, bucketMs = 0) {
+  return spans.find(
+    (span) => time < span.to && time + Math.max(bucketMs, 1) > span.from,
+  );
+}
+
+/** Local time labels across the axis, as many as fit the width. */
+export function timeTicks(from: number, to: number, width: number) {
+  const count = Math.max(2, Math.min(6, Math.floor((width - 90) / 150) + 1));
+  return Array.from(
+    { length: count },
+    (_, i) => from + ((to - from) * i) / (count - 1),
+  );
+}
 
 export type Metric = "gwl" | "battery_v" | "rssi" | "solar_v" | "csq";
 
@@ -18,6 +76,7 @@ export function seriesGeometry(
   width = 960,
   inverted = false,
   minPad = 0.05,
+  nonNegative = false,
 ) {
   const values = samples
     .map(([, v]) => v)
@@ -29,7 +88,9 @@ export function seriesGeometry(
   const low = bounds.length ? Math.min(...bounds) : 0,
     high = bounds.length ? Math.max(...bounds) : 1;
   const pad = Math.max((high - low) * 0.12, minPad);
-  const min = low - pad,
+  // A quantity that cannot be negative (volts, bytes, CSQ) is never padded
+  // below zero.
+  const min = nonNegative && low >= 0 ? Math.max(0, low - pad) : low - pad,
     max = high + pad;
   const x = (time: number) =>
     60 + ((time - from) / Math.max(1, to - from)) * (width - 90);
@@ -104,6 +165,8 @@ export const TimeChart = component$<{
   digits?: number;
   inverted?: boolean;
   band?: { min: number | null; max: number | null } | null;
+  /** Volts, bytes, CSQ: the axis never goes below zero. */
+  nonNegative?: boolean;
 }>((props) => {
   const figure = useSignal<HTMLElement>();
   const width = useSignal(960);
@@ -126,6 +189,7 @@ export const TimeChart = component$<{
     width.value,
     props.inverted,
     props.digits === 0 ? 1 : 0.05,
+    props.nonNegative,
   );
   const count = all.filter(([, v]) => v != null).length;
   const digits = props.digits ?? 2;
@@ -205,17 +269,38 @@ export const TimeChart = component$<{
               </g>
             );
           })}
-          <text x="60" y="252">
-            {axisTime(props.from)}
-          </text>
-          <text x={width.value - 30} y="252" text-anchor="end">
-            {axisTime(props.to)}
-          </text>
+          <TimeAxis from={props.from} to={props.to} width={width.value} />
         </svg>
       )}
     </figure>
   );
 });
+
+const TimeAxis = component$<{ from: number; to: number; width: number }>(
+  (props) => {
+    const ticks = timeTicks(props.from, props.to, props.width);
+    const x = (time: number) =>
+      60 +
+      ((time - props.from) / Math.max(1, props.to - props.from)) *
+        (props.width - 90);
+    return (
+      <>
+        {ticks.map((time, i) => (
+          <text
+            key={i}
+            x={x(time)}
+            y="252"
+            text-anchor={
+              i === 0 ? "start" : i === ticks.length - 1 ? "end" : "middle"
+            }
+          >
+            {axisTime(time)}
+          </text>
+        ))}
+      </>
+    );
+  },
+);
 
 export const HistoryChart = component$<{
   points: SeriesPoint[];
@@ -229,6 +314,7 @@ export const HistoryChart = component$<{
   max?: number | null;
   alerts?: Alert[];
   inverted?: boolean;
+  faults?: FaultSpan[];
 }>((props) => {
   const figure = useSignal<HTMLElement>();
   const width = useSignal(960);
@@ -330,6 +416,24 @@ export const HistoryChart = component$<{
                 </g>
               ),
           )}
+          {(props.faults || [])
+            .filter((f) => f.to > start && f.from < end)
+            .map((f) => {
+              const x1 = geo.x(Math.max(f.from, start)),
+                x2 = geo.x(Math.min(f.to, end));
+              return (
+                <rect
+                  key={f.from}
+                  class="fault-band"
+                  x={x1}
+                  y="22"
+                  width={Math.max(2, x2 - x1)}
+                  height="200"
+                >
+                  <title>{`Sensor ${f.text} from ${stamp(new Date(f.from).toISOString())}${Number.isFinite(f.to) ? ` to ${stamp(new Date(f.to).toISOString())}` : " (still open)"}`}</title>
+                </rect>
+              );
+            })}
           {(props.alerts || [])
             .filter(
               (a) =>
@@ -345,7 +449,7 @@ export const HistoryChart = component$<{
                   y1="22"
                   y2="222"
                 >
-                  <title>{`${a.kind}: ${a.trigger_value} m at ${stamp(a.opened_at)}`}</title>
+                  <title>{`${alertLabel(a)}: ${alertValue(a)} at ${stamp(a.opened_at)}`}</title>
                 </line>
                 <text
                   class="alert-label"
@@ -367,12 +471,7 @@ export const HistoryChart = component$<{
                 r="3"
               />
             )}
-          <text x="60" y="252">
-            {axisTime(start)}
-          </text>
-          <text x={width.value - 30} y="252" text-anchor="end">
-            {axisTime(end)}
-          </text>
+          <TimeAxis from={start} to={end} width={width.value} />
         </svg>
       )}
     </figure>

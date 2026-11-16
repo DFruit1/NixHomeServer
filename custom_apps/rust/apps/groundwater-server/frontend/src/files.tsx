@@ -266,6 +266,22 @@ export const FilesView = component$<Props>((props) => {
                             Save file
                           </a>
                         )}
+                        {["failed", "cancelled"].includes(d.state) &&
+                          props.operator && (
+                            <button
+                              type="button"
+                              disabled={action.pending}
+                              onClick$={() =>
+                                run(
+                                  "/files/downloads",
+                                  { path: d.path },
+                                  `Download of ${d.path} started again; chunks arrive while the logger is connected.`,
+                                )
+                              }
+                            >
+                              Download again
+                            </button>
+                          )}
                         {d.state === "active" && props.operator && (
                           <button
                             type="button"

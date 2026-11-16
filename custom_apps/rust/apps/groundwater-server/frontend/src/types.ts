@@ -487,5 +487,9 @@ export interface Status {
     lastError?: string | null;
     last_error?: string | null;
   };
-  ingest: Record<string, unknown>;
+  ingest: {
+    /** Newest stored inbound delivery (operators only; null otherwise). */
+    lastDeliveryAt?: string | null;
+    [key: string]: unknown;
+  };
 }

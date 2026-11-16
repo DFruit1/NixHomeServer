@@ -1,6 +1,6 @@
 # Project skills
 
-Six discoverable entrypoints are maintained under .agents/skills:
+Seven discoverable entrypoints are maintained under .agents/skills:
 
 - [Development](../.agents/skills/nixhomeserver-development/SKILL.md): ordinary
   coding, debugging, focused checks, and preparation for review.
@@ -20,6 +20,11 @@ Six discoverable entrypoints are maintained under .agents/skills:
   are raised in chat afterwards. Invoking it authorizes those operations within
   existing owner gates; creating or discussing the skill does not activate
   anything.
+- [Shutdown guard](../.agents/skills/nixhomeserver-shutdown-guard/SKILL.md):
+  run the existing guarded desktop/server shutdown script, or inspect and
+  extend a pending shutdown to protect ongoing work. This is an active
+  project skill and must not be archived or removed; it is not one of the
+  retired entrypoints.
 
 A task loads only the entrypoints and references relevant to its boundaries.
 Project policy remains in AGENTS.md; a skill does not widen authority.

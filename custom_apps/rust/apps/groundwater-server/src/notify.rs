@@ -10,6 +10,16 @@
 //! most once per rule cooldown (the next one sent says how many were
 //! suppressed meanwhile); a resolution is sent only when its opening was;
 //! a fleet-wide hourly cap applies to everything except critical messages.
+//!
+//! Logger events become alerts (`alerting.sql`); each alert kind is governed
+//! by one rule (`groundwater_notification_kind`: SD/MRAM kinds by `storage`,
+//! impact/orientation/GPS by `tamper`, the health kinds by `health`).
+//! Late reports: a logger that was offline reports events hours or days
+//! after they happened. An opening reported more than 15 minutes late is held
+//! for two minutes so the rest of that connection arrives; if the episode
+//! has already ended by then it is sent once as "... (ended ...)", or not at
+//! all when it ended more than a day ago, instead of an alarm that is no
+//! longer current followed by its all-clear.
 
 use std::time::Duration;
 
@@ -38,26 +48,32 @@ impl Severity {
 }
 
 /// Notification kinds, their labels, source and possible severities.
-pub const KINDS: [(&str, &str, &str, &[&str]); 10] = [
+pub const KINDS: [(&str, &str, &str, &[&str]); 11] = [
     ("above_max", "Level above maximum", "alert", &["warning"]),
     ("below_min", "Level below minimum", "alert", &["warning"]),
     ("battery_low", "Battery low", "alert", &["warning"]),
     ("solar_low", "Solar low", "alert", &["info"]),
     ("stale", "Missed connection", "alert", &["warning"]),
-    ("gwl_alarm", "Logger level alarm", "event", &["warning"]),
-    ("power_critical", "Power critical", "event", &["critical"]),
-    ("sensor_fault", "Sensor fault", "event", &["warning"]),
+    ("gwl_alarm", "Logger level alarm", "alert", &["warning"]),
+    ("power_critical", "Power critical", "alert", &["critical"]),
+    ("sensor_fault", "Sensor fault", "alert", &["warning"]),
     (
         "storage",
         "Storage (SD/MRAM)",
-        "event",
-        &["info", "warning", "critical"],
+        "alert",
+        &["warning", "critical"],
     ),
     (
         "tamper",
         "Impact, orientation or movement",
-        "event",
+        "alert",
         &["warning"],
+    ),
+    (
+        "health",
+        "Logger health (errors, logging off, clock, signal, resets)",
+        "alert",
+        &["info", "warning"],
     ),
 ];
 
@@ -148,6 +164,64 @@ pub struct Item {
     pub from_alert: bool,
     pub suppressed: i64,
     pub suppressed_since: Option<DateTime<Utc>>,
+    /// The logger's local offset (settings `utc_off`, or the enrollment's
+    /// local offset), for times an operator reads at a glance.
+    pub utc_offset_min: Option<i32>,
+    /// When the server learned of it (for late reports).
+    pub reported_at: Option<DateTime<Utc>>,
+    /// An episode that had already ended when it was reported.
+    pub ended_at: Option<DateTime<Utc>>,
+}
+
+/// A time in the logger's local zone, with UTC alongside when they differ.
+pub fn local_time(at: DateTime<Utc>, offset_min: Option<i32>) -> String {
+    let utc = at.format("%Y-%m-%d %H:%M UTC").to_string();
+    match offset_min
+        .filter(|m| *m != 0)
+        .and_then(|m| chrono::FixedOffset::east_opt(m * 60))
+    {
+        Some(offset) => format!(
+            "{} UTC{} ({} UTC)",
+            at.with_timezone(&offset).format("%Y-%m-%d %H:%M"),
+            offset,
+            at.format("%H:%M")
+        ),
+        None => utc,
+    }
+}
+
+fn ago(span: chrono::Duration) -> String {
+    let minutes = span.num_minutes();
+    if minutes < 120 {
+        format!("{minutes} min")
+    } else if minutes < 48 * 60 {
+        format!("{} h", minutes / 60)
+    } else {
+        format!("{} days", minutes / (24 * 60))
+    }
+}
+
+/// Health `err` codes (contract §4, `gwl_ring.h` `GWL_ERR_*`).
+fn logger_error_text(code: f64) -> Option<&'static str> {
+    Some(match code as i64 {
+        1 => "MRAM I/O error",
+        2 => "MRAM read-back mismatch",
+        3 => "MRAM metadata invalid, read-only recovery",
+        4 => "settings lost",
+        5 => "one settings slot failed its check",
+        6 => "newer settings lost, previous settings in use",
+        7 => "V2.1 settings not migrated, defaults in use: send settings",
+        _ => return None,
+    })
+}
+
+fn sd_text(d: &Value) -> &'static str {
+    match text(d, "sd").or_else(|| text(d, "kind")) {
+        Some("missing" | "sd_missing") => "SD card missing",
+        Some("full" | "sd_full") => "SD card full",
+        Some("error" | "sd_error") => "SD card error",
+        _ => "SD card problem",
+    }
 }
 
 fn num(details: &Value, key: &str) -> Option<f64> {
@@ -204,17 +278,15 @@ pub fn headline(item: &Item) -> String {
         ),
         ("power_critical", true) => "power recovered".into(),
         ("sensor_fault", false) => {
-            let status = num(d, "ss").or_else(|| num(d, "sensor_status"));
-            match status
-                .and_then(|s| u8::try_from(s as i64).ok())
-                .and_then(crate::records::sensor_status_meaning)
-            {
+            let status = num(d, "ss")
+                .or_else(|| num(d, "sensor_status"))
+                .and_then(|s| u8::try_from(s as i64).ok());
+            match status.and_then(crate::records::sensor_status_meaning) {
                 Some(meaning) => format!("sensor reading {meaning}"),
                 None => format!(
                     "sensor fault{}",
-                    text(d, "sensor_status_name")
-                        .map(|s| format!(" ({s})"))
-                        .or_else(|| status.map(|s| format!(" (status {s})")))
+                    status
+                        .map(|s| format!(" ({})", crate::records::sensor_status_name(s)))
                         .unwrap_or_default()
                 ),
             }
@@ -234,6 +306,63 @@ pub fn headline(item: &Item) -> String {
             (_, Some("mram_ok")) => "MRAM back to normal".into(),
             (_, other) => format!("storage warning ({})", other.unwrap_or("unknown")),
         },
+        ("sd_card", false) => sd_text(d).into(),
+        ("sd_card", true) => "SD card back to normal".into(),
+        ("mram_almost_full", false) => "MRAM almost full of unsaved data".into(),
+        ("mram_almost_full", true) => "MRAM back below half full".into(),
+        ("mram_fault", false) => format!(
+            "MRAM fault{}",
+            text(d, "mram")
+                .map(|m| format!(" ({m})"))
+                .unwrap_or_default()
+        ),
+        ("mram_fault", true) => "MRAM back to normal".into(),
+        ("tail_lock", false) => {
+            "MRAM full of unsaved data: logging is locked until it is saved".into()
+        }
+        ("tail_lock", true) => "MRAM tail lock released".into(),
+        ("impact", false) => format!(
+            "impact detected{}",
+            fixed(num(d, "peak_mg").or(num(d, "peak")), 0, "mg")
+        ),
+        ("orientation", false) => {
+            format!("orientation changed{}", fixed(num(d, "tilt_deg"), 1, "°"))
+        }
+        ("gps_moved", false) => match (
+            num(d, "distance_m").or(num(d, "dist_m")),
+            num(d, "threshold_m").or(num(d, "thr_m")),
+        ) {
+            (Some(m), Some(t)) => format!("moved {m:.0} m (threshold {t:.0} m)"),
+            (Some(m), None) => format!("moved {m:.0} m"),
+            _ => "position moved".into(),
+        },
+        ("logger_error", false) => format!(
+            "logger error latched{}",
+            num(d, "err")
+                .map(|e| match logger_error_text(e) {
+                    Some(text) => format!(" (code {e}: {text})"),
+                    None => format!(" (code {e})"),
+                })
+                .unwrap_or_default()
+        ),
+        ("logger_error", true) => "logger error latch cleared".into(),
+        ("logging_off", false) => "logging is off: no readings are recorded".into(),
+        ("logging_off", true) => "logging back on".into(),
+        ("clock_invalid", false) => "clock not set: reading times are unknown".into(),
+        ("clock_invalid", true) => "clock set again".into(),
+        ("signal_low", false) => format!("weak mobile signal{}", fixed(trigger, 0, "CSQ")),
+        ("signal_low", true) => "mobile signal recovered".into(),
+        ("watchdog_resets", false) => format!(
+            "repeated watchdog resets{}",
+            trigger
+                .map(|n| format!(" ({n:.0} in 7 days)"))
+                .unwrap_or_default()
+        ),
+        ("watchdog_resets", true) => "no watchdog reset for a week".into(),
+        ("settings_lost", false) => {
+            "settings lost: logging is stopped until settings are sent".into()
+        }
+        ("settings_lost", true) => "settings restored: logging again".into(),
         ("tamper", _) => match item.event.as_str() {
             "impact" => format!(
                 "impact detected{}",
@@ -252,6 +381,10 @@ pub fn headline(item: &Item) -> String {
         },
         (other, true) => format!("{} resolved", other.replace('_', " ")),
         (other, false) => other.replace('_', " "),
+    };
+    let line = match item.ended_at.filter(|_| !resolved) {
+        Some(end) => format!("{line} (ended {})", local_time(end, item.utc_offset_min)),
+        None => line,
     };
     match text(d, "resolved_by").filter(|_| resolved) {
         Some(by) => format!("{line} (resolved by {by})"),
@@ -289,9 +422,23 @@ pub fn compose(item: &Item, rule: &Rule, public_url: Option<&str>) -> Message {
         body.push(place.join(" · "));
     }
     body.push(format!(
-        "When: {} UTC",
-        item.occurred_at.format("%Y-%m-%d %H:%M")
+        "When: {}{}",
+        local_time(item.occurred_at, item.utc_offset_min),
+        if item.details.get("time_estimated") == Some(&Value::Bool(true)) {
+            " (estimated: the logger's clock was not set)"
+        } else {
+            ""
+        }
     ));
+    if let Some(reported) = item
+        .reported_at
+        .filter(|at| *at - item.occurred_at > chrono::Duration::minutes(LATE_MINUTES))
+    {
+        body.push(format!(
+            "Reported {} later, at the logger's next connection",
+            ago(reported - item.occurred_at)
+        ));
+    }
     if let Some(note) = text(&item.details, "resolve_note").filter(|n| !n.is_empty()) {
         body.push(format!("Note: {note}"));
     }
@@ -379,6 +526,43 @@ pub fn http_client() -> reqwest::Client {
 }
 
 const MAX_ATTEMPTS: i32 = 5;
+/// An opening that reached the server this much after it happened is a late
+/// report (the logger was offline or asleep).
+pub const LATE_MINUTES: i64 = 15;
+/// How long a late opening waits for the rest of its connection.
+const LATE_HOLD_SECONDS: i64 = 120;
+
+/// What to do with an alert opening, given what is known of its episode now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Late {
+    /// Current, or on time: decide as usual.
+    Normal,
+    /// Reported late and the connection may still be arriving: wait.
+    Hold(DateTime<Utc>),
+    /// Reported late and already over: one message saying when it ended.
+    Ended(DateTime<Utc>),
+    /// Reported late and over for more than a day: history, not news.
+    History,
+}
+
+pub fn late(
+    now: DateTime<Utc>,
+    occurred_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
+    resolved_at: Option<DateTime<Utc>>,
+) -> Late {
+    if created_at - occurred_at <= chrono::Duration::minutes(LATE_MINUTES) {
+        return Late::Normal;
+    }
+    match resolved_at {
+        Some(end) if now - end > chrono::Duration::hours(24) => Late::History,
+        Some(end) => Late::Ended(end),
+        None if now - created_at < chrono::Duration::seconds(LATE_HOLD_SECONDS) => {
+            Late::Hold(created_at + chrono::Duration::seconds(LATE_HOLD_SECONDS))
+        }
+        None => Late::Normal,
+    }
+}
 
 /// Processes due outbox rows. Single worker: no row locking needed.
 pub async fn process(
@@ -391,9 +575,12 @@ pub async fn process(
             "SELECT o.id,o.device_id,o.kind,o.severity,o.transition,o.alert_id,o.event,o.occurred_at,o.details,
                 o.attempts,d.display_name,d.location_id,d.project,d.revoked_at IS NOT NULL,
                 r.enabled,r.min_severity,r.priority,r.cooldown_min,r.notify_resolved,r.topic,
-                COALESCE(a.superseded,false)
+                COALESCE(a.superseded,false),o.created_at,
+                CASE WHEN a.state='resolved' THEN a.resolved_at END,
+                COALESCE(CASE WHEN d.settings->>'utc_off' ~ '^-?[0-9]{1,4}$' THEN (d.settings->>'utc_off')::integer END,
+                    CASE WHEN d.clock_policy='local-offset' THEN d.local_offset_min END)
              FROM notification_outbox o JOIN devices d ON d.device_id=o.device_id
-             LEFT JOIN notification_rules r ON r.kind=o.kind
+             LEFT JOIN notification_rules r ON r.kind=groundwater_notification_kind(o.kind)
              LEFT JOIN alerts a ON a.id=o.alert_id
              WHERE o.state='pending' AND o.next_attempt_at<=now() ORDER BY o.id LIMIT 25",
             &[],
@@ -401,6 +588,8 @@ pub async fn process(
         .await
         .map_err(|e| format!("notification outbox: {e}"))?;
     let handled = rows.len();
+    // Alerts whose resolution was folded into, or dropped with, the opening.
+    let mut folded = std::collections::HashSet::new();
     for row in rows {
         let id: i64 = row.get(0);
         let device_id: String = row.get(1);
@@ -408,9 +597,12 @@ pub async fn process(
         let severity = Severity::parse(row.get(3)).unwrap_or(Severity::Warning);
         let transition: String = row.get(4);
         let alert_id: Option<i64> = row.get(5);
+        let occurred_at: DateTime<Utc> = row.get(7);
         let attempts: i32 = row.get(9);
         let revoked: bool = row.get(13);
         let superseded: bool = row.get(20);
+        let created_at: DateTime<Utc> = row.get(21);
+        let resolved_at: Option<DateTime<Utc>> = row.get(22);
         let rule = row.get::<_, Option<bool>>(14).map(|enabled| Rule {
             enabled,
             min_severity: Severity::parse(row.get(15)).unwrap_or(Severity::Warning),
@@ -431,6 +623,31 @@ pub async fn process(
             .await?;
             continue;
         }
+        if transition == "resolved" && alert_id.is_some_and(|a| folded.contains(&a)) {
+            continue;
+        }
+        let mut ended_at = None;
+        if transition == "open" && alert_id.is_some() {
+            match late(Utc::now(), occurred_at, created_at, resolved_at) {
+                Late::Normal => {}
+                Late::Hold(until) => {
+                    db.execute(
+                        "UPDATE notification_outbox SET next_attempt_at=$2 WHERE id=$1",
+                        &[&id, &until],
+                    )
+                    .await
+                    .map_err(|e| format!("notification hold: {e}"))?;
+                    continue;
+                }
+                Late::History => {
+                    finish(db, id, "skipped", Some("history"), None, 0).await?;
+                    fold(db, alert_id, "history").await?;
+                    folded.extend(alert_id);
+                    continue;
+                }
+                Late::Ended(end) => ended_at = Some(end),
+            }
+        }
         let history = history(db, id, &device_id, &kind, &transition, alert_id).await?;
         let decision = decide(
             Utc::now(),
@@ -441,6 +658,11 @@ pub async fn process(
             &history,
             ops.notify_max_per_hour,
         );
+        if ended_at.is_some() && decision != Decision::Send {
+            // Its resolution must not go out on its own either.
+            fold(db, alert_id, "ended-unsent").await?;
+            folded.extend(alert_id);
+        }
         match decision {
             Decision::Skip(reason) => finish(db, id, "skipped", Some(reason), None, 0).await?,
             Decision::Suppress(reason) => {
@@ -464,11 +686,14 @@ pub async fn process(
                     event: row.get(6),
                     severity,
                     transition: transition.clone(),
-                    occurred_at: row.get(7),
+                    occurred_at,
                     details: row.get(8),
                     from_alert: alert_id.is_some(),
                     suppressed,
                     suppressed_since: since,
+                    utc_offset_min: row.get(23),
+                    reported_at: Some(created_at),
+                    ended_at,
                 };
                 let message = compose(&item, rule, ops.public_url.as_deref());
                 db.execute(
@@ -478,7 +703,13 @@ pub async fn process(
                 .await
                 .map_err(|e| format!("notification compose: {e}"))?;
                 match publish(http, target, rule.topic.as_deref(), &message).await {
-                    Ok(()) => finish(db, id, "sent", None, None, 0).await?,
+                    Ok(()) => {
+                        finish(db, id, "sent", None, None, 0).await?;
+                        if ended_at.is_some() {
+                            fold(db, alert_id, "combined").await?;
+                            folded.extend(alert_id);
+                        }
+                    }
                     Err(error) if attempts + 1 >= MAX_ATTEMPTS => {
                         eprintln!("groundwater notify: giving up on #{id}: {error}");
                         finish(db, id, "failed", Some("delivery"), Some(&error), 0).await?
@@ -492,6 +723,18 @@ pub async fn process(
         }
     }
     Ok(handled)
+}
+
+/// Marks an alert's pending resolution as handled by its opening.
+async fn fold(db: &Client, alert_id: Option<i64>, reason: &str) -> Result<(), String> {
+    db.execute(
+        "UPDATE notification_outbox SET state='skipped',reason=$2
+         WHERE alert_id=$1 AND transition='resolved' AND state='pending'",
+        &[&alert_id, &reason],
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| format!("notification fold: {e}"))
 }
 
 async fn finish(
@@ -758,6 +1001,9 @@ mod tests {
             from_alert: kind == "battery_low",
             suppressed: 0,
             suppressed_since: None,
+            utc_offset_min: None,
+            reported_at: None,
+            ended_at: None,
         }
     }
 

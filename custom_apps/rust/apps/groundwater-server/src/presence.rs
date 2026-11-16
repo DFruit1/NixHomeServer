@@ -8,6 +8,15 @@
 //! Without a `next`, the expected connection is the last contact plus the
 //! configured send interval; only when neither is known does the historical
 //! 30-minute rule apply.
+//!
+//! The margin is never shorter than [`RETRY_FLOOR_SECONDS`]: a logger whose
+//! connection fails retries 30 minutes later (firmware
+//! `GWL_SCHED_RETRY_FIRST_S`), so a shorter margin would raise and clear a
+//! missed-connection alert for every single failed attempt.
+//!
+//! A retained `status` is a broker replay (on the server's subscription), not
+//! contact: it never makes a logger awake, and its time never stands in for
+//! the last contact.
 
 use chrono::{DateTime, Duration, Utc};
 
@@ -24,6 +33,8 @@ pub struct PresenceInput<'a> {
     /// Revision 2 `status`.
     pub link_state: Option<&'a str>,
     pub link_state_at: Option<DateTime<Utc>>,
+    /// The stored `status` came from a retained replay.
+    pub link_retained: bool,
     pub listen_window_s: Option<i32>,
     pub next_contact_at: Option<DateTime<Utc>>,
     /// Configured send interval, when known.
@@ -61,6 +72,10 @@ fn presence(
 /// listen window plus keepalive slack.
 const AWAKE_GRACE_SECONDS: i64 = 180;
 
+/// Smallest stale margin: the firmware's first retry after a failed
+/// connection (30 min) plus 10 minutes to register and connect.
+pub const RETRY_FLOOR_SECONDS: i64 = 40 * 60;
+
 pub fn evaluate(now: DateTime<Utc>, input: &PresenceInput<'_>) -> Presence {
     if input.revoked {
         return presence(
@@ -80,11 +95,14 @@ pub fn evaluate(now: DateTime<Utc>, input: &PresenceInput<'_>) -> Presence {
     };
     // An announced next connection wins, unless the logger has connected
     // since it announced it.
-    let announced = input.next_contact_at.filter(|next| {
-        input
-            .link_state_at
-            .is_none_or(|at| *next >= at - Duration::minutes(5))
-    });
+    let contact_at = if input.link_retained {
+        input.last_seen
+    } else {
+        input.link_state_at
+    };
+    let announced = input
+        .next_contact_at
+        .filter(|next| contact_at.is_none_or(|at| *next >= at - Duration::minutes(5)));
     let (expected, basis) = match (announced, input.send_interval_s) {
         (Some(next), _) => (next, "announced next connection".to_owned()),
         (None, Some(interval)) => (
@@ -97,7 +115,7 @@ pub fn evaluate(now: DateTime<Utc>, input: &PresenceInput<'_>) -> Presence {
         ),
     };
     let margin = if input.send_interval_s.is_some() || announced.is_some() {
-        Duration::seconds(input.margin_s)
+        Duration::seconds(input.margin_s.max(RETRY_FLOOR_SECONDS))
     } else {
         Duration::zero()
     };
@@ -121,7 +139,7 @@ pub fn evaluate(now: DateTime<Utc>, input: &PresenceInput<'_>) -> Presence {
         let at = input.link_state_at.unwrap_or(last_seen);
         let window = i64::from(input.listen_window_s.unwrap_or(60)) + AWAKE_GRACE_SECONDS;
         return match state {
-            "online" | "ready" if now - at <= Duration::seconds(window) => presence(
+            "online" | "ready" if !input.link_retained && now - at <= Duration::seconds(window) => presence(
                 "awake",
                 format!("{state} since {}; commands are delivered now", at.to_rfc3339()),
                 Some(expected),
@@ -209,10 +227,11 @@ mod tests {
         let presence = evaluate(now, &input);
         assert_eq!(presence.status, "asleep");
         assert_eq!(presence.expected_contact_at, Some(at(7 * 24 * 60)));
-        assert_eq!(presence.stale_after, Some(at(7 * 24 * 60 + 30)));
+        // The 30 min margin is raised to the 40 min retry floor.
+        assert_eq!(presence.stale_after, Some(at(7 * 24 * 60 + 40)));
         // Missing the announced connection by more than the margin is stale.
-        assert_eq!(evaluate(at(7 * 24 * 60 + 31), &input).status, "stale");
-        assert_eq!(evaluate(at(7 * 24 * 60 + 29), &input).status, "asleep");
+        assert_eq!(evaluate(at(7 * 24 * 60 + 41), &input).status, "stale");
+        assert_eq!(evaluate(at(7 * 24 * 60 + 39), &input).status, "asleep");
     }
 
     #[test]
@@ -228,6 +247,13 @@ mod tests {
         };
         assert_eq!(evaluate(at(2), &input).status, "awake");
         assert_eq!(evaluate(at(10), &input).status, "asleep");
+        // A retained ready replayed at server start is not a live logger.
+        let replayed = PresenceInput {
+            link_retained: true,
+            link_state_at: Some(at(3)),
+            ..input
+        };
+        assert_eq!(evaluate(at(4), &replayed).status, "asleep");
     }
 
     #[test]
@@ -241,7 +267,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(evaluate(at(5), &input).status, "offline");
-        assert_eq!(evaluate(at(24 * 60 + 31), &input).status, "stale");
+        assert_eq!(evaluate(at(24 * 60 + 41), &input).status, "stale");
     }
 
     #[test]
@@ -254,8 +280,8 @@ mod tests {
             margin_s: 600,
             ..Default::default()
         };
-        assert_eq!(evaluate(at(65), &with_interval).status, "asleep");
-        assert_eq!(evaluate(at(71), &with_interval).status, "stale");
+        assert_eq!(evaluate(at(95), &with_interval).status, "asleep");
+        assert_eq!(evaluate(at(101), &with_interval).status, "stale");
         // A next announced before the latest connection is stale evidence.
         let old_next = PresenceInput {
             next_contact_at: Some(at(-120)),

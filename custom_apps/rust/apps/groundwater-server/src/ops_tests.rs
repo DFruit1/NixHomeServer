@@ -353,7 +353,7 @@ async fn alert_policies_drive_power_alerts_and_acknowledgement() {
         }
     };
     // 6950 mV is low under the built-in 7000 mV threshold ...
-    health(6950, 5000, 30).await;
+    health(6950, 400, 30).await;
     assert_eq!(
         scalar::<i64>(
             &client,
@@ -374,7 +374,7 @@ async fn alert_policies_drive_power_alerts_and_acknowledgement() {
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
     // Still open: the clear level is now 6900 + 100 = 7000.
-    health(6990, 5000, 20).await;
+    health(6990, 400, 20).await;
     assert_eq!(
         scalar::<i64>(
             &client,
@@ -388,7 +388,28 @@ async fn alert_policies_drive_power_alerts_and_acknowledgement() {
         scalar::<String>(&client, "SELECT state FROM alerts WHERE kind='battery_low'").await,
         "resolved"
     );
-    // Two dark samples are enough for this project.
+    // Night samples of a new unit alone never open solar low ...
+    assert_eq!(
+        scalar::<i64>(
+            &client,
+            "SELECT count(*) FROM alerts WHERE kind='solar_low'"
+        )
+        .await,
+        0
+    );
+    // ... two days with no sample at the threshold, one of them in local
+    // daylight, on a unit with older history, are enough for this project.
+    client
+        .execute(
+            "INSERT INTO device_health(device_id,recorded_at,time_source,received_at,bat_mv,sol_mv,payload)
+             SELECT $1,t,'device',now(),7400,400,'{}' FROM devices d, LATERAL (VALUES (now()-interval '3 days'),
+                ((date_trunc('day',now() AT TIME ZONE 'UTC')-interval '1 day'+interval '12 hours'
+                    -make_interval(mins=>COALESCE((d.settings->>'utc_off')::int,d.local_offset_min,0))) AT TIME ZONE 'UTC')) v(t)
+             WHERE d.device_id=$1",
+            &[&D],
+        )
+        .await
+        .unwrap();
     health(7400, 400, 5).await;
     assert_eq!(
         scalar::<i64>(
@@ -621,7 +642,8 @@ async fn missed_connections_open_and_close_stale_alerts() {
     let app = app(&url, OpsSettings::default()).await;
     enroll_v22(&app).await;
     let now = Utc::now();
-    // Asleep, announced next connection 2 h ago; margin 30 min → stale.
+    // Asleep, announced next connection 2 h ago; margin 30 min, raised to
+    // the 40 min retry floor → stale.
     client
         .execute(
             "UPDATE devices SET last_seen=$2,link_state='sleep',link_state_at=$2,next_contact_at=$3 WHERE device_id=$1",
@@ -644,9 +666,9 @@ async fn missed_connections_open_and_close_stale_alerts() {
     assert!((row.get::<_, f64>(1) - 2.0).abs() < 0.05);
     assert_eq!(
         row.get::<_, DateTime<Utc>>(2).timestamp(),
-        (now - Duration::minutes(90)).timestamp()
+        (now - Duration::minutes(80)).timestamp()
     );
-    assert_eq!(row.get::<_, Value>(3)["margin_min"], 30);
+    assert_eq!(row.get::<_, Value>(3)["margin_min"], 40);
     // Idempotent while still stale.
     assert!(crate::alerting::evaluate_stale(&client, now, 30)
         .await
@@ -790,7 +812,8 @@ async fn notifications_deliver_dedupe_and_rate_limit() {
         }
     };
     // A flapping battery: open, resolve, open, resolve within the cooldown.
-    let first = open("battery_low", 30).await;
+    // (Openings under 15 minutes old: not late reports, which wait.)
+    let first = open("battery_low", 14).await;
     crate::notify::process(&client, &ops, &http).await.unwrap();
     resolve(first).await;
     let second = open("battery_low", 10).await;
@@ -893,7 +916,7 @@ async fn notifications_deliver_dedupe_and_rate_limit() {
     assert_eq!(
         scalar::<i64>(
             &client,
-            "SELECT count(*) FROM notification_outbox WHERE kind='tamper'"
+            "SELECT count(*) FROM notification_outbox WHERE kind IN ('tamper','impact')"
         )
         .await,
         0
@@ -942,7 +965,7 @@ async fn notifications_deliver_dedupe_and_rate_limit() {
     assert_eq!(last["tags"], json!(["rotating_light"]));
     assert_eq!(
         last["click"],
-        format!("https://groundwater.example/#device={D}&view=events")
+        format!("https://groundwater.example/#device={D}&view=alerts")
     );
 
     // Rules: disabling a kind skips it; the API validates and audits.
@@ -1072,7 +1095,7 @@ async fn notification_delivery_retries_and_test_messages() {
     )
     .await;
     assert_eq!(rules["delivery"]["configured"], false);
-    assert_eq!(rules["rules"].as_array().unwrap().len(), 10);
+    assert_eq!(rules["rules"].as_array().unwrap().len(), 11);
 }
 
 async fn app_unconfigured(url: &str) -> axum::Router {
@@ -1168,15 +1191,48 @@ async fn per_device_credentials_write_broker_files() {
     )
     .await;
     assert_eq!(device["device"]["mqtt_auth"], "device");
+    // Rotation strands a unit flashed with its own password until it is
+    // reflashed, so the server insists on a typed confirmation; an
+    // unconfirmed request changes nothing.
+    for body in [json!({}), Value::Null, json!({"confirm":"rotate"})] {
+        let (status, value) = call(
+            &app,
+            "POST",
+            &format!("/api/devices/{D}/mqtt-credentials"),
+            "operator",
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+    }
+    assert!(crate::mqtt_auth::verify(
+        &password,
+        std::fs::read_to_string(dir.path().join("devices.passwd"))
+            .unwrap()
+            .trim()
+            .split_once(':')
+            .unwrap()
+            .1
+    ));
+    let (status, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/devices/{D}/mqtt-credentials"),
+        "operator",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     // Rotation replaces the hash; the old password stops working.
-    let (_, rotated) = call(
+    let (status, rotated) = call(
         &app,
         "POST",
         &format!("/api/devices/{D}/mqtt-credentials"),
         "operator",
-        json!({}),
+        json!({"confirm":"ROTATE"}),
     )
     .await;
+    assert_eq!(status, StatusCode::CREATED, "{rotated}");
     let passwd = std::fs::read_to_string(dir.path().join("devices.passwd")).unwrap();
     let hash = passwd.trim().split_once(':').unwrap().1.to_owned();
     assert!(!crate::mqtt_auth::verify(&password, &hash));
@@ -1507,4 +1563,72 @@ async fn metrics_need_an_operator_or_the_scraper_token() {
         StatusCode::OK
     );
     assert_eq!(scrape("Bearer wrong").await, StatusCode::UNAUTHORIZED);
+}
+
+/// Regression: the gateway cookie is SameSite=Lax on the parent domain, so a
+/// page on any sibling host could post to body-less routes (danger confirm,
+/// cancel, credential rotation, reinstate) with an operator's session.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn cross_origin_writes_are_refused() {
+    let (url, client) = setup().await;
+    let app = app(&url, OpsSettings::default()).await;
+    enroll_v22(&app).await;
+    let send = |site: Option<&'static str>, origin: Option<&'static str>| {
+        let app = app.clone();
+        async move {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri(format!("/api/devices/{D}/retire"))
+                .header("content-type", "application/json")
+                .header("host", "groundwater.example.org")
+                .header("x-auth-request-preferred-username", "operator")
+                .header("x-auth-request-groups", "app-admin");
+            if let Some(site) = site {
+                request = request.header("sec-fetch-site", site);
+            }
+            if let Some(origin) = origin {
+                request = request.header("origin", origin);
+            }
+            let body = Body::from(json!({"confirm":"RETIRE"}).to_string());
+            app.oneshot(request.body(body).unwrap())
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    for (site, origin) in [
+        (Some("same-site"), Some("https://archives.example.org")),
+        (Some("cross-site"), None),
+        (None, Some("https://archives.example.org")),
+        (None, Some("null")),
+    ] {
+        assert_eq!(
+            send(site, origin).await,
+            StatusCode::FORBIDDEN,
+            "{site:?} {origin:?}"
+        );
+        assert_eq!(
+            scalar::<i64>(
+                &client,
+                "SELECT count(*) FROM devices WHERE revoked_at IS NOT NULL"
+            )
+            .await,
+            0
+        );
+    }
+    // Reads stay available to cross-site navigation (links, downloads).
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("/api/devices/{D}"),
+        "operator",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        send(Some("same-origin"), Some("https://groundwater.example.org")).await,
+        StatusCode::OK
+    );
 }

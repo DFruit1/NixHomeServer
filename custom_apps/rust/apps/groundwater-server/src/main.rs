@@ -19,8 +19,12 @@ mod crc;
 mod db;
 #[cfg(test)]
 mod fixtures;
+#[cfg(test)]
+mod followups_tests;
 mod identity;
 mod ingest;
+#[cfg(test)]
+mod ingest_tests;
 mod metrics;
 mod mqtt_auth;
 mod notify;

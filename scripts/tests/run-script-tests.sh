@@ -107,7 +107,7 @@ test_scripts=(
   scripts/tests/test-install-temp-cleanup.sh
   scripts/tests/test-temp-cleanup-module.sh
   scripts/tests/test-shutdown-guard.sh
-  scripts/tests/test-offline-media-reliability.sh
+  scripts/tests/test-shutdown-skill.sh  scripts/tests/test-offline-media-reliability.sh
   scripts/tests/test-opencloud-module.sh
   scripts/tests/test-opencloud-public-access.sh
   scripts/tests/test-deploy-cli.sh

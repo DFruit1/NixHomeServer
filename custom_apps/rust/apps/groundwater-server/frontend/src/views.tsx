@@ -1,23 +1,50 @@
 import {
   component$,
+  useComputed$,
   useSignal,
   useStore,
   useVisibleTask$,
 } from "@builder.io/qwik";
 import { errorText, lag, number, query, request, stamp } from "./api";
-import { HistoryChart } from "./chart";
+import { HistoryChart, faultAt, faultSpans } from "./chart";
+import { devicePath, useJson } from "./hooks";
 import { latestRequest } from "./live";
-import type { Alert, Delivery, Device, Series } from "./types";
+import type {
+  Alert,
+  Delivery,
+  Device,
+  DeviceEvent,
+  Series,
+  SeriesPoint,
+} from "./types";
 import { datumLabel, datumUnit } from "./ops";
-import { ALERT_KIND_LABEL, alertValue } from "./alerts";
+import { alertLabel, alertValue } from "./alerts";
+import { deviceProblems } from "./attention";
+import { observationProblem } from "./events";
+import { csqText, millivolts } from "./format";
 
-export const Fleet = component$<{ devices: Device[] }>((props) => {
+export const Fleet = component$<{
+  devices: Device[];
+  openAlerts?: Alert[];
+}>((props) => {
   const search = useSignal("");
-  const devices = props.devices.filter((device) =>
-    `${device.display_name} ${device.device_id} ${device.location_id || ""}`
-      .toLowerCase()
-      .includes(search.value.toLowerCase()),
-  );
+  // Loggers that need attention come first; the order is otherwise stable.
+  const devices = props.devices
+    .filter((device) =>
+      `${device.display_name} ${device.device_id} ${device.location_id || ""}`
+        .toLowerCase()
+        .includes(search.value.toLowerCase()),
+    )
+    .map((device) => ({
+      device,
+      problems: deviceProblems(
+        device,
+        props.openAlerts?.filter((a) => a.device_id === device.device_id),
+      ),
+    }))
+    .sort(
+      (a, b) => Number(b.problems.length > 0) - Number(a.problems.length > 0),
+    );
   return (
     <section aria-labelledby="fleet-title">
       <div class="section-heading">
@@ -54,18 +81,21 @@ export const Fleet = component$<{ devices: Device[] }>((props) => {
               <tr>
                 <th>Device</th>
                 <th>Groundwater</th>
-                <th>Battery</th>
-                <th>RSSI</th>
-                <th>Presence / last seen</th>
-                <th>Delivery lag</th>
-                <th>Alerts</th>
+                <th>Power / signal</th>
+                <th>Presence</th>
+                <th>Needs attention</th>
               </tr>
             </thead>
             <tbody>
-              {devices.map((device) => {
+              {devices.map(({ device, problems }) => {
                 const reading =
                   device.latest_plausible || device.latest_received;
                 const latest = device.latest_received;
+                const fault = observationProblem(reading);
+                const rev2 = device.capabilities?.protocol === 2;
+                const health = (device.health || {}) as Record<string, unknown>;
+                const expected =
+                  device.expected_contact_at || device.next_contact_at;
                 return (
                   <tr key={device.device_id}>
                     <td>
@@ -81,36 +111,81 @@ export const Fleet = component$<{ devices: Device[] }>((props) => {
                       )}
                     </td>
                     <td class="numeric">
-                      <strong>{number(reading?.gwl)} m</strong>
-                      <small>
-                        {reading?.recorded_at
-                          ? stamp(reading.recorded_at)
-                          : "Clock unverified"}
-                      </small>
+                      {!reading ? (
+                        <span class="muted">No readings yet</span>
+                      ) : fault ? (
+                        <strong class="error-text">{fault}</strong>
+                      ) : (
+                        <strong>
+                          {reading.gwl == null
+                            ? "unknown"
+                            : `${number(reading.gwl)} m`}
+                        </strong>
+                      )}
+                      {reading && (
+                        <small>
+                          {reading.recorded_at
+                            ? stamp(reading.recorded_at)
+                            : "Clock unverified"}
+                        </small>
+                      )}
                       {reading && reading.time_quality !== "plausible" && (
                         <small class="error-text">{reading.time_quality}</small>
                       )}
+                      {latest?.recorded_at && (
+                        <small>
+                          delivery lag{" "}
+                          {lag(latest.recorded_at, latest.received_at)}
+                        </small>
+                      )}
                     </td>
-                    <td class="numeric">{number(reading?.battery_v)} V</td>
                     <td class="numeric">
-                      {number(reading?.rssi, 0)}
-                      <small>0–100</small>
+                      {rev2 ? (
+                        <>
+                          {millivolts(health.bat_mv)}
+                          <small>solar {millivolts(health.sol_mv)}</small>
+                          <small>CSQ {csqText(health.csq)}</small>
+                        </>
+                      ) : (
+                        <>
+                          {number(reading?.battery_v)} V
+                          <small>RSSI {number(reading?.rssi, 0)} (0–100)</small>
+                        </>
+                      )}
                     </td>
                     <td>
-                      <span title={device.status_reason}>{device.status}</span>
-                      <small>{stamp(device.last_received_at)}</small>
-                    </td>
-                    <td>
-                      {lag(latest?.recorded_at, latest?.received_at)}
-                      {latest && <small>{latest.time_quality}</small>}
-                    </td>
-                    <td>
-                      <a
-                        class={device.open_alert_count ? "error-text" : ""}
-                        href={`#${query({ device: device.device_id, view: "alerts" })}`}
+                      <span
+                        class={
+                          ["stale", "offline"].includes(device.status)
+                            ? "error-text"
+                            : ""
+                        }
+                        title={device.status_reason}
                       >
-                        {device.open_alert_count || 0} open
-                      </a>
+                        {device.status}
+                      </span>
+                      {rev2 && expected && !device.revoked ? (
+                        <small>next connection {stamp(expected)}</small>
+                      ) : null}
+                      <small>last seen {stamp(device.last_received_at)}</small>
+                    </td>
+                    <td>
+                      {problems.length === 0 ? (
+                        <span class="muted">nothing</span>
+                      ) : (
+                        <ul class="problem-list">
+                          {problems.map((problem) => (
+                            <li key={problem.text}>
+                              <a
+                                class="error-text"
+                                href={`#${query({ device: device.device_id, view: problem.view })}`}
+                              >
+                                {problem.text}
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                     </td>
                   </tr>
                 );
@@ -178,8 +253,7 @@ export const AlertList = component$<{ alerts: Alert[]; compact?: boolean }>(
                       <strong
                         class={alert.state === "open" ? "error-text" : ""}
                       >
-                        {ALERT_KIND_LABEL[alert.kind] ||
-                          alert.kind.replaceAll("_", " ")}
+                        {alertLabel(alert)}
                       </strong>
                       <small>
                         #{alert.id} · {alert.state}
@@ -205,7 +279,24 @@ export const History = component$<{
   alerts: Alert[];
   from: string;
   to: string;
+  revision: number;
 }>((props) => {
+  // The series carries no sensor status: out-of-range and fault spans come
+  // from the logger's sensor_fault ring records (firmware 2.2 only).
+  const faultUrl = useComputed$(() =>
+    props.device.capabilities?.protocol === 2
+      ? devicePath(
+          props.device.device_id,
+          `/events?${query({ source: "record", event: "sensor_fault", to: props.to, limit: 1000 })}`,
+        )
+      : "",
+  );
+  const rev = useComputed$(() => props.revision);
+  const faultEvents = useJson<{ events: DeviceEvent[] }>(faultUrl, rev);
+  const faults = faultSpans(faultEvents.state.data?.events || []);
+  const bucketMs = (props.series?.bucket_minutes || 0) * 60000;
+  const faultOf = (point: SeriesPoint) =>
+    faultAt(faults, Date.parse(point.recorded_at), bucketMs);
   const reading = props.device.latest_received;
   const lf = props.device.desired_config?.lf?.split(":").map(Number);
   const expected =
@@ -224,7 +315,14 @@ export const History = component$<{
     ? (props.series?.limits?.max ?? null)
     : props.device.max_limit;
   const points = props.series?.points || [];
+  const levelPoints = points.map((point) =>
+    faultOf(point) ? { ...point, gwl: null as unknown as number } : point,
+  );
+  const faultCount =
+    points.length - levelPoints.filter((p) => p.gwl != null).length;
   const hasSolar = points.some((p) => p.solar_v != null);
+  const hasBattery = points.some((p) => p.battery_v != null);
+  const rev2 = props.device.capabilities?.protocol === 2;
   const hasCsq = points.some((p) => p.csq != null);
   const hasRssi = points.some((p) => p.rssi != null);
   return (
@@ -235,7 +333,8 @@ export const History = component$<{
             title={converted ? datumLabel(datum) : "Groundwater level"}
             unit={datumUnit(datum)}
             metric="gwl"
-            points={props.series.points}
+            points={levelPoints}
+            faults={faults}
             from={props.from}
             to={props.to}
             gapMinutes={gap}
@@ -252,7 +351,24 @@ export const History = component$<{
             vertical lines: alert opened. Line breaks: intervals longer than{" "}
             {gap} min
             {interval ? "" : " (3 min assumed; logging interval unavailable)"}.
+            {faults.length > 0 &&
+              " Red dotted spans: the logger reported a sensor fault or an out-of-range reading; levels there are not plotted."}
           </p>
+          {faultEvents.state.error && (
+            <p class="notice error-text" role="alert">
+              Sensor fault records could not be loaded (
+              {faultEvents.state.error}): out-of-range readings cannot be marked
+              on this chart.
+            </p>
+          )}
+          {faultCount > 0 && (
+            <p class="notice error-text">
+              {faultCount} point{faultCount === 1 ? "" : "s"} in this range{" "}
+              {faultCount === 1 ? "falls" : "fall"} inside a sensor fault and{" "}
+              {faultCount === 1 ? "is" : "are"} not plotted as a level: out of
+              range, possible sensor failure.
+            </p>
+          )}
           {converted && (props.series.unconverted || 0) > 0 && (
             <p class="notice">
               {props.series.unconverted} reading
@@ -266,48 +382,61 @@ export const History = component$<{
               or a larger bucket. CSV exports observations for the full range.
             </p>
           )}
-          <div class="secondary-charts">
-            <HistoryChart
-              title="Battery"
-              unit="V"
-              metric="battery_v"
-              points={props.series.points}
-              from={props.from}
-              to={props.to}
-              gapMinutes={gap}
-            />
-            <HistoryChart
-              title="Solar"
-              unit={hasSolar ? "V" : "V · not reported in this range"}
-              metric="solar_v"
-              points={props.series.points}
-              from={props.from}
-              to={props.to}
-              gapMinutes={gap}
-            />
-            {(hasRssi || !hasCsq) && (
+          {rev2 && !hasBattery && !hasSolar && !hasCsq ? (
+            <p>
+              Firmware 2.2 readings carry no power or signal values: battery,
+              solar and signal history are on{" "}
+              <a
+                href={`#${query({ device: props.device.device_id, view: "health" })}`}
+              >
+                Health
+              </a>
+              .
+            </p>
+          ) : (
+            <div class="secondary-charts">
               <HistoryChart
-                title="Signal strength"
-                unit="RSSI · 0–100, not dBm"
-                metric="rssi"
+                title="Battery"
+                unit="V"
+                metric="battery_v"
                 points={props.series.points}
                 from={props.from}
                 to={props.to}
                 gapMinutes={gap}
               />
-            )}
-            {hasCsq && (
               <HistoryChart
-                title="Signal quality"
-                unit="CSQ · 0–31"
-                metric="csq"
+                title="Solar"
+                unit={hasSolar ? "V" : "V · not reported in this range"}
+                metric="solar_v"
                 points={props.series.points}
                 from={props.from}
                 to={props.to}
                 gapMinutes={gap}
               />
-            )}
-          </div>
+              {(hasRssi || !hasCsq) && (
+                <HistoryChart
+                  title="Signal strength"
+                  unit="RSSI · 0–100, not dBm"
+                  metric="rssi"
+                  points={props.series.points}
+                  from={props.from}
+                  to={props.to}
+                  gapMinutes={gap}
+                />
+              )}
+              {hasCsq && (
+                <HistoryChart
+                  title="Signal quality"
+                  unit="CSQ · 0–31"
+                  metric="csq"
+                  points={props.series.points}
+                  from={props.from}
+                  to={props.to}
+                  gapMinutes={gap}
+                />
+              )}
+            </div>
+          )}
           <details>
             <summary>
               Measurement data ({props.series.points.length} points)
@@ -336,7 +465,19 @@ export const History = component$<{
                       <tr key={`${point.recorded_at}-${index}`}>
                         <td>{stamp(point.recorded_at)}</td>
                         <td>
-                          {number(point.gwl, converted ? 3 : 2)}
+                          {faultOf(point) ? (
+                            <>
+                              <span class="error-text">
+                                {faultOf(point)!.text}
+                              </span>
+                              <small>
+                                untrusted reading{" "}
+                                {number(point.gwl, converted ? 3 : 2)}
+                              </small>
+                            </>
+                          ) : (
+                            number(point.gwl, converted ? 3 : 2)
+                          )}
                           {converted && point.raw_gwl != null && (
                             <small>raw {number(point.raw_gwl, 3)} m</small>
                           )}
@@ -463,10 +604,9 @@ export const RawLog = component$<{ device: string; revision: number }>(
             </a>
           </p>
         )}
-        <p>
-          Operator-only evidence. The latest 100 matching deliveries are shown.
-          Unattributed and rejected messages appear in the all-deliveries view.
-          Self-test output appears on the testresults topic.
+        <p class="muted">
+          The latest 100 matching deliveries, newest first
+          {props.device ? "" : ", including unattributed and quarantined ones"}.
         </p>
         <form
           class="toolbar"
@@ -513,7 +653,16 @@ export const RawLog = component$<{ device: string; revision: number }>(
             <details key={`${delivery.received_at}-${index}`}>
               <summary>
                 {stamp(delivery.received_at)} · {delivery.topic}
-                <span class="state">{delivery.state}</span>
+                <span
+                  class={
+                    delivery.state === "accepted" ? "state" : "state error-text"
+                  }
+                >
+                  {delivery.state}
+                </span>
+                {delivery.state !== "accepted" && delivery.reason && (
+                  <small class="error-text">{delivery.reason}</small>
+                )}
               </summary>
               <dl class="facts">
                 <div>

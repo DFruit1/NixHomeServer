@@ -406,6 +406,11 @@ td small {
 .threshold-band {
   fill: var(--accent-soft);
 }
+.fault-band {
+  fill: var(--danger-soft);
+  stroke: var(--danger);
+  stroke-dasharray: 2 3;
+}
 .limit-line {
   stroke: var(--accent);
   stroke-dasharray: 6 4;
@@ -454,6 +459,19 @@ td small {
   gap: var(--space-4) var(--space-5);
   margin-block: var(--space-4);
 }
+.ack-data {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0 var(--space-3);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-small);
+}
+.ack-data div {
+  display: contents;
+}
+.ack-data dd {
+  overflow-wrap: anywhere;
+}
 dt {
   color: var(--muted);
   font-size: var(--text-small);
@@ -493,6 +511,17 @@ details .table-scroll {
 .command-section {
   padding-block: var(--space-5);
   border-block-end: 1px solid var(--border);
+}
+.typed-action + .typed-action,
+.command-section > button + .typed-action {
+  margin-block-start: var(--space-5);
+}
+.typed-action .field {
+  flex: 0 1 18rem;
+}
+.typed-action > p {
+  margin-block: 0 var(--space-2);
+  max-inline-size: 70ch;
 }
 .state {
   display: inline-block;
@@ -722,6 +751,15 @@ progress {
 }
 .changed {
   color: var(--warning);
+}
+.problem-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+.problem-list li + li {
+  margin-block-start: var(--space-1);
 }
 .diff-list {
   margin: 0;

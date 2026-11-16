@@ -193,6 +193,127 @@ add_batch("bad frame crc8", batch(0x6A1B2C3D, 9000, 0, [bytes(f) for f in damage
 add_batch("every type", batch(0x6A1B2C3D, 20000, 0, all_frames),
           {"ok": True, "frame_seqs": [r["seq"] for r in records]})
 
+# ---- downlink commands -----------------------------------------------------
+# Every command shape the server builds (rev2_commands::wire), written here
+# independently: contract envelope key order, compact JSON, raw UTF-8, integers
+# without a fraction, floats in the shortest round-trip form with serde's
+# exponent spelling. The Rust test `server_command_vectors` compares its own
+# wire byte for byte. To prove the logger accepts them, stage each `wire` (after
+# its `prelude`) with gwl_proto_stage() on its channel in a firmware snapshot,
+# using the fake application of the firmware's tests/proto_cmd.c, and check
+# gwl_proto_run_next() acks `expect` without a reason.
+
+U32_MAX = 2**32 - 1
+
+
+def num(value):
+    if isinstance(value, bool) or not isinstance(value, float):
+        return json.dumps(value)
+    text = repr(value)
+    # serde (ryu) writes 1e-7 and -3.4e+38 where Python writes 1e-07 and
+    # -3.4e+38; both use exponents for these magnitudes (avoid 1e16..1e21
+    # and 1e-5..1e-4, where only one of them does).
+    return text.replace("e-0", "e-")
+
+
+def dump(value):
+    if isinstance(value, dict):
+        # serde_json (no preserve_order) writes object keys sorted; the
+        # logger looks keys up by name, so their order is not significant.
+        return "{" + ",".join(json.dumps(k) + ":" + dump(v) for k, v in sorted(value.items())) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(dump(v) for v in value) + "]"
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if value is None:
+        return "null"
+    return num(value)
+
+
+CHANNEL = {"settings": "config/set"}
+DANGER = ["reboot", "wipe_sd", "wipe_mram", "factory_reset", "recover_mram",
+          "disable_logging", "enter_bootloader", "confirm"]
+commands = []
+
+
+def cmd(name, op, args=None, cid=42, exp=T + 7 * 86400, replace=False, publish_t=None,
+        expect="ok", unsaved=0, prelude=None, refused=None):
+    """`expect`: the logger's ack status with the fake application of the
+    firmware host tests (every handler ok, nonce 9F3A01C2). `refused`: the
+    server refuses to queue it (reason fragment); then there is no wire."""
+    sent = dict(args or {})
+    if op == "sync_time":
+        sent = {"t": publish_t}
+    wire = '{"v":2,"id":%d,"exp":%d,"op":%s' % (cid, exp, json.dumps(op))
+    if replace:
+        wire += ',"replace":true'
+    if sent:
+        wire += ',"args":' + dump(sent)
+    wire += "}"
+    channel = CHANNEL.get(op, "cmd/danger" if op in DANGER else "cmd/basic")
+    entry = {"name": name, "op": op, "args": args or {}, "replace": replace, "id": cid,
+             "exp": exp, "now": T, "channel": channel}
+    if publish_t is not None:
+        entry["publish_t"] = publish_t
+    if refused:
+        entry["refused"] = refused
+    else:
+        assert len(wire.encode()) <= 1024, name
+        entry.update({"wire": wire, "bytes": len(wire.encode()), "expect": expect})
+    if unsaved:
+        entry["unsaved"] = unsaved
+    if prelude:
+        entry["prelude"] = prelude
+    commands.append(entry)
+
+
+for op in ["self_test", "get_status", "get_settings", "get_debug", "flush_mqtt", "flush_sd",
+           "clear_error_latch", "enable_logging"]:
+    cmd(op, op)
+cmd("flush_mqtt range at the u32 limits", "flush_mqtt",
+    {"log_id": U32_MAX, "from_seq": 1, "to_seq": U32_MAX}, cid=U32_MAX, exp=U32_MAX)
+cmd("file_list page", "file_list", {"path": "/GWL/6A1B2C3D", "page": 65535})
+LONG_PATH = "/GWL/6A1B2C3D/" + "D" * 41 + "/B01.BIN"
+assert len(LONG_PATH) == 63
+cmd("file_chunk 63-byte path", "file_chunk", {"path": LONG_PATH, "off": U32_MAX, "len": 1024})
+cmd("file_chunk 64-byte path", "file_chunk", {"path": LONG_PATH + "X", "off": 0, "len": 1},
+    refused="63 bytes")
+cmd("sync_time carries the publish time", "sync_time", publish_t=T + 180)
+cmd("settings contract example", "settings",
+    {"read_s": 900, "send_s": 86400, "hi": 10.5, "hi_hys": 0.2})
+cmd("settings every key, worst case", "settings",
+    {"read_s": 2332800, "send_s": 2332800, "gps_mode": 2, "gps_val": 2332800,
+     "tilt_mode": 1, "tilt_val": 255, "start": T + 366 * 86400,
+     "fac": [-3.4e38, 1e-07, -0.00125, 123456.789], "tap": 0,
+     "tap_sens": 10, "gps_sens": 0, "lo": -1234567.875, "hi": 1234567.875,
+     "lo_hys": 0.0, "hi_hys": 1234567.875, "loc": "\u00fc" * 16, "proj": "\u00e9" * 16,
+     "text": '"' * 20 + "\\" * 20 + "x" * 23 + "\n", "partial": 1, "utc_off": -720,
+     "led": 1, "attempts": 10, "listen_s": 600},
+    cid=U32_MAX, exp=U32_MAX, replace=True)
+cmd("settings unset limits, modes off, text", "settings",
+    {"lo": None, "hi": None, "gps_mode": 3, "gps_val": 0, "tilt_mode": 0, "tilt_val": 0,
+     "utc_off": 840, "text": "Bohrung 7 \U0001F30A\nZeile zwei", "loc": "", "fac": [0, 1, 1, 0]})
+cmd("settings start too far ahead", "settings", {"start": T + 367 * 86400},
+    refused="366 days")
+cmd("settings text two newlines", "settings", {"text": "a\nb\nc"}, refused="newline")
+cmd("settings loc 33 bytes", "settings", {"loc": "\u00fc" * 16 + "x"}, refused="loc")
+cmd("settings gps value out of range", "settings", {"gps_mode": 2, "gps_val": 599},
+    refused="gps_val")
+cmd("settings fractional integer", "settings", {"read_s": 900.0}, refused="read_s")
+cmd("reboot", "reboot", exp=T + 86400)
+for op in ["wipe_sd", "wipe_mram", "factory_reset", "recover_mram", "disable_logging",
+           "enter_bootloader"]:
+    cmd(op, op, exp=T + 86400, expect="challenge")
+for op in ["erase_keys", "rotate_keys", "firmware_update"]:
+    cmd(op, op, exp=T + 86400, refused="not supported")
+cmd("wipe_mram with unsaved data", "wipe_mram", cid=44, exp=T + 86400, expect="challenge",
+    unsaved=12)
+cmd("confirm with the unsaved count", "confirm",
+    {"ref": 44, "nonce": "9F3A01C2", "confirm_unsaved": 12}, cid=45, exp=T + 120,
+    unsaved=12, prelude="wipe_mram with unsaved data")
+cmd("confirm without unsaved data", "confirm", {"ref": 42, "nonce": "9F3A01C2"}, cid=46,
+    exp=T + 120, prelude="wipe_sd")
+
 file_body = b"GWF1" + struct.pack("<IIIH", 77, 2048, 5000, 5) + b"hello"
 file_chunk = file_body + struct.pack("<I", zlib.crc32(file_body))
 
@@ -204,6 +325,7 @@ json.dump({
         "name": "five bytes at 2048", "payload_hex": file_chunk.hex().upper(),
         "expect": {"command_id": 77, "offset": 2048, "total_size": 5000, "data_hex": b"hello".hex().upper()},
     }],
+    "commands": commands,
     "tlv": {"payload_hex": TLV.hex().upper(),
             "expect": {"read_s": 900, "send_s": 86400, "hi": 10.5, "loc": "Bore 7",
                        "tap_sens": 5}},

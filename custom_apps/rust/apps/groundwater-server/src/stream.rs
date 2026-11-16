@@ -284,12 +284,8 @@ pub fn parse_batch(bytes: &[u8]) -> Result<Batch, StreamError> {
             frame.pos = Some(header.start_pos.wrapping_add(frame.offset as u32));
         }
     }
-    // The firmware sends a damaged run in items of at most
-    // DAMAGED_ITEM_MAX bytes, and counts each item in frame_count.
-    let damaged_items: usize = issues
-        .iter()
-        .map(|issue| issue.length.div_ceil(DAMAGED_ITEM_MAX).max(1))
-        .sum();
+    // The firmware counts each damaged item in frame_count.
+    let damaged_items = issues.len();
     if frames.len() + damaged_items != usize::from(header.frame_count) {
         warnings.push(format!(
             "header says {} frames, found {} valid and {} damaged",
@@ -317,25 +313,25 @@ pub fn parse_batch(bytes: &[u8]) -> Result<Batch, StreamError> {
 }
 
 /// Parses a frame starting at `at`, verifying its CRC-8.
-fn frame_at(area: &[u8], at: usize) -> Result<Frame, (&'static str, usize, Option<u32>)> {
+fn frame_at(area: &[u8], at: usize) -> Result<Frame, (&'static str, Option<u32>)> {
     let rest = &area[at..];
     if rest.len() < FRAME_OVERHEAD {
-        return Err(("truncated-frame", rest.len(), None));
+        return Err(("truncated-frame", None));
     }
     if rest[..2] != FRAME_MAGIC {
-        return Err(("bad-frame-magic", 1, None));
+        return Err(("bad-frame-magic", None));
     }
     let length = usize::from(rest[3]);
     let size = length + FRAME_OVERHEAD;
     let seq = u32_at(rest, 4);
     if rest.len() < size {
-        return Err(("truncated-frame", rest.len(), Some(seq)));
+        return Err(("truncated-frame", Some(seq)));
     }
     if rest[2] == 0xFF {
-        return Err(("reserved-type-255", size, Some(seq)));
+        return Err(("reserved-type-255", Some(seq)));
     }
     if crc8_autosar(&rest[2..8 + length]) != rest[8 + length] {
-        return Err(("bad-crc8", size, Some(seq)));
+        return Err(("bad-crc8", Some(seq)));
     }
     Ok(Frame {
         offset: at,
@@ -347,11 +343,12 @@ fn frame_at(area: &[u8], at: usize) -> Result<Frame, (&'static str, usize, Optio
     })
 }
 
-/// Splits a frame area. A damaged frame whose length still lands on a valid
-/// next frame (or the end) is skipped as one unit; otherwise the decoder
-/// resynchronises at the next offset holding a CRC-valid frame (Rev2 "Faults
-/// and recovery": "Decoders resynchronise at the next frame with valid magic,
-/// CRC and the next expected sequence").
+/// Splits a frame area exactly as the firmware cuts it (`gwl_batch.c`
+/// `range_peek`): bytes that are not a CRC-valid frame form one damaged item
+/// that ends at the first later offset holding a CRC-valid frame, and is at
+/// most [`DAMAGED_ITEM_MAX`] bytes long. A damaged length byte is never
+/// trusted (Rev2 "Faults and recovery": decoders resynchronise on magic and
+/// CRC), so a valid frame right after a damaged one is never skipped.
 pub fn split_frames(area: &[u8]) -> (Vec<Frame>, Vec<FrameIssue>) {
     let mut frames = Vec::new();
     let mut issues = Vec::new();
@@ -362,32 +359,18 @@ pub fn split_frames(area: &[u8]) -> (Vec<Frame>, Vec<FrameIssue>) {
                 at += frame.size();
                 frames.push(frame);
             }
-            Err((code, size, claimed_seq)) => {
-                // Same-length skip: keeps the next frame aligned when only
-                // payload bytes were damaged.
-                let next = at + size;
-                if (code == "bad-crc8" || code == "reserved-type-255")
-                    && (next == area.len() || frame_at(area, next).is_ok())
-                {
-                    issues.push(FrameIssue {
-                        offset: at,
-                        length: size,
-                        code,
-                        claimed_seq,
-                    });
-                    at = next;
-                    continue;
-                }
-                let resync = (at + 1..area.len())
-                    .find(|&candidate| frame_at(area, candidate).is_ok())
-                    .unwrap_or(area.len());
+            Err((code, claimed_seq)) => {
+                let limit = (area.len() - at).min(DAMAGED_ITEM_MAX);
+                let length = (1..limit)
+                    .find(|&skip| frame_at(area, at + skip).is_ok())
+                    .unwrap_or(limit);
                 issues.push(FrameIssue {
                     offset: at,
-                    length: resync - at,
+                    length,
                     code,
                     claimed_seq,
                 });
-                at = resync;
+                at += length;
             }
         }
     }
@@ -596,6 +579,40 @@ mod tests {
         assert_eq!(parsed.frames[0].seq, 3);
         assert_eq!(parsed.issues[0].offset, 0);
         assert_eq!(parsed.issues[0].length, 16);
+    }
+
+    // Losing a CRC-valid frame is permanent: a resend repeats the same bytes.
+    // A damaged length that happens to point at a later valid frame must not
+    // swallow the valid frame in between (Rev2: resynchronise on magic and
+    // CRC, never on a damaged length).
+    #[test]
+    fn a_damaged_length_never_swallows_the_next_valid_frame() {
+        let mut bad = frame(12, 1, &[0x10, 0x27, 0, 0, 1, 0x7B, 0]);
+        bad[3] = 23; // 16-byte frame now claims 32 bytes: itself plus the next
+        let middle = frame(12, 2, &[0x11, 0x27, 0, 0, 1, 0x7B, 0]);
+        let last = frame(12, 3, &[0x12, 0x27, 0, 0, 1, 0x7B, 0]);
+        let parsed = parse_batch(&batch(1, 0, 0, &[bad, middle, last])).unwrap();
+        assert_eq!(
+            parsed.frames.iter().map(|f| f.seq).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(parsed.issues.len(), 1);
+        assert_eq!((parsed.issues[0].offset, parsed.issues[0].length), (0, 16));
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    }
+
+    // The firmware cuts a damaged run into items of at most 264 bytes, each
+    // counted in frame_count; the decoder must count them the same way.
+    #[test]
+    fn a_long_damaged_run_is_counted_in_firmware_sized_items() {
+        let mut area = vec![0x55u8; 600];
+        area.extend(frame(12, 9, &[0, 0, 0, 0, 1, 1, 0]));
+        let (frames, issues) = split_frames(&area);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(
+            issues.iter().map(|i| i.length).collect::<Vec<_>>(),
+            vec![264, 264, 72]
+        );
     }
 
     #[test]

@@ -469,6 +469,520 @@
    }
   }
  ],
+ "commands": [
+  {
+   "name": "self_test",
+   "op": "self_test",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763904800,\"op\":\"self_test\"}",
+   "bytes": 49,
+   "expect": "ok"
+  },
+  {
+   "name": "get_status",
+   "op": "get_status",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763904800,\"op\":\"get_status\"}",
+   "bytes": 50,
+   "expect": "ok"
+  },
+  {
+   "name": "get_settings",
+   "op": "get_settings",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763904800,\"op\":\"get_settings\"}",
+   "bytes": 52,
+   "expect": "ok"
+  },
+  {
+   "name": "get_debug",
+   "op": "get_debug",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763904800,\"op\":\"get_debug\"}",
+   "bytes": 49,
+   "expect": "ok"
+  },
+  {
+   "name": "flush_mqtt",
+   "op": "flush_mqtt",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763904800,\"op\":\"flush_mqtt\"}",
+   "bytes": 50,
+   "expect": "ok"
+  },
+  {
+   "name": "flush_sd",
+   "op": "flush_sd",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763904800,\"op\":\"flush_sd\"}",
+   "bytes": 48,
+   "expect": "ok"
+  },
+  {
+   "name": "clear_error_latch",
+   "op": "clear_error_latch",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763904800,\"op\":\"clear_error_latch\"}",
+   "bytes": 57,
+   "expect": "ok"
+  },
+  {
+   "name": "enable_logging",
+   "op": "enable_logging",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763904800,\"op\":\"enable_logging\"}",
+   "bytes": 54,
+   "expect": "ok"
+  },
+  {
+   "name": "flush_mqtt range at the u32 limits",
+   "op": "flush_mqtt",
+   "args": {
+    "log_id": 4294967295,
+    "from_seq": 1,
+    "to_seq": 4294967295
+   },
+   "replace": false,
+   "id": 4294967295,
+   "exp": 4294967295,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "wire": "{\"v\":2,\"id\":4294967295,\"exp\":4294967295,\"op\":\"flush_mqtt\",\"args\":{\"from_seq\":1,\"log_id\":4294967295,\"to_seq\":4294967295}}",
+   "bytes": 120,
+   "expect": "ok"
+  },
+  {
+   "name": "file_list page",
+   "op": "file_list",
+   "args": {
+    "path": "/GWL/6A1B2C3D",
+    "page": 65535
+   },
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763904800,\"op\":\"file_list\",\"args\":{\"page\":65535,\"path\":\"/GWL/6A1B2C3D\"}}",
+   "bytes": 94,
+   "expect": "ok"
+  },
+  {
+   "name": "file_chunk 63-byte path",
+   "op": "file_chunk",
+   "args": {
+    "path": "/GWL/6A1B2C3D/DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD/B01.BIN",
+    "off": 4294967295,
+    "len": 1024
+   },
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763904800,\"op\":\"file_chunk\",\"args\":{\"len\":1024,\"off\":4294967295,\"path\":\"/GWL/6A1B2C3D/DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD/B01.BIN\"}}",
+   "bytes": 160,
+   "expect": "ok"
+  },
+  {
+   "name": "file_chunk 64-byte path",
+   "op": "file_chunk",
+   "args": {
+    "path": "/GWL/6A1B2C3D/DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD/B01.BINX",
+    "off": 0,
+    "len": 1
+   },
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "refused": "63 bytes"
+  },
+  {
+   "name": "sync_time carries the publish time",
+   "op": "sync_time",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "publish_t": 1763300180,
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763904800,\"op\":\"sync_time\",\"args\":{\"t\":1763300180}}",
+   "bytes": 73,
+   "expect": "ok"
+  },
+  {
+   "name": "settings contract example",
+   "op": "settings",
+   "args": {
+    "read_s": 900,
+    "send_s": 86400,
+    "hi": 10.5,
+    "hi_hys": 0.2
+   },
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "config/set",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763904800,\"op\":\"settings\",\"args\":{\"hi\":10.5,\"hi_hys\":0.2,\"read_s\":900,\"send_s\":86400}}",
+   "bytes": 108,
+   "expect": "ok"
+  },
+  {
+   "name": "settings every key, worst case",
+   "op": "settings",
+   "args": {
+    "read_s": 2332800,
+    "send_s": 2332800,
+    "gps_mode": 2,
+    "gps_val": 2332800,
+    "tilt_mode": 1,
+    "tilt_val": 255,
+    "start": 1794922400,
+    "fac": [
+     -3.4e+38,
+     1e-07,
+     -0.00125,
+     123456.789
+    ],
+    "tap": 0,
+    "tap_sens": 10,
+    "gps_sens": 0,
+    "lo": -1234567.875,
+    "hi": 1234567.875,
+    "lo_hys": 0.0,
+    "hi_hys": 1234567.875,
+    "loc": "\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc",
+    "proj": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+    "text": "\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\xxxxxxxxxxxxxxxxxxxxxxx\n",
+    "partial": 1,
+    "utc_off": -720,
+    "led": 1,
+    "attempts": 10,
+    "listen_s": 600
+   },
+   "replace": true,
+   "id": 4294967295,
+   "exp": 4294967295,
+   "now": 1763300000,
+   "channel": "config/set",
+   "wire": "{\"v\":2,\"id\":4294967295,\"exp\":4294967295,\"op\":\"settings\",\"replace\":true,\"args\":{\"attempts\":10,\"fac\":[-3.4e+38,1e-7,-0.00125,123456.789],\"gps_mode\":2,\"gps_sens\":0,\"gps_val\":2332800,\"hi\":1234567.875,\"hi_hys\":1234567.875,\"led\":1,\"listen_s\":600,\"lo\":-1234567.875,\"lo_hys\":0.0,\"loc\":\"\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\",\"partial\":1,\"proj\":\"\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\",\"read_s\":2332800,\"send_s\":2332800,\"start\":1794922400,\"tap\":0,\"tap_sens\":10,\"text\":\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\xxxxxxxxxxxxxxxxxxxxxxx\\n\",\"tilt_mode\":1,\"tilt_val\":255,\"utc_off\":-720}}",
+   "bytes": 601,
+   "expect": "ok"
+  },
+  {
+   "name": "settings unset limits, modes off, text",
+   "op": "settings",
+   "args": {
+    "lo": null,
+    "hi": null,
+    "gps_mode": 3,
+    "gps_val": 0,
+    "tilt_mode": 0,
+    "tilt_val": 0,
+    "utc_off": 840,
+    "text": "Bohrung 7 \ud83c\udf0a\nZeile zwei",
+    "loc": "",
+    "fac": [
+     0,
+     1,
+     1,
+     0
+    ]
+   },
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "config/set",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763904800,\"op\":\"settings\",\"args\":{\"fac\":[0,1,1,0],\"gps_mode\":3,\"gps_val\":0,\"hi\":null,\"lo\":null,\"loc\":\"\",\"text\":\"Bohrung 7 \ud83c\udf0a\\nZeile zwei\",\"tilt_mode\":0,\"tilt_val\":0,\"utc_off\":840}}",
+   "bytes": 204,
+   "expect": "ok"
+  },
+  {
+   "name": "settings start too far ahead",
+   "op": "settings",
+   "args": {
+    "start": 1795008800
+   },
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "config/set",
+   "refused": "366 days"
+  },
+  {
+   "name": "settings text two newlines",
+   "op": "settings",
+   "args": {
+    "text": "a\nb\nc"
+   },
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "config/set",
+   "refused": "newline"
+  },
+  {
+   "name": "settings loc 33 bytes",
+   "op": "settings",
+   "args": {
+    "loc": "\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fcx"
+   },
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "config/set",
+   "refused": "loc"
+  },
+  {
+   "name": "settings gps value out of range",
+   "op": "settings",
+   "args": {
+    "gps_mode": 2,
+    "gps_val": 599
+   },
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "config/set",
+   "refused": "gps_val"
+  },
+  {
+   "name": "settings fractional integer",
+   "op": "settings",
+   "args": {
+    "read_s": 900.0
+   },
+   "replace": false,
+   "id": 42,
+   "exp": 1763904800,
+   "now": 1763300000,
+   "channel": "config/set",
+   "refused": "read_s"
+  },
+  {
+   "name": "reboot",
+   "op": "reboot",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763386400,
+   "now": 1763300000,
+   "channel": "cmd/danger",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763386400,\"op\":\"reboot\"}",
+   "bytes": 46,
+   "expect": "ok"
+  },
+  {
+   "name": "wipe_sd",
+   "op": "wipe_sd",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763386400,
+   "now": 1763300000,
+   "channel": "cmd/danger",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763386400,\"op\":\"wipe_sd\"}",
+   "bytes": 47,
+   "expect": "challenge"
+  },
+  {
+   "name": "wipe_mram",
+   "op": "wipe_mram",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763386400,
+   "now": 1763300000,
+   "channel": "cmd/danger",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763386400,\"op\":\"wipe_mram\"}",
+   "bytes": 49,
+   "expect": "challenge"
+  },
+  {
+   "name": "factory_reset",
+   "op": "factory_reset",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763386400,
+   "now": 1763300000,
+   "channel": "cmd/danger",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763386400,\"op\":\"factory_reset\"}",
+   "bytes": 53,
+   "expect": "challenge"
+  },
+  {
+   "name": "recover_mram",
+   "op": "recover_mram",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763386400,
+   "now": 1763300000,
+   "channel": "cmd/danger",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763386400,\"op\":\"recover_mram\"}",
+   "bytes": 52,
+   "expect": "challenge"
+  },
+  {
+   "name": "disable_logging",
+   "op": "disable_logging",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763386400,
+   "now": 1763300000,
+   "channel": "cmd/danger",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763386400,\"op\":\"disable_logging\"}",
+   "bytes": 55,
+   "expect": "challenge"
+  },
+  {
+   "name": "enter_bootloader",
+   "op": "enter_bootloader",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763386400,
+   "now": 1763300000,
+   "channel": "cmd/danger",
+   "wire": "{\"v\":2,\"id\":42,\"exp\":1763386400,\"op\":\"enter_bootloader\"}",
+   "bytes": 56,
+   "expect": "challenge"
+  },
+  {
+   "name": "erase_keys",
+   "op": "erase_keys",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763386400,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "refused": "not supported"
+  },
+  {
+   "name": "rotate_keys",
+   "op": "rotate_keys",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763386400,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "refused": "not supported"
+  },
+  {
+   "name": "firmware_update",
+   "op": "firmware_update",
+   "args": {},
+   "replace": false,
+   "id": 42,
+   "exp": 1763386400,
+   "now": 1763300000,
+   "channel": "cmd/basic",
+   "refused": "not supported"
+  },
+  {
+   "name": "wipe_mram with unsaved data",
+   "op": "wipe_mram",
+   "args": {},
+   "replace": false,
+   "id": 44,
+   "exp": 1763386400,
+   "now": 1763300000,
+   "channel": "cmd/danger",
+   "wire": "{\"v\":2,\"id\":44,\"exp\":1763386400,\"op\":\"wipe_mram\"}",
+   "bytes": 49,
+   "expect": "challenge",
+   "unsaved": 12
+  },
+  {
+   "name": "confirm with the unsaved count",
+   "op": "confirm",
+   "args": {
+    "ref": 44,
+    "nonce": "9F3A01C2",
+    "confirm_unsaved": 12
+   },
+   "replace": false,
+   "id": 45,
+   "exp": 1763300120,
+   "now": 1763300000,
+   "channel": "cmd/danger",
+   "wire": "{\"v\":2,\"id\":45,\"exp\":1763300120,\"op\":\"confirm\",\"args\":{\"confirm_unsaved\":12,\"nonce\":\"9F3A01C2\",\"ref\":44}}",
+   "bytes": 105,
+   "expect": "ok",
+   "unsaved": 12,
+   "prelude": "wipe_mram with unsaved data"
+  },
+  {
+   "name": "confirm without unsaved data",
+   "op": "confirm",
+   "args": {
+    "ref": 42,
+    "nonce": "9F3A01C2"
+   },
+   "replace": false,
+   "id": 46,
+   "exp": 1763300120,
+   "now": 1763300000,
+   "channel": "cmd/danger",
+   "wire": "{\"v\":2,\"id\":46,\"exp\":1763300120,\"op\":\"confirm\",\"args\":{\"nonce\":\"9F3A01C2\",\"ref\":42}}",
+   "bytes": 84,
+   "expect": "ok",
+   "prelude": "wipe_sd"
+  }
+ ],
  "tlv": {
   "payload_hex": "0104840300000204805101000B04000028410E06426F72652037",
   "expect": {

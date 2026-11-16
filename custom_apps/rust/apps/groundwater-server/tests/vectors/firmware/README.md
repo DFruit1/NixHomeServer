@@ -11,6 +11,11 @@ the firmware worktrees; regenerate there, never edit here.
 
 SHA-256: records `672de1aa…5e1d`, batches `a10a8fc5…a884`, json `84a50192…a430b`.
 
+Re-checked 2026-11-16 against the merged firmware branch `feat/fw-rev2` @
+c105daf (`docs/protocol/vectors/`): rebuilding the three generators from a
+`git archive` snapshot and running them with `--write` reproduces all three
+files byte for byte, so the copies here are current.
+
 Known contract point: Type 14 `firmware_version` is packed
 `major<<16 | minor<<8 | patch` (build in bits 24-31), not the byte order
 "major, minor, patch, build" the Rev2 table suggests; the server follows the

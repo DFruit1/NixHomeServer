@@ -312,6 +312,9 @@ pub fn page_view() -> crate::ui::FleetView {
                 csq: None,
                 sample_count: 1,
                 conflict: false,
+                sensor_status: None,
+                fault_count: 0,
+                fault_kinds: Vec::new(),
             });
             observations.push(*observation);
         }
@@ -407,6 +410,7 @@ fn summary_of(observation: &crate::adapter::Observation) -> crate::db::Observati
         quality_reasons: observation.quality_reasons.clone(),
         duplicate_outcome: "new".to_string(),
         interpretation_version: observation.interpretation_version.clone(),
+        sensor_status: None,
     }
 }
 

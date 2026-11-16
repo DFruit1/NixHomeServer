@@ -23,6 +23,18 @@ these recovery corrections:
   ending at the next CRC-valid frame. They count as damaged items (sequence 0)
   in batch counts; parsers resynchronise using magic and CRC, not damaged lengths.
   Adjacent damaged bytes form one item up to the chunk limit.
+- SD segment header byte 48 (Rev2 "created_time, flags"): bits 0-2 are the
+  time flags of `created_time`; bit 4 `GAP` (frames before `start_pos` were
+  reclaimed before they reached the card); bit 5 `RESTART` (the segment starts
+  at tail because the card did not end where `sd_saved_end` expected, so it
+  may repeat frames of earlier segments; never set on a new log's first
+  segment). Other bits are 0. `first_seq` (offset 36) is the sequence of the
+  segment's first valid frame, 0 when unknown (it starts with damaged bytes).
+- `WIPE_MRAM` / factory reset do **not** zero the metadata zones (Rev2's
+  wording): free space is zeroed first, the new log's Type 14 is written,
+  a switching checkpoint makes it current, then the old frames are zeroed.
+  A power cut leaves either the old log or the new one, never neither; a
+  factory reset cut before its settings change is completed at the next boot.
 
 ## 1. Transport
 
@@ -76,7 +88,10 @@ revision 1 forms for V2.1 units. The broker ACL must allow the new channels.
    so its unsaved-data challenge describes the post-upload state.
 6. Upload: publish pending `alerts`, then flush unsaved ring frames as
    `data/stream` batches (Rev2 "MQTT data/stream"). In fallback mode publish
-   the SD backlog on `reading` / `gps` instead.
+   the SD backlog on `reading` / `gps` instead. With a working ring, lines
+   left in that backlog (written during a ring fault or read-only RECOVERY,
+   or an unsent V2.1 backlog on the card) are also published on `reading` /
+   `gps` after the `data/stream` flush, at most 2 minutes per connection.
 7. Release the held commands, then publish `status` `ready` with `win` = listen window seconds, and keep
    listening for commands for `win` seconds (setting `listen_s`, default 60).
    A pending nonce challenge extends the window up to its expiry.
@@ -112,7 +127,13 @@ use (§5). `reset`: last reset cause `por` | `pin` | `wdg` | `sw` | `bor` | `oth
 ```
 `sd`: `ok` | `missing` | `error` | `full`. `mram`: `ok` | `absent` | `fault` |
 `locked` (Tail Lock) | `recovery`. `log`: `on` | `off`. `gen`: active settings
-generation. `err`: latched error code (Rev2 metadata `last_error`, 0 = none).
+generation. `err`: latched error code (Rev2 metadata `last_error`, 0 = none;
+`clear_error_latch` clears it): 1 MRAM I/O error, 2 MRAM read-back mismatch
+(fault), 3 both checkpoints invalid (read-only RECOVERY), 4 settings lost
+(no slot, no snapshot), 5 one settings slot failed its check, 6 newer
+settings slot lost (rollback), 7 a V2.1 settings page was found on a blank
+MRAM but could not be migrated, so the logger runs on default settings
+(level factors, intervals): send `settings`.
 
 ### alerts
 Common fields `{"v":2,"t":..,"tv":..,"ev":"<event>","seq":<ring seq or omitted>}` plus:
@@ -129,8 +150,27 @@ Common fields `{"v":2,"t":..,"tv":..,"ev":"<event>","seq":<ring seq or omitted>}
 
 Alerts are a notification copy. The authoritative record arrives in
 `data/stream`. Alerts raised while asleep are published at the next connection;
-an alarm entry, impact, sensor fault, power critical or Tail Lock brings the
-next connection forward (subject to the 10 % rule).
+an alarm entry, impact, sensor fault, power critical, MRAM almost full or Tail
+Lock brings the next connection forward (subject to the 10 % rule). A
+`gps_moved` or `orientation` alert connects at once: it is not held by the
+send schedule, the 10 % rule or the back-off after failed connections (owner
+decision 2026-11-16; both are latched, so one occurrence asks once).
+
+`ss` (sensor status, also in Type 0/1/5/17 records and `reading` /
+`test/result`): 0 ok, 1 no sensor / open loop (< 3.5 mA), 2 under-range
+(3.5–3.9 mA), 3 over-range (> 20.5 mA), 4 ADC fault, 5 level factors invalid.
+Statuses 1–4 are sensor faults. Owner decision 2026-11-16: a reading with
+status 2 or 3 usually means a failed or failing sensor, or a level outside
+the sensor's range; show it as "out of range: possible sensor failure",
+saying under- or over-range. Such a reading keeps its status (and the level
+computed from the out-of-range current, which is not trustworthy) in its
+record, and level alarms are **not evaluated** on any reading with status 1–4:
+no `gwl_alarm` enter or exit, the alarm state is frozen until an in-range
+reading. The fault itself is reported by `sensor_fault` (Type 17), which is
+urgent. `ss` in a `sensor_fault` enter is the new fault's status; in an exit
+it is the status that ended. A change from one fault status to another
+(say under-range to over-range) is an exit for the old status followed by an
+enter for the new one, so enter and exit always alternate.
 Impacts are rate limited: at most one Type 11 record and `impact` alert per
 10 minutes. Taps inside that hold-off are not recorded on their own; the
 highest of their peaks is recorded at the first wake after it, with that time.
@@ -181,7 +221,8 @@ batch, and deduplicates frames by `(DEVICE, log_id, seq)`.
 **Encoding.** Binary payloads are sent with `AT+QMTPUBEX` (length-delimited,
 binary-safe). If the modem rejects `AT+QMTPUBEX` (probed at boot), the firmware
 sends the same bytes as uppercase ASCII hex through `AT+QMTPUB`, halving the
-batch size (≤ 732 bytes of frames). The server accepts both: a payload starting
+batch size (≤ 714 bytes of frames, so the hex text of the whole batch stays
+within 1,500 characters; servers accept up to 732). The server accepts both: a payload starting
 with bytes `GWB1`/`GWF1` is binary, one starting with ASCII `47574231`/`47574631`
 is hex.
 
@@ -245,6 +286,11 @@ Keys in `args` (Rev2 TLV settings plus three firmware settings). A missing key k
 | `attempts` | int 1 … 10 (MQTT connect attempts) | 3 | 0x14 |
 | `listen_s` | int 10 … 600 (command window) | 60 | 0x15 |
 
+Floats in `settings` objects (acks, `get_settings`) carry 7 significant
+digits. A request whose values all match the current settings (floats within
+16 units in the last place, so an echo of those 7-digit values matches) is
+acked `ok` with the current `gen`; no new generation is made.
+
 Rule: the whole request is validated first. Any present key with an invalid
 value → `rejected` (`reason":"bad-args"`, `results` names it), nothing changes.
 Unknown keys → `unsupported` in `results`, the rest is applied, status `partial`.
@@ -259,14 +305,14 @@ A change follows Rev2 "Applying a settings change" and the ack carries the new
 | `self_test` | — | ack `ok`, then `test/result` with this `id`; Type 5 record (trigger 2, req_id = id) |
 | `get_status` | — | the `health` object plus `boot`, `head`, `tail`, `sd_saved`, `mqtt_saved`, `log_id`, `last_seq`, `flags` |
 | `get_settings` | — | `{"gen":..,"settings":{...}}` |
-| `get_debug` | — | firmware/runtime details: `info` fields, reset cause, watchdog resets, `last_error`, modem `csq`/`creg`, free RAM |
+| `get_debug` | — | firmware/runtime details: `info` fields, reset cause, watchdog resets, `last_error`, modem `csq`/`creg`, free RAM. `reset_flags`: bits 31–23 the MCU reset flags, bit 8 set when the 32.768 kHz crystal did not start at this boot (the RTC runs from the internal LSI, about ±5 %, corrected at each connection; switching to it invalidates the clock until it is set again), bits 7–0 the reset-loop guard |
 | `flush_mqtt` | optional `{"log_id":L,"from_seq":A,"to_seq":B}` | without args: send unsaved frames now. With args: **resend** that range from MRAM (or from the SD archive when MRAM no longer holds it; batch flag bit2). `data`: `{"frames":n,"batches":m,"first_seq":..,"last_seq":..,"missing":k}` |
 | `flush_sd` | — | save unsaved frames to the SD archive now; `data`: `{"frames":n,"segment":s}` |
-| `file_list` | `{"path":"/GWL","page":0}` | `{"path":..,"files":[["B0000001.BIN",123456],["SUBDIR/",0]],"more":false}` (≤ 16 entries per page) |
+| `file_list` | `{"path":"/GWL","page":0}` | `{"path":..,"files":[["B0000001.BIN",123456],["SUBDIR/",0]],"more":false}` (≤ 16 entries per page). `file_list` and `file_chunk` take any absolute 8.3 path on the card, not only `/GWL` (e.g. `/` or a V2.1 `/String.txt`); both only read. `.`, `..`, `\`, `:` and control characters are refused |
 | `file_chunk` | `{"path":"/GWL/6A1B2C3D/B0000001.BIN","off":0,"len":1024}` | publishes `data/file`; ack `data` `{"off":..,"len":..,"size":..,"crc32":"…"}` |
 | `clear_error_latch` | — | clears `err` and latched SD/MRAM fault states |
 | `enable_logging` | — | resumes logging (Type 16 gap reason 4, anchor) |
-| `sync_time` | `{"t":<UTC s>}` | sets the RTC (source 3) when invalid or > 2 s off; Type 15 |
+| `sync_time` | `{"t":<UTC s>}` | sets the RTC (source 3) when invalid or > 2 s off; Type 15. `t` is advanced by the time the command waited in the logger's queue. `data`: `{"t":..,"tv":..,"set":true\|false}` (the clock afterwards; `set` false when it was already within 2 s). A `t` outside 2024–2099 → `failed`/`bad-args` |
 
 ### cmd/danger
 `reboot` needs no nonce (ack `ok` is published before the reset).
@@ -324,3 +370,7 @@ Every other danger `op` uses the handshake in §7:
   `(device, log_id, seq)`, rebuild Type 0 times from anchors, detect sequence
   gaps and request them with `flush_mqtt` + range.
 - Raise battery and solar alerts itself from `health` / test data.
+- Settings-lost RECOVERY: when `health` reports `mram:"recovery"` with `err`
+  other than 3, send `settings` with `"replace":true` and the last settings the
+  logger acknowledged, once per episode (until a `health` no longer reports
+  it); with none known, ask the operator to send settings.

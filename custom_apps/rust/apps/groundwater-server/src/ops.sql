@@ -86,7 +86,8 @@ CREATE INDEX IF NOT EXISTS alerts_opened_idx ON alerts(opened_at DESC,id DESC);
 
 CREATE OR REPLACE FUNCTION groundwater_alert_severity(kind TEXT) RETURNS TEXT
 LANGUAGE sql IMMUTABLE AS $$
-    SELECT CASE kind WHEN 'solar_low' THEN 'info' ELSE 'warning' END
+    SELECT CASE WHEN kind IN ('power_critical','tail_lock','mram_fault','settings_lost') THEN 'critical'
+        WHEN kind IN ('solar_low','signal_low') THEN 'info' ELSE 'warning' END
 $$;
 
 -- Notifications ---------------------------------------------------------------
@@ -214,9 +215,9 @@ BEGIN
     END;
     RETURN NEW;
 END $$;
+-- Superseded: logger events now open and resolve alerts (alerting.sql),
+-- which notify once per episode whichever copy arrives first.
 DROP TRIGGER IF EXISTS groundwater_event_notify ON device_events;
-CREATE TRIGGER groundwater_event_notify AFTER INSERT ON device_events
-    FOR EACH ROW EXECUTE FUNCTION groundwater_event_notify();
 
 -- Installation datum ------------------------------------------------------------
 -- sensor_depth_m: sensor below top of casing; casing_height_m: top of casing
