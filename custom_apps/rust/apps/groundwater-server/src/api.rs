@@ -444,7 +444,13 @@ async fn events(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
     let stream = futures_util::stream::unfold(
         (
             receiver,
-            tokio::time::interval(Duration::from_secs(15)),
+            // The first keepalive is due after one period, not immediately:
+            // `interval` ticks at once, which interleaved a keepalive with
+            // the first real events (and made the SSE ACL test flaky).
+            tokio::time::interval_at(
+                tokio::time::Instant::now() + Duration::from_secs(15),
+                Duration::from_secs(15),
+            ),
             true,
             db,
             identity,
