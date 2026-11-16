@@ -19,6 +19,8 @@ mod crc;
 mod db;
 #[cfg(test)]
 mod fixtures;
+#[cfg(test)]
+mod followups_tests;
 mod identity;
 mod ingest;
 #[cfg(test)]

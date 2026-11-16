@@ -86,7 +86,7 @@ CREATE INDEX IF NOT EXISTS alerts_opened_idx ON alerts(opened_at DESC,id DESC);
 
 CREATE OR REPLACE FUNCTION groundwater_alert_severity(kind TEXT) RETURNS TEXT
 LANGUAGE sql IMMUTABLE AS $$
-    SELECT CASE WHEN kind IN ('power_critical','tail_lock','mram_fault') THEN 'critical'
+    SELECT CASE WHEN kind IN ('power_critical','tail_lock','mram_fault','settings_lost') THEN 'critical'
         WHEN kind IN ('solar_low','signal_low') THEN 'info' ELSE 'warning' END
 $$;
 

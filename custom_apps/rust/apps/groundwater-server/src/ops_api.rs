@@ -1942,9 +1942,18 @@ impl ExportQuery {
     }
 }
 
-/// Exports are capped so one request cannot hold the HTTP connection's
-/// memory hostage; the window narrows a bigger history.
-const EXPORT_LIMIT: i64 = 100_000;
+/// JSON exports are built in memory, so they are capped: 20,000 rows (a
+/// few MB of JSON, tens of MB while serialising) keep several concurrent
+/// exports well inside the unit's `MemoryMax`. One extra row is fetched so
+/// `truncated` is exact; the window narrows a bigger history.
+const EXPORT_LIMIT: i64 = 20_000;
+
+/// Drops the extra row fetched to detect truncation.
+fn cap_export(rows: &mut Vec<Value>) -> bool {
+    let truncated = rows.len() as i64 > EXPORT_LIMIT;
+    rows.truncate(EXPORT_LIMIT as usize);
+    truncated
+}
 
 fn attachment(name: &str, content_type: &str, body: String) -> Response {
     (
@@ -1969,18 +1978,19 @@ async fn export_events(
     let device = authorize(&s, &h, &device).await?;
     let (from, to) = q.bounds();
     let db = s.db.get().await.map_err(database)?;
-    let events = json_rows(
+    let mut events = json_rows(
         &*db,
         "SELECT jsonb_build_object('id',e.id,'source',e.source,'event',e.event,'log_id',e.log_id,'seq',e.seq,
             'record_type',e.record_type,'recorded_at',e.recorded_at,'time_valid',e.time_valid,'time_rel_s',e.time_rel_s,
             'time_source',e.time_source,'received_at',e.received_at,'details',e.details)
          FROM device_events e WHERE e.device_id=$1 AND COALESCE(e.recorded_at,e.received_at) BETWEEN $2 AND $3
          ORDER BY COALESCE(e.recorded_at,e.received_at),e.id LIMIT $4",
-        &[&device, &from, &to, &EXPORT_LIMIT],
+        &[&device, &from, &to, &(EXPORT_LIMIT + 1)],
     )
     .await?;
+    let truncated = cap_export(&mut events);
     let body = json!({"device_id":device,"exported_at":Utc::now(),"from":q.from,"to":q.to,
-        "truncated":events.len() as i64 >= EXPORT_LIMIT,"events":events});
+        "truncated":truncated,"limit":EXPORT_LIMIT,"events":events});
     Ok(attachment(
         &format!("{device}-events.json"),
         "application/json",
@@ -2020,20 +2030,21 @@ async fn export_positions(
     };
     let (from, to) = q.bounds();
     let db = s.db.get().await.map_err(database)?;
-    let positions = json_rows(
+    let mut positions = json_rows(
         &*db,
         "SELECT jsonb_build_object('id',id,'source',source,'log_id',log_id,'seq',seq,'recorded_at',recorded_at,
             'time_valid',time_valid,'time_source',time_source,'received_at',received_at,'settings_gen',settings_gen,
             'reason',reason,'fix',fix,'lat',lat,'lon',lon,'alt_m',alt_m,'hdop',hdop,'satellites',satellites)
          FROM device_positions WHERE device_id=$1 AND COALESCE(recorded_at,received_at) BETWEEN $2 AND $3
          ORDER BY COALESCE(recorded_at,received_at),id LIMIT $4",
-        &[&device, &from, &to, &EXPORT_LIMIT],
+        &[&device, &from, &to, &(EXPORT_LIMIT + 1)],
     )
     .await?;
+    let truncated = cap_export(&mut positions);
     if geojson {
         let features: Vec<Value> = positions.iter().filter_map(position_feature).collect();
         let body = json!({"type":"FeatureCollection","features":features,
-            "properties":{"device_id":device,"exported_at":Utc::now()}});
+            "properties":{"device_id":device,"exported_at":Utc::now(),"truncated":truncated,"limit":EXPORT_LIMIT}});
         return Ok(attachment(
             &format!("{device}-positions.geojson"),
             "application/geo+json",
@@ -2041,7 +2052,7 @@ async fn export_positions(
         ));
     }
     let body = json!({"device_id":device,"exported_at":Utc::now(),"from":q.from,"to":q.to,
-        "truncated":positions.len() as i64 >= EXPORT_LIMIT,"positions":positions});
+        "truncated":truncated,"limit":EXPORT_LIMIT,"positions":positions});
     Ok(attachment(
         &format!("{device}-positions.json"),
         "application/json",

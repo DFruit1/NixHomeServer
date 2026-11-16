@@ -201,6 +201,20 @@ fn ago(span: chrono::Duration) -> String {
     }
 }
 
+/// Health `err` codes (contract §4, `gwl_ring.h` `GWL_ERR_*`).
+fn logger_error_text(code: f64) -> Option<&'static str> {
+    Some(match code as i64 {
+        1 => "MRAM I/O error",
+        2 => "MRAM read-back mismatch",
+        3 => "MRAM metadata invalid, read-only recovery",
+        4 => "settings lost",
+        5 => "one settings slot failed its check",
+        6 => "newer settings lost, previous settings in use",
+        7 => "V2.1 settings not migrated, defaults in use: send settings",
+        _ => return None,
+    })
+}
+
 fn sd_text(d: &Value) -> &'static str {
     match text(d, "sd").or_else(|| text(d, "kind")) {
         Some("missing" | "sd_missing") => "SD card missing",
@@ -325,7 +339,10 @@ pub fn headline(item: &Item) -> String {
         ("logger_error", false) => format!(
             "logger error latched{}",
             num(d, "err")
-                .map(|e| format!(" (code {e})"))
+                .map(|e| match logger_error_text(e) {
+                    Some(text) => format!(" (code {e}: {text})"),
+                    None => format!(" (code {e})"),
+                })
                 .unwrap_or_default()
         ),
         ("logger_error", true) => "logger error latch cleared".into(),
@@ -342,6 +359,10 @@ pub fn headline(item: &Item) -> String {
                 .unwrap_or_default()
         ),
         ("watchdog_resets", true) => "no watchdog reset for a week".into(),
+        ("settings_lost", false) => {
+            "settings lost: logging is stopped until settings are sent".into()
+        }
+        ("settings_lost", true) => "settings restored: logging again".into(),
         ("tamper", _) => match item.event.as_str() {
             "impact" => format!(
                 "impact detected{}",

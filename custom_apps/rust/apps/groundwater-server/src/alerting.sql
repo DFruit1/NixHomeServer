@@ -22,19 +22,21 @@
 --
 -- health (and the server's boot events) raise the alerts the logger does not
 -- raise itself: SD card, MRAM, Tail Lock, logger error latch, logging off,
--- clock not valid, weak signal and repeated watchdog resets.
+-- clock not valid, weak signal and repeated watchdog resets. `settings_lost`
+-- (logging stopped until settings arrive and the server could not restore
+-- them) is raised by rev2_commands.rs `maybe_restore_settings`.
 
 DO $$
 BEGIN
     IF pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname='alerts_kind_check' AND conrelid='alerts'::regclass))
-        NOT LIKE '%watchdog_resets%' THEN
+        NOT LIKE '%settings_lost%' THEN
         ALTER TABLE alerts DROP CONSTRAINT alerts_kind_check;
         ALTER TABLE alerts ADD CONSTRAINT alerts_kind_check
             CHECK(kind IN ('above_max','below_min','battery_low','solar_low','stale',
                 'gwl_alarm','sensor_fault','power_critical',
                 'mram_almost_full','mram_fault','tail_lock','sd_card',
                 'impact','orientation','gps_moved',
-                'logger_error','logging_off','clock_invalid','signal_low','watchdog_resets'));
+                'logger_error','logging_off','clock_invalid','signal_low','watchdog_resets','settings_lost'));
     END IF;
     IF pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname='notification_rules_kind_check'
             AND conrelid='notification_rules'::regclass)) NOT LIKE '%health%' THEN
@@ -53,7 +55,8 @@ LANGUAGE sql IMMUTABLE AS $$
     SELECT CASE
         WHEN kind IN ('mram_almost_full','mram_fault','tail_lock','sd_card') THEN 'storage'
         WHEN kind IN ('impact','orientation','gps_moved') THEN 'tamper'
-        WHEN kind IN ('logger_error','logging_off','clock_invalid','signal_low','watchdog_resets') THEN 'health'
+        WHEN kind IN ('logger_error','logging_off','clock_invalid','signal_low','watchdog_resets','settings_lost')
+            THEN 'health'
         ELSE kind END
 $$;
 

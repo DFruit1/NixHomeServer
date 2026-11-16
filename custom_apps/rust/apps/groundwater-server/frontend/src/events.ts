@@ -114,7 +114,11 @@ export function eventSummary(event: Pick<DeviceEvent, "event" | "details">) {
       return `Sensor fault ${d.state === "exit" ? "ended" : "started"} · ${what} · ${d.sensor_mv ?? d.mv ?? "?"} mV`;
     }
     case "power_critical":
-      return `Power ${d.state ?? ""} · battery ${mv(d.bat_mv)}, solar ${mv(d.sol_mv)}`;
+      return `Power critical ${d.state === "exit" ? "ended" : "started"} · battery ${mv(d.bat_mv)}, solar ${mv(d.sol_mv)}`;
+    case "gap_requested":
+      return `Asked the logger to resend seq ${d.from_seq ?? "?"}–${d.to_seq ?? "?"} of log ${d.log_id ?? "?"} (command #${d.command_id ?? "?"})`;
+    case "challenge_held":
+      return `Danger command #${d.command_id ?? "?"} waiting for an operator's confirmation (${d.unsaved_frames ?? 0} unsaved frames)`;
     case "storage_warning":
       return `${String(d.kind ?? "storage").replaceAll("_", " ")}${typeof d.unsaved === "number" ? ` · ${d.unsaved} of ${d.usable ?? "?"} bytes unsaved` : ""}`;
     case "clock_set":
@@ -199,6 +203,22 @@ export const SENSOR_STATUS = [
   "adc-fault",
   "factors-invalid",
 ];
+// health.err / Rev2 last_error codes (contract §4 health).
+export const LATCHED_ERRORS: Record<number, string> = {
+  1: "MRAM I/O error",
+  2: "MRAM read-back mismatch (fault)",
+  3: "both checkpoints invalid: read-only recovery",
+  4: "settings lost (no slot, no snapshot)",
+  5: "one settings slot failed its check",
+  6: "newer settings slot lost (rolled back)",
+  7: "V2.1 settings not migrated: defaults in use, send settings",
+};
+export const latchedErrorText = (code: unknown) =>
+  typeof code !== "number"
+    ? "—"
+    : code === 0
+      ? "none"
+      : `${code}: ${LATCHED_ERRORS[code] ?? "unknown"}`;
 export const sensorStatusName = (status: number | null | undefined) =>
   status == null ? "—" : SENSOR_STATUS[status] || `unknown (${status})`;
 

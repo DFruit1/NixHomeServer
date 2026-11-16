@@ -1,4 +1,5 @@
 // Alert history with acknowledge/resolve, alert policies and level limits.
+export { ALERT_KIND_LABEL, alertLabel, alertValue } from "./alert-text";
 import { nextContactText } from "./console";
 import {
   $,
@@ -8,33 +9,19 @@ import {
   useStore,
   type QRL,
 } from "@builder.io/qwik";
-import { errorText, number, query, stamp } from "./api";
-import { humanize } from "./format";
+import { errorText, query, stamp } from "./api";
+import {
+  alertLabel,
+  alertNotes,
+  alertValue,
+  isLatched,
+  reportedLate,
+  resolution,
+} from "./alert-text";
 import { devicePath, send, useJson } from "./hooks";
 import { POLICY_FIELDS, buildLimits, buildPolicy, policyDraft } from "./ops";
 import type { Alert, Device, DevicePolicy, PolicyValues } from "./types";
 import { Feedback, LoadState, TableRegion } from "./widgets";
-
-export function alertValue(alert: Pick<Alert, "kind" | "trigger_value">) {
-  const v = alert.trigger_value;
-  switch (alert.kind) {
-    case "battery_low":
-    case "solar_low":
-      return `${number(v, 2)} V`;
-    case "stale":
-      return `${number(v, 1)} h overdue`;
-    default:
-      return `${number(v, 3)} m`;
-  }
-}
-
-export const ALERT_KIND_LABEL: Record<string, string> = {
-  above_max: "Level above high limit",
-  below_min: "Level below low limit",
-  battery_low: "Battery low",
-  solar_low: "Solar low",
-  stale: "Missed connection",
-};
 
 export const AlertHistory = component$<{
   device?: string;
@@ -95,10 +82,10 @@ export const AlertHistory = component$<{
         </label>
       </div>
       <p class="muted">
-        Level alerts follow the configured limits and hysteresis; battery, solar
-        and missed connection alerts follow the alert policy. They resolve
-        automatically. Acknowledging records that someone is handling an alert;
-        resolving closes it by hand.
+        Most alerts close when the logger or its next health report clears them.
+        Impact, orientation and GPS-moved alerts stay open until an operator
+        resolves them after checking the site. Acknowledging records that
+        someone is handling an alert.
       </p>
       <LoadState
         loading={data.loading && !data.data}
@@ -123,7 +110,7 @@ export const AlertHistory = component$<{
                 <tr key={alert.id}>
                   <td>
                     <strong class={alert.state === "open" ? "error-text" : ""}>
-                      {ALERT_KIND_LABEL[alert.kind] || humanize(alert.kind)}
+                      {alertLabel(alert)}
                     </strong>
                     <small>
                       #{alert.id} · {alert.state}
@@ -139,13 +126,23 @@ export const AlertHistory = component$<{
                       </small>
                     )}
                   </td>
-                  <td>{alertValue(alert)}</td>
+                  <td>
+                    {alertValue(alert)}
+                    {alertNotes(alert).map((note) => (
+                      <small key={note}>{note}</small>
+                    ))}
+                  </td>
                   <td>
                     {stamp(alert.opened_at)}
+                    {reportedLate(alert) && (
+                      <small>{reportedLate(alert)}</small>
+                    )}
                     <small>
-                      {alert.resolved_at
-                        ? `resolved ${stamp(alert.resolved_at)}${alert.resolved_by ? ` by ${alert.resolved_by}` : ""}`
-                        : "unresolved"}
+                      {alert.state === "resolved"
+                        ? resolution(alert)
+                        : isLatched(alert.kind)
+                          ? "open until an operator resolves it"
+                          : "open"}
                     </small>
                     {alert.resolve_note && (
                       <small>“{alert.resolve_note}”</small>
@@ -159,7 +156,9 @@ export const AlertHistory = component$<{
                         {alert.ack_note && <small>“{alert.ack_note}”</small>}
                       </>
                     ) : (
-                      <span class="muted">Not acknowledged</span>
+                      alert.state === "open" && (
+                        <span class="muted">Not acknowledged</span>
+                      )
                     )}
                     {props.operator &&
                       alert.state === "open" &&

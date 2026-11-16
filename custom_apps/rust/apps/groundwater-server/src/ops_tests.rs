@@ -353,7 +353,7 @@ async fn alert_policies_drive_power_alerts_and_acknowledgement() {
         }
     };
     // 6950 mV is low under the built-in 7000 mV threshold ...
-    health(6950, 5000, 30).await;
+    health(6950, 400, 30).await;
     assert_eq!(
         scalar::<i64>(
             &client,
@@ -374,7 +374,7 @@ async fn alert_policies_drive_power_alerts_and_acknowledgement() {
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
     // Still open: the clear level is now 6900 + 100 = 7000.
-    health(6990, 5000, 20).await;
+    health(6990, 400, 20).await;
     assert_eq!(
         scalar::<i64>(
             &client,
@@ -388,7 +388,28 @@ async fn alert_policies_drive_power_alerts_and_acknowledgement() {
         scalar::<String>(&client, "SELECT state FROM alerts WHERE kind='battery_low'").await,
         "resolved"
     );
-    // Two dark samples are enough for this project.
+    // Night samples of a new unit alone never open solar low ...
+    assert_eq!(
+        scalar::<i64>(
+            &client,
+            "SELECT count(*) FROM alerts WHERE kind='solar_low'"
+        )
+        .await,
+        0
+    );
+    // ... two days with no sample at the threshold, one of them in local
+    // daylight, on a unit with older history, are enough for this project.
+    client
+        .execute(
+            "INSERT INTO device_health(device_id,recorded_at,time_source,received_at,bat_mv,sol_mv,payload)
+             SELECT $1,t,'device',now(),7400,400,'{}' FROM devices d, LATERAL (VALUES (now()-interval '3 days'),
+                ((date_trunc('day',now() AT TIME ZONE 'UTC')-interval '1 day'+interval '12 hours'
+                    -make_interval(mins=>COALESCE((d.settings->>'utc_off')::int,d.local_offset_min,0))) AT TIME ZONE 'UTC')) v(t)
+             WHERE d.device_id=$1",
+            &[&D],
+        )
+        .await
+        .unwrap();
     health(7400, 400, 5).await;
     assert_eq!(
         scalar::<i64>(

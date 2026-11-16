@@ -611,7 +611,13 @@ async fn store_health<C: GenericClient + Sync>(
             device_id: ctx.device_id.to_owned(),
         });
     }
+    if crate::rev2_commands::maybe_restore_settings(client, ctx, &health).await? {
+        outcome.events.push(LiveEvent::Command {
+            device_id: ctx.device_id.to_owned(),
+        });
+    }
     if let Some(generation) = health.settings_gen
+        && !crate::rev2_commands::settings_lost(&health)
         && crate::rev2_commands::maybe_fetch_settings(client, ctx, generation).await?
     {
         outcome.events.push(LiveEvent::Command {
@@ -717,13 +723,14 @@ async fn store_test<C: GenericClient + Sync>(
         }
     }
     let int = |key| rev2::i64_field(object, key).and_then(|v| i32::try_from(v).ok());
+    let mv = |key| rev2::mv_field(object, key).and_then(|v| i32::try_from(v).ok());
     let inserted = client
-        .execute(
+        .query_opt(
             "INSERT INTO device_tests(device_id,source,recorded_at,time_valid,time_rel_s,time_source,received_at,
                 trigger,command_id,battery_mv,solar_mv,csq,sensor_mv,sensor_ma,level,sensor_status,status_bits,ok,
                 details,dedupe_key,delivery_id)
              VALUES($1,'json',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-             ON CONFLICT DO NOTHING",
+             ON CONFLICT DO NOTHING RETURNING id",
             &[
                 &ctx.device_id,
                 &placed.recorded_at,
@@ -733,11 +740,12 @@ async fn store_test<C: GenericClient + Sync>(
                 &ctx.received_at,
                 &rev2::str_field(object, "trigger"),
                 &rev2::i64_field(object, "id"),
-                &int("bat_mv"),
-                &int("sol_mv"),
-                &rev2::i64_field(object, "csq").and_then(|v| i16::try_from(v).ok()),
-                &int("mv"),
-                &rev2::f64_field(object, "ma"),
+                &mv("bat_mv"),
+                &mv("sol_mv"),
+                &rev2::csq_field(object, "csq").and_then(|v| i16::try_from(v).ok()),
+                &mv("mv"),
+                // The firmware sends ma 0 when the shunt was not read.
+                &rev2::f64_field(object, "ma").filter(|_| mv("mv").is_some()),
                 &rev2::f64_field(object, "lvl"),
                 &rev2::i64_field(object, "ss").and_then(|v| i16::try_from(v).ok()),
                 &int("status"),
@@ -748,13 +756,17 @@ async fn store_test<C: GenericClient + Sync>(
             ],
         )
         .await
-        .map_err(dberr("test result insert"))?;
+        .map_err(dberr("test result insert"))?
+        .map(|row| row.get::<_, i64>(0));
+    if let Some(id) = inserted {
+        pair_test(client, id).await?;
+    }
     client
         .execute("SELECT groundwater_power_alerts($1)", &[&ctx.device_id])
         .await
         .map_err(dberr("power alerts"))?;
     let mut outcome = Outcome::default();
-    if inserted == 1 {
+    if inserted.is_some() {
         outcome.events.push(LiveEvent::DeviceEvent {
             device_id: ctx.device_id.to_owned(),
             event: "test_result".into(),
@@ -764,6 +776,16 @@ async fn store_test<C: GenericClient + Sync>(
         });
     }
     Ok(outcome)
+}
+
+/// Links a test's `test/result` JSON and its Type 5 record
+/// (`groundwater_pair_test`), whichever arrives second.
+async fn pair_test<C: GenericClient + Sync>(client: &C, id: i64) -> Result<(), String> {
+    client
+        .execute("SELECT groundwater_pair_test($1)", &[&id])
+        .await
+        .map_err(dberr("test pairing"))?;
+    Ok(())
 }
 
 /// Column values of one observation row.
@@ -943,11 +965,11 @@ async fn store_reading<C: GenericClient + Sync>(
         .get("lvl")
         .filter(|v| v.is_number())
         .map(Value::to_string);
-    row.sensor_mv = rev2::i64_field(object, "mv").and_then(|v| i32::try_from(v).ok());
+    row.sensor_mv = rev2::mv_field(object, "mv").and_then(|v| i32::try_from(v).ok());
     row.sensor_status = rev2::i64_field(object, "ss").and_then(|v| i16::try_from(v).ok());
-    row.battery_v = rev2::f64_field(object, "bat_mv").map(|v| v / 1000.0);
-    row.solar_v = rev2::f64_field(object, "sol_mv").map(|v| v / 1000.0);
-    row.csq = rev2::i64_field(object, "csq").and_then(|v| i16::try_from(v).ok());
+    row.battery_v = rev2::mv_field(object, "bat_mv").map(|v| v as f64 / 1000.0);
+    row.solar_v = rev2::mv_field(object, "sol_mv").map(|v| v as f64 / 1000.0);
+    row.csq = rev2::csq_field(object, "csq").and_then(|v| i16::try_from(v).ok());
     row.settings_gen = rev2::i64_field(object, "gen");
     sensor_reasons(row.sensor_status, row.gwl, &mut row.quality_reasons);
     row.quality_reasons.push("fallback-json".into());
@@ -1006,6 +1028,18 @@ async fn store_gps<C: GenericClient + Sync>(
         placed
     };
     let small = |key| rev2::i64_field(object, key).and_then(|v| i16::try_from(v).ok());
+    // Not-available markers (INT32_MIN e-7 degrees, INT16_MIN metres, the
+    // u16 HDOP marker) are never a place: keep the raw JSON, store NULL.
+    let lat = rev2::f64_field(object, "lat");
+    let lon = rev2::f64_field(object, "lon");
+    let (lat, lon) = match (lat, lon) {
+        (Some(lat), Some(lon)) if lat.abs() <= 90.0 && lon.abs() <= 180.0 => (Some(lat), Some(lon)),
+        _ => (None, None),
+    };
+    let alt = rev2::i64_field(object, "alt")
+        .filter(|&v| v != i64::from(i16::MIN))
+        .and_then(|v| i32::try_from(v).ok());
+    let hdop = rev2::f64_field(object, "hdop").filter(|v| (0.0..99.99).contains(v));
     let inserted = client
         .execute(
             "INSERT INTO device_positions(device_id,source,recorded_at,time_valid,time_rel_s,time_source,received_at,
@@ -1019,10 +1053,10 @@ async fn store_gps<C: GenericClient + Sync>(
                 &placed.source,
                 &ctx.received_at,
                 &small("fix"),
-                &rev2::f64_field(object, "lat"),
-                &rev2::f64_field(object, "lon"),
-                &rev2::i64_field(object, "alt").and_then(|v| i32::try_from(v).ok()),
-                &rev2::f64_field(object, "hdop"),
+                &lat,
+                &lon,
+                &alt,
+                &hdop,
                 &small("sats"),
                 &digest(payload),
                 &ctx.delivery_id,
@@ -1165,20 +1199,26 @@ async fn store_stream<C: GenericClient + Sync>(
     let mut duplicates = 0i32;
     let mut conflicts = 0;
     let mut new_seqs: Vec<i64> = Vec::new();
+    let mut positioned: Vec<i64> = Vec::new();
     let mut to_derive: Vec<&stream::Frame> = Vec::new();
     // Raw first: every CRC-valid frame is stored byte-exact before anything
     // is derived from it. The logger frees its MRAM once the broker has this
     // message, so nothing derived below may cost these rows.
     for frame in &batch.frames {
         let seq = i64::from(frame.seq);
+        // The CTE reads the stored row before the upsert: a copy that brings
+        // the first position for a frame stored without one changes gap
+        // detection (a seq skip with contiguous positions is not a gap).
         let row = client
             .query_one(
-                "INSERT INTO stream_frames(device_id,log_id,seq,record_type,pos,size,raw,payload_schema,batch_id,received_at)
+                "WITH old AS (SELECT pos FROM stream_frames WHERE device_id=$1 AND log_id=$2 AND seq=$3)
+                 INSERT INTO stream_frames(device_id,log_id,seq,record_type,pos,size,raw,payload_schema,batch_id,received_at)
                  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                  ON CONFLICT(device_id,log_id,seq) DO UPDATE SET copies=stream_frames.copies+1,
                     conflicting_copies=stream_frames.conflicting_copies+CASE WHEN stream_frames.raw<>EXCLUDED.raw THEN 1 ELSE 0 END,
                     pos=COALESCE(stream_frames.pos,EXCLUDED.pos)
-                 RETURNING xmax::text='0', raw=$7",
+                 RETURNING xmax::text='0', raw=$7,
+                    COALESCE((SELECT old.pos IS NULL FROM old),false) AND $5::bigint IS NOT NULL",
                 &[
                     &ctx.device_id,
                     &log_id,
@@ -1195,6 +1235,9 @@ async fn store_stream<C: GenericClient + Sync>(
             .await
             .map_err(dberr("frame upsert"))?;
         let inserted: bool = row.get(0);
+        if !inserted && row.get::<_, bool>(2) {
+            positioned.push(seq);
+        }
         if !inserted {
             duplicates += 1;
             if !row.get::<_, bool>(1) {
@@ -1244,13 +1287,16 @@ async fn store_stream<C: GenericClient + Sync>(
         )),
         ..Outcome::default()
     };
-    if let (Some(min), Some(max)) = (new_seqs.iter().min(), new_seqs.iter().max()) {
+    let gap_seqs = new_seqs.iter().chain(&positioned);
+    let gaps = gap_seqs.clone().min().copied().zip(gap_seqs.max().copied());
+    if gaps.is_some() {
         let derived = derive_frames(client, ctx, log_id, &to_derive, false).await?;
         let log_error = derive_log(
             client,
             ctx,
             log_id,
-            (*min, *max),
+            gaps,
+            !new_seqs.is_empty(),
             &derived.generations,
             derived.tests,
         )
@@ -1273,6 +1319,9 @@ async fn store_stream<C: GenericClient + Sync>(
                 detail.push_str("; ");
                 detail.push_str(&text);
             }
+        }
+        if new_seqs.is_empty() {
+            return Ok(outcome);
         }
         if derived.tests {
             outcome.events.push(LiveEvent::Alert {
@@ -1373,29 +1422,28 @@ async fn derive_frames<C: GenericClient + Sync>(
     Ok(derived)
 }
 
-/// Log-level derived work after new frames `seqs` (min, max): gaps,
-/// settings snapshots, record times, power alerts. Returns the error when it
+/// Log-level derived work: gaps around `gaps` (min, max seq of new or newly
+/// positioned frames) and, when `resolve` (new frames), settings snapshots,
+/// record times and power alerts. Returns the error when it
 /// failed for a reason in the data; the log is then flagged
 /// `resolve_pending` and re-derived at the next start.
 async fn derive_log<C: GenericClient + Sync>(
     client: &C,
     ctx: &Context<'_>,
     log_id: i64,
-    seqs: (i64, i64),
+    gaps: Option<(i64, i64)>,
+    resolve: bool,
     generations: &[i64],
     tests: bool,
 ) -> Result<Option<String>, String> {
     savepoint(client, "rev2_log").await?;
     let result = async {
-        detect_gaps(
-            client,
-            ctx.device_id,
-            log_id,
-            seqs.0,
-            seqs.1,
-            ctx.received_at,
-        )
-        .await?;
+        if let Some((min, max)) = gaps {
+            detect_gaps(client, ctx.device_id, log_id, min, max, ctx.received_at).await?;
+        }
+        if !resolve {
+            return Ok(());
+        }
         for generation in generations {
             assemble_settings(client, ctx, *generation).await?;
         }
@@ -1514,9 +1562,17 @@ pub async fn rederive_pending(
                 delivery_id: None,
                 policy,
             };
-            still |= derive_log(&tx, &ctx, log_id, (min, max), &generations, true)
-                .await?
-                .is_some();
+            still |= derive_log(
+                &tx,
+                &ctx,
+                log_id,
+                Some((min, max)),
+                true,
+                &generations,
+                true,
+            )
+            .await?
+            .is_some();
         }
         tx.commit().await.map_err(dberr("re-derive commit"))?;
         if still {
@@ -1669,7 +1725,7 @@ async fn store_record<C: GenericClient + Sync>(
                         received_at,settings_gen,reason,fix,lat,lon,alt_m,hdop,satellites,accel_x_mg,accel_y_mg,accel_z_mg,
                         accel_status,delivery_id)
                      VALUES($1,'record',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
-                     ON CONFLICT DO NOTHING",
+                     ON CONFLICT DO NOTHING RETURNING id",
                     &[
                         &ctx.device_id,
                         &log_id,
@@ -1743,14 +1799,14 @@ async fn store_record<C: GenericClient + Sync>(
             status,
         } => {
             let placed = place(*time);
-            let ok = status & 0x01 != 0;
-            client
-                .execute(
+            let ok = test_passed(*status);
+            let inserted = client
+                .query_opt(
                     "INSERT INTO device_tests(device_id,source,log_id,seq,recorded_at,time_valid,time_rel_s,time_source,
                         received_at,settings_gen,trigger,command_id,battery_mv,solar_mv,csq,sensor_mv,level,sensor_status,
                         status_bits,ok,details,delivery_id)
                      VALUES($1,'record',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
-                     ON CONFLICT DO NOTHING",
+                     ON CONFLICT DO NOTHING RETURNING id",
                     &[
                         &ctx.device_id,
                         &log_id,
@@ -1777,6 +1833,9 @@ async fn store_record<C: GenericClient + Sync>(
                 )
                 .await
                 .map_err(dberr("test record"))?;
+            if let Some(row) = inserted {
+                pair_test(client, row.get(0)).await?;
+            }
             Ok(Stored::Test)
         }
         Record::Tilt {
@@ -1878,6 +1937,16 @@ async fn store_record<C: GenericClient + Sync>(
 }
 
 /// Names of the Type 5 status bits that are set.
+/// Status bits a self test must have for the firmware's `test/result`
+/// `ok` (`app_core.c` `App_TestFinish` `need`): sensor, SD, SIM, network,
+/// MQTT, display, accelerometer and MRAM. GNSS fix and solar only warn.
+pub const TEST_REQUIRED_BITS: u16 = 0x01 | 0x02 | 0x04 | 0x08 | 0x10 | 0x40 | 0x80 | 0x100;
+
+/// The pass/fail the logger itself reports for a Type 5 status bitfield.
+pub fn test_passed(status: u16) -> bool {
+    status & TEST_REQUIRED_BITS == TEST_REQUIRED_BITS
+}
+
 pub fn test_status_flags(status: u16) -> Vec<&'static str> {
     const NAMES: [&str; 10] = [
         "sensor",

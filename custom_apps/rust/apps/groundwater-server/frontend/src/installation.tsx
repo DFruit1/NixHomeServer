@@ -616,6 +616,71 @@ export const DatumPanel = component$<Props>((props) => {
   );
 });
 
+/** What a credential change does to a unit that already uses its own
+ * account. Firmware 2.2 has its MQTT username and password compiled in and
+ * no remote credential change, so either change strands it until a
+ * reflash on site. */
+export function strandWarning(
+  rev2: boolean,
+  mode: string,
+  change: "rotate" | "remove",
+) {
+  const certain = mode === "device";
+  const unit = rev2
+    ? "Firmware 2.2 has its MQTT password compiled in."
+    : "A unit flashed with its own account cannot change it remotely.";
+  const condition = certain
+    ? "This unit can only use its own account, so"
+    : "If the unit already runs with its own account,";
+  return change === "rotate"
+    ? `${unit} ${condition} it cannot connect after the rotation until it is reflashed on site with the new password. Its data waits in its memory until then.`
+    : `${unit} ${condition} it cannot connect after the removal until it is reflashed on site with the shared account. Its data waits in its memory until then.`;
+}
+
+/** A change confirmed by typing a word, with its consequence stated. */
+export const TypedAction = component$<{
+  id: string;
+  word: string;
+  button: string;
+  warning: string;
+  pending: boolean;
+  run: QRL<() => Promise<boolean>>;
+}>((props) => {
+  const typed = useSignal("");
+  return (
+    <form
+      class="typed-action"
+      preventdefault:submit
+      onSubmit$={async () => {
+        if (typed.value !== props.word) return;
+        if (await props.run()) typed.value = "";
+      }}
+    >
+      <p>{props.warning}</p>
+      <div class="toolbar">
+        <label class="field" for={props.id}>
+          Type {props.word}
+          <input
+            id={props.id}
+            autoComplete="off"
+            value={typed.value}
+            onInput$={(_, el) => {
+              typed.value = el.value;
+            }}
+          />
+        </label>
+        <button
+          class="danger"
+          type="submit"
+          disabled={props.pending || typed.value !== props.word}
+        >
+          {props.button}
+        </button>
+      </div>
+    </form>
+  );
+});
+
 export const CredentialsPanel = component$<Props>((props) => {
   const rev = useComputed$(() => props.revision);
   const url = useComputed$(() =>
@@ -623,7 +688,7 @@ export const CredentialsPanel = component$<Props>((props) => {
   );
   const { state, reload } = useJson<MqttCredentials>(url, rev);
   const secret = useStore({ username: "", password: "" });
-  const confirm = useSignal("");
+  const rev2 = props.device.capabilities?.protocol === 2;
   const action = useStore({ pending: false, message: "", failed: false });
   const id = props.device.device_id;
   const run = $(
@@ -633,7 +698,7 @@ export const CredentialsPanel = component$<Props>((props) => {
       body: unknown,
       done: string,
     ) => {
-      if (action.pending) return;
+      if (action.pending) return false;
       action.pending = true;
       action.message = "";
       try {
@@ -648,12 +713,13 @@ export const CredentialsPanel = component$<Props>((props) => {
         }
         action.message = done;
         action.failed = false;
-        confirm.value = "";
         reload();
         await props.refresh();
+        return true;
       } catch (error) {
         action.message = errorText(error);
         action.failed = true;
+        return false;
       } finally {
         action.pending = false;
       }
@@ -749,7 +815,7 @@ tools/build.sh --profile release && tools/flash.sh`}</pre>
           )}
           {props.operator && c.available && !props.device.revoked && (
             <div class="command-section">
-              <div class="row-actions">
+              {c.mode === "shared" ? (
                 <button
                   type="button"
                   class="primary"
@@ -759,83 +825,78 @@ tools/build.sh --profile release && tools/flash.sh`}</pre>
                       "POST",
                       "/mqtt-credentials",
                       {},
-                      c.mode === "shared"
-                        ? "Credentials generated; the broker accepts both accounts for this unit (dual)."
-                        : "Password rotated. Reflash the unit before the old password is needed again.",
+                      "Credentials generated; the broker accepts both accounts for this unit (dual).",
                     )
                   }
                 >
-                  {c.mode === "shared"
-                    ? "Generate credentials"
-                    : "Rotate password"}
+                  Generate credentials
                 </button>
-                {c.mode === "device" && (
-                  <button
-                    type="button"
-                    disabled={action.pending}
-                    onClick$={() =>
+              ) : (
+                <>
+                  {c.mode === "device" && (
+                    <button
+                      type="button"
+                      disabled={action.pending}
+                      onClick$={() =>
+                        run(
+                          "POST",
+                          "/mqtt-credentials/mode",
+                          { mode: "dual" },
+                          "Shared account accepted again (dual).",
+                        )
+                      }
+                    >
+                      Allow shared account again
+                    </button>
+                  )}
+                  <TypedAction
+                    id="mqtt-rotate"
+                    word="ROTATE"
+                    button="Rotate password"
+                    pending={action.pending}
+                    warning={strandWarning(rev2, c.mode, "rotate")}
+                    run={$(() =>
                       run(
                         "POST",
-                        "/mqtt-credentials/mode",
-                        { mode: "dual" },
-                        "Shared account accepted again (dual).",
-                      )
-                    }
-                  >
-                    Allow shared account again
-                  </button>
-                )}
-                {c.mode !== "shared" && (
-                  <button
-                    type="button"
-                    disabled={action.pending}
-                    onClick$={() =>
+                        "/mqtt-credentials",
+                        { confirm: "ROTATE" },
+                        "Password rotated. The unit connects with its own account again only after it is reflashed with the new password.",
+                      ),
+                    )}
+                  />
+                  <TypedAction
+                    id="mqtt-remove"
+                    word="REMOVE"
+                    button="Remove own account"
+                    pending={action.pending}
+                    warning={strandWarning(rev2, c.mode, "remove")}
+                    run={$(() =>
                       run(
                         "DELETE",
                         "/mqtt-credentials",
-                        undefined,
-                        "Own account removed; the unit uses the shared account.",
-                      )
-                    }
-                  >
-                    Remove own account
-                  </button>
-                )}
-              </div>
+                        { confirm: "REMOVE" },
+                        "Own account removed; the broker accepts only the shared account for this unit.",
+                      ),
+                    )}
+                  />
+                </>
+              )}
               {c.mode === "dual" && (
-                <form
-                  class="toolbar"
-                  preventdefault:submit
-                  onSubmit$={() => {
-                    if (confirm.value !== "DEVICE") return;
-                    return run(
+                <TypedAction
+                  id="mqtt-enforce"
+                  word="DEVICE"
+                  button="Enforce own account"
+                  pending={action.pending}
+                  warning="After the reflashed unit has connected with its own account, deny the shared account on its topics."
+                  run={$(() =>
+                    run(
                       "POST",
                       "/mqtt-credentials/mode",
                       { mode: "device", confirm: "DEVICE" },
                       "Shared account denied for this unit. Only its own account can publish or receive its topics.",
-                    );
-                  }}
-                >
-                  <label class="field" for="mqtt-enforce">
-                    After the reflashed unit has connected with its own account,
-                    type DEVICE to deny the shared account on its topics
-                    <input
-                      id="mqtt-enforce"
-                      autoComplete="off"
-                      value={confirm.value}
-                      onInput$={(_, el) => {
-                        confirm.value = el.value;
-                      }}
-                    />
-                  </label>
-                  <button
-                    class="danger"
-                    type="submit"
-                    disabled={action.pending || confirm.value !== "DEVICE"}
-                  >
-                    Enforce own account
-                  </button>
-                </form>
+                    ),
+                  )}
+                />
               )}
             </div>
           )}
