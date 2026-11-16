@@ -489,6 +489,9 @@ async fn start_download(
 ) -> ApiResult {
     let user = operator(&h)?;
     let device = authorize(&s, &h, &device).await?;
+    // Path errors are the operator's to fix; anything later is a database
+    // error, logged and answered generically.
+    rev2_commands::download_request(&q.path, Utc::now()).map_err(|e| bad(&e))?;
     let mut db = connect_tx(&s).await?;
     let tx = db
         .transaction()
@@ -497,13 +500,7 @@ async fn start_download(
     let started =
         rev2_commands::start_download(&tx, &device, &q.path, &user.username, &s.settings.rev2)
             .await
-            .map_err(|e| {
-                if e.contains("path") {
-                    bad(&e)
-                } else {
-                    database(e)
-                }
-            })?;
+            .map_err(database)?;
     let Some((download_id, command_id)) = started else {
         return Err(bad(
             "downloads need a firmware 2.2 (V22) unit with a live cmd/basic binding",

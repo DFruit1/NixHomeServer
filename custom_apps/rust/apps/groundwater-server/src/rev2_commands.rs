@@ -1211,8 +1211,7 @@ pub async fn start_download<C: GenericClient + Sync>(
     policy: &Rev2Policy,
 ) -> Result<Option<(i64, i64)>, String> {
     let now = Utc::now();
-    let first = json!({"path":path,"off":0,"len":stream_chunk_len()});
-    prepare("file_chunk", &first, false, now)?;
+    let first = download_request(path, now)?;
     let download: i64 = client
         .query_one(
             "INSERT INTO file_downloads(device_id,path,requested_by) VALUES($1,$2,$3) RETURNING id",
@@ -1238,6 +1237,14 @@ pub async fn start_download<C: GenericClient + Sync>(
         .await
         .map_err(dberr("download command"))?;
     Ok(Some((download, command)))
+}
+
+/// The first `file_chunk` of a download, validated (the path rules).
+/// `Err` is a message for the operator, never a database error.
+pub fn download_request(path: &str, now: DateTime<Utc>) -> Result<Value, String> {
+    let first = json!({"path":path,"off":0,"len":stream_chunk_len()});
+    prepare("file_chunk", &first, false, now)?;
+    Ok(first)
 }
 
 fn stream_chunk_len() -> i64 {

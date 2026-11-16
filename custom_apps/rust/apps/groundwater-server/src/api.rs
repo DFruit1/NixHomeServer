@@ -353,7 +353,12 @@ async fn commands(State(s): State<AppState>, h: HeaderMap, Query(q): Query<List>
         None => None,
     };
     let visible = ids(&s, &h).await?;
-    Ok(Json(json!({"commands":platform::commands(&db,&visible,device.as_deref()).await.map_err(database)?})).into_response())
+    let mut commands = platform::commands(&db, &visible, device.as_deref())
+        .await
+        .map_err(database)?;
+    let truncated = commands.len() > platform::COMMAND_LIST_LIMIT;
+    commands.truncate(platform::COMMAND_LIST_LIMIT);
+    Ok(Json(json!({"commands":commands,"truncated":truncated})).into_response())
 }
 #[derive(Deserialize)]
 struct DeliveryParams {

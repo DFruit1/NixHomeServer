@@ -417,9 +417,17 @@ fn path_arg(args: &Map<String, Value>) -> Result<(), String> {
         .and_then(Value::as_str)
         .ok_or("path must be a string")?;
     // The logger's path buffer holds 63 bytes (GWL_PROTO_PATH_MAX); a longer
-    // path is answered rejected/bad-args.
-    if !path.starts_with('/') || path.len() > 63 || path.contains("..") || path.contains('\0') {
+    // path is answered rejected/bad-args, and so are `.`/`..` components,
+    // `\`, `:` and control characters (contract §5 `file_list`).
+    if !path.starts_with('/') || path.len() > 63 || path.contains("..") {
         return Err("path must be absolute, at most 63 bytes, without '..'".into());
+    }
+    if path.split('/').any(|c| c == ".")
+        || path
+            .chars()
+            .any(|c| c.is_control() || c == '\\' || c == ':')
+    {
+        return Err("path may not contain '.' components, '\\', ':' or control characters".into());
     }
     Ok(())
 }
