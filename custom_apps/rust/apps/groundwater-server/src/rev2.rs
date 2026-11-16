@@ -250,9 +250,11 @@ pub fn parse_health(object: &Map<String, Value>) -> Health {
         csq: csq_field(object, "csq"),
         bat_mv: mv_field(object, "bat_mv"),
         sol_mv: mv_field(object, "sol_mv"),
-        // Free space is read only from a working card: after a removal the
-        // logger repeats the last value, and a card never read reports 0.
-        sd_free_mb: i64_field(object, "sd_free_mb").filter(|_| sd.as_deref() == Some("ok")),
+        // Free space is read only from a mounted card (`ok` or `full`).
+        // Firmware 2.2 omits it otherwise; earlier builds repeated the last
+        // value after a removal or sent 0 for a card never read.
+        sd_free_mb: i64_field(object, "sd_free_mb")
+            .filter(|_| matches!(sd.as_deref(), Some("ok" | "full"))),
         sd,
         mram: text("mram"),
         unsaved: i64_field(object, "unsaved"),
@@ -262,6 +264,13 @@ pub fn parse_health(object: &Map<String, Value>) -> Health {
         next: next_contact(object),
         err: i64_field(object, "err"),
     }
+}
+
+/// Whether a `health` comes from a logger in fallback mode (no MRAM ring:
+/// MRAM absent or faulted at boot). Firmware 2.2 reports `usable` 0 only
+/// then (`App_Health`); a ring that faults later keeps its `usable`.
+pub fn fallback_mode(health: &Health) -> bool {
+    matches!(health.mram.as_deref(), Some("absent" | "fault")) && health.usable == Some(0)
 }
 
 /// The `health` object as the device summary serves it: the logger's JSON
@@ -297,6 +306,91 @@ pub fn alert_event(ev: &str) -> Option<&'static str> {
     })
 }
 
+/// `get_debug` `boot_report` bits (contract §5, firmware `GWL_BOOT_*`): what
+/// the last MRAM ring boot found and did.
+pub const BOOT_REPORT_BITS: [&str; 15] = [
+    "MRAM chip formatted",
+    "settings slot A failed its check",
+    "settings slot B failed its check",
+    "checkpoint A invalid",
+    "checkpoint B invalid",
+    "a committed settings change was activated",
+    "settings rolled back to the older slot",
+    "settings restored from a snapshot",
+    "settings lost",
+    "read-only RECOVERY",
+    "power gap recorded",
+    "Tail Locked",
+    "frames found past the checkpoint head",
+    "an interrupted factory reset was completed",
+    "new log started: the payload schema changed",
+];
+/// The `boot_report` bits that need an operator's attention: settings lost,
+/// rolled back or restored from a snapshot, read-only RECOVERY, and a new
+/// log because the payload schema changed.
+pub const BOOT_REPORT_ALERT_MASK: u32 = 1 << 6 | 1 << 7 | 1 << 8 | 1 << 9 | 1 << 14;
+/// `reset_flags` bit 6: a HardFault reset the MCU since the last cold start.
+pub const RESET_FLAG_HARDFAULT: u32 = 1 << 6;
+
+/// Words for a `get_debug` `boot_report`.
+pub fn boot_report_words(report: u32) -> Vec<String> {
+    let mut words: Vec<String> = BOOT_REPORT_BITS
+        .iter()
+        .enumerate()
+        .filter(|(bit, _)| report & (1 << bit) != 0)
+        .map(|(_, word)| (*word).to_owned())
+        .collect();
+    if report >> BOOT_REPORT_BITS.len() != 0 {
+        words.push(format!(
+            "unknown bits 0x{:X}",
+            report >> BOOT_REPORT_BITS.len() << BOOT_REPORT_BITS.len()
+        ));
+    }
+    words
+}
+
+/// Words for a `get_debug` `reset_flags`: bits 31–25 the MCU reset flags
+/// (RCC_CSR), bit 8 the 32.768 kHz crystal did not start, bits 7–0 the
+/// reset-loop guard (3–0 consecutive unclean resets, 4 next reset
+/// commanded, 5 flash ECC double error seen, 6 HardFault since the last
+/// cold start).
+pub fn reset_flags_words(flags: u32) -> Vec<String> {
+    // STM32G0 RCC_CSR, as the firmware copies it (`board_io.c`).
+    const MCU: [(u32, &str); 7] = [
+        (25, "MCU: option byte loader reset"),
+        (26, "MCU: reset pin"),
+        (27, "MCU: power-on reset"),
+        (28, "MCU: software reset"),
+        (29, "MCU: independent watchdog"),
+        (30, "MCU: window watchdog"),
+        (31, "MCU: low-power reset"),
+    ];
+    let mut words = Vec::new();
+    let unclean = flags & 0x0F;
+    if unclean != 0 {
+        words.push(format!("{unclean} consecutive unclean reset(s)"));
+    }
+    for (bit, word) in [
+        (4, "next reset commanded"),
+        (5, "flash ECC double error seen"),
+        (6, "HardFault since the last cold start"),
+        (
+            8,
+            "32.768 kHz crystal did not start: clock runs from the internal LSI (about ±5 %)",
+        ),
+    ] {
+        if flags & (1 << bit) != 0 {
+            words.push(word.to_owned());
+        }
+    }
+    for (bit, word) in MCU {
+        if flags & (1 << bit) != 0 {
+            words.push(word.to_owned());
+        }
+    }
+    words
+}
+
 /// A command acknowledgement on `config/applied` or `cmd/ack`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ack {
@@ -317,6 +411,9 @@ pub struct Ack {
     pub unsaved_bytes: Option<i64>,
     /// The earlier status repeated by a `duplicate`.
     pub prev: Option<String>,
+    /// `"persist":false` on a settings ack in fallback mode: the settings are
+    /// held in RAM until the next reset and `gen` counts from 1 per boot.
+    pub ram_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -379,6 +476,7 @@ pub fn parse_ack(object: &Map<String, Value>) -> Result<Ack, String> {
         unsaved_frames: unsaved.and_then(|u| i64_field(u, "frames")),
         unsaved_bytes: unsaved.and_then(|u| i64_field(u, "bytes")),
         prev: str_field(object, "prev").map(str::to_owned),
+        ram_only: object.get("persist").and_then(Value::as_bool) == Some(false),
     })
 }
 
@@ -637,6 +735,43 @@ mod tests {
         assert!(parse_ack(&object(br#"{"v":2,"op":"x","status":"ok"}"#).unwrap()).is_err());
         assert!(parse_ack(&object(br#"{"v":2,"id":3,"status":"done"}"#).unwrap()).is_err());
         assert!(object(br#"{"state":"ready"}"#).is_err());
+    }
+
+    #[test]
+    fn round3_fields_parse() {
+        let ack = parse_ack(
+            &object(br#"{"v":2,"id":9,"op":"settings","status":"ok","gen":1,"persist":false,"settings":{}}"#)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(ack.ram_only);
+        let health = parse_health(
+            &object(br#"{"v":2,"t":1763300000,"tv":1,"csq":99,"sd":"full","sd_free_mb":0,"mram":"fault","usable":0,"gen":1}"#)
+                .unwrap(),
+        );
+        // Values not read are omitted, not 65535.
+        assert_eq!(
+            (health.bat_mv, health.sol_mv, health.csq),
+            (None, None, None)
+        );
+        assert_eq!(health.sd_free_mb, Some(0));
+        assert!(fallback_mode(&health));
+        assert!(!fallback_mode(&Health {
+            usable: Some(122_368),
+            ..health
+        }));
+        assert_eq!(
+            boot_report_words(1 << 8 | 1 << 14),
+            [
+                "settings lost",
+                "new log started: the payload schema changed"
+            ]
+        );
+        let flags = reset_flags_words(1 << 29 | 1 << 8 | 1 << 6 | 2);
+        assert!(flags.iter().any(|w| w.contains("HardFault")));
+        assert!(flags.iter().any(|w| w.contains("crystal")));
+        assert!(flags.iter().any(|w| w.contains("independent watchdog")));
+        assert!(flags.iter().any(|w| w.starts_with("2 consecutive")));
     }
 
     #[test]

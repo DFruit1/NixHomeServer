@@ -447,21 +447,24 @@ async fn store_info<C: GenericClient + Sync>(
     object: &Map<String, Value>,
 ) -> Result<Outcome, String> {
     let text = |key| rev2::str_field(object, key).map(str::to_owned);
-    let previous: Option<String> = client
+    let (previous, previous_info_at): (Option<String>, Option<DateTime<Utc>>) = client
         .query_opt(
-            "SELECT fw_version FROM devices WHERE device_id=$1",
+            "SELECT fw_version,info_at FROM devices WHERE device_id=$1",
             &[&ctx.device_id],
         )
         .await
         .map_err(dberr("info lookup"))?
-        .and_then(|row| row.get(0));
+        .map(|row| (row.get(0), row.get(1)))
+        .unwrap_or_default();
     let proto = rev2::i64_field(object, "proto").map(|p| p as i16);
     let schema = rev2::i64_field(object, "schema").map(|s| s as i32);
     let info = Value::Object(object.clone());
     client
         .execute(
             "UPDATE devices SET fw_version=$2,fw_build=$3,hw_version=$4,protocol_rev=COALESCE($5,protocol_rev),
-                payload_schema=COALESCE($6,payload_schema),mcu_uid=$7,imei=$8,iccid=$9,modem=$10,network_name=$11,
+                payload_schema=COALESCE($6,payload_schema),mcu_uid=$7,
+                -- firmware 2.2 omits imei/iccid/modem while they are unknown
+                imei=COALESCE($8,imei),iccid=COALESCE($9,iccid),modem=COALESCE($10,modem),network_name=$11,
                 stream_encoding=$12,reset_cause=$13,info=$14,info_at=$15
              WHERE device_id=$1",
             &[
@@ -494,6 +497,22 @@ async fn store_info<C: GenericClient + Sync>(
         )
         .await?;
     }
+    let mut events = vec![LiveEvent::Presence {
+        device_id: ctx.device_id.to_owned(),
+    }];
+    if !ctx.retained
+        && crate::rev2_commands::maybe_fetch_debug(
+            client,
+            ctx,
+            rev2::str_field(object, "reset"),
+            previous_info_at,
+        )
+        .await?
+    {
+        events.push(LiveEvent::Command {
+            device_id: ctx.device_id.to_owned(),
+        });
+    }
     if previous.is_some() && previous != text("fw") {
         server_event(
             client,
@@ -505,9 +524,7 @@ async fn store_info<C: GenericClient + Sync>(
         .await?;
     }
     Ok(Outcome {
-        events: vec![LiveEvent::Presence {
-            device_id: ctx.device_id.to_owned(),
-        }],
+        events,
         ..Outcome::default()
     })
 }
@@ -618,7 +635,13 @@ async fn store_health<C: GenericClient + Sync>(
     }
     if let Some(generation) = health.settings_gen
         && !crate::rev2_commands::settings_lost(&health)
-        && crate::rev2_commands::maybe_fetch_settings(client, ctx, generation).await?
+        && crate::rev2_commands::maybe_fetch_settings(
+            client,
+            ctx,
+            generation,
+            rev2::fallback_mode(&health),
+        )
+        .await?
     {
         outcome.events.push(LiveEvent::Command {
             device_id: ctx.device_id.to_owned(),
@@ -1198,6 +1221,7 @@ async fn store_stream<C: GenericClient + Sync>(
         )
         .await
         .map_err(dberr("log upsert"))?;
+    let mut outcome_alert = false;
     let mut fresh = 0i32;
     let mut duplicates = 0i32;
     let mut conflicts = 0;
@@ -1259,6 +1283,41 @@ async fn store_stream<C: GenericClient + Sync>(
             "{conflicts} frame(s) repeat a stored (log_id, seq) with different bytes; the first copy is kept"
         ));
     }
+    if !supported && fresh > 0 {
+        // Never guess a layout: the frames stay raw, each batch decoded by
+        // its own header's schema. Frames of a known envelope wait as
+        // derive_pending for a server that has the decoder
+        // (`rederive_pending` takes only schemas this build decodes).
+        if header.envelope_version == stream::ENVELOPE_VERSION {
+            client
+                .execute(
+                    "UPDATE stream_frames SET derive_pending=true,derive_error=$2 WHERE batch_id=$1",
+                    &[
+                        &batch_id,
+                        &format!(
+                            "payload schema {} has no decoder in this server version: kept raw, decoded after a server update",
+                            header.payload_schema
+                        ),
+                    ],
+                )
+                .await
+                .map_err(dberr("undecodable frames"))?;
+        }
+        client
+            .execute(
+                "SELECT groundwater_condition_alert($1,'decoder_missing',true,$2,$3,$4)",
+                &[
+                    &ctx.device_id,
+                    &f64::from(header.payload_schema),
+                    &ctx.received_at,
+                    &json!({"payload_schema":header.payload_schema,"envelope_version":header.envelope_version,
+                        "log_id":log_id,"action":"update the server; the frames are kept raw"}),
+                ],
+            )
+            .await
+            .map_err(dberr("decoder alert"))?;
+        outcome_alert = true;
+    }
     client
         .execute(
             "UPDATE stream_batches SET frames_valid=$2,frames_new=$3,frames_duplicate=$4,warnings=$5 WHERE id=$1",
@@ -1290,6 +1349,11 @@ async fn store_stream<C: GenericClient + Sync>(
         )),
         ..Outcome::default()
     };
+    if outcome_alert {
+        outcome.events.push(LiveEvent::Alert {
+            device_id: ctx.device_id.to_owned(),
+        });
+    }
     let gap_seqs = new_seqs.iter().chain(&positioned);
     let gaps = gap_seqs.clone().min().copied().zip(gap_seqs.max().copied());
     if gaps.is_some() {
@@ -1503,11 +1567,17 @@ pub async fn rederive_pending(
     client: &mut tokio_postgres::Client,
     policy: &Rev2Policy,
 ) -> Result<(usize, usize), String> {
+    // Frames of a payload schema this build has no decoder for stay pending
+    // (raw) until a server that has one starts: never decoded by guessing.
+    let schemas: Vec<i32> = stream::SUPPORTED_PAYLOAD_SCHEMAS
+        .iter()
+        .map(|&s| i32::from(s))
+        .collect();
     let logs = client
         .query(
-            "SELECT device_id,log_id FROM stream_frames WHERE derive_pending
+            "SELECT device_id,log_id FROM stream_frames WHERE derive_pending AND payload_schema=ANY($1)
              UNION SELECT device_id,log_id FROM stream_logs WHERE resolve_pending",
-            &[],
+            &[&schemas],
         )
         .await
         .map_err(dberr("pending derivations"))?;
@@ -1523,8 +1593,9 @@ pub async fn rederive_pending(
             .query(
                 "SELECT f.raw,f.received_at,b.delivery_id FROM stream_frames f
                  LEFT JOIN stream_batches b ON b.id=f.batch_id
-                 WHERE f.device_id=$1 AND f.log_id=$2 AND f.derive_pending ORDER BY f.seq",
-                &[&device, &log_id],
+                 WHERE f.device_id=$1 AND f.log_id=$2 AND f.derive_pending AND f.payload_schema=ANY($3)
+                 ORDER BY f.seq",
+                &[&device, &log_id, &schemas],
             )
             .await
             .map_err(dberr("pending frames"))?;
@@ -1584,6 +1655,17 @@ pub async fn rederive_pending(
             done += 1;
         }
     }
+    // A server update that brought the decoder ends the alert.
+    client
+        .execute(
+            "SELECT groundwater_condition_alert(a.device_id,'decoder_missing',false,0,now(),'{}'::jsonb)
+             FROM alerts a WHERE a.kind='decoder_missing' AND a.state='open' AND NOT a.superseded
+               AND NOT EXISTS(SELECT 1 FROM stream_frames f WHERE f.device_id=a.device_id AND f.derive_pending
+                   AND f.payload_schema<>ALL($1))",
+            &[&schemas],
+        )
+        .await
+        .map_err(dberr("decoder alert"))?;
     Ok((done, failing))
 }
 
@@ -2271,7 +2353,7 @@ async fn activate_snapshot_settings<C: GenericClient + Sync>(
         .query_opt(
             "SELECT h.settings_gen,h.settings FROM device_settings_history h JOIN devices d ON d.device_id=h.device_id
              WHERE h.device_id=$1 AND h.source IN ('snapshot','snapshot-backup')
-               AND h.settings_gen>COALESCE(d.settings_gen,0)
+               AND (h.settings_gen>COALESCE(d.settings_gen,0) OR d.settings_ram_only)
                AND EXISTS(SELECT 1 FROM observations o WHERE o.device_id=h.device_id AND o.record_type=1 AND o.anchor
                    AND o.reading_reason=3 AND o.settings_gen=h.settings_gen)
              ORDER BY h.settings_gen DESC,h.source LIMIT 1",
@@ -2286,6 +2368,7 @@ async fn activate_snapshot_settings<C: GenericClient + Sync>(
             row.get(0),
             &row.get(1),
             ctx.received_at,
+            false,
         )
         .await?;
     }
@@ -2295,19 +2378,29 @@ async fn activate_snapshot_settings<C: GenericClient + Sync>(
 /// Records the logger's effective settings and mirrors its alarm limits
 /// into the server's level alerts (Rev2: the logger raises them itself; the
 /// server keeps a consistent view for charts and its own alert history).
+///
+/// `ram_only`: fallback-mode settings (held in RAM until the next reset,
+/// generations counting from 1 per boot). They replace whatever is known
+/// whatever their generation, and anything replaces them: the RAM and ring
+/// generation sequences are not comparable. Returns the RAM generation the
+/// call replaced with ring settings, if it did.
 pub async fn apply_effective_settings<C: GenericClient + Sync>(
     client: &C,
     device: &str,
     generation: i64,
     settings: &Value,
     at: DateTime<Utc>,
-) -> Result<(), String> {
+    ram_only: bool,
+) -> Result<Option<i64>, String> {
     let number = |key| settings.get(key).and_then(Value::as_f64);
-    client
-        .execute(
-            "UPDATE devices SET settings_gen=$2,settings=$3,settings_at=$4,min_limit=$5,max_limit=$6,
-                min_hysteresis=$7,max_hysteresis=$8,location_id=COALESCE(NULLIF($9,''),location_id)
-             WHERE device_id=$1 AND (settings_gen IS NULL OR settings_gen<=$2)",
+    let row = client
+        .query_opt(
+            "WITH old AS (SELECT settings_gen,settings_ram_only FROM devices WHERE device_id=$1)
+             UPDATE devices SET settings_gen=$2,settings=$3,settings_at=$4,min_limit=$5,max_limit=$6,
+                min_hysteresis=$7,max_hysteresis=$8,location_id=COALESCE(NULLIF($9,''),location_id),
+                settings_ram_only=$10
+             WHERE device_id=$1 AND (settings_gen IS NULL OR settings_gen<=$2 OR $10 OR settings_ram_only)
+             RETURNING (SELECT CASE WHEN old.settings_ram_only AND NOT $10 THEN old.settings_gen END FROM old)",
             &[
                 &device,
                 &generation,
@@ -2318,11 +2411,12 @@ pub async fn apply_effective_settings<C: GenericClient + Sync>(
                 &number("lo_hys"),
                 &number("hi_hys"),
                 &settings.get("loc").and_then(Value::as_str),
+                &ram_only,
             ],
         )
         .await
         .map_err(dberr("effective settings"))?;
-    Ok(())
+    Ok(row.and_then(|row| row.get(0)))
 }
 
 async fn store_file_chunk<C: GenericClient + Sync>(

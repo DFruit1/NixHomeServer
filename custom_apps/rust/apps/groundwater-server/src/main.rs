@@ -54,6 +54,8 @@ mod topics;
 mod ui;
 #[cfg(test)]
 mod vectors_tests;
+#[cfg(test)]
+mod wire_follow_tests;
 
 use std::process::ExitCode;
 use std::sync::Arc;
