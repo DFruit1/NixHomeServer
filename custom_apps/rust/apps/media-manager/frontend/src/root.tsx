@@ -30,6 +30,7 @@ import {
 import { isLibraryKind, supportsMediaAction } from "./media-capabilities";
 import { serverFolderSymbol } from "./server-folders";
 import { PlayerView } from "./player-view";
+import { TranscriptView } from "./transcript-view";
 import { VideosView } from "./videos-view";
 import { ImagesView } from "./images-view";
 import { RefreshView } from "./refresh-view";
@@ -756,6 +757,11 @@ export default component$((props: RootProps) => {
             initialItemId={route.initialItemId}
             initialPath={route.initialPath}
             initialRootId={route.initialRootId}
+          />
+        ) : view.value === "transcript" ? (
+          <TranscriptView
+            rootId={route.initialRootId}
+            path={route.initialPath}
           />
         ) : view.value === "images" ? (
           <ImagesView

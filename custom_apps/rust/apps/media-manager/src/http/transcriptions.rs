@@ -6,6 +6,54 @@ mod boundary_tests {
     use super::*;
     // Root-run decoding and private transcripts create a concrete disclosure
     // risk. These cases must fail before any cross-owner file is returned.
+    // New direct reads must never disclose another owner or follow symlinks.
+    #[test]
+    fn personal_reader_contains_paths_and_preserves_timestamps() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let users = temp.path();
+        std::fs::create_dir_all(users.join("alice/_Transcripts/output")).unwrap();
+        std::fs::create_dir_all(users.join("bob/_Transcripts/private")).unwrap();
+        std::fs::write(
+            users.join("bob/_Transcripts/private/transcript.txt"),
+            "private",
+        )
+        .unwrap();
+        std::fs::write(
+            users.join("alice/_Transcripts/output/transcript.txt"),
+            "hello",
+        )
+        .unwrap();
+        std::fs::write(
+            users.join("alice/_Transcripts/output/subtitles.vtt"),
+            "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhello\n",
+        )
+        .unwrap();
+        let read = |path| read_personal_transcript(users, "alice", path, "test");
+        let result = read("_Transcripts/output/transcript.txt").unwrap();
+        assert_eq!(result["cues"][0]["startMs"], 1000);
+        assert_eq!(result["cues"][0]["text"], "hello");
+        assert!(read("_Transcripts/../../bob/_Transcripts/private/transcript.txt").is_err());
+        assert!(read("_Transcripts/private/transcript.txt").is_err());
+        symlink(
+            users.join("bob/_Transcripts/private"),
+            users.join("alice/_Transcripts/linked"),
+        )
+        .unwrap();
+        assert!(read("_Transcripts/linked/transcript.txt").is_err());
+        symlink(
+            users.join("bob/_Transcripts/private/transcript.txt"),
+            users.join("alice/_Transcripts/output/leak.txt"),
+        )
+        .unwrap();
+        std::fs::remove_file(users.join("alice/_Transcripts/output/subtitles.vtt")).unwrap();
+        assert!(read("_Transcripts/output/leak.txt").is_err());
+        assert_eq!(
+            read("_Transcripts/output/transcript.txt").unwrap()["text"],
+            "hello"
+        );
+    }
+
     #[test]
     fn transcripts_reject_symlinks_and_cross_owner_artifacts() {
         use std::os::unix::fs::symlink;
@@ -341,7 +389,7 @@ pub(super) async fn install(
     }
 }
 
-/// Read the complete timed transcript beside a visible video, without requiring
+/// Read complete timed dialogue for a visible audio/video file, without requiring
 /// the transcription service or its private job history to remain enabled.
 pub(super) async fn video_transcript(
     State(state): State<Arc<AppState>>,
@@ -359,9 +407,10 @@ pub(super) async fn video_transcript(
     };
     let video = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
         Ok(item)
-            if item
-                .media_kind
-                .supports(crate::capabilities::MediaAction::ManageSubtitles) =>
+            if matches!(
+                item.media_kind,
+                MediaKind::Video | MediaKind::Music | MediaKind::Audiobook | MediaKind::Podcast
+            ) =>
         {
             item
         }
@@ -369,7 +418,7 @@ pub(super) async fn video_transcript(
             return ApiError::new(
                 StatusCode::NOT_FOUND,
                 "video_not_found",
-                "Select a visible video.",
+                "Select a visible audio or video file.",
                 id,
             )
             .into_response()
@@ -377,6 +426,24 @@ pub(super) async fn video_transcript(
     };
     let Some(root) = state.config.resolve_visible_root(&identity, &video.root_id) else {
         return ApiError::internal(id).into_response();
+    };
+    let cached_subtitle = if let Some(cache) = &state.config.jellyfin_metadata_cache_file {
+        metadata_handlers::cached_application_metadata(&state.metadata_memo, cache, &video, false)
+            .await
+            .and_then(|entry| {
+                let item = entry.get("itemId")?.as_str()?;
+                if item.is_empty() || !item.chars().all(|c| c.is_ascii_alphanumeric()) {
+                    return None;
+                }
+                Some(
+                    cache
+                        .parent()?
+                        .join("subtitles")
+                        .join(format!("{item}.srt")),
+                )
+            })
+    } else {
+        None
     };
     let worker_id = id.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
@@ -389,11 +456,32 @@ pub(super) async fn video_transcript(
         for part in folder.split('/').filter(|p| !p.is_empty()) {
             directory = directory.child(part)?;
         }
-        let name = format!("{leaf}.transcript.vtt");
-        if !directory.names()?.contains(&name) {
-            return Ok(json!({"cues": [], "requestId": worker_id}));
-        }
-        let mut file = directory.file(&name)?;
+        let stem = leaf.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(leaf);
+        let names = directory.names()?;
+        let candidates = [
+            format!("{leaf}.transcript.vtt"),
+            format!("{stem}.vtt"),
+            format!("{stem}.srt"),
+        ];
+        let (mut file, format) =
+            if let Some(name) = candidates.iter().find(|name| names.contains(name)) {
+                (
+                    directory.file(name)?,
+                    if name.ends_with(".srt") { "srt" } else { "vtt" },
+                )
+            } else if let Some(path) = cached_subtitle.filter(|path| path.is_file()) {
+                let parent = Dir::open(path.parent().ok_or("Invalid subtitle path")?)?;
+                (
+                    parent.file(
+                        path.file_name()
+                            .and_then(|n| n.to_str())
+                            .ok_or("Invalid subtitle name")?,
+                    )?,
+                    "srt",
+                )
+            } else {
+                return Ok(json!({"cues": [], "requestId": worker_id}));
+            };
         let mut bytes = Vec::new();
         file.by_ref()
             .take(MAX_SUBTITLE_BYTES as u64 + 1)
@@ -403,7 +491,7 @@ pub(super) async fn video_transcript(
             return Err("Transcript exceeds preview limit".into());
         }
         let text = std::str::from_utf8(&bytes).map_err(|_| "Invalid transcript encoding")?;
-        let cues = parse_subtitle("vtt", text)?;
+        let cues = parse_subtitle(format, text)?;
         Ok(json!({"cues": cues, "requestId": worker_id}))
     })
     .await
@@ -417,4 +505,84 @@ pub(super) async fn video_transcript(
         )
         .into_response(),
     }
+}
+
+// Only the signed-in user's completed transcript directory is readable here.
+// Descriptor traversal rejects symlinks and parent components at every level.
+#[derive(Deserialize)]
+pub(super) struct TranscriptFileQuery {
+    path: String,
+}
+
+pub(super) async fn transcript_file(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<TranscriptFileQuery>,
+) -> Response {
+    let id = request_id();
+    let identity = match identity_from_headers(&headers, &id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let config = state.config.clone();
+    let worker_id = id.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        read_personal_transcript(
+            &config.users_root,
+            &identity.username,
+            &query.path,
+            &worker_id,
+        )
+    })
+    .await;
+    match result {
+        Ok(Ok(body)) => ([(CACHE_CONTROL, "no-store")], Json(body)).into_response(),
+        _ => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "transcript_not_found",
+            "That transcript is unavailable.",
+            id,
+        )
+        .into_response(),
+    }
+}
+
+fn read_personal_transcript(
+    users_root: &FilePath,
+    username: &str,
+    path: &str,
+    request_id: &str,
+) -> Result<Value, String> {
+    let path = path
+        .strip_prefix("_Transcripts/")
+        .ok_or("Invalid transcript path")?;
+    if !matches!(
+        path.rsplit_once('.').map(|(_, ext)| ext),
+        Some("txt" | "vtt" | "srt")
+    ) {
+        return Err("Invalid transcript format".into());
+    }
+    let (folder, leaf) = path.rsplit_once('/').ok_or("Invalid transcript path")?;
+    let mut directory = Dir::open(users_root)?
+        .traverse(username)?
+        .child("_Transcripts")?;
+    for part in folder.split('/') {
+        directory = directory.child(part)?;
+    }
+    let names = directory.names()?;
+    let selected = ["diarized.srt", "subtitles.vtt", "subtitles.srt"]
+        .into_iter()
+        .find(|name| names.iter().any(|entry| entry == name))
+        .unwrap_or(leaf);
+    let bytes = directory.read(selected, MAX_SUBTITLE_BYTES as u64)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| "Invalid transcript encoding")?;
+    let format = selected.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
+    let cues = if matches!(format, "vtt" | "srt") {
+        parse_subtitle(format, text)?
+    } else {
+        Vec::new()
+    };
+    Ok(
+        json!({"cues": cues, "text": if cues.is_empty() { text } else { "" }, "requestId": request_id}),
+    )
 }

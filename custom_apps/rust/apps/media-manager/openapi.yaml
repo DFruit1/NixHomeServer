@@ -1257,10 +1257,35 @@ paths:
           $ref: '#/components/responses/Error'
         '409':
           $ref: '#/components/responses/Error'
+  /transcript-file:
+    get:
+      operationId: transcriptFile
+      description: Reads a contained file in the signed-in user's _Transcripts directory. Prefers diarized SRT or timed subtitles in the same output directory; plain text is returned when timing is absent. Other owners and symlinks are rejected.
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Complete personal transcript
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/VideoTranscript'
+                  - type: object
+                    required: [text]
+                    properties:
+                      text: { type: string }
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
   /items/{itemId}/transcript:
     get:
       operationId: videoTranscript
-      description: Reads the complete generated UTF-8 WebVTT transcript beside a visible video. Returns no cues when no transcript exists; never returns a partial preview.
+      description: Reads complete UTF-8 timed dialogue for a visible video or audio file from a generated transcript, matching SRT/WebVTT sidecar, or the matched Jellyfin subtitle cache. Returns no cues when no transcript exists; never returns a partial preview.
       parameters:
         - in: path
           name: itemId

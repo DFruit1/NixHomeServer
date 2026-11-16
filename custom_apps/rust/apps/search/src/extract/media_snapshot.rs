@@ -938,6 +938,28 @@ impl super::Extractor for MediaSnapshotExtractor {
                 book_failure = Some(err);
             }
 
+            if let (Some(base), Some(root)) = (
+                source.setting_str("mediaManagerBase"),
+                string_field(entry, "rootId"),
+            ) {
+                if !relative_path.is_empty()
+                    && matches!(
+                        media_type.as_deref(),
+                        Some("movie" | "episode" | "video" | "podcast" | "audiobook" | "music")
+                    )
+                {
+                    let query = form_urlencoded::Serializer::new(String::new())
+                        .append_pair("view", "transcript")
+                        .append_pair("root", &root)
+                        .append_pair("path", &relative_path)
+                        .finish();
+                    metadata.insert(
+                        "transcript_url".into(),
+                        Value::String(format!("{}?{query}", base.trim_end_matches('/'))),
+                    );
+                }
+            }
+
             emit_episodes(entry, &title, &metadata, &app_url, emit);
             // Dialogue finds a film by a remembered line but is not what the
             // film is about, so it is searched as incidental text.

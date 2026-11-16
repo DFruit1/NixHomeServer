@@ -228,3 +228,10 @@ non-playable `.backup` suffix; existing ordering sidecars are archived before
 replacement and file-specific metadata follows renames. Unsupported or incomplete
 albums block preparation. Activity owns execution/retry; players need a refresh
 after completion and can still override order through shuffle or manual queues.
+
+Search result actions show Show transcript (for linked media/transcript files),
+Copy link, then Details, with the same quiet text hierarchy. Transcript links
+open Media Manager's searchable dialogue view without starting playback. Folder
+results offer their individual recordings; absent timing falls back to readable
+text, and missing transcripts report availability in place. The reader uses
+page scrolling so the final line remains reachable on phones and desktops.

@@ -67,7 +67,8 @@ export type View =
   | "refresh"
   | "player"
   | "videos"
-  | "images";
+  | "images"
+  | "transcript";
 
 export interface RootProps {
   initialView?: View;

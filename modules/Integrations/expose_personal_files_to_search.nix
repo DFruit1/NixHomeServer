@@ -18,6 +18,7 @@ in
         sourceType = "files";
         appBase = "https://files.${vars.domain}";
         settings = {
+          mediaManagerBase = "https://${config.repo.media-manager.domain}";
           usersRoot = vars.usersRoot;
         }
         // lib.optionalAttrs filesPresent { documentDirs = [ "_Files" ]; }

@@ -306,6 +306,17 @@ impl super::Extractor for FilesExtractor {
                 .ok()
                 .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|duration| duration.as_secs() as i64);
+            let mut metadata = json!({ "owner": file.owner });
+            if file.folder == Folder::Transcripts {
+                if let Some(base) = source.setting_str("mediaManagerBase") {
+                    let query = form_urlencoded::Serializer::new(String::new())
+                        .append_pair("view", "transcript")
+                        .append_pair("path", &file.relative)
+                        .finish();
+                    metadata["transcript_url"] =
+                        json!(format!("{}?{query}", base.trim_end_matches('/')));
+                }
+            }
             let work = ExtractedDocument {
                 incidental_text: String::new(),
                 external_id: sha256_hex(&[&file.owner, &file.relative]),
@@ -321,7 +332,7 @@ impl super::Extractor for FilesExtractor {
                 size_bytes: details.len() as i64,
                 content_created_at: modified,
                 content_modified_at: modified,
-                metadata: json!({ "owner": file.owner }),
+                metadata,
             };
             emit_work(work, found, emit);
         }

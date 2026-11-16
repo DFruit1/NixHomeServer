@@ -364,6 +364,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/items/{item_id}/transcript",
             get(transcriptions::video_transcript),
         )
+        .route(
+            "/api/v1/transcript-file",
+            get(transcriptions::transcript_file),
+        )
         .route("/api/v1/transcriptions", get(transcriptions::jobs))
         .route(
             "/api/v1/transcriptions/{job}/artifacts/{name}",

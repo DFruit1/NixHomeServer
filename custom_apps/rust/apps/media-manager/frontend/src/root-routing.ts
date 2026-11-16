@@ -22,6 +22,7 @@ const ROOT_VIEWS: Set<View> = new Set<View>([
   "player",
   "videos",
   "images",
+  "transcript",
 ]);
 
 export function rootFromSearch(search: string): string {

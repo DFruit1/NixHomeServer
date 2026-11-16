@@ -7674,3 +7674,38 @@ a:focus-visible {
   font-size: 14px;
   overflow-wrap: anywhere;
 }
+
+/* Search deep links keep complete dialogue readable without starting playback. */
+.transcript-page {
+  max-width: 75ch;
+  margin-inline: auto;
+}
+.transcript-page h2,
+.transcript-page pre {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.transcript-page input {
+  display: block;
+  width: 100%;
+  min-height: var(--control-height);
+}
+.transcript-page-lines {
+  list-style: none;
+  padding: 0;
+}
+.transcript-page-lines li {
+  display: flex;
+  gap: 1rem;
+  padding-block: 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+.transcript-page-lines time {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+.transcript-page-lines span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}

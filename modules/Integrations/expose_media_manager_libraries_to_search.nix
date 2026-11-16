@@ -24,6 +24,7 @@ in
             sourceType = "media-snapshot";
             appBase = "https://videos.${vars.domain}";
             settings = {
+              mediaManagerBase = "https://${config.repo.media-manager.domain}";
               snapshotPath = "/var/cache/media-manager-jellyfin/metadata.json";
               # Modern Jellyfin web routes identify the item directly.
               itemUrl = "/web/#/details?id={itemId}";
@@ -39,6 +40,7 @@ in
             sourceType = "media-snapshot";
             appBase = "https://audiobooks.${vars.domain}/audiobookshelf/";
             settings = {
+              mediaManagerBase = "https://${config.repo.media-manager.domain}";
               snapshotPath = "/var/cache/media-manager-audiobookshelf/metadata.json";
               itemUrl = "/item/{itemId}";
               # Catalogue files beside the tracks name the author, narrator
@@ -55,6 +57,7 @@ in
             sourceType = "media-snapshot";
             appBase = "https://books.${vars.domain}";
             settings = {
+              mediaManagerBase = "https://${config.repo.media-manager.domain}";
               snapshotPath = "/var/cache/media-manager-kavita/metadata.json";
               # Kavita opens a series within its library.
               itemUrl = "/library/{libraryId}/series/{itemId}";
