@@ -7,6 +7,11 @@ const V21 = ["8F3A21C04B9E77A1D25C01FE", "A13A21C04B9E77A1D25C01AB"];
 const V22 = "6A1B2C3D4E5F60718293A4B5";
 let role = "operator",
   mode = "normal",
+  // busy: the CSV export answers 429 as when four exports already run.
+  // crossorigin: every write is refused as the API refuses a write the
+  // browser marks as sent from another origin.
+  busy = false,
+  crossOrigin = false,
   commands = [],
   nextId = 100;
 const now = () => new Date().toISOString();
@@ -235,30 +240,53 @@ const deviceView = (d) => ({
         latest_received: observation(true),
         latest_plausible: observation(true),
         health:
-          mode === "fault" ? { ...d.health, mram: "locked", err: 7 } : d.health,
+          mode === "fault"
+            ? { ...d.health, mram: "locked", err: 7, log: "off" }
+            : d.health,
       }
     : {}),
+  open_alert_count: allAlerts().filter(
+    (a) => a.device_id === d.device_id && a.state === "open",
+  ).length,
   pending_challenge_count: commands.filter(
     (c) => c.device_id === d.device_id && c.state === "challenge",
   ).length,
 });
 
+// As ops_api.rs ALERT_JSON; `detail` carries what alerting.sql stores: the
+// event's own details (copy keys lvl/thr/ss/mv/dist_m/thr_m, record keys
+// level/threshold/sensor_status/sensor_mv/distance_m/threshold_m) plus
+// subject, event, source, seq, log_id, time_estimated and received_at.
+const severity = (kind) =>
+  ["power_critical", "tail_lock", "mram_fault"].includes(kind)
+    ? "critical"
+    : ["solar_low", "signal_low"].includes(kind)
+      ? "info"
+      : "warning";
+const logged = (event, source, seq, receivedAt, extra) => ({
+  subject: "",
+  event,
+  event_id: seq,
+  source,
+  seq,
+  log_id: source === "record" ? 1761000001 : null,
+  time_estimated: false,
+  received_at: receivedAt,
+  ...extra,
+});
 let alerts = [
   {
     id: 1,
     device_id: V21[0],
     kind: "above_max",
-    severity: "warning",
     state: "open",
     trigger_value: 5.6,
     opened_at: ago(2 * HOUR),
-    resolved_at: null,
   },
   {
     id: 2,
     device_id: V21[0],
     kind: "below_min",
-    severity: "warning",
     state: "resolved",
     trigger_value: 1.2,
     opened_at: ago(10 * HOUR),
@@ -268,11 +296,9 @@ let alerts = [
     id: 3,
     device_id: V22,
     kind: "battery_low",
-    severity: "warning",
     state: "open",
     trigger_value: 6.91,
     opened_at: ago(5 * HOUR),
-    resolved_at: null,
     acknowledged_at: ago(4 * HOUR),
     acknowledged_by: "fixture-user",
     ack_note: "Battery swap booked for Thursday",
@@ -281,14 +307,193 @@ let alerts = [
     id: 4,
     device_id: V22,
     kind: "stale",
-    severity: "warning",
     state: "resolved",
     trigger_value: 1.5,
     opened_at: ago(6 * DAY),
     resolved_at: ago(5.9 * DAY),
-    detail: { margin_min: 30 },
+    detail: {
+      expected_at: ago(6 * DAY + 40 * 60000),
+      stale_after: ago(6 * DAY),
+      margin_min: 40,
+    },
+  },
+  {
+    id: 5,
+    device_id: V22,
+    kind: "sensor_fault",
+    state: "open",
+    trigger_value: 2150,
+    opened_at: ago(40 * HOUR),
+    detail: logged("sensor_fault", "record", 370, ago(20 * HOUR), {
+      state: "enter",
+      sensor_status: 3,
+      sensor_status_name: "over-range",
+      sensor_mv: 2150,
+      settings_gen: 5,
+    }),
+  },
+  {
+    id: 6,
+    device_id: V22,
+    kind: "gwl_alarm",
+    state: "resolved",
+    trigger_value: 15.2,
+    opened_at: ago(2 * HOUR),
+    resolved_at: ago(1.5 * HOUR),
+    detail: {
+      ...logged("gwl_alarm_enter", "alert", 431, ago(2 * HOUR - 60000), {
+        limit: "high",
+        state: "enter",
+        lvl: 15.2,
+        thr: 15,
+        subject: "high",
+      }),
+      resolution: "logger",
+      exit: { limit: "high", state: "exit", lvl: 14.7, thr: 15 },
+    },
+  },
+  {
+    id: 7,
+    device_id: V22,
+    kind: "impact",
+    state: "open",
+    trigger_value: 2310,
+    opened_at: ago(3 * DAY),
+    detail: {
+      ...logged("impact", "record", 402, ago(26 * HOUR), {
+        source: "tap",
+        peak_mg: 2310,
+      }),
+      repeats: 1,
+      last_at: ago(2 * DAY),
+    },
+  },
+  {
+    id: 8,
+    device_id: V22,
+    kind: "gps_moved",
+    state: "open",
+    trigger_value: 41,
+    opened_at: ago(50 * HOUR),
+    detail: logged("gps_moved", "alert", null, ago(50 * HOUR - 60000), {
+      dist_m: 41,
+      thr_m: 25,
+    }),
+  },
+  {
+    id: 9,
+    device_id: V22,
+    kind: "power_critical",
+    state: "resolved",
+    trigger_value: 6.55,
+    opened_at: ago(90 * HOUR),
+    resolved_at: ago(80 * HOUR),
+    detail: {
+      ...logged("power_critical", "record", 340, ago(70 * HOUR), {
+        state: "enter",
+        kind: "battery-critical",
+        bat_mv: 6550,
+        sol_mv: 200,
+      }),
+      resolution: "logger",
+    },
+  },
+  {
+    id: 10,
+    device_id: V22,
+    kind: "orientation",
+    state: "resolved",
+    trigger_value: 12.3,
+    opened_at: ago(27 * HOUR),
+    resolved_at: ago(20 * HOUR),
+    resolved_by: "fixture-user",
+    resolve_note: "Casing knocked during mowing; re-seated",
+    detail: logged("orientation", "alert", 401, ago(27 * HOUR - 60000), {
+      tilt_deg: 12.3,
+    }),
+  },
+  {
+    id: 11,
+    device_id: V22,
+    kind: "sd_card",
+    state: "resolved",
+    trigger_value: 0,
+    opened_at: ago(48 * HOUR),
+    resolved_at: ago(42 * HOUR),
+    detail: {
+      sd: "error",
+      sd_free_mb: 7392,
+      source: "server",
+      resolution: "health",
+    },
+  },
+  {
+    id: 12,
+    device_id: V22,
+    kind: "signal_low",
+    state: "resolved",
+    trigger_value: 6,
+    opened_at: ago(9 * DAY),
+    resolved_at: ago(8 * DAY),
+    detail: { csq: 6, source: "server", resolution: "health" },
+  },
+  {
+    id: 13,
+    device_id: V22,
+    kind: "watchdog_resets",
+    state: "resolved",
+    trigger_value: 2,
+    opened_at: ago(12 * DAY),
+    resolved_at: ago(5 * DAY),
+    detail: { resets_7d: 2, source: "server", resolution: "health" },
+  },
+  {
+    id: 14,
+    device_id: V22,
+    kind: "clock_invalid",
+    state: "resolved",
+    trigger_value: 0,
+    opened_at: ago(30 * DAY),
+    resolved_at: ago(29.9 * DAY),
+    detail: { source: "server", resolution: "health" },
+  },
+  {
+    id: 15,
+    device_id: V22,
+    kind: "tail_lock",
+    state: "resolved",
+    trigger_value: 0,
+    opened_at: ago(121 * HOUR),
+    resolved_at: ago(118 * HOUR),
+    detail: {
+      ...logged("tail_lock", "record", 299, ago(110 * HOUR), {
+        head: 1,
+        tail: 2,
+        reason: "ring-full-unsaved",
+      }),
+      resolution: "logger",
+    },
+  },
+  {
+    id: 16,
+    device_id: V22,
+    kind: "mram_almost_full",
+    state: "resolved",
+    trigger_value: 94000,
+    opened_at: ago(125 * HOUR),
+    resolved_at: ago(117 * HOUR),
+    detail: {
+      ...logged("storage_warning", "alert", null, ago(124 * HOUR), {
+        kind: "mram_almost_full",
+        unsaved: 94000,
+        usable: 122368,
+      }),
+      resolution: "health",
+    },
   },
 ].map((a) => ({
+  severity: severity(a.kind),
+  resolved_at: null,
   acknowledged_at: null,
   acknowledged_by: null,
   ack_note: null,
@@ -297,6 +502,32 @@ let alerts = [
   detail: {},
   ...a,
 }));
+// Fault mode: what the server raises from that state (health err 7, ring
+// locked) on top of the logger's own alerts.
+const faultAlerts = () =>
+  mode !== "fault"
+    ? []
+    : [
+        ["logger_error", 7, { err: 7 }],
+        ["tail_lock", 1234, { mram: "locked", unsaved: 1234, usable: 122368 }],
+        ["logging_off", 0, { log: "off" }],
+      ].map(([kind, value, detail], i) => ({
+        id: 200 + i,
+        device_id: V22,
+        kind,
+        severity: severity(kind),
+        state: "open",
+        trigger_value: value,
+        opened_at: ago(4 * HOUR),
+        resolved_at: null,
+        acknowledged_at: null,
+        acknowledged_by: null,
+        ack_note: null,
+        resolved_by: null,
+        resolve_note: null,
+        detail: { ...detail, source: "server" },
+      }));
+const allAlerts = () => [...alerts, ...faultAlerts()];
 
 const health = Array.from({ length: 30 }, (_, i) => ({
   id: 30 - i,
@@ -470,7 +701,8 @@ const positions = Array.from({ length: 8 }, (_, i) => ({
   received_at: ago(i * DAY),
   settings_gen: 5,
   reason: 1,
-  fix: i === 4 ? 2 : 3,
+  // Records code 0 none, 1 2D, 2 3D; the gps JSON adds one (3 = 3D).
+  fix: i === 7 ? 3 : i === 4 ? 1 : 2,
   lat: -33.8688197 + (i === 2 ? 0.00037 : i * 0.000004),
   lon: 151.2092955 + (i === 2 ? 0.00012 : -i * 0.000003),
   alt_m: 12 + i,
@@ -742,6 +974,23 @@ let downloads = [
     completed_at: null,
   },
   {
+    id: 2,
+    path: "/GWL/68F6A0E1/B0000002.BIN",
+    requested_by: "fixture-user",
+    state: "failed",
+    size: 65536,
+    received_bytes: 8192,
+    next_offset: 8192,
+    current_command_id: null,
+    crc32: null,
+    // rev2_commands.rs file_chunk_received (C8).
+    error:
+      "the file changed size during the download (65536 → 98304 bytes); download it again",
+    created_at: ago(3 * DAY),
+    updated_at: ago(3 * DAY),
+    completed_at: null,
+  },
+  {
     id: 3,
     path: "/GWL/EXPORT.DAT",
     requested_by: "fixture-user",
@@ -791,17 +1040,24 @@ const DEFAULTS = {
   stale_enabled: true,
   stale_margin_min: 30,
 };
+// notify.rs KINDS (11 rules).
 const RULES = [
-  ["above_max", "Level above high limit", "alert", ["warning"]],
-  ["below_min", "Level below low limit", "alert", ["warning"]],
+  ["above_max", "Level above maximum", "alert", ["warning"]],
+  ["below_min", "Level below minimum", "alert", ["warning"]],
   ["battery_low", "Battery low", "alert", ["warning"]],
   ["solar_low", "Solar low", "alert", ["info"]],
   ["stale", "Missed connection", "alert", ["warning"]],
-  ["gwl_alarm", "Logger level alarm", "event", ["warning", "info"]],
-  ["power_critical", "Power critical", "event", ["critical", "info"]],
-  ["sensor_fault", "Sensor fault", "event", ["warning", "info"]],
-  ["storage", "Storage", "event", ["critical", "warning", "info"]],
-  ["tamper", "Impact / orientation / moved", "event", ["warning"]],
+  ["gwl_alarm", "Logger level alarm", "alert", ["warning"]],
+  ["power_critical", "Power critical", "alert", ["critical"]],
+  ["sensor_fault", "Sensor fault", "alert", ["warning"]],
+  ["storage", "Storage (SD/MRAM)", "alert", ["warning", "critical"]],
+  ["tamper", "Impact, orientation or movement", "alert", ["warning"]],
+  [
+    "health",
+    "Logger health (errors, logging off, clock, signal, resets)",
+    "alert",
+    ["info", "warning"],
+  ],
 ];
 let rules = RULES.map(([kind, label, source, severities]) => ({
   kind,
@@ -810,8 +1066,8 @@ let rules = RULES.map(([kind, label, source, severities]) => ({
   severities,
   enabled: kind !== "solar_low",
   min_severity: "warning",
-  priority: kind === "power_critical" ? 5 : 4,
-  cooldown_min: 60,
+  priority: kind === "power_critical" ? 5 : kind === "health" ? 3 : 4,
+  cooldown_min: kind === "health" ? 720 : 60,
   notify_resolved: true,
   topic: null,
   updated_by: null,
@@ -840,16 +1096,16 @@ const notifications = [
     id: 2,
     device_id: V22,
     display_name: "Bore 7 · North paddock",
-    kind: "tamper",
+    kind: "impact",
     severity: "warning",
-    transition: "event",
+    transition: "open",
     title: "Impact: Bore 7",
     message: "Impact peak 2310 mg",
     state: "suppressed",
     reason: "cooldown",
     attempts: 0,
-    alert_id: null,
-    event_id: 3,
+    alert_id: 7,
+    event_id: null,
     suppressed_count: 0,
     created_at: ago(26 * HOUR),
     sent_at: null,
@@ -1329,6 +1585,9 @@ async function deviceRoute(req, res, url, deviceId, rest) {
             completed_at: now(),
           });
       }
+    downloads.sort(
+      (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at),
+    );
     return json(res, { downloads: rev2 ? downloads : [] });
   }
   let m = /^files\/downloads\/(\d+)(\/(content|cancel))?$/.exec(rest);
@@ -1583,6 +1842,15 @@ async function deviceRoute(req, res, url, deviceId, rest) {
     }
     if (method === "POST") {
       const rotated = current.mode !== "shared";
+      if (rotated && body.confirm !== "ROTATE")
+        return json(
+          res,
+          {
+            error:
+              "type ROTATE to replace this unit's password; a unit already using its own account stays offline until reflashed",
+          },
+          400,
+        );
       credentials.set(deviceId, {
         ...current,
         mode: rotated ? current.mode : "dual",
@@ -1607,6 +1875,17 @@ async function deviceRoute(req, res, url, deviceId, rest) {
       );
     }
     if (method === "DELETE") {
+      if (body.confirm !== "REMOVE")
+        return json(
+          res,
+          {
+            error:
+              "type REMOVE to delete this unit's own account; a unit flashed with it stays offline until reflashed with the shared account",
+          },
+          400,
+        );
+      if (current.mode === "shared")
+        return json(res, { error: "this unit uses the shared account" }, 404);
       credentials.delete(deviceId);
       d.mqtt_auth = "shared";
       return json(res, { credentials: view() });
@@ -1644,7 +1923,9 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/__fixture") {
     role = url.searchParams.get("role") || "operator";
     mode = url.searchParams.get("mode") || "normal";
-    return json(res, { role, mode });
+    busy = url.searchParams.get("busy") === "1";
+    crossOrigin = url.searchParams.get("crossorigin") === "1";
+    return json(res, { role, mode, busy, crossOrigin });
   }
   if (url.pathname === "/api/events") {
     res.writeHead(200, {
@@ -1661,6 +1942,17 @@ const server = createServer(async (req, res) => {
   const write = req.method !== "GET";
   if (write && role !== "operator")
     return json(res, { error: "operator role required" }, 403);
+  // api.rs cross_origin(): Sec-Fetch-Site other than same-origin/none.
+  const site = req.headers["sec-fetch-site"];
+  if (
+    write &&
+    (crossOrigin || (site && !["same-origin", "none"].includes(site)))
+  )
+    return json(
+      res,
+      { error: "cross-origin requests may not change state" },
+      403,
+    );
   const visible = () =>
     mode === "empty" ? [] : [...devices.values()].map(deviceView);
   const path = url.pathname;
@@ -1669,7 +1961,11 @@ const server = createServer(async (req, res) => {
       user: { username: "fixture-user", role },
       broker: { configured: true, connected: true },
       service: "groundwater-server",
-      ingest: {},
+      ingest: {
+        deliveries: 42,
+        observations: 40,
+        lastDeliveryAt: role === "operator" ? ago(4 * HOUR) : null,
+      },
     });
   if (path === "/api/devices") {
     if (req.method === "POST") {
@@ -1734,13 +2030,16 @@ const server = createServer(async (req, res) => {
   if (path === "/api/alerts") {
     const state = url.searchParams.get("state") || "all";
     const device = url.searchParams.get("device");
+    const kind = url.searchParams.get("kind");
     return json(res, {
-      alerts: alerts
+      alerts: allAlerts()
         .filter(
           (a) =>
             (state === "all" || a.state === state) &&
-            (!device || a.device_id === device),
+            (!device || a.device_id === device) &&
+            (!kind || a.kind === kind),
         )
+        .sort((a, b) => Date.parse(b.opened_at) - Date.parse(a.opened_at))
         .map((a) => ({
           ...a,
           display_name: devices.get(a.device_id)?.display_name,
@@ -1760,7 +2059,7 @@ const server = createServer(async (req, res) => {
       });
     else {
       if (alert.state !== "open")
-        return json(res, { error: "alert is not open" }, 409);
+        return json(res, { error: "the alert is no longer open" }, 409);
       Object.assign(alert, {
         state: "resolved",
         resolved_at: now(),
@@ -1884,10 +2183,32 @@ const server = createServer(async (req, res) => {
           source_profile: "V21",
           binding_key: "fixture",
         },
+        {
+          received_at: ago(HOUR),
+          topic: "gwl/v1/0000000000000000000000AA/health",
+          kind: "health",
+          device_id: null,
+          claimed_device_id: "0000000000000000000000AA",
+          qos: 1,
+          payload: '{"v":2,"t":1763300000,"tv":1,"bat_mv":7400}',
+          state: "quarantined",
+          reason: "unknown-device",
+          detail: "no enrolled device has this DeviceID",
+          time_quality: null,
+          duplicate_outcome: null,
+          source_profile: null,
+          binding_key: null,
+        },
       ],
     });
   }
   if (path === "/api/export") {
+    if (busy)
+      return json(
+        res,
+        { error: "other exports are running; try again shortly" },
+        429,
+      );
     res.writeHead(200, {
       "Content-Type": "text/csv",
       "Content-Disposition": 'attachment; filename="groundwater.csv"',

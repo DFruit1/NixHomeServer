@@ -2,6 +2,7 @@ import { component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
 import type { Alert, DeviceEvent, SeriesPoint } from "./types";
 import { number, stamp } from "./api";
 import { sensorProblem } from "./events";
+import { alertLabel, alertValue } from "./alert-text";
 
 /** A span in which the logger reported a sensor fault (Type 17 enter until
  * its exit). Levels inside it come from an out-of-range or failed loop and
@@ -75,6 +76,7 @@ export function seriesGeometry(
   width = 960,
   inverted = false,
   minPad = 0.05,
+  nonNegative = false,
 ) {
   const values = samples
     .map(([, v]) => v)
@@ -86,7 +88,9 @@ export function seriesGeometry(
   const low = bounds.length ? Math.min(...bounds) : 0,
     high = bounds.length ? Math.max(...bounds) : 1;
   const pad = Math.max((high - low) * 0.12, minPad);
-  const min = low - pad,
+  // A quantity that cannot be negative (volts, bytes, CSQ) is never padded
+  // below zero.
+  const min = nonNegative && low >= 0 ? Math.max(0, low - pad) : low - pad,
     max = high + pad;
   const x = (time: number) =>
     60 + ((time - from) / Math.max(1, to - from)) * (width - 90);
@@ -161,6 +165,8 @@ export const TimeChart = component$<{
   digits?: number;
   inverted?: boolean;
   band?: { min: number | null; max: number | null } | null;
+  /** Volts, bytes, CSQ: the axis never goes below zero. */
+  nonNegative?: boolean;
 }>((props) => {
   const figure = useSignal<HTMLElement>();
   const width = useSignal(960);
@@ -183,6 +189,7 @@ export const TimeChart = component$<{
     width.value,
     props.inverted,
     props.digits === 0 ? 1 : 0.05,
+    props.nonNegative,
   );
   const count = all.filter(([, v]) => v != null).length;
   const digits = props.digits ?? 2;
@@ -442,7 +449,7 @@ export const HistoryChart = component$<{
                   y1="22"
                   y2="222"
                 >
-                  <title>{`${a.kind}: ${a.trigger_value} m at ${stamp(a.opened_at)}`}</title>
+                  <title>{`${alertLabel(a)}: ${alertValue(a)} at ${stamp(a.opened_at)}`}</title>
                 </line>
                 <text
                   class="alert-label"

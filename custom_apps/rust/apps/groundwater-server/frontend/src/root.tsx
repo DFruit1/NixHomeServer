@@ -7,6 +7,7 @@ import {
 } from "@builder.io/qwik";
 import {
   dateInput,
+  download,
   errorText,
   exportUrl,
   query,
@@ -37,6 +38,8 @@ import { StreamView } from "./stream";
 import { AlertHistory, DevicePolicyPanel, LimitsEditor } from "./alerts";
 import { AdminPage, GapsPage } from "./admin";
 import { InstallationView } from "./installation";
+import { relative } from "./format";
+import { useNow } from "./hooks";
 import { DATUM_MODES } from "./ops";
 import { deviceViews, viewLabel } from "./routes";
 
@@ -55,6 +58,9 @@ export default component$(() => {
   const global = useStore<{
     status?: Status;
     devices?: Device[];
+    /** Open alerts of every visible device; names the fleet's attention
+     * items (undefined when they could not be loaded: counts are shown). */
+    openAlerts?: Alert[];
     errors: string[];
     loading: boolean;
   }>({ errors: [], loading: true });
@@ -65,6 +71,7 @@ export default component$(() => {
     errors: {},
     loading: false,
   });
+  const clock = useNow(60000);
   const live = useSignal("Connecting…"),
     revision = useSignal(0),
     updated = useSignal("");
@@ -82,6 +89,7 @@ export default component$(() => {
     bucket: 15,
   });
   const rangeError = useSignal("");
+  const exporting = useSignal(false);
   const refreshPending = useSignal(false);
   const refresh = $(() => {
     refreshPending.value = true;
@@ -134,9 +142,15 @@ export default component$(() => {
         Promise.allSettled([
           request<Status>("/api/status", signal),
           request<{ devices: Device[] }>("/api/devices", signal),
+          request<{ alerts: Alert[] }>(
+            "/api/alerts?state=open&limit=1000",
+            signal,
+          ),
         ]),
       (results) => {
-        const [status, devices] = results;
+        const [status, devices, alerts] = results;
+        global.openAlerts =
+          alerts.status === "fulfilled" ? alerts.value.alerts : undefined;
         global.errors = [];
         if (status.status === "fulfilled") global.status = status.value;
         else {
@@ -315,6 +329,16 @@ export default component$(() => {
           <span class="muted" role="status">
             {live.value}
           </span>
+          {operator && global.status && (
+            <span
+              class="muted"
+              title={stamp(global.status.ingest.lastDeliveryAt)}
+            >
+              {global.status.ingest.lastDeliveryAt
+                ? `last delivery ${relative(global.status.ingest.lastDeliveryAt, clock.value)}`
+                : "no delivery stored"}
+            </span>
+          )}
           <button
             onClick$={refresh}
             disabled={global.loading || workspace.loading}
@@ -357,7 +381,12 @@ export default component$(() => {
                 {global.loading && !global.devices && (
                   <p role="status">Loading devices…</p>
                 )}
-                {global.devices && <Fleet devices={global.devices} />}
+                {global.devices && (
+                  <Fleet
+                    devices={global.devices}
+                    openAlerts={global.openAlerts}
+                  />
+                )}
               </>
             )}
           </>
@@ -536,16 +565,32 @@ export default component$(() => {
                         <button class="primary" type="submit">
                           Apply range
                         </button>
-                        <a
-                          class="button"
-                          href={exportUrl(
-                            device.device_id,
-                            range.from,
-                            range.to,
-                          )}
+                        <button
+                          type="button"
+                          disabled={exporting.value}
+                          aria-busy={exporting.value}
+                          onClick$={async () => {
+                            if (exporting.value) return;
+                            exporting.value = true;
+                            rangeError.value = "";
+                            try {
+                              await download(
+                                exportUrl(
+                                  device.device_id,
+                                  range.from,
+                                  range.to,
+                                ),
+                                "groundwater-observations.csv",
+                              );
+                            } catch (error) {
+                              rangeError.value = errorText(error);
+                            } finally {
+                              exporting.value = false;
+                            }
+                          }}
                         >
-                          Export CSV
-                        </a>
+                          {exporting.value ? "Exporting…" : "Export CSV"}
+                        </button>
                       </div>
                       <div class="quick-range" aria-label="Recent history">
                         {[24, 168, 720].map((hours) => (
@@ -599,6 +644,11 @@ export default component$(() => {
                     device={device}
                     revision={revision.value}
                     operator={operator}
+                    openAlerts={
+                      workspace.errors.open
+                        ? undefined
+                        : workspace.alerts.filter((a) => a.state === "open")
+                    }
                   />
                 )}
                 {view === "health" && (

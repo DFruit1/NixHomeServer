@@ -5,7 +5,7 @@ import {
   useVisibleTask$,
   type ReadonlySignal,
 } from "@builder.io/qwik";
-import { errorText, request } from "./api";
+import { errorText, failure, request } from "./api";
 import { latestRequest } from "./live";
 
 export interface Loaded<T> {
@@ -84,20 +84,7 @@ export async function send<T>(
       body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (!response.ok) {
-    const error: unknown = await response.json().catch(() => null);
-    const message =
-      error && typeof error === "object" && "error" in error
-        ? String(error.error)
-        : response.statusText;
-    throw new Error(
-      response.status === 401
-        ? "Your session expired. Reload to sign in again."
-        : response.status === 403
-          ? "You do not have permission for this action."
-          : `${response.status}: ${message || "Request failed"}`,
-    );
-  }
+  if (!response.ok) throw await failure(response);
   const text = await response.text();
   return (text ? JSON.parse(text) : {}) as T;
 }
