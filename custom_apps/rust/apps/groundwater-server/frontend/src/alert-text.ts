@@ -30,6 +30,9 @@ export const ALERT_KIND_LABEL: Record<string, string> = {
   signal_low: "Weak signal",
   watchdog_resets: "Repeated watchdog resets",
   settings_lost: "Settings lost (logging stopped)",
+  battery_unread: "Battery not read",
+  boot_report: "Boot report",
+  decoder_missing: "Data cannot be decoded (server update needed)",
 };
 
 type AlertFields = Pick<Alert, "kind" | "trigger_value" | "detail">;
@@ -59,7 +62,10 @@ export function alertValue(alert: AlertFields) {
     case "battery_low":
     case "solar_low":
     case "power_critical":
-      return `${number(v, 2)} V`;
+      // Firmware 2.2 leaves bat_mv out when the ADC reading failed.
+      return alert.kind === "power_critical" && field(d, "bat_mv") == null && !v
+        ? "battery not read"
+        : `${number(v, 2)} V`;
     case "stale":
       return `${number(v, 1)} h overdue`;
     case "above_max":
@@ -70,7 +76,10 @@ export function alertValue(alert: AlertFields) {
       return `${number(v, 3)} m${limit == null ? "" : ` (limit ${number(limit, 3)} m)`}`;
     }
     case "sensor_fault":
-      return `${number(v, 0)} mV`;
+      // Firmware 2.2 leaves mv out when the sensor was not read.
+      return field(d, "sensor_mv", "mv") == null && !v
+        ? "mV not read"
+        : `${number(v, 0)} mV`;
     case "impact":
       return `${number(v, 0)} mg`;
     case "orientation":
@@ -87,6 +96,10 @@ export function alertValue(alert: AlertFields) {
       return `code ${number(v, 0)}`;
     case "settings_lost":
       return `error ${latchedErrorText(v)}`;
+    case "battery_unread":
+      return `${number(v, 0)} health reports without it`;
+    case "decoder_missing":
+      return `payload schema ${number(v, 0)}`;
     case "mram_almost_full":
     case "tail_lock": {
       const unsaved = field(d, "unsaved") ?? (v > 0 ? v : null);
@@ -127,6 +140,18 @@ export function alertNotes(alert: AlertFields) {
       );
     notes.push("send full settings with Replace on the Settings tab");
   }
+  if (alert.kind === "boot_report" && Array.isArray(d.problems))
+    notes.push(d.problems.map(String).join("; "));
+  if (alert.kind === "decoder_missing")
+    notes.push(
+      "frames are kept raw; update the server and they are decoded at its first start",
+    );
+  if (alert.kind === "battery_unread")
+    notes.push("battery low and power critical alerts cannot work meanwhile");
+  if (alert.kind === "orientation" || alert.kind === "gps_moved")
+    notes.push(
+      "one alert per excursion: the logger re-arms only after the value is back within the re-arm margin",
+    );
   if (alert.kind === "solar_low") {
     const days = field(d, "days"),
       threshold = field(d, "threshold_mv");

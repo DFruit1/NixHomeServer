@@ -3,7 +3,7 @@
 //! Lifecycle of a command row (`commands.protocol = 2`):
 //!
 //! ```text
-//! queued ──publish+PUBACK──▶ sent ──ack──▶ acked (final_status ok/partial/failed/rejected/duplicate)
+//! queued ──publish+PUBACK──▶ sent ──ack──▶ acked (final_status ok/partial/failed/rejected/duplicate/interrupted)
 //!   ▲                          │  └─challenge──▶ challenge ──confirm acked──▶ acked
 //!   │   sleep/offline, no ack  │                    └── nexp passed / slept ──▶ expired
 //!   └──────────(≤ 3 re-publishes)┘── exhausted ──▶ unacknowledged
@@ -33,7 +33,7 @@ use crate::rev2_store::{dberr, Context, Outcome};
 pub struct QueueOptions<'a> {
     pub requested_by: &'a str,
     /// `operator`, `auto-gap`, `auto-clock`, `auto-settings`,
-    /// `auto-restore`, `auto-confirm`, `download`.
+    /// `auto-restore`, `auto-confirm`, `auto-debug`, `download`.
     pub origin: &'a str,
     pub expires_at: DateTime<Utc>,
     pub preconfirmed: bool,
@@ -334,8 +334,9 @@ pub async fn on_status<C: GenericClient + Sync>(
                 state=CASE WHEN expires_at<=$2 OR live_only OR op='confirm' THEN 'expired'
                     WHEN publish_count>$3 THEN 'unacknowledged' ELSE 'queued' END,
                 final_status=CASE WHEN expires_at<=$2 OR live_only OR op='confirm' THEN 'expired' ELSE final_status END,
-                status_reason=CASE WHEN expires_at<=$2 THEN 'exp passed without a final ack'
-                    WHEN live_only OR op='confirm' THEN 'the awake window closed without an ack'
+                status_reason=CASE WHEN op='confirm' THEN 'the awake window closed without an ack to this confirmation: the confirmed operation may have run (a reset while it ran also ends the window); check the logger before queueing it again'
+                    WHEN expires_at<=$2 THEN 'exp passed without a final ack'
+                    WHEN live_only THEN 'the awake window closed without an ack'
                     WHEN publish_count>$3 THEN 'no ack after '||publish_count||' publishes'
                     ELSE 'no ack before the logger slept; re-publishing' END
              WHERE device_id=$1 AND protocol=2 AND state='sent' AND active_publish_attempt IS NULL
@@ -358,7 +359,10 @@ pub async fn on_status<C: GenericClient + Sync>(
     changed += client
         .execute(
             "UPDATE commands SET state='expired',final_status='expired',
-                status_reason=CASE WHEN state='challenge' THEN 'challenge was not confirmed before the logger slept'
+                status_reason=CASE WHEN state='challenge' AND EXISTS(SELECT 1 FROM commands k WHERE k.parent_id=commands.id
+                        AND k.op='confirm' AND k.last_published_at IS NOT NULL)
+                    THEN 'confirmed, but no ack arrived before the logger slept or went offline: it may have run (a reset while it ran also ends the window); check the logger before queueing it again'
+                    WHEN state='challenge' THEN 'challenge was not confirmed before the logger slept'
                     ELSE 'the awake window closed before it was published' END
              WHERE device_id=$1 AND protocol=2 AND active_publish_attempt IS NULL
                AND ((state='challenge' AND acked_at<$2) OR (state='queued' AND (live_only OR op='confirm')))",
@@ -376,7 +380,12 @@ pub async fn expire<C: GenericClient + Sync>(client: &C) -> Result<Vec<String>, 
         .query(
             "WITH expired AS (
                 UPDATE commands SET state='expired',final_status='expired',
-                    status_reason=CASE WHEN state='challenge' THEN 'challenge was not confirmed before nexp'
+                    status_reason=CASE WHEN state='challenge' AND EXISTS(SELECT 1 FROM commands k WHERE k.parent_id=commands.id
+                            AND k.op='confirm' AND k.last_published_at IS NOT NULL)
+                        THEN 'confirmed, but no ack arrived before nexp: it may have run; check the logger before queueing it again'
+                        WHEN state='challenge' THEN 'challenge was not confirmed before nexp'
+                        WHEN op='confirm' AND last_published_at IS NOT NULL
+                        THEN 'no ack to this confirmation before nexp: the confirmed operation may have run; check the logger before queueing it again'
                         ELSE 'exp passed without a final ack' END
                 WHERE protocol=2 AND active_publish_attempt IS NULL AND (
                     (state IN ('queued','sent') AND expires_at<=now())
@@ -576,6 +585,15 @@ pub fn final_state(
 ) -> (&'static str, Option<&'static str>, bool) {
     match (status, reason) {
         (AckStatus::Duplicate, _) if prev == Some("challenge") => ("acked", Some("failed"), false),
+        // The logger records an id as failed just before its handler runs
+        // (firmware `keep_before_run`) and replaces that only after the
+        // handler returns: a handler cut by a watchdog or fault reset answers
+        // a re-sent copy duplicate/failed and is not run again. That means
+        // "no outcome was reported" (it may have done part or all of its
+        // work), not "not done": final `interrupted`, never re-sent.
+        (AckStatus::Duplicate, _) if prev == Some("failed") => {
+            ("acked", Some("interrupted"), false)
+        }
         (AckStatus::Duplicate, _) if prev == Some("expired") => ("expired", Some("expired"), false),
         (AckStatus::Rejected, Some("busy")) => ("queued", None, true),
         (AckStatus::Rejected, Some("time-invalid")) => ("queued", None, true),
@@ -587,6 +605,77 @@ pub fn final_state(
         (AckStatus::Rejected, _) => ("acked", Some("rejected"), false),
         (AckStatus::Challenge, _) => ("challenge", None, false),
     }
+}
+
+/// The operation a command ran: a `confirm` runs its challenged command.
+fn effective_op(command: &CommandRow) -> &str {
+    match (command.op.as_str(), command.parent_op.as_deref()) {
+        ("confirm", Some(parent)) => parent,
+        (op, _) => op,
+    }
+}
+
+/// Operator text for a `duplicate` with `"prev":"failed"`: the logger has
+/// this id as failed and did not run it again. Firmware 2.2 records an id as
+/// failed just before its handler runs and replaces that only when the
+/// handler returns, so the handler was cut by a watchdog or fault reset (or
+/// it failed and that ack was lost): no outcome was reported, and it may
+/// have done part or all of its work. Destructive operations say how to
+/// tell whether they ran instead of inviting a second run.
+pub fn interrupted_text(op: &str) -> String {
+    let check = match op {
+        "wipe_sd" => {
+            "wipe_sd may have erased part or all of /GWL: list /GWL on Files (empty or missing means it ran) before deciding to send it again"
+        }
+        "wipe_mram" => {
+            "wipe_mram may have run: a new log_id starting with a Type 14 record (reason wipe-mram) on Data stream, or get_status, shows whether the ring was wiped; check before sending it again"
+        }
+        "factory_reset" => {
+            "factory_reset may have partly or fully run: a new log_id (Type 14 reason factory-reset) and default settings from get_settings mean it did, and the logger completes an interrupted factory reset at its next boot (get_debug boot_report); check before sending it again"
+        }
+        "recover_mram" => "get_status or the next health (mram) shows whether the ring left RECOVERY",
+        "disable_logging" => "the next health (log on/off) shows whether logging stopped",
+        "settings" => "a get_settings is queued to read the settings in force",
+        "flush_mqtt" | "flush_sd" | "file_chunk" | "file_list" => {
+            "it may have sent or saved data before the reset; the data received shows what arrived"
+        }
+        "reboot" | "enter_bootloader" => "the logger reset either way",
+        _ => "check the logger's state (get_status) before queueing it again",
+    };
+    format!(
+        "interrupted by a logger reset, outcome unknown: the logger answered duplicate, previously failed, and did not \
+         run {op} again. A watchdog or fault reset cut it while it ran (or its ack was lost), so it may have done part or \
+         all of its work; {check}"
+    )
+}
+
+/// Operator text for an ack `reason` code (contract §6.1); the code stays
+/// first so it can be searched for.
+pub fn reason_text(reason: &str) -> String {
+    let text = match reason {
+        "malformed" => "the logger could not parse the command",
+        "unknown-op" => "the firmware does not know this operation",
+        "bad-args" => "an argument is outside what the logger accepts",
+        "busy" => "the logger's command queue was full",
+        "locked" => "Tail Locked: settings are refused until the unsaved data is saved",
+        "time-invalid" => "the logger's clock is not set",
+        "bad-nonce" => "the confirmation did not match the live challenge",
+        "no-challenge" => "no challenge was open on the logger",
+        "unsaved-mismatch" => "the unsaved data count changed since the challenge",
+        "unsupported" => "firmware 2.2 does not implement this",
+        "no-space" => "not enough space (settings: ordinary MRAM space; card: full)",
+        "mram-fault" => "the MRAM is absent or faulted",
+        "wrong-state" => {
+            "not possible in the logger's current state (e.g. wipe_mram outside its state, a ring in read-only RECOVERY)"
+        }
+        "io-error" => "a storage read or write failed on the logger",
+        "not-found" => "the file or log is not on the SD card",
+        "sd-missing" => "no SD card is mounted",
+        "data-truncated" => "the reply did not fit in one ack; its data or results are incomplete",
+        "logging-off" => "logging is off",
+        _ => return reason.to_owned(),
+    };
+    format!("{reason}: {text}")
 }
 
 async fn finalize<C: GenericClient + Sync>(
@@ -603,8 +692,11 @@ async fn finalize<C: GenericClient + Sync>(
             "previously challenge: the challenge lapsed unconfirmed; queue the command again"
                 .to_owned(),
         ),
+        AckStatus::Duplicate if ack.prev.as_deref() == Some("failed") => {
+            Some(interrupted_text(effective_op(command)))
+        }
         AckStatus::Duplicate => ack.prev.clone().map(|prev| format!("previously {prev}")),
-        _ => ack.reason.clone(),
+        _ => ack.reason.as_deref().map(reason_text),
     };
     let mut hold = hold;
     let mut reason = reason;
@@ -790,39 +882,34 @@ async fn effects<C: GenericClient + Sync>(
 ) -> Result<(), String> {
     let success = matches!(ack.status, AckStatus::Ok | AckStatus::Partial);
     let data = ack.data.clone().unwrap_or(Value::Null);
+    if ack.status == AckStatus::Duplicate && ack.prev.as_deref() == Some("failed") {
+        server_event(
+            client,
+            ctx.device_id,
+            "command_outcome_unknown",
+            ctx.received_at,
+            json!({"command_id":command.parent_id.filter(|_| command.op == "confirm").unwrap_or(command.id),
+                "op":effective_op(command),"ack":"duplicate","prev":"failed"}),
+        )
+        .await?;
+    }
     match command.op.as_str() {
-        "settings" if success && ack.settings.is_none() => {
-            // The logger drops the settings object when the ack would exceed
-            // 1,024 bytes (reason data-truncated): fetch it explicitly.
-            let open = client
-                .query_opt(
-                    "SELECT 1 FROM commands WHERE device_id=$1 AND protocol=2 AND op='get_settings'
-                        AND state IN ('queued','sent')",
-                    &[&ctx.device_id],
-                )
-                .await
-                .map_err(dberr("open get_settings"))?
-                .is_some();
-            if !open {
-                let options = QueueOptions {
-                    requested_by: "auto-settings",
-                    origin: "auto-settings",
-                    ..QueueOptions::new(ctx.policy, ctx.received_at)
-                };
-                queue(client, ctx.device_id, "get_settings", &json!({}), &options).await?;
-            }
+        // The logger drops the settings object when the ack would exceed
+        // 1,024 bytes (reason data-truncated): fetch it explicitly. A
+        // settings change cut by a reset (duplicate/failed) may or may not
+        // have been committed: read what is in force.
+        "settings"
+            if (success && ack.settings.is_none())
+                || (ack.status == AckStatus::Duplicate
+                    && ack.prev.as_deref() == Some("failed")) =>
+        {
+            queue_get_settings(client, ctx).await?;
         }
         "settings" if success => {
             if let (Some(generation), Some(settings)) = (ack.settings_gen, &ack.settings) {
-                settings_history(client, ctx, generation, settings, "ack", command.id).await?;
-                crate::rev2_store::apply_effective_settings(
-                    client,
-                    ctx.device_id,
-                    generation,
-                    settings,
-                    ctx.received_at,
-                )
-                .await?;
+                let source = if ack.ram_only { "ack-ram" } else { "ack" };
+                settings_history(client, ctx, generation, settings, source, command.id).await?;
+                effective_settings(client, ctx, generation, settings, ack.ram_only).await?;
             }
         }
         "get_settings" if success => {
@@ -830,23 +917,17 @@ async fn effects<C: GenericClient + Sync>(
             if let (Some(generation), Some(settings)) =
                 (generation, data.get("settings").filter(|s| s.is_object()))
             {
-                settings_history(
-                    client,
-                    ctx,
-                    generation,
-                    settings,
-                    "get_settings",
-                    command.id,
-                )
-                .await?;
-                crate::rev2_store::apply_effective_settings(
-                    client,
-                    ctx.device_id,
-                    generation,
-                    settings,
-                    ctx.received_at,
-                )
-                .await?;
+                // get_settings does not say where the settings live: the
+                // logger's latest health tells whether it runs without its
+                // MRAM ring (fallback mode, settings in RAM only).
+                let ram_only = latest_health_fallback(client, ctx.device_id).await?;
+                let source = if ram_only {
+                    "get_settings-ram"
+                } else {
+                    "get_settings"
+                };
+                settings_history(client, ctx, generation, settings, source, command.id).await?;
+                effective_settings(client, ctx, generation, settings, ram_only).await?;
             }
         }
         "get_status" if success && data.is_object() => {
@@ -866,6 +947,10 @@ async fn effects<C: GenericClient + Sync>(
                 )
                 .await
                 .map_err(dberr("debug snapshot"))?;
+            boot_report_alert(client, ctx, &data).await?;
+            outcome.events.push(LiveEvent::Alert {
+                device_id: ctx.device_id.to_owned(),
+            });
         }
         "file_list" if success => {
             let path = data
@@ -1082,6 +1167,210 @@ async fn fail_download<C: GenericClient + Sync>(
     Ok(())
 }
 
+/// Whether the device's newest `health` reports fallback mode
+/// ([`rev2::fallback_mode`]).
+async fn latest_health_fallback<C: GenericClient + Sync>(
+    client: &C,
+    device: &str,
+) -> Result<bool, String> {
+    let row = client
+        .query_opt(
+            "SELECT mram,usable FROM device_health WHERE device_id=$1 AND source='health'
+             ORDER BY received_at DESC,id DESC LIMIT 1",
+            &[&device],
+        )
+        .await
+        .map_err(dberr("latest health"))?;
+    Ok(row.is_some_and(|row| {
+        rev2::fallback_mode(&rev2::Health {
+            mram: row.get(0),
+            usable: row.get(1),
+            ..rev2::parse_health(&Map::new())
+        })
+    }))
+}
+
+/// Stores effective settings; records when ring settings replaced the
+/// RAM-only settings of fallback mode (the logger sends no new
+/// `config/applied` when its ring comes back).
+async fn effective_settings<C: GenericClient + Sync>(
+    client: &C,
+    ctx: &Context<'_>,
+    generation: i64,
+    settings: &Value,
+    ram_only: bool,
+) -> Result<(), String> {
+    let replaced = crate::rev2_store::apply_effective_settings(
+        client,
+        ctx.device_id,
+        generation,
+        settings,
+        ctx.received_at,
+        ram_only,
+    )
+    .await?;
+    if let Some(ram_gen) = replaced {
+        server_event(
+            client,
+            ctx.device_id,
+            "settings_ram_replaced",
+            ctx.received_at,
+            json!({"ram_gen":ram_gen,"gen":generation}),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// The `boot_report` alert from a `get_debug`: the last MRAM ring boot lost,
+/// rolled back or restored settings from a snapshot, left the ring in
+/// read-only RECOVERY or started a new log for a payload schema change, or
+/// a HardFault reset the MCU since the last cold start. One alert per boot:
+/// a later boot (status `boot`) ends the previous one before a new report
+/// opens another, so an operator who resolved it is told about the next.
+async fn boot_report_alert<C: GenericClient + Sync>(
+    client: &C,
+    ctx: &Context<'_>,
+    data: &Value,
+) -> Result<(), String> {
+    let field = |key| {
+        data.get(key)
+            .and_then(Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok())
+    };
+    let (report, flags) = (field("boot_report"), field("reset_flags"));
+    if report.is_none() && flags.is_none() {
+        return Ok(());
+    }
+    let report = report.unwrap_or(0);
+    let flags = flags.unwrap_or(0);
+    let hardfault = flags & rev2::RESET_FLAG_HARDFAULT != 0;
+    let problems = rev2::boot_report_words(report & rev2::BOOT_REPORT_ALERT_MASK);
+    let active = hardfault || !problems.is_empty();
+    let boot: Option<i64> = client
+        .query_one(
+            "SELECT boot_count FROM devices WHERE device_id=$1",
+            &[&ctx.device_id],
+        )
+        .await
+        .map_err(dberr("boot count"))?
+        .get(0);
+    let previous: Option<Option<i64>> = client
+        .query_opt(
+            "SELECT (detail->>'boot')::bigint FROM alerts WHERE device_id=$1 AND kind='boot_report' AND NOT superseded
+             ORDER BY opened_at DESC,id DESC LIMIT 1",
+            &[&ctx.device_id],
+        )
+        .await
+        .map_err(dberr("boot report alert"))?
+        .map(|row| row.get(0));
+    let condition = |active: bool, detail: Value| async move {
+        client
+            .execute(
+                "SELECT groundwater_condition_alert($1,'boot_report',$2,$3,$4,$5)",
+                &[
+                    &ctx.device_id,
+                    &active,
+                    &f64::from(report),
+                    &ctx.received_at,
+                    &detail,
+                ],
+            )
+            .await
+            .map_err(dberr("boot report alert"))
+    };
+    if active && previous.is_some_and(|b| b != boot) {
+        condition(false, json!({})).await?;
+    }
+    let mut words = problems;
+    if hardfault {
+        words.push("a HardFault reset the MCU since the last cold start".into());
+    }
+    condition(
+        active,
+        json!({"boot":boot,"boot_report":report,"reset_flags":flags,"problems":words,
+            "boot_report_words":rev2::boot_report_words(report),"reset_flags_words":rev2::reset_flags_words(flags)}),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Queues one automatic `get_debug` after a boot the server did not command
+/// (`info` `reset` other than a `reboot`/`enter_bootloader` it saw acked
+/// since the previous `info`): `info` carries only the reset cause, while
+/// `get_debug` adds the ring's boot report and the HardFault and crystal
+/// flags. At most one per device every 6 hours.
+pub async fn maybe_fetch_debug<C: GenericClient + Sync>(
+    client: &C,
+    ctx: &Context<'_>,
+    reset: Option<&str>,
+    previous_info_at: Option<DateTime<Utc>>,
+) -> Result<bool, String> {
+    if reset.is_none() {
+        return Ok(false);
+    }
+    let wanted: bool = client
+        .query_one(
+            "SELECT groundwater_profile_id(d.source_profile)='V22' AND d.revoked_at IS NULL
+                AND NOT ($2::text='sw' AND EXISTS(SELECT 1 FROM commands c WHERE c.device_id=d.device_id AND c.protocol=2
+                    AND c.op IN ('reboot','enter_bootloader') AND c.final_status='ok'
+                    AND c.acked_at>=COALESCE($3::timestamptz,'-infinity'::timestamptz)))
+                AND NOT EXISTS(SELECT 1 FROM commands c WHERE c.device_id=d.device_id AND c.protocol=2 AND c.op='get_debug'
+                    AND (c.state IN ('queued','sent')
+                        OR (c.origin='auto-debug' AND c.created_at>$4::timestamptz-interval '6 hours')))
+             FROM devices d WHERE d.device_id=$1",
+            &[&ctx.device_id, &reset, &previous_info_at, &ctx.received_at],
+        )
+        .await
+        .map_err(dberr("debug request"))?
+        .get(0);
+    if !wanted {
+        return Ok(false);
+    }
+    let options = QueueOptions {
+        requested_by: "auto-debug",
+        origin: "auto-debug",
+        ..QueueOptions::new(ctx.policy, ctx.received_at)
+    };
+    let queued = queue(client, ctx.device_id, "get_debug", &json!({}), &options).await?;
+    if let Some(id) = queued {
+        server_event(
+            client,
+            ctx.device_id,
+            "debug_requested",
+            ctx.received_at,
+            json!({"command_id":id,"reset":reset}),
+        )
+        .await?;
+    }
+    Ok(queued.is_some())
+}
+
+/// Queues an automatic `get_settings` unless one is already outstanding.
+async fn queue_get_settings<C: GenericClient + Sync>(
+    client: &C,
+    ctx: &Context<'_>,
+) -> Result<Option<i64>, String> {
+    let open = client
+        .query_opt(
+            "SELECT 1 FROM commands WHERE device_id=$1 AND protocol=2 AND op='get_settings'
+                AND state IN ('queued','sent')",
+            &[&ctx.device_id],
+        )
+        .await
+        .map_err(dberr("open get_settings"))?
+        .is_some();
+    if open {
+        return Ok(None);
+    }
+    let options = QueueOptions {
+        requested_by: "auto-settings",
+        origin: "auto-settings",
+        ..QueueOptions::new(ctx.policy, ctx.received_at)
+    };
+    queue(client, ctx.device_id, "get_settings", &json!({}), &options).await
+}
+
 async fn settings_history<C: GenericClient + Sync>(
     client: &C,
     ctx: &Context<'_>,
@@ -1226,19 +1515,27 @@ pub async fn maybe_sync_clock<C: GenericClient + Sync>(
 /// Queues `get_settings` when `health` reports a generation the server has
 /// no effective settings for (e.g. a factory reset, or settings changed
 /// while the server was not listening).
+///
+/// `fallback`: the health reports fallback mode. Settings the server holds
+/// as RAM-only while the health no longer does mean the MRAM ring came back
+/// (`clear_error_latch`, or the logger's hourly retry): the ring's settings
+/// replaced the RAM ones without a `config/applied`, so they are fetched
+/// even when the generation numbers happen to match.
 pub async fn maybe_fetch_settings<C: GenericClient + Sync>(
     client: &C,
     ctx: &Context<'_>,
     generation: i64,
+    fallback: bool,
 ) -> Result<bool, String> {
     let wanted = client
         .query_one(
-            "SELECT d.settings_gen IS DISTINCT FROM $2 AND groundwater_profile_id(d.source_profile)='V22'
+            "SELECT (d.settings_gen IS DISTINCT FROM $2 OR d.settings_ram_only<>$4)
+                AND groundwater_profile_id(d.source_profile)='V22'
                 AND NOT EXISTS(SELECT 1 FROM commands c WHERE c.device_id=d.device_id AND c.protocol=2
                     AND c.op IN ('settings','get_settings') AND (c.state IN ('queued','sent')
                         OR (c.op='get_settings' AND c.created_at>$3::timestamptz-interval '1 hour')))
              FROM devices d WHERE d.device_id=$1",
-            &[&ctx.device_id, &generation, &ctx.received_at],
+            &[&ctx.device_id, &generation, &ctx.received_at, &fallback],
         )
         .await
         .map_err(dberr("settings generation"))?
@@ -1841,6 +2138,34 @@ mod tests {
             final_state(AckStatus::Duplicate, None, Some("expired")),
             ("expired", Some("expired"), false)
         );
+        // Cut by a reset (or failed with its ack lost): never a success.
+        assert_eq!(
+            final_state(AckStatus::Duplicate, None, Some("failed")),
+            ("acked", Some("interrupted"), false)
+        );
+    }
+
+    #[test]
+    fn interrupted_and_reason_texts_tell_the_operator_what_to_check() {
+        assert!(interrupted_text("wipe_sd").contains("list /GWL"));
+        assert!(interrupted_text("factory_reset").contains("partly or fully run"));
+        assert!(interrupted_text("get_status").contains("outcome unknown"));
+        for code in [
+            "no-space",
+            "mram-fault",
+            "wrong-state",
+            "io-error",
+            "not-found",
+            "sd-missing",
+            "data-truncated",
+        ] {
+            let text = reason_text(code);
+            assert!(
+                text.starts_with(&format!("{code}: ")) && text.len() > code.len() + 10,
+                "{text}"
+            );
+        }
+        assert_eq!(reason_text("new-code"), "new-code");
     }
 
     #[test]

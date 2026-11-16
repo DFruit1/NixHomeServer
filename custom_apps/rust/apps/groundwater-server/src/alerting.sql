@@ -22,21 +22,26 @@
 --
 -- health (and the server's boot events) raise the alerts the logger does not
 -- raise itself: SD card, MRAM, Tail Lock, logger error latch, logging off,
--- clock not valid, weak signal and repeated watchdog resets. `settings_lost`
--- (logging stopped until settings arrive and the server could not restore
--- them) is raised by rev2_commands.rs `maybe_restore_settings`.
+-- clock not valid, weak signal, repeated watchdog resets and a battery that
+-- is never read. `settings_lost` (logging stopped until settings arrive and
+-- the server could not restore them) is raised by rev2_commands.rs
+-- `maybe_restore_settings`, `boot_report` (a ring boot that lost, rolled
+-- back or restored settings, read-only RECOVERY, a schema-change log, a
+-- HardFault) by its `get_debug` handling, and `decoder_missing` (frames of a
+-- payload schema this server cannot decode) by rev2_store.rs.
 
 DO $$
 BEGIN
     IF pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname='alerts_kind_check' AND conrelid='alerts'::regclass))
-        NOT LIKE '%settings_lost%' THEN
+        NOT LIKE '%decoder_missing%' THEN
         ALTER TABLE alerts DROP CONSTRAINT alerts_kind_check;
         ALTER TABLE alerts ADD CONSTRAINT alerts_kind_check
             CHECK(kind IN ('above_max','below_min','battery_low','solar_low','stale',
                 'gwl_alarm','sensor_fault','power_critical',
                 'mram_almost_full','mram_fault','tail_lock','sd_card',
                 'impact','orientation','gps_moved',
-                'logger_error','logging_off','clock_invalid','signal_low','watchdog_resets','settings_lost'));
+                'logger_error','logging_off','clock_invalid','signal_low','watchdog_resets','settings_lost',
+                'battery_unread','boot_report','decoder_missing'));
     END IF;
     IF pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname='notification_rules_kind_check'
             AND conrelid='notification_rules'::regclass)) NOT LIKE '%health%' THEN
@@ -55,7 +60,8 @@ LANGUAGE sql IMMUTABLE AS $$
     SELECT CASE
         WHEN kind IN ('mram_almost_full','mram_fault','tail_lock','sd_card') THEN 'storage'
         WHEN kind IN ('impact','orientation','gps_moved') THEN 'tamper'
-        WHEN kind IN ('logger_error','logging_off','clock_invalid','signal_low','watchdog_resets','settings_lost')
+        WHEN kind IN ('logger_error','logging_off','clock_invalid','signal_low','watchdog_resets','settings_lost',
+                'battery_unread','boot_report','decoder_missing')
             THEN 'health'
         ELSE kind END
 $$;
@@ -363,6 +369,16 @@ BEGIN
             CASE WHEN NEW.csq>=10 THEN false WHEN recent.n=3 AND recent.weak THEN true END,
             NEW.csq,at,jsonb_build_object('csq',NEW.csq));
     END IF;
+    -- Firmware 2.2 omits bat_mv when the battery ADC reading failed
+    -- (earlier builds sent 65535, stored as NULL): three health reports in a
+    -- row without it is an ADC or wiring fault, and battery_low and
+    -- power_critical cannot work. Clears at the first health that has it.
+    SELECT count(*) AS n,bool_and(bat_mv IS NULL) AS unread INTO recent FROM (
+        SELECT bat_mv FROM device_health WHERE device_id=NEW.device_id AND source='health'
+        ORDER BY received_at DESC,id DESC LIMIT 3) h;
+    PERFORM groundwater_condition_alert(NEW.device_id,'battery_unread',
+        CASE WHEN NEW.bat_mv IS NOT NULL THEN false WHEN recent.n=3 AND recent.unread THEN true END,
+        recent.n,at,'{}'::jsonb);
     -- Repeated watchdog resets clear after a week without one.
     SELECT count(*) INTO wdg FROM device_events WHERE device_id=NEW.device_id AND event='boot'
         AND source='server' AND details->>'reset'='wdg' AND received_at>at-interval '7 days';

@@ -379,10 +379,30 @@ binary batch or the bare Last Will:
   gap), waiting for a clock set, or no time information. JSON messages with
   `tv` 0 sent in the current connection are dated from the reported uptime
   (`uptime-estimate`); a fallback reading with `tv` 0 is never converted.
-- **Not-read values** (`bat_mv`/`sol_mv`/`mv` 65535, CSQ 99, `sd_free_mb`
-  while the card is not `ok`, GPS markers) are stored and served as null,
-  including in the device summary's `health` object (`rev2.rs`
-  `normalised_health`).
+- **Not-read values** are stored and served as null, including in the
+  device summary's `health` object (`rev2.rs` `normalised_health`). Firmware
+  2.2 omits `bat_mv`/`sol_mv`/`mv` it did not read and sends `sd_free_mb`
+  only for a card that is `ok` or `full`; earlier builds' markers (65535,
+  CSQ 99, a stale `sd_free_mb`, GPS markers) mean the same.
+- **Payload schema per log.** Each batch (and SD segment) header carries the
+  schema of the log its frames belong to, which can differ from
+  `info.schema`; a firmware with a new schema starts a new log (Type 14
+  reason 6, shown as such in the log list). Every batch is decoded by its own
+  header's schema. Frames of a schema this server has no decoder for are
+  stored raw and marked pending, never decoded with another layout; the
+  `decoder_missing` alert asks for a server update, and the first start of a
+  server that has the decoder derives them and closes the alert.
+- **Alarm attitude.** After an impact (Type 11), or an orientation alarm
+  (Type 12) found by a tilt reading, firmware 2.2 writes a Type 2 (reason 2)
+  with the accelerometer only and no fix as the very next record; the GPS
+  Type 2 follows before the next connection unless GPS is off (a position
+  reading in between takes its place). A Type 10, or a Type 12 found during a
+  position reading, is followed only by that reading's own Type 2. The
+  server identifies the accelerometer-only record by its position (right
+  after the Type 11, or after a Type 12 that itself follows the tilt
+  reading's Type 4: `alarm_event`), keeps it off the position plot and exports'
+  points, lists it as the attitude at the alarm and attaches it to the alarm
+  in the events view.
 - **GNSS fix** is stored on the ring record scale (0 none, 1 2D, 2 3D); the
   `gps` JSON's value, one higher, is stored minus one.
 - **Gaps.** A sequence skip whose positions are not contiguous is a gap.
@@ -415,11 +435,14 @@ Alert kinds, who raises them and how they close:
 | `sd_card` | warning | the logger's storage event, or a health with `sd` missing/error/full | `sd_restored` or a health with `sd` ok |
 | `mram_fault` | critical | the logger, or a health with `mram` fault/absent/recovery | a health with `mram` ok or locked |
 | `tail_lock` | critical | the logger, or a health with `mram` locked | `tail_unlocked` or a health with `mram` ok |
-| `impact`, `orientation`, `gps_moved` | warning | the logger | **only an operator** (latched) |
+| `impact`, `orientation`, `gps_moved` | warning | the logger; `orientation` enters above 10.0° and re-arms at ≤ 8.0°, `gps_moved` above `thr_m` and re-arms at ≤ `thr_m`/2, so one alert covers a whole excursion | **only an operator** (latched) |
 | `logger_error`, `logging_off` | warning | health `err` ≠ 0 / `log` off | the next health without it |
 | `clock_invalid` | warning | the two latest healths with `tv` 0 | a health with `tv` 1 |
 | `signal_low` | info | CSQ ≤ 7 on three healths in a row (99 ignored) | CSQ ≥ 10 |
 | `watchdog_resets` | warning | two or more watchdog boots in 7 days | a health with none in 7 days |
+| `battery_unread` | warning | three healths in a row without `bat_mv` (battery ADC not read: `battery_low` and `power_critical` cannot work) | a health with it |
+| `boot_report` | warning | a `get_debug` whose `boot_report` says settings were lost, rolled back or restored from a snapshot, the ring is in read-only RECOVERY or a new log started for a schema change, or whose `reset_flags` bit 6 reports a HardFault | a `get_debug` without them; a later boot opens a new one |
+| `decoder_missing` | warning | data/stream frames of a payload schema this server cannot decode | the start of a server that decoded them |
 | `battery_low` | warning | latest health/test battery below the policy threshold | at threshold + hysteresis |
 | `solar_low` | info | no health/test solar sample reached the threshold in the last N days, with a daylight sample (09:00–15:00 logger local time) and older history | any sample at or above it |
 | `settings_lost` | critical | settings-lost RECOVERY with no restore possible, or a restore that ended (§5.5.3) | a health no longer reporting it |
@@ -434,7 +457,9 @@ Alert kinds, who raises them and how they close:
   50 %) are constants in `alerting.sql`. Battery (7.0 V, hysteresis 0.2 V),
   solar (1.0 V over 3 days) and the stale margin are alert policies resolved
   device → project → fleet → default and edited in the UI.
-- **Missed connection:** expected at the logger's announced `next`, else
+- **Missed connection:** expected at the logger's announced `next` (a
+  logger in back-off after a failed upload announces its planned retry
+  there: 30 min, then doubling to 24 h, never later than `send_s`), else
   last contact + `send_s`; stale after that plus the policy margin
   (`GROUNDWATER_STALE_MARGIN_MINUTES`, default 30), never below 40 minutes
   (the firmware's first retry is after 30). Without either time, 30 minutes
@@ -487,7 +512,26 @@ survives restarts and is audited with `requested_by` and `origin`.
   `time-invalid` rejection holds the command until the next sleep, unless the
   ack arrived after that window had closed; `time-invalid` also queues a
   `sync_time`. The logger runs each `id` at most once, so a re-publish never
-  repeats an operation.
+  repeats an operation; a copy of an executed `id` turned away on arrival is
+  answered `duplicate`, never `rejected`/`busy`/`malformed`. The first final
+  ack wins; later acks for the id are only recorded.
+- **Interrupted by a reset:** firmware 2.2 records an id as failed just
+  before its handler runs and replaces that only when the handler returns,
+  so a handler cut by a watchdog or fault reset answers the re-published copy
+  `duplicate` with `"prev":"failed"` and is not run again. That means no
+  outcome was reported: it may have done part or all of its work. The server
+  stores it with the final status `interrupted` (neither a success nor
+  "not done", never re-published) and a reason that says how to tell
+  whether it ran instead of inviting a repeat (a new `log_id` or `get_status`
+  after `wipe_mram`/`factory_reset`, an empty `/GWL` listing after
+  `wipe_sd`), records `command_outcome_unknown`, and queues a `get_settings`
+  for an interrupted `settings`. Danger confirmations are never
+  re-published, so a confirmation that never got its ack (the window closed
+  or the logger reset while it ran) ends `expired` with the same warning on
+  both rows: the operation may have run.
+- **Ack reasons** are stored with their meaning (`no-space`, `mram-fault`,
+  `wrong-state`, `io-error`, `not-found`, `sd-missing`, `data-truncated` and
+  the older codes); `logging-off` is reserved and never sent.
 - **Lifetimes:** `exp` is sent to the logger and the command expires on the
   server at the same instant. It counts from creation: 7 days for basic
   commands and settings (`GROUNDWATER_COMMAND_EXPIRY_HOURS`), 24 hours for
@@ -529,7 +573,8 @@ stub handlers are refused by the API.
 | `auto-gap` | `flush_mqtt {log_id,from_seq,to_seq}` | on a live `ready` or `sleep`: the oldest open gap of a V22 unit, at most 1,024 frames, at least 30 minutes after the previous request (`GROUNDWATER_GAP_REQUEST_MINUTES`), three attempts; then the gap is `unrecoverable` (also when an ack reports frames missing) |
 | `auto-restore` | `settings` with `replace:true` and the last settings the logger acknowledged (`ack` or `get_settings`), a past delayed `start` sent as 0 | once per settings-lost episode: a health with `mram` `recovery` and `err` ≠ 3; the episode ends at the first health without it. With nothing to send, or when the restore ended and the state remains, `settings_lost` opens |
 | `auto-clock` | `sync_time` (`t` filled at publish) | a health with `tv` 0 or a clock more than 120 s off (`GROUNDWATER_CLOCK_TOLERANCE_SECONDS`), at most hourly, only while the logger is awake, expiring in 15 minutes; also after a `time-invalid` rejection |
-| `auto-settings` | `get_settings` | a health whose settings generation differs from the known one (not during settings-lost), at most hourly; also after a settings ack without the settings |
+| `auto-settings` | `get_settings` | a health whose settings generation differs from the known one, or whose fallback state (MRAM ring absent) differs from the known settings' (not during settings-lost), at most hourly; also after a settings ack without the settings, and after a settings command cut by a reset |
+| `auto-debug` | `get_debug` | an `info` (once per boot) whose `reset` is not a `reboot`/`enter_bootloader` the server saw acknowledged since the previous `info`, at most every 6 hours: it brings the ring's boot report and the HardFault and crystal flags (`boot_report` alert); the result is listed with the command, decoded |
 | `auto-confirm` | `confirm` | see the danger handshake |
 | `download` | `file_chunk` (1 KiB) | the next chunk of an SD download, when the previous one arrives; at most 8 MiB per file |
 
@@ -540,7 +585,24 @@ keys unless `replace` (unlisted keys reset to firmware defaults); the
 envelope is at most 1,024 bytes and the server validates every key against
 the contract's ranges. Effective settings follow what the logger reports: a
 settings or `get_settings` ack, or a ring snapshot once an anchor shows the
-logger running that generation. Their `lo`/`hi`/`lo_hys`/`hi_hys`/`loc`
+logger running that generation. `lo` above `hi` is refused before queueing,
+also when the request names one limit and the other is in force on the
+logger (with `replace`, against the defaults), as the logger rejects it
+(bad-args); equal limits and an unset side are allowed.
+
+**Fallback mode** (MRAM absent or faulted at boot; a health with `mram`
+absent/fault and `usable` 0): settings are held in RAM until the next reset,
+acks carry `"persist":false` and generations count from 1 per boot. The
+server keeps them as the effective settings with `settings_ram_only` (shown
+on the Settings tab), records them under the history sources `ack-ram` and
+`get_settings-ram`, never compares their generation with the ring's and
+never restores them after a settings loss (the restore reads `ack` and
+`get_settings` only). When the ring comes back (`clear_error_latch` or the
+logger's hourly retry) the ring's settings replace the RAM ones without a
+`config/applied`; the first health without fallback makes the server read
+them (`get_settings`) and records `settings_ram_replaced`.
+
+Their `lo`/`hi`/`lo_hys`/`hi_hys`/`loc`
 become the device's limits and location. For V22 the limits editor queues
 such a `settings` command and the limits change at the ack; other profiles
 change the server's limits directly. A V2.1 settings migration that left the

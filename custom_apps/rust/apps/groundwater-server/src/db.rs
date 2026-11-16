@@ -617,6 +617,9 @@ pub struct DeviceSummary {
     /// Settings-lost RECOVERY (rev2_commands.rs `maybe_restore_settings`):
     /// the first health of the episode that reported it; null otherwise.
     pub settings_lost_since: Option<DateTime<Utc>>,
+    /// Fallback mode: the effective settings are held in RAM only and are
+    /// lost at the logger's next reset (`"persist":false`).
+    pub settings_ram_only: bool,
     /// The episode's automatic restore command (`auto-restore`) and how it
     /// stands: `{id,state,final_status,status_reason,created_at,expires_at,
     /// acked_at}`; null when none was queued in this episode.
@@ -773,6 +776,7 @@ pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<Devic
             revoked_at: row.get("revoked_at"),
             mqtt_auth: row.get("mqtt_auth"),
             settings_lost_since: row.get("settings_lost_since"),
+            settings_ram_only: row.get("settings_ram_only"),
             settings_restore: row.get("settings_restore"),
         });
     }
