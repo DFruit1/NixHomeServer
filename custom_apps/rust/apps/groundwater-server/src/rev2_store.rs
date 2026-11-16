@@ -2003,17 +2003,43 @@ async fn store_file_chunk<C: GenericClient + Sync>(
             return Ok(Outcome::rejected(format!("{}: {error}", error.code())));
         }
     };
+    // The logger answers a file_chunk command with exactly one chunk at the
+    // requested offset and at most the requested length (app_cmd.c
+    // h_file_chunk). Anything else would let a logger account write
+    // unbounded chunk rows under one command, so it is refused.
+    let requested = client
+        .query_opt(
+            "SELECT args->>'off',args->>'len' FROM commands WHERE id=$1 AND device_id=$2 AND op='file_chunk'",
+            &[&i64::from(chunk.command_id), &ctx.device_id],
+        )
+        .await
+        .map_err(dberr("chunk request"))?;
+    let mismatch = requested.and_then(|row| {
+        let off = row.get::<_, Option<String>>(0)?.parse::<u64>().ok()?;
+        let len = row.get::<_, Option<String>>(1)?.parse::<usize>().ok()?;
+        (u64::from(chunk.offset) != off || chunk.data.len() > len).then(|| {
+            format!(
+                "data/file chunk at {} with {} bytes does not answer command {} (off {off}, len {len})",
+                chunk.offset,
+                chunk.data.len(),
+                chunk.command_id
+            )
+        })
+    });
     insert_batch_row(
         client,
         ctx,
         encoding.as_str(),
         &bytes,
-        None,
+        mismatch.clone(),
         None,
         json!([]),
         json!([]),
     )
     .await?;
+    if let Some(reason) = mismatch {
+        return Ok(Outcome::rejected(reason));
+    }
     crate::rev2_commands::file_chunk_received(client, ctx, &chunk).await
 }
 

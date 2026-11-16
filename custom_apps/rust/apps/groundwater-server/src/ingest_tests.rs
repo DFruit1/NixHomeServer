@@ -198,3 +198,44 @@ async fn an_expired_gap_request_is_asked_again_and_finally_closed() {
         i64::from(attempts)
     );
 }
+
+// A file_chunk command is answered by one chunk at the requested offset.
+// Chunks at other offsets were stored too, so a logger account could fill
+// the disk under a single command.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn a_file_chunk_must_answer_the_offset_it_was_asked_for() {
+    use crate::stream::encode::file_chunk;
+    let mut h = Harness::new().await;
+    let policy = crate::config::rev2_policy();
+    let command = crate::rev2_commands::queue(
+        &h.client,
+        D,
+        "file_chunk",
+        &serde_json::json!({"path":"/GWL/A.CSV","off":0,"len":4}),
+        &crate::rev2_commands::QueueOptions::new(&policy, Utc::now()),
+    )
+    .await
+    .unwrap()
+    .unwrap() as u32;
+    for offset in [4096, 1 << 30] {
+        h.publish("data/file", &file_chunk(command, offset, 1 << 31, b"junk"))
+            .await
+            .unwrap();
+    }
+    h.publish("data/file", &file_chunk(command, 0, 4, b"toolong"))
+        .await
+        .unwrap();
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM file_download_chunks")
+            .await,
+        0
+    );
+    h.publish("data/file", &file_chunk(command, 0, 4, b"data"))
+        .await
+        .unwrap();
+    assert_eq!(
+        h.scalar::<String>("SELECT state FROM file_downloads").await,
+        "complete"
+    );
+}
