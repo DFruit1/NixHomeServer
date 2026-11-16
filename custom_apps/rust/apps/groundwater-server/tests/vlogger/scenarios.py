@@ -245,7 +245,7 @@ def lost_batch_resent_from_mram(s):
 @scenario()
 def lost_batch_resent_from_sd(s):
     """MRAM wrapped past a lost range: the next upload is flagged GAP and the SD archive serves the range."""
-    s.settle_timeout = 900  # ingest of this backlog is slow: see backlog_ingest_time
+    s.settle_timeout = 900
     lg = boot(s)
     configure(s, lg, {"read_s": 60})
     t0 = lg.last["world"]
@@ -832,7 +832,7 @@ def broker_acl_device_account(s):
           read=read[:160], other_status_deliveries=(before, after), own_health=own)
 
 
-@scenario(xfail="E2E-01")
+@scenario()
 def backlog_ingest_time(s):
     """A realistic backlog (6 days of minute readings, ~10k frames) is ingested within 60 s of real time."""
     s.settle_timeout = 900
