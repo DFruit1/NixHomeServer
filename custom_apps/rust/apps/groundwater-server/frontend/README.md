@@ -47,6 +47,21 @@ logger clock that was never set and reads "clock not set".
 - `/api/status` `ingest.lastDeliveryAt` (operators only) is shown in the
   header as "last delivery … ago": a stalled ingest is visible even while
   the broker is connected.
+- `/api/status` `ingest.held` (uplinks held unacknowledged because storing
+  them failed; retried), `ingest.rerun` (`{pendingLogs, failingLogs}`: logs
+  waiting for the background re-run, and those whose re-run has failed) and
+  `ingest.salvaged` (`{rawBatches, oldestRawBatchAt, storeFailedMessages,
+oldestStoreFailedAt}`: acknowledged content kept only as raw bytes, exempt
+  from retention until re-ingested or dismissed, over the visible devices)
+  are operator-only (`rerun`/`salvaged` null for viewers). When any is
+  non-zero, a notice under the header says so in words with a link to the
+  raw deliveries (the logger's own raw log when only one is enrolled).
+  `retentionDays` is the delivery retention.
+- `POST /api/devices/{id}/salvaged/dismiss` (operator, no body) releases the
+  device's salvaged content to normal retention and returns
+  `{"rawBatches","storeFailedMessages"}` released. The device's Raw log
+  offers it while `ingest.salvaged` is non-zero, after a confirmation that
+  says the bytes then expire with retention and their data is not recovered.
 - Danger commands default to expire one hour after the logger's announced
   next connection (24 hours when it is unknown or the logger is awake),
   shown as a time; a weekly logger never sees a one-day command.
@@ -82,7 +97,9 @@ latched error and logging off (with the server alerts they raise); `lost`
 gives it settings-lost RECOVERY (err 4, an expired `auto-restore`, the
 `settings_lost` alert) and a health object with not-read values (null);
 `restoring` is the same state with the restore still queued; `ram` puts it in
-fallback mode (MRAM faulted at boot, settings held in RAM only). The
+fallback mode (MRAM faulted at boot, settings held in RAM only); `stuck`
+reports a held uplink, a log whose re-run keeps failing and salvaged raw
+content on the 2.2 unit until its Raw log releases it. The
 series always has raw over-range and no-sensor readings, a mixed bucket and
 fault-only buckets. The raw log has 260 deliveries (every 25th quarantined),
 the ring log and one batch carry a derive failure, a payload schema 2 log has
@@ -712,9 +729,13 @@ source: 0 none, 1 2D, 2 3D (the `gps` JSON's value minus one).
 `POST …/commands/{cid}/cancel` returns `{"command","warning"}`; `warning` is
 set when the command or one of its danger confirmations had already been
 sent, so the logger may still run the operation; the UI shows it until
-dismissed. `/logs` entries add `derive_pending` (frames whose derived data is
-re-run at the next start), `resolve_pending` and `resolve_error`; `/batches`
-entries add `derive_error` and `frames_derive_pending`.
+dismissed. `/logs` entries add `derive_pending` (frames whose derived data
+waits for the re-run), `resolve_pending` and `resolve_error`; `/batches`
+entries add `derive_error` and `frames_derive_pending`. The server re-runs
+pending logs in the background: about 2 s after a batch left work, and every
+5 minutes; a log whose re-run fails waits 1 minute, doubling to at most a day,
+and its `resolve_error` reads "re-run attempt N failed: …". The next retry
+time and attempt count are not served separately.
 
 `GET /api/messages` (operator raw log): `device`, `topic`, `since`,
 `state` (e.g. `quarantined`), `direction` (`in`/`out`), `limit` (default

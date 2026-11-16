@@ -1,6 +1,7 @@
 import {
   $,
   component$,
+  type QRL,
   useSignal,
   useStore,
   useVisibleTask$,
@@ -14,12 +15,22 @@ import {
   levelSeries,
 } from "./chart";
 import { latestRequest } from "./live";
-import type { Alert, Delivery, Device, Series, SeriesPoint } from "./types";
+import type {
+  Alert,
+  Delivery,
+  Device,
+  Salvaged,
+  Series,
+  SeriesPoint,
+  Status,
+} from "./types";
+import { devicePath, send } from "./hooks";
 import { datumLabel, datumUnit } from "./ops";
 import { alertLabel, alertValue } from "./alerts";
 import { deviceProblems } from "./attention";
 import { observationProblem, sensorProblem } from "./events";
-import { csqText, millivolts } from "./format";
+import { csqText, millivolts, relative } from "./format";
+import { Feedback } from "./widgets";
 
 export const Fleet = component$<{
   devices: Device[];
@@ -593,6 +604,145 @@ export const History = component$<{
   );
 });
 
+const plural = (n: number, one: string, many = `${one}s`) =>
+  `${n.toLocaleString()} ${n === 1 ? one : many}`;
+
+export const salvagedTotal = (s?: Salvaged | null) =>
+  s ? s.rawBatches + s.storeFailedMessages : 0;
+
+/** Oldest salvaged item of either kind. */
+const salvagedSince = (s: Salvaged) =>
+  [s.oldestRawBatchAt, s.oldestStoreFailedAt]
+    .filter((v): v is string => !!v)
+    .sort()[0] ?? null;
+
+/** Operator `/api/status` ingest facts that mean logger data has not reached
+ *  storage yet, in words; empty when there are none. */
+export function stuckIngest(ingest: Status["ingest"], now: number): string[] {
+  const parts: string[] = [];
+  const held = ingest.held ?? 0;
+  if (held > 0)
+    parts.push(
+      `${plural(held, "uplink")} held unacknowledged (storing failed; retried)`,
+    );
+  const rerun = ingest.rerun;
+  if (rerun && rerun.pendingLogs > 0)
+    parts.push(
+      `${plural(rerun.pendingLogs, "log")} waiting for the re-run` +
+        (rerun.failingLogs > 0 ? `, ${rerun.failingLogs} failing` : ""),
+    );
+  const salvaged = ingest.salvaged;
+  const total = salvagedTotal(salvaged);
+  if (salvaged && total > 0)
+    parts.push(
+      `${plural(total, "uplink")} kept only as raw bytes, the oldest received ${relative(salvagedSince(salvaged), now)}`,
+    );
+  return parts;
+}
+
+/** Releases a device's salvaged raw content to normal retention
+ *  (`POST …/salvaged/dismiss`), after a plain confirmation. */
+const SalvagedRelease = component$<{
+  device: string;
+  salvaged: Salvaged;
+  retentionDays?: number;
+  refresh?: QRL<() => void>;
+}>((props) => {
+  const asking = useSignal(false);
+  const action = useStore({ pending: false, message: "", failed: false });
+  const release = $(async () => {
+    if (action.pending) return;
+    action.pending = true;
+    action.message = "";
+    try {
+      const r = await send<{ rawBatches: number; storeFailedMessages: number }>(
+        "POST",
+        devicePath(props.device, "/salvaged/dismiss"),
+      );
+      action.message =
+        r.rawBatches + r.storeFailedMessages > 0
+          ? `Released ${plural(r.rawBatches, "raw batch", "raw batches")} and ${plural(r.storeFailedMessages, "message")} of this logger to normal retention.`
+          : "This logger had no salvaged content to release.";
+      action.failed = false;
+      asking.value = false;
+      if (props.refresh) await props.refresh();
+    } catch (error) {
+      action.message = errorText(error);
+      action.failed = true;
+    } finally {
+      action.pending = false;
+    }
+  });
+  const days = props.retentionDays;
+  // Stays mounted after a release so its result remains visible.
+  if (salvagedTotal(props.salvaged) === 0)
+    return <Feedback message={action.message} failed={action.failed} />;
+  return (
+    <div class="salvaged">
+      <h3>Salvaged content</h3>
+      <p>
+        Across all loggers,{" "}
+        {plural(salvagedTotal(props.salvaged), "acknowledged uplink")} could not
+        be stored and {salvagedTotal(props.salvaged) === 1 ? "is" : "are"} kept
+        only as raw bytes, the oldest received{" "}
+        {relative(salvagedSince(props.salvaged))}. They are exempt from
+        retention until the server re-ingests them or an operator releases them.
+        This logger&apos;s share: its quarantined <code>rev2-store-failed</code>{" "}
+        deliveries below and its &ldquo;not stored&rdquo; batches in{" "}
+        <a href={`#device=${encodeURIComponent(props.device)}&view=stream`}>
+          Data stream
+        </a>
+        .
+      </p>
+      {asking.value ? (
+        <div class="typed-action">
+          <p>
+            Releasing makes this logger&apos;s salvaged raw bytes subject to
+            normal retention
+            {days
+              ? `: each is deleted once it is more than ${days} days old`
+              : ""}
+            . The data in them is not recovered.
+          </p>
+          <div class="toolbar">
+            <button
+              class="danger"
+              type="button"
+              disabled={action.pending}
+              aria-busy={action.pending}
+              onClick$={release}
+            >
+              Release
+            </button>
+            <button
+              type="button"
+              disabled={action.pending}
+              onClick$={() => {
+                asking.value = false;
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <p>
+          <button
+            type="button"
+            onClick$={() => {
+              asking.value = true;
+              action.message = "";
+            }}
+          >
+            Release this logger&apos;s salvaged content…
+          </button>
+        </p>
+      )}
+      <Feedback message={action.message} failed={action.failed} />
+    </div>
+  );
+});
+
 /** `/api/messages` filters of the raw log. */
 const deliveryQuery = (f: {
   device: string;
@@ -612,235 +762,256 @@ const mergedDeliveries = (newest: Delivery[], older: Delivery[]) => {
   return [...newest, ...older.filter((d) => !ids.has(d.id))];
 };
 
-export const RawLog = component$<{ device: string; revision: number }>(
-  (props) => {
-    const topic = useSignal(""),
-      since = useSignal(""),
-      quarantined = useSignal(false),
-      filter = useStore({ topic: "", since: "", quarantined: false });
-    const data = useStore<{
-      deliveries: Delivery[];
-      /** The server has more deliveries after the newest page. */
-      more: boolean;
-      /** Older pages from "Show older deliveries", kept across refreshes. */
-      older: Delivery[];
-      olderMore: boolean;
-      olderLoading: boolean;
-      error: string;
-      loading: boolean;
-    }>({
-      deliveries: [],
-      more: false,
-      older: [],
-      olderMore: false,
-      olderLoading: false,
-      error: "",
-      loading: true,
-    });
-    const refresh = useSignal(0),
-      fetchedRevision = useSignal(-1),
-      loadedSelection = useSignal("");
-    const loadOlder = $(async () => {
-      const list = mergedDeliveries(data.deliveries, data.older);
-      const last = list[list.length - 1];
-      if (!last || data.olderLoading) return;
-      data.olderLoading = true;
-      try {
-        const result = await request<{
-          deliveries: Delivery[];
-          more?: boolean;
-        }>(
-          `/api/messages?${query({ ...deliveryQuery({ ...filter, device: props.device }), before: String(last.id) })}`,
-        );
-        data.older = [...data.older, ...result.deliveries];
-        data.olderMore = result.more === true;
-      } catch (error) {
-        data.error = errorText(error);
-      } finally {
-        data.olderLoading = false;
-      }
-    });
+export const RawLog = component$<{
+  device: string;
+  revision: number;
+  /** Operator `/api/status` `ingest.salvaged` (fleet-wide). */
+  salvaged?: Salvaged | null;
+  retentionDays?: number;
+  refresh?: QRL<() => void>;
+}>((props) => {
+  const topic = useSignal(""),
+    since = useSignal(""),
+    quarantined = useSignal(false),
+    filter = useStore({ topic: "", since: "", quarantined: false });
+  const data = useStore<{
+    deliveries: Delivery[];
+    /** The server has more deliveries after the newest page. */
+    more: boolean;
+    /** Older pages from "Show older deliveries", kept across refreshes. */
+    older: Delivery[];
+    olderMore: boolean;
+    olderLoading: boolean;
+    error: string;
+    loading: boolean;
+  }>({
+    deliveries: [],
+    more: false,
+    older: [],
+    olderMore: false,
+    olderLoading: false,
+    error: "",
+    loading: true,
+  });
+  const refresh = useSignal(0),
+    fetchedRevision = useSignal(-1),
+    loadedSelection = useSignal("");
+  const loadOlder = $(async () => {
     const list = mergedDeliveries(data.deliveries, data.older);
-    const more = data.older.length ? data.olderMore : data.more;
-    useVisibleTask$(({ track }) => {
-      const revision = track(() => props.revision),
-        fetched = track(() => fetchedRevision.value),
-        loading = track(() => data.loading);
-      if (!loading && revision !== fetched) refresh.value++;
-    });
-    useVisibleTask$(({ track, cleanup }) => {
-      const selection = JSON.stringify([
-        track(() => props.device),
-        track(() => filter.topic),
-        track(() => filter.since),
-        track(() => filter.quarantined),
-      ]);
-      track(() => refresh.value);
-      if (selection !== loadedSelection.value) {
-        data.older = [];
-        data.olderMore = false;
-        loadedSelection.value = selection;
-      }
-      const latest = latestRequest();
-      data.loading = true;
-      fetchedRevision.value = props.revision;
-      latest.run(
-        (signal) =>
-          request<{ deliveries: Delivery[]; more?: boolean }>(
-            `/api/messages?${query(deliveryQuery({ ...filter, device: props.device }))}`,
-            signal,
-          ),
-        (result) => {
-          // With older pages shown, the previous newest page joins them, so
-          // rows pushed off the newest page by new arrivals stay listed.
-          if (data.older.length)
-            data.older = mergedDeliveries(data.deliveries, data.older);
-          data.deliveries = result.deliveries;
-          data.more = result.more === true;
-          data.error = "";
-          data.loading = false;
-        },
-        (error) => {
-          data.error = errorText(error);
-          data.loading = false;
-        },
+    const last = list[list.length - 1];
+    if (!last || data.olderLoading) return;
+    data.olderLoading = true;
+    try {
+      const result = await request<{
+        deliveries: Delivery[];
+        more?: boolean;
+      }>(
+        `/api/messages?${query({ ...deliveryQuery({ ...filter, device: props.device }), before: String(last.id) })}`,
       );
-      cleanup(() => latest.cancel());
-    });
-    return (
-      <section>
-        <h2>{props.device ? "Device delivery log" : "All raw deliveries"}</h2>
-        {props.device && (
-          <p>
-            <a href="#view=log">
-              Inspect all deliveries, including unattributed quarantines
-            </a>
-          </p>
-        )}
-        <p class="muted">
-          Matching deliveries, newest first, 100 at a time
-          {props.device ? "" : ", including unattributed and quarantined ones"}.
-        </p>
-        <form
-          class="toolbar"
-          preventdefault:submit
-          onSubmit$={() => {
-            filter.topic = topic.value;
-            filter.since = since.value;
-            filter.quarantined = quarantined.value;
-          }}
-        >
-          <label class="field" for="log-topic">
-            Exact topic
-            <input
-              id="log-topic"
-              value={topic.value}
-              onInput$={(_, el) => {
-                topic.value = el.value;
-              }}
-            />
-          </label>
-          <label class="field" for="log-since">
-            Received since (local)
-            <input
-              id="log-since"
-              type="datetime-local"
-              value={since.value}
-              onInput$={(_, el) => {
-                since.value = el.value;
-              }}
-            />
-          </label>
-          <label class="checkbox" for="log-quarantined">
-            <input
-              id="log-quarantined"
-              type="checkbox"
-              checked={quarantined.value}
-              onChange$={(_, el) => {
-                quarantined.value = el.checked;
-              }}
-            />
-            Quarantined only
-          </label>
-          <button type="submit">Apply filters</button>
-        </form>
-        {data.error && (
-          <p role="alert" class="notice error-text">
-            {data.error}
-          </p>
-        )}
-        {data.loading && <p role="status">Loading deliveries…</p>}
-        {!data.loading && !data.error && list.length === 0 && (
-          <p class="empty">No deliveries match these filters.</p>
-        )}
-        <div class="delivery-list" aria-busy={data.loading}>
-          {list.map((delivery) => (
-            <details key={delivery.id}>
-              <summary>
-                {stamp(delivery.received_at)} · {delivery.topic}
-                <span
-                  class={
-                    delivery.state === "accepted" ? "state" : "state error-text"
-                  }
-                >
-                  {delivery.state}
-                </span>
-                {delivery.state !== "accepted" && delivery.reason && (
-                  <small class="error-text">{delivery.reason}</small>
-                )}
-              </summary>
-              <dl class="facts">
-                <div>
-                  <dt>Device / claimed identity</dt>
-                  <dd>
-                    {delivery.device_id || "Unattributed"} /{" "}
-                    {delivery.claimed_device_id || "—"}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Kind / QoS</dt>
-                  <dd>
-                    {delivery.kind} / {delivery.qos}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Reason</dt>
-                  <dd>{delivery.reason || "—"}</dd>
-                </div>
-                <div>
-                  <dt>Clock / duplicate</dt>
-                  <dd>
-                    {delivery.time_quality || "—"} /{" "}
-                    {delivery.duplicate_outcome || "—"}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Profile / binding</dt>
-                  <dd>
-                    {delivery.source_profile || "—"} /{" "}
-                    {delivery.binding_key || "—"}
-                  </dd>
-                </div>
-              </dl>
-              {delivery.detail && <p>{delivery.detail}</p>}
-              <pre>{delivery.payload}</pre>
-            </details>
-          ))}
-        </div>
-        {more && (
-          <p class="toolbar">
-            <span class="muted">{list.length} shown.</span>
-            <button
-              type="button"
-              disabled={data.olderLoading}
-              aria-busy={data.olderLoading}
-              onClick$={loadOlder}
-            >
-              {data.olderLoading ? "Loading…" : "Show older deliveries"}
-            </button>
-          </p>
-        )}
-      </section>
+      data.older = [...data.older, ...result.deliveries];
+      data.olderMore = result.more === true;
+    } catch (error) {
+      data.error = errorText(error);
+    } finally {
+      data.olderLoading = false;
+    }
+  });
+  const list = mergedDeliveries(data.deliveries, data.older);
+  const more = data.older.length ? data.olderMore : data.more;
+  useVisibleTask$(({ track }) => {
+    const revision = track(() => props.revision),
+      fetched = track(() => fetchedRevision.value),
+      loading = track(() => data.loading);
+    if (!loading && revision !== fetched) refresh.value++;
+  });
+  useVisibleTask$(({ track, cleanup }) => {
+    const selection = JSON.stringify([
+      track(() => props.device),
+      track(() => filter.topic),
+      track(() => filter.since),
+      track(() => filter.quarantined),
+    ]);
+    track(() => refresh.value);
+    if (selection !== loadedSelection.value) {
+      data.older = [];
+      data.olderMore = false;
+      loadedSelection.value = selection;
+    }
+    const latest = latestRequest();
+    data.loading = true;
+    fetchedRevision.value = props.revision;
+    latest.run(
+      (signal) =>
+        request<{ deliveries: Delivery[]; more?: boolean }>(
+          `/api/messages?${query(deliveryQuery({ ...filter, device: props.device }))}`,
+          signal,
+        ),
+      (result) => {
+        // With older pages shown, the previous newest page joins them, so
+        // rows pushed off the newest page by new arrivals stay listed.
+        if (data.older.length)
+          data.older = mergedDeliveries(data.deliveries, data.older);
+        data.deliveries = result.deliveries;
+        data.more = result.more === true;
+        data.error = "";
+        data.loading = false;
+      },
+      (error) => {
+        data.error = errorText(error);
+        data.loading = false;
+      },
     );
-  },
-);
+    cleanup(() => latest.cancel());
+  });
+  return (
+    <section>
+      <h2>{props.device ? "Device delivery log" : "All raw deliveries"}</h2>
+      {props.device && (
+        <p>
+          <a href="#view=log">
+            Inspect all deliveries, including unattributed quarantines
+          </a>
+        </p>
+      )}
+      {props.device && props.salvaged && (
+        <SalvagedRelease
+          device={props.device}
+          salvaged={props.salvaged}
+          retentionDays={props.retentionDays}
+          refresh={props.refresh}
+        />
+      )}
+      <p class="muted">
+        Matching deliveries, newest first, 100 at a time
+        {props.device ? "" : ", including unattributed and quarantined ones"}.
+      </p>
+      <form
+        class="toolbar"
+        preventdefault:submit
+        onSubmit$={() => {
+          filter.topic = topic.value;
+          filter.since = since.value;
+          filter.quarantined = quarantined.value;
+        }}
+      >
+        <label class="field" for="log-topic">
+          Exact topic
+          <input
+            id="log-topic"
+            value={topic.value}
+            onInput$={(_, el) => {
+              topic.value = el.value;
+            }}
+          />
+        </label>
+        <label class="field" for="log-since">
+          Received since (local)
+          <input
+            id="log-since"
+            type="datetime-local"
+            value={since.value}
+            onInput$={(_, el) => {
+              since.value = el.value;
+            }}
+          />
+        </label>
+        <label class="checkbox" for="log-quarantined">
+          <input
+            id="log-quarantined"
+            type="checkbox"
+            checked={quarantined.value}
+            onChange$={(_, el) => {
+              quarantined.value = el.checked;
+            }}
+          />
+          Quarantined only
+        </label>
+        <button type="submit">Apply filters</button>
+      </form>
+      {data.error && (
+        <p role="alert" class="notice error-text">
+          {data.error}
+        </p>
+      )}
+      {data.loading && <p role="status">Loading deliveries…</p>}
+      {!data.loading && !data.error && list.length === 0 && (
+        <p class="empty">No deliveries match these filters.</p>
+      )}
+      <div class="delivery-list" aria-busy={data.loading}>
+        {list.map((delivery) => (
+          <details key={delivery.id}>
+            <summary>
+              {stamp(delivery.received_at)} · {delivery.topic}
+              <span
+                class={
+                  delivery.state === "accepted" ? "state" : "state error-text"
+                }
+              >
+                {delivery.state}
+              </span>
+              {delivery.state !== "accepted" && delivery.reason && (
+                <small class="error-text">{delivery.reason}</small>
+              )}
+            </summary>
+            <dl class="facts">
+              <div>
+                <dt>Device / claimed identity</dt>
+                <dd>
+                  {delivery.device_id && !props.device ? (
+                    <a
+                      href={`#device=${encodeURIComponent(delivery.device_id)}&view=log`}
+                    >
+                      {delivery.device_id}
+                    </a>
+                  ) : (
+                    delivery.device_id || "Unattributed"
+                  )}{" "}
+                  / {delivery.claimed_device_id || "—"}
+                </dd>
+              </div>
+              <div>
+                <dt>Kind / QoS</dt>
+                <dd>
+                  {delivery.kind} / {delivery.qos}
+                </dd>
+              </div>
+              <div>
+                <dt>Reason</dt>
+                <dd>{delivery.reason || "—"}</dd>
+              </div>
+              <div>
+                <dt>Clock / duplicate</dt>
+                <dd>
+                  {delivery.time_quality || "—"} /{" "}
+                  {delivery.duplicate_outcome || "—"}
+                </dd>
+              </div>
+              <div>
+                <dt>Profile / binding</dt>
+                <dd>
+                  {delivery.source_profile || "—"} /{" "}
+                  {delivery.binding_key || "—"}
+                </dd>
+              </div>
+            </dl>
+            {delivery.detail && <p>{delivery.detail}</p>}
+            <pre>{delivery.payload}</pre>
+          </details>
+        ))}
+      </div>
+      {more && (
+        <p class="toolbar">
+          <span class="muted">{list.length} shown.</span>
+          <button
+            type="button"
+            disabled={data.olderLoading}
+            aria-busy={data.olderLoading}
+            onClick$={loadOlder}
+          >
+            {data.olderLoading ? "Loading…" : "Show older deliveries"}
+          </button>
+        </p>
+      )}
+    </section>
+  );
+});

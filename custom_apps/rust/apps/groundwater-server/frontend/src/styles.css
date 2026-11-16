@@ -848,3 +848,10 @@ tfoot td {
 .export-note small {
   display: block;
 }
+.salvaged {
+  padding-block: var(--space-2) var(--space-4);
+  border-block-end: 1px solid var(--border);
+}
+.salvaged > p {
+  max-inline-size: 70ch;
+}

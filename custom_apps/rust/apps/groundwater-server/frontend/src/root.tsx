@@ -22,7 +22,7 @@ import {
   ConfigSnapshot,
   DeviceCommands,
 } from "./operator";
-import { Fleet, History, RawLog } from "./views";
+import { Fleet, History, RawLog, stuckIngest } from "./views";
 import type { Alert, Command, Device, Series, Status } from "./types";
 import {
   EventsView,
@@ -330,6 +330,13 @@ export default component$(() => {
     moreError: workspace.olderError,
   };
   const operator = global.status?.user?.role === "operator";
+  const stuck =
+    operator && global.status
+      ? stuckIngest(global.status.ingest, clock.value)
+      : [];
+  // With one logger the stuck content can only be its own.
+  const onlyDevice =
+    global.devices?.length === 1 ? global.devices[0] : undefined;
   const device =
     workspace.device?.device_id === route.device ? workspace.device : undefined;
   const rev2 = device?.capabilities?.protocol === 2;
@@ -420,6 +427,20 @@ export default component$(() => {
           {global.status.broker.last_error ||
             global.status.broker.lastError ||
             "Telemetry and command delivery may be delayed."}
+        </p>
+      )}
+      {operator && stuck.length > 0 && (
+        <p class="notice error-text" role="status">
+          Logger data not yet stored: {stuck.join("; ")}.{" "}
+          {onlyDevice ? (
+            <a
+              href={`#device=${encodeURIComponent(onlyDevice.device_id)}&view=log`}
+            >
+              Raw log of {onlyDevice.display_name || onlyDevice.device_id}
+            </a>
+          ) : (
+            <a href="#view=log">Raw deliveries</a>
+          )}
         </p>
       )}
       <main id="main" tabIndex={-1}>
@@ -897,6 +918,9 @@ export default component$(() => {
                       key={device.device_id}
                       device={device.device_id}
                       revision={revision.value}
+                      salvaged={global.status?.ingest.salvaged}
+                      retentionDays={global.status?.retentionDays}
+                      refresh={refresh}
                     />
                   ) : (
                     <p class="notice">

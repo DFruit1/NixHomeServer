@@ -9,7 +9,8 @@ const V22 = "6A1B2C3D4E5F60718293A4B5";
 // (settings-lost RECOVERY after an automatic restore that expired, health
 // with not-read values) | restoring (the same, restore still on its way) |
 // ram (fallback mode: MRAM faulted at boot, settings held in RAM only) |
-// empty | error.
+// stuck (one uplink held, a log whose re-run keeps failing, salvaged raw
+// content until the operator releases it) | empty | error.
 let role = "operator",
   mode = "normal",
   // busy: the CSV export answers 429 as when four exports already run.
@@ -28,6 +29,15 @@ const ahead = (ms) => new Date(Date.now() + ms).toISOString();
 const HOUR = 3600000,
   DAY = 86400000;
 const id = () => nextId++;
+// mode=stuck: /api/status ingest.salvaged until …/salvaged/dismiss (the
+// fixture keeps all of it on the V2.2 logger).
+let salvaged = null;
+const SALVAGED = () => ({
+  rawBatches: 2,
+  oldestRawBatchAt: ago(5 * DAY),
+  storeFailedMessages: 1,
+  oldestStoreFailedAt: ago(2 * DAY),
+});
 const audit = [];
 const log = (device_id, action, detail = null) =>
   audit.unshift({
@@ -1205,10 +1215,15 @@ const logs = [
     open_gaps: 1,
     unrecoverable_gaps: 1,
     pending_readings: 14,
-    // R1 (rev2_store.rs): derived data waiting for the next start.
+    // rev2_store.rs: derived data waiting for the background re-run; in
+    // mode=stuck the re-run itself keeps failing.
     derive_pending: 2,
     resolve_pending: true,
-    resolve_error: "settings: invalid byte sequence for encoding UTF8: 0x00",
+    get resolve_error() {
+      return mode === "stuck"
+        ? "re-run attempt 4 failed: settings: invalid byte sequence for encoding UTF8: 0x00"
+        : "settings: invalid byte sequence for encoding UTF8: 0x00";
+    },
     // api_rev2.rs logs: readings with no time, by reason.
     pending_reasons: [
       {
@@ -1272,8 +1287,14 @@ const batches = Array.from({ length: 6 }, (_, i) => ({
   channel: i === 2 ? "data/file" : "data/stream",
   encoding: i === 4 ? "hex" : "bin",
   size: 230 + i * 100,
-  ok: i !== 3,
-  error: i === 3 ? "crc: batch CRC-32 mismatch" : null,
+  ok: i !== 3 && i !== 5,
+  // i 5: ingest.rs raw salvage of a batch the store failed on.
+  error:
+    i === 3
+      ? "crc: batch CRC-32 mismatch"
+      : i === 5
+        ? "not stored: database: deadlock detected"
+        : null,
   log_id: 1761000001,
   first_seq: 425 - i * 6,
   last_seq: 430 - i * 6,
@@ -1286,10 +1307,10 @@ const batches = Array.from({ length: 6 }, (_, i) => ({
   frames_duplicate: i === 1 ? 4 : 0,
   issues: i === 3 ? [{ at: 12, issue: "crc8" }] : [],
   warnings: [],
-  raw_retained: i < 4,
+  raw_retained: i < 4 || i === 5,
   derive_error:
     i === 1
-      ? "derived data failed (frame 427: numeric field overflow); raw frames kept and flagged for re-derivation at the next start"
+      ? "derived data failed (frame 427: numeric field overflow); raw frames kept and flagged for the re-run"
       : null,
   frames_derive_pending: i === 1 ? 2 : 0,
 }));
@@ -1741,46 +1762,66 @@ commands.push(
 );
 
 const deliveryLog = Array.from({ length: 260 }, (_, i) =>
-  i % 25 === 7
+  i === 24
     ? {
+        // ingest.rs: an uplink acknowledged but not stored (raw kept).
         id: 5000 - i,
-        received_at: ago(i * 2 * HOUR),
-        topic: "gwl/v1/0000000000000000000000AA/health",
+        received_at: ago(2 * DAY),
+        topic: `gwl/v1/${V22}/health`,
         kind: "health",
-        device_id: null,
-        claimed_device_id: "0000000000000000000000AA",
-        qos: 1,
-        payload: '{"v":2,"t":1763300000,"tv":1,"bat_mv":7400}',
-        state: "quarantined",
-        reason: "unknown-device",
-        detail: "no enrolled device has this DeviceID",
-        time_quality: null,
-        duplicate_outcome: null,
-        source_profile: null,
-        binding_key: null,
-        direction: "in",
-      }
-    : {
-        id: 5000 - i,
-        received_at: ago(i * 2 * HOUR),
-        topic: `gwl/v1/${V22}/data/stream`,
-        kind: "data/stream",
         device_id: V22,
         claimed_device_id: V22,
         qos: 1,
-        payload: "47574231…",
-        state: "accepted",
-        reason: null,
-        detail:
-          i === 1
-            ? "6 frames (2 new); derived data failed (frame 427: numeric field overflow); raw frames kept and flagged for re-derivation at the next start"
-            : null,
+        payload: '{"v":2,"t":1763300000,"tv":1,"bat_mv":7400}',
+        state: "quarantined",
+        reason: "rev2-store-failed",
+        detail: "storing failed: database: deadlock detected",
         time_quality: null,
         duplicate_outcome: null,
         source_profile: "V22",
         binding_key: null,
         direction: "in",
-      },
+      }
+    : i % 25 === 7
+      ? {
+          id: 5000 - i,
+          received_at: ago(i * 2 * HOUR),
+          topic: "gwl/v1/0000000000000000000000AA/health",
+          kind: "health",
+          device_id: null,
+          claimed_device_id: "0000000000000000000000AA",
+          qos: 1,
+          payload: '{"v":2,"t":1763300000,"tv":1,"bat_mv":7400}',
+          state: "quarantined",
+          reason: "unknown-device",
+          detail: "no enrolled device has this DeviceID",
+          time_quality: null,
+          duplicate_outcome: null,
+          source_profile: null,
+          binding_key: null,
+          direction: "in",
+        }
+      : {
+          id: 5000 - i,
+          received_at: ago(i * 2 * HOUR),
+          topic: `gwl/v1/${V22}/data/stream`,
+          kind: "data/stream",
+          device_id: V22,
+          claimed_device_id: V22,
+          qos: 1,
+          payload: "47574231…",
+          state: "accepted",
+          reason: null,
+          detail:
+            i === 1
+              ? "6 frames (2 new); derived data failed (frame 427: numeric field overflow); raw frames kept and flagged for the re-run"
+              : null,
+          time_quality: null,
+          duplicate_outcome: null,
+          source_profile: "V22",
+          binding_key: null,
+          direction: "in",
+        },
 );
 
 const json = (res, body, code = 200) => {
@@ -2477,6 +2518,17 @@ async function deviceRoute(req, res, url, deviceId, rest) {
     }
     return json(res, view());
   }
+  if (rest === "salvaged/dismiss" && method === "POST") {
+    // api.rs dismiss_salvaged: counts released (0 when nothing waited).
+    const mine = deviceId === V22 && salvaged;
+    const released = {
+      rawBatches: mine ? salvaged.rawBatches : 0,
+      storeFailedMessages: mine ? salvaged.storeFailedMessages : 0,
+    };
+    if (mine) salvaged = null;
+    log(deviceId, "salvaged_dismissed", released);
+    return json(res, released);
+  }
   if (rest === "datums") {
     const list = datums.get(deviceId) || [];
     if (method === "POST") {
@@ -2511,6 +2563,7 @@ const server = createServer(async (req, res) => {
     busy = url.searchParams.get("busy") === "1";
     crossOrigin = url.searchParams.get("crossorigin") === "1";
     cut = url.searchParams.get("cut") === "1";
+    salvaged = mode === "stuck" ? SALVAGED() : null;
     return json(res, { role, mode, busy, crossOrigin, cut });
   }
   if (url.pathname === "/api/events") {
@@ -2551,7 +2604,25 @@ const server = createServer(async (req, res) => {
         deliveries: 42,
         observations: 40,
         lastDeliveryAt: role === "operator" ? ago(4 * HOUR) : null,
+        held: mode === "stuck" ? 1 : 0,
+        // api.rs status: operators only, null for viewers.
+        rerun:
+          role === "operator"
+            ? mode === "stuck"
+              ? { pendingLogs: 1, failingLogs: 1 }
+              : { pendingLogs: 0, failingLogs: 0 }
+            : null,
+        salvaged:
+          role === "operator"
+            ? salvaged || {
+                rawBatches: 0,
+                oldestRawBatchAt: null,
+                storeFailedMessages: 0,
+                oldestStoreFailedAt: null,
+              }
+            : null,
       },
+      retentionDays: 90,
     });
   if (path === "/api/devices") {
     if (req.method === "POST") {
