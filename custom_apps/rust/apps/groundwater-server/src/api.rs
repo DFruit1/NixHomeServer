@@ -528,7 +528,8 @@ async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
     let rows=db.query_raw("SELECT o.device_id,o.recorded_at,o.received_at,o.gwl,o.rssi,o.battery_v,o.solar_v,o.time_quality,o.duplicate_outcome,
             o.source,o.log_id,o.seq,o.record_type,o.sensor_mv,o.sensor_status,o.settings_gen,o.csq,o.time_source,
             groundwater_datum_value('dtw_bgl',o.gwl,dt.sensor_depth_m,dt.casing_height_m,dt.ground_elevation_m),
-            groundwater_datum_value('rl_ahd',o.gwl,dt.sensor_depth_m,dt.casing_height_m,dt.ground_elevation_m)
+            groundwater_datum_value('rl_ahd',o.gwl,dt.sensor_depth_m,dt.casing_height_m,dt.ground_elevation_m),
+            o.gwl IS NOT NULL AND COALESCE(o.sensor_status,0)=0,o.time_reason
         FROM observations o
         LEFT JOIN LATERAL (SELECT sensor_depth_m,casing_height_m,ground_elevation_m FROM device_datums
             WHERE device_id=o.device_id AND effective_from<=o.recorded_at ORDER BY effective_from DESC LIMIT 1) dt ON true
@@ -560,6 +561,13 @@ async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
                 text(r.get::<_, Option<String>>(17)),
                 text(r.get::<_, Option<f64>>(18).map(|v| format!("{v:.4}"))),
                 text(r.get::<_, Option<f64>>(19).map(|v| format!("{v:.4}"))),
+                text(r.get::<_, Option<i16>>(14).map(|v| {
+                    u8::try_from(v)
+                        .map_or("unknown", crate::records::sensor_status_name)
+                        .to_owned()
+                })),
+                r.get::<_, bool>(20).to_string(),
+                r.get::<_, String>(21),
             ];
             fields
                 .iter()
@@ -585,8 +593,11 @@ async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
 }
 /// Concurrent CSV exports, each on its own database connection.
 static EXPORTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
-/// CSV header: the original nine columns, then revision 2 and datum fields.
-pub(crate) const EXPORT_COLUMNS: [&str; 20] = [
+/// CSV header: the original nine columns, then revision 2 and datum fields,
+/// then the readable sensor status, whether `gwl` is a valid level (false
+/// for any sensor fault status, including out of range) and why a reading
+/// has the time it has (or none).
+pub(crate) const EXPORT_COLUMNS: [&str; 23] = [
     "device_id",
     "recorded_at",
     "received_at",
@@ -607,6 +618,9 @@ pub(crate) const EXPORT_COLUMNS: [&str; 20] = [
     "time_source",
     "depth_bgl_m",
     "level_ahd_m",
+    "sensor_status_text",
+    "level_valid",
+    "time_reason",
 ];
 fn csv_field(v: &str) -> String {
     format!("\"{}\"", v.replace('"', "\"\""))
