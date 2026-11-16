@@ -471,12 +471,27 @@ async fn cancel(
     Ok(Json(json!({"command":command})).into_response())
 }
 async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>) -> ApiResult {
-    let db = s.db.get().await.map_err(database)?;
     let device = authorize(&s, &h, &q.device).await?;
     let (from, to) = q.bounds()?;
     if q.format.as_deref().is_some_and(|f| f != "csv") {
         return Err(bad("format must be csv"));
     }
+    // A streamed export runs on its own connection: tokio-postgres stops
+    // reading a connection while any one result stream is not consumed, so a
+    // slow or paused download on the shared connection stalled every other
+    // API request until the 30 s statement timeout cut the export short.
+    let permit = EXPORTS.try_acquire().map_err(|_| {
+        error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "other exports are running; try again shortly",
+        )
+    })?;
+    let db = db::connect(&s.settings.database_url)
+        .await
+        .map_err(database)?;
+    db.batch_execute("SET statement_timeout = '15min'")
+        .await
+        .map_err(|e| database(e.to_string()))?;
     let params: [&(dyn tokio_postgres::types::ToSql + Sync); 3] = [&device, &from, &to];
     // Revision 2 fields and the installation datum are appended, so existing
     // consumers of the first nine columns are unaffected.
@@ -524,7 +539,11 @@ async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
                 + "\r\n"
         })
         .map_err(std::io::Error::other),
-    );
+    )
+    // The stream ends when the connection does: keep it and the slot alive.
+    .inspect(move |_| {
+        let _ = (&db, &permit);
+    });
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "text/csv; charset=utf-8")
         .header(
@@ -534,6 +553,8 @@ async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
         .body(axum::body::Body::from_stream(body))
         .unwrap())
 }
+/// Concurrent CSV exports, each on its own database connection.
+static EXPORTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 /// CSV header: the original nine columns, then revision 2 and datum fields.
 pub(crate) const EXPORT_COLUMNS: [&str; 20] = [
     "device_id",
