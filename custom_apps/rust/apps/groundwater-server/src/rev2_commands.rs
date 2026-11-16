@@ -198,6 +198,23 @@ pub async fn queue<C: GenericClient + Sync>(
         )
         .await
         .map_err(dberr("command wire"))?;
+    if op == "settings" && options.origin != "auto-restore" {
+        // A newer operator settings command withdraws an automatic restore
+        // not yet published, and takes its place in the recovery episode.
+        client
+            .execute(
+                "WITH withdrawn AS (
+                    UPDATE commands SET state='cancelled',final_status='cancelled',
+                        status_reason='superseded by settings command '||$2::bigint
+                    WHERE device_id=$1 AND protocol=2 AND origin='auto-restore' AND state='queued'
+                      AND active_publish_attempt IS NULL AND id<$2 RETURNING id)
+                 UPDATE devices SET settings_restore_command_id=$2
+                 WHERE device_id=$1 AND settings_restore_command_id IN (SELECT id FROM withdrawn)",
+                &[&device, &id],
+            )
+            .await
+            .map_err(dberr("restore withdrawal"))?;
+    }
     Ok(Some(id))
 }
 
@@ -239,6 +256,12 @@ pub async fn next_publish<C: GenericClient + Sync>(
                -- publish one for a parent no longer awaiting it (cancelled,
                -- expired, already acked).
                AND (c.op<>'confirm' OR EXISTS(SELECT 1 FROM commands p WHERE p.id=c.parent_id AND p.state='challenge'))
+               -- An automatic settings restore is never published after a
+               -- newer operator settings command: its replace-all would
+               -- revert the operator's change.
+               AND (c.origin<>'auto-restore' OR NOT EXISTS(SELECT 1 FROM commands n WHERE n.device_id=c.device_id
+                    AND n.protocol=2 AND n.op='settings' AND n.origin<>'auto-restore' AND n.id>c.id
+                    AND n.state NOT IN ('cancelled','expired')))
                AND (c.op='confirm' OR c.live_only OR NOT EXISTS(SELECT 1 FROM commands h WHERE h.device_id=c.device_id
                     AND h.protocol=2 AND h.state='queued' AND h.id<c.id AND (h.hold_until_sleep
                         OR (h.republish_after IS NOT NULL AND NOT (d.link_state IN ('online','ready')
@@ -1373,6 +1396,39 @@ pub async fn maybe_restore_settings<C: GenericClient + Sync>(
         return Ok(false);
     }
     let mut queued = false;
+    // An operator's settings command already on its way supersedes the
+    // automatic restore: the restore's replace-all would revert it.
+    let operator_settings: Option<i64> = if since.is_none() {
+        client
+            .query_opt(
+                "SELECT id FROM commands WHERE device_id=$1 AND protocol=2 AND op='settings'
+                   AND origin<>'auto-restore' AND state IN ('queued','sent') ORDER BY id DESC LIMIT 1",
+                &[&ctx.device_id],
+            )
+            .await
+            .map_err(dberr("operator settings"))?
+            .map(|row| row.get(0))
+    } else {
+        None
+    };
+    if let Some(id) = operator_settings {
+        client
+            .execute(
+                "UPDATE devices SET settings_lost_since=$2,settings_restore_command_id=$3 WHERE device_id=$1",
+                &[&ctx.device_id, &ctx.received_at, &id],
+            )
+            .await
+            .map_err(dberr("settings recovery start"))?;
+        server_event(
+            client,
+            ctx.device_id,
+            "settings_restore_superseded",
+            ctx.received_at,
+            json!({"command_id":id,"err":health.err}),
+        )
+        .await?;
+        return Ok(false);
+    }
     if since.is_none() {
         let previous = client
             .query_opt(

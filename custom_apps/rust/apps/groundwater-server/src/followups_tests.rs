@@ -220,3 +220,83 @@ async fn not_read_markers_never_count_as_readings() {
         "an unread battery is not a recovered battery"
     );
 }
+
+// V6 (second independent review): the automatic restore was queued after
+// an operator's settings command still waiting for the logger, got a
+// higher id, was published after it, and its replace-all reverted the
+// operator's change. An operator's queued or in-flight settings command
+// supersedes the restore; a newer one withdraws a restore not yet sent.
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn an_operator_settings_command_supersedes_the_automatic_restore() {
+    use crate::rev2_commands::next_publish;
+    let mut h = Harness::new().await;
+    let settings = json!({"read_s":900,"send_s":86400,"gps_mode":2,"gps_val":3600,"tilt_mode":2,"tilt_val":3600,
+        "start":0,"fac":[1.25e-3,1.0,2.5,-0.25],"tap":1,"tap_sens":5,"gps_sens":5,"lo":null,"hi":10.5,
+        "lo_hys":0.25,"hi_hys":0.25,"loc":"B7","proj":"North","text":"Bore 7","partial":0,"utc_off":600,"led":1,
+        "attempts":3,"listen_s":120});
+    h.client
+        .execute(
+            "INSERT INTO device_settings_history(device_id,settings_gen,source,settings,received_at)
+             VALUES($1,7,'ack',$2,now()-interval '1 day')",
+            &[&D, &settings],
+        )
+        .await
+        .unwrap();
+    let policy = crate::config::rev2_policy();
+    // 1. Queued before the logger reports RECOVERY: no restore.
+    let first = operator_settings(&h.client).await;
+    h.health("recovery", 4).await;
+    assert_eq!(
+        h.restores().await,
+        0,
+        "the restore would revert the operator's change"
+    );
+    assert_eq!(
+        h.scalar::<i64>("SELECT settings_restore_command_id FROM devices")
+            .await,
+        first
+    );
+    // 2. Queued after the restore: the restore is withdrawn.
+    h.client
+        .batch_execute(
+            "UPDATE commands SET state='cancelled'; UPDATE devices SET settings_lost_since=NULL,settings_restore_command_id=NULL",
+        )
+        .await
+        .unwrap();
+    h.health("recovery", 4).await;
+    assert_eq!(h.restores().await, 1);
+    let second = operator_settings(&h.client).await;
+    assert_eq!(
+        h.scalar::<String>("SELECT state FROM commands WHERE origin='auto-restore'")
+            .await,
+        "cancelled"
+    );
+    for channel in crate::rev2::DOWNLINK_CHANNELS {
+        let topic = format!("gwl/v1/{D}/{channel}");
+        h.client
+            .execute(
+                "INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES($1,$2,$1,'V22')",
+                &[&topic, &D],
+            )
+            .await
+            .unwrap();
+    }
+    let next = next_publish(&h.client, policy).await.unwrap();
+    let wire: Value = serde_json::from_str(&next.expect("a command to publish").wire).unwrap();
+    assert_eq!(wire["id"].as_i64(), Some(second));
+}
+
+async fn operator_settings(client: &Client) -> i64 {
+    use crate::rev2_commands::{queue, QueueOptions};
+    queue(
+        client,
+        D,
+        "settings",
+        &json!({"hi":12.0}),
+        &QueueOptions::for_op("settings", crate::config::rev2_policy(), Utc::now()),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+}
