@@ -672,6 +672,7 @@ pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<Devic
                 legacy_ready_at: ready,
                 link_state: link_state.as_deref(),
                 link_state_at: row.get("link_state_at"),
+                link_retained: row.get("link_retained"),
                 listen_window_s: row.get("listen_window_s"),
                 next_contact_at: row.get("next_contact_at"),
                 send_interval_s: send_interval,
