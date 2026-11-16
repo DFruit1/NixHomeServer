@@ -64,10 +64,14 @@ export const dateInput = (date: Date) =>
   new Date(date.getTime() - date.getTimezoneOffset() * 60000)
     .toISOString()
     .slice(0, 16);
-export const stamp = (value: string | null | undefined) =>
-  value && Number.isFinite(Date.parse(value))
-    ? new Date(value).toLocaleString()
-    : "—";
+/** Instants before 2001 come from a logger clock that was never set (tv 0
+ * seconds since boot misread as UTC); no real record predates the fleet. */
+export const CLOCK_FLOOR_MS = Date.UTC(2001, 0, 1);
+export const stamp = (value: string | null | undefined) => {
+  const at = value ? Date.parse(value) : NaN;
+  if (!Number.isFinite(at)) return "—";
+  return at < CLOCK_FLOOR_MS ? "clock not set" : new Date(at).toLocaleString();
+};
 export const number = (value: number | null | undefined, digits = 2) =>
   value == null || !Number.isFinite(value) ? "—" : value.toFixed(digits);
 export function lag(

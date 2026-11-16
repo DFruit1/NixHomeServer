@@ -15,7 +15,14 @@ enforcement stay on the API; unknown session roles expose no write controls.
 `GROUNDWATER_DEV_API=http://127.0.0.1:5188 pnpm dev` in another terminal.
 Fixtures are development tooling and are never imported by production source.
 `http://127.0.0.1:5188/__fixture?role=viewer&mode=normal` changes the fixture
-session; modes `empty` and `error` exercise the corresponding states.
+session; modes `empty` and `error` exercise the corresponding states, and
+`fault` gives the firmware 2.2 unit an over-range latest reading and a locked
+MRAM ring. `FIXTURE_PORT` moves the fixture off 5188 (then
+`pnpm exec vite --port <free>` with `GROUNDWATER_DEV_API` pointing at it).
+Fixture shapes follow the real handlers: firmware 2.2 ring readings carry no
+battery, solar or signal; the series always carries datum, limits and
+`raw_gwl`; a confirmed danger command stays in `challenge` until the logger
+acknowledges the confirmation.
 
 Configuration validation follows firmware `8278b61` and the server's
 `commands.rs`: eleven ordered string keys, extraction simulation, 150-byte

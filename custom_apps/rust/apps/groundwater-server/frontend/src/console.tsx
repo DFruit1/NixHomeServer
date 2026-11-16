@@ -15,6 +15,7 @@ import {
   duration,
   expiryError,
   secondsLeft,
+  show,
 } from "./format";
 import { OP_HELP, opArgs } from "./commands";
 import { devicePath, send, useNow } from "./hooks";
@@ -22,6 +23,14 @@ import type { Command, Device } from "./types";
 import { Feedback, TableRegion } from "./widgets";
 
 type ConsoleProps = { device: Device; refresh: QRL<() => void> };
+
+/** When a queued command can reach the logger. */
+export function nextContactText(device: Device) {
+  if (device.status === "awake")
+    return "The logger is awake now; it should answer within its listen window.";
+  const expected = device.expected_contact_at || device.next_contact_at;
+  return `It waits in the logger's broker session until the next connection${expected ? `, expected ${stamp(expected)}` : " (time unknown)"}; the result appears here after that.`;
+}
 
 export const Rev2Console = component$<ConsoleProps>((props) => {
   const caps = props.device.capabilities;
@@ -50,7 +59,7 @@ export const Rev2Console = component$<ConsoleProps>((props) => {
         devicePath(props.device.device_id, "/commands"),
         body,
       );
-      action.message = `${label} queued as #${result.command?.id ?? "?"}. It is published now and waits in the broker session until the logger connects.`;
+      action.message = `${label} queued as #${result.command?.id ?? "?"}. ${nextContactText(props.device)}`;
       action.failed = false;
       confirm.value = "";
       props.refresh();
@@ -384,6 +393,14 @@ export const Challenges = component$<{
         const left = secondsLeft(deadline, now.value);
         const frames = challenge?.unsaved_frames || 0;
         const expired = left === 0;
+        // A confirmation already queued or published: the server refuses a
+        // second one, and the logger's ack settles this command.
+        const sent = props.commands.find(
+          (c) =>
+            c.parent_id === command.id &&
+            c.op === "confirm" &&
+            ["queued", "sent"].includes(c.state),
+        );
         const matches = frames === 0 || typed[command.id] === String(frames);
         return (
           <form
@@ -391,7 +408,13 @@ export const Challenges = component$<{
             class="command-section"
             preventdefault:submit
             onSubmit$={async () => {
-              if (action.pending || expired || !matches || !props.operator)
+              if (
+                action.pending ||
+                expired ||
+                !matches ||
+                sent ||
+                !props.operator
+              )
                 return;
               action.pending = command.id;
               action.message = "";
@@ -441,7 +464,15 @@ export const Challenges = component$<{
                 <dd>{stamp(challenge?.received_at)}</dd>
               </div>
             </dl>
-            {props.operator && !expired && (
+            {sent && (
+              <p class="notice" role="status">
+                Confirmation #{sent.id}{" "}
+                {sent.state === "sent" ? "published" : "queued"}{" "}
+                {stamp(sent.last_published_at || sent.created_at)}. Waiting for
+                the logger to execute {command.op} and acknowledge it.
+              </p>
+            )}
+            {props.operator && !expired && !sent && (
               <div class="toolbar">
                 {frames > 0 && (
                   <label class="field" for={`confirm-count-${command.id}`}>
@@ -477,12 +508,48 @@ export const Challenges = component$<{
 
 const CANCELLABLE = ["queued", "sent", "challenge"];
 
+/** What a logger's final status means for the operator. */
+const FINAL_TEXT: Record<string, string> = {
+  ok: "done",
+  partial: "partly done; see the per-key results",
+  failed: "not done",
+  rejected: "not accepted; nothing changed",
+  expired: "not run: its expiry passed before the logger executed it",
+  duplicate: "already run under this id; not run again",
+};
+
+/** Ack `data` as label/value pairs (get_status, get_debug, flush results,
+ * file_chunk, sync_time …). */
+export function ackData(ack: unknown): [string, string][] {
+  if (ack == null || typeof ack !== "object") return [];
+  const record = ack as Record<string, unknown>;
+  const data = record.data;
+  const pairs: [string, string][] = [];
+  if (typeof record.gen === "number")
+    pairs.push(["settings generation", String(record.gen)]);
+  if (data && typeof data === "object" && !Array.isArray(data))
+    for (const [key, value] of Object.entries(data)) {
+      if (key === "settings" || key === "files") continue;
+      if (key === "t" && typeof value === "number")
+        pairs.push([
+          "logger clock",
+          stamp(new Date(value * 1000).toISOString()),
+        ]);
+      else if (/_mv$/.test(key) && typeof value === "number")
+        pairs.push([key.replace(/_mv$/, ""), `${(value / 1000).toFixed(2)} V`]);
+      else pairs.push([key.replaceAll("_", " "), show(value)]);
+    }
+  return pairs.slice(0, 40);
+}
+
 export const Rev2Queue = component$<{
   device: string;
   commands: Command[];
   operator: boolean;
   refresh: QRL<() => void>;
   audit?: boolean;
+  /** When the logger is expected to connect next (commands wait for it). */
+  expected?: string | null;
 }>((props) => {
   const now = useNow(30000);
   const pending = useSignal(0),
@@ -548,8 +615,20 @@ export const Rev2Queue = component$<{
                       {c.final_status && (
                         <small class={problem ? "error-text" : ""}>
                           logger: {c.final_status}
+                          {FINAL_TEXT[c.final_status]
+                            ? ` (${FINAL_TEXT[c.final_status]})`
+                            : ""}
                         </small>
                       )}
+                      {["queued", "sent"].includes(c.state) &&
+                        !c.hold_until_sleep && (
+                          <small>
+                            waiting for the logger's next connection
+                            {props.expected
+                              ? ` (expected ${stamp(props.expected)})`
+                              : ""}
+                          </small>
+                        )}
                       {c.status_reason && <small>{c.status_reason}</small>}
                       {c.hold_until_sleep && (
                         <small>held until the next sleep (busy)</small>
@@ -566,7 +645,8 @@ export const Rev2Queue = component$<{
                       {c.expires_at && (
                         <small>
                           expires {stamp(c.expires_at)}
-                          {Date.parse(c.expires_at) > now.value
+                          {CANCELLABLE.includes(c.state) &&
+                          Date.parse(c.expires_at) > now.value
                             ? ` (in ${duration(Date.parse(c.expires_at) - now.value)})`
                             : ""}
                         </small>
@@ -582,6 +662,16 @@ export const Rev2Queue = component$<{
                       <small>ack {stamp(c.acked_at)}</small>
                     </td>
                     <td>
+                      {ackData(c.ack_payload).length > 0 && (
+                        <dl class="ack-data">
+                          {ackData(c.ack_payload).map(([key, value]) => (
+                            <div key={key}>
+                              <dt>{key}</dt>
+                              <dd>{value}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      )}
                       <details>
                         <summary>Details</summary>
                         <pre>

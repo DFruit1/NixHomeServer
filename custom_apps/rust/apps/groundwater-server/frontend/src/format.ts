@@ -1,3 +1,4 @@
+import { CLOCK_FLOOR_MS } from "./api";
 // Pure formatting helpers shared by the revision 2 and operations views.
 
 /** "in 3 h 5 min" / "4 min ago" for an instant relative to `now`. */
@@ -8,6 +9,7 @@ export function relative(
   if (!value) return "—";
   const at = Date.parse(value);
   if (!Number.isFinite(at)) return "—";
+  if (at < CLOCK_FLOOR_MS) return "clock not set";
   const delta = at - now;
   const text = duration(Math.abs(delta));
   if (text === "now") return "now";
@@ -36,7 +38,7 @@ export function secondsLeft(
 ): number | null {
   if (!deadline) return null;
   const at = Date.parse(deadline);
-  if (!Number.isFinite(at)) return null;
+  if (!Number.isFinite(at) || at < CLOCK_FLOOR_MS) return null;
   return Math.max(0, Math.floor((at - now) / 1000));
 }
 

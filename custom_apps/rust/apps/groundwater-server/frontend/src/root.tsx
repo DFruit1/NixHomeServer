@@ -145,7 +145,8 @@ export default component$(() => {
         }
         if (devices.status === "fulfilled")
           global.devices = devices.value.devices;
-        else global.errors.push(errorText(devices.reason));
+        else if (!global.errors.includes(errorText(devices.reason)))
+          global.errors.push(errorText(devices.reason));
         global.loading = false;
         updated.value = new Date().toISOString();
       },
@@ -368,11 +369,18 @@ export default component$(() => {
             {workspace.loading && !device && (
               <p role="status">Loading device…</p>
             )}
-            {Object.entries(workspace.errors).map(([key, error]) => (
-              <p key={key} role="alert" class="notice error-text">
-                {key}: {error} <button onClick$={refresh}>Retry</button>
+            {workspace.errors.device?.startsWith("404") ? (
+              // The API answers 404 for both unknown and unpermitted devices.
+              <p role="alert" class="notice error-text">
+                This device does not exist or your account has no access to it.
               </p>
-            ))}
+            ) : (
+              Object.entries(workspace.errors).map(([key, error]) => (
+                <p key={key} role="alert" class="notice error-text">
+                  {key}: {error} <button onClick$={refresh}>Retry</button>
+                </p>
+              ))
+            )}
             {device && (
               <>
                 <div class="device-heading">
@@ -582,6 +590,7 @@ export default component$(() => {
                       alerts={workspace.alerts}
                       from={range.from}
                       to={range.to}
+                      revision={revision.value}
                     />
                   </>
                 )}
@@ -728,6 +737,9 @@ export default component$(() => {
                       commands={workspace.commands}
                       operator={operator && !device.revoked}
                       refresh={refresh}
+                      expected={
+                        device.expected_contact_at || device.next_contact_at
+                      }
                     />
                   </>
                 )}
