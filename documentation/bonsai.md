@@ -26,14 +26,20 @@ Central persistence retains `/var/lib/bonsai`; backups exclude GGUF weights.
 
 ## Server profile
 
-The Arc Pro B60 profile uses Vulkan, two inference slots, 32K tokens per slot
-(64K total), and quantized KV cache. Vision processing is on the GPU. The model
-releases its GPU allocations after 15 idle minutes and reloads on demand.
+The Arc Pro B60 profile uses Vulkan, two inference slots over one shared 48K
+KV pool (`--kv-unified`, Q8_0 K and V). A single request may use the whole
+pool while concurrent requests share it, instead of each slot being capped at
+half. Idle slots are saved to the prompt cache and cleared when a new task
+starts, so a paused chat does not hold tokens against a background review.
+Vision processing is on the GPU. The model releases its GPU allocations after
+15 idle minutes and reloads on demand.
 
 The two slots share the card, so they do not double throughput. They keep an
 interactive request from waiting behind a long background review: the gate
 still admits one background request at a time, so the other slot stays free.
-The slots share the 64K total context, and each request is limited to 32K.
+The pool is not reserved per slot: background requests use well under 1K
+tokens, and only a chat generating near the full 48K can leave a simultaneous
+review without room.
 
 Bonsai 2 reasons by default. The server uses medium reasoning effort and a
 1,024-token thinking budget so document metadata requests have time to return

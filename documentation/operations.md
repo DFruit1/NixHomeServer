@@ -2481,12 +2481,13 @@ After guarded activation:
 - The indexing embedder runs with every layer on the GPU
   (`repo.search.semantic.indexingGpuLayers = "all"`). The Q8 weights are about
   4.0 GiB, and the pass needs roughly 5.2 GiB of VRAM beside Bonsai (about
-  10.5 GiB with two 32K slots and the projector on the GPU), the query embedder
-  (about 4.3 GiB) and the reranker (about 2 GiB). That leaves roughly 1.5–2
-  GiB of the 23.9 GiB card, so re-measure before adding another resident GPU
-  model. A pass measures 0.6 seconds a passage against 9 with one layer. It
-  holds about 0.1 GiB of RAM. ggml-vulkan cannot spill a failed allocation to
-  host RAM: a pass that cannot load fails and is retried by the timer.
+  11.0 GiB with the shared 48K Q8 pool, two slots and the projector on the
+  GPU), the query embedder (about 4.3 GiB) and the reranker (about 2 GiB).
+  That leaves roughly 1.0-1.5 GiB of the 23.9 GiB card, so re-measure before
+  adding another resident GPU model. A pass measures 0.6 seconds a passage
+  against 9 with one layer. It holds about 0.1 GiB of RAM. ggml-vulkan cannot
+  spill a failed allocation to host RAM: a pass that cannot load fails and is
+  retried by the timer.
 - Two bulk jobs share the card. The backfill and the Media Manager photo-tag
   reviewer each hold `/run/ai-gpu-bulk.lease` for a 30-second slice, then wait
   three seconds before trying again, so neither starves the other and the
