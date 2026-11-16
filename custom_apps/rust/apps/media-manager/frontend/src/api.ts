@@ -69,6 +69,9 @@ export async function api<T>(
   headers.set("accept", "application/json");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const cancel = () => controller.abort(init.signal?.reason);
+  if (init.signal?.aborted) cancel();
+  else init.signal?.addEventListener("abort", cancel, { once: true });
   let response: Response;
   try {
     response = await fetch(`/api/v1${path}`, {
@@ -116,6 +119,7 @@ export async function api<T>(
     }
     return payload as T;
   } catch (error) {
+    if (init.signal?.aborted) throw error;
     if (controller.signal.aborted) {
       throw new ApiError(
         408,
@@ -127,6 +131,7 @@ export async function api<T>(
     throw error;
   } finally {
     clearTimeout(timeout);
+    init.signal?.removeEventListener("abort", cancel);
   }
 }
 

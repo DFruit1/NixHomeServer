@@ -208,7 +208,7 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await page.getByRole('link', { name: 'Getting Started' }).click();
   await expect(page).toHaveURL(/\/getting-started$/);
   await expect(page).toHaveTitle('Getting Started | Example Home Services');
-  await expect(page.getByText(/progress is saved only in this browser profile/)).toBeVisible();
+  await expect(page.getByText(/Progress stays in this browser/)).toBeVisible();
   for (const step of [
     'Install a password manager',
     'Protect your sign-in',
@@ -226,7 +226,7 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await expect(page.getByRole('link', { name: 'Get Bitwarden' })).toHaveAttribute('href', 'https://bitwarden.com/download/');
   await expect(page.getByRole('link', { name: 'Get KeePassXC' })).toHaveAttribute('href', 'https://keepassxc.org/download/');
 
-  await page.getByRole('button', { name: 'Done, next: Protect your sign-in' }).click();
+  await page.getByRole('button', { name: 'Done & continue' }).click();
   await expect(page.locator('#step-passwords')).toHaveClass(/is-done/);
   await expect(page.locator('#step-passwords-body')).toBeHidden();
   await expect(page.locator('#step-account-body')).toBeVisible();
@@ -252,10 +252,8 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await expect(apps.getByRole('link', { name: 'Open Photos' })).toHaveAttribute('target', '_blank');
   await expect(apps.getByRole('link', { name: 'Photos guide' })).toHaveAttribute('href', '/uploads?guide=service-photos');
   await expect(page.getByText('Use a trusted network path.')).toBeVisible();
-  // Troubleshooting stays collapsed until something fails.
-  await expect(page.getByText('If access was just changed, sign out and back in.')).toBeHidden();
-  await page.getByText('If an app does not open').click();
-  await expect(page.getByText('If access was just changed, sign out and back in.')).toBeVisible();
+  // Shared troubleshooting has one home in the guide.
+  await expect(page.getByRole('link', { name: 'App not opening? Try these checks.' })).toHaveAttribute('href', '/uploads?guide=help');
 
   // Links written for the old step names still open the matching step.
   await page.goto('/getting-started?step=uploads');
@@ -268,7 +266,9 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await expect(page.getByRole('link', { name: 'Get NetBird' })).toHaveAttribute('href', 'https://docs.netbird.io/get-started/install');
 
   await stepHeader(page, 'Set up your phone and TV').click();
+  await page.locator('summary').filter({ hasText: 'Back up phone photos with Immich' }).click();
   await expect(page.getByRole('link', { name: 'Get Immich' })).toBeVisible();
+  await page.locator('summary').filter({ hasText: 'Watch on a phone or TV with Jellyfin' }).click();
   await expect(page.getByRole('link', { name: 'Get Jellyfin' })).toBeVisible();
   await expect(page.getByText(/ask an admin for the initial Jellyfin password/)).toBeVisible();
   await expect(page.getByRole('link', { name: 'Approve a Quick Connect code' }))
@@ -309,7 +309,7 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   }
 
   await page.getByPlaceholder(/^Search/).fill('nonexistent');
-  await expect(page.getByText('No commands match your search.')).toBeVisible();
+  await expect(page.getByText('No commands or controls match your search.')).toBeVisible();
 
   await page.getByRole('link', { name: 'Detailed Guide' }).click();
   await expect(page).toHaveURL(/\/uploads$/);
@@ -382,7 +382,7 @@ test('detailed guide opens on an index and independently reveals unused apps', a
     'How sign-in works',
     'Where files go',
     'Mount your files as a drive',
-    'When something does not work',
+    'Troubleshooting',
     'Photos',
     'Files',
     'Videos',

@@ -56,8 +56,7 @@ export default component$(() => {
       <header class="doc-head">
         <h1>Keys &amp; Secrets</h1>
         <p class="doc-lead">
-          Passwords and keys for apps and devices that cannot use your normal sign-in. Save each one in your password
-          manager as soon as it is shown.
+          Manage app passwords and device keys. Save new credentials in your password manager.
         </p>
       </header>
 
@@ -113,8 +112,8 @@ export default component$(() => {
           )}
 
           {denied.length > 0 && (
-            <section class="vault-denied">
-              <h2>Not available to your account</h2>
+            <details class="doc-more vault-denied">
+              <summary>Not available to your account</summary>
               <ul>
                 {denied.map((feature) => (
                   <li key={feature.id}>
@@ -123,7 +122,7 @@ export default component$(() => {
                   </li>
                 ))}
               </ul>
-            </section>
+            </details>
           )}
 
           {allowed.length === 0 && denied.length === 0 && vault.status.unlocked && (

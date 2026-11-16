@@ -28,17 +28,17 @@ export default component$(() => {
   const showSshfs = Boolean(data?.sftp && (data.sftp.allowed || (showUnused.value && data.sftp.enabled)));
 
   const howTos: HowTo[] = [
-    { id: 'access', title: 'How sign-in works', summary: 'One account, the groups that decide what you can open, and the few apps with their own login.' },
+    { id: 'access', title: 'How sign-in works', summary: 'Account access and separate app logins.' },
     ...(folderGuides.length > 0
-      ? [{ id: 'folders', title: 'Where files go', summary: 'The folder each app reads, the file types it accepts, and personal versus shared folders.' }]
+      ? [{ id: 'folders', title: 'Where files go', summary: 'Folders, file types and sharing.' }]
       : []),
     ...(showSshfs
-      ? [{ id: 'sshfs', title: 'Mount your files as a drive', summary: 'Set up SSHFS on Windows, macOS or Linux for large or regular transfers.' }]
+      ? [{ id: 'sshfs', title: 'Mount your files as a drive', summary: 'SSHFS setup for Windows, macOS and Linux.' }]
       : []),
     ...(passwords
-      ? [{ id: 'vault-backup', title: 'Back up your password vault', summary: 'Keep an encrypted copy of your Passwords vault that does not depend on this server.' }]
+      ? [{ id: 'vault-backup', title: 'Back up your password vault', summary: 'Keep an encrypted backup off this server.' }]
       : []),
-    { id: 'help', title: 'When something does not work', summary: 'The checks that fix most problems, and what to send an admin.' },
+    { id: 'help', title: 'Troubleshooting', summary: 'Checks to try before asking an admin.' },
   ];
 
   const serviceGroups = categoryOrder
@@ -76,7 +76,7 @@ export default component$(() => {
       <section class="doc guide">
         <header class="doc-head">
           <h1>Detailed Guide</h1>
-          <p class="doc-lead">How the server works, and a page for every app you can use.</p>
+          <p class="doc-lead">Server help and app guides.</p>
         </header>
 
         <nav class="guide-index" aria-label="Detailed guide contents">

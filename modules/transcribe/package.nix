@@ -9,8 +9,8 @@
         url = "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.5.tar.gz";
         hash = "sha256-Qqqpt+pvCQwSbyaBr1bdb7q+3LbELTcloHdiSikGPc4=";
       };
-      # parakeet-cli only reports finished timings, so the patch teaches it the
-      # whisper.cpp `-pp` progress line Media Manager reads while decoding.
+      # Report completed encoder layers and decoded audio position separately
+      # through -pp, so Media Manager can show both transcription phases.
       patches = [ ./parakeet-progress.patch ];
       postPatch = ""; # Targets install themselves in 1.9.5.
     });

@@ -40,7 +40,6 @@ let
         "ntfy"
         "opencloud"
         "paperless"
-        "paperless-gpt"
         "prowlarr"
         "qbittorrent"
         "radarr"

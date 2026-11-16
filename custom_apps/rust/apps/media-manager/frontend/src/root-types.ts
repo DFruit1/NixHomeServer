@@ -169,6 +169,8 @@ export type IconName =
   | "activity"
   | "shield"
   | "folder"
+  | "server"
+  | "youtube"
   | "file"
   | "upload"
   | "check"

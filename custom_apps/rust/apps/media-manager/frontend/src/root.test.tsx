@@ -820,7 +820,7 @@ describe("Media Manager refresh feedback", () => {
 describe("Media Manager conversions inbox", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("lists inbox ISOs with identification and shows setup guidance", async () => {
+  it("lists waiting DVDs in the unified processing panel", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -865,15 +865,15 @@ describe("Media Manager conversions inbox", () => {
     await vi.waitFor(() =>
       expect(screen.textContent).toContain("EXAMPLE_MOVIE"),
     );
-    expect(screen.textContent).toContain("MOVIE_DISC.ISO");
-    expect(screen.textContent).toContain("Processed");
+    expect(screen.textContent).toContain("DVD conversion");
+    expect(screen.textContent).toContain("Completed");
     expect(screen.textContent).toContain("Failed");
     // Each finished disc is named once: the file name without its extension.
     expect(screen.textContent).toContain("OLD_MOVIE");
     expect(screen.textContent).not.toContain("OLD_MOVIE.ISO");
-    expect(screen.textContent).toContain(
-      "Copy a DVD ISO into the shared inbox at _Shared/_ISO/_DVDs.",
-    );
+    expect(screen.textContent).not.toContain("How to add DVDs");
+    expect(screen.textContent).not.toContain("Use a watched folder instead");
+    expect(screen.textContent).not.toContain("Recent submissions");
     expect(screen.textContent).toContain("No failed jobs.");
     expect(screen.querySelector("main")?.classList).toContain(
       "main-content--conversions",
@@ -938,12 +938,12 @@ describe("Media Manager conversions inbox", () => {
     expect(queue?.textContent).not.toContain(".iso");
     const progress = screen.querySelector('[role="progressbar"]');
     expect(progress?.getAttribute("aria-valuenow")).toBe("42");
-    // "Converting" is stated once, in the card header.
+    // The active DVD shares the processing panel with the waiting discs.
     expect(
       screen
         .querySelector(".conversion-focus")
-        ?.textContent?.match(/Converting/g),
-    ).toHaveLength(1);
+        ?.textContent?.match(/DVD conversion/g),
+    ).toHaveLength(3);
   });
 
   it("shows each running transcript's own stage and measured progress", async () => {
@@ -1317,7 +1317,7 @@ describe("Media Manager library browser", () => {
       {
         id: "movie-1",
         rootId: "shared-videos",
-        relativePath: "_Movies/Example Movie (2020).mkv",
+        relativePath: "Movies/Example Movie (2020).mkv",
         mediaKind: "video",
         sizeBytes: 1024,
       },
@@ -1331,7 +1331,7 @@ describe("Media Manager library browser", () => {
       {
         id: "cover-1",
         rootId: "shared-videos",
-        relativePath: "_Movies/cover.jpg",
+        relativePath: "Movies/cover.jpg",
         mediaKind: "artwork",
         sizeBytes: 8192,
       },
@@ -1374,7 +1374,7 @@ describe("Media Manager library browser", () => {
       Array.from(sharedPane?.querySelectorAll(".tree-row.folder") ?? []).find(
         (row) => row.querySelector(".tree-name")?.textContent === name,
       );
-    const movieBranch = folderRow("_Movies")?.closest(".tree-branch");
+    const movieBranch = folderRow("Movies")?.closest(".tree-branch");
     const showBranch = folderRow("_Shows")?.closest(".tree-branch");
     expect(movieBranch?.getAttribute("aria-expanded")).toBe("true");
 
@@ -1387,13 +1387,11 @@ describe("Media Manager library browser", () => {
 
     expect(showBranch?.getAttribute("aria-expanded")).toBe("true");
     expect(movieBranch?.getAttribute("aria-expanded")).toBe("false");
-    expect(folderRow("_Movies")?.classList.contains("sibling-muted")).toBe(
-      true,
-    );
+    expect(folderRow("Movies")?.classList.contains("sibling-muted")).toBe(true);
     expect(tree.scrollTop).toBe(0);
 
     await userEvent(
-      folderRow("_Movies")?.querySelector(".tree-folder-name") ?? null,
+      folderRow("Movies")?.querySelector(".tree-folder-name") ?? null,
       "click",
     );
 
@@ -1402,13 +1400,73 @@ describe("Media Manager library browser", () => {
     );
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining(
-        "/api/v1/folders/metadata?rootId=shared-videos&relativePath=_Movies",
+        "/api/v1/folders/metadata?rootId=shared-videos&relativePath=Movies",
       ),
       expect.objectContaining({ credentials: "same-origin" }),
     );
     expect(
       screen.querySelector<HTMLImageElement>(".media-image img")?.src,
     ).toContain("/items/movie-1/image");
+  });
+
+  it("uses a producer symbol and read-only metadata for a server folder", async () => {
+    const items = [
+      {
+        id: "yt-1",
+        rootId: "shared-videos",
+        relativePath: "_YouTube/ThunderScott/Example.mkv",
+        mediaKind: "video",
+        sizeBytes: 4096,
+      },
+      {
+        id: "yt-2",
+        rootId: "shared-videos",
+        relativePath: "_YouTube/Another Channel/Second.mkv",
+        mediaKind: "video",
+        sizeBytes: 2048,
+      },
+    ];
+    const libraryFetch = libraryFetchMock(items, true);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/folders/metadata?"))
+        return new Response(
+          wireJson({
+            mediaType: "collection",
+            title: "YouTube",
+            sources: ["folder"],
+          }),
+        );
+      return libraryFetch(input);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+
+    const serverFolder = Array.from(
+      screen.querySelectorAll(".shared-pane .tree-folder-name"),
+    ).find((button) => button.textContent?.trim() === "_YouTube");
+    await userEvent(serverFolder ?? null, "click");
+
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".editor-card")).toBeDefined(),
+    );
+    expect(
+      screen
+        .querySelector(".media-image-symbol")
+        ?.getAttribute("data-folder-symbol"),
+    ).toBe("youtube");
+    expect(screen.querySelector(".media-image img")).toBeUndefined();
+
+    const editor = screen.querySelector(".editor-card") as HTMLElement;
+    expect(
+      Array.from(editor.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Edit",
+      ),
+    ).toBe(false);
+    expect(
+      editor.querySelector(".editor-read-only-note")?.textContent,
+    ).toContain("Managed by the server");
   });
 
   it("replaces the opposite library pane with details and focuses the selected folder", async () => {

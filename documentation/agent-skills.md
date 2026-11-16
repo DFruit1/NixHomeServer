@@ -13,14 +13,13 @@ Six discoverable entrypoints are maintained under .agents/skills:
 - [Operations](../.agents/skills/nixhomeserver-safe-change/SKILL.md): validation
   scope, offload, guarded deployment/recovery, and shutdown protection.
 - [Finish and switch](../.agents/skills/nixhomeserver-finish-and-switch/SKILL.md):
-  gather unfinished work across checkouts, request completion and issue reports
-  from active agents, and wait for their explicit handoffs to the invoking
-  thread before final combined commits/integration and deployment. Review repo
-  state and finish unowned work while waiting, complete complex fixes with scoped
-  subagents, integrate and publish validated changes, and repair guarded
-  test/switch failures through a verified live switch. Invoking this workflow
-  to finish and switch authorizes those operations within existing owner gates;
-  creating or discussing the skill does not activate anything.
+  commit the finished uncommitted work, merge contributing branches and
+  worktrees into master, and run the guarded test/switch from clean source.
+  Usable with no extra context: it decides by itself what is finished, leaves
+  unfinished work uncommitted, and never asks questions mid-run — open issues
+  are raised in chat afterwards. Invoking it authorizes those operations within
+  existing owner gates; creating or discussing the skill does not activate
+  anything.
 
 A task loads only the entrypoints and references relevant to its boundaries.
 Project policy remains in AGENTS.md; a skill does not widen authority.

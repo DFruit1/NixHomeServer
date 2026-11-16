@@ -43,16 +43,20 @@ in
       bonsai = {
         enable = true;
         gpu.enable = true;
-        # Two 32K slots: llama.cpp splits this total across the slots. The
-        # budget on the 23.9 GiB card is 7.10 GiB of weights, 1.13 GiB of q4_0
-        # KV for the 64K total, the 0.59 GiB projector now on the GPU, and the
-        # second slot's state and vision buffers. The Q8 query embedder
-        # (~4.3 GiB), the trimmed reranker (~2 GiB) and the search backfill
-        # (~5.2 GiB while a pass runs) share the rest, so measure before
-        # adding another resident model.
-        contextSize = 65536;
+        # One shared 48K KV pool with a 36K per-slot cap: a single request may
+        # use up to 36K while 12K stays available for the photo-tag reviewer,
+        # DVD menus or a Paperless request. Q8_0 is near-lossless at about
+        # 1.60 GiB for 48K, where q4_0 was 1.13 GiB for 64K. Weights are
+        # 7.10 GiB, the projector 0.59 GiB, plus the slots' state and vision
+        # buffers. The Q8 query embedder (~5.7 GiB), the reranker (~1.3 GiB)
+        # and the search backfill (~5.8 GiB while a pass runs) share the
+        # rest, leaving about 1.2 GiB, so measure before adding another
+        # resident model.
+        contextSize = 49152;
         parallel = 2;
-        quantizeKvCache = true;
+        kvUnified = true;
+        kvUnifiedPerSlot = 36864;
+        kvCacheType = "q8_0";
         # Medium effort and a bounded thinking phase leave room for metadata
         # JSON answers. The gate still admits one background request at a
         # time, which keeps the second slot free for the chat UI.

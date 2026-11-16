@@ -283,6 +283,8 @@ export const ItemEditor = component$<{
   close$?: QRL<() => void>;
   command?: { action: EditorCommandAction; revision: number };
   showIdentity?: boolean;
+  /** Server-provisioned folders keep their name and metadata fixed. */
+  readOnly?: boolean;
 }>((props) => {
   const section = useSignal<MetadataSection>("basics");
   const cardRef = useSignal<HTMLElement>();
@@ -688,7 +690,7 @@ export const ItemEditor = component$<{
   });
 
   const toggleMetadataDraft = $(async () => {
-    if (metadata.confirming) return;
+    if (props.readOnly || metadata.confirming) return;
     if (metadata.isDraft) {
       await stopMetadataDraft();
       return;
@@ -1624,6 +1626,11 @@ export const ItemEditor = component$<{
       <div class="editor-heading">
         <div class="editor-heading-main">
           {props.showIdentity === false && <h3>Metadata</h3>}
+          {props.readOnly && (
+            <p class="editor-read-only-note">
+              Managed by the server. Its name and metadata cannot be edited.
+            </p>
+          )}
           {props.showIdentity !== false && selectedFilePath && (
             <div class="editor-file" title={selectedFilePath}>
               <span class="editor-file-icon" aria-hidden="true">
@@ -1634,24 +1641,26 @@ export const ItemEditor = component$<{
           )}
         </div>
         <div class="editor-heading-actions">
-          {props.state.session?.canEdit && canEditPortableMetadata && (
-            <button
-              class={metadata.isDraft ? "secondary-button" : "primary-button"}
-              type="button"
-              disabled={
-                !portableWriteAvailable ||
-                metadata.loadingDetails ||
-                metadata.confirming
-              }
-              onClick$={toggleMetadataDraft}
-            >
-              {metadata.isDraft
-                ? metadata.isDirty
-                  ? "Discard changes"
-                  : "Stop editing"
-                : "Edit"}
-            </button>
-          )}
+          {props.state.session?.canEdit &&
+            !props.readOnly &&
+            canEditPortableMetadata && (
+              <button
+                class={metadata.isDraft ? "secondary-button" : "primary-button"}
+                type="button"
+                disabled={
+                  !portableWriteAvailable ||
+                  metadata.loadingDetails ||
+                  metadata.confirming
+                }
+                onClick$={toggleMetadataDraft}
+              >
+                {metadata.isDraft
+                  ? metadata.isDirty
+                    ? "Discard changes"
+                    : "Stop editing"
+                  : "Edit"}
+              </button>
+            )}
           <button
             class="close-button"
             type="button"

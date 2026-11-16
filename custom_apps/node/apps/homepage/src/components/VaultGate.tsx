@@ -167,17 +167,17 @@ export const VaultGate = component$(({
         onSubmit$={submit}
       >
         <p>
-          Confirm it is you with a second sign-in. It stays unlocked for{' '}
-          {Math.round((sessionTtlSeconds ?? 900) / 60)} minutes, or {Math.round((idleTtlSeconds ?? 300) / 60)} minutes
-          after your last action, and locks when you close the browser.
+          Confirm your identity to unlock for{' '}
+          {Math.round((sessionTtlSeconds ?? 900) / 60)} minutes. Locks after {Math.round((idleTtlSeconds ?? 300) / 60)} minutes
+          without an action, or when you close the browser.
         </p>
         {!totpRequired.value ? (
           <label class="vault-field" for="vault-password">
-            Kanidm password for your account
+            Kanidm password
           </label>
         ) : (
           <>
-            <p class="vault-unlock__hint">Your account uses sign-in codes. Enter the six-digit code from your authenticator app.</p>
+            <p class="vault-unlock__hint">Enter the six-digit code from your authenticator app.</p>
             <label class="vault-field" for="vault-totp">
               Six-digit sign-in code
             </label>
@@ -208,7 +208,7 @@ export const VaultGate = component$(({
             />
           )}
           <button id="vault-unlock-submit" type="submit" class="doc-btn doc-btn--primary" disabled={busy.value}>
-            {busy.value ? 'Checking…' : totpRequired.value ? 'Finish unlock' : 'Unlock'}
+            {busy.value ? 'Checking…' : 'Unlock'}
           </button>
         </div>
         {error.value && <p class={{ 'key-status': true, error: errorKind.value === 'error' }}>{error.value}</p>}

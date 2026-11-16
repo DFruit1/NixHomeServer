@@ -50,9 +50,9 @@ test('recent errors shows only bounded metadata and stays usable on desktop and 
   await page.goto('/admin-dashboard');
   const panel = page.getByRole('region', { name: 'Recent errors' });
   await expect(panel).toBeVisible();
-  await expect(panel).toContainText('Priority 0–3 journal events in the past hour, with message content withheld.');
+  await expect(panel).toContainText('Errors and higher-severity events from the past hour. Messages are hidden.');
   await expect(panel).toContainText('Homepage');
-  await expect(panel).toContainText('2 retained');
+  await expect(panel).toContainText('2 events');
   await expect(panel).toContainText('Service access canary');
   await expect(panel).toContainText('No events observed');
 

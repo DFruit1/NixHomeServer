@@ -58,7 +58,9 @@ let
         ${lib.optionalString cfg.speculativeNgram "--spec-type ngram-simple"} \
         ${lib.optionalString (cfg.gpu.enable && cfg.arcLoaderFlags) "--load-mode none --no-host --no-op-offload"} \
         ${lib.optionalString (cfg.imageMaxTokens > 0) "--image-max-tokens ${toString cfg.imageMaxTokens}"} \
-        ${lib.optionalString cfg.quantizeKvCache "--cache-type-k q4_0 --cache-type-v q4_0"} \
+        ${lib.optionalString cfg.kvUnified "--kv-unified"} \
+        ${lib.optionalString (cfg.kvUnifiedPerSlot > 0) "--kv-unified-per-slot ${toString cfg.kvUnifiedPerSlot}"} \
+        ${lib.optionalString (cfg.kvCacheType != "f16") "--cache-type-k ${cfg.kvCacheType} --cache-type-v ${cfg.kvCacheType}"} \
         ${lib.escapeShellArgs cfg.extraArgs}
     '';
   };
@@ -75,9 +77,10 @@ in
       type = lib.types.ints.between 1 2;
       default = 1;
       description = ''
-        Number of inference slots. llama.cpp splits `contextSize` across the
-        slots, so two slots with a 65536 context give each request 32768
-        tokens. The slots share the single Arc GPU, so this does not double
+        Number of inference slots. Without `kvUnified`, llama.cpp splits
+        `contextSize` across the slots, so two slots with a 65536 context give
+        each request 32768 tokens. With it, the slots draw from one shared
+        pool. The slots share the single Arc GPU, so this does not double
         throughput; the second slot keeps an interactive request from waiting
         behind a long background review. The default gate still admits only
         one background request at a time, leaving the other slot free.
@@ -90,10 +93,43 @@ in
       description = "Maximum vision tokens per image; zero disables image downscaling.";
     };
 
-    quantizeKvCache = lib.mkOption {
+    kvCacheType = lib.mkOption {
+      type = lib.types.enum [
+        "f16"
+        "q8_0"
+        "q4_0"
+      ];
+      default = "f16";
+      description = ''
+        KV-cache element type applied to both K and V. Q8_0 is near-lossless
+        at about half the F16 size. Q4_0 is smaller still but costs measurable
+        quality at long context. Values other than F16 need flash attention,
+        which the service enables.
+      '';
+    };
+
+    kvUnified = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Use Q4_0 KV caches to reduce long-context RAM at a small quality and speed cost.";
+      description = ''
+        Share one KV buffer across all slots instead of splitting
+        `contextSize` evenly between them. A single request may then use the
+        whole pool while concurrent requests share it. llama.cpp saves idle
+        slots to the prompt cache and clears them when a new task starts, so a
+        paused request does not hold tokens against a background job.
+      '';
+    };
+
+    kvUnifiedPerSlot = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      default = 0;
+      description = ''
+        Maximum tokens one request may use when `kvUnified` is enabled; zero
+        leaves the whole `contextSize` pool available to a single request. The
+        difference between `contextSize` and this cap stays available to
+        concurrent requests, so a long chat cannot deny a smaller background
+        job. Requires `kvUnified`.
+      '';
     };
 
     temperature = lib.mkOption {
@@ -216,6 +252,14 @@ in
       {
         assertion = cfg.imageMaxTokens <= 4096;
         message = "repo.bonsai.imageMaxTokens cannot exceed the model's approximate 4096 vision-token limit.";
+      }
+      {
+        assertion = cfg.kvUnifiedPerSlot == 0 || cfg.kvUnified;
+        message = "repo.bonsai.kvUnifiedPerSlot requires repo.bonsai.kvUnified = true.";
+      }
+      {
+        assertion = cfg.kvUnifiedPerSlot == 0 || cfg.contextSize == 0 || cfg.kvUnifiedPerSlot <= cfg.contextSize;
+        message = "repo.bonsai.kvUnifiedPerSlot cannot exceed repo.bonsai.contextSize.";
       }
     ];
 

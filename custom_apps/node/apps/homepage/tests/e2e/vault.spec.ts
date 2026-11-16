@@ -47,13 +47,13 @@ test('the vault stays locked until a correct second sign-in', async ({ page, bas
   await page.goto('/keys');
 
   await expect(page.getByRole('heading', { name: 'Unlock keys and secrets' })).toBeVisible();
-  await expect(page.locator('.vault-unlock').getByText(/second sign-in/)).toBeVisible();
+  await expect(page.locator('.vault-unlock').getByText(/Confirm your identity/)).toBeVisible();
 
-  await page.getByLabel('Kanidm password for your account').fill('wrong-password');
+  await page.getByLabel('Kanidm password').fill('wrong-password');
   await page.getByRole('button', { name: 'Unlock' }).click();
   await expect(page.getByText('That password or code was not accepted.')).toBeVisible();
 
-  await page.getByLabel('Kanidm password for your account').fill(vaultPassword);
+  await page.getByLabel('Kanidm password').fill(vaultPassword);
   await page.getByRole('button', { name: 'Unlock' }).click();
   await expect(page.getByRole('status', { name: 'Status: unlocked' })).toBeVisible();
   await expect(page.getByText(/Locks in \d+ min/)).toBeVisible();
@@ -70,24 +70,24 @@ test('accounts with TOTP get a second-step prompt', async ({ page }) => {
   await page.goto('/keys');
 
   const startUnlock = async (password = vaultPassword) => {
-    await page.getByLabel('Kanidm password for your account').fill(password);
+    await page.getByLabel('Kanidm password').fill(password);
     await page.getByRole('button', { name: 'Unlock' }).click();
     await expect(page.getByText('Enter the six-digit code from your authenticator app.')).toBeVisible();
   };
 
   await startUnlock();
   await page.getByLabel('Six-digit sign-in code').fill('000000');
-  await page.getByRole('button', { name: 'Finish unlock' }).click();
+  await page.getByRole('button', { name: 'Unlock' }).click();
   await expect(page.getByText('That password or code was not accepted.')).toBeVisible();
 
   await startUnlock('wrong-password');
   await page.getByLabel('Six-digit sign-in code').fill(totpCode);
-  await page.getByRole('button', { name: 'Finish unlock' }).click();
+  await page.getByRole('button', { name: 'Unlock' }).click();
   await expect(page.getByText('That password or code was not accepted.')).toBeVisible();
 
   await startUnlock();
   await page.getByLabel('Six-digit sign-in code').fill(totpCode);
-  await page.getByRole('button', { name: 'Finish unlock' }).click();
+  await page.getByRole('button', { name: 'Unlock' }).click();
   await expect(page.getByRole('status', { name: 'Status: unlocked' })).toBeVisible();
 });
 
@@ -160,7 +160,7 @@ test('the Kavita card creates, rotates, and deletes API keys', async ({ page, ba
   await expect(tabletKey.locator('code').filter({ hasText: /^e2e/ })).toBeVisible();
 
   await tabletKey.getByRole('button', { name: 'Regenerate', exact: true }).click();
-  await tabletKey.getByRole('button', { name: 'Confirm rotate' }).click();
+  await tabletKey.getByRole('button', { name: 'Confirm regeneration' }).click();
   await expect(card.getByText('Key Tablet reader regenerated.')).toBeVisible();
 
   await tabletKey.getByRole('button', { name: 'Delete', exact: true }).click();
@@ -173,7 +173,7 @@ test('features outside the account permissions are listed as unavailable', async
   await unlockThroughApi(page, baseURL, 'basic', 'users');
   await page.goto('/keys');
 
-  await expect(page.getByRole('heading', { name: 'Not available to your account' })).toBeVisible();
+  await expect(page.locator('summary').filter({ hasText: 'Not available to your account' })).toBeVisible();
 
   const syncthing = await page.request.get('/api/vault/syncthing', { headers: identityHeaders('basic', 'users') });
   expect(syncthing.status()).toBe(404);

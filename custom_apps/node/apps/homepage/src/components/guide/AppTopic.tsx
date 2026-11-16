@@ -6,11 +6,6 @@ import { detailedServiceTips } from '../../shared/ui-constants.js';
 import { ClientSetupBlock } from '../ClientSetupBlock.js';
 import { ServiceLogo } from '../ServiceLogo.js';
 
-const fallbackTips = [
-  'Open the app once after access is granted so any first-sign-in setup can finish.',
-  'Try one small item first and check the result before moving a large library.',
-];
-
 export const AppTopic = component$(({
   service,
   folderGuides,
@@ -21,7 +16,7 @@ export const AppTopic = component$(({
   folderGuides: FolderGuide[];
   username: string;
 }) => {
-  const tips = detailedServiceTips[service.id] ?? fallbackTips;
+  const tips = detailedServiceTips[service.id] ?? [];
   const folders = folderGuides.filter((guide) => guide.serviceIds.includes(service.id));
   const client = service.enabled ? clientSetups.find((setup) => setup.serviceId === service.id) : undefined;
   const external = service.url.startsWith('http');
@@ -61,10 +56,14 @@ export const AppTopic = component$(({
         )}
       </dl>
 
-      <h2>Good to know</h2>
-      <ul>
-        {tips.map((tip) => <li key={tip}>{tip}</li>)}
-      </ul>
+      {tips.length > 0 && (
+        <>
+          <h2>Good to know</h2>
+          <ul>
+            {tips.map((tip) => <li key={tip}>{tip}</li>)}
+          </ul>
+        </>
+      )}
 
       {client && (
         <>

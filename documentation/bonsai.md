@@ -26,14 +26,21 @@ Central persistence retains `/var/lib/bonsai`; backups exclude GGUF weights.
 
 ## Server profile
 
-The Arc Pro B60 profile uses Vulkan, two inference slots, 32K tokens per slot
-(64K total), and quantized KV cache. Vision processing is on the GPU. The model
+The Arc Pro B60 profile uses Vulkan, two inference slots over one shared 48K
+KV pool (`--kv-unified`, Q8_0 K and V) with a 36K per-slot cap
+(`--kv-unified-per-slot`). A single request may use up to 36K while the
+remaining 12K stays available to concurrent background requests, instead of
+the context being split into fixed halves. Idle slots are saved to the prompt
+cache and cleared when a new task starts, so a paused chat does not hold
+tokens against a background review. Vision processing is on the GPU. The model
 releases its GPU allocations after 15 idle minutes and reloads on demand.
 
 The two slots share the card, so they do not double throughput. They keep an
 interactive request from waiting behind a long background review: the gate
 still admits one background request at a time, so the other slot stays free.
-The slots share the 64K total context, and each request is limited to 32K.
+The 12K reserve covers the photo-tag reviewer, DVD menus and Paperless v3's
+8K prompts. A Paperless-GPT request of up to 20K needs the chat to be idle
+(its slot is then saved and cleared) or a larger pool.
 
 Bonsai 2 reasons by default. The server uses medium reasoning effort and a
 1,024-token thinking budget so document metadata requests have time to return
@@ -50,9 +57,18 @@ There is no API credential on loopback; neither listener is exposed directly.
 Qwen remains disabled on this host. Its optional background-job integration
 still stops Bonsai while Qwen runs if both applications are enabled later.
 
-## Paperless-GPT
+## Paperless-GPT (currently disabled)
 
-The separately removable `paperless-gpt` app provides the upstream v0.31.0 UI
+The optional `paperless-gpt` app is **disabled on this host** while we operate
+without it. It remains in the catalog: re-add `paperless-gpt` to
+`applications.enabled` in `vars.nix` to restore the container, route and
+provisioning. Disabling it retains `/var/lib/paperless-gpt` and the Paperless
+`paperless-gpt-service` identity/token; the unused token stays valid until it
+is revoked manually. The Linux runtime user is removed while the app is
+disabled, so after re-enabling check that the state directory and its files
+are still readable by the recreated user.
+
+When enabled, the separately removable app provides the upstream v0.31.0 UI
 at `https://paperless-gpt.<domain>`, restricted to the configured owner's
 `paperless-gpt-users` Kanidm group. Its upstream release container is pinned
 by digest. It connects to Bonsai through the concurrency gate and reads the
@@ -89,7 +105,7 @@ provisioning and routing.
 ## Operations
 
 ```bash
-sudo systemctl status bonsai-model-prepare bonsai-llama bonsai-gate paperless-gpt
+sudo systemctl status bonsai-model-prepare bonsai-llama bonsai-gate
 sudo journalctl -u bonsai-model-prepare -u bonsai-llama -n 80 --no-pager
 curl --fail http://127.0.0.1:8086/health
 curl --fail http://127.0.0.1:8094/v1/models

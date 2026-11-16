@@ -73,6 +73,15 @@ impl<'a> StageProgress<'a> {
             last_write: std::time::Instant::now() - std::time::Duration::from_secs(2),
         }
     }
+    fn report_transcription(&mut self, phase: &'static str, percent: u8) {
+        if self.extra["progressPhase"].as_str() != Some(phase) {
+            self.extra["progressPhase"] = json!(phase);
+            self.last_percent = None;
+            self.last_write = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        }
+        self.report(percent);
+    }
+
     fn report(&mut self, percent: u8) {
         let percent = percent.min(100);
         if self.last_percent == Some(percent) {
@@ -422,7 +431,12 @@ impl Worker {
         if opened_file_fingerprint(&file).map_err(|e| e.to_string())? != job.fingerprint {
             return Err("source_changed".into());
         }
-        let stage = json!({"durationMs": duration});
+        let phase = if job.backend == Backend::Parakeet {
+            "preparing"
+        } else {
+            "decoding"
+        };
+        let stage = json!({"durationMs": duration, "progressPhase": phase});
         let mut transcribing = StageProgress::new(self, job, "transcribing", stage.clone());
         self.record(job, "transcribing", stage)?;
         let transcript = runtime
@@ -431,7 +445,7 @@ impl Worker {
                 &job.request,
                 &wav,
                 scratch.path(),
-                &mut |percent| transcribing.report(percent),
+                &mut |phase, percent| transcribing.report_transcription(phase, percent),
             )
             .await?;
         transcribing.report(100);
@@ -534,6 +548,7 @@ pub fn read_jobs(state: &Path, username: &str) -> Result<Vec<Value>, String> {
                     "updatedAt",
                     "durationMs",
                     "progress",
+                    "progressPhase",
                     "outputDir",
                     "error",
                     "ignored",
