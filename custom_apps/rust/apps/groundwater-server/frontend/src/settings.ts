@@ -289,9 +289,12 @@ export function validateSettings(args: unknown, now: number): string[] {
       case "tilt_val":
         break;
       case "start":
-        error = int(value, key, 0, 4294967295);
+        // The firmware rejects a start after 2099 or over 366 days ahead.
+        error = int(value, key, 0, 4102444799);
         if (!error && value !== 0 && (value as number) <= now)
           error = "start must be 0 (none) or a future UTC time";
+        else if (!error && (value as number) > now + 366 * 86400)
+          error = "start must be at most 366 days ahead";
         break;
       case "fac":
         if (!Array.isArray(value) || value.length !== 4)

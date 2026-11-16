@@ -131,6 +131,9 @@ Alerts are a notification copy. The authoritative record arrives in
 `data/stream`. Alerts raised while asleep are published at the next connection;
 an alarm entry, impact, sensor fault, power critical or Tail Lock brings the
 next connection forward (subject to the 10 % rule).
+Impacts are rate limited: at most one Type 11 record and `impact` alert per
+10 minutes. Taps inside that hold-off are not recorded on their own; the
+highest of their peaks is recorded at the first wake after it, with that time.
 
 ### test/result
 ```json
@@ -226,7 +229,7 @@ Keys in `args` (Rev2 TLV settings plus three firmware settings). A missing key k
 | `send_s` | int 300 … 2,332,800 | 604800 | 0x02 |
 | `gps_mode` / `gps_val` | 0 at send, 1 N per send (1–255), 2 fixed s (600–2,332,800), 3 off | 0 / 0 | 0x03 |
 | `tilt_mode` / `tilt_val` | as GPS | 0 / 0 | 0x04 |
-| `start` | UTC s, 0 = none | 0 | 0x05 |
+| `start` | UTC s, 0 = none; ≤ 4,102,444,799 (end of 2099) and, on a valid logger clock, ≤ now + 366 days | 0 | 0x05 |
 | `fac` | `[a,p,b,c]` finite floats | `[0,1,1,0]` | 0x06 |
 | `tap` | 0/1 | 1 | 0x07 |
 | `tap_sens` | 1 … 10 | 5 | 0x08 |
@@ -288,6 +291,7 @@ Every other danger `op` uses the handshake in §7:
    re-sends it after the next `sleep`.
 2. **At most once.** The logger remembers the last 16 `(id, op, status)`
    results in RAM; a repeated `id` is acked `duplicate` with `prev`, never re-run.
+   The list survives a warm reset (`reboot`, watchdog) but not a loss of power.
 3. **Order.** Commands run in arrival order. `reboot` and `enter_bootloader`
    are deferred to the end of the window.
 4. Every received command gets exactly one final ack (plus the challenge for

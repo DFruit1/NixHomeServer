@@ -450,11 +450,18 @@ pub async fn handle_ack<C: GenericClient + Sync>(
 }
 
 /// Final state for an ack status: `(state, final_status, hold_until_sleep)`.
+/// `prev` is a `duplicate` ack's earlier status. The logger remembers a
+/// danger challenge under its id, so re-sending that id after the challenge
+/// lapsed answers `duplicate`/`challenge`: the command never ran and the id
+/// is spent, so it fails rather than counting as done.
 pub fn final_state(
     status: AckStatus,
     reason: Option<&str>,
+    prev: Option<&str>,
 ) -> (&'static str, Option<&'static str>, bool) {
     match (status, reason) {
+        (AckStatus::Duplicate, _) if prev == Some("challenge") => ("acked", Some("failed"), false),
+        (AckStatus::Duplicate, _) if prev == Some("expired") => ("expired", Some("expired"), false),
         (AckStatus::Rejected, Some("busy")) => ("queued", None, true),
         (AckStatus::Rejected, Some("time-invalid")) => ("queued", None, true),
         (AckStatus::Expired, _) => ("expired", Some("expired"), false),
@@ -474,8 +481,13 @@ async fn finalize<C: GenericClient + Sync>(
     ack: &rev2::Ack,
     payload: &Value,
 ) -> Result<(), String> {
-    let (mut state, final_status, hold) = final_state(ack.status, ack.reason.as_deref());
+    let (mut state, final_status, hold) =
+        final_state(ack.status, ack.reason.as_deref(), ack.prev.as_deref());
     let reason = match ack.status {
+        AckStatus::Duplicate if ack.prev.as_deref() == Some("challenge") => Some(
+            "previously challenge: the challenge lapsed unconfirmed; queue the command again"
+                .to_owned(),
+        ),
         AckStatus::Duplicate => ack.prev.clone().map(|prev| format!("previously {prev}")),
         _ => ack.reason.clone(),
     };
@@ -1291,33 +1303,42 @@ mod tests {
     #[test]
     fn ack_statuses_map_to_final_states() {
         assert_eq!(
-            final_state(AckStatus::Ok, None),
+            final_state(AckStatus::Ok, None, None),
             ("acked", Some("ok"), false)
         );
         assert_eq!(
-            final_state(AckStatus::Partial, None),
+            final_state(AckStatus::Partial, None, None),
             ("acked", Some("partial"), false)
         );
         assert_eq!(
-            final_state(AckStatus::Rejected, Some("bad-args")),
+            final_state(AckStatus::Rejected, Some("bad-args"), None),
             ("acked", Some("rejected"), false)
         );
         // busy: re-send after the next sleep; time-invalid: after a sync.
         assert_eq!(
-            final_state(AckStatus::Rejected, Some("busy")),
+            final_state(AckStatus::Rejected, Some("busy"), None),
             ("queued", None, true)
         );
         assert_eq!(
-            final_state(AckStatus::Rejected, Some("time-invalid")),
+            final_state(AckStatus::Rejected, Some("time-invalid"), None),
             ("queued", None, true)
         );
         assert_eq!(
-            final_state(AckStatus::Expired, None),
+            final_state(AckStatus::Expired, None, None),
             ("expired", Some("expired"), false)
         );
         assert_eq!(
-            final_state(AckStatus::Duplicate, None),
+            final_state(AckStatus::Duplicate, None, Some("ok")),
             ("acked", Some("duplicate"), false)
+        );
+        // A lapsed danger challenge never ran; its id is spent.
+        assert_eq!(
+            final_state(AckStatus::Duplicate, None, Some("challenge")),
+            ("acked", Some("failed"), false)
+        );
+        assert_eq!(
+            final_state(AckStatus::Duplicate, None, Some("expired")),
+            ("expired", Some("expired"), false)
         );
     }
 

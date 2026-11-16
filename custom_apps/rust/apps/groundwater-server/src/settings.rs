@@ -10,6 +10,10 @@
 use serde_json::{json, Map, Value};
 
 pub const MAX_INTERVAL_S: i64 = 2_332_800;
+/// Latest `start` the firmware accepts: the end of 2099 (UTC).
+pub const START_MAX: i64 = 4_102_444_799;
+/// The firmware rejects a `start` further ahead than this on a valid clock.
+pub const START_AHEAD_MAX_S: i64 = 366 * 86_400;
 
 /// Firmware defaults (contract table "Default" column).
 pub fn defaults() -> Map<String, Value> {
@@ -101,9 +105,11 @@ pub fn validate(args: &Value, now: i64) -> Result<(), Vec<String>> {
             "read_s" => int(value, key, 60, MAX_INTERVAL_S).map(|_| ()),
             "send_s" => int(value, key, 300, MAX_INTERVAL_S).map(|_| ()),
             "gps_mode" | "gps_val" | "tilt_mode" | "tilt_val" => Ok(()),
-            "start" => int(value, key, 0, i64::from(u32::MAX)).and_then(|start| {
+            "start" => int(value, key, 0, START_MAX).and_then(|start| {
                 if start != 0 && start <= now {
                     Err("start must be 0 (none) or a future UTC time".into())
+                } else if start > now + START_AHEAD_MAX_S {
+                    Err("start must be at most 366 days ahead".into())
                 } else {
                     Ok(())
                 }
@@ -353,6 +359,8 @@ mod tests {
             (json!({"gps_mode":1}), "requires gps_val"),
             (json!({"tilt_val":5}), "needs tilt_mode"),
             (json!({"start":NOW - 1}), "start"),
+            (json!({"start":NOW + 367 * 86_400}), "start"),
+            (json!({"start":START_MAX + 1}), "start"),
             (json!({"fac":[1,2,3]}), "fac"),
             (json!({"fac":[1,2,3,"x"]}), "fac"),
             (json!({"tap":2}), "tap"),

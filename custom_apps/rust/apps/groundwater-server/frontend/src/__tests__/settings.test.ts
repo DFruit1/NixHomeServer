@@ -61,6 +61,7 @@ describe("revision 2 settings validation", () => {
       [{ tilt_val: 5 }, "tilt_val needs tilt_mode"],
       [{ start: NOW - 1 }, "start must be 0 (none) or a future UTC time"],
       [{ start: NOW }, "start must be 0"],
+      [{ start: NOW + 367 * 86400 }, "start must be at most 366 days ahead"],
       [{ fac: [1, 2, 3] }, "fac must be [a,p,b,c]"],
       [{ fac: [1, 2, 3, "x"] }, "fac must be a finite number"],
       [{ fac: [1, 2, 3, 1e39] }, "fac must be a finite number"],
