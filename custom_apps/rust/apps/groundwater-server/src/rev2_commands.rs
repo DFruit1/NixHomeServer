@@ -13,8 +13,11 @@
 //! The wire id is `commands.id`. Commands are published as soon as they are
 //! queued: the logger's persistent session holds them while it sleeps. At
 //! most `max_in_flight` unacknowledged commands per device are outstanding
-//! (the logger queues four). `sync_time` and nonce confirmations are only
-//! meaningful in the current awake window, so they are never re-published.
+//! (the logger queues four); later commands wait behind one held by
+//! `rejected`/`busy`, so the logger runs them in the order they were queued.
+//! `sync_time` and nonce confirmations are only meaningful in the current
+//! awake window, so they are never re-published. The first final ack wins:
+//! repeated or `duplicate` acks for an acked command are only recorded.
 
 use chrono::{DateTime, Utc};
 use serde_json::{json, Map, Value};
@@ -38,11 +41,16 @@ pub struct QueueOptions<'a> {
     pub parent_id: Option<i64>,
     pub download_id: Option<i64>,
     pub replace: bool,
+    /// Extend `expires_at` past the device's announced next connection
+    /// (plus its listen window and the stale margin). Automatic commands
+    /// use it so a weekly logger does not receive them already expired;
+    /// an operator's explicit expiry and window-bound commands do not.
+    pub cover_next_contact: bool,
 }
 
 impl<'a> QueueOptions<'a> {
-    /// Defaults for `op`'s channel: basic/settings expire after
-    /// `basic_expiry_seconds`, danger after `danger_expiry_seconds`.
+    /// Defaults for server-issued commands: `basic_expiry_seconds`, at least
+    /// until the device's next connection has passed.
     pub fn new(policy: &Rev2Policy, now: DateTime<Utc>) -> Self {
         Self {
             requested_by: "server",
@@ -53,10 +61,15 @@ impl<'a> QueueOptions<'a> {
             parent_id: None,
             download_id: None,
             replace: false,
+            cover_next_contact: true,
         }
     }
+    /// Operator defaults for `op`'s channel: basic/settings expire after
+    /// `basic_expiry_seconds`, danger after `danger_expiry_seconds`, exactly
+    /// (the operator chooses the lifetime).
     pub fn for_op(op: &str, policy: &Rev2Policy, now: DateTime<Utc>) -> Self {
         let mut options = Self::new(policy, now);
+        options.cover_next_contact = false;
         if rev2::kind_of(op) == Some(rev2::CommandKind::Danger) {
             options.expires_at = now + chrono::Duration::seconds(policy.danger_expiry_seconds);
         }
@@ -68,6 +81,11 @@ impl<'a> QueueOptions<'a> {
 /// including the 1,024-byte downlink limit.
 pub fn prepare(op: &str, args: &Value, replace: bool, now: DateTime<Utc>) -> Result<Value, String> {
     let args = rev2::validate_args(op, args, now.timestamp())?;
+    if rev2::UNSUPPORTED_BY_FIRMWARE.contains(&op) {
+        return Err(format!(
+            "{op} is not supported by firmware 2.2 (the logger answers rejected/unsupported)"
+        ));
+    }
     if replace && op != "settings" {
         return Err("replace applies only to settings".into());
     }
@@ -125,14 +143,19 @@ pub async fn queue<C: GenericClient + Sync>(
     let args = prepare(op, args, options.replace, now)?;
     let kind = rev2::kind_of(op).ok_or_else(|| format!("{op} is not a contract operation"))?;
     let payload = json!({"op":op,"args":args});
+    let margin = crate::config::rev2_policy().stale_margin_seconds as f64;
     let row = client
         .query_opt(
             "INSERT INTO commands(device_id,kind,payload,wire_payload,requested_by,firmware_ack_expected,protocol,op,args,
                 replace_settings,expires_at,preconfirmed,live_only,origin,parent_id,download_id)
-             SELECT d.device_id,$2,$3,'',$4,true,2,$5,$6,$7,$8,$9,$10,$11,$12,$13 FROM devices d
+             SELECT d.device_id,$2,$3,'',$4,true,2,$5,$6,$7,
+                CASE WHEN $14 AND d.next_contact_at>now() THEN GREATEST($8::timestamptz,
+                    d.next_contact_at+make_interval(secs=>COALESCE(d.listen_window_s,60)+$15::double precision))
+                    ELSE $8::timestamptz END,
+                $9,$10,$11,$12,$13 FROM devices d
              WHERE d.device_id=$1 AND d.revoked_at IS NULL
                AND groundwater_command_supported(d.source_profile,$2,$3,d.clock_policy,d.local_offset_min,d.clock_change_unverified) IS TRUE
-             RETURNING id",
+             RETURNING id,expires_at",
             &[
                 &device,
                 &kind.as_str(),
@@ -147,22 +170,22 @@ pub async fn queue<C: GenericClient + Sync>(
                 &options.origin,
                 &options.parent_id,
                 &options.download_id,
+                &options.cover_next_contact,
+                &margin,
             ],
         )
         .await
         .map_err(dberr("command queue"))?;
     let Some(row) = row else { return Ok(None) };
     let id: i64 = row.get(0);
+    let expires_at: DateTime<Utc> = row.get(1);
     if id > i64::from(u32::MAX) {
         return Err("command id exceeds the protocol's u32 range".into());
     }
     client
         .execute(
             "UPDATE commands SET wire_payload=$2 WHERE id=$1",
-            &[
-                &id,
-                &wire(id, options.expires_at, op, &args, options.replace, now),
-            ],
+            &[&id, &wire(id, expires_at, op, &args, options.replace, now)],
         )
         .await
         .map_err(dberr("command wire"))?;
@@ -197,6 +220,8 @@ pub async fn next_publish<C: GenericClient + Sync>(
                AND (c.expires_at IS NULL OR c.expires_at>now())
                AND (NOT c.live_only OR (d.link_state IN ('online','ready') AND NOT d.link_retained
                     AND d.link_state_at>now()-make_interval(secs=>COALESCE(d.listen_window_s,60)+180)))
+               AND (c.op='confirm' OR c.live_only OR NOT EXISTS(SELECT 1 FROM commands h WHERE h.device_id=c.device_id
+                    AND h.protocol=2 AND h.state='queued' AND h.hold_until_sleep AND h.id<c.id))
                AND (c.op='confirm' OR (SELECT count(*) FROM commands o WHERE o.device_id=c.device_id AND o.protocol=2
                     AND o.op IS DISTINCT FROM 'confirm'
                     AND (o.state IN ('sent','challenge') OR o.active_publish_attempt IS NOT NULL))<$1)
@@ -359,7 +384,36 @@ pub async fn expire<C: GenericClient + Sync>(client: &C) -> Result<Vec<String>, 
         )
         .await
         .map_err(dberr("command expiry"))?;
-    Ok(rows.iter().map(|row| row.get(0)).collect())
+    let mut devices: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+    // A gap request or download chunk whose command ended without an ack
+    // (expired, given up after the re-publishes, cancelled) would otherwise
+    // stay `requested`/`active` forever: nothing re-requests the gap and
+    // nothing issues the next chunk.
+    let released = client
+        .query(
+            "WITH gaps AS (
+                UPDATE stream_gaps g SET state=CASE WHEN g.attempts>=$1 THEN 'unrecoverable' ELSE 'open' END,
+                    resolved_at=CASE WHEN g.attempts>=$1 THEN now() ELSE NULL END
+                FROM commands c WHERE g.command_id=c.id AND g.state='requested'
+                    AND c.state IN ('expired','unacknowledged','cancelled')
+                RETURNING g.device_id),
+             downloads AS (
+                UPDATE file_downloads f SET state='failed',error='chunk command '||c.state||' without data',updated_at=now()
+                FROM commands c WHERE f.current_command_id=c.id AND f.state='active'
+                    AND c.state IN ('expired','unacknowledged','cancelled')
+                RETURNING f.device_id)
+             SELECT device_id FROM gaps UNION SELECT device_id FROM downloads",
+            &[&crate::config::rev2_policy().max_gap_attempts],
+        )
+        .await
+        .map_err(dberr("gap and download release"))?;
+    for row in released {
+        let device: String = row.get(0);
+        if !devices.contains(&device) {
+            devices.push(device);
+        }
+    }
+    Ok(devices)
 }
 
 struct CommandRow {
@@ -372,6 +426,9 @@ struct CommandRow {
     args: Value,
     preconfirmed: bool,
     publish_count: i32,
+    state: String,
+    /// The challenged command's op, for a `confirm`.
+    parent_op: Option<String>,
 }
 
 async fn load_command<C: GenericClient + Sync>(
@@ -381,8 +438,9 @@ async fn load_command<C: GenericClient + Sync>(
 ) -> Result<Option<CommandRow>, String> {
     let row = client
         .query_opt(
-            "SELECT id,op,kind,parent_id,origin,download_id,args,preconfirmed,publish_count
-             FROM commands WHERE id=$1 AND device_id=$2 AND protocol=2 FOR UPDATE",
+            "SELECT c.id,c.op,c.kind,c.parent_id,c.origin,c.download_id,c.args,c.preconfirmed,c.publish_count,c.state,p.op
+             FROM commands c LEFT JOIN commands p ON p.id=c.parent_id
+             WHERE c.id=$1 AND c.device_id=$2 AND c.protocol=2 FOR UPDATE OF c",
             &[&id, &device],
         )
         .await
@@ -397,6 +455,8 @@ async fn load_command<C: GenericClient + Sync>(
         args: row.get::<_, Option<Value>>(6).unwrap_or_else(|| json!({})),
         preconfirmed: row.get(7),
         publish_count: row.get(8),
+        state: row.get(9),
+        parent_op: row.get(10),
     }))
 }
 
@@ -424,6 +484,48 @@ pub async fn handle_ack<C: GenericClient + Sync>(
             ack.id
         )));
     };
+    // The logger names the op it ran (a confirm's ack names the confirmed
+    // op; a parse-time rejection may omit it). Another op under this id is
+    // not about this command: an id from before a database restore, or a
+    // forged ack. Applying it would show the wrong outcome.
+    if !ack_op_matches(&command, &ack.op) {
+        server_event(
+            client,
+            ctx.device_id,
+            "unmatched_ack",
+            ctx.received_at,
+            json!({"id":ack.id,"op":ack.op,"status":ack.status.as_str(),"command_op":command.op}),
+        )
+        .await?;
+        return Ok(Outcome::rejected(format!(
+            "ack id {} names op {} but command {} is {}",
+            ack.id, ack.op, command.id, command.op
+        )));
+    }
+    // A final ack is final. A second ack for the same id is a QoS 1
+    // redelivery, or the logger's `duplicate` answer to a copy re-published
+    // after a `sleep` that overtook the ack (status and acks travel on
+    // different MQTT sessions). It must not replace the outcome: a
+    // `duplicate`/`challenge` after a confirmed wipe would otherwise show
+    // the executed wipe as failed and invite the operator to run it again.
+    if command.state == "acked" {
+        server_event(
+            client,
+            ctx.device_id,
+            "repeated_ack",
+            ctx.received_at,
+            json!({"command_id":command.id,"op":ack.op,"status":ack.status.as_str(),"prev":ack.prev}),
+        )
+        .await?;
+        return Ok(Outcome {
+            detail: Some(format!(
+                "command {} already has its final ack; {} recorded only",
+                command.id,
+                ack.status.as_str()
+            )),
+            ..Outcome::default()
+        });
+    }
     let mut outcome = Outcome::default();
     let expected_channel = if command.kind == "config" {
         "config/applied"
@@ -447,6 +549,13 @@ pub async fn handle_ack<C: GenericClient + Sync>(
         device_id: ctx.device_id.to_owned(),
     });
     Ok(outcome)
+}
+
+/// Whether an ack's `op` can belong to `command`.
+fn ack_op_matches(command: &CommandRow, op: &str) -> bool {
+    op.is_empty()
+        || op == command.op
+        || (command.op == "confirm" && command.parent_op.as_deref() == Some(op))
 }
 
 /// Final state for an ack status: `(state, final_status, hold_until_sleep)`.
@@ -515,8 +624,11 @@ async fn finalize<C: GenericClient + Sync>(
     {
         client
             .execute(
+                // Also when the parent was already expired: the `sleep` that
+                // closed the window can be processed before this ack (they
+                // use different MQTT sessions), and the logger did run it.
                 "UPDATE commands SET state=$2,final_status=$3,status_reason=$4,acked_at=$5,ack_payload=$6
-                 WHERE id=$1 AND state IN ('challenge','sent','queued')",
+                 WHERE id=$1 AND state<>'acked'",
                 &[
                     &parent,
                     &if hold { "expired" } else { state },
@@ -551,6 +663,25 @@ async fn handle_challenge<C: GenericClient + Sync>(
         outcome.rejected = Some(format!("{} does not use the nonce handshake", command.op));
         return Ok(());
     }
+    // A cancelled or lapsed command reaches the logger anyway when it was
+    // already in the persistent session. Its challenge is recorded but never
+    // reopened, so nobody (and no auto-confirm) can confirm a destructive
+    // op the operator withdrew; the nonce lapses on the logger by itself.
+    if !matches!(command.state.as_str(), "queued" | "sent" | "challenge") {
+        server_event(
+            client,
+            ctx.device_id,
+            "challenge_ignored",
+            ctx.received_at,
+            json!({"command_id":command.id,"op":command.op,"state":command.state,"nexp":nexp}),
+        )
+        .await?;
+        outcome.detail = Some(format!(
+            "challenge for command {} ignored: it is {}",
+            command.id, command.state
+        ));
+        return Ok(());
+    }
     let nexp_at = crate::rev2_store::utc(i64::from(nexp));
     let challenge = json!({"nonce":nonce,"nexp":nexp,"unsaved_frames":ack.unsaved_frames,
         "unsaved_bytes":ack.unsaved_bytes,"received_at":ctx.received_at});
@@ -569,6 +700,7 @@ async fn handle_challenge<C: GenericClient + Sync>(
             origin: "auto-confirm",
             expires_at: nexp_at,
             parent_id: Some(command.id),
+            cover_next_contact: false,
             ..QueueOptions::new(ctx.policy, ctx.received_at)
         };
         queue(
@@ -719,6 +851,31 @@ async fn effects<C: GenericClient + Sync>(
                 device_id: ctx.device_id.to_owned(),
             });
         }
+        "file_chunk" if success || ack.status == AckStatus::Duplicate => {
+            let off = data
+                .get("off")
+                .or_else(|| command.args.get("off"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            // A duplicate re-sent nothing, so there is nothing to compare.
+            let expected = success.then(|| {
+                (
+                    data.get("len").and_then(Value::as_i64),
+                    data.get("crc32")
+                        .and_then(Value::as_str)
+                        .and_then(|h| u32::from_str_radix(h, 16).ok()),
+                )
+            });
+            if let Some(download) = command.download_id
+                && let Some(error) =
+                    check_chunk_ack(client, download, command.id, off, expected).await?
+            {
+                fail_download(client, download, &error).await?;
+                outcome.events.push(LiveEvent::Download {
+                    device_id: ctx.device_id.to_owned(),
+                });
+            }
+        }
         "file_chunk" if !success && ack.status != AckStatus::Duplicate => {
             if let Some(download) = command.download_id {
                 client
@@ -756,12 +913,14 @@ async fn effects<C: GenericClient + Sync>(
             .await?;
         }
         "sync_time" if success => {
+            // `data`: the clock afterwards and whether this command set it.
             server_event(
                 client,
                 ctx.device_id,
                 "clock_synced",
                 ctx.received_at,
-                json!({"command_id":command.id}),
+                json!({"command_id":command.id,"t":data.get("t"),"tv":data.get("tv"),
+                    "set":data.get("set")}),
             )
             .await?;
         }
@@ -792,6 +951,77 @@ async fn effects<C: GenericClient + Sync>(
         .await?;
     }
     let _ = &command.origin;
+    Ok(())
+}
+
+/// Compares a `file_chunk` ack with the `data/file` chunk stored for it
+/// (the logger publishes the chunk before the ack). Returns why the download
+/// must fail: the chunk never arrived, or its length or CRC-32 differ from
+/// what the logger read.
+async fn check_chunk_ack<C: GenericClient + Sync>(
+    client: &C,
+    download: i64,
+    command_id: i64,
+    off: i64,
+    expected: Option<(Option<i64>, Option<u32>)>,
+) -> Result<Option<String>, String> {
+    let len = expected
+        .and_then(|(len, _)| len)
+        .unwrap_or(0)
+        .clamp(0, 65_536) as i32;
+    let row = client
+        .query_opt(
+            "SELECT f.state,f.current_command_id,COALESCE(ch.data,CASE WHEN f.state='complete'
+                    THEN substring(f.content FROM ($2::bigint+1)::int FOR $3::int) END)
+             FROM file_downloads f LEFT JOIN file_download_chunks ch ON ch.download_id=f.id AND ch.offset_bytes=$2::bigint
+             WHERE f.id=$1 FOR UPDATE OF f",
+            &[&download, &off.clamp(0, i64::from(i32::MAX) - 1), &len],
+        )
+        .await
+        .map_err(dberr("chunk ack check"))?;
+    let Some(row) = row else { return Ok(None) };
+    let state: String = row.get(0);
+    let current: Option<i64> = row.get(1);
+    let stored: Option<Vec<u8>> = row.get(2);
+    match (state.as_str(), stored) {
+        ("active" | "complete", Some(stored)) => {
+            let Some((len, crc)) = expected else {
+                return Ok(None);
+            };
+            let actual = crate::crc::crc32(&stored);
+            if len.is_some_and(|len| len != stored.len() as i64)
+                || crc.is_some_and(|crc| crc != actual)
+            {
+                return Ok(Some(format!(
+                    "chunk at offset {off} does not match the logger's ack (len {}/{}, crc32 {:08x}/{})",
+                    stored.len(),
+                    len.map_or("?".into(), |l| l.to_string()),
+                    actual,
+                    crc.map_or("?".into(), |c| format!("{c:08x}"))
+                )));
+            }
+            Ok(None)
+        }
+        ("active", None) if current == Some(command_id) => Ok(Some(format!(
+            "the logger answered file_chunk at offset {off} but no data/file chunk arrived"
+        ))),
+        _ => Ok(None),
+    }
+}
+
+async fn fail_download<C: GenericClient + Sync>(
+    client: &C,
+    download: i64,
+    error: &str,
+) -> Result<(), String> {
+    client
+        .execute(
+            "UPDATE file_downloads SET state='failed',error=$2,current_command_id=NULL,updated_at=now()
+             WHERE id=$1 AND state IN ('active','complete')",
+            &[&download, &error],
+        )
+        .await
+        .map_err(dberr("download failure"))?;
     Ok(())
 }
 
@@ -875,6 +1105,7 @@ async fn queue_clock_sync<C: GenericClient + Sync>(
         origin: "auto-clock",
         live_only: true,
         expires_at: ctx.received_at + chrono::Duration::minutes(15),
+        cover_next_contact: false,
         ..QueueOptions::new(ctx.policy, ctx.received_at)
     };
     let queued = queue(client, ctx.device_id, "sync_time", &json!({}), &options).await?;
@@ -1079,7 +1310,7 @@ pub async fn file_chunk_received<C: GenericClient + Sync>(
         .map_err(dberr("chunk insert"))?;
     let row = client
         .query_one(
-            "SELECT state,current_command_id,path,chunk_len FROM file_downloads WHERE id=$1 FOR UPDATE",
+            "SELECT state,current_command_id,path,chunk_len,size FROM file_downloads WHERE id=$1 FOR UPDATE",
             &[&download],
         )
         .await
@@ -1088,9 +1319,22 @@ pub async fn file_chunk_received<C: GenericClient + Sync>(
     let current: Option<i64> = row.get(1);
     let path: String = row.get(2);
     let chunk_len: i32 = row.get(3);
+    let known_size: Option<i64> = row.get(4);
     let size = i64::from(chunk.total_size);
     if state != "active" {
         outcome.detail = Some(format!("download {download} is {state}; chunk kept"));
+        return Ok(outcome);
+    }
+    // The file changed while it was read (the archive appends to its open
+    // segment): chunks from both versions must not be stitched into a file
+    // that looks complete.
+    if let Some(known) = known_size.filter(|&known| known != size) {
+        fail_download(
+            client,
+            download,
+            &format!("the file changed size during the download ({known} → {size} bytes); download it again"),
+        )
+        .await?;
         return Ok(outcome);
     }
     if size > ctx.policy.max_download_bytes {
@@ -1286,6 +1530,7 @@ pub async fn confirm<C: GenericClient + Sync>(
         origin: "operator",
         expires_at: expires,
         parent_id: Some(command_id),
+        cover_next_contact: false,
         ..QueueOptions::new(policy, now)
     };
     match queue(client, device, "confirm", &args, &options).await? {
@@ -1380,6 +1625,51 @@ mod tests {
         assert!(prepare("teleport", &json!({}), false, now).is_err());
     }
 
+    /// `tests/vectors/rev2-server-vectors.json` `commands`, written by the
+    /// independent Python generator and parsed by the firmware's gwl_proto
+    /// on the host: the server builds each wire byte for byte and refuses
+    /// exactly the ones marked refused.
+    #[test]
+    fn server_command_vectors() {
+        let vectors: Value =
+            serde_json::from_str(include_str!("../tests/vectors/rev2-server-vectors.json"))
+                .unwrap();
+        let cases = vectors["commands"].as_array().unwrap();
+        assert!(cases.len() >= 30);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let op = case["op"].as_str().unwrap();
+            let replace = case["replace"] == true;
+            let now = crate::rev2_store::utc(case["now"].as_i64().unwrap());
+            let prepared = prepare(op, &case["args"], replace, now);
+            if let Some(fragment) = case["refused"].as_str() {
+                let error = prepared.expect_err(name);
+                assert!(error.contains(fragment), "{name}: {error}");
+                continue;
+            }
+            let args = prepared.unwrap_or_else(|e| panic!("{name}: {e}"));
+            let publish = case["publish_t"]
+                .as_i64()
+                .map_or(now, crate::rev2_store::utc);
+            let built = wire(
+                case["id"].as_i64().unwrap(),
+                crate::rev2_store::utc(case["exp"].as_i64().unwrap()),
+                op,
+                &args,
+                replace,
+                publish,
+            );
+            assert_eq!(built, case["wire"].as_str().unwrap(), "{name}");
+            assert!(built.len() <= rev2::MAX_DOWNLINK_BYTES, "{name}");
+            let channel = match rev2::kind_of(op).unwrap() {
+                rev2::CommandKind::Config => "config/set",
+                rev2::CommandKind::Basic => "cmd/basic",
+                rev2::CommandKind::Danger => "cmd/danger",
+            };
+            assert_eq!(channel, case["channel"], "{name}");
+        }
+    }
+
     #[test]
     fn danger_operations_get_the_shorter_default_expiry() {
         let policy = Rev2Policy::default();
@@ -1392,5 +1682,224 @@ mod tests {
             QueueOptions::for_op("get_status", &policy, now).expires_at,
             now + chrono::Duration::days(7)
         );
+    }
+}
+
+/// Database regressions for command delivery and the danger handshake
+/// (round 3 review: an executed wipe shown as failed, a withdrawn wipe
+/// auto-confirmed, gap requests stuck after their command lapsed).
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+    use tokio_postgres::Client;
+
+    const DEV: &str = "6A1B2C3D4E5F60718293C0DE";
+
+    async fn setup() -> Client {
+        let url = std::env::var("GROUNDWATER_TEST_DATABASE_URL").unwrap();
+        let client = crate::db::connect(&url).await.unwrap();
+        crate::db::migrate(&client).await.unwrap();
+        client
+            .batch_execute(
+                "TRUNCATE devices,device_bindings,commands,command_events,command_publish_attempts,
+                    device_events,stream_gaps,file_downloads,file_download_chunks RESTART IDENTITY CASCADE",
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO devices(device_id,display_name,source_profile,clock_policy) VALUES($1,'bore','V22','utc')",
+                &[&DEV],
+            )
+            .await
+            .unwrap();
+        client
+    }
+
+    async fn ack(client: &Client, channel: &str, value: Value) -> Outcome {
+        let policy = Rev2Policy::default();
+        let ctx = Context {
+            device_id: DEV,
+            channel,
+            received_at: Utc::now(),
+            retained: false,
+            delivery_id: 0,
+            policy: &policy,
+        };
+        let object = rev2::object(value.to_string().as_bytes()).unwrap();
+        handle_ack(client, &ctx, &object).await.unwrap()
+    }
+
+    async fn state(client: &Client, id: i64) -> (String, Option<String>) {
+        let row = client
+            .query_one(
+                "SELECT state,final_status FROM commands WHERE id=$1",
+                &[&id],
+            )
+            .await
+            .unwrap();
+        (row.get(0), row.get(1))
+    }
+
+    async fn confirms(client: &Client) -> i64 {
+        client
+            .query_one("SELECT count(*) FROM commands WHERE op='confirm'", &[])
+            .await
+            .unwrap()
+            .get(0)
+    }
+
+    async fn queue_sent(client: &Client, op: &str, preconfirmed: bool) -> i64 {
+        let policy = Rev2Policy::default();
+        let options = QueueOptions {
+            preconfirmed,
+            ..QueueOptions::for_op(op, &policy, Utc::now())
+        };
+        let id = queue(client, DEV, op, &json!({}), &options)
+            .await
+            .unwrap()
+            .unwrap();
+        client
+            .execute(
+                "UPDATE commands SET state='sent',publish_count=1,last_published_at=now()-interval '1 minute' WHERE id=$1",
+                &[&id],
+            )
+            .await
+            .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+    async fn repeated_acks_never_rewrite_an_executed_wipe() {
+        let client = setup().await;
+        let policy = Rev2Policy::default();
+        let wipe = queue_sent(&client, "wipe_sd", false).await;
+        let nexp = (Utc::now() + chrono::Duration::seconds(120)).timestamp();
+        ack(
+            &client,
+            "cmd/ack",
+            json!({"v":2,"id":wipe,"op":"wipe_sd","status":"challenge","nonce":"9F3A01C2","nexp":nexp}),
+        )
+        .await;
+        let confirm_id = confirm(&client, DEV, wipe, None, "operator", &policy)
+            .await
+            .unwrap()
+            .unwrap();
+        client
+            .execute(
+                "UPDATE commands SET state='sent',publish_count=1,last_published_at=now()-interval '1 second' WHERE id=$1",
+                &[&confirm_id],
+            )
+            .await
+            .unwrap();
+        // `sleep` (control session) overtakes the confirm's ack (telemetry
+        // session): the window-close rule expires both first.
+        on_status(
+            &client,
+            DEV,
+            rev2::PresenceState::Sleep,
+            Utc::now(),
+            &policy,
+        )
+        .await
+        .unwrap();
+        assert_eq!(state(&client, wipe).await.0, "expired");
+        ack(
+            &client,
+            "cmd/ack",
+            json!({"v":2,"id":confirm_id,"op":"wipe_sd","ref":wipe,"status":"ok"}),
+        )
+        .await;
+        let done = ("acked".to_owned(), Some("ok".to_owned()));
+        assert_eq!(state(&client, wipe).await, done, "the wipe ran");
+        assert_eq!(state(&client, confirm_id).await, done);
+        // The re-published request copy is answered duplicate/challenge, a
+        // redelivered confirm ack duplicate/ok: neither changes the outcome.
+        ack(
+            &client,
+            "cmd/ack",
+            json!({"v":2,"id":wipe,"op":"wipe_sd","status":"duplicate","prev":"challenge"}),
+        )
+        .await;
+        ack(
+            &client,
+            "cmd/ack",
+            json!({"v":2,"id":confirm_id,"op":"wipe_sd","status":"duplicate","prev":"ok"}),
+        )
+        .await;
+        assert_eq!(state(&client, wipe).await, done);
+        assert_eq!(state(&client, confirm_id).await, done);
+        // An ack naming another op under this id is not applied.
+        let status = queue_sent(&client, "get_status", false).await;
+        let outcome = ack(
+            &client,
+            "cmd/ack",
+            json!({"v":2,"id":status,"op":"wipe_mram","status":"ok"}),
+        )
+        .await;
+        assert!(outcome.rejected.is_some());
+        assert_eq!(state(&client, status).await.0, "sent");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+    async fn withdrawn_danger_is_never_auto_confirmed() {
+        let client = setup().await;
+        let nexp = (Utc::now() + chrono::Duration::seconds(120)).timestamp();
+        let challenge = |id: i64| json!({"v":2,"id":id,"op":"wipe_sd","status":"challenge","nonce":"0BADF00D","nexp":nexp});
+        // Cancelled after it reached the broker: the logger still challenges.
+        let withdrawn = queue_sent(&client, "wipe_sd", true).await;
+        client
+            .execute(
+                "UPDATE commands SET state='cancelled' WHERE id=$1",
+                &[&withdrawn],
+            )
+            .await
+            .unwrap();
+        ack(&client, "cmd/ack", challenge(withdrawn)).await;
+        assert_eq!(state(&client, withdrawn).await.0, "cancelled");
+        assert_eq!(
+            confirms(&client).await,
+            0,
+            "a withdrawn wipe is never confirmed"
+        );
+        // The same request still pending is auto-confirmed as asked.
+        let wanted = queue_sent(&client, "wipe_sd", true).await;
+        ack(&client, "cmd/ack", challenge(wanted)).await;
+        assert_eq!(state(&client, wanted).await.0, "challenge");
+        assert_eq!(confirms(&client).await, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+    async fn lapsed_gap_requests_are_asked_again() {
+        let client = setup().await;
+        let flush = queue_sent(&client, "flush_mqtt", false).await;
+        client
+            .execute(
+                "INSERT INTO stream_gaps(device_id,log_id,from_seq,to_seq,state,attempts,command_id)
+                 VALUES($1,7,10,19,'requested',1,$2),($1,7,30,39,'requested',3,$2)",
+                &[&DEV, &flush],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "UPDATE commands SET expires_at=now()-interval '1 second' WHERE id=$1",
+                &[&flush],
+            )
+            .await
+            .unwrap();
+        expire(&client).await.unwrap();
+        assert_eq!(state(&client, flush).await.0, "expired");
+        let gaps: Vec<String> = client
+            .query("SELECT state FROM stream_gaps ORDER BY from_seq", &[])
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.get(0))
+            .collect();
+        assert_eq!(gaps, ["open", "unrecoverable"]);
     }
 }
