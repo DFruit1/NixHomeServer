@@ -308,7 +308,7 @@ const formatLabels = { 'message/rfc822': 'Email', 'application/pdf': 'PDF', 'tex
 const INTENT_KEYS = ['kind', 'creator', 'after', 'before', 'sort'];
 const sourceNames = new Map();
 sourceNames.set('online-papers', 'Online papers');
-const state = { hits: [], liveHits: [], page: 0, total: 0, hasMore: false, generation: 0, controller: null, submitted: null, loading: false, liveLoading: false,
+const state = { hits: [], liveHits: [], page: 0, total: 0, hasMore: false, generation: 0, controller: null, submitted: null, loading: false, liveLoading: false, refining: false, reranked: false,
   inferred: {}, intentSkip: [], literalNotice: '', relatedTerms: [], unknownTerms: [], relaxed: false, semanticLimited: false, semanticWarning: '', indexedDone: false, liveDone: false, indexedFailed: false, liveFailed: false, indexedFacets: {}, liveFacets: {}, resultNodes: new Map() };
 
 // Returning from a result should show the same answer, not run the search
@@ -340,14 +340,14 @@ function persistResultCache() {
   }
 }
 function rememberResults() {
-  if (!state.submitted || state.loading || state.liveLoading || !state.indexedDone || !state.liveDone
+  if (!state.submitted || state.loading || state.liveLoading || state.refining || !state.indexedDone || !state.liveDone
     || state.indexedFailed || state.liveFailed
     || !(new URLSearchParams(state.submitted).get('q') || '').trim()) return;
   const entry = {
     hits: state.hits, liveHits: state.liveHits, page: state.page, total: state.total, hasMore: state.hasMore,
     inferred: { ...state.inferred }, intentSkip: [...state.intentSkip], literalNotice: state.literalNotice,
     relatedTerms: [...state.relatedTerms], unknownTerms: [...state.unknownTerms], relaxed: state.relaxed,
-    semanticLimited: state.semanticLimited, semanticWarning: state.semanticWarning,
+    semanticLimited: state.semanticLimited, semanticWarning: state.semanticWarning, reranked: state.reranked,
     indexedFacets: state.indexedFacets, liveFacets: state.liveFacets,
     controls: Object.fromEntries(Object.entries(controls).map(([key, control]) => [key, control.value])),
     matching: matchingEl.value, sort: sortEl.value, pageSize: pageSizeEl.value,
@@ -382,6 +382,7 @@ function restoreResults(submitted) {
   state.unknownTerms = Array.isArray(cached.unknownTerms) ? cached.unknownTerms : [];
   state.relaxed = cached.relaxed === true;
   state.semanticLimited = cached.semanticLimited === true;
+  state.reranked = cached.reranked === true;
   state.semanticWarning = typeof cached.semanticWarning === 'string' ? cached.semanticWarning : '';
   state.indexedFacets = cached.indexedFacets && typeof cached.indexedFacets === 'object' ? cached.indexedFacets : {};
   state.liveFacets = cached.liveFacets && typeof cached.liveFacets === 'object' ? cached.liveFacets : {};
@@ -881,9 +882,10 @@ function readUrlState() {
   state.submitted = params().toString();
   return Boolean(queryEl.value.trim());
 }
-async function fetchPage(page, scope, submitted, signal) {
+async function fetchPage(page, scope, submitted, signal, rank = '') {
   const p = new URLSearchParams(submitted);
   p.set('pageSize', p.get('pageSize') || '25'); p.set('scope', scope);
+  if (rank) p.set('rank', rank);
   if (page) p.set('page', page);
   const response = await fetch('/api/search?' + p, {signal});
   if (response.status === 401) { location.href = '/'; return null; }
@@ -898,7 +900,7 @@ function resetResults() {
   state.hits = []; state.liveHits = []; state.page = 0; state.total = 0; state.hasMore = false;
   state.relatedTerms = []; state.unknownTerms = []; state.relaxed = false; state.indexedDone = false; state.liveDone = false; state.indexedFailed = false; state.liveFailed = false;
   state.indexedFacets = {}; state.liveFacets = {}; state.resultNodes.clear();
-  state.semanticLimited = false; state.semanticWarning = '';
+  state.semanticLimited = false; state.semanticWarning = ''; state.refining = false; state.reranked = false;
   resultsEl.replaceChildren();
   for (const id of ['moreWrap', 'searchError', 'liveError', 'searchCoverage', 'searchNotice']) el(id).hidden = true;
   renderFacets({});
@@ -908,15 +910,13 @@ function updateResultsStatus() {
   const count = combinedHits().length;
   const libraryShown = state.hits.length;
   const liveShown = onlinePapers() ? 0 : state.liveHits.length;
-  const pending = state.loading || state.liveLoading;
-  // The library answer stays empty until the reranker has settled its order,
-  // so say what the page is waiting for rather than showing a bare spinner.
-  const waiting = state.loading && !state.indexedDone ? 'searching your library…' : 'searching…';
+  const pending = state.loading || state.liveLoading || state.refining;
   const failed = state.indexedFailed || state.liveFailed || !el('liveError').hidden;
   // Name the live sample separately: the library total never counted it, so
   // "N shown · M in library" otherwise implied the live hits were part of M.
-  statusEl.textContent = count ? `${count.toLocaleString()} match${count === 1 ? '' : 'es'} shown${liveShown ? ` · ${liveShown.toLocaleString()} live` : ''}${state.total > libraryShown ? ` · ${state.total.toLocaleString()} in library` : ''}${state.relaxed ? ' · closest matches' : ''}${pending ? ` · ${waiting}` : ''}` : pending ? 'Searching…' : state.indexedFailed && state.liveFailed ? 'Search is unavailable' : failed ? 'No matches from available sources' : 'No matches';
-  el('moreWrap').hidden = !state.hasMore || state.loading;
+  statusEl.textContent = count ? `${count.toLocaleString()} match${count === 1 ? '' : 'es'} shown${liveShown ? ` · ${liveShown.toLocaleString()} live` : ''}${state.total > libraryShown ? ` · ${state.total.toLocaleString()} in library` : ''}${state.relaxed ? ' · closest matches' : ''}${pending ? ' · searching…' : ''}` : pending ? 'Searching…' : state.indexedFailed && state.liveFailed ? 'Search is unavailable' : failed ? 'No matches from available sources' : 'No matches';
+  // Later pages follow whichever order page one settles on.
+  el('moreWrap').hidden = !state.hasMore || state.refining;
   el('loadMore').disabled = state.loading;
   el('loadMore').textContent = state.loading ? 'Loading more…' : 'Load more results';
   el('emptyState').hidden = count > 0 || pending || (!state.indexedDone && !state.liveDone);
@@ -947,7 +947,7 @@ function updateResultsStatus() {
 // Search the words as typed once, and say so, rather than show an empty page.
 function searchLiterallyIfEmpty() {
   const read = Object.entries(state.inferred);
-  if (!read.length || state.loading || state.liveLoading || !state.indexedDone || !state.liveDone) return;
+  if (!read.length || state.loading || state.liveLoading || state.refining || !state.indexedDone || !state.liveDone) return;
   if (state.indexedFailed || state.liveFailed || onlinePapers() || combinedHits().length) return;
   const reading = read.map(([key, value]) => key === 'sort' ? 'newest first' : `${filterLabels[key].toLowerCase()} ${displayValue(key, value)}`).join(', ');
   for (const [key, value] of read) if (controls[key]?.value === value) controls[key].value = '';
@@ -997,7 +997,7 @@ async function runLive(generation, submitted, signal) {
 }
 async function runSearch(event, {append = false, pushHistory = true} = {}) {
   if (event) event.preventDefault();
-  if (append && (state.loading || !state.hasMore || !state.submitted)) return;
+  if (append && (state.loading || state.refining || !state.hasMore || !state.submitted)) return;
   if (!append) {
     const previousQuery = new URLSearchParams(state.submitted || '').get('q') || '';
     if (queryEl.value.trim() !== previousQuery) {
@@ -1053,10 +1053,32 @@ async function runSearch(event, {append = false, pushHistory = true} = {}) {
   }
   return runIndexed(append);
 }
-// The library answer arrives with the reranked order already applied, so the
-// rows below never move once they are drawn. Reading each document's strongest
-// passage is the slow part of that answer, and it is reported as "searching"
-// rather than as a page of keyword matches that then reorder themselves.
+// Keyword matches are on screen within a fraction of a second. Reading the
+// best passages takes a few seconds more, so that order follows when ready.
+// Nothing already shown is taken away: displaced matches move below it.
+async function refineIndexed(generation, submitted, signal) {
+  state.refining = true;
+  updateResultsStatus();
+  try {
+    const data = await fetchPage(0, 'indexed', submitted, signal);
+    if (generation !== state.generation || !data) return;
+    state.semanticWarning = (data.warnings || []).map(item => item.message).filter(Boolean).join(' ');
+    if (data.semantic !== true) return;
+    const ranked = data.hits || [];
+    const kept = new Set(ranked.map(hit => hit.id));
+    state.hits = [...ranked, ...state.hits.filter(hit => !kept.has(hit.id))];
+    state.reranked = true; state.semanticLimited = data.semanticLimited === true;
+    state.page = 0; state.total = data.total || 0; state.hasMore = Boolean(data.hasMore);
+    renderCombined();
+  } catch { /* The keyword matches already shown remain the answer. */ } finally {
+    if (generation === state.generation) {
+      state.refining = false;
+      updateResultsStatus();
+      searchLiterallyIfEmpty();
+      rememberResults();
+    }
+  }
+}
 async function runIndexed(append = false) {
   if (state.loading || !state.submitted) return;
   const retry = el('retrySearch');
@@ -1070,9 +1092,8 @@ async function runIndexed(append = false) {
   else el('errorMessage').textContent = 'Retrying library search…';
   retry.setAttribute('aria-disabled', 'true'); retry.textContent = 'Retrying…';
   el('loadMore').disabled = true; el('loadMore').textContent = 'Loading more…';
-  updateResultsStatus();
   try {
-    const data = await fetchPage(page, 'indexed', submitted, signal);
+    const data = await fetchPage(page, 'indexed', submitted, signal, state.reranked ? '' : 'keyword');
     if (generation !== state.generation || !data) return;
     applyInterpretation(data);
     state.relatedTerms = Array.isArray(data.relatedTerms) ? data.relatedTerms.filter(term => typeof term === 'string').slice(0, 16) : [];
@@ -1080,6 +1101,8 @@ async function runIndexed(append = false) {
     state.relaxed = data.relaxed === true;
     state.semanticLimited = data.semanticLimited === true;
     state.semanticWarning = (data.warnings || []).map(item => item.message).filter(Boolean).join(' ');
+    // Set before this search settles, so nothing treats it as final yet.
+    if (!append && data.refinable === true) { state.refining = true; void refineIndexed(generation, submitted, signal); }
     state.page = page; state.total = data.total || 0; state.hasMore = Boolean(data.hasMore);
     const seen = new Set(state.hits.map(hit => hit.id));
     const hits = (data.hits || []).filter(hit => !seen.has(hit.id));
@@ -1093,8 +1116,6 @@ async function runIndexed(append = false) {
     if (generation !== state.generation || signal.aborted) return;
     el('errorMessage').textContent = error.message; el('searchError').hidden = false;
     state.indexedDone = true; if (!append) state.indexedFailed = true;
-    // Connected results that arrived first were held back for this answer.
-    renderCombined();
   } finally {
     if (generation === state.generation) {
       state.loading = false;
