@@ -681,12 +681,18 @@ scripts/admin/desktop-server-shutdown.sh --timeout 60 --grace 60 --local-grace 5
 The runner blocks desktop idle/sleep with `systemd-inhibit` or
 `elogind-inhibit` until it exits. Before starting the server countdown, it also
 sets the existing power scheduler's `resume-hold.json` to at least two hours
-from now, preserving a longer hold, and renews it hourly while waiting. This
-postpones nightly suspend without changing the configured schedule. The server
-hold expires automatically, including after cancellation; desktop protection
-ends with the runner. Failure to acquire or renew either protection stops the
-sequence. The runner acquires its single-instance lock inside the inhibited
-child; concurrent runs are refused even with the deprecated `--force` flag.
+from now, preserving a longer hold, and renews it hourly while waiting, timing
+each renewal ahead of the pending shutdown deadline so the server's own poweroff
+cannot race the update. This postpones nightly suspend without changing the
+configured schedule. The server hold expires automatically, including after
+cancellation; desktop protection ends with the runner. Failure to acquire either
+protection, or to renew the hold while the server must still answer, stops the
+sequence. A renewal that fails in the last minute before the deadline, or after
+it, is expected because the server may already be powering off; the runner keeps
+polling so an accepted server shutdown is not abandoned before the desktop
+countdown is scheduled. The runner acquires its single-instance lock inside the
+inhibited child; concurrent runs are refused even with the deprecated `--force`
+flag.
 Interruption cancels this runner's server request and any unfinished desktop
 countdown. Failure to open the countdown terminal cancels the scheduled desktop
 poweroff rather than leaving an unattended timer.

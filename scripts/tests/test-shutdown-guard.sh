@@ -135,6 +135,10 @@ cat >"$mock_bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${MOCK_FLAGS}/ssh.log"
 [[ "$*" != *'sudo bash -s'* || ! -e "${MOCK_FLAGS}/hold_fail" ]] || exit 1
+if [[ "$*" == *'sudo bash -s'* && -e "${MOCK_FLAGS}/hold_fail_at" && -e "${MOCK_FLAGS}/now" ]] &&
+   (( $(cat "${MOCK_FLAGS}/now") >= $(cat "${MOCK_FLAGS}/hold_fail_at") )); then
+  exit 1
+fi
 if [[ "$*" == *' true' ]]; then
   if [[ -e "${MOCK_FLAGS}/ssh_down_at" ]] && (( $(cat "${MOCK_FLAGS}/now") < $(cat "${MOCK_FLAGS}/ssh_down_at") )); then
     exit 0
@@ -472,5 +476,63 @@ if MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh --timeout 0 --poll
 fi
 require_fixed "$tmpdir/missing-status.out" 'giving up' 'Missing deadlines must not extend polling.'
 rm "$flags/now" "$flags/ssh_down_at" "$flags/pgrep_busy"
+
+# Regression: the server poweroff and the hourly sleep-hold renewal used to
+# collide. On 2026-11-17 the renewal was due exactly at the deadline, the hold
+# update failed while the server was powering off, the runner exited through its
+# cleanup trap, and this PC stayed on with the server already down. Renewals are
+# now due ahead of the deadline, so the runner still schedules the countdown.
+: >"$flags/ssh.log"
+: >"$flags/loginctl.log"
+printf '1000\n' >"$flags/now"
+printf '4600\n' >"$flags/hold_fail_at"
+printf '4700\n' >"$flags/ssh_down_at"
+if ! MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh \
+  --timeout 60 --poll 300 --local-grace 0 >"$tmpdir/renewal-deadline.out" 2>&1; then
+  echo "❌ A renewal failure as the server powers off must not abort the runner." >&2
+  exit 1
+fi
+require_fixed "$flags/loginctl.log" 'poweroff +0' \
+  'A renewal failure at the server deadline must still schedule the desktop countdown.'
+
+# A renewal that fails while the server has stopped answering is expected: the
+# guard may already be powering off. Report it and keep polling.
+: >"$flags/ssh.log"
+: >"$flags/loginctl.log"
+printf '1000\n' >"$flags/now"
+printf '4300\n' >"$flags/hold_fail_at"
+printf '4300\n' >"$flags/ssh_down_at"
+if ! MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh \
+  --timeout 60 --poll 300 --local-grace 0 >"$tmpdir/renewal-unreachable.out" 2>&1; then
+  echo "❌ An unreachable server must not abort the desktop countdown." >&2
+  exit 1
+fi
+require_fixed "$tmpdir/renewal-unreachable.out" 'continuing to confirm the server shutdown' \
+  'An expected renewal failure must be reported, not fatal.'
+require_fixed "$flags/loginctl.log" 'poweroff +0' \
+  'An expected renewal failure must still schedule the desktop countdown.'
+rm -f "$flags/now" "$flags/ssh_down_at" "$flags/hold_fail_at"
+
+# A renewal that fails while the server still answers is a real fault: the hold
+# cannot be extended, so the sequence must stop instead of proceeding unprotected.
+: >"$flags/ssh.log"
+: >"$flags/loginctl.log"
+printf '1000\n' >"$flags/now"
+printf '1900\n' >"$flags/hold_fail_at"
+printf '2200\n' >"$flags/ssh_down_at"
+if MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh \
+  --timeout 20 --poll 300 >"$tmpdir/renewal-fault.out" 2>&1; then
+  echo "❌ A renewal failure with a reachable server must stop the sequence." >&2
+  exit 1
+fi
+require_fixed "$tmpdir/renewal-fault.out" 'could not renew server sleep protection' \
+  'A renewal fault must fail closed.'
+require_fixed "$flags/ssh.log" 'sudo nixhomeserver-shutdown-guard cancel' \
+  'A renewal fault must cancel the pending server shutdown.'
+if rg -q 'poweroff ' "$flags/loginctl.log"; then
+  echo "❌ A renewal fault must never schedule the desktop poweroff." >&2
+  exit 1
+fi
+rm -f "$flags/now" "$flags/hold_fail_at" "$flags/ssh_down_at"
 
 echo "✅ Shutdown guard schedules, detects critical tasks, and enforces the grace window."

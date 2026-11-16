@@ -67,8 +67,10 @@ do not ask again. A request to implement the skill alone does not.
    desktop `idle:sleep`, and read the server's
    `/var/lib/power-schedule/resume-hold.json` to confirm `holdUntil` is at least
    two hours after launch (or retains a longer existing hold). The script renews
-   this hold hourly while waiting; it expires automatically without changing the
-   normal schedule. The desktop inhibitor is released when the runner exits.
+   this hold while waiting, keeping each renewal ahead of the shutdown deadline
+   so the server's own poweroff cannot race it; it expires automatically without
+   changing the normal schedule. The desktop inhibitor is released when the
+   runner exits.
    If protection cannot be acquired, resolve the failure before retrying.
 5. Verify the runner remains alive and read the server guard status again.
    The runner cancels any leftover scheduled desktop poweroff on startup and on

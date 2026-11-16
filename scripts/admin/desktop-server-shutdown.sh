@@ -6,6 +6,15 @@ set -euo pipefail
 
 ORIGINAL_ARGS=("$@")
 SLEEP_HOLD_REFRESH=0
+# Renew the server sleep hold ahead of the shutdown deadline so an hourly
+# renewal can never collide with the server starting to power off, and retry
+# quickly after a failure so a transient fault does not wait a full hour.
+RENEWAL_MARGIN_SEC=300
+RENEWAL_RETRY_SEC=60
+# A renewal failure inside the final minute before the deadline, or after it, is
+# expected: the guard may already be powering off and dropping its network.
+RENEWAL_FATAL_CUTOFF_SEC=60
+WAIT_DEADLINE=0
 
 HOST="${DESKTOP_SERVER_SHUTDOWN_HOST:-dsaw@192.168.8.12}"
 GUARD="nixhomeserver-shutdown-guard"
@@ -354,7 +363,7 @@ remote() {
 }
 
 protect_server_sleep() {
-  local now attempt
+  local now attempt interval
   now="$(date +%s)"
   (( now >= SLEEP_HOLD_REFRESH )) || return 0
   for attempt in 1 2; do
@@ -377,11 +386,18 @@ chmod 0644 "$tmp"
 mv -f -- "$tmp" "$state/resume-hold.json"
 REMOTE
     then
-      SLEEP_HOLD_REFRESH=$(( now + 3600 ))
+      interval=3600
+      if (( WAIT_DEADLINE > 0 && now < WAIT_DEADLINE - RENEWAL_MARGIN_SEC )); then
+        interval=$(( WAIT_DEADLINE - now - RENEWAL_MARGIN_SEC ))
+        (( interval > 3600 )) && interval=3600
+        (( interval < 60 )) && interval=60
+      fi
+      SLEEP_HOLD_REFRESH=$(( now + interval ))
       return 0
     fi
     sleep 2
   done
+  SLEEP_HOLD_REFRESH=$(( $(date +%s) + RENEWAL_RETRY_SEC ))
   printf 'warning: could not renew server sleep hold\n' >&2
   return 1
 }
@@ -390,10 +406,25 @@ server_reachable() {
   ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "$HOST" true >/dev/null 2>&1
 }
 
+# A renewal failure is a real fault while the server must still be able to
+# renew: it is up, so the hold update failing means sleep protection is gone.
+# Once the server stops answering, or the last minute before the deadline has
+# arrived, the guard may already be powering off and dropping its network. That
+# failure is expected; exiting there is what previously left the server down
+# with the desktop still running.
+renewal_failure_is_fatal() {
+  (( $(date +%s) < WAIT_DEADLINE - RENEWAL_FATAL_CUTOFF_SEC )) && server_reachable
+}
+
 wait_for_server_deadline() {
   local remaining=$(( TIMEOUT_MIN * 60 )) step
   while (( remaining > 0 )); do
-    protect_server_sleep || die "could not renew server sleep protection"
+    if ! protect_server_sleep; then
+      if renewal_failure_is_fatal; then
+        die "could not renew server sleep protection"
+      fi
+      printf 'Sleep hold renewal failed as the shutdown deadline arrived; continuing to confirm the server shutdown.\n' >&2
+    fi
     if desktop_work_active; then
       if ! remote sudo "$GUARD" mark-activity >/dev/null; then
         printf 'Could not report desktop work to the server; retrying at the next check.\n' >&2
@@ -489,7 +520,7 @@ fi
 if [[ "$DRY_RUN" == true ]]; then
   printf 'dry-run: host=%s timeout=%sm grace=%sm poll=%ss poll_timeout=%sm local_grace=%sm local_shutdown=%s\n' \
     "$HOST" "$TIMEOUT_MIN" "$GRACE_MIN" "$POLL_SEC" "$POLL_TIMEOUT_MIN" "$LOCAL_GRACE_MIN" "$LOCAL_SHUTDOWN"
-  printf 'dry-run: would inhibit desktop idle/sleep while running and renew a two-hour server sleep hold hourly.\n'
+  printf 'dry-run: would inhibit desktop idle/sleep while running and renew a two-hour server sleep hold, with each renewal due ahead of the shutdown deadline.\n'
   printf 'dry-run: would run: ssh %s sudo %s start --timeout %s --grace %s\n' \
     "$HOST" "$GUARD" "$TIMEOUT_MIN" "$GRACE_MIN"
   exit 0
@@ -539,6 +570,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
+WAIT_DEADLINE=$(( $(date +%s) + TIMEOUT_MIN * 60 ))
 protect_server_sleep || die "could not acquire server sleep protection; shutdown not started"
 printf 'Sleep protection active: desktop inhibitor and renewable two-hour server hold.\n'
 
@@ -556,7 +588,12 @@ consecutive_failures=0
 while :; do
   if server_reachable; then
     consecutive_failures=0
-    protect_server_sleep || die "could not renew server sleep protection"
+    if ! protect_server_sleep; then
+      if renewal_failure_is_fatal; then
+        die "could not renew server sleep protection"
+      fi
+      printf 'Sleep hold renewal failed while the server powers off; continuing to confirm the server shutdown.\n' >&2
+    fi
     status="$(remote sudo cat "$STATUS_FILE" 2>/dev/null || true)"
     state="$(printf '%s\n' "$status" | sed -n 's/^state=//p')"
     message="$(printf '%s\n' "$status" | sed -n 's/^message=//p')"
