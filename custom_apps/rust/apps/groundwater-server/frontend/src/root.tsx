@@ -49,6 +49,8 @@ interface Workspace {
   seriesSelection: string;
   alerts: Alert[];
   commands: Command[];
+  /** The server listed only its newest 500 commands. */
+  commandsTruncated: boolean;
   errors: Record<string, string>;
   loading: boolean;
 }
@@ -68,6 +70,7 @@ export default component$(() => {
     seriesSelection: "",
     alerts: [],
     commands: [],
+    commandsTruncated: false,
     errors: {},
     loading: false,
   });
@@ -250,8 +253,10 @@ export default component$(() => {
           }
           if (key === "device") workspace.device = result!.device as Device;
           if (key === "series") workspace.series = result!.series as Series;
-          if (key === "commands")
+          if (key === "commands") {
             workspace.commands = result!.commands as Command[];
+            workspace.commandsTruncated = result!.truncated === true;
+          }
           if (key === "open" || key === "resolved")
             alerts.push(...(result!.alerts as Alert[]));
         }
@@ -687,6 +692,7 @@ export default component$(() => {
                   <SettingsView
                     key={device.device_id}
                     device={device}
+                    alerts={workspace.alerts}
                     revision={revision.value}
                     operator={operator && !device.revoked}
                   />
@@ -785,6 +791,7 @@ export default component$(() => {
                     <Rev2Queue
                       device={device.device_id}
                       commands={workspace.commands}
+                      truncated={workspace.commandsTruncated}
                       operator={operator && !device.revoked}
                       refresh={refresh}
                       expected={
@@ -797,6 +804,7 @@ export default component$(() => {
                   <Rev2Queue
                     device={device.device_id}
                     commands={workspace.commands}
+                    truncated={workspace.commandsTruncated}
                     operator={false}
                     refresh={refresh}
                     audit
@@ -820,6 +828,7 @@ export default component$(() => {
                     <CommandQueue
                       device={device.device_id}
                       commands={workspace.commands}
+                      truncated={workspace.commandsTruncated}
                       operator={operator && !device.revoked}
                       refresh={refresh}
                     />
@@ -829,6 +838,7 @@ export default component$(() => {
                   <CommandQueue
                     device={device.device_id}
                     commands={workspace.commands}
+                    truncated={workspace.commandsTruncated}
                     operator={false}
                     refresh={refresh}
                     audit

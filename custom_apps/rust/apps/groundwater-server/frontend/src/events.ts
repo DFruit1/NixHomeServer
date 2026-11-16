@@ -38,6 +38,7 @@ const CATEGORY: Record<string, EventCategory> = {
   log_start: "clock",
   clock_sync_requested: "clock",
   clock_synced: "clock",
+  clock_sync_unchanged: "clock",
 };
 
 export function eventCategory(event: Pick<DeviceEvent, "event" | "source">) {
@@ -65,6 +66,7 @@ export function eventTone(event: Pick<DeviceEvent, "event" | "details">) {
       "power_critical",
       "unmatched_ack",
       "link_lost",
+      "settings_restore_unavailable",
     ].includes(event.event)
   )
     return "problem";
@@ -72,7 +74,15 @@ export function eventTone(event: Pick<DeviceEvent, "event" | "details">) {
     const kind = String(d.kind || "");
     return ["mram_ok", "sd_restored"].includes(kind) ? "ok" : "problem";
   }
-  if (["gwl_alarm_exit", "tail_unlocked", "clock_synced"].includes(event.event))
+  if (
+    [
+      "gwl_alarm_exit",
+      "tail_unlocked",
+      "clock_synced",
+      "clock_sync_unchanged",
+      "settings_recovery_ended",
+    ].includes(event.event)
+  )
     return "ok";
   return "info";
 }
@@ -123,6 +133,17 @@ export function eventSummary(event: Pick<DeviceEvent, "event" | "details">) {
       return `${String(d.kind ?? "storage").replaceAll("_", " ")}${typeof d.unsaved === "number" ? ` · ${d.unsaved} of ${d.usable ?? "?"} bytes unsaved` : ""}`;
     case "clock_set":
       return `Clock set ${d.old_valid ? "" : "from uptime "}to ${typeof d.new_time === "number" && d.new_valid !== false ? stamp(new Date(d.new_time * 1000).toISOString()) : "an invalid time"} (${d.new_source ?? "?"})`;
+    case "clock_sync_requested":
+      return `Asked the logger to set its clock (command #${d.command_id ?? "?"})${d.reason ? `: ${d.reason}` : ""}`;
+    case "clock_synced":
+    case "clock_sync_unchanged":
+      return `${event.event === "clock_synced" ? "Logger clock set" : "Logger clock already within 2 s: not changed"} (command #${d.command_id ?? "?"})${typeof d.t === "number" && d.tv ? `, logger time ${stamp(new Date(d.t * 1000).toISOString())}` : ""}`;
+    case "settings_restore_requested":
+      return `Settings lost on the logger: re-sending the settings it last acknowledged (generation ${d.gen ?? "?"}, ${stamp(typeof d.acknowledged_at === "string" ? d.acknowledged_at : null)}) with Replace as command #${d.command_id ?? "?"}`;
+    case "settings_restore_unavailable":
+      return `Settings lost on the logger and not re-sent automatically: ${d.reason ?? "unknown reason"}. Send settings with Replace.`;
+    case "settings_recovery_ended":
+      return `Logger has settings again (generation ${d.gen ?? "?"}); settings lost since ${stamp(typeof d.since === "string" ? d.since : null)}`;
     case "log_start":
       return `New log ${d.log_id ?? ""} (${d.reason ?? "?"}), firmware ${d.firmware_version ?? "?"}`;
     case "sd_flush":
@@ -235,17 +256,9 @@ export function sensorProblem(status: number | null | undefined): string {
   return OUT_OF_RANGE[status] || `sensor fault: ${sensorStatusName(status)}`;
 }
 
-/** The sensor problem an observation carries in its quality reasons
- * (`sensor-under-range`, `sensor-no-sensor`, …), or "". */
+/** Why an observation is not a valid level (its sensor status), or "". */
 export function observationProblem(
-  observation: Pick<Observation, "quality_reasons"> | null | undefined,
+  observation: Pick<Observation, "sensor_status"> | null | undefined,
 ): string {
-  const reason = observation?.quality_reasons?.find((r) =>
-    r.startsWith("sensor-"),
-  );
-  if (!reason) return "";
-  const status = SENSOR_STATUS.indexOf(reason.slice("sensor-".length));
-  return status > 0
-    ? sensorProblem(status)
-    : `sensor fault: ${reason.slice(7)}`;
+  return sensorProblem(observation?.sensor_status);
 }

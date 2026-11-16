@@ -72,3 +72,19 @@ export function opArgs(op: string, args: Record<string, string>) {
   }
   return { args: {}, errors };
 }
+
+/** Who queued a command, for anything the server queued by itself. */
+export const ORIGIN_TEXT: Record<string, string> = {
+  "auto-settings": "automatic: fetch settings",
+  "auto-gap": "automatic: resend missing data",
+  "auto-clock": "automatic: set the clock",
+  "auto-confirm": "automatic: confirm (no unsaved data)",
+  "auto-restore": "automatic: restore lost settings",
+  download: "file download",
+};
+export const originText = (origin: string | null | undefined) =>
+  !origin || origin === "operator" ? "" : ORIGIN_TEXT[origin] || origin;
+
+/** The command list holds the server's newest 500 commands. */
+export const TRUNCATED_COMMANDS =
+  "Only the newest 500 commands of this logger are listed. Older commands stay on the server but this page cannot show them.";

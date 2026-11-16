@@ -2,7 +2,7 @@
 // unit, and the timing facts (late reports, latched kinds, resolution).
 // Shapes: ops_api.rs ALERT_JSON, detail keys from alerting.sql.
 import { number, stamp } from "./api";
-import { sensorProblem } from "./events";
+import { latchedErrorText, sensorProblem } from "./events";
 import { bytes, csqText, duration, humanize } from "./format";
 import type { Alert } from "./types";
 
@@ -29,6 +29,7 @@ export const ALERT_KIND_LABEL: Record<string, string> = {
   clock_invalid: "Clock not set",
   signal_low: "Weak signal",
   watchdog_resets: "Repeated watchdog resets",
+  settings_lost: "Settings lost (logging stopped)",
 };
 
 type AlertFields = Pick<Alert, "kind" | "trigger_value" | "detail">;
@@ -84,6 +85,8 @@ export function alertValue(alert: AlertFields) {
       return `${number(v, 0)} in 7 days`;
     case "logger_error":
       return `code ${number(v, 0)}`;
+    case "settings_lost":
+      return `error ${latchedErrorText(v)}`;
     case "mram_almost_full":
     case "tail_lock": {
       const unsaved = field(d, "unsaved") ?? (v > 0 ? v : null);
@@ -115,6 +118,22 @@ export function alertNotes(alert: AlertFields) {
         ? sensorProblem(status) || "sensor ok"
         : String(d.sensor_status_name ?? "status unknown"),
     );
+  }
+  if (alert.kind === "settings_lost") {
+    if (typeof d.reason === "string") notes.push(d.reason);
+    if (typeof d.command_id === "number")
+      notes.push(
+        `automatic restore #${d.command_id} ${[d.state, d.final_status].filter((x) => typeof x === "string").join(": ") || "ended"}${typeof d.status_reason === "string" ? ` (${d.status_reason})` : ""}`,
+      );
+    notes.push("send full settings with Replace on the Settings tab");
+  }
+  if (alert.kind === "solar_low") {
+    const days = field(d, "days"),
+      threshold = field(d, "threshold_mv");
+    if (days != null)
+      notes.push(
+        `no solar reading reached ${threshold == null ? "the threshold" : `${number(threshold / 1000, 2)} V`} in ${days} day${days === 1 ? "" : "s"}; value is the highest`,
+      );
   }
   if (d.time_estimated === true)
     notes.push("logger clock not set: time is when it arrived");

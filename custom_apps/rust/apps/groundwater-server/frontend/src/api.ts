@@ -88,6 +88,59 @@ export async function download(path: string, fallbackName: string) {
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
+/** What a capped JSON export says about its cut (ops_api.rs: oldest rows
+ * first, at most `limit`). `lastAt` is the newest row's time, from where a
+ * further export continues. */
+export function exportCut(body: unknown): {
+  truncated: boolean;
+  limit: number | null;
+  lastAt: string | null;
+} {
+  const b = (body || {}) as Record<string, unknown>;
+  const meta = (
+    b.type === "FeatureCollection" ? b.properties || {} : b
+  ) as Record<string, unknown>;
+  const rows = (b.events ||
+    b.positions ||
+    (Array.isArray(b.features)
+      ? (b.features as { properties?: unknown }[]).map((f) => f.properties)
+      : [])) as Record<string, unknown>[];
+  const last = Array.isArray(rows) ? rows[rows.length - 1] : undefined;
+  const at = last?.recorded_at || last?.received_at;
+  return {
+    truncated: meta.truncated === true,
+    limit: typeof meta.limit === "number" ? meta.limit : null,
+    lastAt: typeof at === "string" ? at : null,
+  };
+}
+
+/** Downloads a capped JSON export and reports whether it was cut. */
+export async function downloadExport(path: string, fallbackName: string) {
+  const response = await fetch(path, { credentials: "same-origin" });
+  if (!response.ok) throw await failure(response);
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const name = /filename="?([^";]+)"?/.exec(disposition)?.[1] || fallbackName;
+  const text = await response.text();
+  let cut = exportCut(null);
+  try {
+    cut = exportCut(JSON.parse(text));
+  } catch {
+    // Saved as received; nothing to report.
+  }
+  const url = URL.createObjectURL(
+    new Blob([text], {
+      type: response.headers.get("Content-Type") || "application/json",
+    }),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  return cut;
+}
 export const dateInput = (date: Date) =>
   new Date(date.getTime() - date.getTimezoneOffset() * 60000)
     .toISOString()

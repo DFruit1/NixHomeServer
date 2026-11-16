@@ -1,5 +1,5 @@
-import { component$, Slot, type Signal } from "@builder.io/qwik";
-import { CLOCK_FLOOR_MS, stamp } from "./api";
+import { $, component$, Slot, useStore, type Signal } from "@builder.io/qwik";
+import { CLOCK_FLOOR_MS, downloadExport, errorText, stamp } from "./api";
 import { relative } from "./format";
 
 /** Status line for an operator action (polite on success, alert on error). */
@@ -113,3 +113,77 @@ export const Meter = component$<{
     <span>{props.text}</span>
   </div>
 ));
+
+/** Saves a capped JSON export (events, positions) and, when the server
+ * cut it, says so and offers the next part from the last row's time. */
+export const ExportButton = component$<{
+  /** Export path without `from`. */
+  path: string;
+  from?: string;
+  label: string;
+  fileName: string;
+}>((props) => {
+  const state = useStore({
+    pending: false,
+    message: "",
+    failed: false,
+    next: "",
+  });
+  const run = $(async (from: string) => {
+    if (state.pending) return;
+    state.pending = true;
+    state.message = "";
+    state.next = "";
+    try {
+      const sep = props.path.includes("?") ? "&" : "?";
+      const cut = await downloadExport(
+        from
+          ? `${props.path}${sep}from=${encodeURIComponent(from)}`
+          : props.path,
+        props.fileName,
+      );
+      if (cut.truncated) {
+        state.failed = true;
+        state.message = `The file was cut at ${cut.limit?.toLocaleString() ?? "the server's limit of"} rows, oldest first; it ends at ${stamp(cut.lastAt)}.`;
+        state.next = cut.lastAt || "";
+      }
+    } catch (error) {
+      state.failed = true;
+      state.message = errorText(error);
+    } finally {
+      state.pending = false;
+    }
+  });
+  return (
+    <>
+      <button
+        type="button"
+        class="button"
+        aria-busy={state.pending}
+        disabled={state.pending}
+        onClick$={() => run(props.from || "")}
+      >
+        {props.label}
+      </button>
+      {state.message && (
+        <p
+          role={state.failed ? "alert" : "status"}
+          class="notice error-text export-note"
+        >
+          {state.message}{" "}
+          {state.next && (
+            <button type="button" onClick$={() => run(state.next)}>
+              Export the rest from {stamp(state.next)}
+            </button>
+          )}
+          {state.next && (
+            <small>
+              Rows at exactly that time can appear in both files; their ids tell
+              them apart.
+            </small>
+          )}
+        </p>
+      )}
+    </>
+  );
+});

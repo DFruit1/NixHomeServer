@@ -19,7 +19,13 @@ import {
   resolution,
 } from "./alert-text";
 import { devicePath, send, useJson } from "./hooks";
-import { POLICY_FIELDS, buildLimits, buildPolicy, policyDraft } from "./ops";
+import {
+  POLICY_FIELDS,
+  POLICY_HINTS,
+  buildLimits,
+  buildPolicy,
+  policyDraft,
+} from "./ops";
 import type { Alert, Device, DevicePolicy, PolicyValues } from "./types";
 import { Feedback, LoadState, TableRegion } from "./widgets";
 
@@ -250,7 +256,9 @@ const policyText = (key: string, value: unknown) =>
       ? value
         ? "on"
         : "off"
-      : String(value);
+      : key === "solar_samples"
+        ? `${value} day${value === 1 ? "" : "s"}`
+        : String(value);
 
 /** Editor for one policy level (fleet, project or device). Empty inherits. */
 export const PolicyEditor = component$<{
@@ -330,6 +338,7 @@ export const PolicyEditor = component$<{
                   draft[key] = el.value;
                 }}
               />
+              {POLICY_HINTS[key] && <small>{POLICY_HINTS[key]}</small>}
               {built.value.errors[key] && (
                 <small class="error-text">{built.value.errors[key]}</small>
               )}

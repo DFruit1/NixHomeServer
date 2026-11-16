@@ -13,6 +13,9 @@ export interface Observation {
   quality_reasons: string[];
   duplicate_outcome: string;
   interpretation_version: string;
+  /** Firmware sensor status (0 ok); non-zero is never a valid level.
+   * null for profiles that report none. */
+  sensor_status?: number | null;
 }
 export interface Device {
   device_id: string;
@@ -94,6 +97,22 @@ export interface SeriesPoint {
   csq?: number | null;
   /** Raw level when `gwl` holds a datum-converted value. */
   raw_gwl?: number | null;
+  /** Raw point: the reading's status (non-zero: `gwl` is the firmware's
+   * untrustworthy level, never a level). Always null on a bucket. */
+  sensor_status?: number | null;
+  /** Fault samples behind the point (left out of the bucket average). */
+  fault_count?: number;
+  fault_kinds?: string[];
+}
+/** A raw fault reading, or a bucket that held fault samples (buckets with
+ * only faults and readings without a level have no point). */
+export interface SeriesFault {
+  recorded_at: string;
+  sensor_status: number | null;
+  fault_count: number;
+  fault_kinds: string[];
+  /** Valid samples in the same bucket (0 for a raw fault). */
+  valid_count: number;
 }
 export interface Series {
   device_id: string;
@@ -106,6 +125,8 @@ export interface Series {
   inverted?: boolean;
   unconverted?: number;
   limits?: { min: number | null; max: number | null } | null;
+  faults?: SeriesFault[];
+  faults_truncated?: boolean;
 }
 export interface Alert {
   id: number;
@@ -159,6 +180,7 @@ export interface Command {
   challenge_expires_at?: string | null;
   origin?: string;
   download_id?: number | null;
+  replace_settings?: boolean;
 }
 /** Revision 2 rows; shapes are documented in README "Protocol revision 2 API". */
 export interface HealthSample {
@@ -278,6 +300,10 @@ export interface TestResult extends Timed {
   status_bits: number | null;
   ok: boolean | null;
   details: Record<string, unknown>;
+  /** "record" (Type 5 ring record), "json" (test/result) or both. */
+  sources?: string[];
+  json_id?: number | null;
+  json_ok?: boolean | null;
 }
 export interface SettingsHistoryRow {
   id: number;
@@ -318,6 +344,19 @@ export interface StreamLog {
   open_gaps: number;
   unrecoverable_gaps: number;
   pending_readings: number;
+  pending_reasons?: PendingReason[];
+}
+/** Readings of a log that have no time yet, grouped by why. */
+export interface PendingReason {
+  reason: string;
+  state:
+    | "awaiting_anchor"
+    | "gap_unrecoverable"
+    | "awaiting_clock_set"
+    | "no_time";
+  count: number;
+  min_seq: number | null;
+  max_seq: number | null;
 }
 export interface StreamBatch {
   id: number;

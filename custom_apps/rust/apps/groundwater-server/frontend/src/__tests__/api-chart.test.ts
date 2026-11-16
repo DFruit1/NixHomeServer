@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { exportUrl, lag, rangeQuery, request } from "../api";
-import { chartGeometry } from "../chart";
+import { chartGeometry, faultSpans, levelSeries } from "../chart";
 import type { SeriesPoint } from "../types";
 afterEach(() => vi.unstubAllGlobals());
 describe("API boundary", () => {
@@ -95,5 +95,98 @@ describe("history rendering", () => {
     expect(
       chartGeometry(points, "battery_v", 0, 120000, 6).path.match(/M/g),
     ).toHaveLength(2);
+  });
+});
+describe("level series faults", () => {
+  const at = (minutes: number) => new Date(minutes * 60000).toISOString();
+  const point = (
+    minutes: number,
+    gwl: number,
+    extra: Partial<SeriesPoint> = {},
+  ): SeriesPoint => ({
+    recorded_at: at(minutes),
+    gwl,
+    gwl_text: null,
+    battery_v: null,
+    rssi: null,
+    sample_count: 1,
+    conflict: false,
+    sensor_status: 0,
+    fault_count: 0,
+    fault_kinds: [],
+    ...extra,
+  });
+  it("never draws or scales a raw fault reading as a level", () => {
+    const points = [
+      point(0, 10),
+      point(15, 25.1, {
+        sensor_status: 3,
+        sample_count: 0,
+        fault_count: 1,
+        fault_kinds: ["over-range"],
+      }),
+      point(30, 11),
+    ];
+    const geometry = chartGeometry(points, "gwl", 0, 30 * 60000, 60);
+    // The fault splits the line and stays out of the axis range.
+    expect(geometry.path.match(/M/g)).toHaveLength(2);
+    expect(geometry.max).toBeLessThan(12);
+    const { samples, marks } = levelSeries({
+      points,
+      bucket_minutes: 0,
+      faults: [
+        {
+          recorded_at: at(15),
+          sensor_status: 3,
+          fault_count: 1,
+          fault_kinds: ["over-range"],
+          valid_count: 0,
+        },
+      ],
+    });
+    expect(samples[1][1]).toBeNull();
+    expect(marks[0].text).toBe(
+      "out of range: possible sensor failure (over-range, above 20 mA)",
+    );
+  });
+  it("keeps a mixed bucket's valid average and marks fault-only buckets", () => {
+    const points = [
+      point(0, 10, { sensor_status: null, sample_count: 3 }),
+      point(60, 10.5, {
+        sensor_status: null,
+        sample_count: 2,
+        fault_count: 1,
+        fault_kinds: ["over-range"],
+      }),
+      point(180, 11, { sensor_status: null, sample_count: 4 }),
+    ];
+    const faults = [
+      { at: 60, valid: 2, kinds: ["over-range"] },
+      { at: 120, valid: 0, kinds: ["no-sensor", "under-range"] },
+      { at: 240, valid: 0, kinds: ["adc-fault"] },
+      { at: 300, valid: 0, kinds: ["adc-fault"] },
+    ].map((f) => ({
+      recorded_at: at(f.at),
+      sensor_status: null,
+      fault_count: 2,
+      fault_kinds: f.kinds,
+      valid_count: f.valid,
+    }));
+    const series = { points, faults, bucket_minutes: 60 };
+    const { samples, marks } = levelSeries(series);
+    expect(samples.map(([, v]) => v)).toEqual([10, 10.5, 11]);
+    expect(marks.filter((m) => m.valid > 0)).toHaveLength(1);
+    expect(marks[1].text).toBe(
+      "out of range: possible sensor failure (under-range); sensor fault: no-sensor",
+    );
+    // 120 stands alone (valid buckets either side); 240 and 300 merge into
+    // one span covering both buckets.
+    const spans = faultSpans(marks, samples, 60, 120);
+    expect(spans.map((s) => [s.from / 60000, s.to / 60000, s.count])).toEqual([
+      [120, 180, 2],
+      [240, 360, 4],
+    ]);
+    // A silence longer than the gap threshold stays a gap.
+    expect(faultSpans(marks, samples, 60, 30)).toHaveLength(3);
   });
 });
