@@ -712,7 +712,8 @@ impl Record {
                 ..
             } => json!({"log_id":log_id,"previous_log_id":previous_log_id,
                 "reason":match reason {1=>"blank-mram-formatted",2=>"wipe-mram",3=>"factory-reset",4=>"sequence-rollover",5=>"recovery-rebuild",6=>"payload-schema-changed",_=>"other"},
-                "firmware_version":format!("{}.{}.{}+{}",firmware_version[0],firmware_version[1],firmware_version[2],firmware_version[3]),
+                "firmware_version":firmware_version_text(*firmware_version),
+                "firmware_version_raw":firmware_version_raw(*firmware_version),
                 "envelope_version":envelope_version,"payload_schema":payload_schema,"settings_gen":settings_gen,"mcu_uid":mcu_uid}),
             Self::ClockSet {
                 old,
@@ -771,8 +772,27 @@ impl Record {
 }
 
 /// Firmware version bytes as `major.minor.patch`.
+/// Type 14 `firmware_version`. Rev2 describes it as "u32 (major, minor,
+/// patch, build bytes)"; firmware 2.2 writes the u32 `major<<16 |
+/// minor<<8 | patch` with the build in bits 24-31 (its golden vectors use
+/// 0x00020200 for 2.2.0), so the little-endian bytes are patch, minor,
+/// major, build. The server follows the firmware and keeps the raw value.
+pub fn firmware_version_raw(version: [u8; 4]) -> u32 {
+    u32::from_le_bytes(version)
+}
+
 pub fn firmware_version_text(version: [u8; 4]) -> String {
-    format!("{}.{}.{}", version[0], version[1], version[2])
+    let raw = firmware_version_raw(version);
+    let text = format!(
+        "{}.{}.{}",
+        (raw >> 16) & 0xFF,
+        (raw >> 8) & 0xFF,
+        raw & 0xFF
+    );
+    match raw >> 24 {
+        0 => text,
+        build => format!("{text}+{build}"),
+    }
 }
 
 #[cfg(test)]

@@ -133,10 +133,12 @@ rec("type13 tail lock", 13, 116, tb(T, V) + struct.pack("<IIIIB", 9000, 1000, 80
     {"record": "tail_lock", "head": 9000, "tail": 1000, "sd_saved_end": 800,
      "mqtt_saved_end": 900, "reason": 1})
 rec("type14 log start", 14, 1,
-    tb(T, V) + struct.pack("<IIBBBBBBHI", 0x6A1B2C3D, 0x6A000000, 2, 2, 2, 0, 7, 1, 1, 5)
+    # firmware_version: the firmware packs major<<16 | minor<<8 | patch with
+    # the build in bits 24-31 (2.2.0 build 7), see records.rs.
+    tb(T, V) + struct.pack("<IIBIBHI", 0x6A1B2C3D, 0x6A000000, 2, (7 << 24) | (2 << 16) | (2 << 8) | 0, 1, 1, 5)
     + UID,
     {"record": "log_start", "log_id": 0x6A1B2C3D, "previous_log_id": 0x6A000000,
-     "reason": 2, "firmware_version": [2, 2, 0, 7], "envelope_version": 1,
+     "reason": 2, "firmware_version": [0, 2, 2, 7], "envelope_version": 1,
      "payload_schema": 1, "settings_gen": 5, "mcu_uid": UID.hex().upper()})
 rec("type15 clock set", 15, 117, tb(42, 0) + struct.pack("<IBI", T, 0x07, 42),
     {"record": "clock_set", "old.time": 42, "old.flags": 0, "new_time": T,

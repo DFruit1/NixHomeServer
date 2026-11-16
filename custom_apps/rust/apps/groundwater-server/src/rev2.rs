@@ -46,9 +46,26 @@ pub const DURABLE_CHANNELS: [&str; 9] = [
     "cmd/ack",
 ];
 
+/// The bare-text Last Will: the EC21's plain `AT+QMTCFG="will"` cannot carry
+/// quotes, so a modem without `willex` leaves `offline` (not JSON) retained
+/// on `status`. No revision 1 status uses that word.
+pub fn is_bare_lwt(payload: &[u8]) -> bool {
+    payload.trim_ascii().eq_ignore_ascii_case(b"offline")
+}
+
+/// A `status` payload as a JSON object, mapping the bare-text Last Will to
+/// the JSON one.
+pub fn status_object(payload: &[u8]) -> Result<Map<String, Value>, String> {
+    if is_bare_lwt(payload) {
+        return object(br#"{"v":2,"state":"offline","reason":"lwt"}"#);
+    }
+    object(payload)
+}
+
 /// True when `payload` on `channel` is a revision 2 message.
 pub fn is_rev2_payload(channel: &str, payload: &[u8]) -> bool {
     match channel {
+        "status" if is_bare_lwt(payload) => true,
         "data/stream" => {
             payload.starts_with(crate::stream::BATCH_MAGIC)
                 || payload.len() >= 8 && payload[..8].eq_ignore_ascii_case(b"47574231")
@@ -507,6 +524,8 @@ mod tests {
     fn rev2_routing_needs_the_marker_or_the_binary_magic() {
         assert!(is_rev2_payload("status", br#"{"v":2,"state":"ready"}"#));
         assert!(!is_rev2_payload("status", b"Ready"));
+        assert!(is_rev2_payload("status", b"offline"));
+        assert_eq!(status_object(b"offline").unwrap()["state"], "offline");
         assert!(!is_rev2_payload(
             "reading",
             br#"{"DeviceID":"X","GWL":"1.00"}"#

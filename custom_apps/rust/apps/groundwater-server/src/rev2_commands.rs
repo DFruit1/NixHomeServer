@@ -597,6 +597,27 @@ async fn effects<C: GenericClient + Sync>(
     let success = matches!(ack.status, AckStatus::Ok | AckStatus::Partial);
     let data = ack.data.clone().unwrap_or(Value::Null);
     match command.op.as_str() {
+        "settings" if success && ack.settings.is_none() => {
+            // The logger drops the settings object when the ack would exceed
+            // 1,024 bytes (reason data-truncated): fetch it explicitly.
+            let open = client
+                .query_opt(
+                    "SELECT 1 FROM commands WHERE device_id=$1 AND protocol=2 AND op='get_settings'
+                        AND state IN ('queued','sent')",
+                    &[&ctx.device_id],
+                )
+                .await
+                .map_err(dberr("open get_settings"))?
+                .is_some();
+            if !open {
+                let options = QueueOptions {
+                    requested_by: "auto-settings",
+                    origin: "auto-settings",
+                    ..QueueOptions::new(ctx.policy, ctx.received_at)
+                };
+                queue(client, ctx.device_id, "get_settings", &json!({}), &options).await?;
+            }
+        }
         "settings" if success => {
             if let (Some(generation), Some(settings)) = (ack.settings_gen, &ack.settings) {
                 settings_history(client, ctx, generation, settings, "ack", command.id).await?;

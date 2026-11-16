@@ -163,7 +163,12 @@ pub async fn retained_unchanged<C: GenericClient + Sync>(
     channel: &str,
     payload: &[u8],
 ) -> Result<bool, String> {
-    let Ok(object) = rev2::object(payload) else {
+    let parsed = if channel == "status" {
+        rev2::status_object(payload)
+    } else {
+        rev2::object(payload)
+    };
+    let Ok(object) = parsed else {
         return Ok(false);
     };
     match channel {
@@ -212,7 +217,12 @@ pub async fn store<C: GenericClient + Sync>(
         "data/file" => return store_file_chunk(client, ctx, payload).await,
         _ => {}
     }
-    let object = match rev2::object(payload) {
+    let parsed = if ctx.channel == "status" {
+        rev2::status_object(payload)
+    } else {
+        rev2::object(payload)
+    };
+    let object = match parsed {
         Ok(object) => object,
         Err(error) => return Ok(Outcome::rejected(error)),
     };

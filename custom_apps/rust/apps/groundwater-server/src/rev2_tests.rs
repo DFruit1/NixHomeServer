@@ -1092,6 +1092,36 @@ async fn rev2_command_lifecycle_handshake_and_republish() {
         1
     );
 
+    // An ack truncated to fit 1,024 bytes drops the settings object
+    // (reason data-truncated): the server fetches them with get_settings.
+    let (_, body) = call(
+        &app,
+        "POST",
+        &settings_path,
+        "operator",
+        json!({"settings":{"listen_s":120}}),
+    )
+    .await;
+    let truncated = body["command"]["id"].as_i64().unwrap();
+    h.send_next().await.unwrap();
+    h.json(
+        "config/applied",
+        json!({"v":2,"id":truncated,"op":"settings","status":"ok","reason":"data-truncated","gen":7}),
+    )
+    .await;
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM commands WHERE op='get_settings' AND state='queued'")
+            .await,
+        1
+    );
+    h.client
+        .execute(
+            "UPDATE commands SET state='cancelled' WHERE op='get_settings'",
+            &[],
+        )
+        .await
+        .unwrap();
+
     // An ack for an unknown id is evidence, not a state change.
     h.json(
         "cmd/ack",
@@ -1151,6 +1181,27 @@ async fn rev2_command_lifecycle_handshake_and_republish() {
     )
     .await;
     assert_eq!(body["device"]["status"], "offline");
+    // The bare-text Last Will (modems without willex) means the same.
+    h.json("status", json!({"v":2,"state":"online"})).await;
+    h.publish("status", b"offline").await;
+    assert_eq!(
+        h.scalar::<String>(
+            "SELECT link_state FROM devices WHERE device_id='6A1B2C3D4E5F60718293A4B5'"
+        )
+        .await,
+        "offline"
+    );
+    let before = h
+        .scalar::<i64>("SELECT count(*) FROM deliveries WHERE topic LIKE '%/status'")
+        .await;
+    h.publish_at(D, "status", b"offline", true, Utc::now())
+        .await;
+    assert_eq!(
+        h.scalar::<i64>("SELECT count(*) FROM deliveries WHERE topic LIKE '%/status'")
+            .await,
+        before,
+        "an unchanged retained Last Will is not stored again"
+    );
 }
 
 #[tokio::test]
