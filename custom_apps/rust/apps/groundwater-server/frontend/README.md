@@ -13,9 +13,12 @@ enforcement stay on the API; unknown session roles expose no write controls.
 ## What it shows
 
 - **Devices**: the fleet table with a "Needs attention" list per logger
-  (missed connection, open alerts by name, sensor out of range, SD/MRAM/
-  logging/latched error from health, waiting danger confirmations, open
-  gaps); loggers needing attention sort first.
+  (missed connection, open alerts by name from `open_alert_kinds`, sensor
+  out of range, settings lost, SD/MRAM/logging/latched error from health,
+  waiting danger confirmations, open gaps); loggers needing attention sort
+  first.
+- Command lists page 500 at a time ("Show older commands"); the raw log
+  pages 100 at a time and filters to quarantined deliveries.
 - **Device workspace**, tabs by capability. Firmware 2.2 (protocol 2):
   Overview, History, Health, Events, Location, Tests, Settings, Commands,
   Files, Data stream, Alerts, Installation, Audit, Raw log. Firmware V2.1 and
@@ -77,9 +80,13 @@ session; modes `empty` and `error` exercise those states, and `fault` gives
 the firmware 2.2 unit an over-range latest reading, a locked MRAM ring, a
 latched error and logging off (with the server alerts they raise); `lost`
 gives it settings-lost RECOVERY (err 4, an expired `auto-restore`, the
-`settings_lost` alert) and a health object with not-read markers. The
+`settings_lost` alert) and a health object with not-read values (null);
+`restoring` is the same state with the restore still queued. The
 series always has raw over-range and no-sensor readings, a mixed bucket and
-fault-only buckets. `cut=1` truncates the command list and the JSON
+fault-only buckets. The raw log has 260 deliveries (every 25th quarantined),
+the ring log and one batch carry a derive failure, and cancelling a danger
+command after its confirmation was sent returns the cancel warning. `cut=1`
+gives the logger 1,200 older commands (the list pages) and truncates the JSON
 exports. `busy=1`
 makes the CSV export answer 429; `crossorigin=1` refuses every write as a
 cross-origin one. `FIXTURE_PORT` moves the fixture off 5188 (then
@@ -667,8 +674,8 @@ readings without a level and fault-only buckets appear only there.
 `faults_truncated` follows the point cap. Device summaries'
 `latest_received`/`latest_plausible` carry `sensor_status`.
 
-Other fields the UI reads: `/api/commands` `truncated` (newest 500) and
-per-command `replace_settings`; origin `auto-restore` (settings re-sent after
+Other fields the UI reads: `/api/commands` `truncated` (500 per page; the
+next page is `?before=<last id>`) and per-command `replace_settings`; origin `auto-restore` (settings re-sent after
 settings-lost RECOVERY, `mram:"recovery"` with `err` ≠ 3); alert kind
 `settings_lost` (`detail.reason`, `command_id`, `state`, `final_status`,
 `status_reason`, `action`); `solar_low` detail `{threshold_mv, days,
@@ -676,9 +683,28 @@ daylight_samples, max_mv}` and policy `solar_samples` meaning days (1–10);
 `/tests` merged rows with `sources`, `json_id`, `json_ok`; `/logs`
 `pending_reasons[{reason,state,count,min_seq,max_seq}]`; JSON exports
 `truncated` and `limit` (20,000, oldest first; GeoJSON in `properties`).
-Not-read health, test and position values are null. The device's `health`
-object is the logger's JSON as sent, so the UI maps 65535 mV and CSQ 99 to
-"—" itself (`readHealth`).
+Not-read health, test and position values are null, and so are they in the
+device summary's `health` object (65535 mV, CSQ 99, `sd_free_mb` while `sd`
+is not `ok`; `rev2.rs` `normalised_health`).
+
+Device summaries also carry `open_alert_kinds` (`[{"kind","subject"}]`, one
+per open kind and level-alarm subject `high`/`low`; the fleet names its
+attention items from it), `settings_lost_since` (settings-lost RECOVERY
+reported, else null) and `settings_restore` (`{id,state,final_status,
+status_reason,created_at,expires_at,acked_at}` of the episode's automatic
+restore, else null). Position `fix` is on the ring record scale for every
+source: 0 none, 1 2D, 2 3D (the `gps` JSON's value minus one).
+`POST …/commands/{cid}/cancel` returns `{"command","warning"}`; `warning` is
+set when the command or one of its danger confirmations had already been
+sent, so the logger may still run the operation; the UI shows it until
+dismissed. `/logs` entries add `derive_pending` (frames whose derived data is
+re-run at the next start), `resolve_pending` and `resolve_error`; `/batches`
+entries add `derive_error` and `frames_derive_pending`.
+
+`GET /api/messages` (operator raw log): `device`, `topic`, `since`,
+`state` (e.g. `quarantined`), `direction` (`in`/`out`), `limit` (default
+100, max 500) and `before=<delivery id>`; rows carry `id`, and `more` says
+whether another page exists.
 
 Gap report row:
 
@@ -708,8 +734,7 @@ detected in the window). `open`, `requested`, `missing_open` and
 `oldest_open_at` describe the current state; `unrecoverable`, `filled`,
 `missing_unrecoverable`, `last_gap_at`, `frames` (received) and
 `data_gap_events` (logger records) count inside the window. `missing_*`
-sums `to_seq − from_seq + 1`. Exports are capped at 100,000 rows
-(`truncated:true`).
+sums `to_seq − from_seq + 1`.
 
 `/metrics` needs either an operator session (through the gateway) or
 `Authorization: Bearer <token>` matching `GROUNDWATER_METRICS_TOKEN_FILE`

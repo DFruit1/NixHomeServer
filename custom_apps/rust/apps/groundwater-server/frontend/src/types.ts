@@ -55,6 +55,9 @@ export interface Device {
     downloads?: boolean;
   };
   open_alert_count: number;
+  /** One entry per open alert kind and subject (a logger level alarm names
+   * high/low), so attention items can name the alert. */
+  open_alert_kinds?: OpenAlertKind[];
   // Protocol revision 2 (null/absent for revision 1 units); see README.
   protocol_rev?: number | null;
   link_state?: "online" | "ready" | "sleep" | "offline" | null;
@@ -68,6 +71,8 @@ export interface Device {
   boot_count?: number | null;
   info?: Record<string, unknown> | null;
   info_at?: string | null;
+  /** The logger's latest `health` JSON with "not read" values (65535 mV,
+   * CSQ 99, free space of a card that is not ok) as null. */
   health?: Record<string, unknown> | null;
   health_at?: string | null;
   settings_gen?: number | null;
@@ -84,6 +89,24 @@ export interface Device {
   /** Level alarm hysteresis (null = server default 0.5 m for revision 1). */
   min_hysteresis?: number | null;
   max_hysteresis?: number | null;
+  /** Settings-lost RECOVERY: when the logger first reported it (null when
+   * it has settings). */
+  settings_lost_since?: string | null;
+  /** The episode's automatic restore command, null when none was sent. */
+  settings_restore?: SettingsRestore | null;
+}
+export interface OpenAlertKind {
+  kind: string;
+  subject: string | null;
+}
+export interface SettingsRestore {
+  id: number;
+  state: string;
+  final_status: string | null;
+  status_reason: string | null;
+  created_at: string;
+  expires_at: string | null;
+  acked_at: string | null;
 }
 export interface SeriesPoint {
   recorded_at: string;
@@ -345,6 +368,11 @@ export interface StreamLog {
   unrecoverable_gaps: number;
   pending_readings: number;
   pending_reasons?: PendingReason[];
+  /** Frames whose derived data failed and is re-run at the next start. */
+  derive_pending?: number;
+  /** Time resolution and settings assembly for the log failed. */
+  resolve_pending?: boolean;
+  resolve_error?: string | null;
 }
 /** Readings of a log that have no time yet, grouped by why. */
 export interface PendingReason {
@@ -379,6 +407,11 @@ export interface StreamBatch {
   issues: unknown[];
   warnings: unknown[];
   raw_retained: boolean;
+  /** Derived data (readings, events, times) failed when this batch was
+   * stored; the raw frames were kept. */
+  derive_error?: string | null;
+  /** Frames first stored by this batch still waiting to be re-derived. */
+  frames_derive_pending?: number;
 }
 export interface GapReportRow {
   device_id: string;
@@ -502,6 +535,7 @@ export interface Datum {
   created_at: string;
 }
 export interface Delivery {
+  id: number;
   received_at: string;
   topic: string;
   kind: string;

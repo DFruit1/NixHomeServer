@@ -712,3 +712,29 @@ UPDATE device_tests SET battery_mv=NULLIF(battery_mv,65535),solar_mv=NULLIF(sola
 UPDATE observations SET battery_v=NULLIF(battery_v,65.535),solar_v=NULLIF(solar_v,65.535),csq=NULLIF(csq,99),
         sensor_mv=NULLIF(sensor_mv,65535)
     WHERE source='json' AND (battery_v=65.535 OR solar_v=65.535 OR csq=99 OR sensor_mv=65535);
+
+-- The device summary's `health` object carries the same "not read" rule as
+-- the stored columns (rev2.rs `normalised_health`): earlier versions kept
+-- the logger's markers there.
+UPDATE devices SET health=health
+        || CASE WHEN health->'bat_mv'='65535'::jsonb THEN '{"bat_mv":null}'::jsonb ELSE '{}'::jsonb END
+        || CASE WHEN health->'sol_mv'='65535'::jsonb THEN '{"sol_mv":null}'::jsonb ELSE '{}'::jsonb END
+        || CASE WHEN health->'csq'='99'::jsonb THEN '{"csq":null}'::jsonb ELSE '{}'::jsonb END
+        || CASE WHEN jsonb_typeof(health->'sd_free_mb')='number' AND health->>'sd' IS DISTINCT FROM 'ok'
+            THEN '{"sd_free_mb":null}'::jsonb ELSE '{}'::jsonb END
+    WHERE health->'bat_mv'='65535'::jsonb OR health->'sol_mv'='65535'::jsonb OR health->'csq'='99'::jsonb
+        OR (jsonb_typeof(health->'sd_free_mb')='number' AND health->>'sd' IS DISTINCT FROM 'ok');
+
+-- GNSS fix on one scale, the ring record's (Type 2): 0 none, 1 2D, 2 3D.
+-- The `gps` JSON sends the record value + 1 (app_core.c `App_Position`);
+-- rev2_store.rs `store_gps` stores it minus one. Rows stored before that
+-- are converted once; the column comment marks the conversion as done.
+DO $$ BEGIN
+    IF col_description('device_positions'::regclass,
+            (SELECT attnum FROM pg_attribute WHERE attrelid='device_positions'::regclass AND attname='fix'))
+        IS DISTINCT FROM 'record scale: 0 none, 1 2D, 2 3D' THEN
+        UPDATE device_positions SET fix=CASE WHEN fix BETWEEN 1 AND 3 THEN fix-1 END
+            WHERE source='json' AND fix IS NOT NULL;
+        COMMENT ON COLUMN device_positions.fix IS 'record scale: 0 none, 1 2D, 2 3D';
+    END IF;
+END $$;

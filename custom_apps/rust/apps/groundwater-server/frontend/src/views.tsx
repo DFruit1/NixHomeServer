@@ -1,4 +1,5 @@
 import {
+  $,
   component$,
   useSignal,
   useStore,
@@ -18,11 +19,10 @@ import { datumLabel, datumUnit } from "./ops";
 import { alertLabel, alertValue } from "./alerts";
 import { deviceProblems } from "./attention";
 import { observationProblem, sensorProblem } from "./events";
-import { csqText, millivolts, readHealth } from "./format";
+import { csqText, millivolts } from "./format";
 
 export const Fleet = component$<{
   devices: Device[];
-  openAlerts?: Alert[];
 }>((props) => {
   const search = useSignal("");
   // Loggers that need attention come first; the order is otherwise stable.
@@ -34,10 +34,7 @@ export const Fleet = component$<{
     )
     .map((device) => ({
       device,
-      problems: deviceProblems(
-        device,
-        props.openAlerts?.filter((a) => a.device_id === device.device_id),
-      ),
+      problems: deviceProblems(device),
     }))
     .sort(
       (a, b) => Number(b.problems.length > 0) - Number(a.problems.length > 0),
@@ -90,7 +87,7 @@ export const Fleet = component$<{
                 const latest = device.latest_received;
                 const fault = observationProblem(reading);
                 const rev2 = device.capabilities?.protocol === 2;
-                const health = readHealth(device.health);
+                const health = device.health || {};
                 const expected =
                   device.expected_contact_at || device.next_contact_at;
                 return (
@@ -596,18 +593,75 @@ export const History = component$<{
   );
 });
 
+/** `/api/messages` filters of the raw log. */
+const deliveryQuery = (f: {
+  device: string;
+  topic: string;
+  since: string;
+  quarantined: boolean;
+}) => ({
+  device: f.device,
+  topic: f.topic,
+  since: f.since ? new Date(f.since).toISOString() : "",
+  state: f.quarantined ? "quarantined" : "",
+});
+
+/** The live newest page followed by the older pages, without repeats. */
+const mergedDeliveries = (newest: Delivery[], older: Delivery[]) => {
+  const ids = new Set(newest.map((d) => d.id));
+  return [...newest, ...older.filter((d) => !ids.has(d.id))];
+};
+
 export const RawLog = component$<{ device: string; revision: number }>(
   (props) => {
     const topic = useSignal(""),
       since = useSignal(""),
-      filter = useStore({ topic: "", since: "" });
+      quarantined = useSignal(false),
+      filter = useStore({ topic: "", since: "", quarantined: false });
     const data = useStore<{
       deliveries: Delivery[];
+      /** The server has more deliveries after the newest page. */
+      more: boolean;
+      /** Older pages from "Show older deliveries", kept across refreshes. */
+      older: Delivery[];
+      olderMore: boolean;
+      olderLoading: boolean;
       error: string;
       loading: boolean;
-    }>({ deliveries: [], error: "", loading: true });
+    }>({
+      deliveries: [],
+      more: false,
+      older: [],
+      olderMore: false,
+      olderLoading: false,
+      error: "",
+      loading: true,
+    });
     const refresh = useSignal(0),
-      fetchedRevision = useSignal(-1);
+      fetchedRevision = useSignal(-1),
+      loadedSelection = useSignal("");
+    const loadOlder = $(async () => {
+      const list = mergedDeliveries(data.deliveries, data.older);
+      const last = list[list.length - 1];
+      if (!last || data.olderLoading) return;
+      data.olderLoading = true;
+      try {
+        const result = await request<{
+          deliveries: Delivery[];
+          more?: boolean;
+        }>(
+          `/api/messages?${query({ ...deliveryQuery({ ...filter, device: props.device }), before: String(last.id) })}`,
+        );
+        data.older = [...data.older, ...result.deliveries];
+        data.olderMore = result.more === true;
+      } catch (error) {
+        data.error = errorText(error);
+      } finally {
+        data.olderLoading = false;
+      }
+    });
+    const list = mergedDeliveries(data.deliveries, data.older);
+    const more = data.older.length ? data.olderMore : data.more;
     useVisibleTask$(({ track }) => {
       const revision = track(() => props.revision),
         fetched = track(() => fetchedRevision.value),
@@ -615,21 +669,34 @@ export const RawLog = component$<{ device: string; revision: number }>(
       if (!loading && revision !== fetched) refresh.value++;
     });
     useVisibleTask$(({ track, cleanup }) => {
-      const device = track(() => props.device),
-        selectedTopic = track(() => filter.topic),
-        selectedSince = track(() => filter.since);
+      const selection = JSON.stringify([
+        track(() => props.device),
+        track(() => filter.topic),
+        track(() => filter.since),
+        track(() => filter.quarantined),
+      ]);
       track(() => refresh.value);
+      if (selection !== loadedSelection.value) {
+        data.older = [];
+        data.olderMore = false;
+        loadedSelection.value = selection;
+      }
       const latest = latestRequest();
       data.loading = true;
       fetchedRevision.value = props.revision;
       latest.run(
         (signal) =>
-          request<{ deliveries: Delivery[] }>(
-            `/api/messages?${query({ device, topic: selectedTopic, since: selectedSince ? new Date(selectedSince).toISOString() : "" })}`,
+          request<{ deliveries: Delivery[]; more?: boolean }>(
+            `/api/messages?${query(deliveryQuery({ ...filter, device: props.device }))}`,
             signal,
           ),
         (result) => {
+          // With older pages shown, the previous newest page joins them, so
+          // rows pushed off the newest page by new arrivals stay listed.
+          if (data.older.length)
+            data.older = mergedDeliveries(data.deliveries, data.older);
           data.deliveries = result.deliveries;
+          data.more = result.more === true;
           data.error = "";
           data.loading = false;
         },
@@ -651,7 +718,7 @@ export const RawLog = component$<{ device: string; revision: number }>(
           </p>
         )}
         <p class="muted">
-          The latest 100 matching deliveries, newest first
+          Matching deliveries, newest first, 100 at a time
           {props.device ? "" : ", including unattributed and quarantined ones"}.
         </p>
         <form
@@ -660,6 +727,7 @@ export const RawLog = component$<{ device: string; revision: number }>(
           onSubmit$={() => {
             filter.topic = topic.value;
             filter.since = since.value;
+            filter.quarantined = quarantined.value;
           }}
         >
           <label class="field" for="log-topic">
@@ -683,6 +751,17 @@ export const RawLog = component$<{ device: string; revision: number }>(
               }}
             />
           </label>
+          <label class="checkbox" for="log-quarantined">
+            <input
+              id="log-quarantined"
+              type="checkbox"
+              checked={quarantined.value}
+              onChange$={(_, el) => {
+                quarantined.value = el.checked;
+              }}
+            />
+            Quarantined only
+          </label>
           <button type="submit">Apply filters</button>
         </form>
         {data.error && (
@@ -691,12 +770,12 @@ export const RawLog = component$<{ device: string; revision: number }>(
           </p>
         )}
         {data.loading && <p role="status">Loading deliveries…</p>}
-        {!data.loading && !data.error && data.deliveries.length === 0 && (
+        {!data.loading && !data.error && list.length === 0 && (
           <p class="empty">No deliveries match these filters.</p>
         )}
         <div class="delivery-list" aria-busy={data.loading}>
-          {data.deliveries.map((delivery, index) => (
-            <details key={`${delivery.received_at}-${index}`}>
+          {list.map((delivery) => (
+            <details key={delivery.id}>
               <summary>
                 {stamp(delivery.received_at)} · {delivery.topic}
                 <span
@@ -748,6 +827,19 @@ export const RawLog = component$<{ device: string; revision: number }>(
             </details>
           ))}
         </div>
+        {more && (
+          <p class="toolbar">
+            <span class="muted">{list.length} shown.</span>
+            <button
+              type="button"
+              disabled={data.olderLoading}
+              aria-busy={data.olderLoading}
+              onClick$={loadOlder}
+            >
+              {data.olderLoading ? "Loading…" : "Show older deliveries"}
+            </button>
+          </p>
+        )}
       </section>
     );
   },

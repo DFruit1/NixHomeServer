@@ -147,14 +147,27 @@ pub async fn queue(
     client.query_one("WITH queued AS (INSERT INTO commands(device_id,kind,payload,wire_payload,requested_by,firmware_ack_expected) SELECT d.device_id,$2,$3,$4,$5,groundwater_firmware_ack_expected(EXISTS(SELECT 1 FROM device_bindings b WHERE b.device_id=d.device_id AND b.revoked_at IS NULL AND b.topic LIKE 'gwl/v1/%'),$2,$3) FROM devices d WHERE d.device_id=$1 AND d.revoked_at IS NULL RETURNING *), desired AS (UPDATE devices d SET desired_config=COALESCE(d.desired_config,'{}'::jsonb)||q.payload FROM queued q WHERE d.device_id=q.device_id AND q.kind='cfg') SELECT * FROM queued", &[&device,&kind,&payload,&wire,&username]).await.map(command).map_err(|e|format!("queue: {e:?}"))
 }
 /// The newest commands, at most `COMMAND_LIST_LIMIT` + 1 (the caller drops
-/// the extra one and reports `truncated`).
+/// the extra one and reports `truncated`; `before=<last id>` reaches the
+/// rest).
 pub const COMMAND_LIST_LIMIT: usize = 500;
+#[cfg(test)]
 pub async fn commands(
     client: &Client,
     ids: &[String],
     device: Option<&str>,
 ) -> Result<Vec<Command>, String> {
-    client.query("SELECT c.*,groundwater_command_supported(d.source_profile,c.kind,c.payload,d.clock_policy,d.local_offset_min,d.clock_change_unverified) IS TRUE AS supported FROM commands c JOIN devices d ON d.device_id=c.device_id WHERE c.device_id=ANY($1) AND ($2::text IS NULL OR c.device_id=$2) ORDER BY c.id DESC LIMIT 501", &[&ids,&device]).await.map(|r|r.into_iter().map(command).collect()).map_err(|e|e.to_string())
+    commands_page(client, ids, device, None).await
+}
+
+/// One page of [`commands`]: with `before`, the newest commands whose id is
+/// lower (keyset paging, the list's own id order).
+pub async fn commands_page(
+    client: &Client,
+    ids: &[String],
+    device: Option<&str>,
+    before: Option<i64>,
+) -> Result<Vec<Command>, String> {
+    client.query("SELECT c.*,groundwater_command_supported(d.source_profile,c.kind,c.payload,d.clock_policy,d.local_offset_min,d.clock_change_unverified) IS TRUE AS supported FROM commands c JOIN devices d ON d.device_id=c.device_id WHERE c.device_id=ANY($1) AND ($2::text IS NULL OR c.device_id=$2) AND ($3::bigint IS NULL OR c.id<$3) ORDER BY c.id DESC LIMIT 501", &[&ids,&device,&before]).await.map(|r|r.into_iter().map(command).collect()).map_err(|e|e.to_string())
 }
 
 pub async fn command_supported(

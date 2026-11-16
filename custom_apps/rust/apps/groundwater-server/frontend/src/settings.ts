@@ -450,14 +450,13 @@ export function settingsDiff(
     .map((key) => ({ key, before: previous?.[key], after: current[key] }));
 }
 
-/** Settings-lost RECOVERY as the server detects it (rev2_commands.rs
- * `settings_lost`): `mram:"recovery"` with any latched error but 3. The
- * logger runs on firmware defaults and does not log until it is sent
- * settings. err 3 is the read-only RECOVERY that refuses settings. */
-export function settingsLost(
-  health: Record<string, unknown> | null | undefined,
-): boolean {
-  return health?.mram === "recovery" && health.err !== 3;
+/** Settings-lost RECOVERY as the server tracks it (`settings_lost_since`,
+ * rev2_commands.rs `maybe_restore_settings`): the logger runs on firmware
+ * defaults and does not log until it is sent settings. */
+export function settingsLost(device: {
+  settings_lost_since?: string | null;
+}): boolean {
+  return !!device.settings_lost_since;
 }
 
 /** Editor drafts holding every key of `settings` (a generation the logger

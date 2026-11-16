@@ -30,7 +30,8 @@ type Props = {
   device: Device;
   revision: number;
   operator: boolean;
-  /** The device's alerts (open settings_lost explains a restore). */
+  /** The device's alerts (an open settings_lost carries the server's reason
+   * when no restore could be sent). */
   alerts?: Alert[];
 };
 
@@ -48,13 +49,13 @@ export const SettingsView = component$<Props>((props) => {
   const action = useStore({ pending: false, message: "", failed: false });
   // A logger that lost its settings runs on firmware defaults whatever
   // generation it last acknowledged: edits compare against the defaults.
-  const lost = settingsLost(props.device.health);
+  const lost = settingsLost(props.device);
   const effective = (
     lost ? {} : state.data?.effective.settings || props.device.settings || {}
   ) as Record<string, unknown>;
   const changes = useComputed$(() => {
     const base = (
-      settingsLost(props.device.health)
+      settingsLost(props.device)
         ? {}
         : state.data?.effective.settings || props.device.settings || {}
     ) as Record<string, unknown>;
@@ -145,9 +146,13 @@ export const SettingsView = component$<Props>((props) => {
         ["ack", "get_settings"].includes(r.source) && r.settings_gen != null,
     )
     .sort((a, b) => Date.parse(b.received_at) - Date.parse(a.received_at))[0];
-  const restore = requests.find((c) => c.origin === "auto-restore");
-  const restoring =
-    !!restore && ["queued", "sent"].includes(restore.state) && !lostAlert;
+  const restore = props.device.settings_restore;
+  const restoring = !!restore && ["queued", "sent"].includes(restore.state);
+  const restoreEnded =
+    restore &&
+    !restoring &&
+    [restore.state, restore.final_status].filter(Boolean).join(", ") +
+      (restore.status_reason ? `: ${restore.status_reason}` : "");
   return (
     <>
       <section aria-labelledby="settings-heading">
@@ -176,31 +181,33 @@ export const SettingsView = component$<Props>((props) => {
             Your viewer account has read-only access to settings.
           </p>
         )}
-        {(lost || lostAlert) && (
+        {lost && (
           <div class="notice danger" role="status">
             <p>
               <strong class="error-text">
                 Settings lost: the logger is not logging.
               </strong>{" "}
-              {lost
-                ? `It reports MRAM recovery with latched error ${String(props.device.health?.err ?? "?")}: both settings copies were lost, it runs on the firmware defaults shown below and stores no readings until it receives settings.`
-                : "The server raised this alert from the logger's last health report."}
+              {`Reported ${stamp(props.device.settings_lost_since)} (MRAM recovery, latched error ${String(props.device.health?.err ?? "?")}): both settings copies were lost, it runs on the firmware defaults shown below and stores no readings until it receives settings.`}
             </p>
             {restoring ? (
               <p>
-                The server re-sends the settings this logger last acknowledged
-                with Replace (command #{restore!.id}, {restore!.state}). It is
+                The server sent the settings this logger last acknowledged with
+                Replace as command #{restore!.id} on{" "}
+                {stamp(restore!.created_at)}; it is {restore!.state}. It is
                 delivered at the next connection
                 {(props.device.expected_contact_at ||
                   props.device.next_contact_at) &&
                   `, expected ${stamp(props.device.expected_contact_at || props.device.next_contact_at)}`}
-                . No action is needed unless this alert stays open after that.
+                . No action is needed unless this notice is still here after
+                that.
               </p>
             ) : (
               <p>
-                {typeof lostAlert?.detail?.reason === "string"
-                  ? `${lostAlert.detail.reason[0].toUpperCase()}${lostAlert.detail.reason.slice(1)}. `
-                  : ""}
+                {restoreEnded
+                  ? `The automatic restore, command #${restore!.id}, ended (${restoreEnded}) and the logger still has no settings. `
+                  : typeof lostAlert?.detail?.reason === "string"
+                    ? `No automatic restore was sent: ${lostAlert.detail.reason}. `
+                    : "No automatic restore was sent. "}
                 To restore logging, send the full settings: check every value
                 below, tick Replace and queue.
                 {acknowledged &&

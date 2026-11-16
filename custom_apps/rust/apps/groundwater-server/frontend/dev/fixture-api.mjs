@@ -7,7 +7,8 @@ const V21 = ["8F3A21C04B9E77A1D25C01FE", "A13A21C04B9E77A1D25C01AB"];
 const V22 = "6A1B2C3D4E5F60718293A4B5";
 // mode: normal | fault (sensor over-range, ring locked, err 7) | lost
 // (settings-lost RECOVERY after an automatic restore that expired, health
-// with not-read markers) | empty | error.
+// with not-read values) | restoring (the same, restore still on its way) |
+// empty | error.
 let role = "operator",
   mode = "normal",
   // busy: the CSV export answers 429 as when four exports already run.
@@ -15,7 +16,8 @@ let role = "operator",
   // browser marks as sent from another origin.
   busy = false,
   crossOrigin = false,
-  // cut: JSON exports and the command list come back truncated.
+  // cut: JSON exports come back truncated, and the logger has 1,200 older
+  // commands, so the command list pages (`before`).
   cut = false,
   commands = [],
   nextId = 100;
@@ -248,22 +250,49 @@ const deviceView = (d) => ({
         health:
           mode === "fault"
             ? { ...d.health, mram: "locked", err: 7, log: "off" }
-            : mode === "lost"
+            : lostMode()
               ? {
                   ...d.health,
-                  // Settings lost (err 4), with the logger's not-read
-                  // markers as sent: the API passes this object through.
+                  // Settings lost (err 4). The logger sent 65535 mV and
+                  // CSQ 99 (not read); rev2.rs normalised_health serves
+                  // them, and free space of a card that is not ok, as null.
                   mram: "recovery",
                   err: 4,
                   log: "off",
                   gen: 0,
-                  bat_mv: 65535,
-                  csq: 99,
+                  bat_mv: null,
+                  csq: null,
                   sd: "error",
+                  sd_free_mb: null,
                 }
               : d.health,
+        // db.rs scoped_devices: the episode and its automatic restore.
+        settings_lost_since: lostMode() ? ago(2 * DAY) : null,
+        settings_restore: lostMode()
+          ? (({ id, state, final_status, status_reason, created_at }) => ({
+              id,
+              state,
+              final_status,
+              status_reason,
+              created_at,
+              expires_at: restoreCommand().expires_at,
+              acked_at: restoreCommand().acked_at,
+            }))(restoreCommand())
+          : null,
       }
     : {}),
+  open_alert_kinds: [
+    ...new Map(
+      allAlerts()
+        .filter((a) => a.device_id === d.device_id && a.state === "open")
+        .map((a) => {
+          const subject = ["high", "low"].includes(a.detail?.subject)
+            ? a.detail.subject
+            : null;
+          return [`${a.kind}/${subject}`, { kind: a.kind, subject }];
+        }),
+    ).values(),
+  ].sort((a, b) => a.kind.localeCompare(b.kind)),
   open_alert_count: allAlerts().filter(
     (a) => a.device_id === d.device_id && a.state === "open",
   ).length,
@@ -585,6 +614,63 @@ const faultAlerts = () =>
     detail: { ...detail, source: "server" },
   }));
 const allAlerts = () => [...alerts, ...faultAlerts()];
+const lostMode = () => mode === "lost" || mode === "restoring";
+/** Command #66 (the automatic restore) as the current mode has it. */
+const restoreCommand = () => {
+  const c = commands.find((x) => x.id === 66);
+  if (mode === "lost")
+    return {
+      ...c,
+      state: "expired",
+      final_status: null,
+      status_reason: "expired before the logger received it",
+      created_at: ago(2 * DAY),
+      sent_at: ago(2 * DAY),
+      acked_at: null,
+      ack_payload: null,
+      expires_at: ago(DAY),
+    };
+  if (mode === "restoring")
+    return {
+      ...c,
+      state: "queued",
+      final_status: null,
+      created_at: ago(2 * DAY),
+      sent_at: null,
+      acked_at: null,
+      ack_payload: null,
+      publish_count: 0,
+      expires_at: ahead(5 * DAY),
+    };
+  return c;
+};
+/** cut=1: 1,200 older acknowledged commands below the fixture's own. */
+const olderCommands = Array.from({ length: 1200 }, (_, i) => ({
+  id: 40 - i,
+  device_id: V22,
+  kind: "basic",
+  protocol: 2,
+  op: "get_status",
+  args: {},
+  payload: null,
+  state: "acked",
+  final_status: "ok",
+  status_reason: null,
+  requested_by: "fixture-user",
+  origin: "operator",
+  created_at: ago(40 * DAY + i * HOUR),
+  sent_at: ago(40 * DAY + i * HOUR),
+  acked_at: ago(40 * DAY + i * HOUR),
+  ack_payload: null,
+  publish_count: 1,
+  last_published_at: ago(40 * DAY + i * HOUR),
+  expires_at: null,
+  hold_until_sleep: false,
+  parent_id: null,
+  preconfirmed: false,
+  challenge: null,
+  replace_settings: false,
+}));
 
 const health = Array.from({ length: 30 }, (_, i) => ({
   id: 30 - i,
@@ -792,8 +878,8 @@ const positions = Array.from({ length: 8 }, (_, i) => ({
   received_at: ago(i * DAY),
   settings_gen: 5,
   reason: 1,
-  // Records code 0 none, 1 2D, 2 3D; the gps JSON adds one (3 = 3D).
-  fix: i === 7 ? 3 : i === 5 ? 0 : i === 4 ? 1 : 2,
+  // The API serves every source on the record scale: 0 none, 1 2D, 2 3D.
+  fix: i === 5 ? 0 : i === 4 ? 1 : 2,
   // i 5: no fix; lat/lon/alt/hdop not read (null).
   lat: i === 5 ? null : -33.8688197 + (i === 2 ? 0.00037 : i * 0.000004),
   lon: i === 5 ? null : 151.2092955 + (i === 2 ? 0.00012 : -i * 0.000003),
@@ -1018,6 +1104,10 @@ const logs = [
     open_gaps: 1,
     unrecoverable_gaps: 1,
     pending_readings: 14,
+    // R1 (rev2_store.rs): derived data waiting for the next start.
+    derive_pending: 2,
+    resolve_pending: true,
+    resolve_error: "settings: invalid byte sequence for encoding UTF8: 0x00",
     // api_rev2.rs logs: readings with no time, by reason.
     pending_reasons: [
       {
@@ -1096,6 +1186,11 @@ const batches = Array.from({ length: 6 }, (_, i) => ({
   issues: i === 3 ? [{ at: 12, issue: "crc8" }] : [],
   warnings: [],
   raw_retained: i < 4,
+  derive_error:
+    i === 1
+      ? "derived data failed (frame 427: numeric field overflow); raw frames kept and flagged for re-derivation at the next start"
+      : null,
+  frames_derive_pending: i === 1 ? 2 : 0,
 }));
 let listings = [
   {
@@ -1495,6 +1590,49 @@ commands.push(
     acked_at: ago(5 * DAY),
     publish_count: 1,
   }),
+);
+
+const deliveryLog = Array.from({ length: 260 }, (_, i) =>
+  i % 25 === 7
+    ? {
+        id: 5000 - i,
+        received_at: ago(i * 2 * HOUR),
+        topic: "gwl/v1/0000000000000000000000AA/health",
+        kind: "health",
+        device_id: null,
+        claimed_device_id: "0000000000000000000000AA",
+        qos: 1,
+        payload: '{"v":2,"t":1763300000,"tv":1,"bat_mv":7400}',
+        state: "quarantined",
+        reason: "unknown-device",
+        detail: "no enrolled device has this DeviceID",
+        time_quality: null,
+        duplicate_outcome: null,
+        source_profile: null,
+        binding_key: null,
+        direction: "in",
+      }
+    : {
+        id: 5000 - i,
+        received_at: ago(i * 2 * HOUR),
+        topic: `gwl/v1/${V22}/data/stream`,
+        kind: "data/stream",
+        device_id: V22,
+        claimed_device_id: V22,
+        qos: 1,
+        payload: "47574231…",
+        state: "accepted",
+        reason: null,
+        detail:
+          i === 1
+            ? "6 frames (2 new); derived data failed (frame 427: numeric field overflow); raw frames kept and flagged for re-derivation at the next start"
+            : null,
+        time_quality: null,
+        duplicate_outcome: null,
+        source_profile: "V22",
+        binding_key: null,
+        direction: "in",
+      },
 );
 
 const json = (res, body, code = 200) => {
@@ -1951,7 +2089,17 @@ async function deviceRoute(req, res, url, deviceId, rest) {
     if (!c) return json(res, { error: "command not found" }, 404);
     if (m[2] === "cancel") {
       c.state = "cancelled";
-      return json(res, { command: c });
+      // platform.rs cancel_command: confirmations go with their command; a
+      // confirmation already published gets the warning.
+      const sent = commands.filter(
+        (k) => k.parent_id === c.id && ["queued", "sent"].includes(k.state),
+      );
+      for (const k of sent) k.state = "cancelled";
+      const published = sent.filter((k) => k.publish_count > 0);
+      const warning = published.length
+        ? `cancelled, but confirmation ${published.map((k) => k.id).join(", ")} was already sent to the logger: the operation may still run; its ack will show the outcome`
+        : null;
+      return json(res, { command: c, warning });
     }
     if (c.state !== "challenge")
       return json(
@@ -1996,7 +2144,10 @@ async function deviceRoute(req, res, url, deviceId, rest) {
       expires_at: c.challenge_expires_at,
     });
     commands.unshift(confirm);
-    setTimeout(() => (confirm.state = "sent"), 1000);
+    setTimeout(
+      () => Object.assign(confirm, { state: "sent", publish_count: 1 }),
+      1000,
+    );
     setTimeout(() => {
       const ack = {
         v: 2,
@@ -2438,25 +2589,17 @@ const server = createServer(async (req, res) => {
   }
   if (path === "/api/commands") {
     const device = url.searchParams.get("device");
-    const list = commands
-      .filter((c) => !device || c.device_id === device)
-      .map((c) =>
-        mode === "lost" && c.id === 66
-          ? {
-              ...c,
-              state: "expired",
-              final_status: null,
-              status_reason: "expired before the logger received it",
-              created_at: ago(2 * DAY),
-              sent_at: ago(2 * DAY),
-              acked_at: null,
-              ack_payload: null,
-              expires_at: ago(DAY),
-            }
-          : c,
-      );
-    // api.rs commands: the newest 500, `truncated` when there were more.
-    return json(res, { commands: list, truncated: cut });
+    const before = Number(url.searchParams.get("before") || Infinity);
+    const list = [...commands, ...(cut ? olderCommands : [])]
+      .filter((c) => (!device || c.device_id === device) && c.id < before)
+      .map((c) => (c.id === 66 ? restoreCommand() : c))
+      .sort((a, b) => b.id - a.id);
+    // api.rs commands: 500 per page (id order), `truncated` when there are
+    // more, `before=<last id>` for the next page.
+    return json(res, {
+      commands: list.slice(0, 500),
+      truncated: list.length > 500,
+    });
   }
   if (path === "/api/series") {
     if (!devices.has(url.searchParams.get("device") || ""))
@@ -2468,41 +2611,23 @@ const server = createServer(async (req, res) => {
   if (path === "/api/messages") {
     if (role !== "operator")
       return json(res, { error: "operator required" }, 403);
+    // api.rs deliveries: newest first, `state`/`topic`/`device` filters,
+    // `before=<id>` paging, `more` when another page exists. 260 rows; every
+    // 25th is a quarantined delivery from an unknown DeviceID.
+    const q = url.searchParams;
+    const before = Number(q.get("before") || Infinity);
+    const limit = Math.min(Math.max(Number(q.get("limit") || 100), 1), 500);
+    const rows = deliveryLog.filter(
+      (d) =>
+        d.id < before &&
+        (!q.get("state") || d.state === q.get("state")) &&
+        (!q.get("topic") || d.topic === q.get("topic")) &&
+        (!q.get("device") || d.device_id === q.get("device")) &&
+        (!q.get("since") || d.received_at >= q.get("since")),
+    );
     return json(res, {
-      deliveries: [
-        {
-          received_at: now(),
-          topic: "azman1/feeds/testresults",
-          kind: "test",
-          device_id: url.searchParams.get("device") || null,
-          claimed_device_id: null,
-          qos: 1,
-          payload: "~ GPS passed\nX SD card unavailable",
-          state: "accepted",
-          reason: null,
-          detail: null,
-          time_quality: null,
-          duplicate_outcome: null,
-          source_profile: "V21",
-          binding_key: "fixture",
-        },
-        {
-          received_at: ago(HOUR),
-          topic: "gwl/v1/0000000000000000000000AA/health",
-          kind: "health",
-          device_id: null,
-          claimed_device_id: "0000000000000000000000AA",
-          qos: 1,
-          payload: '{"v":2,"t":1763300000,"tv":1,"bat_mv":7400}',
-          state: "quarantined",
-          reason: "unknown-device",
-          detail: "no enrolled device has this DeviceID",
-          time_quality: null,
-          duplicate_outcome: null,
-          source_profile: null,
-          binding_key: null,
-        },
-      ],
+      deliveries: rows.slice(0, limit),
+      more: rows.length > limit,
     });
   }
   if (path === "/api/export") {

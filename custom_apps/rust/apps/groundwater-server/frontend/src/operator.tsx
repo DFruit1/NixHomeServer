@@ -9,7 +9,7 @@ import {
 import { ackOutcome, buildConfig, CONFIG_FIELDS, emptyConfig } from "./config";
 import { errorText, request, stamp } from "./api";
 import type { Command, Device } from "./types";
-import { TRUNCATED_COMMANDS } from "./commands";
+import { OlderCommands, type CommandPaging } from "./widgets";
 
 type Props = { device: Device; refresh: QRL<() => void> };
 export const ConfigEditor = component$<Props>(({ device, refresh }) => {
@@ -312,14 +312,15 @@ export const ConfigSnapshot = component$<{ device: Device }>(({ device }) => (
   </details>
 ));
 
-export const CommandQueue = component$<{
-  device: string;
-  commands: Command[];
-  operator: boolean;
-  refresh: QRL<() => void>;
-  audit?: boolean;
-  truncated?: boolean;
-}>((props) => {
+export const CommandQueue = component$<
+  {
+    device: string;
+    commands: Command[];
+    operator: boolean;
+    refresh: QRL<() => void>;
+    audit?: boolean;
+  } & CommandPaging
+>((props) => {
   const pending = useSignal<number | null>(null),
     error = useSignal("");
   return (
@@ -334,7 +335,6 @@ export const CommandQueue = component$<{
           {error.value}
         </p>
       )}
-      {props.truncated && <p class="notice">{TRUNCATED_COMMANDS}</p>}
       {props.commands.length === 0 ? (
         <p class="empty">No commands recorded for this device.</p>
       ) : (
@@ -435,6 +435,13 @@ export const CommandQueue = component$<{
           </table>
         </div>
       )}
+      <OlderCommands
+        truncated={props.truncated}
+        more={props.more}
+        moreLoading={props.moreLoading}
+        moreError={props.moreError}
+        shown={props.commands.length}
+      />
     </section>
   );
 });

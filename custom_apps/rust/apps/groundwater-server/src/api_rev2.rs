@@ -272,7 +272,7 @@ async fn logs(State(s): State<AppState>, h: HeaderMap, Path(device): Path<String
             'firmware_version',l.firmware_version,'mcu_uid',l.mcu_uid,
             'frames',f.frames,'min_seq',f.min_seq,'max_seq',f.max_seq,'decode_errors',f.decode_errors,
             'conflicting_copies',f.conflicting,'resent_copies',f.resent,
-            'derive_pending',f.derive_pending,'resolve_error',l.resolve_error,
+            'derive_pending',f.derive_pending,'resolve_pending',l.resolve_pending,'resolve_error',l.resolve_error,
             'open_gaps',(SELECT count(*) FROM stream_gaps g WHERE g.device_id=l.device_id AND g.log_id=l.log_id AND g.state IN ('open','requested')),
             'unrecoverable_gaps',(SELECT count(*) FROM stream_gaps g WHERE g.device_id=l.device_id AND g.log_id=l.log_id AND g.state='unrecoverable'),
             'pending_readings',(SELECT count(*) FROM observations o WHERE o.device_id=l.device_id AND o.log_id=l.log_id AND o.recorded_at IS NULL),
@@ -352,8 +352,9 @@ async fn batches(
             'start_pos',start_pos,'end_pos',end_pos,'frame_count',frame_count,'flags',flags,
             'resend',(flags & 1)<>0,'gap_before',(flags & 2)<>0,'from_sd',(flags & 4)<>0,
             'frames_valid',frames_valid,'frames_new',frames_new,'frames_duplicate',frames_duplicate,
-            'issues',issues,'warnings',warnings,'raw_retained',raw IS NOT NULL,'derive_error',derive_error)
-         FROM stream_batches WHERE device_id=$1 ORDER BY received_at DESC,id DESC LIMIT $2",
+            'issues',issues,'warnings',warnings,'raw_retained',raw IS NOT NULL,'derive_error',derive_error,
+            'frames_derive_pending',(SELECT count(*) FROM stream_frames f WHERE f.batch_id=b.id AND f.derive_pending))
+         FROM stream_batches b WHERE device_id=$1 ORDER BY received_at DESC,id DESC LIMIT $2",
         &[&device, &q.limit(100)],
     )
     .await?;

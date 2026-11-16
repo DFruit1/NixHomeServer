@@ -1,4 +1,11 @@
-import { $, component$, Slot, useStore, type Signal } from "@builder.io/qwik";
+import {
+  $,
+  component$,
+  Slot,
+  useStore,
+  type QRL,
+  type Signal,
+} from "@builder.io/qwik";
 import { CLOCK_FLOOR_MS, downloadExport, errorText, stamp } from "./api";
 import { relative } from "./format";
 
@@ -13,6 +20,38 @@ export const Feedback = component$<{ message: string; failed: boolean }>(
         {props.message}
       </p>
     ) : null,
+);
+
+/** Paging props of a command list: the server lists 500 commands per page. */
+export interface CommandPaging {
+  truncated?: boolean;
+  more?: QRL<() => void>;
+  moreLoading?: boolean;
+  moreError?: string;
+}
+
+/** "Show older commands" below a command list cut at a page. */
+export const OlderCommands = component$<CommandPaging & { shown: number }>(
+  (props) => (
+    <>
+      <Feedback message={props.moreError || ""} failed />
+      {props.truncated && props.more && (
+        <p class="toolbar">
+          <span class="muted">
+            {props.shown.toLocaleString()} newest commands shown.
+          </span>
+          <button
+            type="button"
+            disabled={props.moreLoading}
+            aria-busy={props.moreLoading}
+            onClick$={() => props.more!()}
+          >
+            {props.moreLoading ? "Loading…" : "Show older commands"}
+          </button>
+        </p>
+      )}
+    </>
+  ),
 );
 
 /** Loading / error / empty states shared by the fetched views. */
