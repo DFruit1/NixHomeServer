@@ -29,6 +29,8 @@ pub struct AppState {
     pub db: Arc<db::Database>,
     pub bus: EventBus,
     pub stats: Arc<tokio::sync::Mutex<IngestStats>>,
+    /// Signals the ingest loop that enrollments or bindings changed.
+    pub registry_changed: Arc<tokio::sync::Notify>,
 }
 pub(crate) type ApiResult = Result<Response, Response>;
 pub fn router(state: AppState) -> Router {

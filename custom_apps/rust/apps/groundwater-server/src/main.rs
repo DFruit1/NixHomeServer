@@ -97,6 +97,8 @@ async fn run() -> Result<(), String> {
         registry.bindings().len()
     );
     let registry = Arc::new(tokio::sync::RwLock::new(registry));
+    // Provisioning API → ingest loop: reload enrollments and bindings now.
+    let registry_changed = Arc::new(tokio::sync::Notify::new());
 
     let retention_days = settings.retention_days;
     let bus = EventBus::new();
@@ -225,6 +227,7 @@ async fn run() -> Result<(), String> {
         let ingest_bus = bus.clone();
         let ingest_stats = Arc::clone(&stats);
         let ingest_registry = Arc::clone(&registry);
+        let ingest_changed = Arc::clone(&registry_changed);
         tokio::spawn(async move {
             if let Err(err) = ingest::run(
                 ingest_settings,
@@ -233,6 +236,7 @@ async fn run() -> Result<(), String> {
                 ingest_bus,
                 Arc::clone(&ingest_stats),
                 ingest_registry,
+                ingest_changed,
             )
             .await
             {
@@ -251,6 +255,7 @@ async fn run() -> Result<(), String> {
         db: Arc::new(db::Database::new(settings.database_url.clone(), client)),
         bus,
         stats,
+        registry_changed,
     };
     api::serve(state).await
 }

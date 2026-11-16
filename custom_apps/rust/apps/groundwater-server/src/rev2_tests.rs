@@ -190,6 +190,7 @@ impl Harness {
             )),
             bus: self.bus.clone(),
             stats: self.stats.clone(),
+            registry_changed: Default::default(),
         })
     }
 }

@@ -184,7 +184,11 @@ pub fn headline(item: &Item) -> String {
         ("gwl_alarm", false) => format!(
             "logger {} level alarm{}",
             text(d, "limit").unwrap_or("level"),
-            match (num(d, "level"), num(d, "threshold")) {
+            // Ring records say level/threshold; alerts copies lvl/thr.
+            match (
+                num(d, "level").or(num(d, "lvl")),
+                num(d, "threshold").or(num(d, "thr")),
+            ) {
                 (Some(l), Some(t)) => format!(" ({l:.3} m, threshold {t:.3} m)"),
                 (Some(l), None) => format!(" ({l:.3} m)"),
                 _ => String::new(),
@@ -203,6 +207,7 @@ pub fn headline(item: &Item) -> String {
             "sensor fault{}",
             text(d, "sensor_status_name")
                 .map(|s| format!(" ({s})"))
+                .or_else(|| num(d, "ss").map(|s| format!(" (status {s})")))
                 .unwrap_or_default()
         ),
         ("sensor_fault", true) => "sensor fault cleared".into(),
@@ -803,6 +808,24 @@ mod tests {
                 json!({"limit":"high","level":12.3456,"threshold":10.5})
             ),
             "logger high level alarm (12.346 m, threshold 10.500 m)"
+        );
+        assert_eq!(
+            h(
+                "gwl_alarm",
+                "gwl_alarm_enter",
+                "open",
+                json!({"limit":"low","lvl":1.5,"thr":2.0})
+            ),
+            "logger low level alarm (1.500 m, threshold 2.000 m)"
+        );
+        assert_eq!(
+            h(
+                "sensor_fault",
+                "sensor_fault",
+                "open",
+                json!({"ss":3,"mv":12})
+            ),
+            "sensor fault (status 3)"
         );
         assert_eq!(
             h(

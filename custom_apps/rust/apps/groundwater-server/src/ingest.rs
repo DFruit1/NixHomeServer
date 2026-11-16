@@ -156,8 +156,14 @@ pub async fn run(
     bus: EventBus,
     stats: Arc<tokio::sync::Mutex<IngestStats>>,
     registry: SharedRegistry,
+    registry_changed: Arc<tokio::sync::Notify>,
 ) -> Result<(), String> {
     let options = mqtt_options(&mqtt, false)?;
+    // Wakes the telemetry session after every reload, so it subscribes a new
+    // unit's durable channels from the registry this loop just loaded rather
+    // than racing it on its own timer.
+    let reloaded = Arc::new(tokio::sync::Notify::new());
+    let telemetry_reloaded = reloaded.clone();
     let telemetry_settings = settings.clone();
     let telemetry_mqtt = mqtt.clone();
     let telemetry_bus = bus.clone();
@@ -170,6 +176,7 @@ pub async fn run(
             telemetry_bus,
             telemetry_stats.clone(),
             telemetry_registry,
+            telemetry_reloaded,
         )
         .await
         {
@@ -222,7 +229,13 @@ pub async fn run(
                 }
                 continue;
             }
-            _ = refresh.tick() => {
+            // Provisioning changed the registry: reload now, not within 60 s.
+            _ = async {
+                tokio::select! {
+                    _ = refresh.tick() => {},
+                    _ = registry_changed.notified() => {},
+                }
+            } => {
                 if client.is_closed()
                     && let Ok(db) = db::connect(&settings.database_url).await
                 {
@@ -236,6 +249,7 @@ pub async fn run(
                         let subscriber=mqtt_client.clone();
                         tokio::spawn(async move {for topic in topics {if let Err(e)=subscriber.subscribe(topic,rumqttc::QoS::AtLeastOnce).await {eprintln!("groundwater subscription refresh: {e}");}}});
                         *registry.write().await = loaded;
+                        reloaded.notify_one();
                         eprintln!(
                             "groundwater: registry refreshed ({enrollments} enrollment(s), {bindings} binding(s))"
                         );
@@ -409,6 +423,7 @@ async fn telemetry_run(
     bus: EventBus,
     stats: Arc<tokio::sync::Mutex<IngestStats>>,
     registry: SharedRegistry,
+    reloaded: Arc<tokio::sync::Notify>,
 ) -> Result<(), String> {
     let (subscriber, mut events) = AsyncClient::new(mqtt_options(&mqtt, true)?, 10);
     let mut client = worker_database(&settings, &stats, false).await?;
@@ -418,7 +433,12 @@ async fn telemetry_run(
     loop {
         let event = tokio::select! {
             event = events.poll() => event,
-            _ = refresh.tick(), if connected => {
+            _ = async {
+                tokio::select! {
+                    _ = refresh.tick() => {},
+                    _ = reloaded.notified() => {},
+                }
+            }, if connected => {
                 let topics = new_topics(&mut subscribed, session_topics(&settings, &*registry.read().await, true));
                 let sender = subscriber.clone();
                 tokio::spawn(async move { for topic in topics {

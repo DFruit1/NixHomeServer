@@ -174,6 +174,13 @@ pub fn valid_username(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'@' | b'-'))
 }
 
+/// Tells open browser tabs that a device's administrative state changed.
+fn refresh_tabs(s: &AppState, device: &str) {
+    s.bus.emit(LiveEvent::Presence {
+        device_id: device.to_owned(),
+    });
+}
+
 // ---------------------------------------------------------------- alerts
 
 const ALERT_JSON: &str = "jsonb_build_object('id',a.id,'device_id',a.device_id,'display_name',d.display_name,
@@ -1146,6 +1153,7 @@ pub async fn enroll(
     )
     .await?;
     tx.commit().await.map_err(db_err)?;
+    s.registry_changed.notify_one();
     s.bus.emit(LiveEvent::Presence {
         device_id: e.device_id.clone(),
     });
@@ -1343,6 +1351,7 @@ async fn retire(
     )
     .await?;
     tx.commit().await.map_err(db_err)?;
+    s.registry_changed.notify_one();
     s.bus.emit(LiveEvent::Command {
         device_id: device.clone(),
     });
@@ -1388,6 +1397,7 @@ async fn reinstate(
     )
     .await?;
     tx.commit().await.map_err(db_err)?;
+    s.registry_changed.notify_one();
     s.bus.emit(LiveEvent::Presence {
         device_id: device.clone(),
     });
@@ -1477,6 +1487,7 @@ async fn grant(
         json!({"username":username}),
     )
     .await?;
+    refresh_tabs(&s, &device);
     Ok((StatusCode::CREATED, Json(json!({"permission":permission}))).into_response())
 }
 
@@ -1506,6 +1517,7 @@ async fn revoke_permission(
         json!({"username":username}),
     )
     .await?;
+    refresh_tabs(&s, &device);
     Ok(Json(json!({"deleted":true})).into_response())
 }
 
@@ -1656,6 +1668,7 @@ async fn generate_credentials(
     )
     .await?;
     tx.commit().await.map_err(db_err)?;
+    refresh_tabs(&s, &device);
     let shared = s.db.get().await.map_err(database)?;
     Ok((
         StatusCode::CREATED,
@@ -1729,6 +1742,7 @@ async fn credentials_mode(
         .await?;
     }
     tx.commit().await.map_err(db_err)?;
+    refresh_tabs(&s, &device);
     let shared = s.db.get().await.map_err(database)?;
     Ok(Json(credentials_json(&s, &shared, &device).await?).into_response())
 }
@@ -1768,6 +1782,7 @@ async fn delete_credentials(
     )
     .await?;
     tx.commit().await.map_err(db_err)?;
+    refresh_tabs(&s, &device);
     let shared = s.db.get().await.map_err(database)?;
     Ok(Json(credentials_json(&s, &shared, &device).await?).into_response())
 }
@@ -1858,6 +1873,7 @@ async fn add_datum(
         datum.clone(),
     )
     .await?;
+    refresh_tabs(&s, &device);
     Ok((StatusCode::CREATED, Json(json!({"datum":datum}))).into_response())
 }
 
@@ -1879,6 +1895,7 @@ async fn delete_datum(
         return Err(error(StatusCode::NOT_FOUND, "datum not found"));
     };
     audit(&*db, Some(&device), &user.username, "datum_removed", datum).await?;
+    refresh_tabs(&s, &device);
     Ok(Json(json!({"deleted":true})).into_response())
 }
 

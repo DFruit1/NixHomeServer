@@ -55,6 +55,7 @@ async fn app(url: &str, ops: OpsSettings) -> axum::Router {
         )),
         bus: EventBus::new(),
         stats: Default::default(),
+        registry_changed: Default::default(),
     })
 }
 

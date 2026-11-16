@@ -430,6 +430,7 @@ async fn firmware_clock_and_atomic_presence_safety() {
         )),
         bus,
         stats,
+        registry_changed: Default::default(),
     };
     let app = api::router(state);
     let command_path = format!("/api/devices/{A}/commands");
@@ -917,6 +918,7 @@ async fn platform_database_api_and_scheduler_regressions() {
         db: Arc::new(db::Database::new(url.clone(), db)),
         bus: bus.clone(),
         stats: Arc::new(tokio::sync::Mutex::new(IngestStats::default())),
+        registry_changed: Default::default(),
     };
     let app = api::router(state.clone());
     let (status, body) = request(app.clone(), "GET", "/api/status", "viewer", "").await;
