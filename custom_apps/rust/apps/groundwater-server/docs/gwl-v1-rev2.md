@@ -1,7 +1,7 @@
 # gwl/v1 wire contract, protocol revision 2
 
-Status: **implemented on branches, not deployed**. Firmware 2.2 (branch
-`feat/fw-rev2`) and groundwater-server (branch `feat/groundwater-protocol-rev2`)
+Status: **implemented, not deployed**. Firmware 2.2 (branch
+`feat/fw-rev2`) and groundwater-server (NixHomeServer `master`)
 implement this document together. Only bench units exist, so there is no
 compatibility period: protocol revision 1 firmware (V2.1) keeps working on the
 server only through the legacy parsers the server already has.
