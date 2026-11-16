@@ -3,12 +3,15 @@
 The application is `groundwater-server`; its removable NixOS module keeps the
 catalog key `groundwater-logger`. The Rust service serves the Qwik application,
 API and event stream on loopback behind the existing Kanidm auth gateway.
-The [design contract](groundwater.md#13-resolved-decisions) records the scope.
+The [design](groundwater.md) describes the system and records the
+[decisions](groundwater.md#13-decisions).
 
 ## Commission a logger
 
 Enrollment is an operator action in the app (**Admin → Enroll device**, or
-`POST /api/devices`); legacy shared-topic units remain an SQL action. The
+`POST /api/devices`) for `V22` and `V21` units; legacy shared-topic units
+(V2.00, MQTT-Logger) and later changes of profile, clock policy or bindings
+remain SQL actions. The
 server never creates devices from untrusted MQTT traffic, and never
 attributes an identity-free message to the last logger that sent a reading.
 Every enrollment, edit, retirement, viewer grant, policy change and
@@ -21,10 +24,11 @@ device's **Installation** tab).
    speaking `gwl/v1` protocol revision 2
    (`custom_apps/rust/apps/groundwater-server/docs/gwl-v1-rev2.md`); a `V21`
    unit bound only to its own `gwl/v1` topics is switched to `V22`
-   automatically when its retained `info` reports `proto:2` (audited as a
-   `profile_detected` device event).
+   automatically by the first revision 2 message the server stores from it
+   (a `profile_detected` device event). The switch keeps the unit's clock
+   policy.
 2. Confirm the firmware clock policy. Firmware 2.2 sends UTC seconds with an
-   explicit validity flag, so `V22` units use `utc`. For the V2.1 default, GPS time plus
+   explicit validity flag, so `V22` units use `utc` (enrollment enforces it). For the V2.1 default, GPS time plus
    `ltost=5:0` is `local-offset` with `local_offset_min=300`. Use `utc` only
    when the deployed firmware actually writes UTC; `unknown` preserves the
    timestamp without pretending that its timezone is known. A timezone carried
@@ -82,20 +86,35 @@ device's **Installation** tab).
      itself means reflashing every logger.
 4. Enroll the unit: **Admin → Enroll device** with the DeviceID, name,
    profile (`V22` or `V21`), clock policy, location/sensor/project and
-   viewers. "gwl/v1 topics" creates the per-device bindings below in the
-   same transaction; the ingest loop subscribes them at once. The SQL
-   templates below remain for review and for legacy V2.00/MQTT-Logger units.
+   viewers. "gwl/v1 topics" creates the per-device bindings (all 18
+   `gwl/v1/<DeviceID>/` channels) in the same transaction; the ingest loop
+   subscribes them at once. The SQL templates below remain for review and
+   for legacy V2.00/MQTT-Logger units.
 5. Grant viewers on the device's **Installation** tab (or at enrollment).
    `app-admin` has global access. Membership of `groundwater-user` alone
    grants no device access.
 6. Optionally record the installation datum (Installation tab) so history,
    charts and exports can show depth to water below ground and level in
    m AHD; see "Use the platform".
-7. Verify a telemetry delivery, its interpreted UTC time and receive lag, then
-   an attributed `Ready` / `sleep` cycle (V22: `online`, `ready`, `sleep` on
-   `status`, a `health` row and `data/stream` batches with `ok` and new
-   frames). Check raw deliveries for quarantine reasons (`rev2-invalid` for a
-   refused revision 2 payload) before changing clock or topic policy.
+7. Verify the first connection. For a 2.2 unit, in this order:
+   - **Overview:** presence goes `online` → `awake` → `asleep`, the `info`
+     facts (firmware, hardware, IMEI) and a health report appear, and "Next
+     expected connection" shows the logger's announced `next`.
+   - **Data stream:** a ring log with frames, batches `ok` with new frames,
+     no open gaps (or gaps the server is already requesting).
+   - **History:** readings with UTC times close to the logger's schedule.
+   - **Settings:** the server fetches the effective settings by itself
+     (`get_settings`) when the logger reports a generation it does not know;
+     check every value, then send the commissioning settings (sampling and
+     send intervals, limits, `utc_off`, location text) and wait for the ack
+     at the next connection.
+   - **Commands:** run `self_test` (or the button test) and read the result
+     on **Tests**; check the clock on Overview (the server sends `sync_time`
+     itself when the logger's clock is invalid or more than 120 s off while
+     it is awake).
+   - **Raw log:** no quarantined deliveries (`rev2-invalid` for a refused
+     revision 2 payload, `rev2-store-failed` for a storage error) before
+     changing clock or topic policy.
 
 Retiring a unit (Installation tab, type RETIRE) revokes its enrollment and
 bindings, cancels queued/sent/challenged commands, cancels active downloads,
@@ -200,36 +219,110 @@ viewers, datums and MQTT credentials.
 
 ### Alerts and notifications
 
-Server alerts: `above_max`/`below_min` (level against the device limits and
-hysteresis), `battery_low`, `solar_low` and `stale` (missed the expected
-connection by more than the margin). Battery/solar thresholds, battery
-hysteresis, solar sample count and the stale margin come from alert
-policies resolved per field device → project → fleet → defaults (7.0 V,
-0.2 V, 1.0 V, 3 samples, `GROUNDWATER_STALE_MARGIN_MINUTES`); edit them on
-**Admin → Alert policies** and on a device's **Alerts** tab. The device
-status uses the same margin. Level limits: revision 1 units are edited on the
-server; for V22 units the edit queues a `settings` command (`lo`, `hi`,
-`lo_hys`, `hi_hys`) and the server follows the logger's acknowledged values.
+The [design](groundwater.md#53-alerting) lists every alert kind, who raises
+it and how it closes. For V22 units the logger raises the level alarm
+(`gwl_alarm`) from its own `lo`/`hi`/hysteresis settings; for V20/V21/ML the
+server replays readings against the device limits (`above_max`,
+`below_min`). Battery, solar and missed-connection thresholds come from alert
+policies resolved per device → project → fleet → defaults (battery 7.0 V,
+hysteresis 0.2 V, solar 1.0 V, "days without solar" 3, stale margin
+`GROUNDWATER_STALE_MARGIN_MINUTES`, never below 40 minutes); edit them on
+**Admin → Alert policies** and on a device's **Alerts** tab. Solar low means
+no solar reading reached the threshold in that many days although the logger
+reported at least once in daylight (09:00–15:00 logger time). The health
+thresholds (CSQ ≤ 7 three times, two watchdog resets in 7 days, clock
+invalid on two health reports) are fixed. Level limits: revision 1 units are
+edited on the server; for V22 units the edit queues a `settings` command
+(`lo`, `hi`, `lo_hys`, `hi_hys`) and the limits change at the logger's ack.
 
 **Acknowledge** records who and when and keeps the alert open; **Resolve**
-closes it by hand with an optional note. A hand-resolved alert is never
-reopened; a persisting condition opens a new one.
+closes it by hand with an optional note. A resolved logger alert opens again
+only for a later event from the logger (copies of the one you resolved stay
+history); a health alert only after its condition has cleared once.
 
-Alert transitions and the logger's own urgent events (level alarm, power
-critical, sensor fault, storage, impact/orientation/GPS movement) are sent to
-the private ntfy server when `repo.ntfy` is enabled
-(`notify_groundwater_alerts_through_ntfy`, topic `groundwater` on ntfy's
-loopback listener; subscribe from the ntfy app on the LAN or NetBird with
-`https://ntfy.<domain>/groundwater`). Rules per kind (**Admin →
-Notifications**): enabled, minimum severity, ntfy priority, cooldown,
-resolution messages and an optional topic. A device and kind notify at most
-once per cooldown (the next message counts the suppressed ones); a
-resolution goes out only if its opening did; at most
-`notifications.maxPerHour` (30) per hour fleet-wide, critical messages
-exempt. Replayed history and events older than a day never notify. Messages
-carry the device name, DeviceID, location, project and a link to the device.
-**Send test notification** checks the path. ntfy is unauthenticated; anyone
-on the LAN/NetBird who knows the topic can read it.
+What to do for each kind:
+
+| Alert | Action |
+|---|---|
+| Level above/below limit, logger level alarm | Check the reading on History against the datum and the bore; it closes by itself when the level returns. |
+| Sensor fault | The reading is not a level ("possible sensor failure"). Check the cable and sensor on site; a persistent over/under range may also be a level beyond the sensor's range. |
+| Battery low, power critical, solar low | Check the solar panel and battery on site; Health shows the trend. |
+| Missed connection | Expect a late connection first (LTE, the logger's retries); then check Raw log for its last traffic, the router endpoint and the unit on site. |
+| SD card problem | `missing`/`error`: reseat or replace the card on site; `full`: download what you need (Files) and replace or wipe it (`wipe_sd`, typed DANGER). The ring keeps logging meanwhile. |
+| MRAM almost full | Readings are waiting to be uploaded: check that the logger connects and the Data stream shows batches; it clears when the ring is saved. |
+| MRAM fault | Ring fault: the logger falls back to `reading`/`gps` JSON. Plan a site visit; `mram` `recovery` with error 4 is "settings lost" below. |
+| Tail Lock | Logging has stopped because unsaved data would be overwritten. See "Recovery and Tail Lock" below. |
+| Impact, orientation changed, moved (GPS) | Check the installation (and Location for the move); these stay open until you resolve them. |
+| Logger error latched | Read the code on Overview; error 7 means the V2.1 settings were not migrated: send full settings. Clear the latch with `clear_error_latch` once handled. |
+| Logging off | Logging was disabled (by `disable_logging` or the logger); send `enable_logging` if that was not intended. |
+| Clock not set | The server sends `sync_time` while the logger is awake; if it persists, check GNSS reception and the next health. |
+| Weak signal | Antenna or site coverage; listed but not notified by default. |
+| Repeated watchdog resets | Firmware or power instability: read `get_debug` and the boot events; plan a visit if it continues. |
+| Settings lost | See "When a logger loses its settings" below. |
+
+Alert openings and resolutions are sent to the private ntfy server when
+`repo.ntfy` is enabled (`notify_groundwater_alerts_through_ntfy`, topic
+`groundwater` on ntfy's loopback listener; subscribe from the ntfy app on
+the LAN or NetBird with `https://ntfy.<domain>/groundwater`). Rules per kind
+(**Admin → Notifications**): enabled, minimum severity, ntfy priority,
+cooldown, resolution messages and an optional topic. A device and kind
+notify at most once per cooldown (the next message counts the suppressed
+ones); a resolution goes out only if its opening did, and always does then;
+at most `notifications.maxPerHour` (30) per hour fleet-wide, critical
+messages exempt. An alert still open is notified however late the logger
+reports it (an impact more than a day late is only listed); one that has
+already ended is sent once as "(ended …)", or not at all after a day.
+Messages carry the device name, DeviceID, location, project, the logger's
+local time and a link to the device. **Send test notification** checks the
+path. ntfy is unauthenticated; anyone on the LAN/NetBird who knows the topic
+can read it.
+
+### When a logger loses its settings
+
+A logger that lost both settings copies with no snapshot reports `mram`
+`recovery` with error 4: it runs on firmware defaults and **stores no
+readings** until it receives settings. The server then (once per episode)
+re-sends the last settings the logger acknowledged, with Replace, as an
+automatic command (origin `auto-restore`, shown as "automatic: restore lost
+settings"). The Settings tab says when the logger reported it and how that
+restore stands.
+
+- Restore queued or sent: nothing to do; it is delivered at the next
+  connection. The notice disappears when a health no longer reports the
+  state.
+- Restore ended (expired, rejected, …) or none was possible (no acknowledged
+  settings, or they no longer validate): the `settings_lost` alert opens.
+  On the Settings tab use **Fill in generation N with Replace** (or enter
+  every value), check them, tick Replace and queue.
+- `recovery` with error 3 is different: read-only metadata recovery that
+  refuses settings. It raises `mram_fault`; plan a site visit.
+
+### Recovery and Tail Lock
+
+`mram` `locked` (Tail Lock): logging stops because the oldest unsaved data
+would be overwritten. Let the logger connect and upload (Data stream shows
+batches; request any open gaps); it unlocks when the data is saved
+(`tail_unlocked` closes the alert). If it cannot upload, plan a site visit
+before considering `wipe_mram`, which discards unsaved data.
+
+### Typed confirmations
+
+| Action | Type | Where |
+|---|---|---|
+| Any danger command (`wipe_sd`, `wipe_mram`, `factory_reset`, `disable_logging`, `reboot`, …) | `DANGER` | Commands |
+| Confirm a danger challenge with unsaved data | the reported unsaved-frame count | Commands, challenge panel |
+| Retire a unit | `RETIRE` | Installation |
+| Rotate a unit's own MQTT password | `ROTATE` | Installation → MQTT credentials |
+| Remove a unit's own MQTT account | `REMOVE` | Installation → MQTT credentials |
+| Enforce the unit's own account (deny the shared one) | `DEVICE` | Installation → MQTT credentials |
+
+The server refuses each request without the word. A danger command is
+challenged by the logger at its next connection; it runs only after a
+confirmation inside that challenge's two-minute window (automatic only when
+you ticked auto-confirm and the logger reports no unsaved data). **Cancel**
+withdraws the command and its confirmation; if the confirmation had already
+been sent, the page warns that the operation may still run, and the
+command's acknowledgement shows whether it did.
 
 ### Data, datum and exports
 
@@ -239,9 +332,11 @@ height above ground − `h`; level in m AHD = ground elevation − depth. Each
 reading uses the latest datum effective at its time; earlier readings stay
 unconverted. History can plot either; the CSV export appends `source`,
 `log_id`, `seq`, `record_type`, `sensor_mv`, `sensor_status`,
-`settings_gen`, `csq`, `time_source`, `depth_bgl_m` and `level_ahd_m` after
-the original columns. Events and positions export as JSON (positions also as
-GeoJSON). **Gaps** shows open/requested sequence gaps per device and the
+`settings_gen`, `csq`, `time_source`, `depth_bgl_m`, `level_ahd_m`,
+`sensor_status_text`, `level_valid` and `time_reason` after the original
+columns. Events and positions export as JSON (positions also as GeoJSON),
+at most 20,000 rows per file, oldest first; a cut file says so and the page
+offers the rest. At most four CSV exports run at once. **Gaps** shows open/requested sequence gaps per device and the
 filled/unrecoverable ones in a window; the device's **Data stream** tab can
 request a resend of any gap now.
 
@@ -255,8 +350,19 @@ states and notification states; names and locations are not exported.
 `GWL` is the firmware's raw value in metres. Its datum and sign are
 uncommissioned until checked against the actual installation. Thresholds must
 be chosen by the operator; the 1000 m parser bound is a sanity limit, not an
-alarm threshold. RSSI is the firmware's 0–100 scale, battery is volts, and solar
-is an integer-truncated coarse voltage, not a calibrated energy measurement.
+alarm threshold. A reading with a non-zero sensor status is shown as
+"possible sensor failure", never as a level. For revision 1 units RSSI is the
+firmware's 0–100 scale, battery is volts and solar an integer-truncated coarse
+voltage; firmware 2.2 reports millivolts and the modem's CSQ (0–31), and a
+value the logger could not read shows as "—".
+
+A 2.2 unit uploads lines left in its SD backlog, including an unsent V2.1
+backlog from before the reflash, on `reading`/`gps`. Such V2.1 lines carry a
+zoneless local `TIME` and are read with the device's clock policy, which is
+`utc` for a unit enrolled as V22: a V2.1 build with a non-zero `ltost`
+offset therefore places them that many hours off. A unit promoted from V21
+keeps its earlier policy. Check the times of such backlog readings after a
+reflash.
 
 History uses plausible device event time. Last seen uses the latest attributed
 traffic's server receipt time, including Ready, sleep and acknowledgments. Days of
@@ -264,30 +370,37 @@ backlog are legitimate; reset, invalid, ambiguous and future clock values stay
 visible as quality evidence rather than being silently interpreted as live data.
 Recent-history ranges follow the current time on refresh/live events; applying
 explicit From/To values fixes the range. Operators can open **Raw deliveries**
-from the header to inspect quarantines without a device attribution.
+from the header to inspect quarantines without a device attribution; it lists
+100 deliveries at a time (**Show older deliveries**) and can show quarantined
+ones only.
 
 ### Configuration and commands
 
 Firmware 2.2 (`V22`) units use `{v,id,exp,op,args}` commands on `config/set`,
 `cmd/basic` and `cmd/danger` (all contract operations; see the frontend
 README "Protocol revision 2"). They are published at once, QoS 1, never
-retained: the logger's persistent session holds them while it sleeps.
-Default expiry is 7 days for basic/settings and 1 day for danger commands
-(`GROUNDWATER_COMMAND_EXPIRY_HOURS`, `GROUNDWATER_DANGER_EXPIRY_HOURS`); a
-weekly logger therefore needs a longer `expires_in_s` for a danger command
-queued days before its next connection. A command without a final ack is
+retained: the logger's persistent session holds them while it sleeps, and it
+runs them at its next connection. A command without a final ack is
 re-published after the logger's next `sleep`/`offline` (at most three
-times); at most four are in flight per device. Destructive operations need
-typing DANGER and the logger's nonce handshake: confirmation is automatic
-only when the operator pre-confirmed and the logger reports no unsaved data;
-otherwise an operator confirms the reported unsaved count within the ~2 min
-challenge window. The server itself requests missing ring data
-(`flush_mqtt` ranges), corrects the logger clock (`sync_time`, only while
-awake) and fetches effective settings (`get_settings`). Battery and solar
-alerts (`battery_low`, `solar_low`) are raised by the server from `health`
-and test data; level alarms come from the logger's own events and its
-effective `lo`/`hi`/hysteresis settings are mirrored into the server's
-limits.
+times, then `unacknowledged`); at most four are in flight per device; a
+`busy` rejection waits for the next connection. Lifetimes count from the
+moment you queue: 7 days for basic commands and settings, 24 hours for
+danger commands (`GROUNDWATER_COMMAND_EXPIRY_HOURS`,
+`GROUNDWATER_DANGER_EXPIRY_HOURS`), or the expiry you choose (60 s to 30
+days). For a danger command the console proposes the logger's next
+connection + 1 hour, so a weekly logger still receives it. Danger operations
+follow the handshake under "Typed confirmations".
+
+The server queues some commands itself, shown with their origin on the
+Commands tab: missing ring data (`flush_mqtt` ranges, automatic gap
+requests every 30 minutes at most, three attempts), the logger clock
+(`sync_time`, only while it is awake), the effective settings
+(`get_settings`) and the restore of lost settings. Battery and solar alerts
+are raised by the server from `health` and test data; the logger's effective
+`lo`/`hi`/hysteresis settings become the server's limits.
+
+Older commands: the Commands tab lists 500 at a time; **Show older
+commands** loads the next page.
 
 The rest of this section describes revision 1 units.
 
@@ -412,6 +525,15 @@ control-loop database stalls invalidate old wake windows and discard buffered
 control packets; delayed Ready messages cannot authorize downlink after recovery.
 Workers retry initial database connection failures as well as later outages.
 
+A revision 2 batch is stored raw before anything is derived from it. When
+deriving readings or times fails for a reason in the data, the raw frames are
+kept, the frame or log is flagged and the work is re-run at the next service
+start (the start log counts what still fails); Data stream shows those logs
+and batches in words. A database error that is not about the content is
+retried without acknowledging the message, so nothing is lost; a refused
+payload is quarantined (`rev2-invalid`, `rev2-store-failed`) with its raw
+bytes kept.
+
 Device counters/latest pointers are maintained on observation insertion and
 initialized once for existing databases. Device reads scope authorized IDs in SQL.
 Alert evaluation checkpoints append-only history, replaying earlier data only for
@@ -434,6 +556,36 @@ bindings, grants and pending commands, then follow the repository's guarded
 recovery and deployment procedure. Do not activate a restored command queue
 against live devices until its pending actions have been inspected. Disabling
 the optional module stops the service and broker but retains persisted data.
+
+## What the next deploy changes
+
+The deployed server runs older code (the deployed revision is not recorded in
+this repository); compare it with the evaluated configuration before the
+guarded deploy. As of this source:
+
+- **Mosquitto** (`services.mosquitto.settings` and listeners):
+  `persistent_client_expiration` 60 d, `max_queued_messages` 100,000,
+  `max_queued_bytes` 100 MiB, `max_packet_size` 16 KiB, `memory_limit`
+  256 MiB, `autosave_interval` 60 s, `max_connections` 16 (loopback), 64
+  (LAN), 32 (NetBird), 64 (TLS 8883); the logger ACL includes the revision 2
+  channels (`info`, `health`, `data/stream`, `data/file`, `cmd/basic`).
+  The `mosquitto` unit gets `MemoryHigh` 320M and `MemoryMax` 448M. Changed
+  listener settings restart the broker, which drops connected loggers for
+  that moment; their sessions and queued messages persist.
+- **Per-device accounts** stay off until
+  `deviceCredentials.enable` is set; `tlsDeviceAccountsOnly` stays off until
+  every field unit has its own account.
+- **groundwater-server** unit: `StartLimitIntervalSec=0` with restart back-off
+  up to 5 minutes, `MemoryHigh` 384M, `MemoryMax` 768M, `OOMPolicy=stop`,
+  15 s stop timeout; `notifications.*` and `metrics.tokenFile` options.
+- **Database:** the idempotent schema scripts run at the first start. They
+  create whichever revision 2, alerting and operations tables are missing, null the stored
+  "not read" values, convert stored JSON GNSS fixes to the record scale
+  once, and recompute the command id floor. With no enrolled devices on the
+  live server, nothing existing is converted.
+
+After the deploy, run and inspect the authenticated canary
+(`modules/Core_Modules/homepage/canary.nix` covers `groundwater.<domain>`).
 
 ## Focused development checks
 

@@ -188,6 +188,22 @@ export const StreamView = component$<Props>((props) => {
                       </small>
                     </td>
                     <td>
+                      {(l.derive_pending ?? 0) > 0 && (
+                        <small class="error-text">
+                          {l.derive_pending} frame
+                          {l.derive_pending === 1 ? "" : "s"} kept raw: their
+                          readings and events could not be derived yet; the
+                          server retries at its next start
+                        </small>
+                      )}
+                      {l.resolve_pending && (
+                        <small class="error-text">
+                          Reading times and settings of this log could not be
+                          worked out
+                          {l.resolve_error ? ` (${l.resolve_error})` : ""}; the
+                          server retries at its next start
+                        </small>
+                      )}
                       <small>{l.decode_errors} decode errors</small>
                       <small>{l.conflicting_copies} conflicting copies</small>
                       <small>{l.resent_copies} resent copies</small>
@@ -353,6 +369,13 @@ export const StreamView = component$<Props>((props) => {
                           {b.ok ? "ok" : "refused"}
                         </span>
                         {b.error && <small class="error-text">{b.error}</small>}
+                        {b.derive_error && (
+                          <small class="error-text">
+                            Stored, but {b.derive_error}
+                            {(b.frames_derive_pending ?? 0) > 0 &&
+                              ` · ${b.frames_derive_pending} frame${b.frames_derive_pending === 1 ? "" : "s"} still waiting`}
+                          </small>
+                        )}
                         {(b.issues?.length > 0 || b.warnings?.length > 0) && (
                           <details>
                             <summary>

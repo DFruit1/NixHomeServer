@@ -51,6 +51,11 @@ interface Workspace {
   commands: Command[];
   /** The server listed only its newest 500 commands. */
   commandsTruncated: boolean;
+  /** Older pages loaded with "Show older commands" (`before=<id>`). */
+  olderCommands: Command[];
+  olderTruncated: boolean;
+  olderLoading: boolean;
+  olderError: string;
   errors: Record<string, string>;
   loading: boolean;
 }
@@ -60,9 +65,6 @@ export default component$(() => {
   const global = useStore<{
     status?: Status;
     devices?: Device[];
-    /** Open alerts of every visible device; names the fleet's attention
-     * items (undefined when they could not be loaded: counts are shown). */
-    openAlerts?: Alert[];
     errors: string[];
     loading: boolean;
   }>({ errors: [], loading: true });
@@ -71,6 +73,10 @@ export default component$(() => {
     alerts: [],
     commands: [],
     commandsTruncated: false,
+    olderCommands: [],
+    olderTruncated: false,
+    olderLoading: false,
+    olderError: "",
     errors: {},
     loading: false,
   });
@@ -145,15 +151,9 @@ export default component$(() => {
         Promise.allSettled([
           request<Status>("/api/status", signal),
           request<{ devices: Device[] }>("/api/devices", signal),
-          request<{ alerts: Alert[] }>(
-            "/api/alerts?state=open&limit=1000",
-            signal,
-          ),
         ]),
       (results) => {
-        const [status, devices, alerts] = results;
-        global.openAlerts =
-          alerts.status === "fulfilled" ? alerts.value.alerts : undefined;
+        const [status, devices] = results;
         global.errors = [];
         if (status.status === "fulfilled") global.status = status.value;
         else {
@@ -194,6 +194,8 @@ export default component$(() => {
       workspace.series = undefined;
       workspace.alerts = [];
       workspace.commands = [];
+      workspace.olderCommands = [];
+      workspace.olderError = "";
       workspace.errors = {};
     }
     let params: string;
@@ -254,6 +256,15 @@ export default component$(() => {
           if (key === "device") workspace.device = result!.device as Device;
           if (key === "series") workspace.series = result!.series as Series;
           if (key === "commands") {
+            // With older pages shown, the previous newest page joins them,
+            // so commands pushed off it by new ones stay listed.
+            if (workspace.olderCommands.length) {
+              const known = new Set(workspace.olderCommands.map((c) => c.id));
+              workspace.olderCommands = [
+                ...workspace.commands.filter((c) => !known.has(c.id)),
+                ...workspace.olderCommands,
+              ].sort((a, b) => b.id - a.id);
+            }
             workspace.commands = result!.commands as Command[];
             workspace.commandsTruncated = result!.truncated === true;
           }
@@ -272,6 +283,52 @@ export default component$(() => {
     );
     cleanup(() => latest.cancel());
   });
+  // The newest page refreshes live; older pages are appended below it.
+  const newest = workspace.commands;
+  const oldestShown = newest.length ? newest[newest.length - 1].id : Infinity;
+  const commandList = [
+    ...newest,
+    ...workspace.olderCommands.filter((c) => c.id < oldestShown),
+  ];
+  const commandsTruncated = workspace.olderCommands.length
+    ? workspace.olderTruncated
+    : workspace.commandsTruncated;
+  const loadOlder = $(async () => {
+    const list = [
+      ...workspace.commands,
+      ...workspace.olderCommands.filter(
+        (c) =>
+          !workspace.commands.length ||
+          c.id < workspace.commands[workspace.commands.length - 1].id,
+      ),
+    ];
+    const last = list[list.length - 1];
+    if (!last || workspace.olderLoading) return;
+    const device = last.device_id;
+    workspace.olderLoading = true;
+    workspace.olderError = "";
+    try {
+      const result = await request<{ commands: Command[]; truncated: boolean }>(
+        `/api/commands?${query({ device, before: String(last.id) })}`,
+      );
+      if (workspace.device?.device_id !== device) return;
+      workspace.olderCommands = [
+        ...workspace.olderCommands.filter((c) => c.id > last.id),
+        ...result.commands,
+      ];
+      workspace.olderTruncated = result.truncated === true;
+    } catch (error) {
+      workspace.olderError = errorText(error);
+    } finally {
+      workspace.olderLoading = false;
+    }
+  });
+  const paging = {
+    truncated: commandsTruncated,
+    more: loadOlder,
+    moreLoading: workspace.olderLoading,
+    moreError: workspace.olderError,
+  };
   const operator = global.status?.user?.role === "operator";
   const device =
     workspace.device?.device_id === route.device ? workspace.device : undefined;
@@ -386,12 +443,7 @@ export default component$(() => {
                 {global.loading && !global.devices && (
                   <p role="status">Loading devices…</p>
                 )}
-                {global.devices && (
-                  <Fleet
-                    devices={global.devices}
-                    openAlerts={global.openAlerts}
-                  />
-                )}
+                {global.devices && <Fleet devices={global.devices} />}
               </>
             )}
           </>
@@ -649,11 +701,6 @@ export default component$(() => {
                     device={device}
                     revision={revision.value}
                     operator={operator}
-                    openAlerts={
-                      workspace.errors.open
-                        ? undefined
-                        : workspace.alerts.filter((a) => a.state === "open")
-                    }
                   />
                 )}
                 {view === "health" && (
@@ -790,8 +837,8 @@ export default component$(() => {
                     )}
                     <Rev2Queue
                       device={device.device_id}
-                      commands={workspace.commands}
-                      truncated={workspace.commandsTruncated}
+                      commands={commandList}
+                      {...paging}
                       operator={operator && !device.revoked}
                       refresh={refresh}
                       expected={
@@ -803,8 +850,8 @@ export default component$(() => {
                 {view === "audit" && rev2 && (
                   <Rev2Queue
                     device={device.device_id}
-                    commands={workspace.commands}
-                    truncated={workspace.commandsTruncated}
+                    commands={commandList}
+                    {...paging}
                     operator={false}
                     refresh={refresh}
                     audit
@@ -827,8 +874,8 @@ export default component$(() => {
                     )}
                     <CommandQueue
                       device={device.device_id}
-                      commands={workspace.commands}
-                      truncated={workspace.commandsTruncated}
+                      commands={commandList}
+                      {...paging}
                       operator={operator && !device.revoked}
                       refresh={refresh}
                     />
@@ -837,8 +884,8 @@ export default component$(() => {
                 {view === "audit" && !rev2 && (
                   <CommandQueue
                     device={device.device_id}
-                    commands={workspace.commands}
-                    truncated={workspace.commandsTruncated}
+                    commands={commandList}
+                    {...paging}
                     operator={false}
                     refresh={refresh}
                     audit

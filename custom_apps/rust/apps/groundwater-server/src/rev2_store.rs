@@ -583,7 +583,7 @@ async fn store_health<C: GenericClient + Sync>(
              WHERE device_id=$1",
             &[
                 &ctx.device_id,
-                &Value::Object(object.clone()),
+                &Value::Object(rev2::normalised_health(object)),
                 &ctx.received_at,
                 &health.up.map(i64::from),
                 &next,
@@ -1040,6 +1040,9 @@ async fn store_gps<C: GenericClient + Sync>(
         .filter(|&v| v != i64::from(i16::MIN))
         .and_then(|v| i32::try_from(v).ok());
     let hdop = rev2::f64_field(object, "hdop").filter(|v| (0.0..99.99).contains(v));
+    // The JSON sends the ring record's fix + 1 (1 none, 2 2D, 3 3D); stored
+    // on the record scale so every source reads alike (rev2.sql).
+    let fix = small("fix").and_then(|v| (1..=3).contains(&v).then(|| v - 1));
     let inserted = client
         .execute(
             "INSERT INTO device_positions(device_id,source,recorded_at,time_valid,time_rel_s,time_source,received_at,
@@ -1052,7 +1055,7 @@ async fn store_gps<C: GenericClient + Sync>(
                 &placed.rel,
                 &placed.source,
                 &ctx.received_at,
-                &small("fix"),
+                &fix,
                 &lat,
                 &lon,
                 &alt,

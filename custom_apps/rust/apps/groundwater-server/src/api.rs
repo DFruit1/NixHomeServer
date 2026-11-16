@@ -345,6 +345,8 @@ async fn series(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>)
 #[derive(Deserialize)]
 struct List {
     device: Option<String>,
+    /// Keyset paging: only commands with a lower id.
+    before: Option<i64>,
 }
 async fn commands(State(s): State<AppState>, h: HeaderMap, Query(q): Query<List>) -> ApiResult {
     let db = s.db.get().await.map_err(database)?;
@@ -353,7 +355,7 @@ async fn commands(State(s): State<AppState>, h: HeaderMap, Query(q): Query<List>
         None => None,
     };
     let visible = ids(&s, &h).await?;
-    let mut commands = platform::commands(&db, &visible, device.as_deref())
+    let mut commands = platform::commands_page(&db, &visible, device.as_deref(), q.before)
         .await
         .map_err(database)?;
     let truncated = commands.len() > platform::COMMAND_LIST_LIMIT;
@@ -366,6 +368,12 @@ struct DeliveryParams {
     topic: Option<String>,
     since: Option<DateTime<Utc>>,
     limit: Option<i64>,
+    /// `accepted`, `quarantined`, … (exact match).
+    state: Option<String>,
+    /// `in` (uplinks) or `out` (published commands).
+    direction: Option<String>,
+    /// Keyset paging: deliveries older than this delivery's id.
+    before: Option<i64>,
 }
 async fn deliveries(
     State(s): State<AppState>,
@@ -375,16 +383,30 @@ async fn deliveries(
     let db = s.db.get().await.map_err(database)?;
     operator(&h)?;
     let device = q.device.as_deref().map(crate::adapter::canonical_device_id);
-    let deliveries = db::filtered_deliveries(
+    if q.direction
+        .as_deref()
+        .is_some_and(|d| !matches!(d, "in" | "out"))
+    {
+        return Err(bad("direction must be in or out"));
+    }
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    let mut deliveries = db::filtered_deliveries(
         &db,
-        device.as_deref(),
-        q.topic.as_deref(),
-        q.since,
-        q.limit.unwrap_or(100).clamp(1, 500),
+        &db::DeliveryFilter {
+            device_id: device.as_deref(),
+            topic: q.topic.as_deref(),
+            since: q.since,
+            state: q.state.as_deref(),
+            direction: q.direction.as_deref(),
+            before: q.before,
+        },
+        limit + 1,
     )
     .await
     .map_err(database)?;
-    Ok(Json(json!({"deliveries":deliveries})).into_response())
+    let more = deliveries.len() as i64 > limit;
+    deliveries.truncate(limit as usize);
+    Ok(Json(json!({"deliveries":deliveries,"more":more})).into_response())
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

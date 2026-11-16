@@ -210,15 +210,15 @@ in
         # holds the fleet's uploads while the server is down. Past either
         # limit Mosquitto drops a queued QoS 1 message although the logger
         # already has its PUBACK and frees that ring space: permanent loss.
+        # memory_limit below is sized above everything these limits allow,
+        # so they, not memory, decide when that happens.
         # Sized for a week-long server outage: 50 loggers (the fleet is
         # tens), each sending a full ring (122 KiB = about 84 batches of
         # 1.5 KB plus about 15 JSON messages) once a day, is 350 connections,
         # about 35,000 messages and 47 MiB. A weekly logger sends at most one
         # ring a week, so the daily case bounds it. Twice that, rounded up:
         # 100,000 messages, 100 MiB. At about 250 bytes of broker overhead per
-        # message the full queue takes about 124 MiB, inside memory_limit
-        # below. A hostile logger account cannot exceed memory_limit with any
-        # number of sessions either.
+        # message the full queue takes about 124 MiB.
         max_queued_messages = 100000;
         max_queued_bytes = 104857600;
         # data/stream batches are <= 1,500 bytes binary or ~1.5 KiB hex;
@@ -228,33 +228,44 @@ in
         # Bound the broker's heap below its cgroup limit: anyone holding the
         # shared logger password can create persistent sessions and fill
         # their queues (the legacy readwrite topics let one account both
-        # publish and subscribe). Past the limit Mosquitto fails the
-        # allocation instead of growing until the cgroup kills it (losing
-        # every queued command); an upload it does not acknowledge stays in
-        # the logger's ring. 192 MiB: the server session's full queue (about
-        # 124 MiB) plus logger sessions and connections, below MemoryHigh
-        # (256M) and MemoryMax (384M) of the unit.
-        memory_limit = 201326592;
+        # publish and subscribe). Past the limit Mosquitto fails allocations
+        # instead of growing until the cgroup kills it (losing every queued
+        # command), but a failed allocation also drops messages it has
+        # already acknowledged to a logger, queued for the server's session
+        # (mosquitto.conf(5)). So the limit sits above what legitimate
+        # traffic can hold: the server session's full queue (about 124 MiB)
+        # plus 512 KiB for each connection the listeners admit (176 below:
+        # session state and 16 KiB packet buffers, 88 MiB) plus 44 MiB
+        # headroom = 256 MiB. MemoryHigh/MemoryMax of the unit sit above it
+        # for allocator overhead.
+        memory_limit = 268435456;
         # Write queued messages and sessions to disk every minute rather
         # than the default 30: a power cut while the platform is down then
         # loses at most a minute of acknowledged uploads.
         autosave_interval = 60;
       };
+      # max_connections per listener bounds the connections memory_limit is
+      # sized for (176 in all): the server and local tools on loopback;
+      # bench and legacy loggers on LAN and NetBird; field loggers on TLS
+      # (the fleet is tens; raise with memory_limit past 64 units).
       listeners = [
         {
           address = listenAddress;
           port = mqttPort;
           users = listenerUsers;
+          settings.max_connections = 16;
         }
         (withDeviceAccounts 1 {
           address = lanAddress;
           port = mqttPort;
           users = listenerUsers;
+          settings.max_connections = 64;
         })
         (withDeviceAccounts 2 {
           address = netbirdAddress;
           port = mqttPort;
           users = listenerUsers;
+          settings.max_connections = 32;
         })
         # Internet-facing TLS endpoint for field loggers: the router forwards
         # public TCP 8883 to this LAN address. Only logger accounts exist
@@ -271,6 +282,7 @@ in
             keyfile = config.age.secrets.groundwaterMqttTlsKey.path;
             tls_version = "tlsv1.2";
             require_certificate = false;
+            max_connections = 64;
           } // lib.optionalAttrs tlsDeviceOnly {
             use_username_as_clientid = true;
           };
@@ -299,9 +311,10 @@ in
       preStart = lib.mkIf creds.enable (lib.mkAfter mergeCommand);
       serviceConfig = {
         ReadOnlyPaths = lib.mkIf creds.enable [ "-${authDir}" ];
-        # Normal use is a few MiB; memory_limit above refuses messages first.
-        MemoryHigh = "256M";
-        MemoryMax = "384M";
+        # Normal use is a few MiB. memory_limit (256 MiB) refuses
+        # allocations first; these leave room for allocator overhead.
+        MemoryHigh = "320M";
+        MemoryMax = "448M";
       };
     };
 

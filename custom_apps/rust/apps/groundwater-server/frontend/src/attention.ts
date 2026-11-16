@@ -2,9 +2,8 @@
 // the device list already returns. Each item names the view that explains it.
 import { alertLabel } from "./alert-text";
 import { observationProblem } from "./events";
-import { readHealth } from "./format";
 import { settingsLost } from "./settings";
-import type { Alert, Device } from "./types";
+import type { Device } from "./types";
 
 export interface Problem {
   text: string;
@@ -24,15 +23,11 @@ const COVERED: Record<string, (device: Device) => boolean> = {
     !["ok", "locked"].includes(d.health.mram),
   logging_off: (d) => d.health?.log === "off",
   logger_error: (d) => typeof d.health?.err === "number" && d.health.err !== 0,
-  settings_lost: (d) => settingsLost(d.health),
+  settings_lost: (d) => settingsLost(d),
 };
 
-/** `openAlerts` (this device's open alerts, when loaded) names each alert;
- * without it the item is a count. */
-export function deviceProblems(
-  device: Device,
-  openAlerts?: Alert[],
-): Problem[] {
+/** The open alerts are named from the summary's `open_alert_kinds`. */
+export function deviceProblems(device: Device): Problem[] {
   if (device.revoked) return [];
   const problems: Problem[] = [];
   const rev2 = device.capabilities?.protocol === 2;
@@ -43,11 +38,11 @@ export function deviceProblems(
       text: "connection lost without a clean sleep",
       view: "",
     });
-  if (openAlerts) {
+  if (device.open_alert_kinds) {
     const named = new Set<string>();
-    for (const alert of openAlerts) {
-      if (alert.state !== "open" || COVERED[alert.kind]?.(device)) continue;
-      const text = alertLabel(alert);
+    for (const { kind, subject } of device.open_alert_kinds) {
+      if (COVERED[kind]?.(device)) continue;
+      const text = alertLabel({ kind, detail: subject ? { subject } : {} });
       if (named.has(text)) continue;
       named.add(text);
       problems.push({ text, view: "alerts" });
@@ -60,8 +55,8 @@ export function deviceProblems(
   const sensor = observationProblem(device.latest_received);
   if (sensor)
     problems.push({ text: `latest reading ${sensor}`, view: "history" });
-  const h = readHealth(device.health);
-  const lost = settingsLost(device.health);
+  const h = device.health || {};
+  const lost = settingsLost(device);
   if (rev2 && lost)
     problems.push({
       text: "settings lost: not logging until settings are sent",

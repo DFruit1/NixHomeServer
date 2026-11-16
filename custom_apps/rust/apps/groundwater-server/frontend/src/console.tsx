@@ -17,10 +17,15 @@ import {
   secondsLeft,
   show,
 } from "./format";
-import { OP_HELP, TRUNCATED_COMMANDS, opArgs, originText } from "./commands";
+import { OP_HELP, opArgs, originText } from "./commands";
 import { devicePath, send, useNow } from "./hooks";
 import type { Command, Device } from "./types";
-import { Feedback, TableRegion } from "./widgets";
+import {
+  Feedback,
+  OlderCommands,
+  TableRegion,
+  type CommandPaging,
+} from "./widgets";
 
 type ConsoleProps = { device: Device; refresh: QRL<() => void> };
 
@@ -582,20 +587,42 @@ export function ackData(ack: unknown): [string, string][] {
   return pairs.slice(0, 40);
 }
 
-export const Rev2Queue = component$<{
-  device: string;
-  commands: Command[];
-  operator: boolean;
-  refresh: QRL<() => void>;
-  audit?: boolean;
-  /** When the logger is expected to connect next (commands wait for it). */
-  expected?: string | null;
-  /** The server cut the list at its newest 500 commands. */
-  truncated?: boolean;
-}>((props) => {
+/** The cancel response's `warning` in plain words: the command, or its
+ * danger confirmation, was already with the logger, which may still run the
+ * operation. `parentOp`: the confirmed command's op when `c` is a confirm. */
+export function cancelWarningText(
+  c: Pick<Command, "id" | "op" | "kind" | "parent_id">,
+  warning: string,
+  parentOp?: string | null,
+) {
+  const op =
+    c.op === "confirm" ? parentOp || "the confirmed operation" : c.op || c.kind;
+  const detail = warning
+    .replace(/^cancelled, but /, "")
+    .replace(
+      /: the operation may still run; its ack will show the outcome$/,
+      "",
+    );
+  return `Cancelled #${c.id}, but ${detail}: ${op} may still run on the logger. Its acknowledgement in this list will show whether it ran.`;
+}
+
+export const Rev2Queue = component$<
+  {
+    device: string;
+    commands: Command[];
+    operator: boolean;
+    refresh: QRL<() => void>;
+    audit?: boolean;
+    /** When the logger is expected to connect next (commands wait for it). */
+    expected?: string | null;
+  } & CommandPaging
+>((props) => {
   const now = useNow(30000);
   const pending = useSignal(0),
-    error = useSignal("");
+    error = useSignal(""),
+    // The server's warning when a cancelled command (or its confirmation)
+    // had already been sent: the logger may still run it.
+    cancelWarning = useSignal("");
   return (
     <section>
       <h2>{props.audit ? "Command audit" : "Command queue"}</h2>
@@ -610,7 +637,16 @@ export const Rev2Queue = component$<{
           {error.value}
         </p>
       )}
-      {props.truncated && <p class="notice">{TRUNCATED_COMMANDS}</p>}
+      {cancelWarning.value && (
+        <div role="alert" class="notice danger">
+          <p>
+            <strong class="error-text">{cancelWarning.value}</strong>
+          </p>
+          <button type="button" onClick$={() => (cancelWarning.value = "")}>
+            Dismiss
+          </button>
+        </div>
+      )}
       {props.commands.length === 0 ? (
         <p class="empty">No commands recorded for this device.</p>
       ) : (
@@ -737,8 +773,11 @@ export const Rev2Queue = component$<{
                           onClick$={async () => {
                             pending.value = c.id;
                             error.value = "";
+                            cancelWarning.value = "";
                             try {
-                              await send(
+                              const result = await send<{
+                                warning?: string | null;
+                              }>(
                                 "POST",
                                 devicePath(
                                   props.device,
@@ -746,6 +785,14 @@ export const Rev2Queue = component$<{
                                 ),
                                 {},
                               );
+                              if (result.warning)
+                                cancelWarning.value = cancelWarningText(
+                                  c,
+                                  result.warning,
+                                  props.commands.find(
+                                    (p) => p.id === c.parent_id,
+                                  )?.op,
+                                );
                               props.refresh();
                             } catch (e) {
                               error.value = errorText(e);
@@ -767,6 +814,13 @@ export const Rev2Queue = component$<{
           </table>
         </TableRegion>
       )}
+      <OlderCommands
+        truncated={props.truncated}
+        more={props.more}
+        moreLoading={props.moreLoading}
+        moreError={props.moreError}
+        shown={props.commands.length}
+      />
     </section>
   );
 });

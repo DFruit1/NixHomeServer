@@ -264,6 +264,25 @@ pub fn parse_health(object: &Map<String, Value>) -> Health {
     }
 }
 
+/// The `health` object as the device summary serves it: the logger's JSON
+/// with every "not read" value (`bat_mv`/`sol_mv` 65535 or out of range,
+/// `csq` 99, `sd_free_mb` while the card is not ok) replaced by null, by the
+/// same rules [`parse_health`] applies to the stored columns.
+pub fn normalised_health(object: &Map<String, Value>) -> Map<String, Value> {
+    let health = parse_health(object);
+    let mut out = object.clone();
+    let mut set = |key: &str, value: Option<i64>| {
+        if let Some(slot) = out.get_mut(key) {
+            *slot = value.map_or(Value::Null, Value::from);
+        }
+    };
+    set("bat_mv", health.bat_mv);
+    set("sol_mv", health.sol_mv);
+    set("csq", health.csq);
+    set("sd_free_mb", health.sd_free_mb);
+    out
+}
+
 /// Valid `alerts` event names and the Rev2 record they copy.
 pub fn alert_event(ev: &str) -> Option<&'static str> {
     Some(match ev {

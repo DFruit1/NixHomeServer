@@ -570,6 +570,10 @@ pub struct DeviceSummary {
     pub clock_change_unverified: bool,
     pub capabilities: serde_json::Value,
     pub open_alert_count: i64,
+    /// The open alerts' kinds, one entry per kind and subject (a logger level
+    /// alarm names `high`/`low`), so the fleet can name what needs attention:
+    /// `[{"kind":"gwl_alarm","subject":"high"},{"kind":"stale","subject":null}]`.
+    pub open_alert_kinds: serde_json::Value,
     /// Protocol revision 2 state (all absent for revision 1 units).
     pub protocol_rev: Option<i16>,
     /// `status` channel: `online`, `ready`, `sleep` or `offline` (Last Will).
@@ -589,7 +593,8 @@ pub struct DeviceSummary {
     /// modem, net, stream, reset.
     pub info: Option<serde_json::Value>,
     pub info_at: Option<DateTime<Utc>>,
-    /// Latest `health` object.
+    /// Latest `health` object, with "not read" values as null
+    /// ([`crate::rev2::normalised_health`]).
     pub health: Option<serde_json::Value>,
     pub health_at: Option<DateTime<Utc>>,
     /// Effective logger settings from the latest ack/get_settings/snapshot.
@@ -609,6 +614,13 @@ pub struct DeviceSummary {
     pub revoked_at: Option<DateTime<Utc>>,
     /// MQTT account: `shared`, `dual` (own + shared) or `device` (own only).
     pub mqtt_auth: String,
+    /// Settings-lost RECOVERY (rev2_commands.rs `maybe_restore_settings`):
+    /// the first health of the episode that reported it; null otherwise.
+    pub settings_lost_since: Option<DateTime<Utc>>,
+    /// The episode's automatic restore command (`auto-restore`) and how it
+    /// stands: `{id,state,final_status,status_reason,created_at,expires_at,
+    /// acked_at}`; null when none was queued in this episode.
+    pub settings_restore: Option<serde_json::Value>,
 }
 
 impl DeviceSummary {
@@ -641,6 +653,12 @@ pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<Devic
     let sql = format!(
         "SELECT d.*,d.revoked_at IS NOT NULL AS revoked,
             (SELECT count(*) FROM alerts a WHERE a.device_id=d.device_id AND a.state='open' AND NOT a.superseded) AS open_alert_count,
+            (SELECT COALESCE(jsonb_agg(jsonb_build_object('kind',k.kind,'subject',k.subject) ORDER BY k.kind,k.subject),'[]'::jsonb)
+                FROM (SELECT DISTINCT a.kind,a.detail->>'subject' AS subject FROM alerts a
+                      WHERE a.device_id=d.device_id AND a.state='open' AND NOT a.superseded) k) AS open_alert_kinds,
+            (SELECT jsonb_build_object('id',c.id,'state',c.state,'final_status',c.final_status,'status_reason',c.status_reason,
+                    'created_at',c.created_at,'expires_at',c.expires_at,'acked_at',c.acked_at)
+                FROM commands c WHERE c.id=d.settings_restore_command_id AND c.device_id=d.device_id) AS settings_restore,
             (SELECT count(*) FROM stream_gaps g WHERE g.device_id=d.device_id AND g.state IN ('open','requested')) AS open_gap_count,
             (SELECT count(*) FROM commands c WHERE c.device_id=d.device_id AND c.protocol=2 AND c.state='challenge') AS pending_challenge_count,
             COALESCE((SELECT c.mode FROM device_mqtt_credentials c WHERE c.device_id=d.device_id),'shared') AS mqtt_auth,
@@ -727,6 +745,7 @@ pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<Devic
                 row.get("clock_change_unverified"),
             ),
             open_alert_count: row.get("open_alert_count"),
+            open_alert_kinds: row.get("open_alert_kinds"),
             protocol_rev: row.get("protocol_rev"),
             link_state,
             link_state_at: row.get("link_state_at"),
@@ -753,6 +772,8 @@ pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<Devic
             enrolled_at: row.get("enrolled_at"),
             revoked_at: row.get("revoked_at"),
             mqtt_auth: row.get("mqtt_auth"),
+            settings_lost_since: row.get("settings_lost_since"),
+            settings_restore: row.get("settings_restore"),
         });
     }
     Ok(devices)
@@ -761,6 +782,8 @@ pub async fn scoped_devices(client: &Client, ids: &[String]) -> Result<Vec<Devic
 /// A recent delivery (raw log) row.
 #[derive(Debug, Clone, Serialize)]
 pub struct DeliveryRow {
+    /// Cursor for `before` paging.
+    pub id: i64,
     pub received_at: DateTime<Utc>,
     pub topic: String,
     pub kind: String,
@@ -788,26 +811,50 @@ pub async fn list_deliveries(
     device_id: Option<&str>,
     limit: i64,
 ) -> Result<Vec<DeliveryRow>, String> {
-    filtered_deliveries(client, device_id, None, None, limit).await
+    let filter = DeliveryFilter {
+        device_id,
+        ..DeliveryFilter::default()
+    };
+    filtered_deliveries(client, &filter, limit).await
+}
+
+/// Raw-log filters; every `None` matches all.
+#[derive(Debug, Default)]
+pub struct DeliveryFilter<'a> {
+    pub device_id: Option<&'a str>,
+    pub topic: Option<&'a str>,
+    pub since: Option<DateTime<Utc>>,
+    pub state: Option<&'a str>,
+    pub direction: Option<&'a str>,
+    /// Only deliveries listed after this one (newest-first order).
+    pub before: Option<i64>,
 }
 
 pub async fn filtered_deliveries(
     client: &Client,
-    device_id: Option<&str>,
-    topic: Option<&str>,
-    since: Option<DateTime<Utc>>,
+    filter: &DeliveryFilter<'_>,
     limit: i64,
 ) -> Result<Vec<DeliveryRow>, String> {
     let rows = client
         .query(
             "SELECT received_at, topic, kind, device_id, claimed_device_id, qos, payload,
                     state, reason, detail, time_quality, duplicate_outcome,
-                    source_profile, binding_key, direction
+                    source_profile, binding_key, direction, id
              FROM deliveries
              WHERE ($1::TEXT IS NULL OR device_id = $1) AND ($3::text IS NULL OR topic=$3) AND ($4::timestamptz IS NULL OR received_at >= $4)
+               AND ($5::text IS NULL OR state=$5) AND ($6::text IS NULL OR direction=$6)
+               AND ($7::bigint IS NULL OR (received_at,id) < (SELECT p.received_at,p.id FROM deliveries p WHERE p.id=$7))
              ORDER BY received_at DESC, id DESC
              LIMIT $2",
-            &[&device_id, &limit, &topic, &since],
+            &[
+                &filter.device_id,
+                &limit,
+                &filter.topic,
+                &filter.since,
+                &filter.state,
+                &filter.direction,
+                &filter.before,
+            ],
         )
         .await
         .map_err(|err| db_context("delivery listing failed", err))?;
@@ -830,6 +877,7 @@ pub async fn filtered_deliveries(
             source_profile: row.get(12),
             binding_key: row.get(13),
             direction: row.get(14),
+            id: row.get(15),
         })
         .collect())
 }

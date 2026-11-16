@@ -86,5 +86,3 @@ export const originText = (origin: string | null | undefined) =>
   !origin || origin === "operator" ? "" : ORIGIN_TEXT[origin] || origin;
 
 /** The command list holds the server's newest 500 commands. */
-export const TRUNCATED_COMMANDS =
-  "Only the newest 500 commands of this logger are listed. Older commands stay on the server but this page cannot show them.";

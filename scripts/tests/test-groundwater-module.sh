@@ -157,6 +157,13 @@ jq -e '
   and .services.mosquitto.persistence
   and (.mosquitto.settings.max_packet_size >= 1600)
   and (.mosquitto.settings.memory_limit > 0 and .mosquitto.settings.autosave_interval <= 60)
+  # Memory must not drop acknowledged uploads before the queue limits apply:
+  # the full server queue (bytes + ~250 B per message) and 512 KiB for each
+  # admitted connection must fit inside memory_limit.
+  and (.mosquitto.listeners | all(.settings.max_connections > 0))
+  and (.mosquitto.settings.memory_limit >= .mosquitto.settings.max_queued_bytes
+    + .mosquitto.settings.max_queued_messages * 250
+    + ([.mosquitto.listeners[].settings.max_connections] | add) * 524288)
   and (.mosquitto.unit.MemoryMax != null)
   and (.services.mosquitto.listeners | all(has("acl") | not))
   and ([.devices.listeners[] | .plugins] == [[], [

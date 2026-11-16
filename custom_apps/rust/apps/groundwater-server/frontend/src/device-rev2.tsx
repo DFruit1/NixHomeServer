@@ -22,7 +22,6 @@ import {
   humanize,
   millivolts,
   percent,
-  readHealth,
   relative,
   secondsLeft,
   show,
@@ -40,7 +39,6 @@ import {
 import { deviceProblems } from "./attention";
 import { devicePath, useJson, useNow } from "./hooks";
 import type {
-  Alert,
   Device,
   DeviceEvent,
   HealthSample,
@@ -59,8 +57,6 @@ import {
 import { settingsLost } from "./settings";
 
 type ViewProps = { device: Device; revision: number; operator: boolean };
-/** `openAlerts`: this device's open alerts, named in "Needs attention". */
-type OverviewProps = ViewProps & { openAlerts?: Alert[] };
 
 const viewHref = (device: string, view: string) =>
   `#${query({ device, view })}`;
@@ -79,8 +75,10 @@ const PRESENCE_TEXT: Record<string, string> = {
 export const HealthFacts = component$<{
   health: Record<string, unknown> | null | undefined;
   at: string | null | undefined;
+  /** The server's settings-lost RECOVERY state (`settings_lost_since`). */
+  settingsLost?: boolean;
 }>((props) => {
-  const h = readHealth(props.health);
+  const h = props.health || {};
   const unsaved = fraction(h.unsaved, h.usable);
   return (
     <>
@@ -110,7 +108,7 @@ export const HealthFacts = component$<{
           <dd class={h.mram && h.mram !== "ok" ? "error-text" : ""}>
             {h.mram === "locked"
               ? "locked (Tail Lock)"
-              : settingsLost(h)
+              : props.settingsLost
                 ? "recovery: settings lost, not logging"
                 : show(h.mram)}
           </dd>
@@ -144,13 +142,13 @@ export const HealthFacts = component$<{
   );
 });
 
-export const Overview = component$<OverviewProps>((props) => {
+export const Overview = component$<ViewProps>((props) => {
   const now = useNow(1000);
   const d = props.device;
   const info = (d.info || {}) as Record<string, unknown>;
   const expected = d.expected_contact_at || d.next_contact_at;
   const left = secondsLeft(expected, now.value);
-  const problems = deviceProblems(d, props.openAlerts);
+  const problems = deviceProblems(d);
   return (
     <>
       {problems.length > 0 && (
@@ -233,7 +231,11 @@ export const Overview = component$<OverviewProps>((props) => {
       <section aria-labelledby="health-heading">
         <h2 id="health-heading">Latest health</h2>
         {d.health ? (
-          <HealthFacts health={d.health} at={d.health_at} />
+          <HealthFacts
+            health={d.health}
+            at={d.health_at}
+            settingsLost={settingsLost(d)}
+          />
         ) : (
           <p class="empty">No health heartbeat received yet.</p>
         )}
@@ -612,8 +614,6 @@ export const EventsView = component$<ViewProps>((props) => {
   );
 });
 
-/** Ring records (Type 3) code the fix 0 none, 1 2D, 2 3D; the `gps` JSON
- * sends that plus one (NMEA style, 3 = 3D). The API stores both as sent. */
 /** Type 4 tilt record reason (design extract). */
 const TILT_REASON: Record<number, string> = {
   1: "scheduled",
@@ -621,10 +621,11 @@ const TILT_REASON: Record<number, string> = {
   3: "commanded",
 };
 
-export function fixText(p: Pick<Position, "fix" | "source">) {
+/** The API serves every position's fix on the ring record scale (0 none,
+ * 1 2D, 2 3D), whichever message carried it. */
+export function fixText(p: Pick<Position, "fix">) {
   if (p.fix == null) return "fix unknown";
-  const fix = p.source === "json" ? p.fix - 1 : p.fix;
-  return ["no fix", "2D", "3D"][fix] ?? `fix ${p.fix}`;
+  return ["no fix", "2D", "3D"][p.fix] ?? `fix ${p.fix}`;
 }
 const PLOT_W = 640,
   PLOT_H = 360;
