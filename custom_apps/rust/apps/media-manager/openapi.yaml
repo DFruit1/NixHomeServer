@@ -3444,7 +3444,7 @@ components:
         reason: { type: string }
     YoutubeItem:
       type: object
-      required: [itemId, rootId, rootLabel, folder, layout, mediaType, source, naming, chapters, state, lossless, files, hasThumbnail, history, changes, libraries, canEdit]
+      required: [itemId, rootId, rootLabel, folder, layout, mediaType, source, naming, chapters, state, lossless, exactRestore, files, hasThumbnail, history, changes, libraries, canEdit]
       properties:
         itemId: { type: string }
         rootId: { type: string }
@@ -3487,7 +3487,10 @@ components:
             coverEmbedded: { type: boolean }
         lossless:
           type: boolean
-          description: The manifest records the original a split was cut from, so joining restores it exactly.
+          description: The manifest records the original a split was cut from; its audio and video data are intact in the chapter files.
+        exactRestore:
+          type: boolean
+          description: The split's restore file is present, so joining rebuilds the original file byte for byte (same SHA-256).
         files:
           type: array
           items:
@@ -3535,6 +3538,7 @@ components:
         removed: { type: array, items: { type: string }, description: "Paths moved to the library tombstone." }
         added: { type: array, items: { type: string }, description: "New media files." }
         moved: { type: array, items: { type: string }, description: "Where the item's existing files move to." }
+        exact: { type: [boolean, "null"], description: "For a join: whether the original file is rebuilt byte for byte." }
     ItemsResponse:
       type: object
       required: [items]

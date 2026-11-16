@@ -37,3 +37,4 @@ pub mod video_conversion;
 pub mod video_conversion_worker;
 pub mod video_probe;
 pub mod youtube_item;
+pub mod youtube_restore;

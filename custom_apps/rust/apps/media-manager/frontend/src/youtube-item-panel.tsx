@@ -300,6 +300,13 @@ export const YoutubeItemPanel = component$<{
                 {item.state.coverEmbedded
                   ? ", cover embedded"
                   : ", no embedded cover"}
+                {item.state.split && (
+                  <span class="youtube-item__quiet">
+                    {item.exactRestore
+                      ? "Joins back into the original file, byte for byte."
+                      : "Joins back with identical audio and video; the original's tags and exact timing are not on record."}
+                  </span>
+                )}
                 {missing > 0 && (
                   <span class="youtube-item__quiet">
                     {missing === 1

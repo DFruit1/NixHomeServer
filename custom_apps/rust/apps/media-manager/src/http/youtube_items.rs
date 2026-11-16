@@ -106,6 +106,7 @@ pub(super) async fn details(
             "chapters": manifest.chapters,
             "state": manifest.state,
             "lossless": manifest.original.is_some(),
+            "exactRestore": located.exact_restore(),
             "files": files,
             "hasThumbnail": manifest.has_thumbnail,
             "downloadedAt": manifest.download["downloadedAt"],

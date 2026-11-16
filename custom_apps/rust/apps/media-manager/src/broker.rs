@@ -94,8 +94,9 @@ pub struct ConvertVideoAction {
 }
 
 /// Install a file that a YouTube item change staged: a chapter file, a joined
-/// file, a file with its cover added or removed, or the item's rewritten
-/// manifest. The destination must be free; see `crate::youtube_item`.
+/// file, a file with its cover added or removed, the item's rewritten manifest,
+/// or a split's restore file. The destination must be free; see
+/// `crate::youtube_item`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallYoutubeItemFileAction {
@@ -681,7 +682,8 @@ fn validate_youtube_item_file_action(
         .rsplit_once('.')
         .map(|(_, extension)| extension.to_ascii_lowercase())
         .unwrap_or_default();
-    let manifest = extension == "json"
+    // The item's manifest, or the restore file of a split.
+    let manifest = matches!(extension.as_str(), "json" | "restore")
         && parents.last() == Some(&crate::config::YOUTUBE_ITEM_METADATA_FOLDER)
         && !leaf.starts_with('.');
     let media = destination_root
@@ -691,7 +693,7 @@ fn validate_youtube_item_file_action(
         .any(|kind| kind.extensions().contains(&extension.as_str()));
     if !manifest && !media {
         return Err(BrokerError::new(
-            "YouTube item installs must be media of the root's kind or the item's manifest",
+            "YouTube item installs must be media of the root's kind, or the item's manifest or restore file",
         ));
     }
     Ok(())

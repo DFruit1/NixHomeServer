@@ -7,9 +7,10 @@
 //! and for a split, the packets of the file it was cut from. That is enough to
 //! undo or redo each download option here without downloading again:
 //!
-//! - split a single file into chapter files, or join chapter files back into
-//!   the original, both by copying coded packets (never re-encoding) and both
-//!   checked against the original's per-stream packet hashes;
+//! - split a single file into chapter files by copying coded packets (never
+//!   re-encoding), keeping a restore file (`crate::youtube_restore`) with the
+//!   original's container, and join chapter files back into the original byte
+//!   for byte, checked against its recorded SHA-256;
 //! - embed or remove the cover picture, again copying the coded streams;
 //! - move the item between "by channel", its own folder or a named
 //!   collection, and between libraries on the same storage.
@@ -25,6 +26,7 @@ use crate::{
     },
     config::{AppConfig, VisibleRoot, TOMBSTONE_FOLDER, YOUTUBE_ITEM_METADATA_FOLDER},
     media::{LibraryCategory, MediaKind},
+    youtube_restore::{self, StreamData},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -112,16 +114,41 @@ pub struct OriginalStream {
     pub codec: String,
     pub time_base: String,
     pub start_pts: i64,
-    pub packet_md5: String,
+    /// Length and SHA-256 of the stream's raw data (its packets end to end).
+    #[serde(default)]
+    pub bytes: u64,
+    #[serde(default)]
+    pub sha256: String,
 }
 
+/// The restore file kept as `<manifest stem>.restore` in the metadata folder.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreRef {
+    pub bytes: u64,
+    pub sha256: String,
+}
+
+/// The single file a split was cut from.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Original {
+    /// Its file name, restored on a join.
+    #[serde(default)]
+    pub name: String,
     /// With the dot, e.g. `.flac`.
     pub extension: String,
+    #[serde(default)]
+    pub bytes: u64,
+    #[serde(default)]
+    pub sha256: String,
+    /// Whether it carried the thumbnail as embedded cover art.
+    #[serde(default)]
+    pub cover_embedded: bool,
     pub method: String,
     pub streams: Vec<OriginalStream>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<RestoreRef>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -135,6 +162,9 @@ pub struct ManifestFile {
     pub start: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end: Option<f64>,
+    /// A chapter file's share of each of the original's streams.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streams: Option<Vec<StreamData>>,
 }
 
 impl ManifestFile {
@@ -244,6 +274,22 @@ impl Located {
 
     fn thumbnail_path(&self) -> String {
         self.in_folder(&format!("{YOUTUBE_ITEM_METADATA_FOLDER}/{}.jpg", self.stem))
+    }
+
+    fn restore_path(&self) -> String {
+        self.in_folder(&format!(
+            "{YOUTUBE_ITEM_METADATA_FOLDER}/{}.restore",
+            self.stem
+        ))
+    }
+
+    /// Whether a join can rebuild the original file byte for byte.
+    pub fn exact_restore(&self) -> bool {
+        self.manifest
+            .original
+            .as_ref()
+            .is_some_and(|original| original.restore.is_some() && !original.sha256.is_empty())
+            && exists_beneath(self.root_path(), &self.restore_path())
     }
 
     fn extension(&self) -> String {
@@ -725,6 +771,110 @@ async fn stream_hashes(
     ))
 }
 
+/// Run file work that takes as long as the media is large off the async threads.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|_| "A background step stopped unexpectedly.".to_string())?
+}
+
+/// Each programme stream's raw data (its packets end to end, no container).
+struct Gathered {
+    /// One file per stream, in programme order.
+    paths: Vec<PathBuf>,
+    totals: Vec<StreamData>,
+    /// The share of each input file, per stream.
+    per_file: Vec<Vec<StreamData>>,
+}
+
+impl Gathered {
+    fn open(&self) -> Result<Vec<File>, String> {
+        self.paths
+            .iter()
+            .map(|path| File::open(path).map_err(|error| format!("reopen stream data: {error}")))
+            .collect()
+    }
+
+    fn discard(&self) {
+        for path in &self.paths {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+/// Read the streams named by `specifiers` from `files` in order, appending
+/// each stream's raw data into one work file. This is what a restore file's
+/// map refers to, and it is the same whatever container the packets are in.
+async fn gather_stream_data(
+    tools: &Tools,
+    staging: &Staging,
+    files: &[&File],
+    specifiers: &[String],
+    label: &str,
+) -> Result<Gathered, String> {
+    let paths = (0..specifiers.len())
+        .map(|stream| staging.work_path(&format!("{label}.{stream}.bin")))
+        .collect::<Vec<_>>();
+    for path in &paths {
+        File::create(path).map_err(|error| format!("prepare stream data: {error}"))?;
+    }
+    let mut per_file = Vec::new();
+    for file in files {
+        let inherited = Inherited::new(vec![*file]);
+        let pieces = (0..specifiers.len())
+            .map(|stream| staging.work_path(&format!("{label}.piece.{stream}.bin")))
+            .collect::<Vec<_>>();
+        let mut args = strings(&["-nostdin", "-hide_banner", "-v", "error", "-y", "-i"]);
+        args.push(inherited.path(0));
+        for (specifier, piece) in specifiers.iter().zip(&pieces) {
+            args.extend(["-map".into(), format!("0:{specifier}")]);
+            args.extend(strings(&["-c", "copy", "-f", "data"]));
+            args.push(piece.display().to_string());
+        }
+        run(&tools.ffmpeg, &args, &inherited).await?;
+        let targets = paths.clone();
+        per_file.push(
+            blocking(move || {
+                pieces
+                    .iter()
+                    .zip(&targets)
+                    .map(|(piece, target)| {
+                        let mut source = File::open(piece)
+                            .map_err(|error| format!("read stream data: {error}"))?;
+                        let mut out = fs::OpenOptions::new()
+                            .append(true)
+                            .open(target)
+                            .map_err(|error| format!("collect stream data: {error}"))?;
+                        let data = youtube_restore::append_hashed(&mut source, &mut out)?;
+                        let _ = fs::remove_file(piece);
+                        Ok(data)
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .await?,
+        );
+    }
+    let hashed = paths.clone();
+    let totals = blocking(move || {
+        hashed
+            .iter()
+            .map(|path| {
+                File::open(path)
+                    .map_err(|error| format!("read stream data: {error}"))
+                    .and_then(|file| youtube_restore::hash_file(&file))
+            })
+            .collect::<Result<Vec<_>, String>>()
+    })
+    .await?;
+    Ok(Gathered {
+        paths,
+        totals,
+        per_file,
+    })
+}
+
 fn seconds(pts: i64, time_base: &str) -> f64 {
     let (numerator, denominator) = time_base
         .split_once('/')
@@ -1079,6 +1229,10 @@ struct PlanBuilder<'a> {
     removed: Vec<String>,
     added: Vec<String>,
     moved: Vec<String>,
+    /// For a join: whether the original file is rebuilt byte for byte.
+    exact: Option<bool>,
+    /// Things the preview should say about how the change is made.
+    notes: Vec<String>,
 }
 
 impl<'a> PlanBuilder<'a> {
@@ -1090,6 +1244,8 @@ impl<'a> PlanBuilder<'a> {
             removed: Vec::new(),
             added: Vec::new(),
             moved: Vec::new(),
+            exact: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1231,6 +1387,7 @@ fn summary(builder: &PlanBuilder<'_>, change: &Change, folder: &str, root: &Visi
         "removed": visible(&builder.removed),
         "added": visible(&builder.added),
         "moved": visible(&builder.moved),
+        "exact": builder.exact,
     })
 }
 
@@ -1336,6 +1493,7 @@ pub async fn prepare(
     };
     let root = destination_root.unwrap_or(&located.root);
     let summary = summary(&builder, change, &folder, root);
+    warnings.append(&mut builder.notes);
     warnings
         .push("Replaced files are moved to the library's _Tombstone folder, not deleted.".into());
     Ok(Prepared {
@@ -1410,23 +1568,37 @@ async fn split(
     let input = inherited.path(0);
     let streams = programme_streams(tools, &input, &inherited).await?;
     let starts = earliest_pts(tools, &input, &inherited).await?;
-    let source_hashes = stream_hashes(
+    // The original itself, and the raw data of each of its streams.
+    let hashed = source
+        .try_clone()
+        .map_err(|error| format!("read original: {error}"))?;
+    let original_data = blocking(move || youtube_restore::hash_file(&hashed)).await?;
+    let stream_indexes = streams
+        .iter()
+        .map(|stream| stream.index)
+        .collect::<Vec<_>>();
+    let source_data = gather_stream_data(
         tools,
-        vec!["-i".into(), input.clone()],
-        programme_maps(0),
-        &inherited,
+        staging,
+        &[&source],
+        &stream_indexes
+            .iter()
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>(),
+        "source",
     )
     .await?;
-    if source_hashes.len() != streams.len() {
-        return Err("The file's streams could not be read.".into());
-    }
-    let original = Original {
+    let mut original = Original {
+        name: parent_and_leaf(&media.path).1.to_string(),
         extension: extension.clone(),
+        bytes: original_data.bytes,
+        sha256: original_data.sha256.clone(),
+        cover_embedded: manifest.state.cover_embedded,
         method: "stream-copy".into(),
         streams: streams
             .iter()
-            .zip(&source_hashes)
-            .map(|(stream, hash)| {
+            .zip(&source_data.totals)
+            .map(|(stream, data)| {
                 Ok(OriginalStream {
                     kind: stream.kind.clone(),
                     codec: stream.codec.clone(),
@@ -1434,10 +1606,12 @@ async fn split(
                     start_pts: *starts
                         .get(&stream.index)
                         .ok_or("A stream has no timestamped packets.")?,
-                    packet_md5: hash.clone(),
+                    bytes: data.bytes,
+                    sha256: data.sha256.clone(),
                 })
             })
             .collect::<Result<Vec<_>, &str>>()?,
+        restore: None,
     };
 
     // Cut at the chapter starts, copying packets.
@@ -1521,43 +1695,90 @@ async fn split(
         finished.push((staged_name, staged_path, chapter.clone(), *start, *end));
     }
 
-    // The chapters read back to back must hold exactly the original packets.
+    // The finished chapters, read in order, must hold each stream's raw data
+    // exactly. They keep the programme streams first, so those are addressed
+    // by position (a cover comes after them).
     let opened = finished
         .iter()
         .map(|(_, path, ..)| File::open(path).map_err(|error| format!("reopen chapter: {error}")))
         .collect::<Result<Vec<_>, _>>()?;
-    let chapter_inherited = Inherited::new(opened.iter().collect());
-    let concat = staging.work_path("chapters.txt");
-    fs::write(
-        &concat,
-        (0..opened.len())
-            .map(|index| concat_line(&chapter_inherited.path(index)))
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n",
-    )
-    .map_err(|error| format!("prepare verification: {error}"))?;
-    let joined = stream_hashes(
+    let chapter_data = gather_stream_data(
         tools,
-        concat_input(&concat.display().to_string(), None),
-        positional_maps(0, streams.len()),
-        &chapter_inherited,
+        staging,
+        &opened.iter().collect::<Vec<_>>(),
+        &(0..streams.len())
+            .map(|position| position.to_string())
+            .collect::<Vec<_>>(),
+        "chapters",
     )
     .await?;
-    if joined != source_hashes {
+    drop(opened);
+    if chapter_data.totals != source_data.totals {
         return Err(
-            "The chapter files did not add up to the original exactly, so nothing was changed."
+            "The chapter files did not add up to the original's audio and video data exactly, so nothing was changed."
                 .into(),
         );
     }
-    drop(opened);
+
+    // Save what the chapters do not hold (the original's container), and
+    // prove that it and the chapters' stream data rebuild the original byte
+    // for byte before the original is let go.
+    let packet_list = run(
+        &tools.ffprobe,
+        &[
+            "-v".into(),
+            "error".into(),
+            "-show_entries".into(),
+            "packet=stream_index,pos,size".into(),
+            "-of".into(),
+            "csv=p=0:nk=0".into(),
+            input.clone(),
+        ],
+        &inherited,
+    )
+    .await?;
+    let packets = youtube_restore::parse_packet_list(&packet_list, &stream_indexes);
+    drop(packet_list);
+    let (restore_name, restore_path) = staging.next(".restore");
+    {
+        let original_file = source
+            .try_clone()
+            .map_err(|error| format!("read original: {error}"))?;
+        let dumps = source_data
+            .open()?
+            .into_iter()
+            .zip(source_data.totals.clone())
+            .collect::<Vec<_>>();
+        let chapter_dumps = chapter_data.open()?;
+        let sha256 = original_data.sha256.clone();
+        let output = restore_path.clone();
+        let expected = original_data.clone();
+        let restore_data = blocking(move || {
+            youtube_restore::build(&original_file, &sha256, &dumps, &packets, &output)?;
+            let restore = File::open(&output).map_err(|error| format!("reopen restore file: {error}"))?;
+            if youtube_restore::rebuilt_hash(&restore, &chapter_dumps)? != expected {
+                return Err(
+                    "The restore file would not rebuild the original exactly, so nothing was changed."
+                        .to_string(),
+                );
+            }
+            youtube_restore::hash_file(&restore)
+        })
+        .await?;
+        original.restore = Some(RestoreRef {
+            bytes: restore_data.bytes,
+            sha256: restore_data.sha256,
+        });
+    }
+    source_data.discard();
+    chapter_data.discard();
 
     // Plan: chapters in, sidecars along, original and old manifest out.
     let root_id = builder.root_id();
     let root_path = located.root_path().to_path_buf();
     let total = chapters.len();
     let mut files = Vec::new();
-    for (staged_name, staged_path, chapter, start, end) in &finished {
+    for (position, (staged_name, staged_path, chapter, start, end)) in finished.iter().enumerate() {
         let name = chapter_file_name(chapter, total, &extension);
         let path = join(&destination, &name);
         builder.claim(&root_path, &path)?;
@@ -1572,8 +1793,19 @@ async fn split(
             chapter: Some(chapter.index),
             start: Some(*start),
             end: Some(*end),
+            streams: chapter_data.per_file.get(position).cloned(),
         });
     }
+    let restore_destination = join(
+        &destination,
+        &format!("{YOUTUBE_ITEM_METADATA_FOLDER}/{}.restore", located.stem),
+    );
+    builder.claim(&root_path, &restore_destination)?;
+    builder.install(
+        &root_id,
+        (restore_name, staged_fingerprint(&restore_path)?),
+        &restore_destination,
+    );
     for (file, path, fingerprint) in present {
         if file.is_media() {
             continue;
@@ -1586,7 +1818,7 @@ async fn split(
         files.push(file.clone());
     }
     if moving {
-        move_thumbnail(builder, &root_id, &destination, &located.stem)?;
+        move_companions(builder, &root_id, &destination, &located.stem)?;
     }
     builder.tombstone(media_path, media_fingerprint);
     let state = ItemState {
@@ -1605,24 +1837,29 @@ async fn split(
     Ok(destination)
 }
 
-fn move_thumbnail(
+/// Take the item's files in the metadata folder (its archived thumbnail and,
+/// for a split, its restore file) along to `destination` under `stem`.
+fn move_companions(
     builder: &mut PlanBuilder<'_>,
     root_id: &str,
     destination: &str,
     stem: &str,
 ) -> Result<(), String> {
     let located = builder.located;
-    if !located.manifest.has_thumbnail
-        || !exists_beneath(located.root_path(), &located.thumbnail_path())
-    {
-        return Ok(());
+    for (current, extension) in [
+        (located.thumbnail_path(), "jpg"),
+        (located.restore_path(), "restore"),
+    ] {
+        if !exists_beneath(located.root_path(), &current) {
+            continue;
+        }
+        let fingerprint = fingerprint_beneath(located.root_path(), &current)?;
+        let target = join(
+            destination,
+            &format!("{YOUTUBE_ITEM_METADATA_FOLDER}/{stem}.{extension}"),
+        );
+        builder.relocate(root_id, &current, &target, &fingerprint);
     }
-    let fingerprint = fingerprint_beneath(located.root_path(), &located.thumbnail_path())?;
-    let target = join(
-        destination,
-        &format!("{YOUTUBE_ITEM_METADATA_FOLDER}/{stem}.jpg"),
-    );
-    builder.relocate(root_id, &located.thumbnail_path(), &target, &fingerprint);
     Ok(())
 }
 
@@ -1635,15 +1872,6 @@ fn concat_input(list: &str, offset: Option<f64>) -> Vec<String> {
     args.extend(strings(&["-f", "concat", "-safe", "0", "-i"]));
     args.push(list.into());
     args
-}
-
-/// The first `count` streams of `input`. Joined chapter files are mapped by
-/// position: the concat reader drops the flag that tells a cover from video,
-/// and chapter files keep the programme streams first.
-fn positional_maps(input: usize, count: usize) -> Vec<String> {
-    (0..count)
-        .flat_map(|index| ["-map".to_string(), format!("{input}:{index}")])
-        .collect()
 }
 
 pub fn parse_segment_list(csv: &str) -> Result<Vec<(String, f64, f64)>, String> {
@@ -1692,6 +1920,209 @@ async fn join_chapters(
         .iter()
         .map(|(_, path, fingerprint)| open_media(located, path, fingerprint))
         .collect::<Result<Vec<_>, _>>()?;
+
+    // Every chapter must still hold its share of each stream, and together
+    // they must hold the original's streams exactly. Only the coded data
+    // counts: a chapter that was re-tagged or given another cover is fine.
+    let positions = (0..original.streams.len())
+        .map(|position| position.to_string())
+        .collect::<Vec<_>>();
+    let chapter_data = gather_stream_data(
+        tools,
+        staging,
+        &opened.iter().collect::<Vec<_>>(),
+        &positions,
+        "chapters",
+    )
+    .await?;
+    for ((file, _, _), found) in chapters.iter().zip(&chapter_data.per_file) {
+        if file
+            .streams
+            .as_ref()
+            .is_some_and(|recorded| recorded != found)
+        {
+            return Err(format!(
+                "{} no longer holds the audio and video it was split with, so the chapters were not joined.",
+                file.path
+            ));
+        }
+    }
+    let recorded = original
+        .streams
+        .iter()
+        .map(|stream| StreamData {
+            bytes: stream.bytes,
+            sha256: stream.sha256.clone(),
+        })
+        .collect::<Vec<_>>();
+    let hashes_recorded = recorded.iter().all(|stream| !stream.sha256.is_empty());
+    if hashes_recorded && chapter_data.totals != recorded {
+        return Err(
+            "The chapter files no longer add up to the original's audio and video data, so they were not joined."
+                .into(),
+        );
+    }
+
+    // With the restore file, the original is rebuilt byte for byte.
+    let exact = match rebuild_exactly(staging, located, original, &chapter_data).await {
+        Ok(rebuilt) => rebuilt,
+        Err(reason) => {
+            builder.notes.push(format!(
+                "{reason} The chapters are joined into a new file instead: its audio and video data are identical to the original's, but its tags, cover and the timing between chapters are rebuilt and can differ slightly."
+            ));
+            None
+        }
+    };
+    let (staged_name, staged_path, name, cover_embedded) = match exact {
+        Some((staged_name, staged_path)) => {
+            builder.exact = Some(true);
+            builder.notes.push(
+                "The original file is rebuilt byte for byte and matched its recorded SHA-256."
+                    .into(),
+            );
+            let name = if original.name.is_empty() || original.name.contains('/') {
+                format!("{}{}", manifest.title(), original.extension)
+            } else {
+                original.name.clone()
+            };
+            (staged_name, staged_path, name, original.cover_embedded)
+        }
+        None => {
+            builder.exact = Some(false);
+            let (staged_name, staged_path, cover_embedded) =
+                join_streams(staging, tools, located, original, &opened).await?;
+            // The new file must hold exactly the chapters' stream data.
+            let output =
+                File::open(&staged_path).map_err(|error| format!("reopen joined file: {error}"))?;
+            let joined =
+                gather_stream_data(tools, staging, &[&output], &positions, "joined").await?;
+            joined.discard();
+            if joined.totals != chapter_data.totals {
+                return Err(
+                    "The joined file does not hold the chapters' audio and video data exactly, so nothing was changed."
+                        .into(),
+                );
+            }
+            (
+                staged_name,
+                staged_path,
+                format!("{}{}", manifest.title(), original.extension),
+                cover_embedded,
+            )
+        }
+    };
+    chapter_data.discard();
+    drop(opened);
+
+    let root_id = builder.root_id();
+    let root_path = located.root_path().to_path_buf();
+    let path = join(&located.folder, &name);
+    builder.claim(&root_path, &path)?;
+    builder.install(
+        &root_id,
+        (staged_name, staged_fingerprint(&staged_path)?),
+        &path,
+    );
+    let mut files = vec![ManifestFile {
+        path: name,
+        role: "media".into(),
+        chapter: None,
+        start: None,
+        end: None,
+        streams: None,
+    }];
+    for (file, path, fingerprint) in present {
+        if file.is_media() {
+            builder.tombstone(path, fingerprint);
+        } else {
+            files.push(file.clone());
+        }
+    }
+    // The chapters are gone, so their restore file has nothing left to restore.
+    if exists_beneath(&root_path, &located.restore_path()) {
+        let fingerprint = fingerprint_beneath(&root_path, &located.restore_path())?;
+        builder.tombstone(&located.restore_path(), &fingerprint);
+    }
+    let state = ItemState {
+        split: false,
+        cover_embedded,
+    };
+    let bytes = rewritten_manifest(located, change, username, &state, None, &files)?;
+    let folder = located.folder.clone();
+    replace_manifest(builder, staging, &root_id, &folder, &located.stem, &bytes)?;
+    Ok(folder)
+}
+
+/// Rebuild the original from its restore file and the chapters' stream data
+/// into a staged file, accepted only with the original's size and SHA-256.
+/// `Ok(None)` is never returned; an `Err` says why an exact rebuild is not
+/// possible, and the caller falls back to joining the streams.
+async fn rebuild_exactly(
+    staging: &mut Staging,
+    located: &Located,
+    original: &Original,
+    chapter_data: &Gathered,
+) -> Result<Option<(String, PathBuf)>, String> {
+    let reference = original
+        .restore
+        .clone()
+        .filter(|_| !original.sha256.is_empty())
+        .ok_or("This split has no restore file recorded.")?;
+    let restore = open_regular_file_beneath(located.root_path(), &located.restore_path())
+        .map_err(|_| "The restore file is missing.".to_string())?;
+    let (staged_name, staged_path) = staging.next(&original.extension);
+    let dumps = chapter_data.open()?;
+    let output = staged_path.clone();
+    let expected = StreamData {
+        bytes: original.bytes,
+        sha256: original.sha256.clone(),
+    };
+    let outcome = blocking(move || {
+        let found = youtube_restore::hash_file(&restore)?;
+        if found.sha256 != reference.sha256 || found.bytes != reference.bytes {
+            return Err("The restore file has changed since the split.".to_string());
+        }
+        let file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o660)
+            .open(&output)
+            .map_err(|error| format!("stage rebuilt file: {error}"))?;
+        let mut hashing = youtube_restore::Hashing::new(std::io::BufWriter::new(file));
+        youtube_restore::rebuild(&restore, &dumps, &mut hashing)?;
+        let (rebuilt, writer) = hashing.finish().map_err(|error| error.to_string())?;
+        writer
+            .into_inner()
+            .map_err(|error| error.to_string())?
+            .sync_all()
+            .map_err(|error| error.to_string())?;
+        if rebuilt != expected {
+            return Err("The rebuilt file did not match the original's SHA-256.".to_string());
+        }
+        Ok(())
+    })
+    .await;
+    match outcome {
+        Ok(()) => Ok(Some((staged_name, staged_path))),
+        Err(reason) => {
+            let _ = fs::remove_file(&staged_path);
+            Err(reason)
+        }
+    }
+}
+
+/// Join the chapters' streams into a new container: the audio and video data
+/// are the original's, but the container is rebuilt. Used only when the
+/// restore file is unavailable. Returns the staged file and whether it carries
+/// the cover.
+async fn join_streams(
+    staging: &mut Staging,
+    tools: &Tools,
+    located: &Located,
+    original: &Original,
+    opened: &[File],
+) -> Result<(String, PathBuf, bool), String> {
+    let manifest = &located.manifest;
     let thumbnail = thumbnail_file(located);
     let cover = (manifest.state.cover_embedded && cover_supported(&original.extension))
         .then_some(thumbnail.as_ref())
@@ -1777,61 +2208,7 @@ async fn join_chapters(
     run(&tools.ffmpeg, &args, &inherited).await?;
     drop(inherited);
 
-    // The joined file must hold exactly the original's packets.
-    let output =
-        File::open(&staged_path).map_err(|error| format!("reopen joined file: {error}"))?;
-    let output_inherited = Inherited::new(vec![&output]);
-    let hashes = stream_hashes(
-        tools,
-        vec!["-i".into(), output_inherited.path(0)],
-        programme_maps(0),
-        &output_inherited,
-    )
-    .await?;
-    let expected = original
-        .streams
-        .iter()
-        .map(|stream| stream.packet_md5.to_ascii_lowercase())
-        .collect::<Vec<_>>();
-    if hashes != expected {
-        return Err(
-            "The joined file does not match the original exactly, so nothing was changed.".into(),
-        );
-    }
-    drop(opened);
-
-    let root_id = builder.root_id();
-    let root_path = located.root_path().to_path_buf();
-    let name = format!("{}{}", manifest.title(), original.extension);
-    let path = join(&located.folder, &name);
-    builder.claim(&root_path, &path)?;
-    builder.install(
-        &root_id,
-        (staged_name, staged_fingerprint(&staged_path)?),
-        &path,
-    );
-    let mut files = vec![ManifestFile {
-        path: name,
-        role: "media".into(),
-        chapter: None,
-        start: None,
-        end: None,
-    }];
-    for (file, path, fingerprint) in present {
-        if file.is_media() {
-            builder.tombstone(path, fingerprint);
-        } else {
-            files.push(file.clone());
-        }
-    }
-    let state = ItemState {
-        split: false,
-        cover_embedded: cover.is_some(),
-    };
-    let bytes = rewritten_manifest(located, change, username, &state, None, &files)?;
-    let folder = located.folder.clone();
-    replace_manifest(builder, staging, &root_id, &folder, &located.stem, &bytes)?;
-    Ok(folder)
+    Ok((staged_name, staged_path, cover.is_some()))
 }
 
 /// Embed or remove the cover in every media file, copying the streams.
@@ -1998,14 +2375,19 @@ fn move_item(
             &destination,
             &format!("{YOUTUBE_ITEM_METADATA_FOLDER}/{stem}.jpg"),
         );
+        let restore_path = join(
+            &destination,
+            &format!("{YOUTUBE_ITEM_METADATA_FOLDER}/{stem}.restore"),
+        );
         if !exists_beneath(destination_path, &manifest_path)
             && !exists_beneath(destination_path, &thumbnail_path)
+            && !exists_beneath(destination_path, &restore_path)
         {
             break;
         }
         stem = format!("{} ({attempt})", located.stem);
     }
-    move_thumbnail(builder, &root_id, &destination, &stem)?;
+    move_companions(builder, &root_id, &destination, &stem)?;
     if !same_root {
         warnings.push(format!(
             "The item moves to {}; players that index that library will pick it up after their next scan.",
