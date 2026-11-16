@@ -206,7 +206,14 @@ BEGIN
         'time_estimated',NEW.recorded_at IS NULL OR NEW.time_valid IS NOT TRUE,'received_at',NEW.received_at);
     SELECT * INTO open_a FROM alerts WHERE device_id=NEW.device_id AND kind=c.kind AND state='open'
         AND NOT superseded AND COALESCE(detail->>'subject','')=c.subject ORDER BY opened_at DESC,id DESC LIMIT 1;
-    SELECT max(resolved_at) INTO last_resolved FROM alerts WHERE device_id=NEW.device_id AND kind=c.kind
+    -- The logger-time end of the latest closed episode. An operator's hand
+    -- resolution happens on the server's clock: it silences the occurrence
+    -- that was on screen (its opening, repeats and the logger's exit, if one
+    -- arrives later), not later-reported evidence of a separate occurrence
+    -- or of a condition still active after it.
+    SELECT max(CASE WHEN resolved_by IS NULL THEN resolved_at
+            ELSE GREATEST(opened_at,(detail->>'last_at')::timestamptz,(detail->>'exit_at')::timestamptz) END)
+        INTO last_resolved FROM alerts WHERE device_id=NEW.device_id AND kind=c.kind
         AND state='resolved' AND NOT superseded AND COALESCE(detail->>'subject','')=c.subject;
 
     IF c.action IN ('open','latch') THEN
@@ -218,7 +225,7 @@ BEGIN
                 WHERE id=open_a.id;
             INSERT INTO alert_event_links(event_id,device_id,alert_id,role,kind,subject,action,at)
                 VALUES(NEW.id,NEW.device_id,open_a.id,'repeat',c.kind,c.subject,c.action,ev_at);
-        ELSIF open_a.id IS NOT NULL OR (last_resolved IS NOT NULL AND ev_at<last_resolved) THEN
+        ELSIF open_a.id IS NOT NULL OR (last_resolved IS NOT NULL AND ev_at<=last_resolved) THEN
             -- Older than the open episode or one already closed: history,
             -- paired with its exit when that arrives.
             INSERT INTO alert_event_links(event_id,device_id,role,kind,subject,action,at)
@@ -236,6 +243,21 @@ BEGIN
         UPDATE alerts SET state='resolved',resolved_at=ev_at,
                 detail=detail||jsonb_build_object('resolution','logger','resolved_event_id',NEW.id,'exit',NEW.details)
             WHERE id=open_a.id AND state='open';
+        INSERT INTO alert_event_links(event_id,device_id,alert_id,role,kind,subject,action,at)
+            VALUES(NEW.id,NEW.device_id,open_a.id,'close',c.kind,c.subject,c.action,ev_at);
+        RETURN NEW;
+    END IF;
+    -- The logger's exit of an episode an operator already resolved by hand
+    -- ends that episode in logger time.
+    SELECT * INTO open_a FROM alerts WHERE device_id=NEW.device_id AND kind=c.kind AND state='resolved'
+        AND resolved_by IS NOT NULL AND NOT superseded AND COALESCE(detail->>'subject','')=c.subject
+        AND NOT detail ? 'exit_at' AND opened_at<=ev_at
+        ORDER BY opened_at DESC,id DESC LIMIT 1;
+    IF open_a.id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM alerts n WHERE n.device_id=NEW.device_id
+            AND n.kind=c.kind AND NOT n.superseded AND COALESCE(n.detail->>'subject','')=c.subject
+            AND n.opened_at>open_a.opened_at AND n.opened_at<=ev_at) THEN
+        UPDATE alerts SET detail=detail||jsonb_build_object('exit_at',ev_at,'resolved_event_id',NEW.id,'exit',NEW.details)
+            WHERE id=open_a.id;
         INSERT INTO alert_event_links(event_id,device_id,alert_id,role,kind,subject,action,at)
             VALUES(NEW.id,NEW.device_id,open_a.id,'close',c.kind,c.subject,c.action,ev_at);
         RETURN NEW;
