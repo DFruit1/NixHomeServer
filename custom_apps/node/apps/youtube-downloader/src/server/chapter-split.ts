@@ -1,8 +1,10 @@
 import type { ChildProcess } from 'node:child_process';
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { runCommand, type SpawnResult } from './child.js';
 import { sanitizeSegment } from './paths.js';
+import { buildRestoreFile, hashFileInto, parsePacketList, rebuiltSha256, sha256File } from './restore-data.js';
 import type { Chapter } from '../shared/types.js';
 
 const MEDIA_EXTENSIONS = new Set([
@@ -49,24 +51,32 @@ export const findDownloadedMedia = async (directory: string): Promise<string> =>
 };
 
 /*
- * Lossless chapter splitting.
+ * Lossless, reversible chapter splitting.
  *
  * Nothing is re-encoded. ffmpeg's segment muxer copies the coded packets of
  * the source into one file per chapter, so every packet lands in exactly one
- * chapter file and concatenating the chapter files gives back the source's
- * packets bit for bit. Each split is checked for exactly that before it is
- * used: the per-stream packet hash of the source must equal the hash of the
- * chapter files read back to back.
+ * chapter file. Two things are then proven before the split is used:
+ *
+ * 1. Each stream's raw data (its packets end to end) read from the chapter
+ *    files in order has the same SHA-256 as the source's. No audio or video
+ *    is lost, duplicated or reordered.
+ * 2. A restore file (`restore-data.ts`) holding the source's container bytes
+ *    and the place of every run of stream data rebuilds the source from that
+ *    raw data byte for byte, with the source's SHA-256. Joining the chapters
+ *    later therefore gives back the identical file: same timestamps, tags,
+ *    cover and index, not merely the same decoded sound and picture.
  *
  * Packets cannot be cut in half, so a chapter boundary moves to the nearest
  * packet at or after the chapter's start: within a few milliseconds for audio,
  * and to the next keyframe (usually under a few seconds) for video. The cut
- * points actually used are recorded per chapter file.
+ * points actually used, and each chapter's share of every stream, are
+ * recorded per chapter file.
  *
- * Containers that trim an encoder delay (AAC in MP4/M4A) lose that trim on
- * the first chapter, which then starts with ~21 ms of decoder warm-up. The
- * source's earliest timestamp per stream is recorded so a recombination can
- * restore the trim and decode to exactly the source's samples and frames.
+ * A chapter file is a new container around the same packets: its timestamps
+ * start again at zero, it carries its own title and track tags, and the first
+ * chapter loses any encoder-delay trim (AAC in MP4/M4A starts with ~21 ms of
+ * decoder warm-up). None of that is carried back: a join rebuilds the
+ * original from the restore file, and ignores the chapters' own containers.
  */
 
 /** One coded stream of the source, as needed to recombine and verify it. */
@@ -77,8 +87,9 @@ export type SplitStream = {
   timeBase: string;
   /** The stream's earliest presentation timestamp in the source. */
   startPts: number;
-  /** MD5 over every packet of the stream, from ffmpeg's `streamhash` muxer. */
-  packetMd5: string;
+  /** Length and SHA-256 of the stream's raw data (its packets end to end). */
+  bytes: number;
+  sha256: string;
 };
 
 export type SplitPart = {
@@ -87,12 +98,18 @@ export type SplitPart = {
   /** Where the chapter file actually starts and ends in the source, in seconds. */
   start: number;
   end: number;
+  /** This chapter's share of each stream's raw data, in programme order. */
+  streams: { bytes: number; sha256: string }[];
 };
 
 export type LosslessSplit = {
   extension: string;
+  /** The file the chapters were cut from. */
+  original: { name: string; bytes: number; sha256: string };
   streams: SplitStream[];
   parts: SplitPart[];
+  /** The verified restore file, left at `SplitOptions.restoreFile`. */
+  restore: { file: string; bytes: number; sha256: string };
 };
 
 type ChildHooks = {
@@ -108,6 +125,8 @@ export type SplitOptions = {
   outputDir: string;
   /** Private scratch space, removed afterwards. */
   workDir: string;
+  /** Where to write the restore file; it must not exist yet. */
+  restoreFile: string;
   /** Embedded as cover art when the container supports it. */
   coverPath?: string;
   /** Total source length in seconds, used only to size command timeouts. */
@@ -205,34 +224,19 @@ export const buildChapterFinishArgs = (
 };
 
 /**
- * Per-stream packet hashes of `inputArgs`: of its programme streams, or of
- * its first `streamCount` streams. Joined chapter files are hashed by
- * position because the concat reader drops the attached-picture flag that
- * otherwise tells a cover apart from video; the finished chapters keep the
- * programme streams first and any cover after them.
+ * Write the raw data of the given streams of `input` (their packets end to
+ * end, no container) to one file each, in a single pass.
  */
-export const buildStreamHashArgs = (inputArgs: string[], streamCount?: number): string[] => [
+export const buildDumpArgs = (input: string, streamSpecifiers: string[], outputs: string[]): string[] => [
   '-nostdin',
   '-hide_banner',
   '-v',
   'error',
-  ...inputArgs,
-  ...(streamCount == null ? PROGRAMME_STREAMS : Array.from({ length: streamCount }, (_, index) => ['-map', `0:${index}`]).flat()),
-  '-c',
-  'copy',
-  '-f',
-  'streamhash',
-  '-hash',
-  'md5',
-  '-',
+  '-y',
+  '-i',
+  input,
+  ...streamSpecifiers.flatMap((specifier, index) => ['-map', `0:${specifier}`, '-c', 'copy', '-f', 'data', outputs[index]]),
 ];
-
-/** Lines of `streamhash` output (`0,a,MD5=…`) in stream order. */
-export const parseStreamHashes = (output: string): string[] =>
-  output
-    .split(/\r?\n/)
-    .map((line) => /^\d+,[a-z],MD5=([0-9a-f]{32})$/.exec(line.trim())?.[1])
-    .filter((hash): hash is string => hash != null);
 
 /** `filename,start,end` rows of the segment muxer's CSV list. */
 export const parseSegmentList = (csv: string): { name: string; start: number; end: number }[] =>
@@ -288,7 +292,7 @@ export const splitLosslessly = async (options: SplitOptions): Promise<LosslessSp
   await mkdir(path.join(workDir, 'parts'), { recursive: true, mode: 0o750 });
   await mkdir(outputDir, { recursive: true, mode: 0o750 });
   try {
-    // 1. The source's programme streams, their earliest timestamps and packet hashes.
+    // 1. The source's programme streams and their earliest timestamps.
     const probe = parseJson<{ streams?: ProbeStream[] }>(
       (
         await run(
@@ -307,7 +311,7 @@ export const splitLosslessly = async (options: SplitOptions): Promise<LosslessSp
     if (!programme.some((stream) => stream.codec_type === 'audio')) {
       throw new Error('the source has no audio stream');
     }
-    const packets = parseJson<{ packets?: { stream_index?: number; pts?: number }[] }>(
+    const firstPackets = parseJson<{ packets?: { stream_index?: number; pts?: number }[] }>(
       (
         await run(
           'ffprobe',
@@ -317,12 +321,22 @@ export const splitLosslessly = async (options: SplitOptions): Promise<LosslessSp
       ).stdout,
       'the source timestamps',
     );
-    const sourceHashes = parseStreamHashes((await run('ffmpeg', buildStreamHashArgs(['-i', input]), 'hashing the source')).stdout);
-    if (sourceHashes.length !== programme.length) {
-      throw new Error(`hashed ${sourceHashes.length} source streams instead of ${programme.length}`);
-    }
+
+    // 2. The source itself, and the raw data of each of its streams.
+    const original = await sha256File(input);
+    const sourceDumps = programme.map((_, position) => path.join(workDir, `source.${position}.bin`));
+    await run(
+      'ffmpeg',
+      buildDumpArgs(
+        input,
+        programme.map((stream) => String(stream.index)),
+        sourceDumps,
+      ),
+      'reading the source streams',
+    );
+    const sourceData = await Promise.all(sourceDumps.map((file) => sha256File(file)));
     const streams: SplitStream[] = programme.map((stream, position) => {
-      const starts = (packets.packets ?? [])
+      const starts = (firstPackets.packets ?? [])
         .filter((packet) => packet.stream_index === stream.index && typeof packet.pts === 'number')
         .map((packet) => packet.pts as number);
       if (starts.length === 0) {
@@ -333,11 +347,12 @@ export const splitLosslessly = async (options: SplitOptions): Promise<LosslessSp
         codec: stream.codec_name ?? 'unknown',
         timeBase: stream.time_base ?? '1/1000',
         startPts: Math.min(...starts),
-        packetMd5: sourceHashes[position],
+        bytes: sourceData[position].bytes,
+        sha256: sourceData[position].sha256,
       };
     });
 
-    // 2. Cut at the chapter starts without touching the coded data.
+    // 3. Cut at the chapter starts without touching the coded data.
     const listFile = path.join(workDir, 'segments.csv');
     await run('ffmpeg', buildSegmentArgs(input, chapters, listFile, path.join(workDir, 'parts', `%05d${extension}`)), 'splitting the chapters');
     const segments = parseSegmentList(await readFile(listFile, 'utf8'));
@@ -345,7 +360,7 @@ export const splitLosslessly = async (options: SplitOptions): Promise<LosslessSp
       throw new Error(`the split produced ${segments.length} files for ${chapters.length} chapters`);
     }
 
-    // 3. Name, tag and decorate each chapter; streams are copied, never re-encoded.
+    // 4. Name, tag and decorate each chapter; streams are copied, never re-encoded.
     const parts: SplitPart[] = [];
     for (const [position, segment] of segments.entries()) {
       const chapter = chapters[position];
@@ -355,27 +370,72 @@ export const splitLosslessly = async (options: SplitOptions): Promise<LosslessSp
         buildChapterFinishArgs(path.join(workDir, 'parts', path.basename(segment.name)), file, chapter, chapters.length, coverPath),
         `finishing chapter ${chapter.index}`,
       );
-      parts.push({ chapter, file, start: segment.start, end: segment.end });
+      parts.push({ chapter, file, start: segment.start, end: segment.end, streams: [] });
+    }
+    await rm(path.join(workDir, 'parts'), { recursive: true, force: true });
+
+    // 5. The finished chapter files, read in order, must hold each stream's
+    //    raw data exactly. A chapter keeps the programme streams first, so
+    //    they are addressed by position (a cover comes after them).
+    const running = programme.map(() => createHash('sha256'));
+    for (const part of parts) {
+      const chapterDumps = programme.map((_, position) => path.join(workDir, `chapter.${position}.bin`));
+      await run(
+        'ffmpeg',
+        buildDumpArgs(
+          part.file,
+          programme.map((_, position) => String(position)),
+          chapterDumps,
+        ),
+        `reading chapter ${part.chapter.index}`,
+      );
+      for (const [position, dump] of chapterDumps.entries()) {
+        const own = createHash('sha256');
+        const bytes = await hashFileInto(dump, [own, running[position]]);
+        part.streams.push({ bytes, sha256: own.digest('hex') });
+        await rm(dump, { force: true });
+      }
+    }
+    for (const [position, hash] of running.entries()) {
+      if (hash.digest('hex') !== streams[position].sha256) {
+        throw new Error('the chapter files do not add up to the original audio and video data');
+      }
     }
 
-    // 4. The chapter files, read back to back, must hold the source's packets exactly.
-    const concatList = path.join(workDir, 'chapters.txt');
-    await writeFile(concatList, `${parts.map((part) => concatListLine(part.file)).join('\n')}\n`, { mode: 0o640 });
-    const joinedHashes = parseStreamHashes(
+    // 6. Save what the chapters do not hold (the source's container), and
+    //    prove that it and the stream data rebuild the source byte for byte.
+    const packetList = parsePacketList(
       (
         await run(
-          'ffmpeg',
-          buildStreamHashArgs(['-auto_convert', '0', '-f', 'concat', '-safe', '0', '-i', concatList], streams.length),
-          'verifying the chapters',
+          'ffprobe',
+          ['-v', 'error', '-show_entries', 'packet=stream_index,pos,size', '-of', 'csv=p=0:nk=0', input],
+          'reading the source packets',
         )
       ).stdout,
+      programme.map((stream) => stream.index),
     );
-    if (joinedHashes.join() !== sourceHashes.join()) {
-      throw new Error('the chapter files do not add up to the original packets');
+    await buildRestoreFile({
+      original: input,
+      originalSha256: original.sha256,
+      dumps: sourceDumps.map((file, position) => ({ file, ...sourceData[position] })),
+      packets: packetList,
+      output: options.restoreFile,
+    });
+    const rebuilt = await rebuiltSha256(options.restoreFile, sourceDumps);
+    if (rebuilt.sha256 !== original.sha256 || rebuilt.bytes !== original.bytes) {
+      throw new Error('the restore file does not rebuild the original exactly');
     }
-    return { extension, streams, parts };
+    const restore = await sha256File(options.restoreFile);
+    return {
+      extension,
+      original: { name: path.basename(input), ...original },
+      streams,
+      parts,
+      restore: { file: options.restoreFile, ...restore },
+    };
   } catch (error) {
     await rm(outputDir, { recursive: true, force: true });
+    await rm(options.restoreFile, { force: true });
     throw error;
   } finally {
     await rm(workDir, { recursive: true, force: true });

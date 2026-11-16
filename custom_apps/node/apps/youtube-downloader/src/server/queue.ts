@@ -41,6 +41,7 @@ import {
 } from './youtube-folders.js';
 import {
   ITEM_METADATA_FOLDER,
+  archiveRestoreFile,
   archiveThumbnail,
   buildItemManifest,
   manifestStem,
@@ -511,6 +512,7 @@ export class JobQueue {
         chapters: source.chapters,
         outputDir: path.join(tempDir, 'chapters'),
         workDir: path.join(tempDir, 'split-work'),
+        restoreFile: path.join(tempDir, 'split.restore'),
         coverPath: embedCover ? await findThumbnail(tempDir) : undefined,
         durationSeconds: source.durationSeconds,
         childHooks: {
@@ -556,6 +558,17 @@ export class JobQueue {
       reserved = await prepareItemMetadataFolder(itemFolder, manifestStem(source));
       const thumbnail = await findThumbnail(tempDir);
       const archived = thumbnail ? await archiveThumbnail(thumbnail, reserved.folder, reserved.stem) : undefined;
+      let hasRestore = false;
+      if (split) {
+        try {
+          await archiveRestoreFile(split.restore.file, reserved.folder, reserved.stem);
+          hasRestore = true;
+        } catch (error) {
+          // The chapters still hold every packet; only the byte-exact
+          // rebuild of the original's container is unavailable.
+          await this.db.addEvent(job.id, 'metadata', `could not keep the restore file: ${errorMessage(error)}`);
+        }
+      }
       const manifest = buildItemManifest({
         jobId: job.id,
         downloadedBy: job.createdBy,
@@ -566,6 +579,7 @@ export class JobQueue {
         itemFolder,
         files: itemFiles,
         hasThumbnail: archived != null,
+        hasRestore,
       });
       await writeItemManifest(reserved.folder, reserved.stem, manifest);
     } catch (error) {

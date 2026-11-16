@@ -2,6 +2,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config.js';
 import { Database } from '../db.js';
@@ -453,7 +454,7 @@ process.stdout.write('[download] 100% of 1MiB\\n');
       // The manifest ties each chapter file to its chapter and records the
       // original's streams, so the split can be joined back exactly.
       const metadata = path.join(outputFolder, '.youtube-downloader');
-      expect((await readdir(metadata)).sort()).toEqual(['.nomedia', 'abc123.jpg', 'abc123.json']);
+      expect((await readdir(metadata)).sort()).toEqual(['.nomedia', 'abc123.jpg', 'abc123.json', 'abc123.restore']);
       const manifest = JSON.parse(await readFile(path.join(metadata, 'abc123.json'), 'utf8'));
       expect(manifest.chapters).toEqual([
         { index: 1, title: 'Intro', startTime: 0, endTime: 2 },
@@ -468,8 +469,19 @@ process.stdout.write('[download] 100% of 1MiB\\n');
       expect(manifest.files[2].start).toBeGreaterThanOrEqual(2);
       expect(manifest.files[2].start).toBeLessThan(2.1);
       expect(manifest.state).toEqual({ split: true, coverEmbedded: true });
-      expect(manifest.original).toMatchObject({ extension: '.flac', method: 'stream-copy', streams: [{ type: 'audio', codec: 'flac' }] });
-      expect(manifest.original.streams[0].packetMd5).toMatch(/^[0-9a-f]{32}$/);
+      expect(manifest.original).toMatchObject({
+        name: 'Test Song.flac',
+        extension: '.flac',
+        coverEmbedded: true,
+        method: 'stream-copy',
+        streams: [{ type: 'audio', codec: 'flac' }],
+      });
+      // The restore file in the metadata folder is the one the manifest names.
+      expect(manifest.original.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(manifest.original.restore.sha256).toBe(
+        createHash('sha256').update(await readFile(path.join(metadata, 'abc123.restore'))).digest('hex'),
+      );
+      expect(manifest.files[1].streams[0].bytes + manifest.files[2].streams[0].bytes).toBe(manifest.original.streams[0].bytes);
       expect(manifest.hasThumbnail).toBe(true);
     });
 

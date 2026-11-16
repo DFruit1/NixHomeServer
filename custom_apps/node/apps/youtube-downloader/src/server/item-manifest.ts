@@ -48,6 +48,12 @@ export type ManifestFile = {
    */
   start?: number;
   end?: number;
+  /**
+   * A `chapter` file's share of each of the original's streams: the length
+   * and SHA-256 of its raw stream data, in the order of `original.streams`.
+   * A join checks each chapter against these, so a damaged one is named.
+   */
+  streams?: { bytes: number; sha256: string }[];
 };
 
 /** One coded stream of the original a split was cut from. */
@@ -110,16 +116,32 @@ export type ItemManifest = {
   };
   /**
    * The single file a split was cut from, present while `state.split` is set.
-   * The chapter files concatenated in chapter order hold exactly these
-   * packets (`packetMd5`); shifting each stream to start at `startPts` again
-   * restores the original's timing, so a recombination is bit-exact.
+   *
+   * The chapter files, read in chapter order, hold exactly its streams: each
+   * stream's raw data (its packets end to end) has the recorded length and
+   * SHA-256. With `restore`, a join rebuilds this file byte for byte, to
+   * `sha256`. Without it, the streams can still be joined into a new
+   * container that starts each stream at `startPts` again, which keeps the
+   * audio and video data but not the original's exact timestamps and tags.
    */
   original?: {
+    /** The original's file name, restored on a join. */
+    name: string;
     /** File extension of the original, with the dot. */
     extension: string;
+    bytes: number;
+    sha256: string;
+    /** Whether the original carried the thumbnail as embedded cover art. */
+    coverEmbedded: boolean;
     method: 'stream-copy';
     /** Video streams first, then audio, as ffmpeg's `-map 0:V? -map 0:a` orders them. */
     streams: ManifestStream[];
+    /**
+     * The restore file kept as `<manifest stem>.restore` in the metadata
+     * folder (`restore-data.ts`): the original's container bytes and the
+     * place of every run of stream data between them.
+     */
+    restore?: { bytes: number; sha256: string };
   };
   files: ManifestFile[];
   /** Whether the original YouTube thumbnail is kept as `<manifest stem>.jpg` in the metadata folder. */
@@ -188,7 +210,7 @@ export const classifyItemFile = (relativePath: string, parts: SplitPart[] | unde
     const chapter = parts ? CHAPTER_FILE.exec(name)?.[1] : undefined;
     const part = chapter ? parts?.find((candidate) => candidate.chapter.index === Number.parseInt(chapter, 10)) : undefined;
     return part
-      ? { path: relativePath, role: 'chapter', chapter: part.chapter.index, start: part.start, end: part.end }
+      ? { path: relativePath, role: 'chapter', chapter: part.chapter.index, start: part.start, end: part.end, streams: part.streams }
       : { path: relativePath, role: 'media' };
   }
   if (isSubtitleSidecar(name)) {
@@ -241,6 +263,8 @@ export type BuildItemManifestInput = {
   /** Absolute paths of the files this download wrote into `itemFolder`. */
   files: string[];
   hasThumbnail: boolean;
+  /** Whether the split's restore file was kept in the metadata folder. */
+  hasRestore?: boolean;
 };
 
 export const buildItemManifest = (input: BuildItemManifestInput): ItemManifest => {
@@ -280,7 +304,18 @@ export const buildItemManifest = (input: BuildItemManifestInput): ItemManifest =
       split: split != null,
       coverEmbedded: coverEmbeddedFor(request, split != null),
     },
-    original: split ? { extension: split.extension, method: 'stream-copy', streams: split.streams } : undefined,
+    original: split
+      ? {
+          name: split.original.name,
+          extension: split.extension,
+          bytes: split.original.bytes,
+          sha256: split.original.sha256,
+          coverEmbedded: coverEmbeddedFor(request, false),
+          method: 'stream-copy',
+          streams: split.streams,
+          restore: input.hasRestore ? { bytes: split.restore.bytes, sha256: split.restore.sha256 } : undefined,
+        }
+      : undefined,
     files,
     hasThumbnail: input.hasThumbnail,
   };
@@ -324,6 +359,13 @@ export const archiveThumbnail = async (thumbnail: string, metadataFolder: string
   // The stem is reserved, so a file already here is a leftover of an earlier
   // failed write under the same name and is safe to replace.
   await cp(thumbnail, destination, { force: true });
+  return destination;
+};
+
+/** Keep a split's restore file as `<stem>.restore` in the metadata folder. */
+export const archiveRestoreFile = async (restoreFile: string, metadataFolder: string, stem: string): Promise<string> => {
+  const destination = path.join(metadataFolder, `${stem}.restore`);
+  await cp(restoreFile, destination, { force: true });
   return destination;
 };
 
