@@ -604,6 +604,21 @@ async fn finalize<C: GenericClient + Sync>(
         AckStatus::Duplicate => ack.prev.clone().map(|prev| format!("previously {prev}")),
         _ => ack.reason.clone(),
     };
+    let mut hold = hold;
+    let mut reason = reason;
+    // The ack (telemetry session) and `sleep` (control session) are
+    // processed in either order. A `busy` ack processed after a fresh sleep
+    // came from the window that already ended: no later sleep in this cycle
+    // would release the hold, and every command queued behind it would wait
+    // a whole connection cycle. Re-send it in the next window instead. A
+    // confirm keeps its hold: its nonce dies with the window.
+    if hold && command.op != "confirm" && window_closed(client, ctx).await? {
+        hold = false;
+        reason = Some(format!(
+            "{} in the window that has just closed; re-sent in the next window",
+            reason.as_deref().unwrap_or("rejected")
+        ));
+    }
     if hold && command.publish_count > ctx.policy.max_republish {
         state = "unacknowledged";
     }
@@ -649,6 +664,25 @@ async fn finalize<C: GenericClient + Sync>(
         queue_clock_sync(client, ctx, "rejected time-invalid").await?;
     }
     Ok(())
+}
+
+/// Whether the device's last live status is a `sleep`/`offline` processed
+/// at most one listen window (plus 3 minutes) before this message: the
+/// message was produced in the window that status closed.
+async fn window_closed<C: GenericClient + Sync>(
+    client: &C,
+    ctx: &Context<'_>,
+) -> Result<bool, String> {
+    Ok(client
+        .query_one(
+            "SELECT COALESCE(bool_or(link_state IN ('sleep','offline') AND NOT link_retained AND link_state_at<=$2
+                AND link_state_at>$2::timestamptz-make_interval(secs=>COALESCE(listen_window_s,60)+180)),false)
+             FROM devices WHERE device_id=$1",
+            &[&ctx.device_id, &ctx.received_at],
+        )
+        .await
+        .map_err(dberr("window check"))?
+        .get(0))
 }
 
 async fn handle_challenge<C: GenericClient + Sync>(
@@ -1873,6 +1907,71 @@ mod db_tests {
         ack(&client, "cmd/ack", challenge(wanted)).await;
         assert_eq!(state(&client, wanted).await.0, "challenge");
         assert_eq!(confirms(&client).await, 1);
+    }
+
+    // R5 (independent review): `sleep` (control session) processed before
+    // the logger's busy ack (telemetry session) left the command held with
+    // no sleep to release it, and every command behind it waited a whole
+    // connection cycle (a week on a weekly logger).
+    #[tokio::test]
+    #[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+    async fn a_busy_ack_after_the_sleep_does_not_cost_a_cycle() {
+        let client = setup().await;
+        let policy = Rev2Policy::default();
+        client.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES('k1',$1,'gwl/v1/'||$1||'/cmd/basic','V22')", &[&DEV]).await.unwrap();
+        let a = queue_sent(&client, "get_status", false).await;
+        client
+            .execute(
+                "UPDATE devices SET link_state='sleep',link_state_at=now(),link_retained=false WHERE device_id=$1",
+                &[&DEV],
+            )
+            .await
+            .unwrap();
+        on_status(
+            &client,
+            DEV,
+            rev2::PresenceState::Sleep,
+            Utc::now(),
+            &policy,
+        )
+        .await
+        .unwrap();
+        ack(
+            &client,
+            "cmd/ack",
+            json!({"v":2,"id":a,"op":"get_status","status":"rejected","reason":"busy"}),
+        )
+        .await;
+        let held: bool = client
+            .query_one("SELECT hold_until_sleep FROM commands WHERE id=$1", &[&a])
+            .await
+            .unwrap()
+            .get(0);
+        assert!(!held);
+        client.execute("UPDATE devices SET link_state='online',link_state_at=now(),link_retained=false WHERE device_id=$1", &[&DEV]).await.unwrap();
+        let next = next_publish(&client, &policy).await.unwrap();
+        assert!(next.is_some_and(|p| p.wire.contains(&format!("\"id\":{a},"))));
+        // A busy ack while the logger is awake still holds until its sleep.
+        client
+            .execute(
+                "UPDATE commands SET active_publish_attempt=NULL,state='acked' WHERE id=$1",
+                &[&a],
+            )
+            .await
+            .unwrap();
+        let b = queue_sent(&client, "get_status", false).await;
+        ack(
+            &client,
+            "cmd/ack",
+            json!({"v":2,"id":b,"op":"get_status","status":"rejected","reason":"busy"}),
+        )
+        .await;
+        let held: bool = client
+            .query_one("SELECT hold_until_sleep FROM commands WHERE id=$1", &[&b])
+            .await
+            .unwrap()
+            .get(0);
+        assert!(held);
     }
 
     // R2 (independent review): cancelling a challenged wipe left its queued
