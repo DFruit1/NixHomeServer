@@ -1150,7 +1150,17 @@ def run_identifier(
 def identify_disc(args: argparse.Namespace, source: Path, selected: list[Title],
                   hints: SourceHints, renew_lease: Any | None,
                   sidecar: Path | None = None) -> dict[str, Any]:
-    arguments = ["disc", "--iso", str(source), "--name-hint", hints.name,
+    # Repeated All Creatures holds (2026-11-14/15): the library had the
+    # spaced title, but we sent the compressed volume label to TVmaze and
+    # depended on Bonsai to recover its words. Reuse only an unambiguous,
+    # letter-for-letter library match as a search hint, never as episode proof.
+    name_hint = hints.name
+    existing = find_existing_for_hints(args.shows_dir, hints, hints.name)
+    if existing is not None:
+        compact = lambda value: normalized_name(value).replace(" ", "")
+        if compact(existing[0]) == compact(hints.name):
+            name_hint = existing[0]
+    arguments = ["disc", "--iso", str(source), "--name-hint", name_hint,
                  "--sevenzip", args.sevenzip, "--ffmpeg", args.ffmpeg]
     for title in selected:
         arguments += ["--title", f"{title.index}:{title.seconds}"]
@@ -3988,6 +3998,7 @@ def live_shaped_retry_self_test() -> None:
 import json, sys
 argv = sys.argv[1:]
 if argv[0] == "disc":
+    assert argv[argv.index("--name-hint") + 1] == "All Creatures Great and Small", argv
     print(open({str(disc_file)!r}).read())
     raise SystemExit
 context = json.load(open(argv[argv.index("--context") + 1]))
