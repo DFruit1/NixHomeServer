@@ -14,6 +14,7 @@
 mod bonsai;
 mod content;
 mod menu;
+mod replay;
 mod text;
 mod tvmaze;
 
@@ -127,6 +128,24 @@ struct ContentArgs {
     excerpt_start: u32,
     #[arg(long, default_value_t = 360)]
     excerpt_seconds: u32,
+    /// Subtitle phrase containment that names an episode (with --subtitle-margin).
+    #[arg(long, default_value_t = 0.06)]
+    subtitle_min_containment: f64,
+    /// How many times the runner-up's containment the best one must reach.
+    #[arg(long, default_value_t = 3.0)]
+    subtitle_margin: f64,
+    /// Containment that names an episode when it is the only one compared.
+    #[arg(long, default_value_t = 0.10)]
+    subtitle_single_min: f64,
+    /// Bonsai confidence needed when it agrees with the keyword ranking.
+    #[arg(long, default_value_t = 0.5)]
+    bonsai_min_confidence: f64,
+    /// Evaluation only: record transcripts, rankings and subtitle text here.
+    #[arg(long)]
+    replay_cache: Option<PathBuf>,
+    /// Evaluation only: answer from --replay-cache without contacting sources.
+    #[arg(long)]
+    replay_only: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -839,6 +858,7 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         .collect();
 
     let scratch = Scratch::new(args.common.work_dir.as_deref())?;
+    let replay = replay::Replay::new(args.replay_cache.as_deref(), args.replay_only)?;
     let asr = content::Asr {
         ffmpeg: &args.ffmpeg,
         parakeet,
@@ -856,12 +876,20 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
     let mut picks: Vec<Option<Pick>> = Vec::new();
 
     for (video, title) in args.videos.iter().zip(&args.titles) {
-        let transcript = match content::transcribe_excerpt(
-            &asr,
+        let transcript = match replay.transcript(
             video,
-            &scratch.0,
+            model,
             args.excerpt_start,
             args.excerpt_seconds,
+            || {
+                content::transcribe_excerpt(
+                    &asr,
+                    video,
+                    &scratch.0,
+                    args.excerpt_start,
+                    args.excerpt_seconds,
+                )
+            },
         ) {
             Ok(text) => text,
             Err(error) => {
@@ -909,7 +937,10 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
                     )
                 })
                 .collect();
-            match client.rank_synopses(&text::clip(&transcript, 6000), &listing) {
+            let excerpt = text::clip(&transcript, 6000);
+            match replay.ranking(&args.common.bonsai_model, &excerpt, &listing, || {
+                client.rank_synopses(&excerpt, &listing)
+            }) {
                 Ok(Some((index, confidence))) => model_pick = Some((shortlist[index], confidence)),
                 Ok(None) => {}
                 Err(error) => outcome
@@ -944,11 +975,18 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         }
         let mut containment: Vec<(usize, f64)> = Vec::new();
         for candidate in to_check {
+            let episode = &pool[candidate];
+            if subtitles_usable
+                && !subtitle_cache.contains_key(&candidate)
+                && let Some(imdb) = &candidates[episode.show].imdb_id
+                && let Some(text) = replay.subtitle(imdb, episode.season, episode.number)
+            {
+                subtitle_cache.insert(candidate, text);
+            }
             if !subtitle_cache.contains_key(&candidate) {
-                if !subtitles_usable || downloads_left == 0 {
+                if !subtitles_usable || downloads_left == 0 || replay.only() {
                     continue;
                 }
-                let episode = &pool[candidate];
                 let Some(imdb) = candidates[episode.show].imdb_id.clone() else {
                     subtitle_cache.insert(candidate, None);
                     continue;
@@ -962,8 +1000,14 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
                     episode.number,
                 );
                 let text = match result {
-                    content::SubtitleText::Text(text) => Some(text),
-                    content::SubtitleText::NotFound => None,
+                    content::SubtitleText::Text(text) => {
+                        replay.record_subtitle(&imdb, episode.season, episode.number, Some(&text));
+                        Some(text)
+                    }
+                    content::SubtitleText::NotFound => {
+                        replay.record_subtitle(&imdb, episode.season, episode.number, None);
+                        None
+                    }
                     content::SubtitleText::NoAccount => {
                         outcome.reasons.push("The uploader has no OpenSubtitles account; subtitle comparison was skipped.".into());
                         subtitles_usable = false;
@@ -994,11 +1038,12 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
 
         let subtitle_pick = match containment.as_slice() {
             [(best, score), (_, second), ..]
-                if *score >= 0.06 && *score >= 3.0 * second.max(0.005) =>
+                if *score >= args.subtitle_min_containment
+                    && *score >= args.subtitle_margin * second.max(0.005) =>
             {
                 Some(*best)
             }
-            [(best, score)] if *score >= 0.10 => Some(*best),
+            [(best, score)] if *score >= args.subtitle_single_min => Some(*best),
             _ => None,
         };
         let pick = if let Some(best) = subtitle_pick {
@@ -1011,7 +1056,9 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             })
         } else {
             match (model_pick, keyword_top) {
-                (Some((chosen, confidence)), Some(top)) if chosen == top && confidence >= 0.5 => {
+                (Some((chosen, confidence)), Some(top))
+                    if chosen == top && confidence >= args.bonsai_min_confidence =>
+                {
                     Some(Pick {
                         pool: chosen,
                         evidence: "dialogue matches the episode summary".into(),
@@ -1028,7 +1075,7 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         // A contradicted subtitle comparison is worth reporting even without a pick.
         if let (Some(proposed), Some((best, score))) = (proposed, containment.first())
             && *best != proposed
-            && *score >= 0.06
+            && *score >= args.subtitle_min_containment
         {
             outcome.reasons.push(format!(
                 "Title {title}: dialogue matches {} rather than the disc-order guess.",

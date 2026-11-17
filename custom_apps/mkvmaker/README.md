@@ -136,6 +136,47 @@ object, and `status` is `identified` only for consecutive episodes of one season
 See [the operations runbook](../../documentation/operations.md#identifying-tv-episodes)
 for how held discs are confirmed.
 
+### Measuring identification accuracy
+
+`identify_eval.py` is an on-demand evaluation (not a CI check). It groups
+correctly named library episodes into synthetic 1–4 title discs and runs
+`disc-identify content` with four disc-stage contexts: series known without a
+proposal (`a`), with the correct proposal (`b`), with a proposal shifted one
+episode (`c`, must never be identified as proposed), and with a second
+candidate series (`d`, for `--rival`). Episodes are compared by normalised
+title, so a library layout that differs from TVmaze's numbering is not counted
+as wrong. It writes `identify-eval.json` and a `.txt` summary under `--work`;
+`identified-WRONG` is the number that matters.
+
+Run it on the server as `mkvmaker`, at idle priority, read-only on the library,
+with the deployed tool paths from `systemctl cat mkvmaker-import-worker`:
+
+```sh
+S=$(sudo mktemp -d /tmp/identify-eval.XXXXXX); sudo chown mkvmaker: "$S"
+sudo cp identify_eval.py "$S/"
+sudo systemd-run --wait --pipe --collect -p User=mkvmaker -p Group=mkvmaker \
+  -p SupplementaryGroups=files-shared-users -p Nice=19 -p CPUWeight=idle \
+  -p IOWeight=1 -p IOSchedulingClass=idle -p ProtectSystem=strict \
+  -p ProtectHome=yes -p ReadWritePaths="$S" \
+  python3 "$S/identify_eval.py" --work "$S" \
+  --identifier …/bin/disc-identify --ffmpeg …/bin/ffmpeg \
+  --parakeet …/bin/parakeet-cli --parakeet-model …/parakeet.bin \
+  --bonsai-url http://127.0.0.1:8094/v1 \
+  --show 'Sherlock Holmes (1984)=3255' --show 'Rumpole of the Bailey=12144' \
+  --show 'All Creatures Great and Small (1978)=8090' --rival 8090=42836 \
+  --episodes-per-show 5 --seed 3
+sudo rm -rf "$S"   # holds transcripts and subtitle text
+```
+
+`--plan-only` lists the discs first. Subtitles are off by default; the
+uploader's OpenSubtitles quota is small, so allow only a few requests with
+`--subtitle-budget 6 --owner NAME --subtitle-socket
+/run/media-manager-provider-system/system.sock`. With a `disc-identify` that has
+`--replay-cache`, each MKV is transcribed once per excerpt window and Bonsai
+answers are kept, so `--offline --variant 'name=--bonsai-min-confidence 0.7'`
+re-runs the identifier's own rules under other thresholds without ASR, Bonsai
+or subtitle requests. Titles run one at a time because the Bonsai gate is shared.
+
 ## Reliability and recovery
 
 - Every ISO is scanned, even in main-feature mode, so title selection and
