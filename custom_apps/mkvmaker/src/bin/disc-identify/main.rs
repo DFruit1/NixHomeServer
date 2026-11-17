@@ -1713,7 +1713,18 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             diagnostics.decision.rule = "summary contradiction held";
             diagnostics.decision.summary_only_contradictions =
                 refused.iter().map(|&index| args.titles[index]).collect();
-            outcome.assignments = proposal;
+            // A weak guess that a subtitle match already contradicts is no
+            // suggestion for a person either (as in the "not identified" path).
+            let subtitle_contradicts = picks.iter().zip(&planned).any(|(pick, planned)| {
+                matches!((pick, planned), (Some(pick), Some((season, episode)))
+                    if pick.subtitle_score.is_some()
+                        && (pool[pick.pool].season, pool[pick.pool].number) != (*season, *episode))
+            });
+            outcome.assignments = if weak && subtitle_contradicts {
+                Vec::new()
+            } else {
+                proposal
+            };
             outcome.summary = match &series {
                 Some(show) => format!("{} — episodes need confirming.", show_label(show)),
                 None => "The episodes could not be confirmed.".into(),

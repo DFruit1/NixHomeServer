@@ -1959,18 +1959,18 @@ def build_plan(args: argparse.Namespace, source: Path,
     # M1: when the ISO filename already carries Jellyfin-style signals the user
     # curated, bypass TVmaze so the user's chosen library name is preserved
     # instead of being silently overridden by the looked-up series name.
+    episode_like = looks_like_episode_set(selected)
+    # Episodes plus short extras. Not for a name with an explicit episode
+    # range: the person counted the titles, and `prepare_titles` already
+    # checked that count. Applied only once the disc is filed as TV.
+    core = None
+    if not dominant and not episode_like and hints.last_episode is None:
+        core = episode_core(selected)
+        episode_like = core is not None
     if not hints.is_jellyfin_named:
-        metadata = tvmaze_match(hints, len(selected), args.metadata_timeout)
+        metadata = tvmaze_match(hints, len(core or selected), args.metadata_timeout)
     else:
         metadata = None
-    episode_like = looks_like_episode_set(selected)
-    if not dominant and not episode_like:
-        core = episode_core(selected)
-        if core is not None:
-            print(f"Treating DVD titles {[title.index for title in core]} as episodes; "
-                  f"the shorter titles {[title.index for title in selected if title not in core]} "
-                  "are extras")
-            selected, episode_like = core, True
     # A bare trailing series identifier (e.g. ``Rumpole ... IV``) only encodes
     # the season when the disc content is actually TV-like (episode durations).
     # Movie sequels keep their title number (``Mission Impossible 2``).
@@ -1984,6 +1984,11 @@ def build_plan(args: argparse.Namespace, source: Path,
     )
     season = hints.season if hints.season is not None else trailing_season
     is_tv = season is not None or (tv_content and hints.trailing_series is None)
+    if is_tv and core is not None:
+        print(f"Treating DVD titles {[title.index for title in core]} as episodes; "
+              f"the shorter titles {[title.index for title in selected if title not in core]} "
+              "are extras")
+        selected = core
 
     if is_tv:
         tv_name = strip_trailing_series_token(hints.name, season)
@@ -2901,6 +2906,18 @@ def bonsai_gate_busy(args: argparse.Namespace) -> bool:
 BUSY_GATE_PATIENCE_SECONDS = 3600
 
 
+# Attempts given back because Bonsai was only busy, per hold (about a day
+# of hourly forced retries) before busy failures count like any other.
+BUSY_GATE_REFUNDS = 24
+_BUSY_GATE_RE = re.compile(r"^Bonsai (?:could not [a-z ]+|ranking failed): .*HTTP (?:429|503|504)")
+
+
+def busy_gate_only(classification: dict[str, Any]) -> bool:
+    """Every temporary blocker was the Bonsai gate answering busy."""
+    transient = classification.get("transientReasons") or []
+    return bool(transient) and all(_BUSY_GATE_RE.search(str(r)) for r in transient)
+
+
 def postpone_for_busy_gate(args: argparse.Namespace, now: int) -> bool:
     """True when a retry should wait for the Bonsai gate to be idle."""
     marker = args.state_dir / "retry-bonsai-busy-since"
@@ -2910,6 +2927,8 @@ def postpone_for_busy_gate(args: argparse.Namespace, now: int) -> bool:
     try:
         since = int(marker.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
+        since = None
+    if since is None or since > now:  # missing, unreadable, or from a clock that moved back
         since = now
         try:
             marker.write_text(str(now), encoding="utf-8")
@@ -2918,8 +2937,10 @@ def postpone_for_busy_gate(args: argparse.Namespace, now: int) -> bool:
     if now - since < BUSY_GATE_PATIENCE_SECONDS:
         print("Bonsai is busy; postponing an automatic re-identification")
         return True
-    print("Bonsai has been busy for over an hour; re-identifying anyway (the request waits "
-          "in its queue)")
+    # The gate queues two requests and answers 429/504 beyond that; the
+    # identifier retries those for about eleven minutes. An attempt lost
+    # only to a busy gate is given back (see `busy_gate_only`).
+    print("Bonsai has been busy for over an hour; re-identifying anyway")
     marker.unlink(missing_ok=True)
     return False
 
@@ -3234,6 +3255,11 @@ def retry_transient_holds(args: argparse.Namespace, lock_path: Path, state_path:
             "lastRetryAt": int(time.time()),
         }
         if assignments is None:
+            if (classification["retryable"] and busy_gate_only(classification)
+                    and int(retry.get("busyRefunds") or 0) < BUSY_GATE_REFUNDS):
+                # Lost only to a full Bonsai queue: the attempt does not count.
+                retry["attempts"] = max(0, int(retry.get("attempts") or 0) - 1)
+                retry["busyRefunds"] = int(retry.get("busyRefunds") or 0) + 1
             attempts = int(retry.get("attempts") or 0)
             if classification["retryable"] and attempts < len(RETRY_DELAYS):
                 retry.update(state="scheduled", nextAt=int(time.time()) + RETRY_DELAYS[attempts])
@@ -3784,6 +3810,13 @@ def special_and_layout_self_test() -> None:
             assert film["kind"] == "movie" and not film.get("held"), film
             special = plan("Sherlock_Holmes_The_Hound_of_the_Baskervilles_1988.iso", [105], hound)
             assert (special["kind"], special["season"], special["first_episode"]) == ("tv", 0, 2), special
+            # Episodes plus short extras: TV with the extras dropped, unless
+            # the person named the full range, which keeps every title.
+            extras = plan("ALL_CREATURES_GREAT_AND_SMALL.iso", [54, 54, 9, 5], {"broken": True})
+            assert extras["kind"] == "tv" and extras["titles"] == [1, 2], extras
+            ranged = plan("All Creatures Great and Small (2020) S05E01-E04.iso", [54, 54, 9, 5],
+                          {"broken": True})
+            assert ranged["titles"] == [1, 2, 3, 4] and ranged["last_episode"] == 4, ranged
             guessed = plan("Rumpole_of_the_Bailey_D4.iso", [103], rumpole_tmdb)
             assert guessed["held"] and guessed["kind"] == "tv", guessed
             assert iso_suggestion(guessed["identification"]["series"],
@@ -4494,8 +4527,10 @@ def self_test() -> None:
                 return answer(iso, record)
             globals()["reidentify_held"] = fake
 
+        # Not only a busy gate (whose attempts are given back, tested below).
         transient = {"status": "uncertain", "series": series, "summary": "still busy",
-                     "assignments": [], "reasons": creatures_reasons}
+                     "assignments": [], "reasons": creatures_reasons + [
+                         "TVmaze search failed: operation timed out"]}
 
         def identified(first: int) -> dict[str, Any]:
             return {"status": "identified", "series": series, "summary": "Identified",
@@ -4552,6 +4587,15 @@ def self_test() -> None:
             assert postpone_for_busy_gate(retry_args, start + BUSY_GATE_PATIENCE_SECONDS + 1)
             globals()["bonsai_gate_busy"] = original_busy
             assert not postpone_for_busy_gate(retry_args, start) and not marker.exists()
+            marker.write_text(str(start + 86400), encoding="utf-8")  # a clock that moved back
+            globals()["bonsai_gate_busy"] = lambda _args: True
+            assert postpone_for_busy_gate(retry_args, start)
+            assert int(marker.read_text(encoding="utf-8")) == start
+            globals()["bonsai_gate_busy"] = original_busy
+            busy = classify_reasons(["Bonsai could not read the menus: Bonsai returned HTTP 504 Gateway Timeout"])
+            assert busy["retryable"] and busy_gate_only(busy)
+            assert not busy_gate_only(classify_reasons(creatures_reasons + [
+                "TVmaze search failed: timed out"]))
 
             # A shutdown gives the attempt back and releases the lease.
             def stop(_iso: Path, _record: Any) -> Any:
