@@ -1914,8 +1914,8 @@ fn remove_container_muxing_date(path: &Path) -> Result<()> {
 }
 
 fn relay_log<R: std::io::Read>(reader: R, log: Arc<Mutex<fs::File>>) -> Result<()> {
-    for line in BufReader::new(reader).lines() {
-        let line = line?;
+    let mut reader = BufReader::new(reader);
+    while let Some(line) = progress::read_lossy_line(&mut reader)? {
         writeln!(
             log.lock()
                 .map_err(|_| anyhow::anyhow!("log lock poisoned"))?,

@@ -119,6 +119,22 @@ fn live_queue_items(context: &ProgressContext) -> Vec<String> {
     queued
 }
 
+/// One line of a tool's output, decoded leniently. HandBrake echoes DVD
+/// metadata (titles, track names) in whatever encoding the disc used, so a
+/// strict UTF-8 read failed whole conversions after they had finished
+/// encoding ("stream did not contain valid UTF-8", All Creatures discs,
+/// 2026-11-15 to 2026-11-17).
+pub(super) fn read_lossy_line<R: BufRead>(reader: &mut R) -> std::io::Result<Option<String>> {
+    let mut bytes = Vec::new();
+    if reader.read_until(b'\n', &mut bytes)? == 0 {
+        return Ok(None);
+    }
+    while matches!(bytes.last(), Some(b'\n' | b'\r')) {
+        bytes.pop();
+    }
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
 pub(super) fn relay_progress<R: std::io::Read>(
     reader: R,
     log: Arc<Mutex<fs::File>>,
@@ -127,8 +143,8 @@ pub(super) fn relay_progress<R: std::io::Read>(
     let mut eta = None::<u64>;
     let mut rate = None::<f64>;
     let mut last_percent = -1.0_f64;
-    for line in BufReader::new(reader).lines() {
-        let line = line?;
+    let mut reader = BufReader::new(reader);
+    while let Some(line) = read_lossy_line(&mut reader)? {
         writeln!(
             log.lock()
                 .map_err(|_| anyhow::anyhow!("log lock poisoned"))?,
@@ -178,4 +194,28 @@ fn format_duration(seconds: u64) -> String {
         (seconds / 60) % 60,
         seconds % 60
     )
+}
+
+#[cfg(test)]
+mod lossy_line_tests {
+    use super::read_lossy_line;
+
+    #[test]
+    fn invalid_utf8_lines_are_kept_not_fatal() {
+        // "Caf\xe9" is Latin-1, as DVD track names often are.
+        let mut input: &[u8] = b"Encoding 100.0%\nTitle Caf\xe9\r\nlast";
+        assert_eq!(
+            read_lossy_line(&mut input).unwrap().as_deref(),
+            Some("Encoding 100.0%")
+        );
+        assert_eq!(
+            read_lossy_line(&mut input).unwrap().as_deref(),
+            Some("Title Caf\u{fffd}")
+        );
+        assert_eq!(
+            read_lossy_line(&mut input).unwrap().as_deref(),
+            Some("last")
+        );
+        assert_eq!(read_lossy_line(&mut input).unwrap(), None);
+    }
 }
