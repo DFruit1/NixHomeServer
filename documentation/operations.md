@@ -1333,9 +1333,27 @@ certainty. An ISO name that already carries a season and episode range, such as
    the uploader has no OpenSubtitles account the comparison is skipped.
 
 Identification is complete only when every title maps to consecutive episodes
-of one season. Identified episodes are published to `_Shows` with TVmaze
-episode titles, and the ISO is archived in `_Processed` with its sidecar under
-the name it arrived with. Each step's reasoning is logged in the worker journal.
+of one season. TVmaze and TheDiscDB can number a series differently from TMDB,
+which Jellyfin uses (TVmaze has The Adventures of Sherlock Holmes in 4 seasons,
+TMDB in 7), so each identified disc is then mapped onto TMDB's season layout by
+episode title and air date, fetched through the provider broker's system socket
+(`/system/v1/tmdb/tv-episodes`, cached for a week). The disc is published only
+when every title maps to one TMDB episode and they are still consecutive in one
+TMDB season; the files and new series folders then use TMDB numbering, titles
+and `[tmdbid-N]`, and an existing folder tagged with any of the series' TMDB,
+TVDB or IMDb ids is reused. A mapping that is ambiguous or not consecutive is
+held; `TMDB is unavailable` holds are transient. `disc-identify episodes
+--series tvdbid-N --provider-socket …` prints a series' layout as JSON.
+
+The broker uses the host TMDB key from `repo.mediaManager.tmdbApiKeyFile`
+(JSON `{"apiKey": "…"}`, loaded as a systemd credential; not a person's saved
+account). No key is configured today: numbering then stays as TVmaze or
+TheDiscDB gives it, and the evidence says
+`Episode numbering was not checked against TMDB (no TMDB key is configured).`
+
+Identified episodes are published to `_Shows`, and the ISO is archived in
+`_Processed` with its sidecar under the name it arrived with. Each step's
+reasoning is logged in the worker journal.
 
 Anything less is held. The ISO moves to `_Shared/_ISO/_DVDs/_NeedsIdentification`
 with an `X.iso.identify.json` evidence file, and Media Manager's Conversions

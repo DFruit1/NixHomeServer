@@ -30,6 +30,7 @@ mod artwork_lookups;
 mod google_books;
 mod immich;
 mod system;
+mod system_tmdb;
 mod tmdb_lookups;
 
 pub use system::provider_system_router;
@@ -46,6 +47,8 @@ pub struct ProviderBrokerState {
     additional: Arc<additional::Runtime>,
     images: Option<Arc<immich::Runtime>>,
     pub(crate) lookup_cache: Arc<LookupCache>,
+    /// The host's own TMDB key, used only by system jobs on the Unix socket.
+    system_tmdb: Option<Arc<crate::tmdb::TmdbClient>>,
 }
 
 #[derive(Clone, Debug)]
@@ -123,7 +126,22 @@ impl ProviderBrokerState {
             additional: Arc::new(additional::Runtime::default()),
             images: None,
             lookup_cache: Arc::new(LookupCache::disabled()),
+            system_tmdb: None,
         })
+    }
+
+    /// Give system jobs TMDB access with the host's key. Without it the
+    /// system socket answers TMDB requests with `tmdb_unconfigured`.
+    pub fn with_system_tmdb_key(mut self, api_key: String) -> Result<Self, String> {
+        let client = crate::tmdb::TmdbClient::new(crate::tmdb::TmdbClientConfig {
+            api_key: Some(api_key),
+            tmdb_api_base: self.endpoints.tmdb_api_base.clone(),
+            request_gap: std::time::Duration::from_millis(250),
+            user_agent: "NixHomeServer Media Manager/0.1.0".to_string(),
+        })
+        .map_err(|error| format!("initialize system TMDB client: {error}"))?;
+        self.system_tmdb = client.has_api_key().then(|| Arc::new(client));
+        Ok(self)
     }
 
     /// Persist successful provider lookups so repeated item searches reuse one

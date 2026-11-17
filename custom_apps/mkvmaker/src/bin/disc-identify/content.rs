@@ -126,7 +126,7 @@ pub fn episode_subtitle_text(
 }
 
 /// Minimal HTTP/1.1 POST over a Unix socket (reqwest has no Unix transport).
-fn post_unix(socket: &Path, path: &str, body: &str) -> Result<(u16, Value)> {
+pub fn post_unix(socket: &Path, path: &str, body: &str) -> Result<(u16, Value)> {
     let mut stream =
         UnixStream::connect(socket).with_context(|| format!("connect to {}", socket.display()))?;
     stream.set_read_timeout(Some(Duration::from_secs(120)))?;
