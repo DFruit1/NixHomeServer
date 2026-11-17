@@ -32,7 +32,8 @@ copy the recording. `lecture.mkv` pairs with
   "output": {
     "formats": ["txt", "srt", "vtt"],
     "language": "en",
-    "diarize": true
+    "diarize": true,
+    "cleanup": true
   },
   "transcription": {
     "language": "en",
@@ -49,6 +50,11 @@ discarded. Unknown request keys also appear in `ignored`. Parakeet does not
 report a detected language; its result uses `null`, not an invented language.
 Requests are limited to 64 KiB; only version 1 and TXT/SRT/VTT formats are accepted.
 
+`output.cleanup` asks Bonsai to proofread the finished transcript (see
+[Bonsai proofreading](#bonsai-proofreading)). The Media Manager upload form
+requests it by default; a request file without the key, and an inbox file with
+no request, do not. Where Bonsai is not enabled the key appears in `ignored`.
+
 ## Read and install results
 
 Successful jobs publish their completion marker beside the recording and write
@@ -57,6 +63,12 @@ artifacts under `_Transcripts/<stem>-<hash>/`:
 - `transcript.txt` is always present, along with `meta.json`.
 - `subtitles.srt` and `subtitles.vtt` follow the requested formats.
 - `diarized.srt` is added when speaker diarisation is requested.
+- When Bonsai proofreading ran, `transcript.txt` and the subtitles carry the
+  proofread words, and the recognised text is kept separately as
+  `transcript.original.txt`. `words.original.json` and `words.cleaned.json`
+  hold both versions word by word with times (and the recogniser's confidence
+  for the original), for comparing, revising or training; the cleaned file is
+  absent when proofreading failed. Search indexes only the proofread transcript.
 
 The result records provenance, source fingerprint, transcript SHA-256, backend,
 duration, detected language where available, mean token confidence where available,
@@ -89,6 +101,65 @@ FFmpeg's extraction progress, whisper.cpp's `-pp` line, and the same line from
 the pinned parakeet-cli, which `modules/transcribe/parakeet-progress.patch`
 teaches to print its decoded position. Speaker detection reports no position, so
 the UI shows that stage without inventing a number.
+
+### Long recordings
+
+Parakeet encodes each input file in one pass, so its graphics memory grows with
+the file's length: on the Arc Pro B60 one minute peaked at 1.12 GiB, two at
+1.51, four at 2.66, and a 90-minute recording ran the card out of memory,
+pushed the resident search models into host RAM and was killed at the unit's
+32 GiB limit. Parakeet audio longer than about 104 seconds is therefore cut at
+pauses into chunks of about 90 seconds (the longest silence between 67 and 104
+seconds, at the quietest of -40/-35/-30/-25 dB that has one, otherwise a cut at
+90 seconds). All chunks go to one parakeet-cli run, so the model loads once,
+and word times are shifted back onto the recording. Measured on a 90-minute
+stand-up recording: 78 seconds of decoding, a 1.42 GiB peak, and accuracy
+matching three-minute chunks, where 30-second chunks garbled more words. A
+chunked job reports decoding progress across all chunks. Whisper already reads
+audio in 30-second windows and is not chunked.
+
+### Bonsai proofreading
+
+When a job asks for it and both this app and Bonsai are enabled
+(`modules/Integrations/clean_transcripts_with_bonsai.nix`), the worker sends
+the transcript to Bonsai through its loopback concurrency gate after
+transcription; that is the worker's only network access. The job shows
+"Correcting names and misheard words" meanwhile. Bonsai receives the recording
+title (the request's `source.title`, else the file name), any `vocabulary`
+hints and the transcript in numbered lines, in sections of up to 1,000 words
+(about seven minutes of speech). With 4,000-word sections Bonsai proposed
+corrections only for the first few minutes of each. Names settled in one
+section are passed to the next.
+
+Bonsai may only answer with short corrections: a line number, words from that
+line and their replacement. The worker applies a correction only if:
+
+- its quoted words occur exactly once in that line and do not overlap another
+  correction;
+- judged on the words that actually change, ignoring unchanged words quoted
+  around them: at most three change, at most two are added, none are removed
+  (so swearing, repetitions and filler stay), except merging near-identical
+  words such as "t shirt" into "t-shirt";
+- numbers never change;
+- swearing is never removed, even as a sound-alike substitution;
+- a changed word must be one the recogniser was unsure of (confidence below
+  0.5), and the replacement must resemble it unless every changed word was
+  garbled (below 0.35, as in "Is Handy got a knife?" for "Has anyone"). A confidently recognised word changes only into a name or term
+  from the recording title or `vocabulary` (for example "Conley" into
+  "Connolly" for a Billy Connolly show), or when near-identical words merge. On
+  a 90-minute recording, Bonsai's sound-alike fixes replaced words scored
+  0.31-0.46, while its meaning changes ("an older woman" made younger, "£12,000"
+  made £1,200) replaced words scored 0.74-1.0.
+
+A section where the accepted corrections would change more than 15% of its
+words is left untouched. Replaced words share the original span's time, so
+subtitles stay in sync. `meta.json` records the outcome under `cleanup`:
+`status` (`applied`, `unchanged` or `failed`), counts of applied and rejected
+corrections, every applied correction with its time, and each refused
+correction with its reason. A Bonsai failure or
+timeout leaves the transcript as recognised and does not fail the job.
+
+### Process limits
 
 Only one ASR process runs at a time. It exits and releases its model after each
 job. Backend affinity is retained while choosing jobs, but an older job from

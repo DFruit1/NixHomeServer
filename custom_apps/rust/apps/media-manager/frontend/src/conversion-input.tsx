@@ -306,6 +306,7 @@ export const ConversionInput = component$<{
     path: "",
     backend: "parakeet",
     diarize: false,
+    cleanup: true,
     language: "",
     storageRootId: "",
     storageFolder: "",
@@ -429,6 +430,7 @@ export const ConversionInput = component$<{
               kind,
               backend: form.backend as "parakeet" | "whisper",
               diarize: kind === "transcription" && form.diarize,
+              cleanup: kind === "transcription" && form.cleanup,
               language:
                 kind === "transcription" &&
                 form.backend === "whisper" &&
@@ -605,6 +607,16 @@ export const ConversionInput = component$<{
                       }}
                     />
                     Identify speakers
+                  </label>
+                  <label class="conversion-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={form.cleanup}
+                      onChange$={(_, el) => {
+                        form.cleanup = el.checked;
+                      }}
+                    />
+                    Correct names and misheard words with Bonsai
                   </label>
                   {form.backend === "whisper" && (
                     <>

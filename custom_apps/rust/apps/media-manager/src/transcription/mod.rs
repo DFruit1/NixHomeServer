@@ -1,4 +1,5 @@
 mod adapters;
+pub mod cleanup;
 pub mod fs;
 pub mod worker;
 use crate::subtitle_format::SubtitleCue;
@@ -33,6 +34,9 @@ pub struct Output {
     pub language: Option<String>,
     #[serde(default)]
     pub diarize: bool,
+    /// Proofread the finished transcript with Bonsai where it is available.
+    #[serde(default)]
+    pub cleanup: bool,
     #[serde(flatten)]
     pub unknown: std::collections::BTreeMap<String, Value>,
 }
@@ -45,6 +49,7 @@ impl Default for Output {
             formats: default_formats(),
             language: None,
             diarize: false,
+            cleanup: false,
             unknown: Default::default(),
         }
     }

@@ -126,6 +126,7 @@ const TRANSCRIPT_STAGES: Record<TranscriptionJob["state"], string> = {
   queued: "Waiting",
   extracting: "Extracting audio",
   transcribing: "Transcribing",
+  cleaning: "Correcting names and misheard words",
   diarising: "Finding speakers",
   writing: "Writing transcript files",
   completed: "Finished",

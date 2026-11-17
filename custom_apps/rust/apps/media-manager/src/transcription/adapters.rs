@@ -23,6 +23,7 @@ pub struct Runtime {
     pub diarization: PathBuf,
     pub models: PathBuf,
     pub timeout: u64,
+    pub cleaner: Option<super::cleanup::Cleaner>,
 }
 pub struct Transcript {
     pub words: Vec<Word>,
@@ -47,6 +48,7 @@ impl Runtime {
                 .unwrap_or("21600".into())
                 .parse()
                 .map_err(|_| "invalid timeout")?,
+            cleaner: super::cleanup::Cleaner::from_env()?,
         })
     }
     pub async fn extract(
@@ -164,95 +166,218 @@ impl Runtime {
         backend: Backend,
         request: &Request,
         wav: &Path,
+        duration_ms: u64,
         directory: &Path,
         progress: TranscriptionProgress<'_>,
     ) -> Result<Transcript, String> {
-        let mut command = Command::new(match backend {
-            Backend::Parakeet => &self.parakeet,
-            Backend::Whisper => &self.whisper,
-        });
+        if backend == Backend::Parakeet {
+            return self
+                .transcribe_parakeet(wav, duration_ms, directory, progress)
+                .await;
+        }
+        let mut command = Command::new(&self.whisper);
         command
             .arg("-m")
-            .arg(self.models.join(match backend {
-                Backend::Parakeet => "parakeet.bin",
-                Backend::Whisper => "whisper.bin",
-            }))
+            .arg(self.models.join("whisper.bin"))
             .args(["-t", "4", "-f"])
             .arg(wav)
-            // Both CLIs print their decoded position as a percentage; the
-            // patched parakeet-cli mirrors whisper.cpp's line.
+            // whisper.cpp prints its decoded position as a percentage.
             .arg("-pp");
         let mut report = |line: &str| {
             if let Some(percent) = engine_progress(line) {
-                let phase = if line.starts_with("parakeet_encoder_print_progress_callback:") {
-                    "encoding"
-                } else {
-                    "decoding"
-                };
-                progress(phase, percent);
+                progress("decoding", percent);
             }
         };
-        match backend {
-            Backend::Parakeet => {
-                command.arg("-ps");
-                let (_, stderr) = run(&mut command, self.timeout, Some(&mut report)).await?;
-                let text = String::from_utf8_lossy(&stderr);
-                let words = parse_parakeet(&text)?;
-                let probabilities: Vec<f64> = text
-                    .lines()
-                    .filter(|line| line.contains("word_start="))
-                    .filter_map(|line| {
-                        line.split_whitespace()
-                            .find_map(|field| field.strip_prefix("p="))
-                    })
-                    .filter_map(|p| p.parse().ok())
-                    .collect();
-                Ok(Transcript {
-                    words,
-                    language: None,
-                    mean_token_confidence: (!probabilities.is_empty())
-                        .then(|| probabilities.iter().sum::<f64>() / probabilities.len() as f64),
-                })
+        command
+            .args([
+                "-ojf",
+                "-sow",
+                "-ml",
+                "1",
+                "-l",
+                request.transcription.language.as_deref().unwrap_or("auto"),
+                "-of",
+            ])
+            .arg(directory.join("whisper"));
+        let prompt = [
+            request.transcription.prompt.clone().unwrap_or_default(),
+            request.transcription.vocabulary.join(", "),
+        ]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+        if !prompt.is_empty() {
+            command.arg("--prompt").arg(prompt);
+        }
+        run(&mut command, self.timeout, Some(&mut report)).await?;
+        let json_file = tokio::fs::File::open(directory.join("whisper.json"))
+            .await
+            .map_err(|_| "whisper_output_missing")?;
+        let mut bytes = Vec::new();
+        json_file
+            .take(32 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|_| "whisper_output_invalid")?;
+        if bytes.len() > 32 * 1024 * 1024 {
+            return Err("whisper_output_too_large".into());
+        }
+        parse_whisper(&bytes)
+    }
+    /// Parakeet encodes each input file in one pass, so its graphics memory
+    /// grows with the file's length. Measured on the Arc Pro B60 beside the
+    /// resident chat and search models (2.9 GiB free): one minute peaked at
+    /// 1.12 GiB, two at 1.51, four at 2.66, and longer files ran out of card
+    /// memory, displaced the search models into host RAM and, at 90 minutes,
+    /// were killed at the unit's 32 GiB limit. Longer audio is therefore cut
+    /// at pauses into chunks of about 90 seconds (1.42 GiB peak) and every
+    /// chunk is passed to one parakeet-cli run, so the model loads once. On a
+    /// 90-minute stand-up recording that matched three-minute chunks for
+    /// accuracy and was clearly better than 30-second chunks.
+    async fn transcribe_parakeet(
+        &self,
+        wav: &Path,
+        duration_ms: u64,
+        directory: &Path,
+        progress: TranscriptionProgress<'_>,
+    ) -> Result<Transcript, String> {
+        let chunks = self
+            .chunk(wav, duration_ms as f64 / 1000.0, directory)
+            .await?;
+        let total = chunks.len();
+        let mut command = Command::new(&self.parakeet);
+        command
+            .arg("-m")
+            .arg(self.models.join("parakeet.bin"))
+            .args(["-t", "4", "-ps", "-pp"])
+            .args(chunks.iter().map(|(path, _)| path));
+        let mut started = 0usize;
+        let mut report = |line: &str| {
+            if line.starts_with(FILE_MARKER) {
+                started += 1;
+                return;
             }
-            Backend::Whisper => {
-                command
-                    .args([
-                        "-ojf",
-                        "-sow",
-                        "-ml",
-                        "1",
-                        "-l",
-                        request.transcription.language.as_deref().unwrap_or("auto"),
-                        "-of",
-                    ])
-                    .arg(directory.join("whisper"));
-                let prompt = [
-                    request.transcription.prompt.clone().unwrap_or_default(),
-                    request.transcription.vocabulary.join(", "),
-                ]
-                .into_iter()
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-                if !prompt.is_empty() {
-                    command.arg("--prompt").arg(prompt);
-                }
-                run(&mut command, self.timeout, Some(&mut report)).await?;
-                let json_file = tokio::fs::File::open(directory.join("whisper.json"))
-                    .await
-                    .map_err(|_| "whisper_output_missing")?;
-                let mut bytes = Vec::new();
-                json_file
-                    .take(32 * 1024 * 1024 + 1)
-                    .read_to_end(&mut bytes)
-                    .await
-                    .map_err(|_| "whisper_output_invalid")?;
-                if bytes.len() > 32 * 1024 * 1024 {
-                    return Err("whisper_output_too_large".into());
-                }
-                parse_whisper(&bytes)
+            let Some(percent) = engine_progress(line) else {
+                return;
+            };
+            let encoder = line.starts_with("parakeet_encoder_print_progress_callback:");
+            if total == 1 {
+                progress(if encoder { "encoding" } else { "decoding" }, percent);
+            } else if !encoder {
+                // Chunks decode in turn; report the share of the whole.
+                let done = started.saturating_sub(1) * 100 + percent as usize;
+                progress("decoding", (done / total).min(100) as u8);
+            }
+        };
+        let (_, stderr) = run(&mut command, self.timeout, Some(&mut report)).await?;
+        let text = String::from_utf8_lossy(&stderr);
+        let sections = file_sections(&text);
+        if sections.len() != total {
+            return Err("parakeet_output_invalid".into());
+        }
+        let mut words = Vec::new();
+        for ((_, offset_ms), section) in chunks.iter().zip(sections) {
+            // A chunk of applause or music legitimately has no words.
+            for mut word in parakeet_words(section)? {
+                word.start_ms += offset_ms;
+                word.end_ms += offset_ms;
+                words.push(word);
             }
         }
+        // A changed CLI layout must fail visibly, never look like silence.
+        if words.is_empty() {
+            return Err("parakeet_output_unparseable".into());
+        }
+        let probabilities: Vec<f64> = text
+            .lines()
+            .filter(|line| line.contains("word_start="))
+            .filter_map(|line| {
+                line.split_whitespace()
+                    .find_map(|field| field.strip_prefix("p="))
+            })
+            .filter_map(|p| p.parse().ok())
+            .collect();
+        Ok(Transcript {
+            words,
+            language: None,
+            mean_token_confidence: (!probabilities.is_empty())
+                .then(|| probabilities.iter().sum::<f64>() / probabilities.len() as f64),
+        })
+    }
+    /// The audio as one file, or as chunks cut at pauses, with each chunk's
+    /// start in milliseconds.
+    async fn chunk(
+        &self,
+        wav: &Path,
+        total_s: f64,
+        directory: &Path,
+    ) -> Result<Vec<(PathBuf, u64)>, String> {
+        if total_s <= CHUNK_MAX_S {
+            return Ok(vec![(wav.to_path_buf(), 0)]);
+        }
+        let mut silence_sets = Vec::new();
+        for threshold in SILENCE_THRESHOLDS {
+            let mut command = Command::new(&self.ffmpeg);
+            command
+                .args(["-nostdin", "-hide_banner", "-i"])
+                .arg(wav)
+                .args([
+                    "-af",
+                    &format!("silencedetect=noise={threshold}:d=0.25"),
+                    "-f",
+                    "null",
+                    "-",
+                ]);
+            let (_, stderr) = run(&mut command, 3600, None)
+                .await
+                .map_err(|_| "audio_silence_scan_failed")?;
+            silence_sets.push(parse_silences(&String::from_utf8_lossy(&stderr)));
+        }
+        let cuts = plan_cuts(total_s, &silence_sets);
+        let chunk_dir = directory.join("chunks");
+        std::fs::create_dir_all(&chunk_dir).map_err(|e| e.to_string())?;
+        let list = chunk_dir.join("chunks.csv");
+        let times = cuts
+            .iter()
+            .map(|t| format!("{t:.3}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut command = Command::new(&self.ffmpeg);
+        command
+            .args(["-nostdin", "-v", "error", "-i"])
+            .arg(wav)
+            .args(["-f", "segment", "-segment_times", &times, "-segment_list"])
+            .arg(&list)
+            .args([
+                "-segment_list_type",
+                "csv",
+                "-reset_timestamps",
+                "1",
+                "-c",
+                "copy",
+            ])
+            .arg(chunk_dir.join("chunk%04d.wav"));
+        run(&mut command, 3600, None)
+            .await
+            .map_err(|_| "audio_chunking_failed")?;
+        let listing = std::fs::read_to_string(&list).map_err(|_| "audio_chunking_failed")?;
+        let mut chunks = Vec::new();
+        for line in listing.lines().filter(|l| !l.trim().is_empty()) {
+            let mut fields = line.split(',');
+            let (Some(name), Some(start)) = (fields.next(), fields.next()) else {
+                return Err("audio_chunking_failed".into());
+            };
+            let start: f64 = start.parse().map_err(|_| "audio_chunking_failed")?;
+            if name.contains('/') || !start.is_finite() || start < 0.0 {
+                return Err("audio_chunking_failed".into());
+            }
+            chunks.push((chunk_dir.join(name), (start * 1000.0).round() as u64));
+        }
+        if chunks.len() != cuts.len() + 1 {
+            return Err("audio_chunking_failed".into());
+        }
+        Ok(chunks)
     }
     pub async fn diarize(&self, wav: &Path) -> Result<Vec<Turn>, String> {
         let mut command = Command::new(&self.diarization);
@@ -492,7 +617,8 @@ pub fn parse_whisper(bytes: &[u8]) -> Result<Transcript, String> {
     })
 }
 
-pub fn parse_parakeet(text: &str) -> Result<Vec<Word>, String> {
+/// The words of one parakeet-cli file section; empty for a silent chunk.
+fn parakeet_words(text: &str) -> Result<Vec<Word>, String> {
     let mut words: Vec<Word> = Vec::new();
     for line in text.lines().filter(|s| s.contains("word_start=")) {
         let fields: Vec<_> = line.split_whitespace().collect();
@@ -546,11 +672,113 @@ pub fn parse_parakeet(text: &str) -> Result<Vec<Word>, String> {
             });
         }
     }
-    // A changed CLI layout must fail visibly, never look like a silent clip.
-    if words.is_empty() {
-        return Err("parakeet_output_unparseable".into());
-    }
     Ok(words)
+}
+
+/// parakeet-cli announces each input file on stderr before its output.
+const FILE_MARKER: &str = "read_audio_data: reading audio data from";
+/// Chunk lengths for long Parakeet input: a pause between 0.75 and 1.15 times
+/// the 90-second target, so no chunk exceeds the measured memory peak by much.
+const CHUNK_TARGET_S: f64 = 90.0;
+const CHUNK_MIN_S: f64 = CHUNK_TARGET_S * 0.75;
+const CHUNK_MAX_S: f64 = CHUNK_TARGET_S * 1.15;
+/// Quietest first: a true pause is preferred over a dip in audience noise.
+const SILENCE_THRESHOLDS: [&str; 4] = ["-40dB", "-35dB", "-30dB", "-25dB"];
+
+/// The stderr of each input file, in order.
+fn file_sections(text: &str) -> Vec<&str> {
+    let starts: Vec<usize> = text.match_indices(FILE_MARKER).map(|(i, _)| i).collect();
+    starts
+        .iter()
+        .enumerate()
+        .map(|(n, &start)| &text[start..starts.get(n + 1).copied().unwrap_or(text.len())])
+        .collect()
+}
+
+/// `(start, end)` seconds of each pause ffmpeg's silencedetect reported.
+fn parse_silences(text: &str) -> Vec<(f64, f64)> {
+    let value = |line: &str, key: &str| -> Option<f64> {
+        line.split_once(key)?
+            .1
+            .split_whitespace()
+            .next()?
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite())
+    };
+    let mut spans = Vec::new();
+    let mut start = None;
+    for line in text.lines() {
+        if let Some(s) = value(line, "silence_start: ") {
+            start = Some(s);
+        } else if let (Some(s), Some(e)) = (start, value(line, "silence_end: ")) {
+            spans.push((s.max(0.0), e));
+            start = None;
+        }
+    }
+    spans
+}
+
+/// Cut points for audio of `total_s` seconds. Each cut is the middle of the
+/// longest pause between the minimum and maximum chunk length, taken from the
+/// quietest threshold that has one; without any pause the cut falls at the
+/// target length.
+pub fn plan_cuts(total_s: f64, silence_sets: &[Vec<(f64, f64)>]) -> Vec<f64> {
+    let mut cuts = Vec::new();
+    let mut position = 0.0;
+    while total_s - position > CHUNK_MAX_S {
+        let (low, high) = (position + CHUNK_MIN_S, position + CHUNK_MAX_S);
+        let want = position + CHUNK_TARGET_S;
+        let cut = silence_sets
+            .iter()
+            .find_map(|spans| {
+                spans
+                    .iter()
+                    .map(|&(s, e)| (e - s, (s + e) / 2.0))
+                    .filter(|&(_, middle)| (low..=high).contains(&middle))
+                    .max_by(|a, b| {
+                        a.0.total_cmp(&b.0)
+                            .then((b.1 - want).abs().total_cmp(&(a.1 - want).abs()))
+                    })
+                    .map(|(_, middle)| middle)
+            })
+            .unwrap_or(want);
+        cuts.push(cut);
+        position = cut;
+    }
+    cuts
+}
+
+#[cfg(test)]
+mod chunk_tests {
+    use super::{file_sections, parakeet_words, parse_silences, plan_cuts};
+
+    #[test]
+    fn cuts_at_the_longest_pause_near_ninety_seconds() {
+        let quiet = vec![(80.0, 80.5), (95.0, 96.4), (170.0, 171.0)];
+        // 95.7 is the longest pause in 67.5-103.5; 170.5 follows it in 163.2-199.2.
+        assert_eq!(plan_cuts(260.0, &[quiet]), vec![95.7, 170.5]);
+        // Without a pause the cut falls at the target; a short tail is kept.
+        assert_eq!(plan_cuts(100.0, &[vec![]]), Vec::<f64>::new());
+        assert_eq!(plan_cuts(180.0, &[vec![]]), vec![90.0]);
+        assert_eq!(plan_cuts(200.0, &[vec![]]), vec![90.0, 180.0]);
+        // A quieter threshold's pause wins over a longer, louder one.
+        assert_eq!(
+            plan_cuts(150.0, &[vec![(70.0, 70.3)], vec![(88.0, 92.0)]]),
+            vec![70.15]
+        );
+    }
+
+    #[test]
+    fn reads_silencedetect_and_splits_output_per_file() {
+        let log = "[silencedetect @ 0x1] silence_start: 12.5\n[silencedetect @ 0x1] silence_end: 13.25 | silence_duration: 0.75\n";
+        assert_eq!(parse_silences(log), vec![(12.5, 13.25)]);
+        let out = "Loading\nread_audio_data: reading audio data from 'a.wav' ...\n  [ 0] id= 1 p=0.9 t0= 10 t1= 20 word_start=true \"\u{2581}Hi\"\nread_audio_data: reading audio data from 'b.wav' ...\nSegments (0):\n";
+        let sections = file_sections(out);
+        assert_eq!(sections.len(), 2);
+        assert_eq!(parakeet_words(sections[0]).unwrap()[0].text, "Hi");
+        assert!(parakeet_words(sections[1]).unwrap().is_empty());
+    }
 }
 
 #[cfg(test)]

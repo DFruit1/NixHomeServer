@@ -193,6 +193,7 @@ rec {
     { module = ./Integrations/publish_youtube_downloader_to_fdroid.nix; allApps = [ "fdroid" "youtube-downloader" ]; anyApps = [ ]; }
     { module = ./Integrations/identify_dvd_episodes_with_bonsai.nix; allApps = [ "mkvmaker" "bonsai" ]; anyApps = [ ]; }
     { module = ./Integrations/identify_dvd_episodes_with_transcribe.nix; allApps = [ "mkvmaker" "transcribe" ]; anyApps = [ ]; }
+    { module = ./Integrations/clean_transcripts_with_bonsai.nix; allApps = [ "transcribe" "bonsai" ]; anyApps = [ ]; }
     { module = ./Integrations/reserve_qwen_for_background_jobs.nix; allApps = [ "bonsai" "qwen-27b" ]; anyApps = [ ]; }
     { module = ./Integrations/serve_ai_tools_through_qwen.nix; allApps = [ "ai-tools" "qwen-27b" ]; anyApps = [ ]; }
     { module = ./Integrations/serve_ai_tools_through_bonsai.nix; allApps = [ "ai-tools" "bonsai" ]; anyApps = [ ]; }

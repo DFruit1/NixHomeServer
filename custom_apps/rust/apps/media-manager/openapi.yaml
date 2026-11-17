@@ -2271,6 +2271,7 @@ components:
         kind: { enum: [transcription, iso] }
         backend: { enum: [parakeet, whisper], default: parakeet }
         diarize: { type: boolean, default: false }
+        cleanup: { type: boolean, default: false, description: "Proofread the finished transcript with Bonsai: names, uncommon words and clearly misheard words only. Ignored, and reported as ignored, where Bonsai is unavailable." }
         language: { type: string, nullable: true }
         storageRootId: { type: string, nullable: true }
         storageFolder: { type: string, default: "" }
@@ -4047,7 +4048,7 @@ components:
         id: {type: string}
         name: {type: string}
         backend: {enum: [parakeet, whisper]}
-        state: {enum: [queued, extracting, transcribing, diarising, writing, completed, failed]}
+        state: {enum: [queued, extracting, transcribing, cleaning, diarising, writing, completed, failed]}
         queuedAt: {type: integer}
         updatedAt: {type: integer}
         durationMs: {type: integer}

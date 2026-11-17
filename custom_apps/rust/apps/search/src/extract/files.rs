@@ -160,7 +160,12 @@ fn walk(
             .unwrap_or_default()
             .to_ascii_lowercase();
         let wanted = match folder {
-            Folder::Transcripts => matches!(extension.as_str(), "txt" | "md" | "srt" | "vtt"),
+            // A proofread job keeps the recognised text as transcript.original.txt
+            // beside the cleaned transcript; only the cleaned one is searched.
+            Folder::Transcripts => {
+                matches!(extension.as_str(), "txt" | "md" | "srt" | "vtt")
+                    && !name.to_ascii_lowercase().contains(".original.")
+            }
             Folder::Documents => {
                 document_format(&extension).is_some_and(|(_, note)| !(note && in_project))
             }

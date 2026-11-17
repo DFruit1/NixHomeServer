@@ -169,7 +169,14 @@ fn artifact(
         || !job.bytes().all(|b| b.is_ascii_hexdigit())
         || !matches!(
             name,
-            "transcript.txt" | "subtitles.srt" | "subtitles.vtt" | "diarized.srt" | "meta.json"
+            "transcript.txt"
+                | "subtitles.srt"
+                | "subtitles.vtt"
+                | "diarized.srt"
+                | "meta.json"
+                | "transcript.original.txt"
+                | "words.original.json"
+                | "words.cleaned.json"
         )
     {
         return Err(ApiError::new(

@@ -320,7 +320,13 @@ impl Worker {
                         }
                         if matches!(
                             previous["state"].as_str(),
-                            Some("extracting" | "transcribing" | "diarising" | "writing")
+                            Some(
+                                "extracting"
+                                    | "transcribing"
+                                    | "cleaning"
+                                    | "diarising"
+                                    | "writing"
+                            )
                         ) && previous["requestFingerprint"] == job.request_fingerprint
                         {
                             // A prior worker died while holding the single-instance
@@ -444,16 +450,43 @@ impl Worker {
                 job.backend,
                 &job.request,
                 &wav,
+                duration,
                 scratch.path(),
                 &mut |phase, percent| transcribing.report_transcription(phase, percent),
             )
             .await?;
         transcribing.report(100);
         let super::adapters::Transcript {
-            words,
+            mut words,
             language,
             mean_token_confidence,
         } = transcript;
+        let mut ignored = job.request.ignored(job.backend);
+        let mut cleanup = Value::Null;
+        // The recognised words before proofreading, kept beside the cleaned
+        // ones so the two can be compared, revised or used as training pairs.
+        let mut original: Option<Vec<super::Word>> = None;
+        if job.request.output.cleanup {
+            match &runtime.cleaner {
+                Some(cleaner) => {
+                    self.record(job, "cleaning", json!({"durationMs": duration}))?;
+                    let title = job.request.source["title"]
+                        .as_str()
+                        .filter(|t| !t.trim().is_empty())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| display_title(&job.stem));
+                    let context = super::cleanup::Context {
+                        title: &title,
+                        vocabulary: &job.request.transcription.vocabulary,
+                    };
+                    original = Some(words.clone());
+                    cleanup = cleaner.clean(&mut words, &context).await;
+                }
+                None => ignored.push(
+                    json!({"field": "output.cleanup", "reason": "Bonsai proofreading is unavailable"}),
+                ),
+            }
+        }
         let mut turns = Vec::new();
         if job.request.output.diarize {
             // Speaker detection reports no position, so the record keeps the
@@ -483,6 +516,28 @@ impl Worker {
             + "\n";
         output.write("transcript.txt", transcript.as_bytes())?;
         let mut artifacts = vec!["transcript.txt"];
+        if let Some(original) = &original {
+            let text = build_cues(original, &[])
+                .iter()
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n";
+            output.write("transcript.original.txt", text.as_bytes())?;
+            output.write(
+                "words.original.json",
+                &serde_json::to_vec(original).map_err(|e| e.to_string())?,
+            )?;
+            artifacts.extend(["transcript.original.txt", "words.original.json"]);
+            // A failed proofread reviewed nothing, so there is no cleaned pair.
+            if cleanup["status"] != "failed" {
+                output.write(
+                    "words.cleaned.json",
+                    &serde_json::to_vec(&words).map_err(|e| e.to_string())?,
+                )?;
+                artifacts.push("words.cleaned.json");
+            }
+        }
         if job.request.output.formats.iter().any(|f| f == "srt") {
             output.write("subtitles.srt", render_srt(&cues)?.as_bytes())?;
             artifacts.push("subtitles.srt");
@@ -498,12 +553,26 @@ impl Worker {
             )?;
             artifacts.push("diarized.srt");
         }
-        let result = json!({"backend": job.backend, "language": job.request.output.language, "detectedLanguage": language, "speakerCount": turns.iter().map(|t| &t.speaker).collect::<BTreeSet<_>>().len(), "durationMs": duration, "meanTokenConfidence": mean_token_confidence, "createdAt": now(), "source": job.request.source, "sourceFingerprint": job.fingerprint, "transcriptSha256": sha256_hex(transcript.as_bytes()), "outputDir": format!("_Transcripts/{output_name}"), "honoured": {"language": job.backend == Backend::Whisper && job.request.transcription.language.is_some(), "diarize": job.request.output.diarize}, "ignored": job.request.ignored(job.backend), "artifacts": artifacts});
+        let result = json!({"backend": job.backend, "language": job.request.output.language, "detectedLanguage": language, "speakerCount": turns.iter().map(|t| &t.speaker).collect::<BTreeSet<_>>().len(), "durationMs": duration, "meanTokenConfidence": mean_token_confidence, "createdAt": now(), "source": job.request.source, "sourceFingerprint": job.fingerprint, "transcriptSha256": sha256_hex(transcript.as_bytes()), "outputDir": format!("_Transcripts/{output_name}"), "honoured": {"language": job.backend == Backend::Whisper && job.request.transcription.language.is_some(), "diarize": job.request.output.diarize, "cleanup": cleanup["status"] == "applied" || cleanup["status"] == "unchanged"}, "ignored": ignored, "cleanup": cleanup, "artifacts": artifacts});
         let bytes = serde_json::to_vec(&result).map_err(|e| e.to_string())?;
         output.write("meta.json", &bytes)?;
         directory.write(&format!("{}.transcribe.result.json", job.stem), &bytes)?;
         self.record(job, "completed", result)?;
         Ok(())
+    }
+}
+
+/// The file name a person chose, without the `-<12 hex>` suffix uploads get.
+fn display_title(stem: &str) -> String {
+    match stem.rsplit_once('-') {
+        Some((title, suffix))
+            if !title.is_empty()
+                && suffix.len() == 12
+                && suffix.bytes().all(|b| b.is_ascii_hexdigit()) =>
+        {
+            title.to_string()
+        }
+        _ => stem.to_string(),
     }
 }
 

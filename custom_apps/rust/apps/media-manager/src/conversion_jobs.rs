@@ -23,6 +23,8 @@ pub struct Options {
     pub backend: String,
     #[serde(default)]
     pub diarize: bool,
+    #[serde(default)]
+    pub cleanup: bool,
     pub language: Option<String>,
     pub storage_root_id: Option<String>,
     #[serde(default)]
@@ -39,6 +41,7 @@ impl Options {
                 || !self.name.to_ascii_lowercase().ends_with(".iso")
                 || self.storage_root_id.is_some()
                 || self.diarize
+                || self.cleanup
                 || self.language.is_some()
             {
                 return Err(
@@ -83,6 +86,7 @@ impl Options {
         let mut request = Request::default();
         request.output.formats = vec!["txt".into(), "srt".into(), "vtt".into()];
         request.output.diarize = self.diarize;
+        request.output.cleanup = self.cleanup;
         request.transcription.language = self.language.clone();
         request
     }
@@ -723,6 +727,7 @@ mod safety_tests {
                 kind: "transcription".into(),
                 backend: "parakeet".into(),
                 diarize: true,
+                cleanup: false,
                 language: None,
                 storage_root_id: None,
                 storage_folder: String::new(),
