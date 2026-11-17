@@ -739,6 +739,28 @@ def looks_like_episode_set(titles: list[Title]) -> bool:
     return 8 * 60 <= shortest and longest <= 75 * 60 and longest / shortest <= 1.5
 
 
+def episode_core(titles: list[Title]) -> list[Title] | None:
+    """Episode-length titles of a disc that also carries short extras.
+
+    ``ALL_CREATURES_GREAT_AND_SMALL.iso`` (2026-11-17) held two 54-minute
+    episodes and 9- and 5-minute extras; the extras broke
+    ``looks_like_episode_set`` and the disc was filed as a film. Returns the
+    episodes when at least two similar episode-length titles exist and every
+    other title is clearly shorter (under 35% of the longest episode).
+    """
+    if not titles:
+        return None
+    longest = max(title.seconds for title in titles)
+    core = [title for title in titles
+            if title.seconds >= 0.6 * longest and 8 * 60 <= title.seconds <= 75 * 60]
+    rest = [title for title in titles if title not in core]
+    if len(core) < 2 or not rest or not looks_like_episode_set(core):
+        return None
+    if any(title.seconds >= 0.35 * longest for title in rest):
+        return None
+    return core
+
+
 def source_hints(path: Path) -> SourceHints:
     stem = _RIPPER_SUFFIX_RE.sub("", path.stem)
     parens_year = _PARENS_YEAR_RE.search(stem)
@@ -1942,6 +1964,13 @@ def build_plan(args: argparse.Namespace, source: Path,
     else:
         metadata = None
     episode_like = looks_like_episode_set(selected)
+    if not dominant and not episode_like:
+        core = episode_core(selected)
+        if core is not None:
+            print(f"Treating DVD titles {[title.index for title in core]} as episodes; "
+                  f"the shorter titles {[title.index for title in selected if title not in core]} "
+                  "are extras")
+            selected, episode_like = core, True
     # A bare trailing series identifier (e.g. ``Rumpole ... IV``) only encodes
     # the season when the disc content is actually TV-like (episode durations).
     # Movie sequels keep their title number (``Mission Impossible 2``).
@@ -4268,6 +4297,14 @@ def self_test() -> None:
         [Title(2, 1326, True), Title(3, 1705, False), Title(4, 1638, False), Title(5, 1523, False)]
     )
     assert not looks_like_episode_set([Title(1, 5400, True), Title(2, 1200, False), Title(3, 900, False)])
+    # Two episodes plus short extras are TV with the extras dropped; a film
+    # with featurettes, or one episode with extras, is not.
+    creatures = [Title(1, 3250, True), Title(2, 3271, False), Title(3, 548, False), Title(4, 334, False)]
+    assert [title.index for title in episode_core(creatures)] == [1, 2]
+    assert episode_core([Title(1, 6100, True), Title(2, 548, False), Title(3, 334, False)]) is None
+    assert episode_core([Title(1, 3250, True), Title(2, 548, False)]) is None
+    assert episode_core([Title(1, 3250, True), Title(2, 3271, False), Title(3, 1500, False)]) is None
+    assert episode_core([Title(1, 3250, True), Title(2, 3271, False)]) is None
     with tempfile.TemporaryDirectory() as scan_dir:
         fake_handbrake = Path(scan_dir) / "fake-handbrake"
         fake_handbrake.write_bytes(
