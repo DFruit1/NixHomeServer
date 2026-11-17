@@ -48,6 +48,10 @@ struct EpisodeTextRequest {
     season: u16,
     episode: u16,
     language: String,
+    /// Answer only from the cache; never contact OpenSubtitles. The caller
+    /// uses this once its own download budget is spent.
+    #[serde(default)]
+    cache_only: bool,
 }
 
 struct EpisodeQuery {
@@ -57,6 +61,7 @@ struct EpisodeQuery {
     season: u16,
     episode: u16,
     language: String,
+    cache_only: bool,
 }
 
 fn validated(request: EpisodeTextRequest) -> Option<EpisodeQuery> {
@@ -87,6 +92,7 @@ fn validated(request: EpisodeTextRequest) -> Option<EpisodeQuery> {
         season: request.season,
         episode: request.episode,
         language: request.language,
+        cache_only: request.cache_only,
     })
 }
 
@@ -134,11 +140,21 @@ async fn opensubtitles_episode_text(
         )
         .as_bytes(),
     );
-    if let Some(cached) = state.lookup_cache.get(&cache_key).await
+    if let Some(mut cached) = state.lookup_cache.get(&cache_key).await
         && cached["text"].is_string()
     {
         log(&request_id, &query, "cache_hit");
+        // Tell the caller this spent no download, so its budget is kept.
+        cached["cached"] = json!(true);
         return Json(cached).into_response();
+    }
+    if query.cache_only {
+        return outcome(
+            &request_id,
+            Some(&query),
+            StatusCode::NOT_FOUND,
+            "not_cached",
+        );
     }
     let client = match opensubtitles_client_for(&state, &identity, &request_id) {
         Ok(client) => client,
@@ -202,6 +218,8 @@ async fn opensubtitles_episode_text(
         .put(cache_key, EPISODE_TEXT_CACHE_SCOPE, "system", body.clone())
         .await;
     log(&request_id, &query, "downloaded");
+    let mut body = body;
+    body["cached"] = json!(false);
     Json(body).into_response()
 }
 

@@ -1091,7 +1091,8 @@ def run_identifier(
 
 
 def identify_disc(args: argparse.Namespace, source: Path, selected: list[Title],
-                  hints: SourceHints, renew_lease: Any | None) -> dict[str, Any]:
+                  hints: SourceHints, renew_lease: Any | None,
+                  sidecar: Path | None = None) -> dict[str, Any]:
     arguments = ["disc", "--iso", str(source), "--name-hint", hints.name,
                  "--sevenzip", args.sevenzip, "--ffmpeg", args.ffmpeg]
     for title in selected:
@@ -1101,7 +1102,7 @@ def identify_disc(args: argparse.Namespace, source: Path, selected: list[Title],
     aspects = [title.aspect for title in selected if title.aspect]
     if aspects:
         arguments += ["--display-aspect", f"{sorted(aspects)[len(aspects) // 2]:.2f}"]
-    sidecar = ripper_sidecar(source)
+    sidecar = sidecar or ripper_sidecar(source)
     if sidecar.is_file():
         arguments += ["--sidecar", str(sidecar)]
     return run_identifier(args, arguments, renew_lease, "disc menus")
@@ -1113,7 +1114,13 @@ def identify_content(args: argparse.Namespace, source: Path, plan: dict[str, Any
         return uncertain(plan.get("identification", {}).get("summary") or "Episodes need confirming.",
                          "speech transcription is not configured")
     context = args.state_dir / f".identify-context-{os.getpid()}.json"
-    atomic_json(context, plan.get("identification") or {})
+    disc_outcome = dict(plan.get("identification") or {})
+    proposal = order_proposal(args, source, disc_outcome, list(plan["titles"]))
+    if proposal is not None:
+        disc_outcome.update(assignments=proposal["assignments"],
+                            proposalSource=proposal["proposalSource"])
+        print(f"  identification: {proposal['reason']}")
+    atomic_json(context, disc_outcome)
     arguments = ["content", "--context", str(context), "--ffmpeg", args.ffmpeg,
                  "--parakeet", args.parakeet, "--parakeet-model", args.parakeet_model,
                  "--threads", str(args.identify_threads)]
@@ -1123,9 +1130,12 @@ def identify_content(args: argparse.Namespace, source: Path, plan: dict[str, Any
     if owner and getattr(args, "subtitle_socket", None):
         arguments += ["--owner", owner, "--subtitle-socket", args.subtitle_socket]
     try:
-        return run_identifier(args, arguments, renew_lease, "dialogue")
+        result = run_identifier(args, arguments, renew_lease, "dialogue")
     finally:
         context.unlink(missing_ok=True)
+    if proposal is not None:
+        result["reasons"] = [proposal["reason"], *(result.get("reasons") or [])]
+    return result
 
 
 def identified_assignments(result: dict[str, Any], titles: list[int]) -> list[dict[str, Any]] | None:
@@ -1141,6 +1151,207 @@ def identified_assignments(result: dict[str, Any], titles: list[int]) -> list[di
     if any(n[0] != numbers[0][0] or n[1] != numbers[0][1] + i for i, n in enumerate(numbers)):
         return None
     return assignments
+
+
+# Hold reasons that a later attempt can change: a busy or failed service, or
+# the identifier itself failing. Matched against reason text from both
+# stages and from this worker.
+TRANSIENT_REASONS = [re.compile(pattern) for pattern in (
+    r"Bonsai (?:could not [a-z ]+|ranking failed): .*(?:HTTP (?:429|5\d\d)|timed out|timeout"
+    r"|error sending request|connection|POST https?://)",
+    r"^TVmaze (?:search failed|episodes for .+ failed)",
+    r"^The OpenSubtitles daily download limit was reached",
+    r"^OpenSubtitles comparison is unavailable",
+    r"^TMDB is unavailable",
+    r"^the identifier exceeded its deadline",
+    r"^identifier error:",
+    r"^could not start the identifier",
+    r"^the identifier printed invalid JSON",
+    r"^Title \d+: transcription failed: (?!the excerpt contains too little speech)",
+)]
+# Reasons that say the evidence disagrees, which no retry changes.
+SUBSTANTIVE_REASONS = [re.compile(pattern) for pattern in (
+    r"rather than the .* guess",
+    r"^The matched episodes are not consecutive",
+    r"^The episodes named on the menu are not consecutive",
+    r"different series equally well",
+    r"TV series share this name",
+    r"^The disc menu lists \d+ episodes but",
+    r"^TheDiscDB places these episodes",
+    r"^publishing failed:",
+    r"converter's outputs could not be matched",
+    r"^the disc's titles changed",
+)]
+# Automatic re-identification of a hold whose blockers were all transient:
+# the delay before attempt 1, 2 and 3; after that a person decides.
+RETRY_DELAYS = (3600, 6 * 3600, 24 * 3600)
+# `.identify.json` evidence schema. 2 added `status`, `outcomes`, `retry`
+# and `resolution`; the schema-1 fields keep their meaning.
+EVIDENCE_SCHEMA_VERSION = 2
+
+
+def classify_reasons(reasons: list[Any]) -> dict[str, Any]:
+    """Split hold reasons into transient and substantive blockers.
+
+    ``retryable`` is true when something temporary went wrong and nothing
+    contradicts the disc; other reasons (no match, unreadable menus) only
+    follow from the evidence that was available and block nothing alone.
+    """
+    texts = [str(reason) for reason in reasons]
+    transient = [text for text in texts if any(p.search(text) for p in TRANSIENT_REASONS)]
+    substantive = [text for text in texts if any(p.search(text) for p in SUBSTANTIVE_REASONS)]
+    return {
+        "retryable": bool(transient) and not substantive,
+        "transientReasons": transient,
+        "substantiveReasons": substantive,
+    }
+
+
+def library_to_provider_episode(series: dict[str, Any], season: int,
+                                episode: int) -> tuple[int, int]:
+    """Convert library (Jellyfin folder) numbering into the identifier's.
+
+    The library is numbered like TVmaze for now. This is the one place a
+    numbering map (e.g. TMDB/TVDB orderings) has to be applied.
+    """
+    del series  # the mapping does not depend on the series yet
+    return season, episode
+
+
+_LIBRARY_EPISODE_RE = re.compile(r"(?i)S(\d{1,2})E(\d{1,3})(?:-?E(\d{1,3}))?")
+
+
+def library_last_episode(series_dir: Path, season: int | None) -> tuple[int, int] | None:
+    """Highest (season, episode) in a library series folder, optionally in one season."""
+    if season is not None:
+        following = existing_next_episode(series_dir.parent, series_dir.name, season)
+        return (season, following - 1) if following is not None else None
+    best: tuple[int, int] | None = None
+    try:
+        folders = [entry for entry in series_dir.iterdir()
+                   if entry.is_dir() and re.fullmatch(r"Season \d{1,3}", entry.name)]
+    except OSError:
+        return None
+    for folder in folders:
+        for path in folder.glob("*.mkv"):
+            match = _LIBRARY_EPISODE_RE.search(path.name)
+            if match:
+                number = (int(match.group(1)), int(match.group(3) or match.group(2)))
+                best = number if best is None or number > best else best
+    return best
+
+
+def order_proposal(args: argparse.Namespace, source: Path, identification: dict[str, Any],
+                   titles: list[int]) -> dict[str, Any] | None:
+    """Propose episodes for a disc whose series is known but episodes are not.
+
+    The next episodes after the library's last one ("library order"), else
+    an estimate from the disc number in the file name ("disc number"). The
+    content stage only accepts it when the dialogue confirms a title and
+    contradicts none, so a disc uploaded out of order is still held.
+    """
+    series = identification.get("series")
+    if (identification.get("status") == "identified" or identification.get("assignments")
+            or not isinstance(series, dict) or not series.get("tvmazeId") or not titles):
+        return None
+    counts: dict[int, int] = {}
+    raw_counts = identification.get("seasonEpisodeCounts")
+    for key, value in (raw_counts.items() if isinstance(raw_counts, dict) else []):
+        if str(key).isdigit() and isinstance(value, int):
+            counts[int(key)] = value
+    known_season = identification.get("season") if isinstance(identification.get("season"), int) else None
+    count = len(titles)
+    start: tuple[int, int] | None = None
+    origin = ""
+    note = ""
+    name, year, provider = library_identity(args.shows_dir, series)
+    series_dir = args.shows_dir / safe_name(jellyfin_name(name, year, provider))
+    last = library_last_episode(series_dir, known_season) if series_dir.is_dir() else None
+    if last is not None:
+        season, episode = last
+        origin = "library order"
+        note = f"after S{season:02d}E{episode:02d} in the library"
+        if counts.get(season) is not None and episode >= counts[season]:
+            # The library season is complete; only an unspecified season
+            # continues into the next one.
+            if known_season is None and counts.get(season + 1):
+                start = (season + 1, 1)
+        else:
+            start = (season, episode + 1)
+    else:
+        # No library episodes to continue from (in this season).
+        try:
+            disc = source_hints(source).disc
+        except ValueError:
+            disc = None
+        if disc:
+            season = known_season or 1
+            start = (season, (disc - 1) * count + 1)
+            origin = "disc number"
+            note = f"disc {disc} of season {season}"
+    if start is None:
+        return None
+    season, first = start
+    numbers = [library_to_provider_episode(series, season, first + offset) for offset in range(count)]
+    if any(n[0] != numbers[0][0] or n[1] != numbers[0][1] + i for i, n in enumerate(numbers)):
+        return None
+    provider_season, provider_first = numbers[0]
+    # A disc never crosses a season; past the provider's count it cannot fit.
+    if counts and provider_first + count - 1 > counts.get(provider_season, 0):
+        return None
+    assignments = [
+        {"title": title, "season": s, "episode": e, "name": "", "evidence": origin}
+        for title, (s, e) in zip(titles, numbers)
+    ]
+    episodes = f"S{provider_season:02d}E{provider_first:02d}" + (
+        f"-E{provider_first + count - 1:02d}" if count > 1 else "")
+    return {
+        "proposalSource": origin,
+        "assignments": assignments,
+        "reason": f"Proposed {episodes} from the {origin} ({note}); the dialogue must confirm it.",
+    }
+
+
+def evidence_resolution(by: str, name: str, year: int | None, provider: str | None,
+                        season: int, first: int, count: int) -> dict[str, Any]:
+    """How a disc's episodes were finally decided, for the evaluation harness.
+
+    ``by`` is "identifier" (identified on first pass), "automatic retry" or
+    "rename" (a person named the ISO).
+    """
+    return {"by": by, "series": name, "year": year, "provider": provider,
+            "season": season, "firstEpisode": first, "lastEpisode": first + count - 1}
+
+
+def write_processed_evidence(archived: Path, plan: dict[str, Any]) -> None:
+    """Keep an identified disc's evidence beside its archived ISO.
+
+    Same document as a held disc's ``.identify.json`` (schema 2) with
+    ``status`` "identified" and a ``resolution``; best effort.
+    """
+    outcomes = plan.get("identify_outcomes")
+    if not isinstance(outcomes, dict):
+        outcomes = {"disc": plan.get("identification"), "content": None}
+    titles = plan.get("titles") or []
+    evidence = {
+        "schemaVersion": EVIDENCE_SCHEMA_VERSION,
+        "status": "identified",
+        "sourceIso": plan.get("source_iso") or "",
+        "titles": titles,
+        "summary": str((plan.get("identification") or {}).get("summary") or ""),
+        "reasons": [str(r) for r in ((plan.get("identification") or {}).get("reasons") or [])][:12],
+        "outcomes": outcomes,
+        "resolution": evidence_resolution(
+            "automatic retry" if plan.get("retried") else "identifier",
+            str(plan.get("name") or ""), plan.get("year"), plan.get("provider"),
+            int(plan.get("season") or 1), int(plan.get("first_episode") or 1), len(titles)),
+        "finishedAt": int(time.time()),
+    }
+    try:
+        atomic_json(archived.with_name(archived.name + ".identify.json"), evidence)
+    except OSError as error:
+        print(f"Could not record identification evidence for {archived.name}: {error}",
+              file=sys.stderr)
 
 
 def library_identity(shows_root: Path, series: dict[str, Any]) -> tuple[str, int | None, str | None]:
@@ -1249,19 +1460,28 @@ def stage_episode(file: Path, staged: Path) -> bool:
     return True
 
 
-def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, year: int | None,
-                     provider: str | None, season: int, first: int, names: list[str]) -> Path:
-    """Move held episode files into the TV library, all or nothing."""
+def episode_targets(args: argparse.Namespace, count: int, name: str, year: int | None,
+                    provider: str | None, season: int, first: int,
+                    names: list[str]) -> tuple[Path, list[Path]]:
+    """The season folder and library file names publish_episodes uses."""
     media_name = safe_name(jellyfin_name(name, year, provider))
     # Jellyfin reads the series identifier from the folder; repeating it in
     # every episode file only makes the library harder to read.
     episode_series = safe_name(jellyfin_name(name, year, None))
     season_dir = args.shows_dir / media_name / f"Season {season:02d}"
     targets = []
-    for offset, _ in enumerate(files):
+    for offset in range(count):
         title = safe_name(names[offset]) if offset < len(names) and names[offset] else ""
         stem = f"{episode_series} S{season:02d}E{first + offset:02d}"
         targets.append(season_dir / (f"{stem} - {title}.mkv" if title else f"{stem}.mkv"))
+    return season_dir, targets
+
+
+def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, year: int | None,
+                     provider: str | None, season: int, first: int, names: list[str]) -> Path:
+    """Move held episode files into the TV library, all or nothing."""
+    season_dir, targets = episode_targets(args, len(files), name, year, provider, season,
+                                          first, names)
     # Recover from a publish of this disc that was killed part-way. A target
     # that is the same file as this disc's staging name is its own link; a
     # target with neither staging nor held file left was already cleaned up.
@@ -1916,11 +2136,15 @@ def process_source(
 def finish_held(args: argparse.Namespace, source: Path, plan: dict[str, Any],
                 videos: list[str], renew_lease: Any | None) -> None:
     """Compare a held disc's dialogue, then publish it or park it for a person."""
+    disc_outcome = plan.get("identification") or None
+    content_outcome: dict[str, Any] | None = None
     if len(videos) != len(plan["titles"]):
         result = dict(plan.get("identification") or {})
-        result.setdefault("reasons", []).append("the converter's outputs could not be matched to the titles")
+        result["reasons"] = [*(result.get("reasons") or []),
+                             "the converter's outputs could not be matched to the titles"]
     else:
         result = identify_content(args, source, plan, videos, renew_lease)
+        content_outcome = result
         # Keep what the menus showed alongside what the dialogue showed.
         earlier = (plan.get("identification") or {}).get("reasons") or []
         result["reasons"] = list(dict.fromkeys([*earlier, *(result.get("reasons") or [])]))
@@ -1948,35 +2172,63 @@ def finish_held(args: argparse.Namespace, source: Path, plan: dict[str, Any],
                 first_episode=assignments[0]["episode"], output=str(args.shows_dir),
                 media_dir=str(season_dir.parent), held=False, published=True,
                 identification=result,
+                identify_outcomes={"disc": disc_outcome, "content": content_outcome},
             )
             if renew_lease is not None:
                 renew_lease()  # persist "published" before the ISO is archived
             return
     shared_root = args.held_dir.parent.parent
     held_folder = Path(videos[0]).parent.parent if videos else args.held_dir / plan["name"]
+    reasons = [str(reason) for reason in (result.get("reasons") or [])]
     plan["needs_identification"] = {
-        "schemaVersion": 1,
+        "schemaVersion": EVIDENCE_SCHEMA_VERSION,
+        "status": "held",
         "sourceIso": source.name,
         "heldDir": os.path.relpath(held_folder, shared_root),
         "heldFiles": videos,
         "titles": plan["titles"],
         "summary": str(result.get("summary") or "The episodes could not be identified."),
-        "reasons": [str(reason) for reason in (result.get("reasons") or [])][:12],
+        "reasons": reasons[:12],
         "suggestion": iso_suggestion(result.get("series"), result.get("assignments") or [],
                                      len(plan["titles"])),
+        "outcomes": {"disc": disc_outcome, "content": content_outcome},
+        "retry": classify_reasons(reasons),
     }
     if renew_lease is not None:
         renew_lease()
+
+
+def initial_retry(classification: Any, now: int) -> dict[str, Any]:
+    """Queue-state retry schedule for a newly held disc."""
+    if isinstance(classification, dict) and classification.get("retryable"):
+        return {"state": "scheduled", "attempts": 0, "nextAt": now + RETRY_DELAYS[0]}
+    return {"state": "not retryable", "attempts": 0}
+
+
+def retry_view(classification: dict[str, Any], retry: dict[str, Any]) -> dict[str, Any]:
+    """The evidence file's `retry` object: why, and what happens next."""
+    return {
+        **{key: classification.get(key) for key in
+           ("retryable", "transientReasons", "substantiveReasons")},
+        "state": retry.get("state"),
+        "attempts": int(retry.get("attempts") or 0),
+        "maxAttempts": len(RETRY_DELAYS),
+        "nextAttemptAt": retry.get("nextAt") if retry.get("state") == "scheduled" else None,
+    }
 
 
 def park_for_identification(args: argparse.Namespace, source: Path,
                             record: dict[str, Any], state: dict[str, Any]) -> Path:
     """Move the ISO to _NeedsIdentification with its evidence for the UI."""
     archived = archive_source(source, needs_dir(args))
-    evidence = dict(record, finishedAt=int(time.time()))
+    now = int(time.time())
+    classification = record.get("retry") if isinstance(record.get("retry"), dict) else {}
+    retry = initial_retry(classification, now)
+    evidence = dict(record, finishedAt=now, retry=retry_view(classification, retry))
     identify_path = archived.with_name(archived.name + ".identify.json")
     atomic_json(identify_path, evidence)
     state.setdefault("held", {})[held_record_key(archived)] = {
+        "retry": retry,
         "identify": identify_path.name,
         "sidecar": ripper_sidecar(archived).name,
         "files": record.get("heldFiles", []),
@@ -2006,6 +2258,34 @@ def held_provider(identify_path: Path) -> str | None:
     if not isinstance(provider, str) or parse_provider(f"[{provider}]") != provider:
         return None
     return provider
+
+
+def read_evidence(identify_path: Path) -> dict[str, Any]:
+    """A held disc's evidence; {} when missing, unreadable or a link.
+
+    The folder is writable by people; never follow a link placed there.
+    """
+    if identify_path.is_symlink():
+        return {}
+    try:
+        evidence = json.loads(identify_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return evidence if isinstance(evidence, dict) else {}
+
+
+def move_evidence(identify_path: Path, destination: Path, updates: dict[str, Any]) -> None:
+    """Archive a held disc's evidence beside its ISO, recording how it ended."""
+    if not identify_path.is_file() and not identify_path.is_symlink():
+        return
+    evidence = read_evidence(identify_path)
+    evidence.update(updates)
+    try:
+        atomic_json(destination, evidence)
+    except OSError as error:
+        print(f"Could not archive {identify_path.name}: {error}", file=sys.stderr)
+        return
+    identify_path.unlink(missing_ok=True)
 
 
 def note_identification_problem(identify_path: Path, message: str) -> None:
@@ -2073,6 +2353,8 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
             record = records.get(key)
             if not isinstance(record, dict):
                 continue
+            if isinstance(record.get("retry"), dict) and record["retry"].get("publishing"):
+                continue  # an automatic retry's publish is finished first
             if isinstance(record.get("mtimeNs"), int) and iso.stat().st_mtime_ns != record["mtimeNs"]:
                 continue
             try:
@@ -2111,8 +2393,11 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
                 "kind": "tv", "name": name, "output": str(args.shows_dir),
                 "media_dir": str(season_dir.parent),
             })
-            if identify_path.is_file():
-                os.replace(identify_path, archived.with_name(archived.name + ".identify.json"))
+            move_evidence(identify_path, archived.with_name(archived.name + ".identify.json"), {
+                "status": "confirmed",
+                "resolution": evidence_resolution("rename", name, year, provider,
+                                                  hints.season, hints.episode, count),
+            })
             # The ripper's evidence keeps the ISO's original name.
             original_sidecar = directory / str(record.get("sidecar") or "")
             if record.get("sidecar") and original_sidecar.is_file():
@@ -2131,6 +2416,336 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
             if not any(Path(str(item)).is_file() for item in files):
                 del records[stale]
         state["held"] = records
+        atomic_json(state_path, state)
+
+
+def held_iso_for_key(directory: Path, key: str) -> Path | None:
+    """The ISO in _NeedsIdentification that a held record belongs to, by inode."""
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return None
+    for path in entries:
+        if path.suffix.lower() != ".iso" or path.is_symlink() or not path.is_file():
+            continue
+        try:
+            if held_record_key(path) == key:
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def bonsai_gate_busy(args: argparse.Namespace) -> bool:
+    """True while the Bonsai gate is serving or queueing someone else's work.
+
+    A retry is background work, so it waits for an idle gate instead of
+    adding to its queue. An unreachable gate is not "busy": the attempt runs
+    and fails as a transient problem, which keeps the retries bounded.
+    """
+    url = getattr(args, "bonsai_url", None)
+    if not url:
+        return False
+    base = url.rstrip("/").removesuffix("/v1")
+    try:
+        health = fetch_json(f"{base}/health", 5)
+    except Exception:  # noqa: BLE001 - no health endpoint means no gate to honour
+        return False
+    if not isinstance(health, dict):
+        return False
+    return bool(health.get("queued")) or health.get("available_permits") == 0
+
+
+def update_held_evidence(identify_path: Path, updates: dict[str, Any]) -> None:
+    evidence = read_evidence(identify_path) or {"schemaVersion": 1}
+    evidence.update(updates)
+    try:
+        atomic_json(identify_path, evidence)
+    except OSError as error:
+        print(f"Could not update {identify_path.name}: {error}", file=sys.stderr)
+
+
+def reidentify_held(args: argparse.Namespace, directory: Path, iso: Path, record: dict[str, Any],
+                    renew: Any) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]] | None]:
+    """Identify a held disc again from its ISO and its already-encoded videos.
+
+    Returns the final result, both stages' outcomes and the validated
+    assignments (None when still uncertain). Nothing is re-encoded.
+    """
+    titles = [int(title) for title in record.get("titles") or []]
+    files = [str(item) for item in record.get("files") or []]
+    scanned = {title.index: title for title in scan_titles(
+        args.handbrake, iso, renew, getattr(args, "lease_seconds", 120) / 3)}
+    if not titles or any(title not in scanned for title in titles) or len(files) != len(titles):
+        result = uncertain("The disc no longer matches its held videos.",
+                           "the disc's titles changed since it was encoded")
+        return result, {"disc": None, "content": None}, None
+    hints = source_hints(iso)  # parseable: checked when the hold was chosen
+    sidecar = directory / str(record.get("sidecar") or "")
+    disc = identify_disc(args, iso, [scanned[title] for title in titles], hints, renew,
+                         sidecar if record.get("sidecar") else None)
+    assignments = identified_assignments(disc, titles)
+    if assignments is not None:
+        return disc, {"disc": disc, "content": None}, assignments
+    content = identify_content(args, iso, {"titles": titles, "identification": disc}, files, renew)
+    content["reasons"] = list(dict.fromkeys([*(disc.get("reasons") or []),
+                                             *(content.get("reasons") or [])]))
+    return content, {"disc": disc, "content": content}, identified_assignments(content, titles)
+
+
+def complete_retry_publish(args: argparse.Namespace, directory: Path, processed_dir: Path,
+                           records: dict[str, Any], key: str) -> None:
+    """Publish a re-identified hold and archive its ISO; the caller holds
+    queue.lock and saves the state afterwards.
+
+    `retry.publishing` is saved before anything moves, so a run killed at any
+    point resumes here: publish_episodes undoes or finishes its own partial
+    work, an already published disc is only archived, and a disc whose ISO
+    was already archived is only forgotten.
+    """
+    record = records[key]
+    retry = record["retry"]
+    job = retry["publishing"]
+    files = [Path(str(item)) for item in record.get("files") or []]
+    titles = list(record.get("titles") or [])
+    names = [str(name) for name in job.get("names") or []]
+    season_dir, targets = episode_targets(args, len(files), job["name"], job.get("year"),
+                                          job.get("provider"), job["season"], job["first"], names)
+    published = bool(files) and all(target.exists() for target in targets) and not any(
+        file.exists() or staging_name(target, file).exists()
+        for file, target in zip(files, targets))
+    identify_path = directory / str(record.get("identify") or "")
+    if not published:
+        try:
+            publish_episodes(args, files, job["name"], job.get("year"), job.get("provider"),
+                             job["season"], job["first"], names)
+        except (OSError, RuntimeError) as error:
+            retry.pop("publishing", None)
+            retry.update(state="stopped", stoppedBecause=f"publishing failed: {error}")
+            if record.get("identify"):
+                update_held_evidence(identify_path, {
+                    "summary": f"Identified automatically, but could not publish: {error}",
+                    "retry": dict(read_evidence(identify_path).get("retry") or {},
+                                  state="stopped", nextAttemptAt=None),
+                })
+            print(f"Could not publish re-identified episodes: {error}", file=sys.stderr)
+            return
+    iso = held_iso_for_key(directory, key)
+    if iso is not None:
+        plan = {
+            "kind": "tv", "name": job["name"], "year": job.get("year"),
+            "provider": job.get("provider"), "season": job["season"],
+            "first_episode": job["first"], "titles": titles,
+            "identification": {"status": "identified"},
+            "output": str(args.shows_dir), "media_dir": str(season_dir.parent),
+        }
+        archived = archive_source(iso, processed_dir, plan, identified_iso_name(plan))
+        if record.get("identify"):
+            move_evidence(identify_path, archived.with_name(archived.name + ".identify.json"), {
+                "status": "identified",
+                "resolution": evidence_resolution("automatic retry", job["name"], job.get("year"),
+                                                  job.get("provider"), job["season"],
+                                                  job["first"], len(files)),
+                "finishedAt": int(time.time()),
+            })
+        original_sidecar = directory / str(record.get("sidecar") or "")
+        if record.get("sidecar") and original_sidecar.is_file():
+            os.replace(original_sidecar, ripper_sidecar(archived))
+        print(f"Published held episodes of {iso.name} to {season_dir} after re-identifying them")
+    del records[key]
+
+
+def retry_transient_holds(args: argparse.Namespace, lock_path: Path, state_path: Path,
+                          processed_dir: Path) -> None:
+    """Re-identify one held disc whose blockers were all temporary.
+
+    Runs between claims, like resolve_renamed_holds. queue.lock is held only
+    to choose, lease and settle the record, never while the identifier runs.
+    The attempt is counted when it starts, so a crash cannot retry forever;
+    a shutdown gives it back. A person's rename or deletion always wins: the
+    record or ISO is re-checked before anything is published.
+    """
+    if shutdown_signal is not None:
+        raise ShutdownRequested("shutdown before re-identifying held discs")
+    directory = needs_dir(args)
+    if not directory.is_dir():
+        return
+    now = int(time.time())
+
+    def candidate(records: dict[str, Any]) -> tuple[str, Path] | None:
+        for key in sorted(records):
+            record = records[key]
+            retry = record.get("retry") if isinstance(record, dict) else None
+            if not isinstance(retry, dict) or retry.get("state") != "scheduled":
+                continue
+            lease = retry.get("lease")
+            if isinstance(lease, dict) and int(lease.get("expiresAt") or 0) > now:
+                continue  # another worker is on it
+            if int(retry.get("nextAt") or 0) > now:
+                continue
+            iso = held_iso_for_key(directory, key)
+            if iso is None or (isinstance(record.get("mtimeNs"), int)
+                               and iso.stat().st_mtime_ns != record["mtimeNs"]):
+                continue
+            try:
+                named = source_hints(iso)
+            except ValueError:
+                continue
+            if named.season is not None and named.episode is not None:
+                continue  # the person named it; resolve_renamed_holds publishes
+            if not all(Path(str(item)).is_file() for item in record.get("files") or [None]):
+                retry.pop("lease", None)
+                retry.update(state="stopped", stoppedBecause="the held videos are missing")
+                continue
+            return key, iso
+        return None
+
+    with locked_queue(lock_path):
+        state = load_state(state_path)
+        records = state.get("held")
+        if not isinstance(records, dict) or not records:
+            return
+        for key, record in list(records.items()):
+            if not isinstance(record, dict):
+                continue
+            if "retry" not in record:
+                # Held before automatic retries existed: judge its evidence.
+                evidence = read_evidence(directory / str(record.get("identify") or ""))
+                held_at = int(evidence.get("finishedAt") or now)
+                record["retry"] = initial_retry(classify_reasons(evidence.get("reasons") or []),
+                                                held_at)
+            if isinstance(record["retry"], dict) and record["retry"].get("publishing"):
+                # A publish was interrupted; finish it before anything else.
+                complete_retry_publish(args, directory, processed_dir, records, key)
+                atomic_json(state_path, state)
+                return
+        chosen = candidate(records)
+        atomic_json(state_path, state)
+    if chosen is None:
+        return
+    if bonsai_gate_busy(args):
+        print("Bonsai is busy; postponing an automatic re-identification")
+        return
+
+    lease_id = secrets.token_hex(16)
+    with locked_queue(lock_path):
+        state = load_state(state_path)
+        records = state.get("held")
+        again = candidate(records) if isinstance(records, dict) else None
+        if again is None or again[0] != chosen[0]:
+            atomic_json(state_path, state)
+            return
+        key, iso = again
+        retry = records[key]["retry"]
+        retry["attempts"] = int(retry.get("attempts") or 0) + 1
+        retry["lease"] = {"workerId": args.worker_id, "leaseId": lease_id,
+                          "expiresAt": int(time.time()) + args.lease_seconds}
+        retry["lastAttemptAt"] = int(time.time())
+        record = dict(records[key])
+        atomic_json(state_path, state)
+
+    def owned(state: dict[str, Any]) -> dict[str, Any] | None:
+        held = state.get("held")
+        current = held.get(key) if isinstance(held, dict) else None
+        retry = current.get("retry") if isinstance(current, dict) else None
+        lease = retry.get("lease") if isinstance(retry, dict) else None
+        if isinstance(lease, dict) and lease.get("workerId") == args.worker_id \
+                and lease.get("leaseId") == lease_id:
+            return current
+        return None
+
+    def renew() -> bool:
+        with locked_queue(lock_path):
+            state = load_state(state_path)
+            current = owned(state)
+            if current is None:
+                return False
+            current["retry"]["lease"]["expiresAt"] = int(time.time()) + args.lease_seconds
+            atomic_json(state_path, state)
+            return True
+
+    print(f"Re-identifying held disc {iso.name} "
+          f"(automatic attempt {retry['attempts']} of {len(RETRY_DELAYS)})")
+    try:
+        result, outcomes, assignments = reidentify_held(args, directory, iso, record, renew)
+    except ShutdownRequested:
+        with locked_queue(lock_path):
+            state = load_state(state_path)
+            current = owned(state)
+            if current is not None:
+                # Not this disc's fault: give the attempt back.
+                current["retry"]["attempts"] = max(0, int(current["retry"]["attempts"]) - 1)
+                current["retry"].pop("lease", None)
+                atomic_json(state_path, state)
+        raise
+    except LeaseLost as error:
+        print(f"Stopped re-identifying {iso.name}: {error}", file=sys.stderr)
+        return
+    except Exception as error:  # noqa: BLE001 - becomes a transient failure
+        result = uncertain("Episode identification failed.", f"identifier error: {error}")
+        outcomes, assignments = {"disc": None, "content": None}, None
+
+    with locked_queue(lock_path):
+        state = load_state(state_path)
+        current = owned(state)
+        if current is None:
+            print(f"{iso.name} was resolved or removed while it was being re-identified")
+            return
+        retry = current["retry"]
+        retry.pop("lease", None)
+        records = state["held"]
+        identify_path = directory / str(current.get("identify") or "")
+        live_iso = held_iso_for_key(directory, key)
+        if live_iso is None:
+            retry.update(state="stopped", stoppedBecause="the ISO left _NeedsIdentification")
+            atomic_json(state_path, state)
+            return
+        try:
+            named = source_hints(live_iso)
+        except ValueError:
+            named = None
+        if named is not None and named.season is not None and named.episode is not None:
+            atomic_json(state_path, state)  # the person's name wins
+            return
+        reasons = [str(reason) for reason in (result.get("reasons") or [])]
+        classification = classify_reasons(reasons)
+        titles = list(current.get("titles") or [])
+        evidence = {
+            "schemaVersion": EVIDENCE_SCHEMA_VERSION,
+            "summary": str(result.get("summary") or "The episodes could not be identified."),
+            "reasons": reasons[:12],
+            "suggestion": iso_suggestion(result.get("series"), result.get("assignments") or [],
+                                         len(titles)),
+            "outcomes": outcomes,
+            "lastRetryAt": int(time.time()),
+        }
+        if assignments is None:
+            attempts = int(retry.get("attempts") or 0)
+            if classification["retryable"] and attempts < len(RETRY_DELAYS):
+                retry.update(state="scheduled", nextAt=int(time.time()) + RETRY_DELAYS[attempts])
+            else:
+                retry.update(state="stopped", stoppedBecause=(
+                    "automatic attempts used up" if classification["retryable"]
+                    else "no longer a temporary problem"))
+            if current.get("identify"):
+                update_held_evidence(identify_path, dict(
+                    evidence, status="held", retry=retry_view(classification, retry)))
+            atomic_json(state_path, state)
+            print(f"  {live_iso.name} is still held: {evidence['summary']}")
+            return
+        name, year, provider = library_identity(args.shows_dir, result["series"])
+        retry["publishing"] = {
+            "name": name, "year": year, "provider": provider,
+            "season": assignments[0]["season"], "first": assignments[0]["episode"],
+            "names": [str(a.get("name") or "") for a in assignments],
+        }
+        retry["state"] = "identified"
+        if current.get("identify"):
+            update_held_evidence(identify_path, dict(
+                evidence, status="held", retry=retry_view(classification, retry)))
+        # Durable before any file moves; see complete_retry_publish.
+        atomic_json(state_path, state)
+        complete_retry_publish(args, directory, processed_dir, records, key)
         atomic_json(state_path, state)
 
 
@@ -2307,21 +2922,27 @@ def run(args: argparse.Namespace) -> int:
             atomic_json(state_path, state)
             return True
 
-    if identification_enabled(args):
+    def tend_holds() -> None:
         try:
             resolve_renamed_holds(args, lock_path, state_path, processed_dir)
         except Exception as error:  # noqa: BLE001 - never block new conversions
             print(f"Could not process renamed ISOs awaiting identification: {error}", file=sys.stderr)
+        try:
+            retry_transient_holds(args, lock_path, state_path, processed_dir)
+        except ShutdownRequested:
+            raise
+        except Exception as error:  # noqa: BLE001 - never block new conversions
+            print(f"Could not re-identify a held disc: {error}", file=sys.stderr)
+
+    if identification_enabled(args):
+        tend_holds()
     public_status(args, "idle", queued=pending_titles())
     failures = 0
     first_claim = True
     while True:
         if identification_enabled(args) and not first_claim:
             # A long queue would otherwise delay renamed holds until it ends.
-            try:
-                resolve_renamed_holds(args, lock_path, state_path, processed_dir)
-            except Exception as error:  # noqa: BLE001 - never block new conversions
-                print(f"Could not process renamed ISOs awaiting identification: {error}", file=sys.stderr)
+            tend_holds()
         first_claim = False
         claim = claim_next()
         if claim is None:
@@ -2479,6 +3100,9 @@ def run(args: argparse.Namespace) -> int:
                     archived = archive_source(source, processed_dir, finished_plan,
                                               identified_iso_name(finished_plan))
                     print(f"Completed {source.name}; preserved the ISO at {archived}")
+                    if finished_plan.get("identification") and finished_plan.get("kind") == "tv":
+                        write_processed_evidence(archived, dict(finished_plan,
+                                                                source_iso=source.name))
                     state.setdefault("processed_hashes", {})[archived.name] = digest
                 del state["sources"][source.name]
                 atomic_json(state_path, state)
@@ -2854,6 +3478,301 @@ def self_test() -> None:
         fake_handbrake.chmod(0o755)
         scanned = scan_titles(str(fake_handbrake), Path(scan_dir) / "disc.iso")
         assert scanned == [Title(index=1, seconds=3000, main_feature=True)]
+    # Hold reasons: only temporary failures with nothing contradicting the
+    # disc are retried. All Creatures S01E05-E06 (2026-11-15) was held after a
+    # Bonsai 504 with no other blocker.
+    creatures_reasons = [
+        "TheDiscDB has no record of this exact disc (no_match).",
+        "Bonsai could not read the menus: Bonsai returned HTTP 504 Gateway Timeout",
+        "The disc menus do not name any All Creatures Great and Small (1978) episode.",
+        "Title 3: the dialogue did not clearly match one episode.",
+    ]
+    assert classify_reasons(creatures_reasons)["retryable"]
+    assert classify_reasons(["TMDB is unavailable: 503", "Title 3: x"])["retryable"]
+    assert classify_reasons(["the identifier exceeded its deadline"])["retryable"]
+    assert classify_reasons(["The OpenSubtitles daily download limit was reached."])["retryable"]
+    assert not classify_reasons(creatures_reasons[:1] + creatures_reasons[2:])["retryable"]
+    assert not classify_reasons(
+        ["Bonsai could not split the label: Bonsai reply is not the requested JSON"])["retryable"]
+    assert not classify_reasons(
+        ["Title 4: transcription failed: the excerpt contains too little speech to compare"]
+    )["retryable"]
+    contradicted = classify_reasons(creatures_reasons + [
+        "Title 3: dialogue matches S01E09 rather than the library order guess."])
+    assert not contradicted["retryable"] and len(contradicted["substantiveReasons"]) == 1
+
+    # Library order: the next free episodes after the library's last one,
+    # rolling into the next season once the provider says it is complete.
+    with tempfile.TemporaryDirectory() as order_dir:
+        root = Path(order_dir)
+        shows = root / "Shows"
+        series_dir = shows / "All Creatures Great and Small (1978) [tvdbid-78289]"
+        season_one = series_dir / "Season 01"
+        season_one.mkdir(parents=True)
+        for number in range(1, 5):
+            (season_one / f"All Creatures Great and Small (1978) S01E{number:02d} - x.mkv").write_bytes(b"")
+        order_args = argparse.Namespace(shows_dir=shows)
+        series = {"tvmazeId": 1, "name": "All Creatures Great and Small", "year": 1978,
+                  "provider": "tvdbid-78289"}
+        disc_outcome = {"status": "uncertain", "series": series, "season": None,
+                        "assignments": [], "seasonEpisodeCounts": {"1": 6, "2": 6}}
+        unnamed = Path("ALLCREATURESGREATANDSMALL_20261114-162720_1TbgkU.iso")
+        proposal = order_proposal(order_args, unnamed, disc_outcome, [3, 4])
+        assert proposal["proposalSource"] == "library order", proposal
+        assert [(a["title"], a["season"], a["episode"]) for a in proposal["assignments"]] == [
+            (3, 1, 5), (4, 1, 6)]
+        assert "S01E05-E06" in proposal["reason"] and "S01E04" in proposal["reason"]
+        # Three titles would run past the six-episode season: no proposal.
+        assert order_proposal(order_args, unnamed, disc_outcome, [3, 4, 5]) is None
+        for number in (5, 6):
+            (season_one / f"All Creatures Great and Small (1978) S01E{number:02d} - x.mkv").write_bytes(b"")
+        rolled = order_proposal(order_args, unnamed, disc_outcome, [3, 4])
+        assert [(a["season"], a["episode"]) for a in rolled["assignments"]] == [(2, 1), (2, 2)]
+        # A season named on the disc is not rolled past.
+        assert order_proposal(order_args, unnamed, dict(disc_outcome, season=1), [3, 4]) is None
+        # Anything the disc stage already proposed or identified is kept.
+        assert order_proposal(order_args, unnamed, dict(
+            disc_outcome, assignments=[{"title": 3, "season": 1, "episode": 1}]), [3, 4]) is None
+        assert order_proposal(order_args, unnamed, dict(disc_outcome, series=None), [3, 4]) is None
+        # No library folder: the disc number estimates the episodes instead.
+        other = dict(disc_outcome, series=dict(series, name="Rumpole of the Bailey", year=1978,
+                                               provider="tvdbid-7794"))
+        by_disc = order_proposal(order_args, Path("RUMPOLE_OF_THE_BAILEY_DISC_3.iso"), other, [1, 2])
+        assert by_disc["proposalSource"] == "disc number"
+        assert [(a["season"], a["episode"]) for a in by_disc["assignments"]] == [(1, 5), (1, 6)]
+        assert order_proposal(order_args, Path("RUMPOLE_OF_THE_BAILEY.iso"), other, [1, 2]) is None
+        assert library_to_provider_episode(series, 1, 5) == (1, 5)
+
+    # Automatic re-identification of transient holds. Concurrency and data
+    # risk (publishing into the library, archiving ISOs, racing a person's
+    # rename or deletion and shutdowns), so every transition is exercised.
+    with tempfile.TemporaryDirectory() as retry_dir:
+        root = Path(retry_dir)
+        inbox = root / "_DVDs"
+        needs = inbox / "_NeedsIdentification"
+        processed = inbox / "_Processed"
+        held = root / "_Unidentified"
+        shows = root / "_Shows"
+        state_dir = root / "state"
+        for folder in (needs, processed, held, shows, state_dir):
+            folder.mkdir(parents=True)
+        retry_args = argparse.Namespace(
+            input_dir=inbox, needs_dir=needs, held_dir=held, shows_dir=shows,
+            state_dir=state_dir, identifier="disc-identify", worker_id="test",
+            lease_seconds=60, bonsai_url=None, handbrake="HandBrakeCLI")
+        lock_path = state_dir / "queue.lock"
+        state_path = state_dir / "queue.json"
+        series = {"tvmazeId": 1, "name": "All Creatures Great and Small", "year": 1978,
+                  "provider": "tvdbid-78289"}
+
+        def hold(name: str, reasons: list[str]) -> tuple[Path, str, list[Path]]:
+            iso = inbox / f"{name}.iso"
+            iso.write_bytes(name.encode())
+            folder = held / name / "Season 01"
+            folder.mkdir(parents=True)
+            files = []
+            for offset, title in enumerate((3, 4)):
+                video = folder / f"{name} S01E{offset + 1:02d} - DVD Title {title:02d}.mkv"
+                video.write_bytes(f"{name}-{title}".encode())
+                files.append(video)
+            record = {
+                "schemaVersion": EVIDENCE_SCHEMA_VERSION, "status": "held",
+                "sourceIso": iso.name, "heldDir": f"_Unidentified/{name}",
+                "heldFiles": [str(f) for f in files], "titles": [3, 4],
+                "summary": "held", "reasons": reasons, "suggestion": None,
+                "outcomes": {"disc": None, "content": None},
+                "retry": classify_reasons(reasons),
+            }
+            with locked_queue(lock_path):
+                state = load_state(state_path)
+                archived = park_for_identification(retry_args, iso, record, state)
+                atomic_json(state_path, state)
+            return archived, held_record_key(archived), files
+
+        def retry_of(key: str) -> dict[str, Any] | None:
+            record = load_state(state_path).get("held", {}).get(key)
+            return record.get("retry") if record else None
+
+        def make_due(key: str) -> None:
+            state = load_state(state_path)
+            state["held"][key]["retry"]["nextAt"] = 0
+            atomic_json(state_path, state)
+
+        calls: list[str] = []
+
+        def scripted(answer: Any) -> None:
+            def fake(_args: Any, _directory: Path, iso: Path, record: dict[str, Any],
+                     renew: Any) -> Any:
+                calls.append(iso.name)
+                assert renew(), "the retry lease must be renewable while identifying"
+                return answer(iso, record)
+            globals()["reidentify_held"] = fake
+
+        transient = {"status": "uncertain", "series": series, "summary": "still busy",
+                     "assignments": [], "reasons": creatures_reasons}
+
+        def identified(first: int) -> dict[str, Any]:
+            return {"status": "identified", "series": series, "summary": "Identified",
+                    "reasons": [], "assignments": [
+                        {"title": 3, "season": 1, "episode": first, "name": "One"},
+                        {"title": 4, "season": 1, "episode": first + 1, "name": "Two"}]}
+
+        original_reidentify = reidentify_held
+        original_busy = bonsai_gate_busy
+        try:
+            # Backoff: 1 h, 6 h, 24 h, then the disc is left for a person.
+            iso_a, key_a, files_a = hold("A", creatures_reasons)
+            assert retry_of(key_a)["state"] == "scheduled"
+            assert retry_of(key_a)["nextAt"] - int(time.time()) in range(3590, 3601)
+            assert read_evidence(Path(f"{iso_a}.identify.json"))["retry"]["nextAttemptAt"]
+            scripted(lambda iso, record: (dict(transient), {"disc": transient, "content": None}, None))
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert calls == [], "a hold is not retried before its delay"
+            for attempt, delay in ((1, RETRY_DELAYS[1]), (2, RETRY_DELAYS[2])):
+                make_due(key_a)
+                retry_transient_holds(retry_args, lock_path, state_path, processed)
+                current = retry_of(key_a)
+                assert current["attempts"] == attempt and current["state"] == "scheduled"
+                assert current["nextAt"] - int(time.time()) in range(delay - 10, delay + 1)
+                assert "lease" not in current
+            make_due(key_a)
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert retry_of(key_a)["state"] == "stopped" and retry_of(key_a)["attempts"] == 3
+            evidence_a = read_evidence(Path(f"{iso_a}.identify.json"))
+            assert evidence_a["retry"]["state"] == "stopped" and evidence_a["outcomes"]["disc"]
+            make_due(key_a)
+            calls.clear()
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert calls == [] and all(f.is_file() for f in files_a)
+
+            # The gate is busy: wait without spending an attempt.
+            iso_h, key_h, _ = hold("H", creatures_reasons)
+            make_due(key_h)
+            globals()["bonsai_gate_busy"] = lambda _args: True
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert calls == [] and retry_of(key_h)["attempts"] == 0
+            globals()["bonsai_gate_busy"] = original_busy
+
+            # A shutdown gives the attempt back and releases the lease.
+            def stop(_iso: Path, _record: Any) -> Any:
+                raise ShutdownRequested("test")
+            scripted(stop)
+            try:
+                retry_transient_holds(retry_args, lock_path, state_path, processed)
+            except ShutdownRequested:
+                pass
+            else:
+                raise AssertionError("a shutdown must reach the worker")
+            assert retry_of(key_h)["attempts"] == 0 and "lease" not in retry_of(key_h)
+
+            # Now dialogue contradicts the disc: stop, never publish.
+            scripted(lambda iso, record: (dict(transient, reasons=creatures_reasons + [
+                "Title 3: dialogue matches S01E09 rather than the library order guess."]),
+                {"disc": None, "content": None}, None))
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert retry_of(key_h)["state"] == "stopped" and iso_h.is_file()
+
+            # A person named the ISO: the rename is theirs to resolve.
+            iso_c, key_c, _ = hold("C", creatures_reasons)
+            make_due(key_c)
+            renamed_c = iso_c.with_name("All Creatures Great and Small (1978) S01E07-E08.iso")
+            os.rename(iso_c, renamed_c)
+            calls.clear()
+            scripted(lambda iso, record: (identified(7), {}, identified(7)["assignments"]))
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert calls == [] and renamed_c.is_file() and retry_of(key_c)["attempts"] == 0
+            renamed_c.unlink()
+
+            # Identified: published without re-encoding and archived as a
+            # confirmed rename would be, with its evidence beside it.
+            iso_d, key_d, files_d = hold("D", creatures_reasons)
+            make_due(key_d)
+            result_d = identified(5)
+            scripted(lambda iso, record: (result_d, {"disc": transient, "content": result_d},
+                                          result_d["assignments"]))
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            season_dir = shows / "All Creatures Great and Small (1978) [tvdbid-78289]" / "Season 01"
+            assert sorted(path.name for path in season_dir.glob("*.mkv")) == [
+                "All Creatures Great and Small (1978) S01E05 - One.mkv",
+                "All Creatures Great and Small (1978) S01E06 - Two.mkv"]
+            assert not any(f.exists() for f in files_d) and not iso_d.exists()
+            archived_d = processed / "All Creatures Great and Small (1978) [tvdbid-78289] S01E05-E06.iso"
+            assert archived_d.is_file()
+            evidence_d = read_evidence(Path(f"{archived_d}.identify.json"))
+            assert evidence_d["status"] == "identified"
+            assert evidence_d["resolution"]["by"] == "automatic retry"
+            assert evidence_d["resolution"]["firstEpisode"] == 5
+            assert evidence_d["outcomes"]["content"]["status"] == "identified"
+            assert not Path(f"{iso_d}.identify.json").exists()
+            assert key_d not in load_state(state_path).get("held", {})
+
+            # Resolved elsewhere while identifying (a person's rename handled
+            # by another worker removes the record): nothing is published.
+            iso_f, key_f, files_f = hold("F", creatures_reasons)
+            make_due(key_f)
+
+            def resolved_elsewhere(iso: Path, record: Any) -> Any:
+                with locked_queue(lock_path):
+                    state = load_state(state_path)
+                    del state["held"][key_f]
+                    atomic_json(state_path, state)
+                return identified(9), {}, identified(9)["assignments"]
+            globals()["reidentify_held"] = lambda a, d, iso, r, renew: resolved_elsewhere(iso, r)
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert all(f.is_file() for f in files_f) and iso_f.is_file()
+            assert not (season_dir / "All Creatures Great and Small (1978) S01E09 - One.mkv").exists()
+
+            # The person deleted the ISO meanwhile: stop, keep the videos.
+            iso_j, key_j, files_j = hold("J", creatures_reasons)
+            make_due(key_j)
+
+            def deleted(iso: Path, record: Any) -> Any:
+                iso.unlink()
+                return identified(11), {}, identified(11)["assignments"]
+            scripted(deleted)
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert retry_of(key_j)["state"] == "stopped" and all(f.is_file() for f in files_j)
+
+            # Killed after publishing but before archiving: the next run only
+            # archives. A person's rename meanwhile does not interfere.
+            iso_g, key_g, files_g = hold("G", creatures_reasons)
+            job = {"name": series["name"], "year": 1978, "provider": "tvdbid-78289",
+                   "season": 2, "first": 1, "names": ["", ""]}
+            state = load_state(state_path)
+            state["held"][key_g]["retry"].update(state="identified", publishing=job)
+            atomic_json(state_path, state)
+            publish_episodes(retry_args, files_g, series["name"], 1978, "tvdbid-78289", 2, 1, ["", ""])
+            renamed_g = iso_g.with_name("All Creatures Great and Small (1978) S03E01-E02.iso")
+            os.rename(iso_g, renamed_g)
+            resolve_renamed_holds(retry_args, lock_path, state_path, processed)
+            assert renamed_g.is_file() and key_g in load_state(state_path)["held"]
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert not renamed_g.exists() and key_g not in load_state(state_path).get("held", {})
+            assert (processed / "All Creatures Great and Small (1978) [tvdbid-78289] S02E01-E02.iso").is_file()
+
+            # Killed before publishing: the next run publishes, then archives.
+            iso_k, key_k, files_k = hold("K", creatures_reasons)
+            state = load_state(state_path)
+            state["held"][key_k]["retry"].update(state="identified", publishing=dict(job, first=3))
+            atomic_json(state_path, state)
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert not any(f.exists() for f in files_k) and not iso_k.exists()
+            assert (shows / "All Creatures Great and Small (1978) [tvdbid-78289]" / "Season 02"
+                    / "All Creatures Great and Small (1978) S02E03.mkv").is_file()
+
+            # Held before retries existed: judged from its evidence once.
+            iso_l, key_l, _ = hold("L", creatures_reasons)
+            state = load_state(state_path)
+            del state["held"][key_l]["retry"]
+            atomic_json(state_path, state)
+            calls.clear()
+            scripted(lambda iso, record: (dict(transient), {}, None))
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert retry_of(key_l)["state"] == "scheduled"
+        finally:
+            globals()["reidentify_held"] = original_reidentify
+            globals()["bonsai_gate_busy"] = original_busy
+
     assert match_score("The Wire", "The Wire") == 1.0
     assert natural_key("disc2.iso") < natural_key("disc10.iso")
     with tempfile.NamedTemporaryFile() as handle:

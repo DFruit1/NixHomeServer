@@ -1329,8 +1329,20 @@ certainty. An ISO name that already carries a season and episode range, such as
    Parakeet model and compared with TVmaze summaries (ranked by Bonsai) and,
    for the best candidates, with OpenSubtitles subtitle text fetched through
    the provider broker with the **uploading user's** OpenSubtitles account. At
-   most six subtitle downloads are spent per disc, and results are cached. If
-   the uploader has no OpenSubtitles account the comparison is skipped.
+   most six subtitle downloads are spent per disc; subtitles already in the
+   broker's cache are free and do not count. If the uploader has no
+   OpenSubtitles account the comparison is skipped.
+
+When the series is known but the disc named no episodes, the worker proposes
+them: the episodes after the last one in the series' `_Shows` folder
+(**library order**, continuing into the next season once TVmaze says the season
+is complete), or, with no library episodes, an estimate from the disc number in
+the file name (**disc number**). Like a menu proposal, it is accepted when the
+dialogue confirms at least one title and contradicts none, so a disc uploaded
+out of order is still held. Without any proposal, every title must match
+consecutive episodes of one season, except that one confident subtitle match
+can fix the disc order when at least half the titles agree with it and none
+disagrees.
 
 Identification is complete only when every title maps to consecutive episodes
 of one season. TVmaze and TheDiscDB can number a series differently from TMDB,
@@ -1352,8 +1364,8 @@ TheDiscDB gives it, and the evidence says
 `Episode numbering was not checked against TMDB (no TMDB key is configured).`
 
 Identified episodes are published to `_Shows`, and the ISO is archived in
-`_Processed` with its sidecar under the name it arrived with. Each step's
-reasoning is logged in the worker journal.
+`_Processed` with its sidecar and an `.identify.json` recording both stages'
+scores. Each step's reasoning is logged in the worker journal.
 
 Anything less is held. The ISO moves to `_Shared/_ISO/_DVDs/_NeedsIdentification`
 with an `X.iso.identify.json` evidence file, and Media Manager's Conversions
@@ -1371,6 +1383,17 @@ A range that does not match the number of held videos is refused and the
 reason appears on the Conversions page. Deleting
 an ISO from `_NeedsIdentification` leaves its held videos in `_Unidentified`
 for manual handling.
+
+A disc held only because something was temporarily unavailable (Bonsai busy
+or failing, a TVmaze or TMDB request, the OpenSubtitles quota or broker, or the
+identifier crashing or timing out) is identified again automatically after 1,
+6 and 24 hours, from its ISO and the already-encoded held videos, never
+re-encoding. Retries wait while the Bonsai gate is busy, and stop once the
+evidence contradicts the disc or the three attempts are used; a rename by a
+person always takes precedence. The evidence file's `retry` object shows which
+reasons were temporary and when the next attempt is due, and its `outcomes`
+hold each stage's per-title scores (transcript length, keyword and Bonsai
+picks, every subtitle checked and the rule that decided).
 
 Without the Bonsai app the menu step is skipped; without the transcribe app the
 dialogue step is skipped. Discs are then held more often, never guessed.
