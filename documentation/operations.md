@@ -2493,13 +2493,13 @@ After guarded activation:
   budget, independently of the 90-second interactive inference deadline.
   Completed passages are published progressively while document checkpoints
   wait for the complete document.
-- Card budget on the 23.9 GiB Arc Pro B60: Bonsai about 10.6 GiB (shared 76K
-  Q8 pool, 64K cap, two slots and the projector), the embedder about 5.8 GiB
-  and the 4B reranker about 5 GiB (estimated from its 4.0 GiB weights and
-  2048-token cache; measure after activation). Until 2026-11-17 the backfill
-  loaded a second embedder copy of about 5.8 GiB, which left about 1.2 GiB
-  while a pass ran. The same resident set now leaves roughly 2.5 GiB at all
-  times. ggml-vulkan cannot spill a failed allocation to host RAM, so
+- Card budget on the 23.9 GiB Arc Pro B60, measured on 2026-11-17 with a
+  backfill pass running: Bonsai 10.64 GiB (shared 76K Q8 pool, 64K cap, two
+  slots and the projector), the embedder 5.75 GiB and the 4B reranker
+  4.60 GiB, 21.0 GiB in all with 2.9 GiB free. Until then the backfill loaded
+  a second embedder copy of about 5.8 GiB, which left about 1.2 GiB while a
+  pass ran. The resident set now leaves the same 2.9 GiB whether or not a
+  pass runs. ggml-vulkan cannot spill a failed allocation to host RAM, so
   re-measure before adding another resident GPU model. A fully offloaded
   passage takes about 0.6 seconds. If the embedder is not answering, a pass
   waits up to three minutes, then fails and is retried by the timer.

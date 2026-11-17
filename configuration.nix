@@ -48,10 +48,10 @@ in
         # DVD menus or a Paperless request. Q8_0 is near-lossless at about
         # 2.53 GiB for 76K (1.60 GiB at the earlier 48K). Weights are
         # 7.10 GiB, the projector 0.59 GiB, plus the slots' state and vision
-        # buffers: about 10.6 GiB in all. The Q8 embedder (~5.8 GiB, shared
-        # by queries and the search backfill) and the 4B reranker (~5 GiB)
-        # share the rest, leaving roughly 2.5 GiB for transcription, so
-        # measure before adding another resident model.
+        # buffers: 10.64 GiB measured in all. The Q8 embedder (5.75 GiB,
+        # shared by queries and the search backfill) and the 4B reranker
+        # (4.60 GiB) share the rest, leaving 2.9 GiB of the card for
+        # transcription, so measure before adding another resident model.
         contextSize = 77824;
         parallel = 2;
         kvUnified = true;

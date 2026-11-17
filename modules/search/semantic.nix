@@ -119,9 +119,9 @@ in {
     # Pooled embeddings/reranking need a whole input in one physical batch.
     # Smaller micro-batches make llama.cpp clamp the accepted prompt length.
     systemd.services.search-embedding-query = lib.recursiveUpdate inferenceService {
-      # Also the backfill's embedder. Measured with the Q8_0 file: about
-      # 5.8 GiB, beside Bonsai (9.7 GiB measured at the 48K Q8 pool, about
-      # 10.6 GiB at 76K) and the 4B reranker, on the 23.9 GiB Arc Pro B60.
+      # Also the backfill's embedder. Measured with the Q8_0 file: 5.75 GiB,
+      # beside Bonsai (10.64 GiB at the 76K Q8 pool) and the 4B reranker
+      # (4.60 GiB), which leaves 2.9 GiB of the 23.9 GiB Arc Pro B60.
       # ggml-vulkan cannot spill a failed allocation to host RAM, so re-measure
       # before adding another resident GPU model.
       description = "Qwen3 4B Q8 query and backfill embeddings resident on the GPU";
