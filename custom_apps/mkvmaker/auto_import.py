@@ -2909,7 +2909,8 @@ BUSY_GATE_PATIENCE_SECONDS = 3600
 # Attempts given back because Bonsai was only busy, per hold (about a day
 # of hourly forced retries) before busy failures count like any other.
 BUSY_GATE_REFUNDS = 24
-_BUSY_GATE_RE = re.compile(r"^Bonsai (?:could not [a-z ]+|ranking failed): .*HTTP (?:429|503|504)")
+_BUSY_GATE_RE = re.compile(
+    r"^(?:Title \d+: )?Bonsai (?:could not [a-z ]+|ranking failed): .*HTTP (?:429|503|504)")
 
 
 def busy_gate_only(classification: dict[str, Any]) -> bool:
@@ -4594,6 +4595,9 @@ def self_test() -> None:
             globals()["bonsai_gate_busy"] = original_busy
             busy = classify_reasons(["Bonsai could not read the menus: Bonsai returned HTTP 504 Gateway Timeout"])
             assert busy["retryable"] and busy_gate_only(busy)
+            ranking = classify_reasons(busy["transientReasons"] + [
+                "Title 2: Bonsai ranking failed: Bonsai returned HTTP 429 Too Many Requests"])
+            assert ranking["retryable"] and busy_gate_only(ranking)
             assert not busy_gate_only(classify_reasons(creatures_reasons + [
                 "TVmaze search failed: timed out"]))
 
