@@ -2493,8 +2493,8 @@ After guarded activation:
   budget, independently of the 90-second interactive inference deadline.
   Completed passages are published progressively while document checkpoints
   wait for the complete document.
-- Card budget on the 23.9 GiB Arc Pro B60: Bonsai about 10.2 GiB (shared 64K
-  Q8 pool, 52K cap, two slots and the projector), the embedder about 5.8 GiB
+- Card budget on the 23.9 GiB Arc Pro B60: Bonsai about 10.6 GiB (shared 76K
+  Q8 pool, 64K cap, two slots and the projector), the embedder about 5.8 GiB
   and the 4B reranker about 5 GiB (estimated from its 4.0 GiB weights and
   2048-token cache; measure after activation). Until 2026-11-17 the backfill
   loaded a second embedder copy of about 5.8 GiB, which left about 1.2 GiB

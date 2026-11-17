@@ -121,7 +121,7 @@ in {
     systemd.services.search-embedding-query = lib.recursiveUpdate inferenceService {
       # Also the backfill's embedder. Measured with the Q8_0 file: about
       # 5.8 GiB, beside Bonsai (9.7 GiB measured at the 48K Q8 pool, about
-      # 10.2 GiB at 64K) and the 4B reranker, on the 23.9 GiB Arc Pro B60.
+      # 10.6 GiB at 76K) and the 4B reranker, on the 23.9 GiB Arc Pro B60.
       # ggml-vulkan cannot spill a failed allocation to host RAM, so re-measure
       # before adding another resident GPU model.
       description = "Qwen3 4B Q8 query and backfill embeddings resident on the GPU";
