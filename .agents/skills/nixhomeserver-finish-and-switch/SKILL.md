@@ -43,8 +43,12 @@ git status --short --branch
 git diff --stat && git diff --cached --stat
 ```
 
-Repeat the status and diff calls in each accessible worktree. Classify untracked
-paths before reading them. Never read `secrets/unencrypted/`, never print
+Repeat the status and diff calls in each accessible worktree. Inventory is not
+an instruction to merge every branch or revive historical work. Compare dirty
+patches with current master and its relevant history: an old dirty checkout can
+contain work already integrated or superseded. Leave those paths intact and
+record the evidence; never restore retired systems to make their checks pass.
+Classify untracked paths before reading them. Never read `secrets/unencrypted/`, never print
 credentials, and never gather ignored build output, caches, or `result` links.
 
 ## 2. Commit the finished work
@@ -59,6 +63,9 @@ reason is not obvious.
 A change whose focused check fails is unfinished unless the fix is trivial and
 inside this turn's capability; fix it, re-run the check, then commit. If it still
 fails, leave it uncommitted and untouched.
+
+If no new finished change remains, make no empty commit and merge no unrelated
+branch. Continue with the clean, published master when deployment was requested.
 
 ## 3. Merge into master
 
@@ -90,6 +97,13 @@ force-push.
 The deploy helper builds the working tree and refuses untracked, non-ignored
 files, so start it only from a clean checkout at the integrated commit just
 published to master's upstream.
+Check free space on the local archive-staging filesystem as well as the build
+host. The helper honors `TMPDIR`; if `/tmp` is full, use an absolute task-owned
+scratch path on a filesystem with room, following AGENTS.md scratch rules.
+Do not delete another task's files, resize `/tmp`, or change build allocation
+as a workaround. A staging failure before activation needs storage recovery,
+not rollback; verify live/boot state before retrying.
+
 Review the complete diff being shipped first: the commits made in this pass plus
 anything `master` already carries that has not reached the server.
 
@@ -136,5 +150,13 @@ authenticated canary check. Do not reboot to prove a switch.
 In chat text: commits made and their subjects, branches merged, push result,
 every path left uncommitted with the reason (and any question it raises), checks
 actually run and their coverage limits, test/switch outcome, and the live closure
-plus observed behavior. Never present a passing test or a green subset as a
-completed switch.
+plus observed behavior. For a large inventory, link a retained report listing
+every untouched path and its reason, and summarize the exclusions in chat.
+Never present a passing test or a green subset as a completed switch.
+
+If the user also requested skill improvements, finish the deployment attempt
+before editing the skill so its edits cannot invalidate a passing test. Make
+only corrections supported by the run, validate links and instruction consistency,
+and commit/push the documentation separately. Report that later documentation
+commit separately from the revision actually deployed; a documentation follow-up
+does not itself require another activation.
