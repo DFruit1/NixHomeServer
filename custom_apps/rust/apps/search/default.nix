@@ -34,4 +34,16 @@ let
     };
   };
 in
-app
+app // {
+  checks = app.checks // {
+    ui = pkgs.runCommand "search-ui-test"
+      { nativeBuildInputs = [ pkgs.nodejs ]; }
+      ''
+        mkdir -p tests src
+        cp ${./tests/ui.test.mjs} tests/ui.test.mjs
+        cp ${./src/ui.html} src/ui.html
+        node --test tests/ui.test.mjs
+        touch "$out"
+      '';
+  };
+}

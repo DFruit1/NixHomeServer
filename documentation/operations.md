@@ -2407,13 +2407,16 @@ Plain broad queries of up to 256 characters use rank fusion over the leading
   more; keyword matches always stay.
 - **Reranking budget.** The reranker reads one passage per document in rank
   order, three per request, for at most five seconds, then a second passage
-  per document if time remains. Keyword matches are judged on their densest
-  640-byte window, related documents on the matched passage. The earlier
-  0.6B reranker managed about 730 tokens a second while indexing shared the
-  GPU, reordering 12–18 documents; the 4B is slower per token, so fewer fit
-  the same budget until it is re-measured. The rest keep their fused order. A query embedding has
-  its own five-second budget and otherwise finishes in the background for the
-  next search.
+  per document if time remains. The candidate head follows the requested page
+  size: at least 30 documents, at most 60. Keyword matches are judged on their
+  densest 640-byte window, related documents on the matched passage. Because
+  the second round only runs when the first fits the budget, short documents
+  are read more deeply than long ones. The earlier 0.6B reranker managed about
+  730 tokens a second while indexing shared the GPU, reordering 12–18
+  documents; the 4B is slower per token, so fewer fit the same budget until it
+  is re-measured. The rest keep their fused order. A query embedding has its
+  own five-second budget and otherwise finishes in the background for the next
+  search.
 - **Order.** Documents the reranker read come first, by relevance. Those it
   had no time to read follow in fused order. A keyword match it read and
   scored below 0.1 comes last: such matches measured 0.00–0.09 where relevant
@@ -2431,12 +2434,17 @@ Plain broad queries of up to 256 characters use rank fusion over the leading
   for an hour, so changing a filter, changing the page size or searching the
   same words again settles from earlier scores instead of reading the same
   evidence again; the log line reports those as `reused`. One ranked answer is
-  kept for ten minutes per query, filters and source sync state, so later
-  pages and repeats do not rank again. Query vectors are kept for an hour. A
-  connected source's complete answer is kept for five minutes: the archives
-  per query and match mode, Paperless per query and filters. Answers with a
-  warning are never kept. All of this is in-memory state of `search-ui` and is
-  lost on restart.
+  kept for ten minutes per query, filters, page size and source sync state, so
+  later pages and repeats do not rank again. Query vectors are kept for an
+  hour. A connected source's complete answer is kept for five minutes: the
+  archives per query and match mode, Paperless per query and filters. Answers
+  with a warning are never kept. All of this is in-memory state of `search-ui`
+  and is lost on restart.
+- **Probe.** `search-inference-health.timer` checks both inference servers every
+  15 minutes: `/health` on the embedder and the reranker, plus a one-document
+  rerank whose relevance score must be finite. A failed probe is retried twice
+  and then delivered through the standard unit-failure alert, so a model file
+  without the reranking contract is reported instead of only slowing searches.
 
 Exact identifiers/titles retain priority in the shared UI/CLI ordering.
 Quotes, operators, All words and Newest retain their existing keyword semantics.
@@ -2447,7 +2455,8 @@ Connected sources keep their existing search.
 
 `search-ui` logs one line per library query with its duration, order and hit
 count, and one per ranked answer with retrieval and reranking times, how many
-passages were read and how many were reused. Query text is never logged:
+passages were read, how many were reused and the head size. Query text is never
+logged:
 
 ```bash
 journalctl -u search-ui --since -1h | grep 'search: '
@@ -2479,10 +2488,21 @@ After guarded activation:
   seconds against 9. The GPU-resident Q8 embedder no longer depends on that
   path, but the build remains shared with the reranker.
 - `search-reranker` keeps the 4B Q8_0 model on GPU, loopback port 18095. Its batch
-  is 1024 with a 512-token micro-batch and a 2048-token context: a 4096-token
+  is 1024 with a 1024-token micro-batch and 2048 context tokens per slot: a
+  three-passage request of roughly 200–340 tokens each has to fit one physical
+  batch, which a 512-token micro-batch split into two passes. A 4096-token
   batch sized the output buffer for the full vocabulary and held about 4.1 GiB
-  on the 0.6B, while a search request reranks at most three passages of about
-  200 tokens. The 4B weights are about 4.0 GiB.
+  on the 0.6B. The 4B weights are about 4.0 GiB.
+- `repo.search.semantic.rerankSlots` (1–2, default 1) sets that server's
+  `--parallel` and reserves 2048 context tokens per slot; `search-ui` sends at
+  most that many chunk requests at once through `SEARCH_RERANK_SLOTS`. More
+  than one slot only helps where the pinned llama.cpp serves concurrent rerank
+  requests, and each slot adds context and compute buffer, so measure both
+  throughput and the card before raising it.
+- Reranking attention is requested with `--flash-attn on`. Prompt processing
+  for a pooled reranker is not causal, so confirm from the start-up log of
+  `search-reranker` that the pinned build selects flash attention for it
+  before treating the measured rerank rate as a hardware limit.
 - `search-embed.timer` starts a background passage-indexing pass 15 minutes
   after boot, then 30 minutes after each pass finishes. It processes new or
   changed PostgreSQL documents without extracting source files again,
@@ -2496,7 +2516,9 @@ After guarded activation:
 - Card budget on the 23.9 GiB Arc Pro B60, measured on 2026-11-17 with a
   backfill pass running: Bonsai 10.64 GiB (shared 76K Q8 pool, 64K cap, two
   slots and the projector), the embedder 5.75 GiB and the 4B reranker
-  4.60 GiB, 21.0 GiB in all with 2.9 GiB free. Until then the backfill loaded
+  4.60 GiB, 21.0 GiB in all with 2.9 GiB free. That reranker figure was taken
+  with a 512-token micro-batch and one slot, so the micro-batch above and any
+  extra slot need their own measurement. Until then the backfill loaded
   a second embedder copy of about 5.8 GiB, which left about 1.2 GiB while a
   pass ran. The resident set now leaves the same 2.9 GiB whether or not a
   pass runs. ggml-vulkan cannot spill a failed allocation to host RAM, so
