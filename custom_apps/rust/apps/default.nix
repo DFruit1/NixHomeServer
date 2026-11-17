@@ -16,6 +16,7 @@ let
         "src/platform.sql"
         "src/rev2.sql"
         "src/ops.sql"
+        "src/alerting.sql"
         # include_str! fixtures of the protocol revision 2 decoder tests.
         "tests/vectors/rev2-server-vectors.json"
         "tests/vectors/firmware/rev2-records.json"
