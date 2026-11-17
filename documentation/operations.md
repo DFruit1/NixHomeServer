@@ -1311,7 +1311,14 @@ as TV.
 
 A TV disc reaches Jellyfin only when its episodes are identified with
 certainty. An ISO name that already carries a season and episode range, such as
-`Rumpole_of_the_Bailey_S02E04-E06.iso`, is trusted as written. Otherwise
+`Rumpole_of_the_Bailey_S02E04-E06.iso`, is trusted as written: its folder and
+numbers are kept exactly, and episode titles come from `disc-identify episodes`
+only when that list uses the folder's numbering. Jellyfin numbers episodes as
+TMDB does, so a TMDB list always fits; the TVmaze fallback (used without a TMDB
+key) is not used for a `[tmdbid-…]` folder, whose seasons can differ (Sherlock
+Holmes (1984): four on TVmaze, seven on TMDB). Without a fitting list the
+episodes keep `DVD Title NN` placeholders. `S00Exx` names Jellyfin's specials
+season. Otherwise
 `disc-identify` (part of the mkvmaker package) works through these in order:
 
 1. **Exact disc** – the ripper's `<name>.jellyfin.json` sidecar, when
@@ -1395,6 +1402,17 @@ reasons were temporary and when the next attempt is due, and its `outcomes`
 hold each stage's per-title scores (transcript length, keyword and Bonsai
 picks, every subtitle checked and the rule that decided).
 
+A disc with one dominant title whose name is an existing `_Shows` folder's
+(`Rumpole_of_the_Bailey_D4.iso`) or that folder's name plus a subtitle
+(`Rumpole of the Bailey - Rumpole's Return.iso`) is treated as a feature-length
+special, not a film. When the TMDB-numbered season 0 has exactly one special
+named like the subtitle, it is filed as
+`Rumpole of the Bailey (1978) [tvdbid-72995]/Season 00/Rumpole of the Bailey (1978) S00E03 - Rumpole's Return.mkv`.
+Otherwise it is held as above, without the dialogue step, with a suggested name
+such as `Rumpole of the Bailey (1978) S00E03.iso` when a special's name or
+runtime fits. A bare number after the show name stays part of a film title
+(`Mission Impossible 2`), as does a name that a `_Movies` folder already has.
+
 Without the Bonsai app the menu step is skipped; without the transcribe app the
 dialogue step is skipped. Discs are then held more often, never guessed.
 Movies are unaffected by identification. Ambiguous bare trailing numbers such
@@ -1426,7 +1444,9 @@ MKV is moved out of Jellyfin into `_Duplicate/_Movies` or
 MKV remains in place. A sibling `.iso.duplicate.json` report identifies the
 canonical ISO and every quarantined output for manual review. Ambiguous files
 are left untouched. Other conversion failures are preserved in `_Failed`
-beside an `.error.txt` file after three attempts.
+beside an `.error.txt` file after three attempts. When the ISO is moved out of
+`_Failed` to retry it, the worker removes its now-orphaned `.iso.error.txt` on
+its next run and logs the removal.
 
 While an encode runs, the partially written MKV is staged in
 `_Shared/.mkvmaker-staging` outside the Jellyfin library so the library never
