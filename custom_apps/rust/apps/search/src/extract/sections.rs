@@ -142,7 +142,10 @@ pub(crate) fn sections(units: Vec<Unit>) -> Vec<Section> {
             continue;
         }
         if !current.text.is_empty()
-            && (current.text.len() >= SECTION_TARGET
+            && ((unit.page.is_some()
+                && unit.label.is_some()
+                && current.labels.last() != unit.label.as_ref())
+                || current.text.len() >= SECTION_TARGET
                 || current.text.len() + text.len() > SECTION_MAX)
         {
             out.push(std::mem::take(&mut current).finish());
@@ -398,6 +401,72 @@ pub(crate) fn epub_units<R: Read + Seek>(reader: R) -> Option<Vec<Unit>> {
         .then_some(units)
 }
 
+/// Poppler's XML exporter includes the complete outline even when only the
+/// first page is rendered. Use the sibling of the configured pdftotext binary,
+/// so this needs no new dependency or deployment allocation. Missing outlines
+/// (or an unavailable exporter) retain page-based extraction.
+fn pdf_outline(path: &Path, pdftotext: Option<&Path>) -> std::collections::BTreeMap<usize, String> {
+    use std::process::{Command, Stdio};
+    let mut labels = std::collections::BTreeMap::new();
+    let Some(tool) = pdftotext.map(|tool| tool.with_file_name("pdftohtml")) else {
+        return labels;
+    };
+    let Ok(mut child) = Command::new(tool)
+        .args(["-q", "-xml", "-stdout", "-i", "-f", "1", "-l", "1"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return labels;
+    };
+    let mut bytes = Vec::new();
+    let read = child
+        .stdout
+        .take()
+        .unwrap()
+        .take(XML_LIMIT + 1)
+        .read_to_end(&mut bytes);
+    if bytes.len() as u64 > XML_LIMIT || read.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait();
+    if bytes.len() as u64 > XML_LIMIT || status.is_err() || !status.unwrap().success() {
+        return labels;
+    }
+    let raw = decode_document_text(&bytes);
+    // Parse just the outline, excluding Poppler's external DOCTYPE. No DTD or
+    // entity resolution is enabled for untrusted files.
+    let Some(start) = raw.find("<outline>") else {
+        return labels;
+    };
+    let Some(end) = raw.rfind("</outline>") else {
+        return labels;
+    };
+    if let Some(document) = super::document::parse_xml(&raw[start..end + 10]) {
+        for node in document
+            .descendants()
+            .filter(|node| node.has_tag_name("item"))
+        {
+            let Some(page) = node
+                .attribute("page")
+                .and_then(|p| p.parse::<usize>().ok())
+                .filter(|p| *p > 0)
+            else {
+                continue;
+            };
+            let title = node.text().unwrap_or_default().trim();
+            if !title.is_empty() {
+                // Later descendants on the same page name a more specific
+                // chapter than the enclosing volume or part.
+                labels.insert(page, truncate_text(title, 500));
+            }
+        }
+    }
+    labels
+}
+
 /// A file's text as structural units: EPUB content files, PDF pages, or the
 /// whole text for formats without such structure.
 pub(crate) fn extract_format_units(
@@ -414,15 +483,20 @@ pub(crate) fn extract_format_units(
     }
     if format == "pdf" {
         let text = super::paperless::extract_pdf_text(path, pdftotext)?;
-        return Ok(text
-            .split('\u{c}')
-            .enumerate()
-            .map(|(index, page)| Unit {
-                label: None,
+        let outline = pdf_outline(path, pdftotext);
+        let mut label = None;
+        let mut units: Vec<Unit> = Vec::new();
+        for (index, page) in text.split('\u{c}').enumerate() {
+            if let Some(next) = outline.get(&(index + 1)) {
+                label = Some(next.clone());
+            }
+            units.push(Unit {
+                label: label.clone(),
                 page: Some(index + 1),
                 text: page.to_string(),
-            })
-            .collect());
+            });
+        }
+        return Ok(units);
     }
     Ok(
         super::document::extract_format_text(path, &format, pdftotext)

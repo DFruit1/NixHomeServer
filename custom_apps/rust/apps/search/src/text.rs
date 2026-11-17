@@ -48,7 +48,11 @@ pub fn html_title(html: &str) -> Option<String> {
 
 /// Converts an HTML document into readable plain text.
 pub fn html_to_text(html: &str) -> String {
-    let converted = match html2text::from_read(html.as_bytes(), 120) {
+    let converted = match html2text::config::plain_no_decorate()
+        .raw_mode(true)
+        .link_footnotes(false)
+        .string_from_read(html.as_bytes(), 120)
+    {
         Ok(text) => text,
         Err(_) => return decode_entities(&strip_tags(html)),
     };

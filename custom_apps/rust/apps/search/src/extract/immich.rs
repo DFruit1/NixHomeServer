@@ -149,7 +149,7 @@ impl super::Extractor for ImmichExtractor {
         to_char(a."localDateTime", 'FMDay FMDD FMMonth YYYY') AS taken,
         coalesce(to_char(a."localDateTime", 'YYYY-MM-DD'), '') AS day,
         u."storageLabel" AS label, u.name AS owner_name,
-        e.city, e.state, e.country, e.make, e.model, e.description,
+        e.city, e.state, e.country, e.make, e.model, e.description, a."isFavorite" AS favorite,
         (SELECT array_agg(DISTINCT al."albumName"::text) FROM album_asset aa
             JOIN album al ON al.id = aa."albumId"
             WHERE aa."assetId" = a.id AND al."deletedAt" IS NULL) AS albums,
@@ -225,19 +225,34 @@ impl super::Extractor for ImmichExtractor {
                 .filter(|text| text.len() >= OCR_MINIMUM_BYTES && super::ocr::readable(text, 4))
                 .unwrap_or_default();
 
+            // Long, readable OCR is a document photographed by a camera just
+            // as much as a screenshot. Keep it out of the day/place collapse.
+            let text_photo = !asset.video
+                && recognised.chars().count() >= 600
+                && super::ocr::readable(&recognised, 40);
+            if text_photo {
+                body.push(recognised.clone());
+            }
             let mut metadata = serde_json::Map::new();
+            metadata.insert("text_photo".to_string(), json!(text_photo));
+            metadata.insert(
+                "favorite".to_string(),
+                json!(row.get::<_, bool>("favorite")),
+            );
             metadata.insert("owner".to_string(), json!(asset.owner));
             // One slot per day and place: a trip's two hundred pictures are
             // one result, shown by the best match among them.
-            metadata.insert(
-                super::SECTION_OF.to_string(),
-                json!(format!(
-                    "{}|{}|{}",
-                    asset.owner,
-                    asset.day,
-                    asset.city.as_deref().unwrap_or_default()
-                )),
-            );
+            if !text_photo {
+                metadata.insert(
+                    super::SECTION_OF.to_string(),
+                    json!(format!(
+                        "{}|{}|{}",
+                        asset.owner,
+                        asset.day,
+                        asset.city.as_deref().unwrap_or_default()
+                    )),
+                );
+            }
             if let Some(place) = asset.place() {
                 metadata.insert("place".to_string(), json!(place));
             }
@@ -256,7 +271,11 @@ impl super::Extractor for ImmichExtractor {
                 );
             }
             emit(ExtractedDocument {
-                incidental_text: recognised,
+                incidental_text: if text_photo {
+                    String::new()
+                } else {
+                    recognised
+                },
                 external_id: asset.id.clone(),
                 kind: if asset.video { "video" } else { "photo" }.to_string(),
                 title: asset.title(),

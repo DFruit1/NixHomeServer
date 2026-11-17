@@ -86,6 +86,11 @@ impl ExtractedDocument {
     }
 
     pub fn into_record(mut self) -> crate::db::DocumentRecord {
+        if self.kind == "book" {
+            if let Some(family) = book_family(&self.title, &self.metadata) {
+                self.metadata["work_family"] = Value::String(family);
+            }
+        }
         // Ordinary queries search title/body, not the exact-value facet fields.
         // Keep descriptive metadata in the authoritative body too, so matches
         // on a sender, feed, ISBN, or contributor also get usable snippets.
@@ -175,6 +180,9 @@ pub(crate) fn append_search_metadata(body: &mut String, metadata: &Value) {
         "document_type",
         "subject",
         "subtitle",
+        "journal",
+        "doi",
+        "abstract",
         "audio_languages",
         "subtitle_languages",
         "resolution",
@@ -237,22 +245,19 @@ pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
     // Preserve unaffected sources' revisions so a targeted improvement does
     // not repeat extraction of unrelated, potentially large archives.
     let extraction_version = match source.source_type.as_str() {
-        // 4: the full article where a feed carries only a summary.
-        "freshrss" => "4",
-        // 4: each archive's own title, description, language and topics.
         "kiwix" => "4",
-        // 4: mailing-list marking, quoted replies and tracking links dropped,
-        // scanned attachments and attached pictures read.
-        "mail-archive" => "4",
-        "browsertrix" => "5",
-        // 5: publication dates for Calibre books; stream languages, runtime,
-        // ratings, provider ids, chapters and season/episode wording for media.
-        // 6: whole books as sections in reading order; scanned pages read.
-        "calibre" => "6",
-        // 7: cast, directors, series overviews and subtitle text for video;
-        // sidecar details for audiobooks; podcast episodes; characters and
-        // volume names for comics; whole books as sections.
-        "media-snapshot" => "7",
+        // Raw HTML cells, scholarly citation metadata from saved articles.
+        "freshrss" => "5",
+        // Raw HTML cells and named attachments as message parts.
+        "mail-archive" => "5",
+        // Latest capture per exact URL and raw HTML cells.
+        "browsertrix" => "6",
+        // PDF outline chapters, raw HTML cells and edition families.
+        "calibre" => "7",
+        // Separate series metadata, episode guests and PDF outline chapters.
+        "media-snapshot" => "8",
+        // Source-only projects and common tooling documents excluded.
+        "files" => "3",
         _ => "2",
     };
     Some(crate::timeutil::sha256_hex(&[extraction_version, &inputs]))
@@ -430,4 +435,62 @@ mod tests {
         let kiwix = parse(r#"[{"id":"k","source_type":"kiwix","app_base":"https://a"}]"#);
         assert_eq!(source_fingerprint(&kiwix), None);
     }
+}
+
+/// Explicit work identities take precedence. Recognise complete Bible editions,
+/// never commentaries, study guides or books merely mentioning the Bible.
+pub(crate) fn book_family(title: &str, metadata: &Value) -> Option<String> {
+    if let Some(work) = metadata
+        .get("work_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+    {
+        return Some(work.to_string());
+    }
+    let title = title
+        .split(" — ")
+        .next()
+        .unwrap_or(title)
+        .trim()
+        .to_lowercase();
+    if [
+        "study",
+        "commentary",
+        "dictionary",
+        "introduction",
+        "handbook",
+        "history",
+        "stories",
+        "guide",
+    ]
+    .iter()
+    .any(|word| {
+        title
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|part| part == *word)
+    }) {
+        return None;
+    }
+    let bible = matches!(
+        title.as_str(),
+        "bible"
+            | "the bible"
+            | "holy bible"
+            | "the holy bible"
+            | "king james version"
+            | "american standard version"
+            | "world english bible"
+            | "young's literal translation"
+    ) || [
+        "bible (",
+        "the bible (",
+        "holy bible (",
+        "the holy bible (",
+        "bible - ",
+        "the bible - ",
+        "holy bible - ",
+    ]
+    .iter()
+    .any(|prefix| title.starts_with(prefix));
+    bible.then(|| "bible".to_string())
 }

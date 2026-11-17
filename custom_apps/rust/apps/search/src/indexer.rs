@@ -29,7 +29,8 @@ const ALLOW_MASS_DELETE_ENV: &str = "SEARCH_ALLOW_MASS_DELETE";
 // words and an attachment marker to discovery text, and writer/director facets.
 // Revision 4 adds incidental text, one result slot per sectioned work and the
 // mailing-list marker with its "Mailing list" topic.
-const INDEX_VERSION: i64 = 4;
+// Revision 5 adds book-family collapse, language and personal preference fields.
+const INDEX_VERSION: i64 = 5;
 
 /// Guards against a source silently producing no documents at all — most often
 /// a mount that is present but empty, or an integration whose data was

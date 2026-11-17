@@ -101,6 +101,7 @@ struct ParsedMail {
     /// Sent through a mailing list or subscription.
     mailing_list: bool,
     attachments: Vec<String>,
+    attachment_texts: Vec<(String, String)>,
 }
 
 /// Pictures smaller than this are logos, signatures and tracking pixels.
@@ -119,6 +120,7 @@ struct Parts<'a> {
     strip_quotes: bool,
     pictures: usize,
     incidental: String,
+    attachment_texts: Vec<(String, String)>,
 }
 
 /// Message identifiers as they appear in `Message-ID`, `In-Reply-To` and
@@ -217,6 +219,12 @@ fn text_parts(mail: &mailparse::ParsedMail<'_>, depth: usize, parts: &mut Parts<
         } else {
             for part in &mail.subparts {
                 let text = text_parts(part, depth + 1, parts);
+                if let Some(name) = attachment_name(part) {
+                    if !text.trim().is_empty() && parts.attachment_texts.len() < 64 {
+                        parts.attachment_texts.push((name, text));
+                    }
+                    continue;
+                }
                 if !text.trim().is_empty() {
                     body.push_str(&truncate_text(
                         &text,
@@ -404,6 +412,7 @@ fn parse_eml(
             .any(|id| archived.contains(id)),
         pictures: 0,
         incidental: String::new(),
+        attachment_texts: Vec::new(),
     };
     let body = text_parts(&mail, 0, &mut parts);
     let attachments = mail.parts().filter_map(attachment_name).take(64).collect();
@@ -417,6 +426,7 @@ fn parse_eml(
         incidental: parts.incidental,
         mailing_list,
         attachments,
+        attachment_texts: parts.attachment_texts,
     })
 }
 
@@ -522,6 +532,53 @@ impl super::Extractor for MailExtractor {
                         serde_json::Value::String(value.to_string()),
                     );
                 }
+            }
+            let id = sha256_hex(&[path.to_string_lossy().as_ref()]);
+            if !parsed.attachment_texts.is_empty() {
+                let mut identity = vec![
+                    owner.as_str(),
+                    parsed.subject.as_str(),
+                    parsed.from.as_str(),
+                    parsed.to.as_str(),
+                    parsed.body.as_str(),
+                ];
+                let date = parsed.date.map(|date| date.to_string()).unwrap_or_default();
+                identity.push(&date);
+                for (name, text) in &parsed.attachment_texts {
+                    identity.extend([name.as_str(), text.as_str()]);
+                }
+                metadata.insert(
+                    super::SECTION_OF.to_string(),
+                    serde_json::json!(sha256_hex(&identity)),
+                );
+            }
+            if path.components().any(|part| {
+                part.as_os_str()
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .split(['[', ']', '.'])
+                    .any(|name| name == "important")
+            }) {
+                metadata.insert("important".to_string(), serde_json::json!(true));
+            }
+            for (index, (name, text)) in parsed.attachment_texts.iter().enumerate() {
+                let mut attachment_metadata = metadata.clone();
+                attachment_metadata.insert("attachment".to_string(), serde_json::json!(name));
+                emit(ExtractedDocument {
+                    incidental_text: String::new(),
+                    external_id: format!("{id}#attachment{index}"),
+                    kind: "email".to_string(),
+                    title: truncate_text(&format!("{} — {name}", parsed.subject), 2_000),
+                    body_text: text.clone(),
+                    content_type: "message/rfc822".to_string(),
+                    origin_url: String::new(),
+                    app_url: app_base.clone(),
+                    file_path: path.display().to_string(),
+                    size_bytes: 0,
+                    content_created_at: parsed.date,
+                    content_modified_at: None,
+                    metadata: serde_json::Value::Object(attachment_metadata),
+                });
             }
             emit(ExtractedDocument {
                 incidental_text: parsed.incidental,

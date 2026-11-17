@@ -45,8 +45,91 @@ pub(crate) fn saved_text(root: &Path, url: &str) -> Option<String> {
 /// Saved article files, for the source fingerprint.
 pub(crate) fn saved_files(root: &Path) -> Vec<PathBuf> {
     crate::extract::collect_files(root, 1, &|file: &Path| {
-        file.extension().is_some_and(|extension| extension == "txt")
+        file.extension()
+            .is_some_and(|extension| extension == "txt" || extension == "json")
     })
+}
+
+/// Scholarly metadata belongs to the saved page, not an extra network lookup.
+/// Parse HTML with the existing HTML5 parser: attribute order, quotes and
+/// encoded characters in citation tags must not change what is extracted.
+pub(crate) fn citation_metadata(html: &str) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::{json, Value};
+    let mut metadata = serde_json::Map::new();
+    let Ok(dom) = html2text::config::plain().parse_html(html.as_bytes()) else {
+        return metadata;
+    };
+    // Retain the root while walking: this DOM's node destructor drains its
+    // descendants, even if handles to those descendants remain in the stack.
+    let mut stack = vec![dom.document.clone()];
+    let mut visited = 0;
+    while let Some(node) = stack.pop() {
+        visited += 1;
+        if visited > 100_000 {
+            break;
+        }
+        if let html2text::Element { name, attrs, .. } = &node.data {
+            if name.local.as_ref() == "meta" {
+                let attrs = attrs.borrow();
+                let attribute = |key: &str| {
+                    attrs
+                        .iter()
+                        .find(|attr| attr.name.local.as_ref() == key)
+                        .map(|attr| attr.value.to_string())
+                };
+                let name = attribute("name").unwrap_or_default().to_ascii_lowercase();
+                if let Some(content) = attribute("content").filter(|s| !s.trim().is_empty()) {
+                    let value = crate::text::truncate_text(
+                        content.trim(),
+                        if name == "citation_author" { 512 } else { 4096 },
+                    );
+                    match name.as_str() {
+                        "citation_author" => {
+                            let authors = metadata
+                                .entry("authors")
+                                .or_insert_with(|| json!([]))
+                                .as_array_mut()
+                                .unwrap();
+                            if authors.len() < 64 && !authors.contains(&json!(value)) {
+                                authors.push(json!(value));
+                            }
+                        }
+                        "citation_title"
+                        | "citation_abstract"
+                        | "dc.description"
+                        | "dcterms.abstract"
+                        | "citation_journal_title"
+                        | "citation_doi"
+                        | "citation_publication_date" => {
+                            let key = match name.as_str() {
+                                "citation_title" => "citation_title",
+                                "citation_journal_title" => "journal",
+                                "citation_doi" => "doi",
+                                "citation_publication_date" => "publication_date",
+                                _ => "abstract",
+                            };
+                            metadata.entry(key).or_insert(Value::String(value));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        stack.extend(node.children.borrow().iter().rev().cloned());
+    }
+    metadata
+}
+
+pub(crate) fn saved_metadata(root: &Path, url: &str) -> serde_json::Map<String, serde_json::Value> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(saved_path(root, &key(url), "json"))
+        .ok()
+        .and_then(|file| file.take(100_001).read_to_end(&mut bytes).ok());
+    if bytes.len() > 100_000 {
+        return Default::default();
+    }
+    serde_json::from_slice(&bytes).unwrap_or_default()
 }
 
 /// Whether an address is on the public internet. Private, loopback,
@@ -295,7 +378,8 @@ pub async fn run() -> Result<(), String> {
                 .ok()
                 .and_then(|modified| modified.elapsed().ok())
                 .is_some_and(|age| age < RETRY_AFTER);
-            if text_path.exists() || recently_failed {
+            let metadata_path = saved_path(&root, &key, "json");
+            if (text_path.exists() && metadata_path.exists()) || recently_failed {
                 kept += 1;
                 continue;
             }
@@ -310,13 +394,26 @@ pub async fn run() -> Result<(), String> {
                     .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
             }
             let outcome = fetch(&candidate.url).await.and_then(|html| {
-                let text = article_text(&html);
+                let metadata = citation_metadata(&html);
+                let mut text = article_text(&html);
+                for key in ["citation_title", "abstract", "journal", "doi"] {
+                    if let Some(value) = metadata.get(key).and_then(serde_json::Value::as_str) {
+                        if !text.contains(value) {
+                            text.push_str(&format!("\n{value}"));
+                        }
+                    }
+                }
                 (text.len() >= SUMMARY_BYTES)
-                    .then_some(text)
+                    .then_some((text, metadata))
                     .ok_or_else(|| "page has no more text than the feed".to_string())
             });
             match outcome {
-                Ok(text) => {
+                Ok((text, metadata)) => {
+                    let metadata_temporary = metadata_path.with_extension("json.part");
+                    let json = serde_json::to_vec(&metadata).map_err(|err| err.to_string())?;
+                    std::fs::write(&metadata_temporary, json)
+                        .and_then(|()| std::fs::rename(&metadata_temporary, &metadata_path))
+                        .map_err(|err| format!("failed to save article metadata: {err}"))?;
                     let temporary = text_path.with_extension("part");
                     std::fs::write(&temporary, text)
                         .and_then(|()| std::fs::rename(&temporary, &text_path))

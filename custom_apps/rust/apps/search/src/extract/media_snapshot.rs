@@ -480,16 +480,7 @@ fn build_body(entry: &Value) -> String {
     ));
     parts.push(string_field(entry, "subtitle").unwrap_or_default());
     let description = string_field(entry, "description").unwrap_or_default();
-    // Most episodes carry little or no synopsis of their own; the series
-    // overview says what they are about.
-    if let Some(series) = string_field(entry, "seriesDescription")
-        && !description.contains(&series)
-    {
-        parts.push(description);
-        parts.push(format!("About the series: {series}"));
-    } else {
-        parts.push(description);
-    }
+    parts.push(description);
     let mut body: String = parts
         .into_iter()
         .filter(|part| !part.trim().is_empty())
@@ -849,6 +840,7 @@ impl super::Extractor for MediaSnapshotExtractor {
         let mut book_failure = None;
 
         let subtitles = source.setting_str("subtitlesDir").map(PathBuf::from);
+        let mut seen_series = std::collections::HashSet::new();
         for entry in &entries {
             let sidecar = with_sidecar_details(entry, source);
             let entry = sidecar.as_ref().unwrap_or(entry);
@@ -960,6 +952,77 @@ impl super::Extractor for MediaSnapshotExtractor {
                 }
             }
 
+            // A series owns its overview and recurring cast. An episode owns
+            // its synopsis, dialogue and guests; a remembered line still opens it.
+            let mut episode = entry.clone();
+            if media_type.as_deref() == Some("episode") {
+                if let Some(series) = series_name(entry) {
+                    let series_id =
+                        string_field(entry, "seriesId").unwrap_or_else(|| series.clone());
+                    let id = format!("series:{}", sha256_hex(&[&owner_of(entry), &series_id]));
+                    if (string_field(entry, "seriesDescription").is_some()
+                        || !string_list(entry, "seriesCast").is_empty()
+                        || !string_list(entry, "seriesGenres").is_empty())
+                        && seen_series.insert(id.clone())
+                    {
+                        let mut series_entry = serde_json::json!({
+                            "title": series, "description": entry["seriesDescription"],
+                            "cast": entry["seriesCast"], "genres": entry["seriesGenres"]
+                        });
+                        series_entry["series"] = Value::String(series.clone());
+                        let mut details = Map::new();
+                        details.insert("owner".into(), Value::String(owner_of(entry)));
+                        details.insert("series".into(), Value::String(series.clone()));
+                        list_metadata(&mut details, "cast", string_list(entry, "seriesCast"));
+                        list_metadata(&mut details, "genres", string_list(entry, "seriesGenres"));
+                        emit(ExtractedDocument {
+                            external_id: id,
+                            kind: "video".into(),
+                            title: series,
+                            body_text: build_body(&series_entry),
+                            incidental_text: String::new(),
+                            content_type: "series".into(),
+                            origin_url: String::new(),
+                            app_url: match string_field(entry, "seriesId") {
+                                Some(id) => {
+                                    let mut target = entry.clone();
+                                    target["itemId"] = Value::String(id);
+                                    item_app_url(&target, &app_base, item_url_template)
+                                }
+                                None => app_url.clone(),
+                            },
+                            file_path: String::new(),
+                            size_bytes: 0,
+                            content_created_at: None,
+                            content_modified_at: None,
+                            metadata: Value::Object(details),
+                        });
+                    }
+                    let recurring = string_list(entry, "seriesCast");
+                    let guests: Vec<_> = string_list(entry, "cast")
+                        .into_iter()
+                        .filter(|name| !recurring.contains(name))
+                        .collect();
+                    episode["cast"] = serde_json::json!(guests);
+                    list_metadata(&mut metadata, "cast", guests);
+                    // list_metadata deliberately ignores empty lists.
+                    if string_list(&episode, "cast").is_empty() {
+                        metadata.remove("cast");
+                    }
+                    let series_genres = string_list(entry, "seriesGenres");
+                    let genres: Vec<_> = string_list(entry, "genres")
+                        .into_iter()
+                        .filter(|genre| !series_genres.contains(genre))
+                        .collect();
+                    episode["genres"] = serde_json::json!(genres);
+                    if genres.is_empty() {
+                        metadata.remove("genres");
+                    } else {
+                        list_metadata(&mut metadata, "genres", genres);
+                    }
+                }
+            }
+            let entry = &episode;
             emit_episodes(entry, &title, &metadata, &app_url, emit);
             // Dialogue finds a film by a remembered line but is not what the
             // film is about, so it is searched as incidental text.

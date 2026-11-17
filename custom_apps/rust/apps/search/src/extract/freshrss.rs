@@ -146,6 +146,9 @@ impl super::Extractor for FreshRssExtractor {
                 if let Some(author) = entry.author.filter(|author| !author.is_empty()) {
                     metadata.insert("author".to_string(), serde_json::Value::String(author));
                 }
+                if let Some(root) = articles.as_deref() {
+                    metadata.extend(crate::article_archive::saved_metadata(root, &entry.link));
+                }
                 // Read only files already downloaded by the opt-in archive
                 // pass. Indexing never fetches a feed's URLs over the network.
                 for url in pdf_archive::pdf_urls_in_entry(&entry.link, &entry.content) {
