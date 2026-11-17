@@ -1194,6 +1194,10 @@ def identified_assignments(result: dict[str, Any], titles: list[int]) -> list[di
 TRANSIENT_REASONS = [re.compile(pattern) for pattern in (
     r"Bonsai (?:could not [a-z ]+|ranking failed): .*(?:HTTP (?:429|5\d\d)|timed out|timeout"
     r"|error sending request|connection|POST https?://)",
+    # Label splitting failed on every disc from 2026-11-15 to 2026-11-17
+    # because Bonsai's reasoning used the whole token budget (fixed in
+    # disc-identify since). Those holds, and any later cut-off, are retried.
+    r"^Bonsai could not split the label: Bonsai reply (?:is not the requested JSON|was cut off)",
     r"^TVmaze (?:search failed|episodes for .+ failed)",
     r"^The OpenSubtitles daily download limit was reached",
     r"^OpenSubtitles comparison is unavailable",
@@ -3908,8 +3912,9 @@ def self_test() -> None:
     assert classify_reasons(["the identifier exceeded its deadline"])["retryable"]
     assert classify_reasons(["The OpenSubtitles daily download limit was reached."])["retryable"]
     assert not classify_reasons(creatures_reasons[:1] + creatures_reasons[2:])["retryable"]
-    assert not classify_reasons(
-        ["Bonsai could not split the label: Bonsai reply is not the requested JSON"])["retryable"]
+    assert classify_reasons(
+        ["Bonsai could not split the label: Bonsai reply is not the requested JSON",
+         "No TV series on TVmaze matches the disc's name."])["retryable"]
     assert not classify_reasons(
         ["Title 4: transcription failed: the excerpt contains too little speech to compare"]
     )["retryable"]
