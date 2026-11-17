@@ -186,3 +186,15 @@
     padding-inline: 12px;
   }
 }
+/* A multi-file audiobook's file count sits beside its name, like a size. */
+.tree-folder-name > .tabular {
+  flex: none;
+  margin-left: 8px;
+  white-space: nowrap;
+}
+/* The real file name under a selected title: quiet and secondary. */
+.library-selection-copy > p.library-selection-file {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}

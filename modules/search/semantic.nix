@@ -1,6 +1,7 @@
 { config, lib, pkgs, vars, ... }:
 let
   cfg = config.repo.search;
+  slots = cfg.semantic.rerankSlots;
   ports = vars.networking.ports;
   loopback = vars.networking.loopbackIPv4;
   # Without OpenBLAS: it takes over CPU matrix products for inputs of 32+
@@ -67,6 +68,17 @@ in {
         reranking and transcription keep their speed. A pass fails when the
         file cannot be read. Null disables yielding, which roughly halves
         chat speed while a pass runs.
+      '';
+    };
+    rerankSlots = lib.mkOption {
+      type = lib.types.ints.between 1 2;
+      default = 1;
+      description = ''
+        Parallel rerank requests the resident server serves. More than one
+        slot only helps where the pinned llama.cpp supports concurrent rerank
+        requests, and the search client keeps at most this many chunk requests
+        in flight. Each extra slot doubles the reserved context (--ctx-size
+        becomes 2048 * slots), so measure VRAM on the card before raising it.
       '';
     };
   };
@@ -138,16 +150,21 @@ in {
       serviceConfig = {
         # A 4096-token batch sized the output buffer for the full 151k
         # vocabulary and held 4.1 GiB of the card on the 0.6B. A search request
-        # reranks at most three passages of about 200 tokens, each well under
-        # the 1024-token batch, so a 2048-token context holds every input and
-        # keeps the 4B's 36-layer KV cache at about 0.28 GiB.
-        ExecStart = "${runtime}/bin/llama-server --model ${lib.escapeShellArg rerankerModel} --host ${loopback} --port ${toString ports.searchReranker} --reranking --n-gpu-layers all --ctx-size 2048 --batch-size 1024 --ubatch-size 512 --parallel 1 --threads 2 --flash-attn on";
+        # reranks three passages of roughly 200-340 tokens each, and every
+        # sequence must fit one physical batch: a 512-token micro-batch needs
+        # two passes, so this uses 1024. --ctx-size and --parallel follow
+        # rerankSlots (2048 tokens per slot). The larger micro-batch and any
+        # extra slot cost VRAM, so re-measure on the card (2.9 GiB free with a
+        # backfill pass running) before raising either.
+        ExecStart = "${runtime}/bin/llama-server --model ${lib.escapeShellArg rerankerModel} --host ${loopback} --port ${toString ports.searchReranker} --reranking --n-gpu-layers all --ctx-size ${toString (2048 * slots)} --batch-size 1024 --ubatch-size 1024 --parallel ${toString slots} --threads 2 --flash-attn on";
         SupplementaryGroups = [ "render" "video" ];
         MemoryHigh = "6G";
         MemoryMax = "8G";
       };
     };
-    systemd.services.search-ui.environment = inferenceEnvironment;
+    systemd.services.search-ui.environment = inferenceEnvironment // {
+      SEARCH_RERANK_SLOTS = toString slots;
+    };
     systemd.services.search-ui.serviceConfig = {
       MemoryHigh = "1G";
       MemoryMax = "3G";
@@ -193,6 +210,94 @@ in {
     systemd.timers.search-embed = {
       wantedBy = [ "timers.target" ];
       timerConfig = { OnBootSec = "15min"; OnUnitInactiveSec = "30min"; Persistent = true; };
+    };
+    # Probes the resident inference servers so a silent misconfiguration (for
+    # example a reranking model file that lacks llama.cpp's required conversion
+    # contract) surfaces as an alert rather than a slow search result.
+    systemd.services.search-inference-health = {
+      description = "Probe the resident Search embedding and reranking servers";
+      after = [ "search-embedding-query.service" "search-reranker.service" ];
+      unitConfig = {
+        OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+        OnFailureJobMode = "replace-irreversibly";
+        # A probe that starts while activation is restarting an inference
+        # server would fail on a model that is still loading. Retry a few times
+        # before the unit is failed and the alert is delivered.
+        StartLimitBurst = 3;
+        StartLimitIntervalSec = 300;
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        Restart = "on-failure";
+        RestartSec = 20;
+        User = "search";
+        Group = "search";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHostname = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        RestrictNamespaces = true;
+        RestrictSUIDSGID = true;
+        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+        SystemCallArchitectures = "native";
+        IPAddressDeny = "any";
+        IPAddressAllow = "localhost";
+        MemoryHigh = "64M";
+        MemoryMax = "128M";
+        MemorySwapMax = "0";
+        Nice = 10;
+        CPUWeight = 20;
+        IOWeight = 20;
+      };
+      script = ''
+        set -euo pipefail
+        curl=${pkgs.curl}/bin/curl
+        jq=${pkgs.jq}/bin/jq
+        embed_url="http://${loopback}:${toString ports.searchEmbeddingQuery}"
+        rerank_url="http://${loopback}:${toString ports.searchReranker}"
+        status=0
+
+        if ! "$curl" -fsS --max-time 20 "$embed_url/health" >/dev/null; then
+          echo "search-inference-health: embedder /health failed at $embed_url" >&2
+          status=1
+        fi
+        if ! "$curl" -fsS --max-time 20 "$rerank_url/health" >/dev/null; then
+          echo "search-inference-health: reranker /health failed at $rerank_url" >&2
+          status=1
+        fi
+        if ! rerank_resp="$("$curl" -fsS --max-time 60 \
+            -H 'Content-Type: application/json' \
+            --data '{"query":"canary","documents":["canary passage"],"top_n":1}' \
+            "$rerank_url/v1/rerank")"; then
+          echo "search-inference-health: reranker /v1/rerank at $rerank_url failed" >&2
+          status=1
+        elif ! printf '%s' "$rerank_resp" | "$jq" -e '
+            [ .results[]?.relevance_score // empty
+              | select(type == "number")
+              | select(. == . and . != infinite and . != -infinite) ]
+            | length > 0
+          ' >/dev/null; then
+          echo "search-inference-health: reranker /v1/rerank returned no finite relevance_score" >&2
+          status=1
+        fi
+        exit "$status"
+      '';
+    };
+    systemd.timers.search-inference-health = {
+      description = "Probe the resident Search embedding and reranking servers";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "10min";
+        OnUnitInactiveSec = "15min";
+        Persistent = true;
+        Unit = "search-inference-health.service";
+      };
     };
   };
 }

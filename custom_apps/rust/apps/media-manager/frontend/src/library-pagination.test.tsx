@@ -100,7 +100,10 @@ describe("Media Manager library pagination", () => {
     filter.value = "movie";
     await userEvent(filter, "input");
     await vi.waitFor(() =>
-      expect(screen.textContent).toContain("Contact Movie.mkv"),
+      expect(
+        screen.querySelector('.tree-name[title="Contact Movie.mkv"]')
+          ?.textContent,
+      ).toBe("Contact Movie"),
     );
     expect(screen.querySelector(".library-detail-pane")).toBeDefined();
     expect(screen.querySelector(".library-filter-summary")?.textContent).toBe(
@@ -166,7 +169,11 @@ describe("Media Manager library pagination", () => {
     )!;
     filter.value = "contact";
     await userEvent(filter, "input");
-    await vi.waitFor(() => expect(screen.textContent).toContain("Contact.mkv"));
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector('.tree-name[title="Contact.mkv"]')?.textContent,
+      ).toBe("Contact"),
+    );
     expect(screen.querySelector(".library-detail-pane")).toBeDefined();
     expect(screen.querySelector<HTMLInputElement>(titleSelector)?.value).toBe(
       "Arrival Director's Cut",
@@ -178,7 +185,7 @@ describe("Media Manager library pagination", () => {
     );
     expect(
       screen.querySelector(".shared-pane .tree-row.file")?.textContent,
-    ).toContain("Contact.mkv");
+    ).toContain("Contact");
     expect(
       Array.from(screen.querySelectorAll("button")).some(
         (button) => button.textContent?.trim() === "Load more",
@@ -189,7 +196,7 @@ describe("Media Manager library pagination", () => {
     await vi.waitFor(() =>
       expect(
         screen.querySelector(".shared-pane .tree-row.file")?.textContent,
-      ).toContain("Arrival.mkv"),
+      ).toContain("Arrival"),
     );
     expect(screen.querySelector<HTMLInputElement>(titleSelector)?.value).toBe(
       "Arrival Director's Cut",
@@ -219,14 +226,13 @@ describe("Media Manager library pagination", () => {
     )!;
     input.value = "étoile";
     await userEvent(input, "input");
-    await vi.waitFor(() => expect(screen.textContent).toContain("Étoile.mkv"));
-    const callsBeforeRefresh = fetchMock.mock.calls.length;
-    await userEvent(
-      screen.querySelector(
-        "button[aria-label='Refresh this library from disk now']",
-      ),
-      "click",
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector('.tree-name[title="Étoile.mkv"]')?.textContent,
+      ).toBe("Étoile"),
     );
+    const callsBeforeRefresh = fetchMock.mock.calls.length;
+    await userEvent(screen.querySelector("button.library-refresh"), "click");
     await vi.waitFor(() =>
       expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBeforeRefresh),
     );
@@ -235,7 +241,9 @@ describe("Media Manager library pagination", () => {
       .map(([request]) => new URL(String(request), "https://media.example"))
       .filter((url) => url.pathname.endsWith("/items"));
     expect(refreshedRequests.at(-1)?.searchParams.get("search")).toBe("étoile");
-    expect(screen.textContent).toContain("Étoile.mkv");
+    expect(
+      screen.querySelector('.tree-name[title="Étoile.mkv"]')?.textContent,
+    ).toBe("Étoile");
   });
 
   it("opens a durable folder link whose contents are beyond the first page", async () => {
@@ -317,7 +325,11 @@ describe("Media Manager library pagination", () => {
       <Root initialView="library" initialRootId="shared-videos" />,
     );
     try {
-      await vi.waitFor(() => expect(screen.textContent).toContain("Ready.mkv"));
+      await vi.waitFor(() =>
+        expect(
+          screen.querySelector('.tree-name[title="Ready.mkv"]')?.textContent,
+        ).toBe("Ready"),
+      );
     } finally {
       resolvePersonal(new Response(wireJson({ items: [], nextCursor: null })));
       await rendering;
@@ -428,15 +440,21 @@ describe("Media Manager library pagination", () => {
       );
       input.value = "new";
       await userEvent(input, "input");
-      await vi.waitFor(() => expect(screen.textContent).toContain("New.mkv"));
+      await vi.waitFor(() =>
+        expect(
+          screen.querySelector('.tree-name[title="New.mkv"]')?.textContent,
+        ).toBe("New"),
+      );
       resolveOlder(
         new Response(
           wireJson({ items: [item("old", "Old.mkv")], nextCursor: "Old.mkv" }),
         ),
       );
       await oldInput;
-      expect(screen.textContent).toContain("New.mkv");
-      expect(screen.textContent).not.toContain("Old.mkv");
+      expect(
+        screen.querySelector('.tree-name[title="New.mkv"]')?.textContent,
+      ).toBe("New");
+      expect(screen.querySelector('[title="Old.mkv"]')).toBeFalsy();
       expect(
         Array.from(screen.querySelectorAll("button")).some(
           (button) => button.textContent?.trim() === "Load more",
@@ -504,7 +522,11 @@ describe("Media Manager library pagination", () => {
         ) ?? null,
         "click",
       );
-      await vi.waitFor(() => expect(screen.textContent).toContain("Track.mp3"));
+      await vi.waitFor(() =>
+        expect(
+          screen.querySelector('.tree-name[title="Track.mp3"]')?.textContent,
+        ).toBe("Track"),
+      );
       resolveVideos(
         new Response(
           wireJson({
@@ -514,8 +536,10 @@ describe("Media Manager library pagination", () => {
         ),
       );
       await pending;
-      expect(screen.textContent).toContain("Track.mp3");
-      expect(screen.textContent).not.toContain("Stale.mkv");
+      expect(
+        screen.querySelector('.tree-name[title="Track.mp3"]')?.textContent,
+      ).toBe("Track");
+      expect(screen.querySelector('[title="Stale.mkv"]')).toBeFalsy();
       expect(input.value).toBe("");
     } finally {
       resolveVideos(new Response(wireJson({ items: [], nextCursor: null })));
@@ -544,7 +568,11 @@ describe("Media Manager library pagination", () => {
       <Root initialView="library" initialRootId="shared-videos" />,
     );
     try {
-      await vi.waitFor(() => expect(screen.textContent).toContain("First.mkv"));
+      await vi.waitFor(() =>
+        expect(
+          screen.querySelector('.tree-name[title="First.mkv"]')?.textContent,
+        ).toBe("First"),
+      );
       expect(
         screen.querySelector(".shared-pane .pane-count")?.textContent,
       ).toContain("loaded");
@@ -565,7 +593,9 @@ describe("Media Manager library pagination", () => {
           ),
         ).toBe(true),
       );
-      expect(screen.textContent).toContain("First.mkv");
+      expect(
+        screen.querySelector('.tree-name[title="First.mkv"]')?.textContent,
+      ).toBe("First");
       resolveNext(
         new Response(
           wireJson({ items: [item("second", "Second.mkv")], nextCursor: null }),
@@ -573,9 +603,13 @@ describe("Media Manager library pagination", () => {
       );
       await loading;
       await vi.waitFor(() =>
-        expect(screen.textContent).toContain("Second.mkv"),
+        expect(
+          screen.querySelector('.tree-name[title="Second.mkv"]')?.textContent,
+        ).toBe("Second"),
       );
-      expect(screen.textContent).toContain("First.mkv");
+      expect(
+        screen.querySelector('.tree-name[title="First.mkv"]')?.textContent,
+      ).toBe("First");
       expect(
         Array.from(screen.querySelectorAll("button")).some(
           (button) => button.textContent?.trim() === "Load more",
@@ -611,8 +645,12 @@ describe("Media Manager library pagination", () => {
     if (!filter) return;
     filter.value = "étoile";
     await userEvent(filter, "input");
-    await vi.waitFor(() => expect(screen.textContent).toContain("Étoile.mkv"));
-    expect(screen.textContent).not.toContain("First.mkv");
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector('.tree-name[title="Étoile.mkv"]')?.textContent,
+      ).toBe("Étoile"),
+    );
+    expect(screen.querySelector('[title="First.mkv"]')).toBeFalsy();
     const searchRequests = fetchMock.mock.calls
       .map(([input]) => new URL(String(input), "https://media.example"))
       .filter((url) => url.searchParams.has("search"));
@@ -621,7 +659,11 @@ describe("Media Manager library pagination", () => {
     expect(searchRequests.at(-1)?.searchParams.has("cursor")).toBe(false);
     filter.value = "";
     await userEvent(filter, "input");
-    await vi.waitFor(() => expect(screen.textContent).toContain("First.mkv"));
-    expect(screen.textContent).not.toContain("Étoile.mkv");
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector('.tree-name[title="First.mkv"]')?.textContent,
+      ).toBe("First"),
+    );
+    expect(screen.querySelector('[title="Étoile.mkv"]')).toBeFalsy();
   });
 });

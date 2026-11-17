@@ -4,6 +4,11 @@ import { Icon } from "./icon";
 import { RemoteArtwork } from "./remote-artwork";
 import { SourceSetupLink } from "./source-setup";
 import {
+  LANGUAGE_OPTIONS,
+  languageName,
+  threeLetterLanguageCode,
+} from "./display-names";
+import {
   PROVIDER_USAGE_GUIDES,
   ProviderUsageGuide,
 } from "./provider-setup-guide";
@@ -14,9 +19,47 @@ import type {
   AdditionalProviderLookupResponse,
 } from "./api-contract.generated";
 
+/** TheTVDB takes three-letter codes ("eng"); keep an unlisted current code
+ * selectable rather than showing it as another language. */
+function tvdbLanguageChoices(
+  current: string,
+): Array<{ code: string; name: string }> {
+  const options = LANGUAGE_OPTIONS.map((language) => ({
+    code: threeLetterLanguageCode(language.code),
+    name: language.name,
+  }));
+  return !current || options.some((option) => option.code === current)
+    ? options
+    : [
+        { code: current, name: `${languageName(current)} (${current})` },
+        ...options,
+      ];
+}
+
+const TVDB_ORDER_NAMES: Record<string, string> = {
+  official: "aired order",
+  dvd: "DVD order",
+  absolute: "absolute order",
+};
+
+/** Provider result lines such as "TheTVDB series 81189 · official · eng"
+ * read with language names ("English") and plain episode-order words. */
+function readableSubtitle(subtitle: string): string {
+  return subtitle
+    .split(" · ")
+    .map((part) =>
+      /^[a-z]{3}$/.test(part) && languageName(part) !== part
+        ? languageName(part)
+        : (TVDB_ORDER_NAMES[part] ?? part),
+    )
+    .join(" · ");
+}
+
 export const AdditionalProviderPanel = component$<{
   provider: AdditionalProviderId;
   name: string;
+  /** What the source is for, shown after its name. */
+  description?: string;
   itemKey: string;
   itemId: string;
   fallbackQuery: string;
@@ -135,7 +178,12 @@ export const AdditionalProviderPanel = component$<{
   return (
     <details class="source-accordion">
       <summary class="source-accordion-summary">
-        <span class="source-accordion-title">{props.name}</span>
+        <span class="source-accordion-title">
+          {props.name}
+          {props.description && (
+            <span class="source-accordion-note"> — {props.description}</span>
+          )}
+        </span>
         {!props.publicSource && <SourceSetupLink providerId={props.provider} />}
         <span class="source-accordion-chevron">
           <Icon name="chevron-down" size={16} />
@@ -144,25 +192,31 @@ export const AdditionalProviderPanel = component$<{
       <div class="source-accordion-body">
         {props.provider === "tvdb" && (
           <div class="source-search-options">
-            <label>
-              <span>Episode order</span>
-              <select
-                value={state.order}
-                onChange$={(_, el) => (state.order = el.value)}
-              >
-                <option value="official">Aired / official</option>
-                <option value="dvd">DVD</option>
-                <option value="absolute">Absolute</option>
-              </select>
-            </label>
-            <label class="source-search-short">
+            {["series", "season", "episode"].includes(props.mediaType) && (
+              <label>
+                <span>Episode order</span>
+                <select
+                  value={state.order}
+                  onChange$={(_, el) => (state.order = el.value)}
+                >
+                  <option value="official">As aired</option>
+                  <option value="dvd">DVD order</option>
+                  <option value="absolute">Absolute (no seasons)</option>
+                </select>
+              </label>
+            )}
+            <label class="source-search-language">
               <span>Language</span>
-              <input
+              <select
                 value={state.language}
-                maxLength={3}
-                placeholder="eng"
-                onInput$={(_, el) => (state.language = el.value)}
-              />
+                onChange$={(_, el) => (state.language = el.value)}
+              >
+                {tvdbLanguageChoices(state.language).map((language) => (
+                  <option key={language.code} value={language.code}>
+                    {language.name}
+                  </option>
+                ))}
+              </select>
             </label>
           </div>
         )}
@@ -248,14 +302,16 @@ export const AdditionalProviderPanel = component$<{
             >
               <div>
                 <strong>{candidate.title}</strong>
-                <span>{candidate.subtitle}</span>
+                <span>{readableSubtitle(candidate.subtitle)}</span>
                 {Object.keys(candidate.evidence).length > 0 && (
                   <dl>
                     {Object.entries(candidate.evidence).map(
                       ([label, value]) => (
                         <div key={label}>
                           <dt>{label}</dt>
-                          <dd>{value}</dd>
+                          <dd>
+                            {label === "Language" ? languageName(value) : value}
+                          </dd>
                         </div>
                       ),
                     )}
@@ -340,7 +396,10 @@ export const AdditionalProviderPanel = component$<{
                 onClick$={() => (state.selectedImage = image)}
               >
                 Preview {image.role}
-                {image.language ? ` (${image.language})` : ""} {index + 1}
+                {image.language
+                  ? ` (${languageName(image.language)})`
+                  : ""}{" "}
+                {index + 1}
               </button>
             ))}
           </div>

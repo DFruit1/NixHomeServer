@@ -1,6 +1,7 @@
 import { MATCHABLE_METADATA_FIELDS as EDITABLE_METADATA_FIELDS } from "./metadata-match-workspace";
 import type { MetadataMatchField } from "./metadata-match-workspace";
 import { metadataSourceEditorValue } from "./metadata-provider-candidates";
+import { stripProviderIdTags } from "./display-names";
 import type {
   CatalogItem,
   DashboardState,
@@ -239,21 +240,134 @@ export function renameReady(state: DashboardState): boolean {
   }
 }
 
+/** The rename profile that matches a metadata media type, limited to the
+ * profiles the item's library offers. */
+export function profileForMediaType(
+  mediaType: string,
+  category?: string,
+): NamingProfile {
+  const wanted: NamingProfile | undefined =
+    mediaType === "movie"
+      ? "movie"
+      : ["series", "season", "episode"].includes(mediaType)
+        ? "tv"
+        : mediaType === "music"
+          ? "music"
+          : mediaType === "audiobook"
+            ? "audiobook"
+            : mediaType === "book"
+              ? "book"
+              : undefined;
+  return wanted &&
+    profilesForCategory(category).some((profile) => profile.id === wanted)
+    ? wanted
+    : profileForCategory(category);
+}
+
+/** Title and year a file name suggests, ignoring provider ID tags such as
+ * `[tmdbid-799]` that sit after the year. */
+export function titleAndYearFromFileName(fileName: string): {
+  title: string;
+  year: string;
+} {
+  const stem = stripProviderIdTags(fileName.replace(/\.[A-Za-z0-9]+$/, ""));
+  const year = stem.match(/ \(([0-9]{4})\)$/)?.[1] ?? "";
+  return { title: stem.replace(/ \([0-9]{4}\)$/, ""), year };
+}
+
+const VIDEO_MEDIA_TYPES = ["movie", "series", "season", "episode"];
+const BOOK_MEDIA_TYPES = ["book", "audiobook"];
+
+/** Whether an Advanced field means anything for the selected media type. */
+export function metadataFieldApplies(
+  field:
+    | "authors"
+    | "narrators"
+    | "writers"
+    | "series"
+    | "volumeNumber"
+    | "premiereDate"
+    | "runtimeMinutes"
+    | "officialRating"
+    | "communityRating"
+    | "isbn",
+  mediaType: string,
+): boolean {
+  const video = VIDEO_MEDIA_TYPES.includes(mediaType);
+  switch (field) {
+    case "authors":
+      return !video && mediaType !== "collection";
+    case "narrators":
+      return mediaType === "audiobook";
+    case "writers":
+      return video || mediaType === "book";
+    case "series":
+      return (
+        BOOK_MEDIA_TYPES.includes(mediaType) ||
+        mediaType === "season" ||
+        mediaType === "episode"
+      );
+    case "volumeNumber":
+    case "isbn":
+      return BOOK_MEDIA_TYPES.includes(mediaType);
+    case "premiereDate":
+    case "runtimeMinutes":
+    case "officialRating":
+    case "communityRating":
+      return video || mediaType === "collection";
+  }
+}
+
+/** What each lookup source is for, where its brand name alone says nothing.
+ * Self-describing sources (Open Library, Google Books, Podcast Index) have
+ * no entry. */
+export const PROVIDER_DESCRIPTIONS: Record<string, string> = {
+  tmdb: "movies & TV",
+  omdb: "movies & TV ratings",
+  tvdb: "TV episodes",
+  tvmaze: "TV shows",
+  thediscdb: "DVD & Blu-ray discs",
+  anilist: "anime & manga",
+  wikidata: "general facts",
+  fanart: "posters & logos",
+  musicbrainz: "albums & tracks",
+  discogs: "album releases",
+  deezer: "albums & artwork",
+  theaudiodb: "artist & album art",
+  audnexus: "Audible audiobooks",
+  isbndb: "books by ISBN",
+  "comic-vine": "comics",
+};
+
+/** Sources shown first for each media type when they are ready to use;
+ * every other source sits under "More sources". */
+export function primaryLookupProviders(mediaType: string): string[] {
+  switch (mediaType) {
+    case "movie":
+    case "collection":
+      return ["tmdb", "omdb", "wikidata"];
+    case "series":
+    case "season":
+    case "episode":
+      return ["tmdb", "tvdb", "tvmaze"];
+    case "music":
+      return ["musicbrainz", "discogs", "deezer"];
+    case "audiobook":
+      return ["open-library", "google-books", "audnexus"];
+    case "book":
+      return ["open-library", "google-books"];
+    case "podcast":
+      return ["podcast-index"];
+    default:
+      return [];
+  }
+}
+
 export function numericValue(value: string, length: number): string {
   return value.replace(/\D/g, "").slice(0, length);
 }
 
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return "—";
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let value = bytes;
-  let index = 0;
-  while (value >= 1024 && index < units.length - 1) {
-    value /= 1024;
-    index += 1;
-  }
-  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
-}
+export { formatBytes } from "./display-names";
 
 export function commaSeparated(value: string): string[] {
   return value

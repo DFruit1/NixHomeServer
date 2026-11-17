@@ -60,3 +60,44 @@ export function mediaKindForMediaType(
       return undefined;
   }
 }
+
+const MEDIA_TYPE_LABELS: Record<string, string> = {
+  movie: "Movie",
+  collection: "Collection",
+  series: "TV series",
+  season: "TV season",
+  episode: "TV episode",
+  music: "Music",
+  audiobook: "Audiobook",
+  podcast: "Podcast",
+  book: "Book",
+};
+
+/**
+ * Media types a person can plausibly pick for a file of this catalog kind:
+ * a video file is a movie or a TV episode, an audio file is music, an
+ * audiobook or a podcast, and a document is a book. The current value always
+ * stays selectable, and an unknown kind offers every type.
+ */
+export function mediaTypeOptions(
+  mediaKind: string | undefined,
+  current: string,
+): Array<{ value: string; label: string }> {
+  const plausible =
+    mediaKind === "video"
+      ? ["movie", "episode"]
+      : mediaKind === "music" ||
+          mediaKind === "audiobook" ||
+          mediaKind === "podcast"
+        ? ["music", "audiobook", "podcast"]
+        : mediaKind === "book"
+          ? ["book"]
+          : Object.keys(MEDIA_TYPE_LABELS);
+  const values = plausible.includes(current)
+    ? plausible
+    : [current, ...plausible];
+  return Object.keys(MEDIA_TYPE_LABELS)
+    .filter((value) => values.includes(value))
+    .concat(values.filter((value) => !(value in MEDIA_TYPE_LABELS)))
+    .map((value) => ({ value, label: MEDIA_TYPE_LABELS[value] ?? value }));
+}

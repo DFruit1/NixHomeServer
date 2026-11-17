@@ -84,7 +84,7 @@ export const ComicArchiveAction = component$<{
         throw new Error(
           TERMINAL.has(status.state)
             ? status.error || `The change was ${status.state}.`
-            : "The change is still running. Check Activity for the result.",
+            : "The change is still running. Check Recent changes for the result.",
         );
       // Refresh the catalog so the .cbz replaces the .cbr in every view.
       await api("/scans", {

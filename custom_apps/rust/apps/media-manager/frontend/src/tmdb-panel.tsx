@@ -7,6 +7,7 @@ import type {
 } from "./metadata-provider-candidates";
 import { RemoteArtwork } from "./remote-artwork";
 import { SourceSetupLink } from "./source-setup";
+import { PROVIDER_DESCRIPTIONS } from "./item-editor-helpers";
 import tmdbLogo from "./tmdb-logo.svg";
 
 export const TmdbPanel = component$<{
@@ -48,7 +49,13 @@ export const TmdbPanel = component$<{
   return (
     <details class="musicbrainz-panel tmdb-panel source-accordion">
       <summary class="source-accordion-summary">
-        <span class="source-accordion-title">The Movie Database</span>
+        <span class="source-accordion-title">
+          TMDB
+          <span class="source-accordion-note">
+            {" "}
+            — {PROVIDER_DESCRIPTIONS.tmdb}
+          </span>
+        </span>
         <SourceSetupLink providerId="tmdb" />
         <span class="source-accordion-chevron">
           <Icon name="chevron-down" size={16} />

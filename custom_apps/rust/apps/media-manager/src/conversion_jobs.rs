@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-pub const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+/// 64 GB in decimal units, matching the "Up to 64 GB" the upload form states.
+pub const MAX_INPUT_BYTES: u64 = 64_000_000_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

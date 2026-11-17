@@ -167,6 +167,15 @@ test('one list interleaves live sources and library ranks with exact titles firs
   assert.deepEqual(renderedTitles(h), ['Topic','Library 1','Wiki 1','Library 2','Document 2','Library 3']);
 });
 
+test('a live answer is held until the library answer draws the first page once', async () => {
+  const h = harness(); h.elements.get('query').value = 'Topic'; h.run('runSearch()');
+  h.pending.find(r => r.url.includes('scope=live')).resolve({hits:[{id:'d1',source:'documents',title:'Topic'},{id:'w1',source:'wiki',title:'Wiki 1'}]}); await flush();
+  assert.equal(h.elements.get('results').children.length, 0);
+  assert.equal(h.elements.get('status').textContent, 'Searching your library…');
+  indexed(h)[0].resolve({hits:[{id:'l1',source:'mail',title:'Library 1'}],total:1}); await flush();
+  assert.deepEqual(renderedTitles(h), ['Topic','Library 1','Wiki 1']);
+});
+
 test('newest sorts library and live hits together and places undated hits last', async () => {
   const h = harness('?sort=newest'); h.elements.get('query').value = 'Topic'; h.run('runSearch()');
   indexed(h)[0].resolve({hits:[{id:'l1',title:'Older',created:100}],total:1});

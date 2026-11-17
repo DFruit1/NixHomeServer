@@ -1,3 +1,8 @@
+import {
+  displayFolderName,
+  stripIdTags,
+  stripLeadingTrackNumber,
+} from "./display-names";
 import type { CatalogItem } from "./root-types";
 
 export type QueueTrack = Pick<CatalogItem, "id" | "relativePath" | "mediaKind">;
@@ -39,6 +44,57 @@ export function albumName(track: QueueTrack): string {
   const directory = albumDirectory(track);
   if (!directory) return "";
   return directory.split("/").at(-1) ?? directory;
+}
+
+export interface TrackDisplay {
+  /** Track title without its extension or leading track number. */
+  title: string;
+  /** Artist or author when the file or folder names one, otherwise "". */
+  artist: string;
+  /** Album or book folder, otherwise "". */
+  album: string;
+}
+
+/**
+ * What a listener reads for a track. The catalog only knows paths, so this
+ * follows the usual `Artist/Album/01 - Title` and `01 - Artist - Title`
+ * layouts; server folders such as `_YouTube` never count as an artist or
+ * album.
+ */
+export function trackDisplay(track: QueueTrack): TrackDisplay {
+  const parts = track.relativePath.split("/");
+  const file = parts.pop() ?? "";
+  const stem = file.replace(/\.[^.\s]{1,5}$/, "") || file;
+  const cleaned = stripLeadingTrackNumber(stripIdTags(stem)) || stem;
+  const folder = parts.at(-1) ?? "";
+  const album = folder.startsWith("_") ? "" : displayFolderName(folder);
+  const folderArtist =
+    parts.length >= 2 && !(parts.at(-2) ?? "").startsWith("_")
+      ? displayFolderName(parts.at(-2) ?? "")
+      : "";
+  // "Artist - Title" only counts when no artist folder says otherwise, so
+  // "Song - Live Version" inside Artist/Album keeps its whole title.
+  const dash = cleaned.indexOf(" - ");
+  const prefix = dash > 0 ? cleaned.slice(0, dash).trim() : "";
+  const rest = dash > 0 ? cleaned.slice(dash + 3).trim() : "";
+  const repeatsFolder =
+    !!prefix &&
+    [album, folderArtist].some(
+      (name) => name && name.toLowerCase() === prefix.toLowerCase(),
+    );
+  let artist = folderArtist;
+  let title = cleaned.trim() || cleaned;
+  if (rest && repeatsFolder) title = rest;
+  else if (rest && !folderArtist) {
+    artist = prefix;
+    title = rest;
+  }
+  return { title, artist: artist === album ? "" : artist, album };
+}
+
+/** "Artist · Album" with whichever parts are known. */
+export function trackSubtitle(display: TrackDisplay): string {
+  return [display.artist, display.album].filter(Boolean).join(" · ");
 }
 
 /**

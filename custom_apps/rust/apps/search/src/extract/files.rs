@@ -108,7 +108,30 @@ fn walk(
     let in_project = in_project
         || entries.iter().any(|entry| {
             let name = entry.file_name();
-            name == ".git" || PROJECT_MARKERS.iter().any(|marker| name == *marker)
+            name == ".git"
+                || PROJECT_MARKERS.iter().any(|marker| name == *marker)
+                || entry.file_type().is_ok_and(|kind| kind.is_file())
+                    && entry
+                        .path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| {
+                            matches!(
+                                ext.to_ascii_lowercase().as_str(),
+                                "rs" | "py"
+                                    | "js"
+                                    | "ts"
+                                    | "tsx"
+                                    | "jsx"
+                                    | "c"
+                                    | "cpp"
+                                    | "h"
+                                    | "ino"
+                                    | "go"
+                                    | "java"
+                                    | "cs"
+                            )
+                        })
         });
     for entry in entries {
         if *budget == 0 || out.len() >= MAX_FILES {
@@ -142,7 +165,26 @@ fn walk(
                 document_format(&extension).is_some_and(|(_, note)| !(note && in_project))
             }
         };
-        if wanted {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let project_note = matches!(
+            stem.as_str(),
+            "readme"
+                | "license"
+                | "licence"
+                | "copying"
+                | "keywords"
+                | "changelog"
+                | "authors"
+                | "contributing"
+        );
+        let tooling_note = folder == Folder::Documents
+            && project_note
+            && document_format(&extension).is_some_and(|(_, note)| note);
+        if wanted && !tooling_note {
             out.push(path);
         }
     }

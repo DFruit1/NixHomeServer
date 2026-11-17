@@ -85,11 +85,12 @@ describe("Media Manager navigation", () => {
     await render(<Root />);
 
     const expectedLinks = new Map([
-      ["Manage library", "?view=library"],
+      ["Library", "?view=library"],
       ["Library health", "?view=health"],
       ["Conversions", "?view=conversions"],
-      ["Metadata sources", "?view=accounts"],
-      ["App refresh", "?view=refresh"],
+      ["Recent changes", "?view=activity"],
+      ["Online services", "?view=accounts"],
+      ["Refresh other apps", "?view=refresh"],
     ]);
 
     for (const [label, href] of expectedLinks) {
@@ -111,6 +112,7 @@ describe("Media Manager navigation", () => {
       "?view=library",
       "?view=health",
       "?view=conversions",
+      "?view=activity",
       "?view=accounts",
       "?view=refresh",
     ]);
@@ -292,7 +294,7 @@ describe("Media Manager navigation", () => {
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="accounts" />);
 
-    expect(screen.querySelector("h1")?.textContent).toBe("Metadata sources");
+    expect(screen.querySelector("h1")?.textContent).toBe("Online services");
     expect(screen.textContent).not.toContain("Vaultwarden");
     expect(screen.textContent).toContain("The Movie Database (TMDB)");
     expect(screen.textContent).not.toContain("saved-value");
@@ -593,7 +595,9 @@ describe("Media Manager navigation", () => {
       "/api/v1/items?rootId=shared-videos",
       expect.objectContaining({ credentials: "same-origin" }),
     );
-    expect(screen.textContent).toContain("Movie.mkv");
+    expect(
+      screen.querySelector('.tree-name[title="Movie.mkv"]')?.textContent,
+    ).toBe("Movie");
   });
 
   it("exposes every category as a selectable library tab", async () => {
@@ -655,22 +659,35 @@ describe("Media Manager refresh feedback", () => {
   it("distinguishes queued, running, successful, and failed refresh states", () => {
     expect(
       refreshPresentation({ integrationId: "jellyfin", state: "queued" }),
-    ).toMatchObject({ label: "Queued", busy: true, tone: "pending" });
+    ).toMatchObject({
+      label: "Waiting to start…",
+      busy: true,
+      tone: "pending",
+    });
     expect(
       refreshPresentation({ integrationId: "jellyfin", state: "running" }),
     ).toMatchObject({ label: "Refreshing…", busy: true, tone: "pending" });
+    // A finished refresh reports when it last ran instead of a generic state.
     expect(
-      refreshPresentation({
-        integrationId: "jellyfin",
-        state: "succeeded",
-        message: "Jellyfin library scan completed.",
-      }),
+      refreshPresentation(
+        {
+          integrationId: "jellyfin",
+          state: "succeeded",
+          finishedAt: 1_000,
+          message: "Jellyfin library scan completed.",
+        },
+        1_000_000 + 12 * 60 * 1000,
+      ),
     ).toMatchObject({
-      label: "Succeeded",
-      detail: "Jellyfin library scan completed.",
+      label: "Last refreshed 12 min ago",
+      detail: "",
       busy: false,
       tone: "success",
     });
+    // An app that has never been refreshed says nothing.
+    expect(
+      refreshPresentation({ integrationId: "jellyfin", state: "idle" }),
+    ).toMatchObject({ label: "", busy: false, tone: "idle" });
     expect(
       refreshPresentation({
         integrationId: "jellyfin",
@@ -678,7 +695,7 @@ describe("Media Manager refresh feedback", () => {
         message: "Jellyfin library scan failed.",
       }),
     ).toMatchObject({
-      label: "Failed",
+      label: "Last refresh failed",
       detail: "Jellyfin library scan failed.",
       busy: false,
       tone: "error",
@@ -755,9 +772,9 @@ describe("Media Manager refresh feedback", () => {
     );
     expect(refreshButton).toBeDefined();
 
+    expect(screen.textContent).toContain("Videos app");
     await userEvent(refreshButton ?? null, "click");
-    expect(screen.textContent).toContain("Succeeded");
-    expect(screen.textContent).toContain("Jellyfin library scan completed.");
+    expect(screen.textContent).toContain("Last refreshed");
     expect(refreshStatusReads).toBeGreaterThanOrEqual(2);
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/integrations/jellyfin/refresh",
@@ -806,7 +823,7 @@ describe("Media Manager refresh feedback", () => {
     const { render, screen } = await createDOM();
     await render(<Root initialView="refresh" />);
 
-    expect(screen.textContent).toContain("Jellyfin");
+    expect(screen.textContent).toContain("Videos app");
     expect(screen.textContent).not.toContain("DVD ISO converter");
     expect(screen.textContent).not.toContain("OpenSubtitles");
     expect(
@@ -867,25 +884,21 @@ describe("Media Manager conversions inbox", () => {
     );
     expect(screen.textContent).toContain("DVD conversion");
     expect(screen.textContent).toContain("Completed");
-    expect(screen.textContent).toContain("Failed");
     // Each finished disc is named once: the file name without its extension.
     expect(screen.textContent).toContain("OLD_MOVIE");
     expect(screen.textContent).not.toContain("OLD_MOVIE.ISO");
     expect(screen.textContent).not.toContain("How to add DVDs");
     expect(screen.textContent).not.toContain("Use a watched folder instead");
     expect(screen.textContent).not.toContain("Recent submissions");
-    expect(screen.textContent).toContain("No failed jobs.");
+    // An empty history panel is not shown at all.
+    expect(screen.querySelector("#failed-heading")).toBeFalsy();
     expect(screen.querySelector("main")?.classList).toContain(
       "main-content--conversions",
     );
     const processedRegion = screen.querySelector(
       '[role="region"][aria-labelledby="processed-heading"]',
     );
-    const failedRegion = screen.querySelector(
-      '[role="region"][aria-labelledby="failed-heading"]',
-    );
     expect(processedRegion?.getAttribute("tabindex")).toBe("0");
-    expect(failedRegion?.getAttribute("tabindex")).toBe("0");
   });
 
   it("shows waiting discs as a compact queue under the active progress", async () => {
@@ -1290,14 +1303,17 @@ describe("Media Manager library browser", () => {
 
     expect(screen.querySelector(".table-header")).toBeUndefined();
     expect(screen.querySelector(".kind-pill")).toBeUndefined();
-    expect(screen.textContent).toContain("Example Movie (2020).mkv");
+    expect(
+      screen.querySelector('.tree-name[title="Example Movie (2020).mkv"]')
+        ?.textContent,
+    ).toBe("Example Movie (2020)");
 
     // The tree's top level is the folder index; there is no separate chip row.
     expect(screen.querySelector(".folder-filter")).toBeUndefined();
     const topFolders = Array.from(
       screen.querySelectorAll(".shared-pane .item-tree > .tree-branch"),
     ).map((branch) => branch.querySelector(".tree-name")?.textContent);
-    expect(topFolders).toEqual(["_Movies", "_Shows"]);
+    expect(topFolders).toEqual(["Movies", "TV shows"]);
 
     const toggle = screen.querySelector(
       ".shared-pane .tree-toggle[aria-label='Expand Example Show']",
@@ -1309,7 +1325,10 @@ describe("Media Manager library browser", () => {
       ),
       "click",
     );
-    expect(screen.textContent).toContain("Episode.mkv");
+    expect(
+      screen.querySelector(".shared-pane .tree-name[title='Episode.mkv']")
+        ?.textContent,
+    ).toBe("Episode");
   });
 
   it("selects folder names separately from caret-only expansion", async () => {
@@ -1375,7 +1394,7 @@ describe("Media Manager library browser", () => {
         (row) => row.querySelector(".tree-name")?.textContent === name,
       );
     const movieBranch = folderRow("Movies")?.closest(".tree-branch");
-    const showBranch = folderRow("_Shows")?.closest(".tree-branch");
+    const showBranch = folderRow("TV shows")?.closest(".tree-branch");
     expect(movieBranch?.getAttribute("aria-expanded")).toBe("true");
 
     await userEvent(showBranch?.querySelector(".tree-toggle") ?? null, "click");
@@ -1445,7 +1464,7 @@ describe("Media Manager library browser", () => {
 
     const serverFolder = Array.from(
       screen.querySelectorAll(".shared-pane .tree-folder-name"),
-    ).find((button) => button.textContent?.trim() === "_YouTube");
+    ).find((button) => button.textContent?.trim() === "YouTube");
     await userEvent(serverFolder ?? null, "click");
 
     await vi.waitFor(() =>
@@ -1658,8 +1677,9 @@ describe("Media Manager library browser", () => {
         screen.querySelector(".media-image-placeholder")?.textContent,
       ).toContain("Upload image from device"),
     );
+    // The subtitle beside the movie belongs to it and is not listed.
     expect(screen.querySelectorAll(".tree-row.file.wrap-title")).toHaveLength(
-      2,
+      1,
     );
   });
 
@@ -1736,7 +1756,7 @@ describe("Media Manager library browser", () => {
       ).find(
         (button) => button.querySelector(".tree-name")?.textContent === name,
       );
-    await userEvent(fileButton("A-cover.jpg") ?? null, "click");
+    await userEvent(fileButton("A-cover") ?? null, "click");
     await vi.waitFor(() =>
       expect(
         screen.querySelector(".non-media-card input[type=file]"),
@@ -1759,7 +1779,7 @@ describe("Media Manager library browser", () => {
       ).toBe(true),
     );
 
-    await userEvent(fileButton("B-cover.jpg") ?? null, "click");
+    await userEvent(fileButton("B-cover") ?? null, "click");
     resolveUpload(
       new Response(wireJson({ id: "plan-a", digest: "a".repeat(64) }), {
         status: 201,
@@ -2161,7 +2181,7 @@ describe("Media Manager library browser", () => {
     await vi.waitFor(() =>
       expect(screen.querySelector(".tmdb-panel")).toBeTruthy(),
     );
-    expect(screen.textContent).toContain("The Movie Database");
+    expect(screen.textContent).toContain("TMDB — movies & TV");
     await vi.waitFor(() =>
       expect(
         screen
@@ -2313,7 +2333,7 @@ describe("Media Manager library browser", () => {
       Array.from(
         screen.querySelectorAll<HTMLButtonElement>(".tree-row.file"),
       ).find((button) => button.textContent?.includes(name));
-    await userEvent(fileButton("Arrival.mkv") ?? null, "click");
+    await userEvent(fileButton("Arrival") ?? null, "click");
     await vi.waitFor(() =>
       expect(
         screen
@@ -2347,7 +2367,7 @@ describe("Media Manager library browser", () => {
     await userEvent(nextDraftButton ?? null, "click");
     title.value = "Arrival — Director's Cut";
     await userEvent(title, "input");
-    await userEvent(fileButton("Arrival.mkv") ?? null, "click");
+    await userEvent(fileButton("Arrival") ?? null, "click");
     const activeCategory = Array.from(
       screen.querySelectorAll<HTMLButtonElement>(".library-tab"),
     ).find((button) => button.textContent?.trim() === "Videos");
@@ -2361,7 +2381,7 @@ describe("Media Manager library browser", () => {
       screen.querySelectorAll<HTMLButtonElement>(".library-tab"),
     ).find((button) => button.textContent?.trim() === "Music");
     await userEvent(musicCategory ?? null, "click");
-    await userEvent(fileButton("Contact.mkv") ?? null, "click");
+    await userEvent(fileButton("Contact") ?? null, "click");
 
     expect(globalThis.confirm).toHaveBeenCalledTimes(3);
     expect(
@@ -2371,9 +2391,7 @@ describe("Media Manager library browser", () => {
         )
         ?.getAttribute("value"),
     ).toBe("Arrival — Director's Cut");
-    expect(fileButton("Arrival.mkv")?.classList.contains("selected")).toBe(
-      true,
-    );
+    expect(fileButton("Arrival")?.classList.contains("selected")).toBe(true);
   });
 
   it("shows field-level metadata changes in the confirmation preview", async () => {
@@ -2646,16 +2664,18 @@ describe("Media Manager library browser", () => {
     expect(screen.textContent).not.toContain("Cataloged video");
     expect(screen.textContent).toContain("English SDH");
     expect(screen.textContent).toContain("forced");
-    expect(screen.textContent).toContain("SDH/CC");
-    expect(screen.textContent).toContain("Manage in Jellyfin");
+    expect(screen.textContent).toContain("describes sounds");
+    expect(screen.textContent).toContain("Separate subtitle file");
+    expect(screen.textContent).toContain("Manage in Videos app");
     const inspect = Array.from(screen.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Inspect cues",
+      (button) => button.textContent?.trim() === "View lines",
     );
     await userEvent(inspect ?? null, "click");
     await vi.waitFor(() =>
       expect(screen.textContent).toContain("Come with me."),
     );
-    expect(screen.textContent).toContain("1 cues · 0 issues");
+    expect(screen.textContent).toContain("1 line");
+    expect(screen.textContent).not.toContain("problem");
   });
 
   it("previews and queues removing an item into the library tombstone", async () => {
@@ -2764,7 +2784,7 @@ describe("Media Manager library browser", () => {
     );
     expect(previewRequests).toBe(1);
     expect(screen.textContent).toContain(
-      "_Tombstone/_Movies/Example Movie (2020).mkv",
+      "Removed / Movies / Example Movie (2020).mkv",
     );
 
     const confirmButton = Array.from(screen.querySelectorAll("button")).find(
@@ -2953,7 +2973,9 @@ describe("Media Manager library browser", () => {
     );
     expect(fieldValue("Authors / artists")).toBeNull();
     expect(fieldValue("Publisher / studio")).toBe("DGC");
-    expect(screen.textContent).toContain("People");
+    // Music has no narrators, writers or ISBN to edit.
+    expect(fieldValue("Narrators")).toBeNull();
+    expect(fieldValue("ISBN")).toBeNull();
     expect(screen.textContent).toContain("Release & ratings");
     expect(
       fetchMock.mock.calls.some(
@@ -3092,7 +3114,7 @@ describe("Media Manager library browser", () => {
     await vi.waitFor(() =>
       expect(screen.querySelector(".tmdb-panel")).toBeDefined(),
     );
-    expect(screen.textContent).toContain("The Movie Database");
+    expect(screen.textContent).toContain("TMDB — movies & TV");
     await vi.waitFor(() =>
       expect(
         screen
@@ -3463,7 +3485,7 @@ describe("Media Manager library browser", () => {
     );
     expect(playLink?.getAttribute("href")).toBe("https://jellyfin.example");
     expect(playLink?.getAttribute("target")).toBe("_blank");
-    expect(playLink?.textContent).toContain("Play in Jellyfin");
+    expect(playLink?.textContent).toContain("Play in Videos app");
 
     await userEvent(screen.querySelector(".media-image.editable"), "click");
     expect(screen.textContent).toContain("Edit cover image");
@@ -3485,12 +3507,13 @@ describe("Media Manager library browser", () => {
       ),
     ).toBe(false);
 
-    await userEvent(
-      Array.from(screen.querySelectorAll("button")).find(
+    // The editor is already open below; there is no separate Metadata
+    // button above it.
+    expect(
+      Array.from(screen.querySelectorAll("button")).some(
         (button) => button.textContent?.trim() === "Metadata",
-      ) ?? null,
-      "click",
-    );
+      ),
+    ).toBe(false);
     expect(
       screen.querySelector<HTMLInputElement>(
         ".editor-metadata-form .title-input input",
@@ -3663,6 +3686,20 @@ describe("Jellyfin TV filename parsing", () => {
       season: "01",
       episode: "07",
       episodeTitle: "The Return",
+    });
+  });
+
+  it("keeps a provider tag out of the show title and year", () => {
+    expect(
+      parseTvEpisodeFilename(
+        "Sherlock Holmes (1984) [tmdbid-799] S07E01 - The Three Gables.mkv",
+      ),
+    ).toEqual({
+      title: "Sherlock Holmes",
+      year: "1984",
+      season: "07",
+      episode: "01",
+      episodeTitle: "The Three Gables",
     });
   });
 

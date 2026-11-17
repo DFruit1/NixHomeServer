@@ -14,6 +14,9 @@ use homelab_common::gpu_bulk::{self, GpuBulkLease, LeaseAttempt};
 
 const DIMENSIONS: usize = 2560;
 const VERSION: &str = "qwen4b-q8-b60ae5ce-passage-v1";
+/// Neighbour parents fused into the keyword ranking. The vector query asks for
+/// 1000 passages: up to 100 parents, two spans each, with headroom in a dense
+/// library.
 const CANDIDATES: usize = 100;
 const PASSAGE_BYTES: usize = 1600;
 const OVERLAP_BYTES: usize = 200;
@@ -28,6 +31,9 @@ const INDEX_BATCH_SIZE: usize = 1;
 /// that replaced it is slower per token, so the same deadline reads fewer
 /// documents; re-measure before changing these numbers.
 const RERANK_DOCS: usize = 30;
+/// The rerank head scales with the page size, so a large page reads more
+/// documents than a small one, up to a bound that keeps the budget on a page.
+const RERANK_HEAD_MAX: usize = 60;
 const RERANK_CHUNK: usize = 3;
 const RERANK_BUDGET: Duration = Duration::from_secs(5);
 /// Keyword evidence shown to the reranker: the densest window of a matching
@@ -75,6 +81,8 @@ pub(crate) struct Semantic {
     /// new page size or a repeated answer re-ranks the same documents, and
     /// reading the same evidence again is the expensive part of a search.
     scores: Arc<TtlCache<f64>>,
+    /// Reranker chunk requests kept in flight at once (1 or 2).
+    slots: usize,
 }
 
 impl Semantic {
@@ -112,6 +120,11 @@ impl Semantic {
             vectors: Arc::new(TtlCache::new(Duration::from_secs(3600), 256)),
             windows: Arc::new(TtlCache::new(Duration::from_secs(600), 32)),
             scores: Arc::new(TtlCache::new(Duration::from_secs(3600), 4096)),
+            slots: std::env::var("SEARCH_RERANK_SLOTS")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(1)
+                .clamp(1, 2),
         }))
     }
 
@@ -240,17 +253,19 @@ fn spans(body: &str, size: usize, overlap: usize) -> Vec<(usize, usize)> {
 }
 
 fn passage_input(title: &str, body: &str) -> String {
-    format!(
-        "{}\n\n{body}",
-        &title[..title.floor_char_boundary(title.len().min(256))]
-    )
+    format!("{}\n\n{body}", title_prefix(title))
 }
 
-/// One reranker answer for one query and passage. Titles up to the 256 bytes
-/// `passage_input` keeps are compared whole, so a longer title cannot reuse a
-/// score measured on a truncated one.
+/// The title bytes the reranker is shown. `passage_input` truncates at 256
+/// bytes, so the score cache keys on this prefix rather than the whole title;
+/// otherwise a long title never reuses a score measured on a truncated one.
+fn title_prefix(title: &str) -> &str {
+    &title[..title.floor_char_boundary(title.len().min(256))]
+}
+
+/// One reranker answer for one query and passage.
 fn score_key(query: &str, title: &str, text: &str) -> String {
-    crate::timeutil::sha256_hex(&[query, title, text])
+    crate::timeutil::sha256_hex(&[query, title_prefix(title), text])
 }
 
 /// Keeps a document's strongest passage score and that passage's snippet.
@@ -267,6 +282,27 @@ fn record_score(
         if let Some(snippet) = crate::text::result_snippet(text, query) {
             snippets.insert(id.into(), snippet);
         }
+    }
+}
+
+/// Records freshly reranked scores for one chunk of passages.
+#[allow(clippy::too_many_arguments)]
+fn apply_scores(
+    scores: &TtlCache<f64>,
+    documents: &HashMap<String, db::RerankDocument>,
+    query: &str,
+    chunk: &[(&String, &str, String)],
+    relevance: &[f64],
+    scored: &mut u32,
+    reranked: &mut HashMap<String, f64>,
+    snippets: &mut HashMap<String, String>,
+) {
+    for (entry, score) in chunk.iter().zip(relevance) {
+        let id = entry.0;
+        let text = entry.1;
+        *scored += 1;
+        scores.insert(&score_key(query, &documents[id].title, text), *score);
+        record_score(reranked, snippets, query, id, text, *score);
     }
 }
 
@@ -319,6 +355,43 @@ fn lexical_passages<'a>(body: &'a str, query: &str) -> Vec<&'a str> {
     } else {
         best
     }
+}
+
+/// The passages one document shows the reranker, strongest first: a keyword
+/// match is judged on the words the user typed, while a related passage is all
+/// the evidence a document without them has. At most two distinct texts.
+fn document_evidence<'a>(
+    id: &str,
+    record: &'a db::RerankDocument,
+    keyword_ids: &HashSet<String>,
+    neighbours: &Neighbours,
+    query: &str,
+) -> [Option<&'a str>; 2] {
+    let expected = crate::timeutil::sha256_hex(&[id, &record.checksum, VERSION]);
+    let related = neighbours
+        .spans
+        .get(id)
+        .into_iter()
+        .flatten()
+        .filter(|(_, _, generation)| generation == &expected)
+        .filter_map(|&(start, end, _)| record.body_text.get(start..end));
+    let worded = lexical_passages(&record.body_text, query);
+    let ordered: Vec<&str> = if keyword_ids.contains(id) {
+        worded.into_iter().chain(related).collect()
+    } else {
+        related.chain(worded).collect()
+    };
+    let mut chosen: Vec<&str> = Vec::new();
+    for text in ordered {
+        if chosen.len() < 2 && !chosen.contains(&text) {
+            chosen.push(text);
+        }
+    }
+    let mut out = [None, None];
+    for (round, text) in chosen.into_iter().enumerate() {
+        out[round] = Some(text);
+    }
+    out
 }
 
 /// A separate maintenance pass catches existing and newly changed documents.
@@ -649,11 +722,15 @@ impl Semantic {
             offset,
             ..
         } = request;
+        // The window is keyed by the head size too, so a small and a large
+        // page do not share a window reranked for the wrong number of documents.
+        let head_rows = rows.clamp(RERANK_DOCS, RERANK_HEAD_MAX);
         let key = crate::timeutil::sha256_hex(&[
             query,
             &sources.join("\u{1f}"),
             &format!("{filters:?}"),
             generation,
+            &head_rows.to_string(),
         ]);
         let (window, _) = self
             .windows
@@ -813,6 +890,7 @@ impl Semantic {
             query,
             sources,
             filters,
+            rows,
             ..
         } = request;
         let started = Instant::now();
@@ -830,12 +908,24 @@ impl Semantic {
             scores.insert(hit.id.clone(), 1.0 / (60.0 + rank as f64));
         }
         if !neighbours.parents.is_empty() {
-            // Only the current main index can admit a related passage. This
-            // also blocks stale ownership/tags and removed sources immediately.
-            let allowed = solr
-                .filtered_ids(&neighbours.parents, sources, filters)
-                .await?;
-            let allowed_ids: HashSet<_> = allowed.hits.iter().map(|h| h.id.clone()).collect();
+            // A parent already returned by the keyword search matched under the
+            // same filters and sources, so it is already known visible. Only
+            // neighbours absent from the keyword ranking need re-checking
+            // against the current main index, which also blocks stale
+            // ownership/tags and removed sources immediately.
+            let mut allowed_ids: HashSet<String> = keyword_ids.clone();
+            let unverified: Vec<String> = neighbours
+                .parents
+                .iter()
+                .filter(|id| !keyword_ids.contains(*id))
+                .cloned()
+                .collect();
+            let mut admitted = Vec::new();
+            if !unverified.is_empty() {
+                let allowed = solr.filtered_ids(&unverified, sources, filters).await?;
+                allowed_ids.extend(allowed.hits.iter().map(|h| h.id.clone()));
+                admitted = allowed.hits;
+            }
             for (rank, id) in neighbours
                 .parents
                 .iter()
@@ -844,7 +934,7 @@ impl Semantic {
             {
                 *scores.entry(id.clone()).or_default() += 1.0 / (60.0 + rank as f64);
             }
-            for hit in allowed.hits {
+            for hit in admitted {
                 if !keyword_ids.contains(&hit.id) {
                     hits.push(hit);
                 }
@@ -892,11 +982,8 @@ impl Semantic {
                     .then(a.id.cmp(&b.id))
             })
         });
-        let head: Vec<_> = hits
-            .iter()
-            .take(RERANK_DOCS)
-            .map(|h| h.id.clone())
-            .collect();
+        let head_rows = rows.clamp(RERANK_DOCS, RERANK_HEAD_MAX);
+        let head: Vec<_> = hits.iter().take(head_rows).map(|h| h.id.clone()).collect();
         let documents = db::rerank_documents(database, &head).await?;
         // Every document's strongest evidence is read before any document's
         // second passage, so a deadline costs depth rather than coverage.
@@ -905,30 +992,13 @@ impl Semantic {
             let Some(record) = documents.get(id) else {
                 continue;
             };
-            let expected = crate::timeutil::sha256_hex(&[id, &record.checksum, VERSION]);
-            let related = neighbours
-                .spans
-                .get(id)
+            for (round, text) in document_evidence(id, record, &keyword_ids, &neighbours, query)
                 .into_iter()
-                .flatten()
-                .filter(|(_, _, generation)| generation == &expected)
-                .filter_map(|&(start, end, _)| record.body_text.get(start..end));
-            let worded = lexical_passages(&record.body_text, query);
-            // A keyword match is judged first on the words the user typed; a
-            // related passage is all the evidence a document without them has.
-            let ordered: Vec<&str> = if keyword_ids.contains(id) {
-                worded.into_iter().chain(related).collect()
-            } else {
-                related.chain(worded).collect()
-            };
-            let mut chosen: Vec<&str> = Vec::new();
-            for text in ordered {
-                if chosen.len() < 2 && !chosen.contains(&text) {
-                    chosen.push(text);
+                .enumerate()
+            {
+                if let Some(text) = text {
+                    evidence[round].push((id, text));
                 }
-            }
-            for (round, text) in chosen.into_iter().enumerate() {
-                evidence[round].push((id, text));
             }
         }
         let queue: Vec<(&String, &str)> = evidence.into_iter().flatten().collect();
@@ -952,31 +1022,38 @@ impl Semantic {
                 None => unresolved.push((index, passage_input(title, text))),
             }
         }
-        for chunk in unresolved.chunks(RERANK_CHUNK) {
+        // Requests are sent in waves of up to one chunk per reranker slot, so
+        // the server receives two chunks at once when it serves them in
+        // parallel; with one slot a wave is the original single chunk.
+        for wave in unresolved.chunks(RERANK_CHUNK * self.slots) {
             // A request that cannot finish in time would only delay the answer.
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if scored > 0 && remaining < reranking.elapsed() / scored * chunk.len() as u32 {
+            let chunk = wave.len().min(RERANK_CHUNK) as u32;
+            if scored > 0 && remaining < reranking.elapsed() / scored * chunk {
                 break;
             }
-            let titled: Vec<String> = chunk.iter().map(|(_, text)| text.clone()).collect();
-            let relevance =
-                match tokio::time::timeout_at(deadline, self.rerank(query, &titled)).await {
-                    Ok(Ok(relevance)) => relevance,
-                    // Scores are per passage, so those already returned or
-                    // reused stand.
-                    Ok(Err(error)) if scored > 0 || reused > 0 => {
-                        eprintln!("search: reranking stopped early: {error}");
-                        break;
-                    }
-                    Ok(Err(error)) => return Err(error),
-                    Err(_) => break,
-                };
-            for ((index, _), score) in chunk.iter().zip(relevance) {
-                scored += 1;
-                let (id, text) = queue[*index];
-                self.scores
-                    .insert(&score_key(query, &documents[id].title, text), score);
-                record_score(&mut reranked, &mut snippets, query, id, text, score);
+            let pending: Vec<(&String, &str, String)> = wave
+                .iter()
+                .map(|(index, input)| {
+                    let (id, text) = queue[*index];
+                    (id, text, input.clone())
+                })
+                .collect();
+            if !self
+                .rerank_pending(
+                    &pending,
+                    &documents,
+                    query,
+                    deadline,
+                    reranking,
+                    &mut scored,
+                    &mut reused,
+                    &mut reranked,
+                    &mut snippets,
+                )
+                .await?
+            {
+                break;
             }
         }
         // Relevance reused from earlier searches is still a real answer even
@@ -1030,7 +1107,7 @@ impl Semantic {
         }
         // Durations and counts only: queries are private.
         eprintln!(
-            "search: ranked library results retrieval_ms={} keyword={consumed} related={} rerank_ms={} passages={scored}/{} reused={reused} results={}",
+            "search: ranked library results retrieval_ms={} keyword={consumed} related={} rerank_ms={} passages={scored}/{} reused={reused} results={} head={head_rows}",
             retrieved.as_millis(),
             candidates - consumed,
             reranking.elapsed().as_millis(),
@@ -1043,6 +1120,133 @@ impl Semantic {
             keyword,
             consumed,
         }))
+    }
+
+    /// Sends the buffered unresolved passages to the reranker, keeping at most
+    /// `self.slots` chunks in flight, and applies what returns. Returns
+    /// `Ok(false)` when the deadline or a failure should end the search.
+    #[allow(clippy::too_many_arguments)]
+    async fn rerank_pending(
+        &self,
+        pending: &[(&String, &str, String)],
+        documents: &HashMap<String, db::RerankDocument>,
+        query: &str,
+        deadline: tokio::time::Instant,
+        reranking: Instant,
+        scored: &mut u32,
+        reused: &mut u32,
+        reranked: &mut HashMap<String, f64>,
+        snippets: &mut HashMap<String, String>,
+    ) -> Result<bool, String> {
+        enum Outcome {
+            Scores(Vec<f64>),
+            Error(String),
+            TimedOut,
+        }
+        // The leading chunks that still fit the deadline, first to last.
+        let mut chunks: Vec<&[(&String, &str, String)]> = Vec::new();
+        for chunk in pending.chunks(RERANK_CHUNK) {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if *scored > 0 && remaining < reranking.elapsed() / *scored * chunk.len() as u32 {
+                break;
+            }
+            chunks.push(chunk);
+            if chunks.len() >= self.slots {
+                break;
+            }
+        }
+        if chunks.is_empty() {
+            return Ok(false);
+        }
+        let titled: Vec<Vec<String>> = chunks
+            .iter()
+            .map(|chunk| {
+                chunk
+                    .iter()
+                    .map(|(_, _, passage)| passage.clone())
+                    .collect()
+            })
+            .collect();
+        // One slot is the original sequential request; two keep both chunks in
+        // flight at once.
+        let outcomes: Vec<Outcome> = if chunks.len() == 1 {
+            match tokio::time::timeout_at(deadline, self.rerank(query, &titled[0])).await {
+                Ok(Ok(scores)) => vec![Outcome::Scores(scores)],
+                Ok(Err(error)) => vec![Outcome::Error(error)],
+                Err(_) => vec![Outcome::TimedOut],
+            }
+        } else {
+            let (first, second) = tokio::join!(
+                tokio::time::timeout_at(deadline, self.rerank(query, &titled[0])),
+                tokio::time::timeout_at(deadline, self.rerank(query, &titled[1])),
+            );
+            vec![
+                match first {
+                    Ok(Ok(scores)) => Outcome::Scores(scores),
+                    Ok(Err(error)) => Outcome::Error(error),
+                    Err(_) => Outcome::TimedOut,
+                },
+                match second {
+                    Ok(Ok(scores)) => Outcome::Scores(scores),
+                    Ok(Err(error)) => Outcome::Error(error),
+                    Err(_) => Outcome::TimedOut,
+                },
+            ]
+        };
+        // Apply what succeeded first, so one chunk's failure never discards the
+        // other's scores.
+        for (chunk, outcome) in chunks.iter().zip(outcomes.iter()) {
+            if let Outcome::Scores(scores) = outcome {
+                apply_scores(
+                    self.scores.as_ref(),
+                    documents,
+                    query,
+                    chunk,
+                    scores,
+                    scored,
+                    reranked,
+                    snippets,
+                );
+            }
+        }
+        let failed = outcomes
+            .iter()
+            .any(|outcome| !matches!(outcome, Outcome::Scores(_)));
+        if !failed {
+            return Ok(true);
+        }
+        let error = outcomes.iter().find_map(|outcome| match outcome {
+            Outcome::Error(error) => Some(error.as_str()),
+            Outcome::Scores(_) | Outcome::TimedOut => None,
+        });
+        // Scores already returned or reused stand; anything else is a stop.
+        if *scored > 0 || *reused > 0 {
+            if let Some(error) = error {
+                eprintln!("search: reranking stopped early: {error}");
+            }
+            return Ok(false);
+        }
+        // Nothing scored yet. With two chunks in flight both failed, so retry
+        // the first sequentially once before giving up.
+        if chunks.len() > 1
+            && let Ok(Ok(scores)) =
+                tokio::time::timeout_at(deadline, self.rerank(query, &titled[0])).await
+        {
+            apply_scores(
+                self.scores.as_ref(),
+                documents,
+                query,
+                chunks[0],
+                &scores,
+                scored,
+                reranked,
+                snippets,
+            );
+            return Ok(true);
+        }
+        Err(error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "the reranker did not answer within its budget".into()))
     }
 }
 

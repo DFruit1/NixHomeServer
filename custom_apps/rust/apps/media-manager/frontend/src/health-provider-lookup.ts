@@ -52,9 +52,8 @@ export function healthLookupQueries(
   )
     return [query];
   const identifier = isbnFromContext(context);
-  const author = Array.isArray(context.authors)
-    ? context.authors[0]
-    : context.authors;
+  const authors = searchAuthors(context);
+  const author = Array.isArray(authors) ? authors[0] : authors;
   const quote = (value: unknown) =>
     String(value ?? "")
       .replace(/[\\"]/g, " ")
@@ -76,23 +75,68 @@ export function healthLookupQueries(
     ),
   ];
 }
+/** Known authors, else the author named by the item's folder. */
+function searchAuthors(context: Record<string, unknown>): unknown {
+  return hasHealthValue(context.authors)
+    ? context.authors
+    : context.folderAuthor;
+}
+/**
+ * True when listed authors share the folder's name people file by: the
+ * surname, or the given name in "Augustine of Hippo" ("Saint Augustine").
+ */
+export function matchesFolderAuthor(
+  authors: unknown,
+  folder: unknown,
+): boolean {
+  if (!hasHealthValue(authors) || !hasHealthValue(folder)) return false;
+  const words = normalized(folder).split(" ");
+  const of = words.indexOf("of");
+  const key = of > 0 ? words[of - 1] : words.at(-1);
+  return !!key && normalized(authors).split(" ").includes(key);
+}
+/** A folder guess only narrows a search; it never hides title-only results. */
 export async function lookupHealthProvider(
   provider: string,
   query: string,
   itemId: string,
   context: Record<string, unknown>,
 ): Promise<Record<string, unknown>[]> {
+  const results = await lookupOnce(provider, query, itemId, context);
+  if (hasHealthValue(context.authors) || !hasHealthValue(context.folderAuthor))
+    return results;
+  const supported = results.some((row) => {
+    const fields = (row.fields as Record<string, unknown>) ?? {};
+    return matchesFolderAuthor(
+      row.authors ?? row.artist ?? fields.authors ?? fields.artist,
+      context.folderAuthor,
+    );
+  });
+  if (supported) return results;
+  const titleOnly = await lookupOnce(provider, query, itemId, {
+    ...context,
+    folderAuthor: undefined,
+  });
+  return titleOnly.length ? titleOnly : results;
+}
+async function lookupOnce(
+  provider: string,
+  query: string,
+  itemId: string,
+  context: Record<string, unknown>,
+): Promise<Record<string, unknown>[]> {
   const music = provider === "musicbrainz" || provider === "acoustid";
+  const authors = searchAuthors(context);
   for (const lookupQuery of healthLookupQueries(provider, query, context)) {
     const body = music
       ? {
           mode: provider === "acoustid" ? "fingerprint" : "search",
           title: lookupQuery,
-          ...(hasHealthValue(context.authors)
+          ...(hasHealthValue(authors)
             ? {
-                artist: Array.isArray(context.authors)
-                  ? context.authors.join(", ")
-                  : String(context.authors),
+                artist: Array.isArray(authors)
+                  ? authors.join(", ")
+                  : String(authors),
               }
             : {}),
         }
@@ -120,6 +164,29 @@ export async function lookupHealthProvider(
 
 export const MIN_HEALTH_MATCH = 30;
 export const AUTO_HEALTH_MATCH = 75;
+
+/** Plain wording for an evidence score; the number stays secondary. */
+export function matchLabel(score: number): string {
+  return score >= AUTO_HEALTH_MATCH
+    ? "Good match"
+    : score >= 50
+      ? "Possible match"
+      : "Weak match";
+}
+
+const EVIDENCE_NAMES: Record<string, string> = {
+  title: "Title",
+  mediaType: "Kind of media",
+  authors: "Author",
+  year: "Year",
+  language: "Language",
+  publisher: "Publisher",
+  series: "Series",
+  volumeNumber: "Volume number",
+  season: "Season",
+  episode: "Episode",
+  isbn: "ISBN",
+};
 
 export interface HealthMatch {
   title: string;
@@ -378,7 +445,7 @@ export function matchConfidence(
       candidate.scope === "work" &&
       ["authors", "series"].includes(field)
     ) {
-      reasons.push("Work publication year does not identify this edition");
+      reasons.push("The first publication year doesn't identify this edition");
       return;
     }
     // Do not use the value we are trying to discover as evidence for itself.
@@ -419,7 +486,7 @@ export function matchConfidence(
     )
       supporting++;
     reasons.push(
-      `${key}: ${!present ? "unavailable" : match === 1 ? "matches" : match > 0 ? "partial match" : "differs"}`,
+      `${EVIDENCE_NAMES[key] ?? key} ${!present ? "not listed" : match === 1 ? "matches" : match > 0 ? "partly matches" : "differs"}`,
     );
     if (
       key === "isbn" &&
@@ -450,6 +517,19 @@ export function matchConfidence(
   compare("season", 20);
   compare("episode", 20);
   if (referenceISBN) compare("isbn", 50);
+  // The folder's author is independent of the item's own metadata, so it is
+  // evidence even when the author is the field being looked up. A folder name
+  // is only a guess (it may be a series), so agreement adds support and
+  // disagreement costs nothing.
+  if (
+    !hasHealthValue(context.authors) &&
+    matchesFolderAuthor(candidate.values.authors, context.folderAuthor)
+  ) {
+    possible += 15;
+    earned += 15;
+    supporting++;
+    reasons.push("Author matches the folder name");
+  }
   const ids = context.providerIds as Record<string, unknown> | undefined;
   for (const [key, value] of Object.entries(candidate.providerIds)) {
     if (
@@ -464,7 +544,7 @@ export function matchConfidence(
       providerMatches++;
       if (PRECISE_IDS.has(key)) editionMatches++;
     } else identityConflicts++;
-    reasons.push(`${key} identifier ${same ? "matches" : "differs"}`);
+    reasons.push(`${same ? "Same" : "Different"} ${key} ID`);
   }
   const titleMatch = titleSimilarity(candidate.values.title, context.title);
   if (providerMatches) {
@@ -474,11 +554,11 @@ export function matchConfidence(
   if (!identityMatches && titleMatch < 0.35) cap = Math.min(cap, 29);
   if (identityConflicts) {
     cap = Math.min(cap, 19);
-    reasons.push("Conflicting edition or item identifier; do not auto-propose");
+    reasons.push("Its catalogue ID differs from this item's");
   }
   if (!identityMatches && !supporting) {
     cap = Math.min(cap, 60);
-    reasons.push("Title alone cannot identify the edition or release");
+    reasons.push("Only the title could be compared");
   }
   const referenceParts = numberedTitle(context.title),
     candidateParts = numberedTitle(candidate.values.title);
@@ -490,7 +570,7 @@ export function matchConfidence(
     )
   ) {
     cap = Math.min(cap, 29);
-    reasons.push("Numbered part in the title differs");
+    reasons.push("A different part or volume");
   }
   const abridgement = (v: unknown) =>
     normalized(v).match(/\b(unabridged|abridged)\b/)?.[0];
@@ -513,15 +593,13 @@ export function matchConfidence(
     cap = Math.min(cap, 74);
     reasons.push(
       candidate.detailsPending
-        ? "Further item details have not been checked"
-        : "Only some editions were checked; no exact edition identifier matches",
+        ? "Its full details haven't been checked yet"
+        : "Only some editions were checked",
     );
   }
   // A fingerprint locates a recording/release group, not a particular edition.
   if (candidate.matchMethod === "fingerprint")
-    reasons.push(
-      "Audio fingerprint supports the recording; edition may differ",
-    );
+    reasons.push("The audio matches this recording; the release may differ");
   if (
     candidate.scope === "work" &&
     [
@@ -534,9 +612,7 @@ export function matchConfidence(
     ].includes(field)
   ) {
     cap = Math.min(cap, 60);
-    reasons.push(
-      "Work-level search data does not verify this edition-specific field",
-    );
+    reasons.push("General book details can't confirm this edition's value");
   }
   if (candidate.detailError) {
     cap = Math.min(cap, 74);
@@ -560,9 +636,10 @@ export function matchConfidence(
       )
       .map((other) => sourceFamily(other.provider.id)),
   ).size;
-  reasons.push(
-    `${agreement} other sources agree on this title and value; sources may share data`,
-  );
+  if (agreement)
+    reasons.push(
+      `${agreement} other ${agreement === 1 ? "source agrees" : "sources agree"} (sources may copy each other)`,
+    );
   let score = Math.min(
     cap,
     Math.round(
@@ -571,10 +648,8 @@ export function matchConfidence(
   );
   if (field && !hasHealthValue(candidate.values[field])) {
     score = 0;
-    reasons.push("Requested field absent");
-  } else if (field)
-    reasons.push("Requested field supplied; availability adds no confidence");
-  reasons.push("Evidence estimate, not a calibrated probability");
+    reasons.push(`No ${(EVIDENCE_NAMES[field] ?? field).toLowerCase()} listed`);
+  }
   return { score, reasons, identified };
 }
 

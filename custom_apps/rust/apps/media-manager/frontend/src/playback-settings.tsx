@@ -7,6 +7,8 @@ interface PlaybackSettingsProps {
   shuffle: ShuffleScope;
   endAction: EndOfTrackAction;
   sleepMinutes: number;
+  /** Whether music keeps playing in a small player on other pages. */
+  keepPlaying: boolean;
   /** Media kind of the current track, used to word the shuffle scope. */
   kindLabel: string;
   albumLabel: string;
@@ -15,12 +17,15 @@ interface PlaybackSettingsProps {
   onShuffle$: PropFunction<(scope: ShuffleScope) => void>;
   onEndAction$: PropFunction<(action: EndOfTrackAction) => void>;
   onSleep$: PropFunction<(minutes: number) => void>;
+  onKeepPlaying$: PropFunction<() => void>;
 }
 
+// Details only where the name alone cannot say what an option covers, so the
+// menu stays short enough to fit above or below the controls.
 interface Option {
   value: string;
   name: string;
-  detail: string;
+  detail?: string;
 }
 
 const trackWord = (count: number): string =>
@@ -28,11 +33,7 @@ const trackWord = (count: number): string =>
 
 export const PlaybackSettings = component$<PlaybackSettingsProps>((props) => {
   const shuffleOptions: Option[] = [
-    {
-      value: "off",
-      name: "Shuffle off",
-      detail: "Play the tracks in their listed order.",
-    },
+    { value: "off", name: "Shuffle off" },
     {
       value: "album",
       name: "Shuffle album",
@@ -43,35 +44,15 @@ export const PlaybackSettings = component$<PlaybackSettingsProps>((props) => {
     {
       value: "all",
       name: `Shuffle all ${props.kindLabel} files`,
-      detail: `Random order across all ${trackWord(props.kindTrackCount)}, personal and shared, never another file type.`,
+      detail: `Random order across all ${trackWord(props.kindTrackCount)}, including shared ones.`,
     },
   ];
 
-  const endOptions: Array<{
-    value: EndOfTrackAction;
-    name: string;
-    detail: string;
-  }> = [
-    {
-      value: "next",
-      name: "Continue to the next track",
-      detail: "Carry on by itself when this track ends.",
-    },
-    {
-      value: "stop",
-      name: "Stop after this track",
-      detail: "Playback stops here. Press play to carry on.",
-    },
-    {
-      value: "repeat-one",
-      name: "Repeat this track",
-      detail: "Play this track again until you skip it.",
-    },
-    {
-      value: "repeat-all",
-      name: "Repeat the queue",
-      detail: "Keep cycling back to the start of the queue.",
-    },
+  const endOptions: Array<Option & { value: EndOfTrackAction }> = [
+    { value: "next", name: "Continue to the next track" },
+    { value: "stop", name: "Stop after this track" },
+    { value: "repeat-one", name: "Repeat this track" },
+    { value: "repeat-all", name: "Repeat the queue" },
   ];
 
   return (
@@ -99,7 +80,9 @@ export const PlaybackSettings = component$<PlaybackSettingsProps>((props) => {
             >
               <span class="playback-settings-copy">
                 <span class="playback-settings-name">{option.name}</span>
-                <span class="playback-settings-detail">{option.detail}</span>
+                {option.detail && (
+                  <span class="playback-settings-detail">{option.detail}</span>
+                )}
               </span>
               <span class="playback-settings-check" aria-hidden="true">
                 {selected ? <Icon name="check" size={14} /> : null}
@@ -126,7 +109,9 @@ export const PlaybackSettings = component$<PlaybackSettingsProps>((props) => {
             >
               <span class="playback-settings-copy">
                 <span class="playback-settings-name">{option.name}</span>
-                <span class="playback-settings-detail">{option.detail}</span>
+                {option.detail && (
+                  <span class="playback-settings-detail">{option.detail}</span>
+                )}
               </span>
               <span class="playback-settings-check" aria-hidden="true">
                 {selected ? <Icon name="check" size={14} /> : null}
@@ -157,6 +142,28 @@ export const PlaybackSettings = component$<PlaybackSettingsProps>((props) => {
           })}
         </div>
       </div>
+      <button
+        type="button"
+        role="menuitemcheckbox"
+        aria-checked={props.keepPlaying}
+        class={{
+          "playback-settings-option": true,
+          selected: props.keepPlaying,
+        }}
+        onClick$={() => props.onKeepPlaying$()}
+      >
+        <span class="playback-settings-copy">
+          <span class="playback-settings-name">
+            Keep playing on other pages
+          </span>
+          <span class="playback-settings-detail">
+            Shows a small player while you browse.
+          </span>
+        </span>
+        <span class="playback-settings-check" aria-hidden="true">
+          {props.keepPlaying ? <Icon name="check" size={14} /> : null}
+        </span>
+      </button>
     </div>
   );
 });

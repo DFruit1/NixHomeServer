@@ -61,7 +61,7 @@ export const CollectionViewControl = component$<{
   onChange$: QRL<(value: CollectionView) => void>;
   /** Hide the visible "View" caption where space is tight; the select keeps its accessible name. */
   hideCaption?: boolean;
-  /** Show the current view as an icon (plus tile count) over the native picker. */
+  /** Show the current layout as a short named chip over the native picker. */
   compact?: boolean;
 }>((props) => {
   const select = (
@@ -82,14 +82,17 @@ export const CollectionViewControl = component$<{
   if (props.compact) {
     const tiles = props.value.startsWith("tiles-");
     const current = collectionViews.find(([value]) => value === props.value);
+    // "3 per row" reads as a layout setting, where a bare grid icon and
+    // number read like a photo count.
     return (
       <label class="collection-view-compact" title={current?.[1]}>
-        <Icon name={tiles ? "grid" : "list"} size={20} />
-        {tiles && (
-          <span class="collection-view-count" aria-hidden="true">
-            {props.value.slice("tiles-".length)}
-          </span>
-        )}
+        <Icon name={tiles ? "grid" : "list"} size={18} />
+        <span class="collection-view-current" aria-hidden="true">
+          {tiles
+            ? `${props.value.slice("tiles-".length)} per row`
+            : current?.[1]}
+        </span>
+        <Icon name="chevron-down" size={14} />
         {select}
       </label>
     );

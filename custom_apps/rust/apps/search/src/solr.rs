@@ -45,6 +45,10 @@ pub struct SolrDocument {
     pub incidental: String,
     /// Mailing-list mail, indexed as `mailing_list_b` for a mild demotion.
     pub mailing_list: bool,
+    pub favorite: bool,
+    pub important: bool,
+    pub text_photo: bool,
+    pub languages: Vec<String>,
     pub discovery: String,
     pub content_type: String,
     pub origin_url: String,
@@ -149,11 +153,18 @@ impl SolrDocument {
             .unwrap_or_default();
         // Sections of one work share a slot, so a search lists the work once
         // with its best-matching section instead of a page of its chapters.
-        let dedupe = match record
-            .metadata
-            .get(crate::extract::SECTION_OF)
-            .and_then(Value::as_str)
-        {
+        let family = record.metadata.get("work_family").and_then(Value::as_str);
+        let family = family.map(str::to_owned).or_else(|| {
+            (record.kind == "book")
+                .then(|| crate::extract::book_family(&record.title, &record.metadata))
+                .flatten()
+        });
+        let dedupe = match family.as_deref().or_else(|| {
+            record
+                .metadata
+                .get(crate::extract::SECTION_OF)
+                .and_then(Value::as_str)
+        }) {
             Some(work) => format!(
                 "{SECTIONS_PREFIX}{}",
                 crate::timeutil::sha256_hex(&[source_id, work])
@@ -175,6 +186,24 @@ impl SolrDocument {
             incidental: record.incidental_text.clone(),
             mailing_list: record.metadata.get(crate::extract::MAILING_LIST)
                 == Some(&Value::Bool(true)),
+            favorite: record.metadata["favorite"] == true,
+            important: record.metadata["important"] == true,
+            text_photo: record.metadata["text_photo"] == true,
+            languages: record.metadata["languages"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_lowercase)
+                        .collect()
+                })
+                .unwrap_or_else(|| {
+                    record.metadata["language"]
+                        .as_str()
+                        .map(|s| vec![s.to_lowercase()])
+                        .unwrap_or_default()
+                }),
             discovery,
             content_type: record.content_type.clone(),
             origin_url: record.origin_url.clone(),
@@ -205,6 +234,10 @@ impl SolrDocument {
             "file_path": self.file_path,
             "size_bytes": self.size_bytes,
             "dedupe_s": self.dedupe,
+            "favorite_b": self.favorite,
+            "important_b": self.important,
+            "text_photo_b": self.text_photo,
+            "language_ss": self.languages,
         });
         if let Some(created) = self.content_created {
             doc["content_created"] = json!(epoch_to_solr_date(created));
@@ -904,7 +937,7 @@ impl SolrClient {
         // everything; between comparable matches, prefer mail written to a
         // person. They stay findable and filterable as "Mailing list".
         let boost = format!(
-            "product({},if(query($mailingList),{MAILING_LIST_SCORE_FACTOR},1),if(query($photos),{PHOTO_SCORE_FACTOR},1))",
+            "product({},if(query($mailingList),{MAILING_LIST_SCORE_FACTOR},1),if(query($photos),{PHOTO_SCORE_FACTOR},1),if(query($favorites),1.08,1),if(query($importantMail),1.08,1),if(query($preferredLanguage),1.2,1))",
             coherence
                 .as_ref()
                 .map(|_| {
@@ -945,7 +978,10 @@ impl SolrClient {
             // scattered is demoted rather than excluded.
             ("boost", boost),
             ("mailingList", "mailing_list_b:true".to_string()),
-            ("photos", "kind_s:photo".to_string()),
+            ("photos", "kind_s:photo AND -text_photo_b:true".to_string()),
+            ("favorites", "favorite_b:true".to_string()),
+            ("importantMail", "important_b:true".to_string()),
+            ("preferredLanguage", preferred_language_query(query)),
             ("rows", rows.to_string()),
             ("start", offset.to_string()),
             // Identical copies share a content signature; show the best one
@@ -1715,4 +1751,37 @@ mod tests {
             r#"solr query rejected: {"error":{"msg":"boom","code":500}}"#
         ));
     }
+}
+
+/// Language is a preference, never a filter. Explicit language names override
+/// the English-library default; non-Latin queries receive no guessed preference.
+fn preferred_language_query(query: &str) -> String {
+    let words = crate::text::query_terms(query);
+    let language = [
+        ("english", "en eng english"),
+        ("dutch", "nl nld dut dutch"),
+        ("french", "fr fra fre french"),
+        ("german", "de deu ger german"),
+        ("spanish", "es spa spanish"),
+        ("italian", "it ita italian"),
+        ("portuguese", "pt por portuguese"),
+    ]
+    .into_iter()
+    .find(|(name, _)| words.iter().any(|word| word == name))
+    .map(|(_, codes)| codes)
+    .or_else(|| {
+        query
+            .chars()
+            .filter(|c| c.is_alphabetic())
+            .all(|c| c.is_ascii())
+            .then_some("en eng english")
+    });
+    language
+        .map(|codes| {
+            format!(
+                "kind_s:book AND language_ss:({})",
+                codes.split_whitespace().collect::<Vec<_>>().join(" OR ")
+            )
+        })
+        .unwrap_or_else(|| "id:__no_language_preference__".to_string())
 }

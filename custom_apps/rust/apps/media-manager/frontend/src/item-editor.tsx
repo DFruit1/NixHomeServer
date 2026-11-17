@@ -3,11 +3,12 @@ import {
   $,
   component$,
   type QRL,
+  type JSXOutput,
+  type Signal,
   useComputed$,
   useSignal,
   useStore,
   useTask$,
-  useVisibleTask$,
 } from "@builder.io/qwik";
 import { api, errorDetail, readableError } from "./api";
 import { useBackLayer } from "./back-layers";
@@ -25,16 +26,27 @@ import {
   metadataSourceChoices,
   METADATA_SECTIONS,
   lookupCreatorLabel,
+  metadataFieldApplies,
+  primaryLookupProviders,
+  profileForMediaType,
+  profilesForCategory,
+  PROVIDER_DESCRIPTIONS,
   type MetadataFieldChange,
   type MetadataSection,
   numericValue,
   profileForCategory,
-  profilesForCategory,
   renameReady,
   REVIEWED_METADATA_FIELDS,
   SOURCE_SELECTABLE_METADATA_FIELDS,
+  titleAndYearFromFileName,
 } from "./item-editor-helpers";
-import { revealWhenMounted } from "./reveal";
+import {
+  displayTitleFromFileName,
+  friendlyAppName,
+  languageChoices,
+  friendlyPath,
+  languageName,
+} from "./display-names";
 import { ObservationStructuredDetails } from "./metadata-observation-details";
 import {
   activeMetadataMatchSelection,
@@ -76,9 +88,11 @@ import {
 import { parseTvEpisodeFilename } from "./root-routing";
 import {
   mediaKindForMediaType,
+  mediaTypeOptions,
   supportsMediaAction,
 } from "./media-capabilities";
 import { SubdlPanel } from "./subdl-panel";
+import { providerCatalog } from "./source-setup";
 import { SubtitleView } from "./subtitle-view";
 import type {
   CatalogItem,
@@ -270,7 +284,63 @@ function updateMetadataDraftField(
   markMetadataDraftDirty(metadata, dashboard);
 }
 
-export type EditorCommandAction = "" | "metadata";
+/** Default the rename profile from the metadata media type; the rename
+ * section's own movie/TV choice can still override it. */
+function syncRenameProfile(
+  state: DashboardState,
+  mediaType: string,
+  category?: string,
+): void {
+  const profile = profileForMediaType(mediaType, category);
+  if (state.editProfile === profile) return;
+  state.editProfile = profile;
+  state.preview = undefined;
+}
+
+type RenameFields = Pick<
+  DashboardState,
+  | "editProfile"
+  | "editTitle"
+  | "editYear"
+  | "editCreator"
+  | "editCollection"
+  | "editSeason"
+  | "editEpisode"
+  | "editEpisodeTitle"
+  | "editTrack"
+  | "editDisc"
+>;
+
+const VIDEO_SERIES_TYPES = ["season", "episode"];
+
+// Sources that never need an account or key.
+const PUBLIC_LOOKUP_SOURCES: string[] = [
+  "wikidata",
+  "audnexus",
+  "thediscdb",
+  "tvmaze",
+  "anilist",
+  "deezer",
+];
+
+const RENAME_FIELDS = [
+  "editProfile",
+  "editTitle",
+  "editYear",
+  "editCreator",
+  "editCollection",
+  "editSeason",
+  "editEpisode",
+  "editEpisodeTitle",
+  "editTrack",
+  "editDisc",
+] as const;
+
+function renameFields(state: DashboardState): RenameFields {
+  return Object.fromEntries(
+    RENAME_FIELDS.map((field) => [field, state[field]]),
+  ) as RenameFields;
+}
 
 export const ItemEditor = component$<{
   state: DashboardState;
@@ -281,13 +351,14 @@ export const ItemEditor = component$<{
     relativePath: string;
   };
   close$?: QRL<() => void>;
-  command?: { action: EditorCommandAction; revision: number };
   showIdentity?: boolean;
   /** Server-provisioned folders keep their name and metadata fixed. */
   readOnly?: boolean;
+  /** Receives the saved metadata title so the library header can lead with
+   * it; empty while unknown. */
+  savedTitle?: Signal<string>;
 }>((props) => {
   const section = useSignal<MetadataSection>("basics");
-  const cardRef = useSignal<HTMLElement>();
   const subtitlesOpen = useSignal(false);
   const writePortable = useSignal(true);
   const selectedItem = selectedCatalogItem(props.state);
@@ -375,6 +446,27 @@ export const ItemEditor = component$<{
     draftSessionRevision: 0,
   });
 
+  // Rename fields as they were when editing began, so Stop editing and
+  // Discard changes undo them along with the metadata fields.
+  const renameSnapshot = useStore<{ fields?: RenameFields }>({});
+
+  // Lookup sources that still need an account or key. Shares the one
+  // in-flight catalog request with the rows' "Needs setup" links.
+  const lookupSetup = useStore<{ needsSetup: string[] }>({ needsSetup: [] });
+  useTask$(() => {
+    void providerCatalog()
+      .then((catalog) => {
+        lookupSetup.needsSetup = catalog.providers
+          .filter(
+            (provider) =>
+              provider.account.state === "notConfigured" &&
+              provider.canConfigure,
+          )
+          .map((provider) => provider.id);
+      })
+      .catch(() => undefined);
+  });
+
   const removeAction = useStore<{
     planning: boolean;
     confirming: boolean;
@@ -424,11 +516,11 @@ export const ItemEditor = component$<{
         metadata.draftRevision !== draftRevision
       ) {
         props.state.notice =
-          "The file was queued for the library tombstone. Newer draft edits remain unsaved, or a newer selection was left in place.";
+          "The file was queued to move to the Removed folder. Newer draft edits remain unsaved, or a newer selection was left in place.";
         return;
       }
       props.state.notice =
-        "The file was moved to the library tombstone; it will leave the library after the next refresh.";
+        "The file was moved to the Removed folder; it will leave the library after the next refresh.";
       props.state.metadataDraftDirty = false;
       props.state.selectedItemId = "";
     } catch (error) {
@@ -471,9 +563,11 @@ export const ItemEditor = component$<{
     const item = props.folder ? undefined : selectedCatalogItem(props.state);
     metadata.itemId = selectionKey;
     metadata.isDraft = false;
+    if (selectionChanged && props.savedTitle) props.savedTitle.value = "";
     if (selectionChanged) {
       metadata.pendingPlanId = "";
       metadata.pendingConsumers = [];
+      renameSnapshot.fields = undefined;
     }
     metadata.planning = false;
     metadata.confirming = false;
@@ -495,11 +589,9 @@ export const ItemEditor = component$<{
       (props.folder?.relativePath ?? item?.relativePath)?.split("/").at(-1) ??
       "";
     const tvEpisode = parseTvEpisodeFilename(filename);
-    metadata.title =
-      tvEpisode?.title ??
-      filename.replace(/\.[^.]+$/, "").replace(/ \([0-9]{4}\)$/, "");
-    metadata.year =
-      tvEpisode?.year ?? filename.match(/ \(([0-9]{4})\)$/)?.[1] ?? "";
+    const fromFileName = titleAndYearFromFileName(filename);
+    metadata.title = tvEpisode?.title ?? fromFileName.title;
+    metadata.year = tvEpisode?.year ?? fromFileName.year;
     metadata.season = tvEpisode?.season ?? "";
     metadata.episode = tvEpisode?.episode ?? "";
     metadata.episodeTitle = tvEpisode?.episodeTitle ?? "";
@@ -634,6 +726,16 @@ export const ItemEditor = component$<{
       metadata.lookupArtist = metadata.authors;
       metadata.lookupTitle = metadata.title;
       metadata.baseline = normalizedMetadataValues(metadata);
+      if (props.savedTitle)
+        props.savedTitle.value = details.title ? String(details.title) : "";
+      // The rename profile follows the media type; there is no second
+      // control for it.
+      if (!props.folder)
+        syncRenameProfile(
+          props.state,
+          metadata.mediaType,
+          selectedRoot?.category,
+        );
     } catch (error) {
       const visibleSelectionKey = props.folder
         ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
@@ -656,27 +758,20 @@ export const ItemEditor = component$<{
     }
   });
 
-  // eslint-disable-next-line qwik/no-use-visible-task -- revealing the editor needs the DOM
-  useVisibleTask$(({ track }) => {
-    const revision = track(() => props.command?.revision ?? 0);
-    const action = track(() => props.command?.action);
-    if (!revision || action !== "metadata") return;
-    // Keep the editor heading (and its Edit button) below the sticky
-    // library identity header when the card scrolls into view.
-    const card = cardRef.value;
-    const stickyHeader = card?.parentElement?.querySelector<HTMLElement>(
-      ":scope > .library-selection-hero",
-    );
-    if (card && stickyHeader)
-      card.style.scrollMarginTop = `${stickyHeader.offsetHeight + 12}px`;
-    revealWhenMounted(() => cardRef.value);
-  });
-
   // Returns false when the draft stays open (queued, or the user kept it).
   const stopMetadataDraft = $(() => {
     if (!metadata.isDraft) return true;
-    if (metadata.confirming) return false;
-    if (!allowMetadataDraftDiscard(metadata.isDirty)) return false;
+    if (metadata.confirming || props.state.confirming) return false;
+    const snapshot = renameSnapshot.fields;
+    const renameDirty = Boolean(
+      snapshot &&
+        RENAME_FIELDS.some((field) => snapshot[field] !== props.state[field]),
+    );
+    if (!allowMetadataDraftDiscard(metadata.isDirty || renameDirty))
+      return false;
+    if (snapshot) Object.assign(props.state, snapshot);
+    renameSnapshot.fields = undefined;
+    props.state.preview = undefined;
     metadata.isDraft = false;
     metadata.draftRevision += 1;
     metadata.draftSessionRevision += 1;
@@ -696,6 +791,7 @@ export const ItemEditor = component$<{
       return;
     }
     metadata.isDraft = true;
+    renameSnapshot.fields = renameFields(props.state);
     metadata.draftSessionRevision += 1;
     props.state.metadataDraftRevision += 1;
   });
@@ -847,7 +943,7 @@ export const ItemEditor = component$<{
         return;
       if (metadata.draftSessionRevision !== draftSessionRevision) {
         props.state.notice =
-          "An earlier metadata preview was added to the mutation queue. The current draft or inspection was left unchanged.";
+          "An earlier preview is being saved. Your current changes were left as they are.";
         return;
       }
       metadata.pendingPlanId = preview.id;
@@ -861,8 +957,8 @@ export const ItemEditor = component$<{
         ).length > 0;
       props.state.metadataDraftDirty = metadata.isDirty;
       props.state.notice = metadata.isDirty
-        ? "The previewed metadata update was added to the mutation queue. Newer draft edits remain unsaved."
-        : "The portable metadata update was added to the mutation queue. Refresh the affected app after the broker finishes.";
+        ? "The previewed changes are being saved. Newer edits are not saved yet."
+        : "The changes are being saved. Refresh the apps that show this item once they finish.";
       metadata.previewSelectionKey = "";
       metadata.preview = undefined;
       metadata.previewChanges = [];
@@ -899,7 +995,7 @@ export const ItemEditor = component$<{
     if (consumers.length === 0) return;
     metadata.propagating = true;
     props.state.error = "";
-    props.state.notice = "Waiting for the sidecar write to finish…";
+    props.state.notice = "Waiting for the changes to be saved…";
     try {
       let planState = "";
       for (let attempt = 0; attempt < 60; attempt += 1) {
@@ -909,15 +1005,15 @@ export const ItemEditor = component$<{
         planState = status.state;
         if (planState === "completed") break;
         if (planState === "failed")
-          throw new Error(status.error || "The sidecar write failed.");
+          throw new Error(status.error || "Saving the changes failed.");
         await wait(500);
       }
       if (planState !== "completed")
         throw new Error(
-          "The sidecar write is still queued. Try Refresh and verify again shortly.",
+          "The changes are still waiting to be saved. Try Refresh and verify again shortly.",
         );
       for (const consumer of consumers) {
-        props.state.notice = `Refreshing ${consumer.label}…`;
+        props.state.notice = `Refreshing ${friendlyAppName(consumer.id, consumer.label)}…`;
         await api(`/integrations/${encodeURIComponent(consumer.id)}/refresh`, {
           method: "POST",
         });
@@ -930,18 +1026,21 @@ export const ItemEditor = component$<{
           if (refreshState === "succeeded") break;
           if (refreshState === "failed")
             throw new Error(
-              refresh.message || `${consumer.label} refresh failed.`,
+              refresh.message ||
+                `${friendlyAppName(consumer.id, consumer.label)} refresh failed.`,
             );
           await wait(1000);
         }
         if (refreshState !== "succeeded")
-          throw new Error(`${consumer.label} is still refreshing.`);
+          throw new Error(
+            `${friendlyAppName(consumer.id, consumer.label)} is still refreshing.`,
+          );
       }
       metadata.reloadKey += 1;
       metadata.pendingPlanId = "";
       metadata.pendingConsumers = [];
       props.state.notice =
-        "Refresh completed. Current application metadata has been queried again for comparison.";
+        "Refresh completed. The apps' details were read again for comparison.";
     } catch (error) {
       props.state.error = readableError(error);
       props.state.errorDetail = errorDetail(error);
@@ -1399,6 +1498,7 @@ export const ItemEditor = component$<{
     const selectionCount =
       fieldEntries.length + (Object.keys(patch.providerIds).length > 0 ? 1 : 0);
     if (selectionCount === 0) return;
+    if (!metadata.isDraft) renameSnapshot.fields = renameFields(props.state);
     metadata.isDraft = true;
     for (const [field, value] of fieldEntries) metadata[field] = value;
     metadata.providerIds = mergeMetadataProviderIds(
@@ -1462,6 +1562,21 @@ export const ItemEditor = component$<{
   const sourceChoices = metadata.isDraft
     ? metadataSourceChoices(metadata.observations, normalizedDraftValues)
     : [];
+  // Metadata fields and the rename fields share one Edit mode. When Edit
+  // cannot be used (no writable metadata target), renaming stays open.
+  const showEditButton = Boolean(
+    props.state.session?.canEdit && !props.readOnly && canEditPortableMetadata,
+  );
+  const renameProfiles = profilesForCategory(selectedRoot?.category);
+  const renameLocked =
+    showEditButton && portableWriteAvailable && !metadata.isDraft;
+  const renameSnapshotFields = renameSnapshot.fields;
+  const renameDirty = Boolean(
+    renameSnapshotFields &&
+      RENAME_FIELDS.some(
+        (field) => renameSnapshotFields[field] !== props.state[field],
+      ),
+  );
   const canRefreshAndVerify = Boolean(
     metadata.pendingPlanId &&
       metadata.pendingConsumers.some(
@@ -1469,12 +1584,15 @@ export const ItemEditor = component$<{
           consumer.available && consumer.effect !== "native-podcast-metadata",
       ),
   );
-  const metadataSources = (
-    <>
-      {["movie", "series", "season", "episode"].includes(
-        metadata.mediaType,
-      ) && (
+  const canEditSession = props.state.session?.canEdit ?? false;
+  const mutationMode = props.state.status?.mutationMode ?? "read-only";
+  const lookupRows: Array<{ id: string; row: JSXOutput }> = [];
+  if (["movie", "series", "season", "episode"].includes(metadata.mediaType))
+    lookupRows.push({
+      id: "tmdb",
+      row: (
         <TmdbPanel
+          key="tmdb"
           itemId={props.folder ? "" : metadata.itemId}
           itemMediaType={metadata.mediaType}
           season={
@@ -1493,45 +1611,60 @@ export const ItemEditor = component$<{
           candidates={metadata.tmdbCandidates}
           loading={metadata.tmdbLoading}
           error={metadata.tmdbError}
-          canEdit={props.state.session?.canEdit ?? false}
-          mutationMode={props.state.status?.mutationMode ?? "read-only"}
+          canEdit={canEditSession}
+          mutationMode={mutationMode}
           onQuery$={setTmdbQuery}
           onKind$={setTmdbKind}
           onSearch$={lookupTmdb}
           onCompare$={compareTmdbCandidate}
         />
-      )}
-      {["book", "audiobook"].includes(metadata.mediaType) && !props.folder && (
+      ),
+    });
+  if (["book", "audiobook"].includes(metadata.mediaType) && !props.folder) {
+    lookupRows.push({
+      id: "open-library",
+      row: (
         <OpenLibraryPanel
+          key="open-library"
           itemId={metadata.itemId}
-          mutationMode={props.state.status?.mutationMode ?? "read-only"}
+          mutationMode={mutationMode}
           query={metadata.openLibraryQuery}
           fallbackQuery={openLibraryFallbackQuery}
           candidates={metadata.openLibraryCandidates}
           loading={metadata.openLibraryLoading}
           error={metadata.openLibraryError}
-          canEdit={props.state.session?.canEdit ?? false}
+          canEdit={canEditSession}
           onQueryInput$={setOpenLibraryQuery}
           onSearch$={lookupOpenLibrary}
           onCompare$={compareOpenLibraryCandidate}
         />
-      )}
-      {["book", "audiobook"].includes(metadata.mediaType) && !props.folder && (
+      ),
+    });
+    lookupRows.push({
+      id: "google-books",
+      row: (
         <GoogleBooksPanel
+          key="google-books"
           itemId={metadata.itemId}
           fallbackQuery={openLibraryFallbackQuery}
-          canEdit={props.state.session?.canEdit ?? false}
-          mutationMode={props.state.status?.mutationMode ?? "read-only"}
+          canEdit={canEditSession}
+          mutationMode={mutationMode}
           onCompare$={compareGoogleBooksCandidate}
         />
-      )}
-      {metadata.mediaType === "music" && !props.folder && (
+      ),
+    });
+  }
+  if (metadata.mediaType === "music" && !props.folder)
+    lookupRows.push({
+      id: "musicbrainz",
+      row: (
         <MusicBrainzPanel
+          key="musicbrainz"
           itemId={metadata.itemId}
           available={musicbrainzAvailable}
           fingerprintAvailable={fingerprintAvailable}
-          canEdit={props.state.session?.canEdit ?? false}
-          mutationMode={props.state.status?.mutationMode ?? "read-only"}
+          canEdit={canEditSession}
+          mutationMode={mutationMode}
           mode={metadata.lookupMode}
           artist={metadata.lookupArtist}
           title={metadata.lookupTitle}
@@ -1544,33 +1677,33 @@ export const ItemEditor = component$<{
           onSearch$={lookupMusic}
           onCompare$={compareMusicCandidate}
         />
-      )}
-      {(metadata.mediaType === "music"
-        ? ["discogs", "deezer", "theaudiodb", "wikidata", "fanart"]
-        : metadata.mediaType === "audiobook"
-          ? ["audnexus", "isbndb", "wikidata"]
-          : metadata.mediaType === "book"
-            ? ["comic-vine", "anilist", "isbndb", "wikidata"]
-            : metadata.mediaType === "podcast"
-              ? ["podcast-index"]
-              : [
-                  "omdb",
-                  "tvdb",
-                  "tvmaze",
-                  "thediscdb",
-                  "anilist",
-                  "wikidata",
-                  "fanart",
-                ]
-      ).map((provider) => (
+      ),
+    });
+  for (const provider of (metadata.mediaType === "music"
+    ? ["discogs", "deezer", "theaudiodb", "wikidata", "fanart"]
+    : metadata.mediaType === "audiobook"
+      ? ["audnexus", "isbndb", "wikidata"]
+      : metadata.mediaType === "book"
+        ? ["comic-vine", "anilist", "isbndb", "wikidata"]
+        : metadata.mediaType === "podcast"
+          ? ["podcast-index"]
+          : [
+              "omdb",
+              "tvdb",
+              "tvmaze",
+              "thediscdb",
+              "anilist",
+              "wikidata",
+              "fanart",
+            ]) as AdditionalProviderCandidate["provider"][])
+    lookupRows.push({
+      id: provider,
+      row: (
         <AdditionalProviderPanel
           key={provider}
-          provider={provider as AdditionalProviderCandidate["provider"]}
-          name={
-            ADDITIONAL_PROVIDER_NAMES[
-              provider as AdditionalProviderCandidate["provider"]
-            ]
-          }
+          provider={provider}
+          name={ADDITIONAL_PROVIDER_NAMES[provider]}
+          description={PROVIDER_DESCRIPTIONS[provider]}
           itemKey={metadata.itemId}
           itemId={props.folder ? "" : metadata.itemId}
           fallbackQuery={
@@ -1593,35 +1726,69 @@ export const ItemEditor = component$<{
           fallbackArtist={metadata.authors}
           mediaType={metadata.mediaType}
           providerIds={metadata.providerIds}
-          canEdit={props.state.session?.canEdit ?? false}
-          mutationMode={props.state.status?.mutationMode ?? "read-only"}
-          publicSource={[
-            "wikidata",
-            "audnexus",
-            "thediscdb",
-            "tvmaze",
-            "anilist",
-            "deezer",
-          ].includes(provider)}
+          canEdit={canEditSession}
+          mutationMode={mutationMode}
+          publicSource={PUBLIC_LOOKUP_SOURCES.includes(provider)}
           inspectOnly={metadata.mediaType === "podcast"}
           nativeEditorUrl={
             metadata.consumers.find(
               (consumer) => consumer.id === "audiobookshelf",
-            )?.nativeUrl
+            )?.nativeUrl ?? undefined
           }
           onCompare$={compareAdditionalCandidate}
         />
-      ))}
+      ),
+    });
+  // Ready sources made for this media type come first; the rest, including
+  // any that still need setup, wait under "More sources".
+  const primaryProviders = primaryLookupProviders(metadata.mediaType);
+  const lookupReady = (id: string) =>
+    id === "musicbrainz"
+      ? musicbrainzAvailable
+      : !lookupSetup.needsSetup.includes(id);
+  const primaryLookupRows = lookupRows.filter(
+    (entry) => primaryProviders.includes(entry.id) && lookupReady(entry.id),
+  );
+  const moreLookupRows =
+    primaryLookupRows.length > 0
+      ? lookupRows.filter((entry) => !primaryLookupRows.includes(entry))
+      : [];
+  const metadataSources = (
+    <>
+      {(primaryLookupRows.length > 0 ? primaryLookupRows : lookupRows).map(
+        (entry) => entry.row,
+      )}
+      {moreLookupRows.length > 0 && (
+        <details class="source-accordion more-sources">
+          <summary class="source-accordion-summary">
+            <span class="source-accordion-title">More sources</span>
+            <span class="source-accordion-chevron">
+              <Icon name="chevron-down" size={16} />
+            </span>
+          </summary>
+          <div class="more-sources-body">
+            {moreLookupRows.map((entry) => entry.row)}
+          </div>
+        </details>
+      )}
     </>
   );
 
   const creatorLabel = lookupCreatorLabel(metadata.mediaType);
+  // A field that does not fit the media type still shows while it holds a
+  // value (say a provider set a premiere date for music), so it can be seen,
+  // edited or cleared.
+  const applies = (field: Parameters<typeof metadataFieldApplies>[0]) =>
+    metadataFieldApplies(field, metadata.mediaType) ||
+    Boolean(metadata[field].trim() || metadata.baseline[field]);
+  const showAdvancedAuthors = !creatorLabel && applies("authors");
+  const showPeople =
+    showAdvancedAuthors || applies("narrators") || applies("writers");
 
   return (
     <section
       class="panel editor-card"
       aria-label={`Metadata for ${selectedFileName}`}
-      ref={cardRef}
     >
       <div class="editor-heading">
         <div class="editor-heading-main">
@@ -1636,31 +1803,32 @@ export const ItemEditor = component$<{
               <span class="editor-file-icon" aria-hidden="true">
                 <Icon name={props.folder ? "folder" : "file"} size={18} />
               </span>
-              <strong>{selectedFileName}</strong>
+              <strong>
+                {(!metadata.loadingDetails && metadata.baseline.title) ||
+                  displayTitleFromFileName(selectedFileName)}
+              </strong>
             </div>
           )}
         </div>
         <div class="editor-heading-actions">
-          {props.state.session?.canEdit &&
-            !props.readOnly &&
-            canEditPortableMetadata && (
-              <button
-                class={metadata.isDraft ? "secondary-button" : "primary-button"}
-                type="button"
-                disabled={
-                  !portableWriteAvailable ||
-                  metadata.loadingDetails ||
-                  metadata.confirming
-                }
-                onClick$={toggleMetadataDraft}
-              >
-                {metadata.isDraft
-                  ? metadata.isDirty
-                    ? "Discard changes"
-                    : "Stop editing"
-                  : "Edit"}
-              </button>
-            )}
+          {showEditButton && (
+            <button
+              class={metadata.isDraft ? "secondary-button" : "primary-button"}
+              type="button"
+              disabled={
+                !portableWriteAvailable ||
+                metadata.loadingDetails ||
+                metadata.confirming
+              }
+              onClick$={toggleMetadataDraft}
+            >
+              {metadata.isDraft
+                ? metadata.isDirty || renameDirty
+                  ? "Discard changes"
+                  : "Stop editing"
+                : "Edit"}
+            </button>
+          )}
           <button
             class="close-button"
             type="button"
@@ -1701,31 +1869,38 @@ export const ItemEditor = component$<{
           {section.value === "basics" && (
             <>
               <h4 class="metadata-group-heading">
-                Identity <small>Used to search providers</small>
+                Details used to find this online
               </h4>
               <label class="metadata-lookup-field">
                 <span>Media type</span>
                 <select
                   value={metadata.mediaType}
                   disabled={Boolean(props.folder)}
-                  onChange$={(_, select) =>
+                  onChange$={(_, select) => {
                     updateMetadataDraftField(
                       metadata,
                       props.state,
                       "mediaType",
                       select.value,
-                    )
-                  }
+                    );
+                    if (!props.folder)
+                      syncRenameProfile(
+                        props.state,
+                        select.value,
+                        selectedRoot?.category,
+                      );
+                  }}
                 >
-                  <option value="movie">Movie</option>
-                  <option value="collection">Collection</option>
-                  <option value="series">TV series</option>
-                  <option value="season">TV season</option>
-                  <option value="episode">TV episode</option>
-                  <option value="music">Music</option>
-                  <option value="audiobook">Audiobook</option>
-                  <option value="podcast">Podcast</option>
-                  <option value="book">Book</option>
+                  {mediaTypeOptions(
+                    props.folder
+                      ? undefined
+                      : selectedItem?.mediaKind || metadata.mediaKind,
+                    metadata.mediaType,
+                  ).map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label
@@ -1837,21 +2012,27 @@ export const ItemEditor = component$<{
                   </label>
                 </>
               )}
-              <h4 class="metadata-group-heading">Details</h4>
+              <h4 class="metadata-group-heading">Other details</h4>
               <label>
-                <span>Language code</span>
-                <input
+                <span>Language</span>
+                <select
                   value={metadata.language}
-                  maxLength={15}
-                  onInput$={(_, input) =>
+                  onChange$={(_, select) =>
                     updateMetadataDraftField(
                       metadata,
                       props.state,
                       "language",
-                      input.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
+                      select.value,
                     )
                   }
-                />
+                >
+                  <option value="">Not set</option>
+                  {languageChoices(metadata.language).map((language) => (
+                    <option key={language.code} value={language.code}>
+                      {language.name}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label class="title-input">
                 <span>Genres</span>
@@ -1872,8 +2053,8 @@ export const ItemEditor = component$<{
           )}
           {section.value === "advanced" && (
             <>
-              <h4 class="metadata-group-heading">People</h4>
-              {!creatorLabel && (
+              {showPeople && <h4 class="metadata-group-heading">People</h4>}
+              {showAdvancedAuthors && (
                 <label>
                   <span>Authors / artists</span>
                   <input
@@ -1890,65 +2071,79 @@ export const ItemEditor = component$<{
                   />
                 </label>
               )}
-              <label>
-                <span>Narrators</span>
-                <input
-                  placeholder="Comma-separated"
-                  value={metadata.narrators}
-                  onInput$={(_, input) =>
-                    updateMetadataDraftField(
-                      metadata,
-                      props.state,
-                      "narrators",
-                      input.value,
-                    )
-                  }
-                />
-              </label>
-              <label class="title-input">
-                <span>Writers</span>
-                <input
-                  placeholder="Comma-separated"
-                  value={metadata.writers}
-                  onInput$={(_, input) =>
-                    updateMetadataDraftField(
-                      metadata,
-                      props.state,
-                      "writers",
-                      input.value,
-                    )
-                  }
-                />
-              </label>
-              <h4 class="metadata-group-heading">Series</h4>
-              <label>
-                <span>Series</span>
-                <input
-                  value={metadata.series}
-                  onInput$={(_, input) =>
-                    updateMetadataDraftField(
-                      metadata,
-                      props.state,
-                      "series",
-                      input.value,
-                    )
-                  }
-                />
-              </label>
-              <label>
-                <span>Volume</span>
-                <input
-                  value={metadata.volumeNumber}
-                  onInput$={(_, input) =>
-                    updateMetadataDraftField(
-                      metadata,
-                      props.state,
-                      "volumeNumber",
-                      input.value,
-                    )
-                  }
-                />
-              </label>
+              {applies("narrators") && (
+                <label>
+                  <span>Narrators</span>
+                  <input
+                    placeholder="Comma-separated"
+                    value={metadata.narrators}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "narrators",
+                        input.value,
+                      )
+                    }
+                  />
+                </label>
+              )}
+              {applies("writers") && (
+                <label class="title-input">
+                  <span>Writers</span>
+                  <input
+                    placeholder="Comma-separated"
+                    value={metadata.writers}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "writers",
+                        input.value,
+                      )
+                    }
+                  />
+                </label>
+              )}
+              {applies("series") && (
+                <>
+                  <h4 class="metadata-group-heading">Series</h4>
+                  <label>
+                    <span>
+                      {VIDEO_SERIES_TYPES.includes(metadata.mediaType)
+                        ? "Show"
+                        : "Series"}
+                    </span>
+                    <input
+                      value={metadata.series}
+                      onInput$={(_, input) =>
+                        updateMetadataDraftField(
+                          metadata,
+                          props.state,
+                          "series",
+                          input.value,
+                        )
+                      }
+                    />
+                  </label>
+                  {applies("volumeNumber") && (
+                    <label>
+                      <span>Volume</span>
+                      <input
+                        value={metadata.volumeNumber}
+                        onInput$={(_, input) =>
+                          updateMetadataDraftField(
+                            metadata,
+                            props.state,
+                            "volumeNumber",
+                            input.value,
+                          )
+                        }
+                      />
+                    </label>
+                  )}
+                </>
+              )}
               <h4 class="metadata-group-heading">Release &amp; ratings</h4>
               <label>
                 <span>Publisher / studio</span>
@@ -1964,82 +2159,92 @@ export const ItemEditor = component$<{
                   }
                 />
               </label>
-              <label>
-                <span>Premiere date</span>
-                <input
-                  type="date"
-                  value={metadata.premiereDate}
-                  onInput$={(_, input) =>
-                    updateMetadataDraftField(
-                      metadata,
-                      props.state,
-                      "premiereDate",
-                      input.value,
-                    )
-                  }
-                />
-              </label>
-              <label>
-                <span>Runtime</span>
-                <input
-                  placeholder="Minutes"
-                  value={metadata.runtimeMinutes}
-                  inputMode="numeric"
-                  onInput$={(_, input) =>
-                    updateMetadataDraftField(
-                      metadata,
-                      props.state,
-                      "runtimeMinutes",
-                      numericValue(input.value, 6),
-                    )
-                  }
-                />
-              </label>
-              <label>
-                <span>Official rating</span>
-                <input
-                  value={metadata.officialRating}
-                  maxLength={64}
-                  onInput$={(_, input) =>
-                    updateMetadataDraftField(
-                      metadata,
-                      props.state,
-                      "officialRating",
-                      input.value,
-                    )
-                  }
-                />
-              </label>
-              <label>
-                <span>Community rating</span>
-                <input
-                  placeholder="0–10"
-                  value={metadata.communityRating}
-                  inputMode="decimal"
-                  onInput$={(_, input) =>
-                    updateMetadataDraftField(
-                      metadata,
-                      props.state,
-                      "communityRating",
-                      input.value.replace(/[^0-9.]/g, "").slice(0, 5),
-                    )
-                  }
-                />
-              </label>
-              <label>
-                <span>ISBN</span>
-                <input
-                  value={metadata.isbn}
-                  onInput$={(_, input) =>
-                    updateMetadataDraftField(
-                      metadata,
-                      props.state,
-                      "isbn",
-                      input.value,
-                    )
-                  }
-                />
-              </label>
+              {applies("premiereDate") && (
+                <label>
+                  <span>Premiere date</span>
+                  <input
+                    type="date"
+                    value={metadata.premiereDate}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "premiereDate",
+                        input.value,
+                      )
+                    }
+                  />
+                </label>
+              )}
+              {applies("runtimeMinutes") && (
+                <label>
+                  <span>Runtime</span>
+                  <input
+                    placeholder="Minutes"
+                    value={metadata.runtimeMinutes}
+                    inputMode="numeric"
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "runtimeMinutes",
+                        numericValue(input.value, 6),
+                      )
+                    }
+                  />
+                </label>
+              )}
+              {applies("officialRating") && (
+                <label>
+                  <span>Official rating</span>
+                  <input
+                    value={metadata.officialRating}
+                    maxLength={64}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "officialRating",
+                        input.value,
+                      )
+                    }
+                  />
+                </label>
+              )}
+              {applies("communityRating") && (
+                <label>
+                  <span>Community rating</span>
+                  <input
+                    placeholder="0–10"
+                    value={metadata.communityRating}
+                    inputMode="decimal"
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "communityRating",
+                        input.value.replace(/[^0-9.]/g, "").slice(0, 5),
+                      )
+                    }
+                  />
+                </label>
+              )}
+              {applies("isbn") && (
+                <label>
+                  <span>ISBN</span>
+                  <input
+                    value={metadata.isbn}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "isbn",
+                        input.value,
+                      )
+                    }
+                  />
+                </label>
+              )}
               <label class="description-input">
                 <span>Description</span>
                 <textarea
@@ -2154,7 +2359,9 @@ export const ItemEditor = component$<{
                       <ul>
                         {metadata.consumers.map((consumer) => (
                           <li key={consumer.id}>
-                            <strong>{consumer.label}:</strong>{" "}
+                            <strong>
+                              {friendlyAppName(consumer.id, consumer.label)}:
+                            </strong>{" "}
                             {consumer.sourcePriority}
                           </li>
                         ))}
@@ -2269,7 +2476,7 @@ export const ItemEditor = component$<{
           metadata.audioStreams.length > 0 ||
           metadata.subtitleStreams.length > 0 ||
           Object.keys(metadata.providerIds).length > 0) && (
-          <div class="editor-facts" aria-label="Jellyfin media facts">
+          <div class="editor-facts" aria-label="Media facts">
             <h5>Media facts</h5>
             <dl>
               {metadata.videoStreams.map((stream, index) => (
@@ -2291,7 +2498,9 @@ export const ItemEditor = component$<{
                   <dt>Audio</dt>
                   <dd>
                     {[
-                      stream.language ? String(stream.language) : "",
+                      stream.language
+                        ? languageName(String(stream.language))
+                        : "",
                       stream.codec ? String(stream.codec) : "",
                       stream.channelLayout ? String(stream.channelLayout) : "",
                     ]
@@ -2306,13 +2515,13 @@ export const ItemEditor = component$<{
                   <dd>
                     {[
                       stream.language
-                        ? String(stream.language)
+                        ? languageName(String(stream.language))
                         : "Unknown language",
                       stream.codec ? String(stream.codec) : "",
                       stream.title ? String(stream.title) : "",
                       stream.isDefault ? "default" : "",
                       stream.isForced ? "forced" : "",
-                      stream.isHearingImpaired ? "SDH/CC" : "",
+                      stream.isHearingImpaired ? "describes sounds" : "",
                     ]
                       .filter(Boolean)
                       .join(" · ")}
@@ -2350,7 +2559,9 @@ export const ItemEditor = component$<{
                     {observation.survivesRescan && <span>Survives rescan</span>}
                     {observation.locked === true && <span>Locked in app</span>}
                     {observation.consumedBy?.map((consumer) => (
-                      <span key={consumer}>Read by {consumer}</span>
+                      <span key={consumer}>
+                        Read by {friendlyAppName(consumer)}
+                      </span>
                     ))}
                   </div>
                   <dl>
@@ -2580,27 +2791,29 @@ export const ItemEditor = component$<{
                     roots={props.state.roots}
                     session={props.state.session}
                     status={props.state.status}
-                  />
-                  <SubdlPanel
-                    itemId={props.state.selectedItemId}
-                    title={metadata.title}
-                    mediaType={metadata.mediaType}
-                    providerIds={metadata.providerIds}
-                    season={
-                      metadata.season === ""
-                        ? undefined
-                        : Number(metadata.season)
-                    }
-                    episode={
-                      metadata.episode === ""
-                        ? undefined
-                        : Number(metadata.episode)
-                    }
-                    canEdit={props.state.session?.canEdit ?? false}
-                    mutationMode={
-                      props.state.status?.mutationMode ?? "read-only"
-                    }
-                  />
+                  >
+                    <SubdlPanel
+                      q:slot="online-sources"
+                      itemId={props.state.selectedItemId}
+                      title={metadata.title}
+                      mediaType={metadata.mediaType}
+                      providerIds={metadata.providerIds}
+                      season={
+                        metadata.season === ""
+                          ? undefined
+                          : Number(metadata.season)
+                      }
+                      episode={
+                        metadata.episode === ""
+                          ? undefined
+                          : Number(metadata.episode)
+                      }
+                      canEdit={props.state.session?.canEdit ?? false}
+                      mutationMode={
+                        props.state.status?.mutationMode ?? "read-only"
+                      }
+                    />
+                  </SubtitleView>
                 </div>
               )}
             </section>
@@ -2611,25 +2824,27 @@ export const ItemEditor = component$<{
             aria-labelledby="file-organization-title"
           >
             <h4 id="file-organization-title">Rename this file</h4>
-            <div class="rename-fields">
-              <label class="profile-field">
-                <span>Media profile</span>
-                <select
-                  value={props.state.editProfile}
-                  onInput$={(_, input) => {
-                    props.state.editProfile = input.value as NamingProfile;
-                    props.state.preview = undefined;
-                  }}
-                >
-                  {profilesForCategory(selectedRoot?.category).map(
-                    (profile) => (
+            <fieldset class="rename-fields" disabled={renameLocked}>
+              {renameProfiles.length > 1 && (
+                <label class="profile-field">
+                  <span>Name it as</span>
+                  <select
+                    value={props.state.editProfile}
+                    onChange$={(_, select) => {
+                      // Only the file name changes; the metadata draft and
+                      // its Media type stay as they are.
+                      props.state.editProfile = select.value as NamingProfile;
+                      props.state.preview = undefined;
+                    }}
+                  >
+                    {renameProfiles.map((profile) => (
                       <option value={profile.id} key={profile.id}>
                         {profile.label}
                       </option>
-                    ),
-                  )}
-                </select>
-              </label>
+                    ))}
+                  </select>
+                </label>
+              )}
               <label class="title-field">
                 <span>Title</span>
                 <input
@@ -2767,9 +2982,9 @@ export const ItemEditor = component$<{
                 onClick$={props.previewRename$}
               >
                 <Icon name="scan" size={18} />
-                {props.state.planning ? "Preparing…" : "Preview organization"}
+                {props.state.planning ? "Preparing…" : "Preview new name"}
               </button>
-            </div>
+            </fieldset>
             {props.state.preview && (
               <div class="plan-preview">
                 <div class="path-change">
@@ -2813,8 +3028,15 @@ export const ItemEditor = component$<{
             <div class="editor-remove-confirm">
               <p>
                 The file will move to{" "}
-                <strong>
-                  {removeAction.preview.actions[0]?.destinationRelativePath}
+                <strong
+                  title={
+                    removeAction.preview.actions[0]?.destinationRelativePath
+                  }
+                >
+                  {friendlyPath(
+                    removeAction.preview.actions[0]?.destinationRelativePath ??
+                      "",
+                  )}
                 </strong>{" "}
                 and disappear from the library after the next refresh.
               </p>
@@ -2844,8 +3066,8 @@ export const ItemEditor = component$<{
                 {removeAction.planning ? "Preparing…" : "Remove from library"}
               </button>
               <p>
-                Moves this file to the library&apos;s <code>_Tombstone</code>{" "}
-                folder; nothing is deleted.
+                Moves it to a hidden Removed folder on the server. Nothing is
+                deleted, so it can be moved back.
               </p>
             </>
           )}

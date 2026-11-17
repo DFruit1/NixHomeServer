@@ -6,6 +6,7 @@ import type {
   MusicLookupMode,
 } from "./metadata-provider-candidates";
 import { RemoteArtwork } from "./remote-artwork";
+import { PROVIDER_DESCRIPTIONS } from "./item-editor-helpers";
 
 export const MusicBrainzPanel = component$<{
   itemId: string;
@@ -38,7 +39,13 @@ export const MusicBrainzPanel = component$<{
   return (
     <details class="musicbrainz-panel source-accordion">
       <summary class="source-accordion-summary">
-        <span class="source-accordion-title">MusicBrainz</span>
+        <span class="source-accordion-title">
+          MusicBrainz
+          <span class="source-accordion-note">
+            {" "}
+            — {PROVIDER_DESCRIPTIONS.musicbrainz}
+          </span>
+        </span>
         <span class="source-accordion-chevron">
           <Icon name="chevron-down" size={16} />
         </span>

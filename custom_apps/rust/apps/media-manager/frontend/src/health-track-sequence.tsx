@@ -162,9 +162,9 @@ export const HealthTrackSequence = component$<{
           throw new Error(result.error || `The plan was ${result.state}.`);
         queued = true;
       }
-      state.notice = `Track order queued for ${state.files.length} files. Check Activity for completion, then rescan the library and refresh your players.`;
+      state.notice = `Track order queued for ${state.files.length} files. Check Recent changes for completion, then rescan the library and refresh your players.`;
     } catch (error) {
-      state.error = `${queued ? "Track order was queued." : "Track order could not be confirmed."} ${readableError(error)} Check Activity before preparing another sequence.`;
+      state.error = `${queued ? "Track order was queued." : "Track order could not be confirmed."} ${readableError(error)} Check Recent changes before preparing another sequence.`;
     } finally {
       // A partial submission must never be silently resubmitted with stale item IDs.
       state.submitted = true;
@@ -422,7 +422,7 @@ export const HealthTrackSequence = component$<{
           </div>
           <div class="health-track-actions">
             {state.submitted ? (
-              <a href="?view=activity">View Activity</a>
+              <a href="?view=activity">View recent changes</a>
             ) : (
               <>
                 {props.canEdit ? (

@@ -10,6 +10,10 @@ import { Icon } from "./icon";
 import { NAV_ITEMS, type View } from "./root-types";
 import "./app-navigation.css";
 
+// The auth gateway answers this path on every protected host and ends the
+// single sign-on session (modules/Core_Modules/auth-gateway).
+export const SIGN_OUT_URL = "/oauth2/sign_out";
+
 // Ordered by how often each destination is used. The last two are
 // occasional setup tools, separated at the foot of the sidebar list.
 const navigationOrder: View[] = [
@@ -19,6 +23,7 @@ const navigationOrder: View[] = [
   "library",
   "health",
   "conversions",
+  "activity",
   "accounts",
   "refresh",
 ];
@@ -82,7 +87,7 @@ export const AppNavigation = component$<{ view: View }>((props) => {
           title={item.label}
         >
           <Icon name={item.icon} />
-          <span>{item.id === "library" ? "Library" : item.label}</span>
+          <span>{item.label}</span>
         </a>
       ))}
       <details
@@ -111,6 +116,11 @@ export const AppNavigation = component$<{ view: View }>((props) => {
               <span>{item.label}</span>
             </a>
           ))}
+          {/* Phones hide the sidebar footer and its user menu. */}
+          <a class="more-utility-start" href={SIGN_OUT_URL}>
+            <Icon name="arrow" />
+            <span>Sign out</span>
+          </a>
         </div>
       </details>
     </nav>

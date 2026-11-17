@@ -4,6 +4,7 @@ import type {
   View,
   IntegrationRefresh,
 } from "./root-types";
+import { stripProviderIdTags } from "./display-names";
 
 const YEAR_MATCHER = /\.[^.]+$/;
 
@@ -47,61 +48,70 @@ export function initialRouteFromSearch(search: string): RootProps {
   };
 }
 
-export function refreshPresentation(status?: IntegrationRefresh): {
+/** "just now", "12 min ago", "3 hr ago", then a short date and time. */
+export function formatLastRun(seconds: number, now = Date.now()): string {
+  const elapsed = Math.max(0, Math.round(now / 1000 - seconds));
+  if (elapsed < 60) return "just now";
+  if (elapsed < 3600) return `${Math.round(elapsed / 60)} min ago`;
+  if (elapsed < 86_400) return `${Math.round(elapsed / 3600)} hr ago`;
+  return new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    month: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(seconds * 1000));
+}
+
+/** What a refresh row says. An app that has never been refreshed says
+ * nothing; a finished refresh says when it last ran. */
+export function refreshPresentation(
+  status?: IntegrationRefresh,
+  now = Date.now(),
+): {
   label: string;
   detail: string;
-  action: string;
   busy: boolean;
   tone: "idle" | "pending" | "success" | "error";
 } {
+  const when =
+    status?.finishedAt !== undefined
+      ? ` ${formatLastRun(status.finishedAt, now)}`
+      : "";
   switch (status?.state) {
     case "queued":
       return {
-        label: "Queued",
-        detail: "Waiting to start.",
-        action: "Queued",
+        label: "Waiting to start…",
+        detail: "",
         busy: true,
         tone: "pending",
       };
     case "running":
-      return {
-        label: "Refreshing…",
-        detail: "Scanning its libraries.",
-        action: "Working…",
-        busy: true,
-        tone: "pending",
-      };
+      return { label: "Refreshing…", detail: "", busy: true, tone: "pending" };
     case "succeeded":
       return {
-        label: "Succeeded",
-        detail: status.message ?? "The refresh finished.",
-        action: "Refresh again",
+        label: `Last refreshed${when}`,
+        detail: "",
         busy: false,
         tone: "success",
       };
     case "failed":
       return {
-        label: "Failed",
-        detail: status.message ?? "The refresh did not complete.",
-        action: "Retry",
+        label: `Last refresh failed${when}`,
+        detail: status.message ?? "",
         busy: false,
         tone: "error",
       };
     default:
-      return {
-        label: "Ready",
-        detail: "",
-        action: "Refresh",
-        busy: false,
-        tone: "idle",
-      };
+      return { label: "", detail: "", busy: false, tone: "idle" };
   }
 }
 
 export function parseTvEpisodeFilename(
   filename: string,
 ): TvEpisodeFields | undefined {
-  const stem = filename.replace(YEAR_MATCHER, "");
+  // Provider tags such as `[tmdbid-799]` identify the show; they are never
+  // part of its title.
+  const stem = stripProviderIdTags(filename.replace(YEAR_MATCHER, ""));
   const match = stem.match(
     /^(.*?)\s*(?:-\s*)?[Ss]([0-9]{1,3})[Ee]([0-9]{1,4})(?:\s*-\s*|\s+)?(.*)$/,
   );

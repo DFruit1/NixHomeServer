@@ -1204,7 +1204,7 @@ async fn preview_item_metadata_sidecar(
             .rsplit_once('.')
             .map(|(stem, _)| stem)
             .unwrap_or(filename);
-        if split_episode_marker(stem).is_some() {
+        if crate::metadata::split_episode_marker(stem).is_some() {
             return ApiError::new(
                 StatusCode::CONFLICT,
                 "core_info_episode_unsupported",
@@ -1423,7 +1423,7 @@ async fn item_metadata_value(
     item: &CatalogItem,
     application_caches: Option<&ApplicationMetadataCaches>,
 ) -> Value {
-    let mut response = filename_metadata(item);
+    let mut response = crate::metadata::filename_metadata(&item.relative_path, item.media_kind);
     response["mediaKind"] = json!(item.media_kind);
     let mut observations = vec![filename_observation(&response)];
     let mut field_sources = initial_field_sources(&response, "filename");
@@ -2196,8 +2196,20 @@ pub(super) async fn folder_metadata(
         .rsplit('/')
         .next()
         .unwrap_or(&folder.relative_path);
-    let (title, year) = strip_trailing_year(folder_name);
+    let (folder_title, folder_ids) = crate::metadata::split_provider_id_tags(folder_name);
+    let (title, year) = crate::metadata::strip_trailing_year(&folder_title);
     let media_type = folder_media_type(&folder);
+    // A show or movie folder's own `[tmdbid-…]` tag names that show or movie.
+    // A folder classed as a movie inside a show's tree is not a film.
+    let in_show_tree = folder
+        .relative_path
+        .split('/')
+        .any(crate::metadata::is_show_tree_folder);
+    let provider_ids = if media_type == "series" || (media_type == "movie" && !in_show_tree) {
+        folder_ids
+    } else {
+        Default::default()
+    };
     let mut response = json!({
         "mediaType": media_type,
         "title": title,
@@ -2215,7 +2227,7 @@ pub(super) async fn folder_metadata(
         "runtimeMinutes": null,
         "officialRating": null,
         "communityRating": null,
-        "providerIds": {},
+        "providerIds": provider_ids,
         "videoStreams": [],
         "audioStreams": [],
         "subtitleStreams": [],
@@ -2440,111 +2452,6 @@ pub(super) async fn preview_folder_metadata_sidecar(
             error.into_response()
         }
     }
-}
-
-fn filename_metadata(item: &CatalogItem) -> Value {
-    let filename = item
-        .relative_path
-        .rsplit('/')
-        .next()
-        .unwrap_or(&item.relative_path);
-    let stem = filename
-        .rsplit_once('.')
-        .map(|(stem, _)| stem)
-        .unwrap_or(filename);
-    let mut title = stem.to_string();
-    let mut year = Value::Null;
-    let mut media_type = match item.media_kind {
-        MediaKind::Music => "music",
-        MediaKind::Audiobook => "audiobook",
-        MediaKind::Podcast => "podcast",
-        MediaKind::Book => "book",
-        _ => "movie",
-    };
-    let mut series = Value::Null;
-    let mut season = Value::Null;
-    let mut episode = Value::Null;
-    let mut episode_title = Value::Null;
-    if item.media_kind == MediaKind::Video {
-        if let Some((marker_start, marker_end)) = split_episode_marker(stem) {
-            media_type = "episode";
-            let marker = &stem[marker_start..marker_end];
-            let digits = marker.trim_start_matches(['S', 's']);
-            if let Some((season_text, episode_text)) = digits.split_once(['E', 'e']) {
-                season = season_text
-                    .parse::<u32>()
-                    .map(Value::from)
-                    .unwrap_or(Value::Null);
-                episode = episode_text
-                    .parse::<u32>()
-                    .map(Value::from)
-                    .unwrap_or(Value::Null);
-            }
-            let prefix = stem[..marker_start].trim().trim_end_matches('-').trim();
-            let suffix_title = stem[marker_end..].trim().trim_start_matches('-').trim();
-            let (series_title, parsed_year) = strip_trailing_year(prefix);
-            series = Value::String(series_title.to_string());
-            title = if suffix_title.is_empty() {
-                series_title.to_string()
-            } else {
-                suffix_title.to_string()
-            };
-            episode_title = Value::String(title.clone());
-            year = parsed_year.map(Value::from).unwrap_or(Value::Null);
-        } else {
-            let (parsed_title, parsed_year) = strip_trailing_year(stem);
-            title = parsed_title.to_string();
-            year = parsed_year.map(Value::from).unwrap_or(Value::Null);
-        }
-    }
-    json!({
-        "mediaType": media_type, "title": title, "year": year, "series": series,
-        "season": season, "episode": episode, "episodeTitle": episode_title,
-        "description": null, "publisher": null, "language": null, "genres": [],
-        "writers": [], "premiereDate": null, "runtimeMinutes": null,
-        "officialRating": null, "communityRating": null, "providerIds": {},
-        "videoStreams": [], "audioStreams": [], "subtitleStreams": [],
-        "sources": ["filename"]
-    })
-}
-
-fn split_episode_marker(stem: &str) -> Option<(usize, usize)> {
-    let bytes = stem.as_bytes();
-    for index in 0..bytes.len() {
-        if !matches!(bytes[index], b'S' | b's') {
-            continue;
-        }
-        let season_start = index + 1;
-        let mut cursor = season_start;
-        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() && cursor - season_start < 3 {
-            cursor += 1;
-        }
-        if cursor == season_start || cursor >= bytes.len() || !matches!(bytes[cursor], b'E' | b'e')
-        {
-            continue;
-        }
-        cursor += 1;
-        let episode_start = cursor;
-        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() && cursor - episode_start < 4 {
-            cursor += 1;
-        }
-        if cursor > episode_start {
-            return Some((index, cursor));
-        }
-    }
-    None
-}
-
-fn strip_trailing_year(value: &str) -> (&str, Option<u16>) {
-    if value.len() >= 7 && value.ends_with(')') {
-        let start = value.len() - 6;
-        if value.as_bytes().get(start) == Some(&b'(')
-            && let Ok(year) = value[start + 1..value.len() - 1].parse::<u16>()
-        {
-            return (value[..start].trim(), Some(year));
-        }
-    }
-    (value.trim(), None)
 }
 
 /// Parsed application-metadata caches keyed by file, validated against the

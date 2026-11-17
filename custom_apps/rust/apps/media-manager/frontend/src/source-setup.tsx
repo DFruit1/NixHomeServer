@@ -12,11 +12,11 @@ const PUBLIC_SOURCES = new Set([
 
 // Every source row in an open editor mounts together; share one in-flight
 // catalog request between them. Nothing is cached after it settles, so a key
-// saved on the Metadata sources page is reflected the next time the editor
+// saved on the Online services page is reflected the next time the editor
 // opens.
 let pendingCatalog: Promise<ProviderCatalogResponse> | undefined;
 
-function providerCatalog(): Promise<ProviderCatalogResponse> {
+export function providerCatalog(): Promise<ProviderCatalogResponse> {
   pendingCatalog ??= api<ProviderCatalogResponse>("/provider-accounts").finally(
     () => {
       pendingCatalog = undefined;

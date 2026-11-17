@@ -8,7 +8,7 @@ let
   # visible to it: no file paths, checksums, faces, sessions, keys or
   # settings.
   columns = {
-    asset = [ "id" "ownerId" "type" "originalFileName" "fileCreatedAt" "localDateTime" "deletedAt" "status" "visibility" ];
+    asset = [ "id" "ownerId" "type" "originalFileName" "fileCreatedAt" "localDateTime" "deletedAt" "status" "visibility" "isFavorite" ];
     user = [ "id" "storageLabel" "name" ];
     asset_exif = [ "assetId" "city" "state" "country" "make" "model" "description" ];
     album_asset = [ "assetId" "albumId" ];

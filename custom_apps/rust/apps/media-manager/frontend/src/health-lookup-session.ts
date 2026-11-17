@@ -175,6 +175,7 @@ export function createHealthLookupSession() {
         [
           "title",
           "authors",
+          "folderAuthor",
           "year",
           "language",
           "publisher",

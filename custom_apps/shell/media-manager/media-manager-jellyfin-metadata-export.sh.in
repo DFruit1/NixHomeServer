@@ -32,15 +32,15 @@ done
 work="$(mktemp -d)"
 tmp="$(mktemp "$(dirname "$output")/.metadata.XXXXXX")"
 trap 'rm -f -- "$tmp"; rm -rf -- "$work"' EXIT
-# A series overview describes its episodes, many of which have none of their own.
+# Export series details separately from the episode synopsis and guest cast.
 printf 'header = "X-Emby-Token: %s"\n' "$api_key" \
   | curl --config - --fail --silent --show-error --max-time 60 --max-filesize 16777216 \
     --get "$base_url/Items" \
     --data-urlencode 'Recursive=true' \
     --data-urlencode 'IncludeItemTypes=Series' \
-    --data-urlencode 'Fields=Overview' \
+    --data-urlencode 'Fields=Overview,People,Genres' \
     --data-urlencode 'Limit=10000' \
-  | jq -ce '[(.Items // [])[] | select((.Id|type) == "string" and ((.Overview // "")|length) > 0) | {key:.Id, value:.Overview[0:4000]}] | from_entries' \
+  | jq -ce '[(.Items // [])[] | select((.Id|type) == "string") | {key:.Id, value:{description:(.Overview // "")[0:4000], cast:((.People // []) | map(select(.Type == "Actor") | .Name)[:24]), genres:(.Genres // [])[:64]}}] | from_entries' \
     >"$work/series.json"
 printf 'header = "X-Emby-Token: %s"\n' "$api_key" \
   | curl --config - --fail --silent --show-error --max-time 90 --max-filesize 16777216 \
@@ -83,7 +83,10 @@ printf 'header = "X-Emby-Token: %s"\n' "$api_key" \
             description:(.Overview|clean(20000)),
             publisher:((.Studios // [])[0].Name|clean(500)),
             genres:((.Genres // [])[:64] | map(clean(500))),
-            seriesDescription:(if .Type == "Episode" then $series[0][.SeriesId // ""] else null end),
+            seriesId:(.SeriesId|clean(64)),
+            seriesDescription:(if .Type == "Episode" then $series[0][.SeriesId // ""].description else null end),
+            seriesCast:(if .Type == "Episode" then $series[0][.SeriesId // ""].cast else null end),
+            seriesGenres:(if .Type == "Episode" then $series[0][.SeriesId // ""].genres else null end),
             writers:((.People // []) | map(select(.Type == "Writer") | .Name | clean(500))[:64]),
             directors:((.People // []) | map(select(.Type == "Director") | .Name | clean(500))[:16]),
             cast:((.People // []) | map(select(.Type == "Actor" or .Type == "GuestStar") | .Name | clean(500))[:24]),

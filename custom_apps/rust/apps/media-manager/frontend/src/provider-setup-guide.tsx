@@ -445,7 +445,7 @@ export const PROVIDER_USAGE_GUIDES: Record<string, UsageGuide> = {
   immich: {
     steps: [
       "Open Images and choose a photo. Search filenames, filter saved tags and scores, or use Sort by to rank photos. Load more photos retrieves the next page.",
-      "Choose Analyze photo to generate EYE tags and relative aesthetic, keeper and cover scores locally. Select a saved tag to find related photos.",
+      "Choose Re-check this photo to tag it and score how good it looks, whether it is worth keeping and whether it would make a good cover, each out of 100. Select a saved tag to find related photos.",
       "Open Decision questions to configure saved Yes/No tag or archive actions, or category questions that add photos to Immich albums. Save before assessing; automatic assessment is opt-in. Tags stay private to Media Manager. Uploaded files never archive photos or change albums. Original files stay unchanged.",
     ],
   },

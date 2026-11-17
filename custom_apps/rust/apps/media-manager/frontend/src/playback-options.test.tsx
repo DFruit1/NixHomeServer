@@ -88,10 +88,23 @@ function playerFetch() {
   });
 }
 
-const shuffleButton = (root: ParentNode): HTMLButtonElement | undefined =>
+const openOptions = async (
+  screen: HTMLElement,
+  userEvent: (target: Element | null, event: string) => Promise<void>,
+) => {
+  await userEvent(
+    screen.querySelector("button[aria-label='Playback options']"),
+    "click",
+  );
+  await vi.waitFor(() =>
+    expect(screen.querySelector(".playback-settings")).toBeTruthy(),
+  );
+};
+
+const menuOption = (root: ParentNode, name: string) =>
   Array.from(
-    root.querySelectorAll<HTMLButtonElement>(".player-controls button"),
-  ).find((button) => button.getAttribute("aria-label")?.startsWith("Shuffle"));
+    root.querySelectorAll<HTMLButtonElement>(".playback-settings button"),
+  ).find((button) => button.textContent?.startsWith(name));
 
 describe("music player playback options", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -135,32 +148,39 @@ describe("music player playback options", () => {
     expect(screen.querySelector('input[aria-label="Volume"]')).toBeTruthy();
   });
 
-  it("cycles the shuffle button through album, all and off", async () => {
+  it("keeps shuffle in the options menu and shows the active scope", async () => {
     vi.stubGlobal("fetch", playerFetch());
 
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="player" />);
 
-    await vi.waitFor(() => expect(shuffleButton(screen)).toBeDefined());
-    const shuffle = shuffleButton(screen);
-    if (!shuffle) return;
+    await vi.waitFor(() => expect(screen.textContent).toContain("First Light"));
+    // The transport has no separate shuffle, repeat or stop toggles.
+    const transport = Array.from(
+      screen.querySelectorAll(".player-controls > button"),
+    ).map((button) => button.getAttribute("aria-label"));
+    expect(transport).toEqual(["Previous track", "Play", "Next track"]);
+    expect(screen.querySelector(".playback-status")).toBeFalsy();
 
-    expect(shuffle.getAttribute("aria-label")).toBe("Shuffle off");
-    await userEvent(shuffle, "click");
+    await openOptions(screen, userEvent);
+    await userEvent(menuOption(screen, "Shuffle album") ?? null, "click");
     await vi.waitFor(() =>
-      expect(shuffle.getAttribute("aria-label")).toBe("Shuffle album"),
+      expect(screen.querySelector(".playback-status")?.textContent).toBe(
+        "Shuffle album",
+      ),
     );
-    await userEvent(shuffle, "click");
+    await userEvent(
+      menuOption(screen, "Shuffle all music files") ?? null,
+      "click",
+    );
     await vi.waitFor(() =>
-      expect(shuffleButton(screen)?.getAttribute("aria-label")).toBe(
+      expect(screen.querySelector(".playback-status")?.textContent).toBe(
         "Shuffle all music files",
       ),
     );
-    await userEvent(shuffle, "click");
+    await userEvent(menuOption(screen, "Shuffle off") ?? null, "click");
     await vi.waitFor(() =>
-      expect(shuffleButton(screen)?.getAttribute("aria-label")).toBe(
-        "Shuffle off",
-      ),
+      expect(screen.querySelector(".playback-status")).toBeFalsy(),
     );
   });
 
@@ -191,37 +211,27 @@ describe("music player playback options", () => {
     expect(panel).toContain("Repeat this track");
     expect(panel).toContain("Repeat the queue");
     expect(panel).toContain("Sleep timer");
+    expect(panel).toContain("Keep playing on other pages");
   });
 
-  it("marks the stop-after-track option in both the button and the panel", async () => {
+  it("marks the stop-after-track option in the panel and the status line", async () => {
     vi.stubGlobal("fetch", playerFetch());
 
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="player" />);
 
     await vi.waitFor(() =>
-      expect(screen.querySelector(".player-controls")).toBeDefined(),
+      expect(screen.querySelector(".player-controls")).toBeTruthy(),
     );
-    const stop = screen.querySelector<HTMLButtonElement>(
-      "button[aria-label='Stop after this track']",
+    await openOptions(screen, userEvent);
+    await userEvent(
+      menuOption(screen, "Stop after this track") ?? null,
+      "click",
     );
-    expect(stop?.getAttribute("aria-pressed")).toBe("false");
-    await userEvent(stop ?? null, "click");
-
     await vi.waitFor(() =>
-      expect(
-        screen
-          .querySelector("button[aria-label='Stop after this track']")
-          ?.getAttribute("aria-pressed"),
-      ).toBe("true"),
-    );
-
-    const gear = screen.querySelector<HTMLButtonElement>(
-      "button[aria-label='Playback options']",
-    );
-    await userEvent(gear ?? null, "click");
-    await vi.waitFor(() =>
-      expect(screen.querySelector(".playback-settings")).toBeDefined(),
+      expect(screen.querySelector(".playback-status")?.textContent).toBe(
+        "Stop after this track",
+      ),
     );
     const checked = Array.from(
       screen.querySelectorAll<HTMLButtonElement>(

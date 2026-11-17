@@ -520,6 +520,9 @@ impl super::Extractor for BrowsertrixExtractor {
         let mut wacz_files: Vec<PathBuf> = walk(&PathBuf::from(&archive_root), 0);
         wacz_files.sort();
 
+        let mut latest: std::collections::BTreeMap<String, ExtractedDocument> =
+            std::collections::BTreeMap::new();
+        let mut retained_bytes = 0usize;
         for wacz in wacz_files {
             let file_name = wacz
                 .file_name()
@@ -558,9 +561,9 @@ impl super::Extractor for BrowsertrixExtractor {
                     .clone()
                     .filter(|title| !title.trim().is_empty())
                     .unwrap_or_else(|| page.url.clone());
-                emit(ExtractedDocument {
+                let document = ExtractedDocument {
                     incidental_text: String::new(),
-                    external_id: sha256_hex(&[&crawl_base, &page.url]),
+                    external_id: sha256_hex(&[&page.url]),
                     kind: if page.content_type == "text/html" {
                         "web-page"
                     } else {
@@ -577,8 +580,26 @@ impl super::Extractor for BrowsertrixExtractor {
                     content_created_at: page.timestamp,
                     content_modified_at: None,
                     metadata: serde_json::json!({ "crawl": package.name, "owner": "shared" }),
-                });
+                };
+                if latest.get(&page.url).is_none_or(|previous| {
+                    document.content_created_at >= previous.content_created_at
+                }) {
+                    let previous_bytes = latest.get(&page.url).map_or(0, |doc| doc.body_text.len());
+                    retained_bytes =
+                        retained_bytes.saturating_sub(previous_bytes) + document.body_text.len();
+                    // Keep cross-crawl selection bounded. Failure retains the
+                    // previously indexed source rather than pruning a partial pass.
+                    if retained_bytes > 256_000_000 {
+                        return Err(
+                            "latest web captures exceed the 256 MB extraction text budget".into(),
+                        );
+                    }
+                    latest.insert(page.url.clone(), document);
+                }
             }
+        }
+        for document in latest.into_values() {
+            emit(document);
         }
         Ok(())
     }

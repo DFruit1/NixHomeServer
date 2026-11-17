@@ -156,8 +156,8 @@ export const DecisionQuestions = component$<{
     state.resultFrom = "file";
     if (file.size > limit) {
       state.error = image
-        ? "Images must be at most 16 MiB."
-        : "UTF-8 text files must be at most 16 KiB. PDFs and other binary files are unsupported.";
+        ? "Images must be at most 16 MB."
+        : "Text files must be at most 16 KB. PDFs and other non-text files can't be assessed.";
       input.value = "";
       return;
     }
@@ -235,13 +235,13 @@ export const DecisionQuestions = component$<{
                   {result.albumError && (
                     <span class="message error">{result.albumError}</span>
                   )}
-                  {result.archived && <span>Archived in Immich</span>}
+                  {result.archived && <span>Archived in Photos</span>}
                   {result.archiveRequested &&
                     !result.archived &&
                     !result.archiveError && (
                       <span>
                         {state.result!.target.startsWith("file:")
-                          ? "Archive actions apply only to Immich photos."
+                          ? "Archive actions apply only to photos in Photos."
                           : "Archive action was not applied. Review the saved question before retrying."}
                       </span>
                     )}
@@ -625,7 +625,7 @@ export const DecisionQuestions = component$<{
           <details class="decision-upload">
             <summary>Assess another file</summary>
             <label>
-              Image (max 16 MiB) or UTF-8 text (max 16 KiB)
+              Image (up to 16 MB) or plain text (up to 16 KB)
               <input
                 type="file"
                 accept="image/jpeg,image/png,image/webp,text/*,.md,.json,.csv,.log,.rs,.ts"
