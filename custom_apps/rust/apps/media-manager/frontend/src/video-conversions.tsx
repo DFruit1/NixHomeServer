@@ -31,6 +31,15 @@ type FormatCopy = {
 /** Owner request (2026-11-15): each format explains its size, device and
  * browser support and encoding speed beside the choice. */
 export const FORMAT_COPY: Record<VideoConversionFormatId, FormatCopy> = {
+  "audio-mp3": {
+    title: "MP3 audio copy",
+    codecs: "MP3 audio",
+    size: "Audio only.",
+    devices: "MP3 players.",
+    browsers: "Browsers with MP3 audio.",
+    speed: "Audio conversion only.",
+    subtitles: "No subtitles.",
+  },
   "compatible-mp4": {
     title: "Compatible MP4",
     codecs: "H.264 video, AAC audio",
@@ -101,7 +110,9 @@ function jobStatus(job: VideoConversionJob): string {
     case "encoding":
       return "Converting";
     case "installing":
-      return "Replacing the original";
+      return job.destinationRootId
+        ? "Saving audio copy"
+        : "Replacing the original";
     case "completed": {
       const sizes =
         job.outputBytes != null
@@ -236,6 +247,7 @@ export const VideoConversions = component$<{
   );
   const canQueue = !!list?.available && !!list.canConvert;
   const jobs = [...(list?.jobs ?? [])]
+    .filter((job) => !job.destinationRootId)
     .filter((job) => !props.hideActiveJobs || !ACTIVE.has(job.state))
     .sort(
       (a, b) =>
@@ -404,7 +416,13 @@ export const VideoConversions = component$<{
                       )}
                       {job.state === "completed" && (
                         <small>
-                          Original kept in <code>{job.archivedPath}</code>
+                          {job.destinationRootId ? (
+                            "Source video kept in its library"
+                          ) : (
+                            <>
+                              Original kept in <code>{job.archivedPath}</code>
+                            </>
+                          )}
                           {job.droppedSubtitles > 0 &&
                             `, with ${job.droppedSubtitles} picture-based subtitle track${job.droppedSubtitles === 1 ? "" : "s"} the MP4 could not hold`}
                           .

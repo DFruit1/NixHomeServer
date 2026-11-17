@@ -18,6 +18,7 @@ pub(super) struct ListQuery {
 pub(super) struct QueueRequest {
     item_ids: Vec<String>,
     format: String,
+    destination_root_id: Option<String>,
 }
 
 fn available(config: &AppConfig) -> bool {
@@ -201,6 +202,31 @@ pub(super) async fn queue(
         )
         .into_response();
     };
+    let audio = format == Format::AudioMp3;
+    let destination = request
+        .destination_root_id
+        .as_deref()
+        .and_then(|id| state.config.resolve_visible_root(&identity, id));
+    if (audio
+        && !destination.as_ref().is_some_and(|root| {
+            root.available
+                && matches!(
+                    root.category,
+                    LibraryCategory::Music
+                        | LibraryCategory::Podcasts
+                        | LibraryCategory::Audiobooks
+                )
+        }))
+        || (!audio && request.destination_root_id.is_some())
+    {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_audio_destination",
+            "Choose an available music, podcast or audiobook library for an audio copy.",
+            request_id,
+        )
+        .into_response();
+    }
     if request.item_ids.is_empty() || request.item_ids.len() > MAX_QUEUED_PER_REQUEST {
         return ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -265,6 +291,7 @@ pub(super) async fn queue(
                 root_label: root.label.clone(),
                 relative_path: item.relative_path.clone(),
                 format: format.id().to_string(),
+                destination_root_id: request.destination_root_id.clone(),
                 expected_source,
                 source_bytes: u64::try_from(item.size_bytes).unwrap_or(0),
                 state: "queued".into(),

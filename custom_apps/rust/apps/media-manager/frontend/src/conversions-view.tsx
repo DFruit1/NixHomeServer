@@ -23,6 +23,7 @@ import type {
   ConversionInputs,
 } from "./api-contract.generated";
 import { ComicConversions } from "./comic-conversions";
+import { MediaCopy } from "./media-copy";
 import { VideoConversions } from "./video-conversions";
 import { Icon } from "./icon";
 import type {
@@ -38,7 +39,7 @@ import { EmptyState } from "./view-states";
 const sharedPath = (path: string) =>
   path.split("/").map(encodeURIComponent).join("/");
 
-type ConversionsTask = ConversionTask | "comics" | "videos";
+type ConversionsTask = ConversionTask | "comics" | "videos" | "copy-audio";
 
 type ProcessingJob = {
   id: string;
@@ -141,6 +142,13 @@ const tasks: {
   title: string;
   detail: string;
 }[] = [
+  {
+    id: "copy-audio",
+    icon: "mic",
+    title: "Copy video audio to another library",
+    detail:
+      "Save an interview as a podcast, a song as music, or narrated material as an audiobook.",
+  },
   {
     id: "dvd",
     icon: "disc",
@@ -624,12 +632,14 @@ export const ConversionsView = component$<{
         id: `video-${job.id}`,
         name: job.relativePath.split("/").at(-1) ?? job.relativePath,
         icon: "video" as const,
-        label: "Video conversion",
+        label: job.destinationRootId ? "Audio copy" : "Video conversion",
         stage:
           job.state === "queued"
             ? "Waiting"
             : job.state === "installing"
-              ? "Replacing the original"
+              ? job.destinationRootId
+                ? "Saving audio copy"
+                : "Replacing the original"
               : "Encoding",
         percent:
           job.state === "encoding" && job.progress != null
@@ -786,6 +796,12 @@ export const ConversionsView = component$<{
             })}
           </div>
         </section>
+        {task.value === "copy-audio" && (
+          <MediaCopy
+            canEdit={props.canEdit ?? false}
+            jobs={conv.videos?.jobs}
+          />
+        )}
         {task.value === "comics" && (
           <ComicConversions
             canEdit={props.canEdit ?? false}
@@ -809,20 +825,23 @@ export const ConversionsView = component$<{
               {conv.transcriptionError}
             </p>
           )}
-        {task.value && task.value !== "comics" && task.value !== "videos" && (
-          <ConversionInput
-            task={task.value}
-            inputs={conv.inputs}
-            error={conv.inputError}
-            transcriptionAvailable={props.transcriptionAvailable}
-            onQueued$={(job) => {
-              if (conv.inputs) conv.inputs.jobs = [job, ...conv.inputs.jobs];
-            }}
-            onTask$={(next) => {
-              task.value = next;
-            }}
-          />
-        )}
+        {task.value &&
+          task.value !== "comics" &&
+          task.value !== "videos" &&
+          task.value !== "copy-audio" && (
+            <ConversionInput
+              task={task.value}
+              inputs={conv.inputs}
+              error={conv.inputError}
+              transcriptionAvailable={props.transcriptionAvailable}
+              onQueued$={(job) => {
+                if (conv.inputs) conv.inputs.jobs = [job, ...conv.inputs.jobs];
+              }}
+              onTask$={(next) => {
+                task.value = next;
+              }}
+            />
+          )}
         <section
           class="panel conversion-focus"
           aria-labelledby="processing-heading"

@@ -36,14 +36,16 @@ pub enum Format {
     CompatibleMkv,
     EfficientHevc,
     ModernAv1,
+    AudioMp3,
 }
 
 impl Format {
-    pub const ALL: [Format; 4] = [
+    pub const ALL: [Format; 5] = [
         Format::CompatibleMp4,
         Format::CompatibleMkv,
         Format::EfficientHevc,
         Format::ModernAv1,
+        Format::AudioMp3,
     ];
 
     pub const fn id(self) -> &'static str {
@@ -52,6 +54,7 @@ impl Format {
             Format::CompatibleMkv => "compatible-mkv",
             Format::EfficientHevc => "efficient-hevc",
             Format::ModernAv1 => "modern-av1",
+            Format::AudioMp3 => "audio-mp3",
         }
     }
 
@@ -62,6 +65,7 @@ impl Format {
     pub const fn extension(self) -> &'static str {
         match self {
             Format::CompatibleMp4 => "mp4",
+            Format::AudioMp3 => "mp3",
             _ => "mkv",
         }
     }
@@ -69,6 +73,7 @@ impl Format {
     const fn muxer(self) -> &'static str {
         match self {
             Format::CompatibleMp4 => "mp4",
+            Format::AudioMp3 => "mp3",
             _ => "matroska",
         }
     }
@@ -78,6 +83,7 @@ impl Format {
             Format::CompatibleMp4 | Format::CompatibleMkv => "h264",
             Format::EfficientHevc => "hevc",
             Format::ModernAv1 => "av1",
+            Format::AudioMp3 => "",
         }
     }
 }
@@ -275,6 +281,36 @@ pub fn plan(
     source_extension: &str,
     probe: &SourceProbe,
 ) -> Result<EncodePlan, String> {
+    if format == Format::AudioMp3 {
+        let audio = probe
+            .of_kind("audio")
+            .next()
+            .ok_or("This video has no audio track.")?;
+        return Ok(EncodePlan {
+            args: [
+                "-map",
+                &format!("0:{}", audio.index),
+                "-vn",
+                "-sn",
+                "-dn",
+                "-c:a",
+                "libmp3lame",
+                "-q:a",
+                "2",
+                "-ac",
+                "2",
+                "-map_metadata",
+                "-1",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+            muxer: "mp3",
+            dropped_subtitles: 0,
+            audio_streams: 1,
+            subtitle_streams: 0,
+        });
+    }
     let video = probe
         .video()
         .ok_or("This file has no video stream to convert.")?;
@@ -330,6 +366,7 @@ pub fn plan(
                 "-x265-params",
                 "log-level=error",
             ]),
+            Format::AudioMp3 => unreachable!(),
             Format::ModernAv1 => push(&[
                 "-c:v",
                 "libsvtav1",
@@ -433,7 +470,7 @@ pub fn verify_output(
     output: &SourceProbe,
     plan: &EncodePlan,
 ) -> Result<(), String> {
-    if output.video().is_none() {
+    if plan.muxer != "mp3" && output.video().is_none() {
         return Err("The converted file has no video stream.".into());
     }
     if output.of_kind("audio").count() != plan.audio_streams {
@@ -469,6 +506,8 @@ pub struct Job {
     pub root_label: String,
     pub relative_path: String,
     pub format: String,
+    #[serde(default)]
+    pub destination_root_id: Option<String>,
     /// Fingerprint when queued; a changed file is never converted.
     pub expected_source: String,
     pub source_bytes: u64,
@@ -514,6 +553,7 @@ impl Job {
             "rootLabel": self.root_label,
             "relativePath": self.relative_path,
             "format": self.format,
+            "destinationRootId": self.destination_root_id,
             "state": self.state,
             "createdAt": self.created_at,
             "startedAt": self.started_at,

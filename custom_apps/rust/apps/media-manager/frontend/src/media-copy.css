@@ -1,0 +1,33 @@
+.media-copy-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+.media-copy-fields label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.media-copy-fields :is(input, select) {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height);
+}
+
+.media-copy-fields :is(input, select) {
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  color: var(--ink);
+  background: var(--card);
+  font: inherit;
+}
+.media-copy-fields :is(input, select):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.media-copy .quiet-copy {
+  margin: 0;
+  padding: 0;
+}

@@ -934,7 +934,8 @@ paths:
         worker. When an encode is verified, the filesystem broker copies the
         original into the caller's _Originals folder, then installs the
         conversion beside it with the same name and the format's extension.
-        Requires editor access and enabled mutations.
+        For audio-mp3, installs the first audio track into destinationRootId
+        without changing the video. Requires editor access and enabled mutations.
       requestBody:
         required: true
         content:
@@ -946,6 +947,9 @@ paths:
               properties:
                 itemIds: { type: array, minItems: 1, maxItems: 500, items: { type: string } }
                 format: { $ref: "#/components/schemas/VideoConversionFormatId" }
+                destinationRootId:
+                  type: string
+                  description: Required for audio-mp3. Visible music, podcast or audiobook library; the video is preserved. Other formats must omit this.
       responses:
         "202":
           description: Jobs queued, and videos that were skipped with the reason.
@@ -3272,13 +3276,13 @@ components:
         format: { type: string, enum: [zip, rar, 7z, unknown, unreadable] }
     VideoConversionFormatId:
       type: string
-      enum: [compatible-mp4, compatible-mkv, efficient-hevc, modern-av1]
+      enum: [compatible-mp4, compatible-mkv, efficient-hevc, modern-av1, audio-mp3]
     VideoConversionFormat:
       type: object
       required: [id, extension]
       properties:
         id: { $ref: "#/components/schemas/VideoConversionFormatId" }
-        extension: { type: string, enum: [mp4, mkv] }
+        extension: { type: string, enum: [mp4, mkv, mp3] }
     VideoConversionCandidate:
       type: object
       required: [itemId, rootId, rootLabel, relativePath, sizeBytes, reasons, audioCodecs, imageSubtitles]
@@ -3304,6 +3308,7 @@ components:
         rootLabel: { type: string }
         relativePath: { type: string }
         format: { $ref: "#/components/schemas/VideoConversionFormatId" }
+        destinationRootId: { type: string, nullable: true }
         state: { type: string, enum: [queued, encoding, installing, completed, failed, cancelled] }
         createdAt: { type: integer }
         startedAt: { type: integer, nullable: true }

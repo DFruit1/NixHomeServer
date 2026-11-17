@@ -109,6 +109,8 @@ pub enum BrokerAction {
     /// Archive a video in its owner's originals folder and install its
     /// conversion in the library.
     ConvertVideo(ConvertVideoAction),
+    /// Install an audio copy without modifying the source video.
+    CopyVideoAudio(InstallSubtitleAction),
 }
 
 impl From<MoveAction> for BrokerAction {
@@ -247,6 +249,9 @@ pub fn apply_broker_action(
             apply_replace_file(config, username, action)
         }
         BrokerAction::ConvertVideo(action) => apply_convert_video(config, username, action),
+        BrokerAction::CopyVideoAudio(action) => {
+            copy_video_audio(config, username, action, false).map(|_| ())
+        }
     }
 }
 
@@ -281,6 +286,7 @@ pub fn recover_broker_action(
             recover_replaced_file(config, username, action)
         }
         BrokerAction::ConvertVideo(action) => recover_converted_video(config, username, action),
+        BrokerAction::CopyVideoAudio(action) => copy_video_audio(config, username, action, true),
     }
 }
 
@@ -322,6 +328,11 @@ pub fn discard_staged_broker_action(
             config,
             &action.staging_filename,
             &action.expected_replacement,
+        ),
+        BrokerAction::CopyVideoAudio(action) => discard_staged_file_in(
+            &video_staging_root(config),
+            &action.staging_filename,
+            &action.expected,
         ),
         BrokerAction::ConvertVideo(action) => discard_staged_file_in(
             &video_staging_root(config),
@@ -2233,4 +2244,69 @@ fn ensure_conversion_space(
         }
     }
     Ok(())
+}
+
+// Audio copies use the existing no-clobber, descriptor-relative publisher.
+// A matching destination also makes recovery after publication idempotent.
+#[cfg(target_os = "linux")]
+fn copy_video_audio(
+    config: &AppConfig,
+    username: &str,
+    action: &InstallSubtitleAction,
+    recover: bool,
+) -> Result<bool, BrokerError> {
+    let identity =
+        Identity::try_new(username, ["users"]).map_err(|_| BrokerError::new("Invalid owner"))?;
+    let root = config
+        .resolve_visible_root(&identity, &action.destination_root_id)
+        .filter(|r| {
+            r.available
+                && matches!(
+                    r.category,
+                    LibraryCategory::Music
+                        | LibraryCategory::Podcasts
+                        | LibraryCategory::Audiobooks
+                )
+        })
+        .ok_or_else(|| BrokerError::new("Audio destination unavailable"))?;
+    if !safe_component(&action.staging_filename)
+        || !safe_component(&action.destination_relative_path)
+        || !action.staging_filename.ends_with(".mp3")
+        || !action.destination_relative_path.ends_with(".mp3")
+    {
+        return Err(BrokerError::new(
+            "Audio copies must use a single MP3 filename",
+        ));
+    }
+    let destination = open_root(Path::new(&root.resolved_path))?;
+    let matches =
+        fingerprint_optional_at(destination.as_raw_fd(), &action.destination_relative_path)?
+            .as_deref()
+            == Some(action.expected.as_str());
+    if !matches && recover {
+        return Ok(false);
+    }
+    let staging = open_root(&video_staging_root(config))?;
+    if !matches {
+        let bytes = fingerprint_size(&action.expected);
+        let free = crate::video_conversion::available_space(Path::new(&root.resolved_path))
+            .map_err(BrokerError::new)?;
+        if free < bytes.saturating_add(config.free_space_reserve_bytes) {
+            return Err(BrokerError::new("Not enough free space for the audio copy"));
+        }
+        copy_verified(
+            staging.as_raw_fd(),
+            &action.staging_filename,
+            destination.as_raw_fd(),
+            &action.destination_relative_path,
+            &action.expected,
+        )?;
+    }
+    if fingerprint_optional_at(staging.as_raw_fd(), &action.staging_filename)?.as_deref()
+        == Some(action.expected.as_str())
+    {
+        unlink_regular_at(staging.as_raw_fd(), &action.staging_filename)?;
+        sync_directory(staging.as_raw_fd())?;
+    }
+    Ok(true)
 }

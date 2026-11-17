@@ -4,7 +4,7 @@
 use crate::{
     broker::{
         file_fingerprint, open_regular_file_beneath, opened_file_fingerprint, BrokerAction,
-        ConvertVideoAction,
+        ConvertVideoAction, InstallSubtitleAction,
     },
     catalog::{Catalog, CatalogHandle, ConfirmPlanOutcome, MutationPlanDraft},
     config::{AppConfig, Identity, RootScope},
@@ -187,7 +187,7 @@ fn convert(config: &AppConfig, ffmpeg: &Path, ffprobe: &Path, job: &mut Job) -> 
         .map_or("", |(_, extension)| extension);
     let plan = plan(format, extension, &source_probe)?;
     let output_path = output_relative_path(&job.relative_path, format);
-    if output_path != job.relative_path {
+    if job.destination_root_id.is_none() && output_path != job.relative_path {
         let (_, root_path) = open_source(config, job)?;
         if std::fs::symlink_metadata(root_path.join(&output_path)).is_ok() {
             return Err(format!(
@@ -256,15 +256,39 @@ fn convert(config: &AppConfig, ffmpeg: &Path, ffprobe: &Path, job: &mut Job) -> 
     // The library file must still be the one that was encoded.
     open_source(config, job).map_err(discard)?;
 
-    let action = BrokerAction::ConvertVideo(ConvertVideoAction {
-        staging_filename: staging_filename.clone(),
-        root_id: job.root_id.clone(),
-        source_relative_path: job.relative_path.clone(),
-        replacement_relative_path: output_path.clone(),
-        archived_relative_path: job.archived_relative_path(),
-        expected_source: job.expected_source.clone(),
-        expected_replacement,
-    });
+    let output_path = if job.destination_root_id.is_some() {
+        output_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&output_path)
+            .to_string()
+    } else {
+        output_path
+    };
+    let action = if let Some(destination_root_id) = &job.destination_root_id {
+        if format != Format::AudioMp3 {
+            return Err(discard("Invalid audio format".into()));
+        }
+        BrokerAction::CopyVideoAudio(InstallSubtitleAction {
+            staging_filename: staging_filename.clone(),
+            destination_root_id: destination_root_id.clone(),
+            destination_relative_path: output_path.clone(),
+            expected: expected_replacement,
+        })
+    } else {
+        if format == Format::AudioMp3 {
+            return Err(discard("Missing audio destination".into()));
+        }
+        BrokerAction::ConvertVideo(ConvertVideoAction {
+            staging_filename: staging_filename.clone(),
+            root_id: job.root_id.clone(),
+            source_relative_path: job.relative_path.clone(),
+            replacement_relative_path: output_path.clone(),
+            archived_relative_path: job.archived_relative_path(),
+            expected_source: job.expected_source.clone(),
+            expected_replacement,
+        })
+    };
     let plan_id = format!("plan-video-{}", job.id);
     queue_plan(config, job, &plan_id, action).map_err(discard)?;
     job.state = "installing".into();
@@ -533,7 +557,10 @@ fn sweep_staging(config: &AppConfig) {
 /// Update the catalog and the applications that index the library.
 fn after_install(config: &AppConfig, job: &Job) {
     if let Ok(identity) = owner_identity(job)
-        && let Some(root) = config.resolve_visible_root(&identity, &job.root_id)
+        && let Some(root) = config.resolve_visible_root(
+            &identity,
+            job.destination_root_id.as_deref().unwrap_or(&job.root_id),
+        )
     {
         let scan_root = ScanRoot {
             id: root.id.clone(),
@@ -553,7 +580,11 @@ fn after_install(config: &AppConfig, job: &Job) {
             );
         }
     }
-    for integration in REFRESHED_INTEGRATIONS {
+    for integration in if job.destination_root_id.is_some() {
+        &["audiobookshelf"][..]
+    } else {
+        REFRESHED_INTEGRATIONS
+    } {
         if !crate::applications::refresh_adapter_available(config, integration) {
             continue;
         }

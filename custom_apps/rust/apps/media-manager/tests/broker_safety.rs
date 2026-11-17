@@ -749,3 +749,56 @@ fn video_conversion_writes_nothing_without_free_space_for_both_copies() {
     assert!(!fixture.originals.join("Videos").exists());
     assert!(fixture.staging.join("job.mkv").exists());
 }
+
+// New cross-library publisher: an overwrite or symlink escape could destroy
+// unrelated library files, so exercise the no-clobber boundary and recovery.
+#[test]
+fn audio_copy_preserves_video_and_existing_destination() {
+    use std::os::unix::fs::symlink;
+    let fixture = video_fixture("Interview.mkv");
+    let destination = fixture
+        .library
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("_Music");
+    fs::create_dir_all(&destination).unwrap();
+    fs::write(fixture.staging.join("job.mp3"), b"encoded audio").unwrap();
+    let mut action = InstallSubtitleAction {
+        staging_filename: "job.mp3".into(),
+        destination_root_id: "shared-music".into(),
+        destination_relative_path: "Interview.mp3".into(),
+        expected: file_fingerprint(&fixture.staging.join("job.mp3")).unwrap(),
+    };
+    let wrapped = |a: &InstallSubtitleAction| BrokerAction::CopyVideoAudio(a.clone());
+    fs::write(destination.join("Interview.mp3"), b"existing music").unwrap();
+    assert!(apply_broker_action(&fixture.config, "editor", &wrapped(&action)).is_err());
+    assert_eq!(
+        fs::read(destination.join("Interview.mp3")).unwrap(),
+        b"existing music"
+    );
+    fs::remove_file(destination.join("Interview.mp3")).unwrap();
+    symlink(
+        fixture.library.join("Interview.mkv"),
+        destination.join("Interview.mp3"),
+    )
+    .unwrap();
+    assert!(apply_broker_action(&fixture.config, "editor", &wrapped(&action)).is_err());
+    fs::remove_file(destination.join("Interview.mp3")).unwrap();
+    apply_broker_action(&fixture.config, "editor", &wrapped(&action)).unwrap();
+    assert_eq!(
+        fs::read(destination.join("Interview.mp3")).unwrap(),
+        b"encoded audio"
+    );
+    assert_eq!(
+        fs::read(fixture.library.join("Interview.mkv")).unwrap(),
+        b"original video"
+    );
+    assert!(recover_broker_action(&fixture.config, "editor", &wrapped(&action)).unwrap());
+    action.destination_root_id = "shared-videos".into();
+    assert!(apply_broker_action(&fixture.config, "editor", &wrapped(&action)).is_err());
+    action.destination_root_id = "shared-music".into();
+    action.destination_relative_path = "../escape.mp3".into();
+    assert!(apply_broker_action(&fixture.config, "editor", &wrapped(&action)).is_err());
+}
