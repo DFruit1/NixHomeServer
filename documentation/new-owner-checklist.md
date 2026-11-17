@@ -97,7 +97,7 @@ Create `secrets/unencrypted/` (mode 0700) and stage values that belong to the
 - [ ] `cfHomeCreds` — Cloudflare Tunnel credentials JSON for the new tunnel.
 - [ ] `cfAPIToken` — Cloudflare DNS API token with `DNS:Edit` on the new zone.
 - [ ] Optional: `rcloneMegaPassword` (only if `offsiteBackup.enable = true`).
-- [ ] Optional: `failureAlertWebhookUrl`, `openSubtitlesCredentials`, `acoustidApiKey`.
+- [ ] Optional: `failureAlertWebhookUrl`.
 
 Then generate fresh, re-encrypted secrets:
 

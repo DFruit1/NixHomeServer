@@ -843,6 +843,10 @@ pub fn provider_account_router(state: ProviderBrokerState) -> Router {
             get(accounts::list_provider_accounts),
         )
         .route(
+            "/api/v1/provider-accounts/server-services",
+            get(accounts::server_services),
+        )
+        .route(
             "/api/v1/provider-accounts/{provider_id}",
             axum::routing::put(accounts::save_provider_account)
                 .delete(accounts::delete_provider_account),

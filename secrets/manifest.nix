@@ -217,22 +217,6 @@
       required = false;
       consumedBy = "when monitoring failure alerts are enabled";
     };
-    openSubtitlesCredentials = {
-      description = "OpenSubtitles.com REST API application key and server account credentials for Media Manager.";
-      format = "JSON object with apiKey, username, password, and optional userAgent strings";
-      settingPath = "secrets/unencrypted/openSubtitlesCredentials";
-      validator = "opensubtitles-credentials-json";
-      required = false;
-      consumedBy = "when Media Manager provider search is enabled";
-    };
-    acoustidApiKey = {
-      description = "AcoustID (MusicBrainz Picard) API key used for fingerprint lookup in the Media Manager metadata editor.";
-      format = "JSON object with acoustidApiKey string";
-      settingPath = "secrets/unencrypted/acoustidApiKey";
-      validator = "acoustid-credentials-json";
-      required = false;
-      consumedBy = "when the Media Manager metadata editor is enabled";
-    };
     groundwaterMqttTlsKey = {
       description = "Private key for the internet-facing groundwater MQTT TLS listener (mqtt.sydneybasiniot.org).";
       format = "PEM private key matching modules/groundwater-logger/mqtt-tls/server.pem";

@@ -360,6 +360,23 @@ paths:
                 $ref: "#/components/schemas/ProviderCatalogResponse"
         "401":
           $ref: "#/components/responses/Error"
+  /provider-accounts/server-services:
+    get:
+      operationId: listServerServices
+      description: >-
+        Reports services that run on this server rather than online providers.
+        Immich is notEnabled when NixOS does not enable it, notReachable when it
+        is enabled but not answering, notConnected when the caller's own Immich
+        connection is missing or rejected, and connected otherwise.
+      responses:
+        "200":
+          description: Status of each service on this server for the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerServicesResponse"
+        "401":
+          $ref: "#/components/responses/Error"
   /provider-accounts/{providerId}:
     parameters:
       - in: path
@@ -2133,24 +2150,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MutationPreview'
-  /metadata/tmdb/search:
-    post:
-      responses:
-        '200':
-          description: TmdbSearchResponse
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TmdbSearchResponse'
-  /metadata/tmdb/details:
-    post:
-      responses:
-        '200':
-          description: TmdbDetailsResponse
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TmdbDetailsResponse'
   /items/{itemId}/subtitles/provider/{fileId}/content:
     parameters:
     - in: path
@@ -2631,6 +2630,26 @@ components:
           items: { $ref: "#/components/schemas/ProviderDefinition" }
         recoveryAdvice: { type: string }
         requestId: { type: string }
+    ServerServicesResponse:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, services, requestId]
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        services:
+          type: array
+          items: { $ref: "#/components/schemas/ServerService" }
+        requestId: { type: string }
+    ServerService:
+      type: object
+      additionalProperties: false
+      required: [id, name, logoUrl, status, message]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        logoUrl: { type: string }
+        status: { enum: [notEnabled, notReachable, notConnected, connected] }
+        message: { type: string }
     ProviderDefinition:
       type: object
       additionalProperties: false

@@ -148,8 +148,8 @@ jq -e '
   and (.serviceEnvironment.MEDIA_MANAGER_JELLYFIN_PUBLIC_URL == "https://videos.\(.domain)")
   and (.serviceEnvironment.MEDIA_MANAGER_AUDIOBOOKSHELF_PUBLIC_URL == "https://audiobooks.\(.domain)")
   and (.serviceEnvironment.MEDIA_MANAGER_KAVITA_PUBLIC_URL == "https://books.\(.domain)")
-  and (.ageSecretNames | index("openSubtitlesCredentials") != null)
-  and (.ageSecretNames | index("acoustidApiKey") != null)
+  and (.ageSecretNames | index("openSubtitlesCredentials") == null)
+  and (.ageSecretNames | index("acoustidApiKey") == null)
   and (.service.ReadOnlyPaths | index("-/var/cache/media-manager-jellyfin") != null)
   and (.service.ReadOnlyPaths | index("-/var/cache/media-manager-audiobookshelf") != null)
   and (.service.ReadOnlyPaths | index("-/var/cache/media-manager-kavita") != null)
@@ -342,12 +342,6 @@ require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
 require_fixed custom_apps/rust/apps/media-manager/src/bin/media-manager-broker.rs \
   '.truncate(false)' \
   "The global broker lock must never truncate an existing lock inode on open."
-require_fixed secrets/manifest.nix \
-  'openSubtitlesCredentials = {' \
-  "OpenSubtitles credentials must remain an optional encrypted external secret."
-require_fixed secrets/manifest.nix \
-  'acoustidApiKey = {' \
-  "AcoustID credentials must remain an optional encrypted external secret."
 
 kavita_baseline='[{"id":1,"lastScanned":"before-1"},{"id":2,"lastScanned":"before-2"}]'
 kavita_complete='[{"id":1,"lastScanned":"after-1"},{"id":2,"lastScanned":"after-2"}]'

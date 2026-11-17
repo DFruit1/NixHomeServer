@@ -6082,6 +6082,25 @@ a:focus-visible {
   font-size: var(--text-md);
   font-weight: 600;
 }
+/* A server service row has no expand toggle; its padding keeps the logo in
+ * line with the online-service rows below. */
+.provider-server-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+  padding: 4px 8px 4px 36px;
+}
+.provider-server-name .provider-logo {
+  grid-row: 1 / span 2;
+}
+.provider-server-message {
+  grid-column: 2;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
 .provider-row-name {
   font-size: var(--text-lg);
   font-weight: 600;
@@ -6421,6 +6440,10 @@ a:focus-visible {
   }
   .provider-row-toggle {
     grid-template-columns: 16px 64px minmax(0, 1fr);
+  }
+  .provider-server-name {
+    grid-template-columns: 64px minmax(0, 1fr);
+    padding-left: 36px;
   }
   .provider-logo {
     width: 64px;

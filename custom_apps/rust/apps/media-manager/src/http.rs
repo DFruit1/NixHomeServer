@@ -1,8 +1,6 @@
 use crate::musicbrainz::{
-    AcoustidCredentials, LookupMode, MusicBrainzClient, MusicBrainzClientConfig, ACOUSTID_API_BASE,
-    MUSICBRAINZ_API_BASE,
+    LookupMode, MusicBrainzClient, MusicBrainzClientConfig, ACOUSTID_API_BASE, MUSICBRAINZ_API_BASE,
 };
-use crate::tmdb::TmdbClient;
 use crate::{
     artwork::{
         is_embedded_artwork_capable, preferred_artwork, read_artwork_file, read_embedded_artwork,
@@ -27,9 +25,7 @@ use crate::{
     },
     scanner::ScanRoot,
     subtitle_format::{parse_srt, parse_subtitle, subtitle_validation},
-    subtitles::{
-        opensubtitles_movie_hash, OpenSubtitlesClient, OpenSubtitlesCredentials, SubtitleMatch,
-    },
+    subtitles::{opensubtitles_movie_hash, SubtitleMatch},
     video_probe::{probe_video_beneath, refresh_root_probes, VideoProbe, VideoProbeCache},
 };
 mod artwork_http;
@@ -135,7 +131,6 @@ pub struct AppState {
     pub provider_accounts_cache: Arc<ProviderAccountsCache>,
     pub metadata_memo: Arc<MetadataCacheMemo>,
     pub frontend_index: Arc<tokio::sync::OnceCell<Option<String>>>,
-    pub tmdb_client: Option<Arc<TmdbClient>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -268,21 +263,6 @@ pub(super) struct MusicLookupRequest {
 pub(super) struct CoreInfoRequest {
     title: String,
     release_year: Option<u16>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct TmdbSearchRequest {
-    query: String,
-    year: Option<u16>,
-    media_type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct TmdbDetailsRequest {
-    tmdb_id: u32,
-    media_type: String,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -440,14 +420,6 @@ pub fn router(state: AppState) -> Router {
             post(metadata_lookups::lookup_music_metadata),
         )
         .route(
-            "/api/v1/metadata/tmdb/search",
-            post(metadata_lookups::search_tmdb_metadata),
-        )
-        .route(
-            "/api/v1/metadata/tmdb/details",
-            post(metadata_lookups::get_tmdb_details),
-        )
-        .route(
             "/api/v1/integrations/{integration_id}/refresh",
             get(refresh::integration_refresh_status).post(refresh::queue_integration_refresh),
         )
@@ -584,14 +556,7 @@ async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
         capabilities: vec!["conversion-progress".to_string()],
         url: None,
     });
-    let opensubtitles_available = match state.config.provider_broker_base_url.as_deref() {
-        Some(_) => runtime_accounts.contains("opensubtitles"),
-        None => state
-            .config
-            .open_subtitles_credentials_file
-            .as_ref()
-            .is_some_and(|path| path.is_file()),
-    };
+    let opensubtitles_available = runtime_accounts.contains("opensubtitles");
     integrations.push(crate::config::IntegrationCapability {
         id: "opensubtitles".to_string(),
         label: "OpenSubtitles".to_string(),
@@ -603,14 +568,7 @@ async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
         url: None,
     });
     let mut musicbrainz_capabilities = vec!["musicbrainz-lookup".to_string()];
-    let acoustid_available = match state.config.provider_broker_base_url.as_deref() {
-        Some(_) => runtime_accounts.contains("acoustid"),
-        None => state
-            .config
-            .acoustid_api_key_file
-            .as_ref()
-            .is_some_and(|path| path.is_file()),
-    };
+    let acoustid_available = runtime_accounts.contains("acoustid");
     if acoustid_available {
         musicbrainz_capabilities.push("musicbrainz-fingerprint".to_string());
     }
@@ -1114,13 +1072,12 @@ fn video_search_title(relative_path: &str) -> &str {
         .unwrap_or(filename)
 }
 
-enum SubtitleProviderClient {
-    Broker {
-        base: reqwest::Url,
-        client: reqwest::Client,
-        identity: Identity,
-    },
-    Legacy(OpenSubtitlesClient),
+/// OpenSubtitles requests go through the provider broker with the caller's
+/// own saved account; the web service never holds provider credentials.
+struct SubtitleProviderClient {
+    base: reqwest::Url,
+    client: reqwest::Client,
+    identity: Identity,
 }
 
 #[derive(Deserialize)]
@@ -1142,28 +1099,21 @@ impl SubtitleProviderClient {
         query: &str,
         languages: &str,
     ) -> Result<Vec<SubtitleMatch>, String> {
-        match self {
-            Self::Legacy(client) => client
-                .search_by_query(query, languages)
-                .await
-                .map_err(|error| error.to_string()),
-            Self::Broker {
-                base,
-                client,
-                identity,
-            } => {
-                let response = broker_provider_request(
-                    base,
-                    client,
-                    identity,
-                    "opensubtitles/search",
-                    json!({ "query": query, "languages": languages }),
-                )
-                .await?;
-                let payload = bounded_broker_json(response).await?;
-                Ok(payload.results)
-            }
-        }
+        let Self {
+            base,
+            client,
+            identity,
+        } = self;
+        let response = broker_provider_request(
+            base,
+            client,
+            identity,
+            "opensubtitles/search",
+            json!({ "query": query, "languages": languages }),
+        )
+        .await?;
+        let payload = bounded_broker_json(response).await?;
+        Ok(payload.results)
     }
 
     async fn search_by_hash(
@@ -1171,77 +1121,63 @@ impl SubtitleProviderClient {
         movie_hash: &crate::subtitles::MovieHash,
         languages: &str,
     ) -> Result<Vec<SubtitleMatch>, String> {
-        match self {
-            Self::Legacy(client) => client
-                .search_by_hash(movie_hash, languages)
-                .await
-                .map_err(|error| error.to_string()),
-            Self::Broker {
-                base,
-                client,
-                identity,
-            } => {
-                let response = broker_provider_request(
-                    base,
-                    client,
-                    identity,
-                    "opensubtitles/search",
-                    json!({
-                        "movieHash": movie_hash.value,
-                        "movieByteSize": movie_hash.byte_size,
-                        "query": "local movie hash",
-                        "languages": languages,
-                    }),
-                )
-                .await?;
-                let payload = bounded_broker_json(response).await?;
-                if payload.match_method != "movie-hash" {
-                    return Ok(Vec::new());
-                }
-                Ok(payload.results)
-            }
+        let Self {
+            base,
+            client,
+            identity,
+        } = self;
+        let response = broker_provider_request(
+            base,
+            client,
+            identity,
+            "opensubtitles/search",
+            json!({
+                "movieHash": movie_hash.value,
+                "movieByteSize": movie_hash.byte_size,
+                "query": "local movie hash",
+                "languages": languages,
+            }),
+        )
+        .await?;
+        let payload = bounded_broker_json(response).await?;
+        if payload.match_method != "movie-hash" {
+            return Ok(Vec::new());
         }
+        Ok(payload.results)
     }
 
     async fn download(&self, file_id: i64) -> Result<Vec<u8>, String> {
-        match self {
-            Self::Legacy(client) => client
-                .download(file_id)
-                .await
-                .map_err(|error| error.to_string()),
-            Self::Broker {
-                base,
-                client,
-                identity,
-            } => {
-                let mut response = broker_provider_request(
-                    base,
-                    client,
-                    identity,
-                    "opensubtitles/download",
-                    json!({ "fileId": file_id }),
-                )
-                .await?;
-                if response
-                    .content_length()
-                    .is_some_and(|length| length > MAX_SUBTITLE_BYTES as u64)
-                {
-                    return Err("provider subtitle exceeded the size limit".to_string());
-                }
-                let mut bytes = Vec::new();
-                while let Some(chunk) = response
-                    .chunk()
-                    .await
-                    .map_err(|_| "provider broker response could not be read safely".to_string())?
-                {
-                    if bytes.len().saturating_add(chunk.len()) > MAX_SUBTITLE_BYTES {
-                        return Err("provider subtitle exceeded the size limit".to_string());
-                    }
-                    bytes.extend_from_slice(&chunk);
-                }
-                Ok(bytes)
-            }
+        let Self {
+            base,
+            client,
+            identity,
+        } = self;
+        let mut response = broker_provider_request(
+            base,
+            client,
+            identity,
+            "opensubtitles/download",
+            json!({ "fileId": file_id }),
+        )
+        .await?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_SUBTITLE_BYTES as u64)
+        {
+            return Err("provider subtitle exceeded the size limit".to_string());
         }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| "provider broker response could not be read safely".to_string())?
+        {
+            if bytes.len().saturating_add(chunk.len()) > MAX_SUBTITLE_BYTES {
+                return Err("provider subtitle exceeded the size limit".to_string());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
     }
 }
 
@@ -1301,77 +1237,48 @@ fn open_subtitles_client(
     identity: &Identity,
     request_id: &str,
 ) -> Result<SubtitleProviderClient, ApiError> {
-    if let Some(base) = config.provider_broker_base_url.as_deref() {
-        let mut base = reqwest::Url::parse(base).map_err(|_| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "provider_broker_unavailable",
-                "The provider broker address is invalid.",
-                request_id.to_string(),
-            )
-        })?;
-        let trusted_loopback = base.scheme() == "http"
-            && base
-                .host_str()
-                .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"));
-        if !trusted_loopback {
-            return Err(ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "provider_broker_unavailable",
-                "The provider broker must use a loopback HTTP address.",
-                request_id.to_string(),
-            ));
-        }
-        if !base.path().ends_with('/') {
-            base.set_path(&format!("{}/", base.path()));
-        }
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(35))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| ApiError::internal(request_id.to_string()))?;
-        return Ok(SubtitleProviderClient::Broker {
-            base,
-            client,
-            identity: identity.clone(),
-        });
-    }
-    let path = config
-        .open_subtitles_credentials_file
-        .as_deref()
-        .filter(|path| path.is_file())
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "subtitle_provider_unconfigured",
-                "OpenSubtitles credentials are not configured on this server.",
-                request_id.to_string(),
-            )
-        })?;
-    let credentials = OpenSubtitlesCredentials::from_file(path).map_err(|error| {
-        log_event(
-            "subtitle_provider_credentials_invalid",
-            request_id,
-            json!({ "error": error.to_string() }),
-        );
+    let base = config.provider_broker_base_url.as_deref().ok_or_else(|| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "subtitle_provider_unconfigured",
-            "OpenSubtitles credentials are not valid on this server.",
+            "Connect your OpenSubtitles account in Metadata sources.",
             request_id.to_string(),
         )
     })?;
-    OpenSubtitlesClient::new(credentials)
-        .map(SubtitleProviderClient::Legacy)
-        .map_err(|error| {
-            log_event(
-                "subtitle_provider_client_failed",
-                request_id,
-                json!({ "error": error.to_string() }),
-            );
-            ApiError::internal(request_id.to_string())
-        })
+    let mut base = reqwest::Url::parse(base).map_err(|_| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider_broker_unavailable",
+            "The provider broker address is invalid.",
+            request_id.to_string(),
+        )
+    })?;
+    let trusted_loopback = base.scheme() == "http"
+        && base
+            .host_str()
+            .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"));
+    if !trusted_loopback {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider_broker_unavailable",
+            "The provider broker must use a loopback HTTP address.",
+            request_id.to_string(),
+        ));
+    }
+    if !base.path().ends_with('/') {
+        base.set_path(&format!("{}/", base.path()));
+    }
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(35))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| ApiError::internal(request_id.to_string()))?;
+    Ok(SubtitleProviderClient {
+        base,
+        client,
+        identity: identity.clone(),
+    })
 }
 
 fn subtitle_extension<'a>(requested: Option<&'a str>, headers: &HeaderMap) -> Option<&'a str> {

@@ -12,7 +12,11 @@ import {
 } from "@builder.io/qwik";
 import { api, errorDetail, readableError } from "./api";
 import { pushRoute, useBackLayer } from "./back-layers";
-import type { ProviderTestResult } from "./api-contract.generated";
+import type {
+  ProviderTestResult,
+  ServerService,
+  ServerServicesResponse,
+} from "./api-contract.generated";
 import { ActivityView } from "./activity-view";
 import { ConversionsView } from "./conversions-view";
 import { Icon } from "./icon";
@@ -813,6 +817,9 @@ export default component$((props: RootProps) => {
 const ProviderAccountsView = component$(() => {
   const accounts = useStore<{
     providers: ProviderDefinition[];
+    /** Services on this server (Immich); null until its status check ends. */
+    server: ServerService[] | null;
+    serverError: string;
     recoveryAdvice: string;
     selectedProviderId: string;
     credentialValues: Record<string, string>;
@@ -827,6 +834,8 @@ const ProviderAccountsView = component$(() => {
     notice: string;
   }>({
     providers: [],
+    server: null,
+    serverError: "",
     recoveryAdvice:
       "Saved credentials cannot be viewed again. Keep the recovery copy in Vaultwarden, KeePassXC, or another password manager.",
     selectedProviderId: "",
@@ -848,7 +857,21 @@ const ProviderAccountsView = component$(() => {
     accounts.recoveryAdvice = response.recoveryAdvice;
   });
 
+  // Immich's check waits on Immich itself, so it never holds up the list.
+  const loadServer = $(async () => {
+    try {
+      const response = await api<ServerServicesResponse>(
+        "/provider-accounts/server-services",
+      );
+      accounts.server = response.services;
+      accounts.serverError = "";
+    } catch (error) {
+      accounts.serverError = readableError(error);
+    }
+  });
+
   useTask$(async () => {
+    void loadServer();
     try {
       await loadAccounts();
     } catch (error) {
@@ -983,14 +1006,21 @@ const ProviderAccountsView = component$(() => {
   });
 
   const query = accounts.query.trim().toLowerCase();
+  // Immich runs on this server; it is listed under its own heading.
+  const onlineProviders = accounts.providers.filter(
+    (provider) => provider.id !== SERVER_IMMICH_ID,
+  );
+  const immichProvider = accounts.providers.find(
+    (provider) => provider.id === SERVER_IMMICH_ID,
+  );
   const matchingProviders = query
-    ? accounts.providers.filter((provider) =>
+    ? onlineProviders.filter((provider) =>
         [provider.name, ...provider.mediaDomains, ...provider.capabilities]
           .join(" ")
           .toLowerCase()
           .includes(query),
       )
-    : accounts.providers;
+    : onlineProviders;
   const plannedProviders = matchingProviders.filter(
     (provider) => provider.implementationStatus === "planned",
   );
@@ -1324,6 +1354,64 @@ const ProviderAccountsView = component$(() => {
     );
   };
 
+  const renderServerService = (service: ServerServiceRow) => {
+    // Outside NixOS's managed setup, Immich still takes a personal API key.
+    if (
+      service.id === SERVER_IMMICH_ID &&
+      service.status !== "notEnabled" &&
+      immichProvider?.canConfigure
+    )
+      return renderRow(immichProvider);
+    return (
+      <li class="provider-row" key={service.id}>
+        <div class="provider-row-summary">
+          <div class="provider-server-name">
+            <img
+              class="provider-logo"
+              src={service.logoUrl}
+              alt=""
+              width={44}
+              height={36}
+              loading="lazy"
+              decoding="async"
+            />
+            <span class="provider-row-title">
+              <span class="provider-row-name">{service.name}</span>
+            </span>
+            {service.status !== "connected" && service.message && (
+              <span class="provider-server-message">{service.message}</span>
+            )}
+          </div>
+          <span class={["provider-state", SERVER_STATUS_TONES[service.status]]}>
+            {SERVER_STATUS_LABELS[service.status]}
+          </span>
+        </div>
+      </li>
+    );
+  };
+
+  const serverServices: ServerServiceRow[] =
+    accounts.server ??
+    (accounts.serverError
+      ? [
+          {
+            id: SERVER_IMMICH_ID,
+            name: "Immich",
+            logoUrl: "/assets/logos/immich.svg",
+            status: "unknown",
+            message: `Its status could not be checked: ${accounts.serverError}`,
+          },
+        ]
+      : [
+          {
+            id: SERVER_IMMICH_ID,
+            name: "Immich",
+            logoUrl: "/assets/logos/immich.svg",
+            status: "checking",
+            message: "",
+          },
+        ]);
+
   return (
     <section class="provider-accounts-page">
       {accounts.error && (
@@ -1338,6 +1426,16 @@ const ProviderAccountsView = component$(() => {
           <span>{accounts.notice}</span>
         </div>
       )}
+
+      <section
+        class="provider-list-panel"
+        aria-labelledby="provider-group-server"
+      >
+        <h2 class="provider-group-heading" id="provider-group-server">
+          On this server
+        </h2>
+        <ul class="provider-list">{serverServices.map(renderServerService)}</ul>
+      </section>
 
       <div class="provider-account-toolbar">
         <label class="library-filter provider-account-search">
@@ -1448,14 +1546,13 @@ const domainLabel = (domain: string) =>
   domain.charAt(0).toUpperCase() + domain.slice(1);
 
 /** Page sections, in order. Each media tag belongs to one section so TV
- * sources sit with movies; Immich (the only "images" source) is the user's
- * own photo library, not a metadata lookup. */
+ * sources sit with movies. Immich is not here: it runs on this server and has
+ * its own heading. */
 const PROVIDER_GROUPS: ReadonlyArray<{
   id: string;
   label: string;
   domains: readonly string[];
 }> = [
-  { id: "apps", label: "Your apps", domains: ["images"] },
   { id: "video", label: "Movies & TV", domains: ["movies", "television"] },
   { id: "music", label: "Music", domains: ["music"] },
   {
@@ -1530,7 +1627,6 @@ function providerRowTypes(
       : provider.mediaDomains;
   if (
     group &&
-    group.id !== "apps" &&
     group.domains.length > 0 &&
     group.domains.every((domain) => domains.includes(domain))
   )
@@ -1553,6 +1649,32 @@ function providerRecommendation(
         : recommended.map(domainLabel).join(" · "),
   };
 }
+
+const SERVER_IMMICH_ID = "immich";
+
+/** "checking" and "unknown" are local states before or without an answer. */
+type ServerServiceStatus = ServerService["status"] | "checking" | "unknown";
+type ServerServiceRow = Omit<ServerService, "status"> & {
+  status: ServerServiceStatus;
+};
+
+const SERVER_STATUS_LABELS: Record<ServerServiceStatus, string> = {
+  connected: "Connected",
+  notConnected: "Not connected",
+  notReachable: "Not reachable",
+  notEnabled: "Not enabled",
+  checking: "Checking…",
+  unknown: "Unknown",
+};
+
+const SERVER_STATUS_TONES: Record<ServerServiceStatus, string> = {
+  connected: "connected",
+  notConnected: "attention",
+  notReachable: "attention",
+  notEnabled: "",
+  checking: "quiet",
+  unknown: "attention",
+};
 
 type ProviderAccountStatus =
   | "connected"

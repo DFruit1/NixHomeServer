@@ -123,6 +123,15 @@ shown to the user.
   OpenSubtitles, or AcoustID credentials; its adapters resolve the caller's
   runtime account through the broker.
 
+## Update 2026-11-17
+
+The unused build-time leftovers were archived: the agenix OpenSubtitles and
+AcoustID secrets, and the web service's host-key fallbacks and TMDB routes (see
+[the archive](../archive/declarative-metadata-providers/README.md)). Immich
+runs on this server, so Online services shows it under "On this server" with
+only its status, not as an online provider. The broker's host TMDB key for the
+DVD identifier's system socket remains until the owner chooses a replacement.
+
 ## Rejected alternatives
 
 - Store plaintext credentials in SQLite or show them again in the UI.

@@ -484,9 +484,10 @@ describe("Media Manager navigation", () => {
     await render(<Root initialView="accounts" />);
     await vi.waitFor(() => expect(screen.textContent).toContain("TMDB"));
 
-    expect(screen.querySelector(".provider-state.attention")?.textContent).toBe(
-      "Needs attention",
-    );
+    expect(
+      screen.querySelector(".provider-group .provider-state.attention")
+        ?.textContent,
+    ).toBe("Needs attention");
     const usableRows = screen.querySelectorAll(
       ".provider-group > .provider-list > .provider-row",
     );

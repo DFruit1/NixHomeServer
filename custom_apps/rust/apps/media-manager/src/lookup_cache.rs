@@ -272,12 +272,6 @@ fn media_metadata_scope(request: &Request) -> Option<String> {
         return None;
     }
     let path = request.uri().path();
-    if matches!(
-        path,
-        "/api/v1/metadata/tmdb/search" | "/api/v1/metadata/tmdb/details"
-    ) {
-        return Some("tmdb".to_string());
-    }
     (path.starts_with("/api/v1/items/") && path.ends_with("/metadata/lookup"))
         .then(|| "musicbrainz".to_string())
 }

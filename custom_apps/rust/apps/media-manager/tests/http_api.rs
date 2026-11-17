@@ -75,7 +75,6 @@ fn test_app_with_mode(
             provider_accounts_cache: Arc::default(),
             metadata_memo: Arc::default(),
             frontend_index: Arc::new(tokio::sync::OnceCell::new()),
-            tmdb_client: None,
         }),
         database,
     )
@@ -516,7 +515,6 @@ async fn frontend_assets_are_served_only_from_the_packaged_asset_directory() {
         provider_accounts_cache: Arc::default(),
         metadata_memo: Arc::default(),
         frontend_index: Arc::new(tokio::sync::OnceCell::new()),
-        tmdb_client: None,
     });
 
     let asset = app
@@ -1003,7 +1001,6 @@ async fn items_report_unprobeable_videos_as_null_probes() {
         provider_accounts_cache: Arc::default(),
         metadata_memo: Arc::default(),
         frontend_index: Arc::new(tokio::sync::OnceCell::new()),
-        tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
 
@@ -1344,7 +1341,6 @@ async fn metadata_details_merge_filename_fields_with_a_bounded_jellyfin_snapshot
         provider_accounts_cache: Arc::default(),
         metadata_memo: Arc::default(),
         frontend_index: Arc::new(tokio::sync::OnceCell::new()),
-        tmdb_client: None,
     });
     scan_root(&app, "shared-videos").await;
     let items = app
@@ -1539,7 +1535,6 @@ async fn metadata_health_exposes_current_title_and_real_source_alternatives() {
         provider_accounts_cache: Arc::default(),
         metadata_memo: Arc::default(),
         frontend_index: Arc::new(tokio::sync::OnceCell::new()),
-        tmdb_client: None,
     });
     scan_root(&app, "shared-videos").await;
     let response = app
@@ -2140,7 +2135,6 @@ async fn metadata_inspection_includes_bounded_audiobookshelf_and_kavita_snapshot
         provider_accounts_cache: Arc::default(),
         metadata_memo: Arc::default(),
         frontend_index: Arc::new(tokio::sync::OnceCell::new()),
-        tmdb_client: None,
     });
 
     let audiobook_id = item_id_by_kind(&app, "shared-audiobooks", "audiobook").await;
@@ -2256,7 +2250,6 @@ async fn authenticated_viewer_can_queue_and_follow_a_registered_refresh() {
         provider_accounts_cache: Arc::default(),
         metadata_memo: Arc::default(),
         frontend_index: Arc::new(tokio::sync::OnceCell::new()),
-        tmdb_client: None,
     });
     let response = app
         .clone()
@@ -2311,7 +2304,6 @@ async fn authenticated_viewer_can_queue_a_registered_kavita_refresh() {
         provider_accounts_cache: Arc::default(),
         metadata_memo: Arc::default(),
         frontend_index: Arc::new(tokio::sync::OnceCell::new()),
-        tmdb_client: None,
     });
 
     let response = app
@@ -2371,7 +2363,6 @@ async fn refresh_status_returns_the_durable_terminal_result() {
         provider_accounts_cache: Arc::default(),
         metadata_memo: Arc::default(),
         frontend_index: Arc::new(tokio::sync::OnceCell::new()),
-        tmdb_client: None,
     });
 
     let response = app
@@ -3674,7 +3665,6 @@ async fn musicbrainz_search_lookup_returns_release_group_candidates() {
         provider_accounts_cache: Arc::default(),
         metadata_memo: Arc::default(),
         frontend_index: Arc::new(tokio::sync::OnceCell::new()),
-        tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
     let item_id = item_id_by_kind(&app, "shared-music", "music").await;
@@ -3726,11 +3716,28 @@ async fn musicbrainz_search_lookup_returns_release_group_candidates() {
 }
 
 #[tokio::test]
-async fn musicbrainz_fingerprint_lookup_runs_fpcalc_and_uses_acoustid() {
+async fn musicbrainz_fingerprint_lookup_runs_fpcalc_and_uses_the_callers_acoustid_account() {
+    use axum::{
+        routing::{get, post},
+        Json,
+    };
     let temp = tempfile::tempdir().expect("temporary directory");
     let (mock_base, _mock) = serve_mock(musicbrainz_mock()).await;
-    let key_file = temp.path().join("acoustid.json");
-    std::fs::write(&key_file, r#"{"acoustidApiKey":"test-api-key"}"#).expect("write key");
+    // The provider broker answers with the caller's saved AcoustID account.
+    let broker = axum::Router::new()
+        .route(
+            "/api/v1/provider-accounts",
+            get(|| async {
+                Json(serde_json::json!({
+                    "providers": [{ "id": "acoustid", "account": { "state": "configured" } }]
+                }))
+            }),
+        )
+        .route(
+            "/api/v1/provider-lookups/acoustid/lookup",
+            post(|| async { Json(serde_json::json!({ "releaseGroupIds": [NIRVANA_MBID] })) }),
+        );
+    let (broker_base, _broker) = serve_mock(broker).await;
     let fpcalc = temp.path().join("fpcalc-stub");
     let mut finger = "AQ".to_string();
     for _ in 0..50 {
@@ -3754,8 +3761,7 @@ async fn musicbrainz_fingerprint_lookup_runs_fpcalc_and_uses_acoustid() {
     config.state_dir = temp.path().join("state");
     config.mutation_mode = MutationMode::Enabled;
     config.musicbrainz_api_base = Some(mock_base.clone());
-    config.acoustid_api_base = Some(mock_base);
-    config.acoustid_api_key_file = Some(key_file);
+    config.provider_broker_base_url = Some(format!("{broker_base}/"));
     config.fpcalc_path = Some(fpcalc);
     std::fs::create_dir_all(config.shared_root.join("_Music/Artist/Album")).expect("music folder");
     std::fs::write(
@@ -3773,7 +3779,6 @@ async fn musicbrainz_fingerprint_lookup_runs_fpcalc_and_uses_acoustid() {
         provider_accounts_cache: Arc::default(),
         metadata_memo: Arc::default(),
         frontend_index: Arc::new(tokio::sync::OnceCell::new()),
-        tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
     let item_id = item_id_by_kind(&app, "shared-music", "music").await;
@@ -3820,7 +3825,6 @@ async fn musicbrainz_auto_mode_falls_back_to_search_without_an_api_key() {
         provider_accounts_cache: Arc::default(),
         metadata_memo: Arc::default(),
         frontend_index: Arc::new(tokio::sync::OnceCell::new()),
-        tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
     let item_id = item_id_by_kind(&app, "shared-music", "music").await;
@@ -3861,7 +3865,6 @@ async fn musicbrainz_fingerprint_without_a_key_is_rejected_as_unconfigured() {
         provider_accounts_cache: Arc::default(),
         metadata_memo: Arc::default(),
         frontend_index: Arc::new(tokio::sync::OnceCell::new()),
-        tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
     let item_id = item_id_by_kind(&app, "shared-music", "music").await;

@@ -1234,3 +1234,85 @@ pub(super) async fn add_tags(headers: HeaderMap) -> Result<Json<Value>, ApiError
         &id,
     ))
 }
+
+/// Immich runs on this server, so Metadata sources reports it separately from
+/// online providers: whether NixOS enables it, whether it answers, and whether
+/// the caller's own Immich connection works.
+pub(super) async fn server_status(state: &ProviderBrokerState, identity: &Identity) -> Value {
+    let status = |status: &str, message: &str| {
+        json!({
+            "id": "immich",
+            "name": "Immich",
+            "logoUrl": "/assets/logos/immich.svg",
+            "status": status,
+            "message": message,
+        })
+    };
+    let Some(runtime) = state.images.clone() else {
+        return status("notEnabled", "Immich is not enabled on this server.");
+    };
+    let probe = Duration::from_secs(4);
+    let ping = match runtime.base.join("server/ping") {
+        Ok(url) => state.client.get(url).timeout(probe).send().await,
+        Err(_) => {
+            return status(
+                "notReachable",
+                "Immich's address on this server is invalid.",
+            )
+        }
+    };
+    if !ping.is_ok_and(|response| response.status().is_success()) {
+        return status(
+            "notReachable",
+            "Immich is enabled but is not responding. Check the Photos service.",
+        );
+    }
+    if runtime.managed && !identity.groups.iter().any(|g| g == "immich-users") {
+        return status(
+            "notConnected",
+            "Your account does not have access to Photos.",
+        );
+    }
+    let Ok(account) = load_account(state, identity, runtime, "server-status") else {
+        return status(
+            "notConnected",
+            if state.images.as_ref().is_some_and(|r| r.managed) {
+                "Sign into Photos once to create your Immich account. Media Manager connects automatically within a few minutes."
+            } else {
+                "Connect your Immich API key below."
+            },
+        );
+    };
+    let Ok(mut key) = HeaderValue::from_str(&account.key) else {
+        return status("notConnected", "The saved Immich connection is invalid.");
+    };
+    key.set_sensitive(true);
+    let me = match account.runtime.base.join("users/me") {
+        Ok(url) => {
+            state
+                .client
+                .get(url)
+                .header("x-api-key", key)
+                .timeout(probe)
+                .send()
+                .await
+        }
+        Err(_) => {
+            return status(
+                "notReachable",
+                "Immich's address on this server is invalid.",
+            )
+        }
+    };
+    match me.map(|response| response.status()) {
+        Ok(code) if code.is_success() => status("connected", "Connected to your Immich account."),
+        Ok(reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN) => status(
+            "notConnected",
+            "Immich rejected the saved connection for your account.",
+        ),
+        _ => status(
+            "notReachable",
+            "Immich is enabled but could not confirm your account. Check the Photos service.",
+        ),
+    }
+}

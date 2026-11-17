@@ -40,29 +40,6 @@ impl LookupMode {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AcoustidCredentials {
-    pub acoustid_api_key: String,
-    #[serde(default)]
-    pub user_agent: Option<String>,
-}
-
-impl AcoustidCredentials {
-    pub fn from_file(path: &Path) -> Result<Self, ProviderError> {
-        let bytes = std::fs::read(path)
-            .map_err(|error| ProviderError::new(format!("read AcoustID key: {error}")))?;
-        let credentials = serde_json::from_slice::<Self>(&bytes)
-            .map_err(|error| ProviderError::new(format!("parse AcoustID key JSON: {error}")))?;
-        if credentials.acoustid_api_key.trim().is_empty() {
-            return Err(ProviderError::new(
-                "AcoustID credentials require a non-empty acoustidApiKey",
-            ));
-        }
-        Ok(credentials)
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct MusicBrainzClientConfig {
     pub acoustid_api_key: Option<String>,
@@ -804,17 +781,8 @@ impl std::error::Error for ProviderError {}
 mod tests {
     use super::{
         build_release_group_query, is_trusted_origin, join_artist_credit, normalize_release_group,
-        parse_fingerprint_output, valid_mbid, AcoustidCredentials, ArtistCredit, ReleaseGroup,
-        ReleaseRef,
+        parse_fingerprint_output, valid_mbid, ArtistCredit, ReleaseGroup, ReleaseRef,
     };
-
-    #[test]
-    fn acoustid_credentials_reject_an_empty_key() {
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let file = temp.path().join("key.json");
-        std::fs::write(&file, r#"{"acoustidApiKey":"  "}"#).expect("write key");
-        assert!(AcoustidCredentials::from_file(&file).is_err());
-    }
 
     #[test]
     fn fpcalc_key_value_output_is_parsed() {

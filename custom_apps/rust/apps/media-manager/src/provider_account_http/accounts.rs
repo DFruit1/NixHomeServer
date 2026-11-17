@@ -45,6 +45,24 @@ pub(super) async fn list_provider_accounts(
     .into_response()
 }
 
+pub(super) async fn server_services(
+    State(state): State<ProviderBrokerState>,
+    headers: HeaderMap,
+) -> Response {
+    let request_id = request_id();
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let immich = immich::server_status(&state, &identity).await;
+    Json(json!({
+        "schemaVersion": 1,
+        "services": [immich],
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
 pub(super) async fn save_provider_account(
     State(state): State<ProviderBrokerState>,
     headers: HeaderMap,

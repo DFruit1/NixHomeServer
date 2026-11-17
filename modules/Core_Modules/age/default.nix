@@ -22,8 +22,6 @@ let
   atticEnabled = moduleEnabled "attic";
   failureAlertWebhookFile = secretFile "failureAlertWebhookUrl";
   forgejoGithubTokenFile = secretFile "forgejoGithubToken";
-  openSubtitlesCredentialsFile = secretFile "openSubtitlesCredentials";
-  acoustidApiKeyFile = secretFile "acoustidApiKey";
 in
 {
   imports = [
@@ -134,12 +132,6 @@ in
   }
   // lib.optionalAttrs (builtins.pathExists failureAlertWebhookFile) {
     failureAlertWebhookUrl = { file = failureAlertWebhookFile; owner = "root"; mode = "0400"; };
-  }
-  // lib.optionalAttrs (builtins.pathExists openSubtitlesCredentialsFile) {
-    openSubtitlesCredentials = { file = openSubtitlesCredentialsFile; owner = "media-manager"; group = "media-manager"; mode = "0400"; };
-  }
-  // lib.optionalAttrs (builtins.pathExists acoustidApiKeyFile) {
-    acoustidApiKey = { file = acoustidApiKeyFile; owner = "media-manager"; group = "media-manager"; mode = "0400"; };
   };
 
   systemd.tmpfiles.rules = [
