@@ -457,17 +457,36 @@ pub(super) async fn video_transcript(
             directory = directory.child(part)?;
         }
         let stem = leaf.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(leaf);
-        let names = directory.names()?;
-        let candidates = [
+        let mut names = directory.names()?;
+        names.sort();
+        let mut candidates = vec![
             format!("{leaf}.transcript.vtt"),
             format!("{stem}.vtt"),
             format!("{stem}.srt"),
         ];
+        // Match the subtitle inventory's stem + language/flag convention.
+        // Prioritize generated and unqualified tracks, then use a stable order.
+        candidates.extend(
+            names
+                .iter()
+                .filter(|name| {
+                    let Some((track_stem, extension)) = name.rsplit_once('.') else {
+                        return false;
+                    };
+                    matches!(
+                        extension.to_ascii_lowercase().as_str(),
+                        "srt" | "vtt" | "ass" | "ssa"
+                    ) && (track_stem == stem || track_stem.starts_with(&format!("{stem}.")))
+                })
+                .cloned(),
+        );
         let (mut file, format) =
             if let Some(name) = candidates.iter().find(|name| names.contains(name)) {
                 (
                     directory.file(name)?,
-                    if name.ends_with(".srt") { "srt" } else { "vtt" },
+                    name.rsplit_once('.')
+                        .map(|(_, extension)| extension)
+                        .unwrap_or("vtt"),
                 )
             } else if let Some(path) = cached_subtitle.filter(|path| path.is_file()) {
                 let parent = Dir::open(path.parent().ok_or("Invalid subtitle path")?)?;
@@ -556,29 +575,43 @@ fn read_personal_transcript(
     let path = path
         .strip_prefix("_Transcripts/")
         .ok_or("Invalid transcript path")?;
-    if !matches!(
-        path.rsplit_once('.').map(|(_, ext)| ext),
-        Some("txt" | "vtt" | "srt")
-    ) {
+    if !path.rsplit_once('.').is_some_and(|(_, extension)| {
+        matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "txt" | "md" | "vtt" | "srt"
+        )
+    }) {
         return Err("Invalid transcript format".into());
     }
-    let (folder, leaf) = path.rsplit_once('/').ok_or("Invalid transcript path")?;
+    let (folder, leaf) = path.rsplit_once('/').unwrap_or(("", path));
     let mut directory = Dir::open(users_root)?
         .traverse(username)?
         .child("_Transcripts")?;
-    for part in folder.split('/') {
-        directory = directory.child(part)?;
+    if !folder.is_empty() {
+        for part in folder.split('/') {
+            directory = directory.child(part)?;
+        }
     }
     let names = directory.names()?;
-    let selected = ["diarized.srt", "subtitles.vtt", "subtitles.srt"]
-        .into_iter()
-        .find(|name| names.iter().any(|entry| entry == name))
-        .unwrap_or(leaf);
+    let selected = if matches!(
+        leaf,
+        "transcript.txt" | "subtitles.vtt" | "subtitles.srt" | "diarized.srt"
+    ) {
+        ["diarized.srt", "subtitles.vtt", "subtitles.srt"]
+            .into_iter()
+            .find(|name| names.iter().any(|entry| entry == name))
+            .unwrap_or(leaf)
+    } else {
+        leaf
+    };
     let bytes = directory.read(selected, MAX_SUBTITLE_BYTES as u64)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| "Invalid transcript encoding")?;
-    let format = selected.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
-    let cues = if matches!(format, "vtt" | "srt") {
-        parse_subtitle(format, text)?
+    let format = selected
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .unwrap_or_default();
+    let cues = if matches!(format.as_str(), "vtt" | "srt") {
+        parse_subtitle(&format, text)?
     } else {
         Vec::new()
     };

@@ -911,6 +911,19 @@ fn present_metadata(metadata: &serde_json::Value) -> serde_json::Value {
         {
             continue;
         }
+        // Navigation data must remain intact: truncating an encoded path can
+        // silently select another file or leave an incomplete percent escape.
+        if key == "transcript_url" {
+            if let Some(link) = value
+                .as_str()
+                .map(str::trim)
+                .filter(|link| link.len() <= 32_768)
+                && url::Url::parse(link).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+            {
+                out.insert(key.clone(), json!(link));
+            }
+            continue;
+        }
         match value {
             serde_json::Value::String(text) => {
                 let trimmed = text.trim();

@@ -33,9 +33,14 @@ export const TranscriptView = component$<{ rootId?: string; path?: string }>(
               `/transcript-file?${new URLSearchParams({ path })}`,
             );
           } else if (root && path) {
-            const page = await catalogItems(root, () => !stopped);
-            const exact = page.items.find((item) => item.relativePath === path);
-            const tracks = page.items.filter((item) =>
+            const page = await catalogItems(root, () => !stopped, false, path);
+            const recordings = page.items.filter((item) =>
+              ["video", "music", "audiobook", "podcast"].includes(
+                item.mediaKind,
+              ),
+            );
+            const exact = recordings.find((item) => item.relativePath === path);
+            const tracks = recordings.filter((item) =>
               item.relativePath.startsWith(path.replace(/\/$/, "") + "/"),
             );
             if (!exact && tracks.length > 1) {
@@ -46,7 +51,7 @@ export const TranscriptView = component$<{ rootId?: string; path?: string }>(
             const item = exact ?? (tracks.length === 1 ? tracks[0] : undefined);
             if (!item)
               throw new Error(
-                "This file is unavailable, or the result names a folder with multiple recordings. Open the individual recording from the library.",
+                "This recording is unavailable in your media library.",
               );
             result = await api(
               `/items/${encodeURIComponent(item.id)}/transcript`,
@@ -84,7 +89,7 @@ export const TranscriptView = component$<{ rootId?: string; path?: string }>(
                 <a
                   href={`?${new URLSearchParams({ view: "transcript", root: props.rootId ?? "", path })}`}
                 >
-                  {path.split("/").at(-1)}
+                  {path.slice((props.path ?? "").replace(/\/$/, "").length + 1)}
                 </a>
               </li>
             ))}
@@ -105,7 +110,13 @@ export const TranscriptView = component$<{ rootId?: string; path?: string }>(
               {cues.map((cue) => (
                 <li key={cue.index}>
                   <time>
-                    {new Date(cue.startMs).toISOString().slice(11, 19)}
+                    {[
+                      Math.floor(cue.startMs / 3_600_000),
+                      Math.floor(cue.startMs / 60_000) % 60,
+                      Math.floor(cue.startMs / 1_000) % 60,
+                    ]
+                      .map((part) => String(part).padStart(2, "0"))
+                      .join(":")}
                   </time>
                   <span>{cue.text}</span>
                 </li>

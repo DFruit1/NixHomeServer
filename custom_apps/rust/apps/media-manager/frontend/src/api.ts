@@ -179,6 +179,7 @@ export async function catalogItems(
   rootId: string,
   current: () => boolean,
   probes = false,
+  search = "",
 ): Promise<{
   items: CatalogItem[];
   probePending: boolean;
@@ -191,6 +192,7 @@ export async function catalogItems(
     if (!current()) break;
     const query = new URLSearchParams({ rootId, pageSize: "500" });
     if (cursor) query.set("cursor", cursor);
+    if (search) query.set("search", search);
     if (probes) query.set("includeVideoProbes", "true");
     const page = await api<{
       items: CatalogItem[];
