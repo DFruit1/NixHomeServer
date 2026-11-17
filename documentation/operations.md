@@ -1348,9 +1348,13 @@ episodes of that run. When several runs fit (a partly collected series) no
 guess is made. With no library episodes (in that season) the disc number in
 the file name gives an estimate instead (**disc number**). Such a guess is
 accepted when the dialogue confirms at least one title and contradicts none.
-Contradicted or unconfirmed, it is dropped and the dialogue alone decides, as
-without a proposal, and its contradiction does not stop automatic retries (a
-contradicted menu or TheDiscDB proposal still does). Without a proposal,
+Contradicted by the subtitles or unconfirmed, it is dropped and the dialogue
+alone decides, as without a proposal, and its contradiction does not stop
+automatic retries (a contradicted menu or TheDiscDB proposal still does).
+Episode summaries (Bonsai agreeing with the keyword ranking) may confirm any
+proposal but never overrule it: when only the summaries disagree, with no
+subtitle match behind the change, the disc is held with the proposal as its
+suggestion. Without a proposal,
 every title must match consecutive episodes of one season, except that one
 confident subtitle match can fix the disc order when at least half the titles
 agree with it and none disagrees.

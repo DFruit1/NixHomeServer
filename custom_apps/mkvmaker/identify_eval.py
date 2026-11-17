@@ -196,6 +196,7 @@ def content_digest(outcome: dict[str, Any]) -> dict[str, Any] | None:
         })
     return {
         "rule": decision.get("rule"),
+        "summaryOnlyContradictions": decision.get("summaryOnlyContradictions") or [],
         "subtitleDownloadsUsed": budget.get("used"),
         "subtitleCacheHits": budget.get("cacheHits"),
         "titles": titles,
@@ -337,6 +338,8 @@ def summarize(report: dict[str, Any]) -> str:
             titles = sum(len(r["titles"]) for r in subset)
             correct_titles = sum(len(r["titles"]) for r in subset if r["result"] == "identified-correct")
             guess = sum(1 for r in subset if r["result"] == "held" and r["guessCorrect"])
+            summary_held = sum(1 for r in subset
+                               if (r.get("content") or {}).get("rule") == "summary contradiction held")
             relabelled = sum(1 for r in subset if r["result"] == "identified-correct"
                              for t in r["titles"] if t.get("layoutDiffers"))
             lines.append(
@@ -344,7 +347,8 @@ def summarize(report: dict[str, Any]) -> str:
                 f"identified-correct={counts.get('identified-correct', 0)} ({correct_titles} titles) "
                 f"identified-WRONG={counts.get('identified-WRONG', 0)} "
                 f"layout-mismatch={counts.get('identified-layout-mismatch', 0)} "
-                f"held={counts.get('held', 0)} (best guess right {guess}) errors={counts.get('error', 0)} "
+                f"held={counts.get('held', 0)} (best guess right {guess}, summary-only contradiction "
+                f"{summary_held}) errors={counts.get('error', 0)} "
                 f"correct-but-TVmaze-numbered={relabelled}")
         for run in runs:
             if run["result"] in ("identified-WRONG", "identified-layout-mismatch", "error"):

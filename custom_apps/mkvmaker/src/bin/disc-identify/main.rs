@@ -368,12 +368,16 @@ struct SubtitleCheck {
 #[serde(rename_all = "camelCase")]
 struct Decision {
     /// "proposal confirmed", "all titles matched", "subtitle anchor",
-    /// "not identified" or "not compared".
+    /// "summary contradiction held", "not identified" or "not compared".
     rule: &'static str,
     confirmed: usize,
     contradicted: usize,
     /// The title whose subtitle match anchored disc order ("subtitle anchor").
     anchor_title: Option<u32>,
+    /// Titles whose pick contradicted the proposal on summary agreement
+    /// alone, with no subtitle match behind it; such a disc is held.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    summary_only_contradictions: Vec<u32>,
 }
 
 struct Scratch(PathBuf);
@@ -1111,6 +1115,50 @@ fn anchored_order(
     (confirmed * 2 >= picks.len()).then_some((anchor, order, confirmed))
 }
 
+/// Titles (indices) whose pick contradicts the proposal on episode summaries
+/// alone. Summary agreement may confirm a proposal but never overrule it:
+/// Bonsai's confidence does not track correctness (All Creatures S05E01 was
+/// once published as S05E02 that way). A summary pick is backed by the
+/// subtitles only when it falls in the disc order of another title's subtitle
+/// match that itself departs from the proposal. `planned` is each title's
+/// proposed (season, episode).
+fn unsupported_summary_contradictions(
+    picks: &[Option<Pick>],
+    planned: &[Option<(u32, u32)>],
+    pool: &[PoolEpisode],
+) -> Vec<usize> {
+    let contradicts = |index: usize| match (&picks[index], planned.get(index).copied().flatten()) {
+        (Some(pick), Some(planned)) => {
+            let e = &pool[pick.pool];
+            (e.season, e.number) != planned
+        }
+        _ => false,
+    };
+    let anchors: Vec<(usize, &PoolEpisode)> = picks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, pick)| {
+            let pick = pick.as_ref().filter(|p| p.subtitle_score.is_some())?;
+            let departs = planned.get(index).copied().flatten().is_none() || contradicts(index);
+            departs.then(|| (index, &pool[pick.pool]))
+        })
+        .collect();
+    (0..picks.len())
+        .filter(|&index| {
+            let Some(pick) = picks[index].as_ref().filter(|p| p.subtitle_score.is_none()) else {
+                return false;
+            };
+            let e = &pool[pick.pool];
+            let backed = anchors.iter().any(|(anchor, base)| {
+                base.show == e.show
+                    && base.season == e.season
+                    && i64::from(e.number) - i64::from(base.number) == index as i64 - *anchor as i64
+            });
+            contradicts(index) && !backed
+        })
+        .collect()
+}
+
 fn run_content(args: &ContentArgs) -> Result<Outcome> {
     if args.videos.len() != args.titles.len() {
         bail!("--video and --title must be given the same number of times");
@@ -1633,6 +1681,48 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         }
     }
 
+    // Summary agreement alone never overrules a proposal (of any source):
+    // without subtitle evidence for the change, the disc is held with the
+    // proposal as its best guess.
+    if !proposal.is_empty() {
+        let planned: Vec<Option<(u32, u32)>> = args
+            .titles
+            .iter()
+            .map(|title| {
+                proposal
+                    .iter()
+                    .find(|a| a.title == *title)
+                    .map(|a| (a.season, a.episode))
+            })
+            .collect();
+        let refused = unsupported_summary_contradictions(&picks, &planned, &pool);
+        if !refused.is_empty() {
+            let source = proposal_source.as_deref().unwrap_or("disc-order");
+            for &index in &refused {
+                let (Some(pick), Some((season, episode))) = (&picks[index], planned[index]) else {
+                    continue;
+                };
+                let e = &pool[pick.pool];
+                outcome.reasons.push(format!(
+                    "Title {}: the episode summaries point to {}, but summaries alone cannot overrule the {source} proposal ({}); no subtitle match supports the change.",
+                    args.titles[index],
+                    episode_label(e.season, e.number, e.number),
+                    episode_label(season, episode, episode),
+                ));
+            }
+            diagnostics.decision.rule = "summary contradiction held";
+            diagnostics.decision.summary_only_contradictions =
+                refused.iter().map(|&index| args.titles[index]).collect();
+            outcome.assignments = proposal;
+            outcome.summary = match &series {
+                Some(show) => format!("{} — episodes need confirming.", show_label(show)),
+                None => "The episodes could not be confirmed.".into(),
+            };
+            outcome.content_diagnostics = Some(diagnostics);
+            return Ok(outcome);
+        }
+    }
+
     let chosen: Vec<(u32, &Pick)> = args
         .titles
         .iter()
@@ -1703,6 +1793,7 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             confirmed,
             contradicted: 0,
             anchor_title: Some(anchor_title),
+            summary_only_contradictions: Vec::new(),
         };
         outcome.content_diagnostics = Some(diagnostics);
         return Ok(outcome);
@@ -2301,6 +2392,42 @@ mod tests {
         }
         let printed = serde_json::to_value(Outcome::new("disc")).unwrap();
         assert!(printed.get("tmdbNumberingHeld").is_none());
+    }
+
+    #[test]
+    fn summary_agreement_never_overrules_a_proposal() {
+        // All Creatures S05E01: a correct menu proposal, but Bonsai and the
+        // keyword ranking agreed on S05E02. That was once published.
+        let pool = pool_of(5, 1..=10);
+        let planned = [Some((5, 1))];
+        assert_eq!(
+            unsupported_summary_contradictions(&[summary(&pool, 2)], &planned, &pool),
+            vec![0]
+        );
+        // Summaries may still confirm the proposal.
+        assert!(
+            unsupported_summary_contradictions(&[summary(&pool, 1)], &planned, &pool).is_empty()
+        );
+        // A subtitle match keeps its power to overrule.
+        assert!(
+            unsupported_summary_contradictions(&[subtitle(&pool, 2, 0.4)], &planned, &pool)
+                .is_empty()
+        );
+        let planned = [Some((5, 1)), Some((5, 2))];
+        // A summary pick in the disc order of a contradicting subtitle match
+        // is backed by it.
+        let shifted = [subtitle(&pool, 3, 0.4), summary(&pool, 4)];
+        assert!(unsupported_summary_contradictions(&shifted, &planned, &pool).is_empty());
+        // One that only disagrees with a confirming subtitle match is not.
+        let against = [subtitle(&pool, 1, 0.4), summary(&pool, 5)];
+        assert_eq!(
+            unsupported_summary_contradictions(&against, &planned, &pool),
+            vec![1]
+        );
+        // Without a proposal summaries decide as before.
+        assert!(
+            unsupported_summary_contradictions(&[summary(&pool, 2)], &[None], &pool).is_empty()
+        );
     }
 
     #[test]
