@@ -1340,16 +1340,20 @@ season. Otherwise
    broker's cache are free and do not count. If the uploader has no
    OpenSubtitles account the comparison is skipped.
 
-When the series is known but the disc named no episodes, the worker proposes
-them: the episodes after the last one in the series' `_Shows` folder
-(**library order**, continuing into the next season once TVmaze says the season
-is complete), or, with no library episodes, an estimate from the disc number in
-the file name (**disc number**). Like a menu proposal, it is accepted when the
-dialogue confirms at least one title and contradicts none, so a disc uploaded
-out of order is still held. Without any proposal, every title must match
-consecutive episodes of one season, except that one confident subtitle match
-can fix the disc order when at least half the titles agree with it and none
-disagrees.
+When the series is known but the disc named no episodes, the worker may
+propose them from the series' `_Shows` folder (**library order**): when
+exactly one run of missing episodes, within TVmaze's season episode counts
+(and the disc's season, if known), has room for the disc's titles, the first
+episodes of that run. When several runs fit (a partly collected series) no
+guess is made. With no library episodes (in that season) the disc number in
+the file name gives an estimate instead (**disc number**). Such a guess is
+accepted when the dialogue confirms at least one title and contradicts none.
+Contradicted or unconfirmed, it is dropped and the dialogue alone decides, as
+without a proposal, and its contradiction does not stop automatic retries (a
+contradicted menu or TheDiscDB proposal still does). Without a proposal,
+every title must match consecutive episodes of one season, except that one
+confident subtitle match can fix the disc order when at least half the titles
+agree with it and none disagrees.
 
 Identification is complete only when every title maps to consecutive episodes
 of one season. TVmaze and TheDiscDB can number a series differently from TMDB,
@@ -1361,7 +1365,8 @@ when every title maps to one TMDB episode and they are still consecutive in one
 TMDB season; the files and new series folders then use TMDB numbering, titles
 and `[tmdbid-N]`, and an existing folder tagged with any of the series' TMDB,
 TVDB or IMDb ids is reused. A mapping that is ambiguous or not consecutive is
-held; `TMDB is unavailable` holds are transient. `disc-identify episodes
+held without a suggested name (its guess is in TVmaze numbering); `TMDB is
+unavailable` holds are transient. `disc-identify episodes
 --series tvdbid-N --provider-socket …` prints a series' layout as JSON.
 
 The broker uses the host TMDB key from `repo.mediaManager.tmdbApiKeyFile`
@@ -1369,6 +1374,11 @@ The broker uses the host TMDB key from `repo.mediaManager.tmdbApiKeyFile`
 account). No key is configured today: numbering then stays as TVmaze or
 TheDiscDB gives it, and the evidence says
 `Episode numbering was not checked against TMDB (no TMDB key is configured).`
+Such a disc is never published into an existing `[tmdbid-N]` folder found by
+name and year (for example a TVmaze-identified Sherlock Holmes disc beside
+`Sherlock Holmes (1984) [tmdbid-799]`), nor into a second folder for the same
+series: it is held, without the dialogue step or a suggested name, with the
+reason `The existing library folder … uses TMDB episode numbering …`.
 
 Identified episodes are published to `_Shows`, and the ISO is archived in
 `_Processed` with its sidecar and an `.identify.json` recording both stages'
@@ -1399,26 +1409,40 @@ an ISO from `_NeedsIdentification` leaves its held videos in `_Unidentified`
 for manual handling.
 
 A disc held only because something was temporarily unavailable (Bonsai busy
-or failing, a TVmaze or TMDB request, the OpenSubtitles quota or broker, or the
+or failing, or a Bonsai label split or menu reading cut off at its token
+limit, a TVmaze or TMDB request, the OpenSubtitles quota or broker, or the
 identifier crashing or timing out) is identified again automatically after 1,
 6 and 24 hours, from its ISO and the already-encoded held videos, never
 re-encoding. Retries wait while the Bonsai gate is busy, and stop once the
-evidence contradicts the disc or the three attempts are used; a rename by a
-person always takes precedence. The evidence file's `retry` object shows which
+evidence contradicts the disc or the three attempts are used, including an
+attempt cut short by a killed worker; a rename by a person always takes
+precedence. Held specials are never retried. If the ISO cannot be archived
+after its episodes were published, the error is recorded on the retry and in
+the evidence summary, other holds carry on, and archiving is tried again an
+hour later. The evidence file's `retry` object shows which
 reasons were temporary and when the next attempt is due, and its `outcomes`
 hold each stage's per-title scores (transcript length, keyword and Bonsai
 picks, every subtitle checked and the rule that decided).
 
 A disc with one dominant title whose name is an existing `_Shows` folder's
 (`Rumpole_of_the_Bailey_D4.iso`) or that folder's name plus a subtitle
-(`Rumpole of the Bailey - Rumpole's Return.iso`) is treated as a feature-length
-special, not a film. When the TMDB-numbered season 0 has exactly one special
-named like the subtitle, it is filed as
+(`Rumpole of the Bailey - Rumpole's Return.iso`) may be a feature-length
+special. When the TMDB-numbered season 0 has exactly one special named like
+the subtitle, it is filed as
 `Rumpole of the Bailey (1978) [tvdbid-72995]/Season 00/Rumpole of the Bailey (1978) S00E03 - Rumpole's Return.mkv`.
-Otherwise it is held as above, without the dialogue step, with a suggested name
-such as `Rumpole of the Bailey (1978) S00E03.iso` when a special's name or
-runtime fits. A bare number after the show name stays part of a film title
-(`Mission Impossible 2`), as does a name that a `_Movies` folder already has.
+When a special's name fits fairly or exactly one special has the title's
+runtime, it is held as above, without the dialogue step, with a suggested
+name such as `Rumpole of the Bailey (1978) S00E03.iso`. A name that adds a
+subtitle but has no such season-0 evidence is a film: only TMDB numbers
+specials, so without a TMDB key `Rumpole of the Bailey - Rumpole's Return.iso`
+goes to `_Movies` as before. A year in the name that is not the show's must
+be the special's own air year, so
+`Sherlock_Holmes_A_Game_of_Shadows_2011.iso` beside
+`Sherlock Holmes (1984) [tmdbid-799]` is a film. A disc named only after the
+show (`Rumpole_of_the_Bailey_D4.iso`) is held for a person even without a TMDB
+list, with no suggested name. A bare number after the show name stays part of
+a film title (`Mission Impossible 2`), as does a name that a `_Movies` folder
+already has.
 
 Without the Bonsai app the menu step is skipped; without the transcribe app the
 dialogue step is skipped. Discs are then held more often, never guessed.

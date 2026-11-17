@@ -192,6 +192,11 @@ struct Outcome {
     disc_diagnostics: Option<DiscDiagnostics>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content_diagnostics: Option<ContentDiagnostics>,
+    /// Held because the episodes could not be renumbered as TMDB (Jellyfin)
+    /// numbers them. The assignments, if any, are in the identifier's own
+    /// numbering and must not be offered for publishing.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    tmdb_numbering_held: bool,
 }
 
 impl Outcome {
@@ -210,6 +215,7 @@ impl Outcome {
             season_episode_counts: BTreeMap::new(),
             disc_diagnostics: None,
             content_diagnostics: None,
+            tmdb_numbering_held: false,
         }
     }
 }
@@ -1478,16 +1484,20 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
                 "Title {title}: the dialogue did not clearly match one episode."
             ));
         }
-        // A contradicted subtitle comparison is worth reporting even without a pick.
+        // A contradicted subtitle comparison is worth reporting even without a
+        // pick. Only a menu (or TheDiscDB) proposal is evidence; a weak
+        // guess's contradiction is worded so the worker never treats it as one.
         if let (Some(proposed), Some((best, score))) = (proposed, containment.first())
             && *best != proposed
             && *score >= 0.06
         {
-            outcome.reasons.push(format!(
-                "Title {title}: dialogue matches {} rather than the {} guess.",
-                episode_label(pool[*best].season, pool[*best].number, pool[*best].number),
-                proposal_source.as_deref().unwrap_or("disc-order")
-            ));
+            let matched = episode_label(pool[*best].season, pool[*best].number, pool[*best].number);
+            let source = proposal_source.as_deref().unwrap_or("disc-order");
+            outcome.reasons.push(if weak {
+                format!("Title {title}: dialogue matches {matched}, not the {source} guess.")
+            } else {
+                format!("Title {title}: dialogue matches {matched} rather than the {source} guess.")
+            });
         }
         diagnostics.titles.push(detail);
         picks.push(pick);
@@ -1590,7 +1600,9 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         outcome.content_diagnostics = Some(diagnostics);
         return Ok(outcome);
     }
-    if proposal.is_empty()
+    // A weak guess that was not confirmed says nothing about the disc, so
+    // the dialogue alone decides, as without a proposal.
+    if (proposal.is_empty() || weak)
         && let Some((anchor, order, confirmed)) = anchored_order(&picks, &pool)
     {
         let anchor_title = args.titles[anchor];
@@ -1638,8 +1650,10 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
     if proposal.is_empty() {
         diagnostics.decision.confirmed = chosen.len();
     }
-    // Best guess for a person to confirm: the proposal, else whatever matched.
-    outcome.assignments = if !proposal.is_empty() {
+    // Best guess for a person to confirm: the proposal, else whatever
+    // matched; a weak guess the dialogue contradicted is no longer one.
+    let guess_contradicted = weak && diagnostics.decision.contradicted > 0;
+    outcome.assignments = if !proposal.is_empty() && !guess_contradicted {
         proposal
     } else {
         chosen
@@ -1682,8 +1696,18 @@ fn series_refs(show: &Show) -> Vec<tmdb::SeriesRef> {
 }
 
 /// Hold an identification whose numbering Jellyfin may not share.
+///
+/// The assignments are in TVmaze (or TheDiscDB) numbering, which would name
+/// the wrong episodes in a TMDB-numbered folder if a person accepted them.
+/// The disc stage keeps them as the content stage's proposal (it compares
+/// the same numbering); the content stage's outcome is final, so it drops
+/// them. Either way the outcome is flagged so no suggestion is offered.
 fn hold_for_numbering(outcome: &mut Outcome, show: &Show, reason: String) {
     outcome.status = "uncertain";
+    outcome.tmdb_numbering_held = true;
+    if outcome.stage == "content" {
+        outcome.assignments.clear();
+    }
     outcome.reasons.push(reason);
     outcome.summary = format!(
         "{} — the episode numbers Jellyfin (TMDB) uses need confirming.",
@@ -2171,6 +2195,39 @@ mod tests {
         assert!(anchored_order(&[None, subtitle(&pool, 13, 0.3)], &pool).is_some());
         assert!(anchored_order(&[subtitle(&pool, 13, 0.3), None], &pool).is_none());
         assert!(anchored_order(&[None, subtitle(&pool, 1, 0.3)], &pool).is_none());
+    }
+
+    #[test]
+    fn a_numbering_hold_offers_no_tvmaze_numbered_guess() {
+        let show = Show {
+            tvmaze_id: 1,
+            name: "Sherlock Holmes".into(),
+            year: Some(1984),
+            provider: Some("tvdbid-79588".into()),
+            imdb_id: None,
+            tmdb_id: None,
+            provider_ids: Vec::new(),
+        };
+        let guess = Assignment {
+            title: 1,
+            season: 4,
+            episode: 1,
+            name: "The Sign of Four".into(),
+            evidence: "dialogue".into(),
+        };
+        for (stage, kept) in [("disc", 1), ("content", 0)] {
+            let mut outcome = Outcome::new(stage);
+            outcome.status = "identified";
+            outcome.assignments = vec![guess.clone()];
+            hold_for_numbering(&mut outcome, &show, "TMDB is unavailable: x".into());
+            assert_eq!(outcome.status, "uncertain");
+            // The disc stage's numbering is the content stage's proposal.
+            assert_eq!(outcome.assignments.len(), kept, "{stage}");
+            let printed = serde_json::to_value(&outcome).unwrap();
+            assert_eq!(printed["tmdbNumberingHeld"], true);
+        }
+        let printed = serde_json::to_value(Outcome::new("disc")).unwrap();
+        assert!(printed.get("tmdbNumberingHeld").is_none());
     }
 
     #[test]
