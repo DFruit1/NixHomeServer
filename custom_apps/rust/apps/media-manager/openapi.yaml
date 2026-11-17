@@ -2903,6 +2903,10 @@ components:
           inspectionWarnings,
         ]
       properties:
+        directMediaCount:
+          type: [integer, "null"]
+          minimum: 0
+          description: Direct playable media files in a folder, excluding artwork, subtitles and metadata sidecars. Null when the bounded directory inspection was incomplete; absent for individual items.
         mediaType:
           {
             type: string,

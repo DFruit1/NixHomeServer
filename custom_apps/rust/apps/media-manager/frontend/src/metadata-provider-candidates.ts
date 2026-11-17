@@ -42,7 +42,10 @@ export function metadataSourceEditorValue(
     )
       return undefined;
     if (!Array.isArray(value) && typeof value !== "string") return undefined;
-    const entries = (Array.isArray(value) ? value : String(value).split(","))
+    const people = ["authors", "narrators", "writers"].includes(field);
+    const entries = (
+      Array.isArray(value) ? value : String(value).split(people ? /\r?\n/ : ",")
+    )
       .map((entry) => entry.trim())
       .filter(Boolean);
     if (
@@ -57,7 +60,7 @@ export function metadataSourceEditorValue(
       )
     )
       return undefined;
-    normalized = entries.join(", ");
+    normalized = entries.join(people ? "\n" : ", ");
   } else if (typeof value === "string") {
     normalized = value.trim();
   } else if (typeof value === "number" && NUMERIC_FIELDS.has(field)) {

@@ -16,6 +16,8 @@ import { Icon } from "./icon";
 import {
   allowMetadataDraftDiscard,
   commaSeparated,
+  personNames,
+  folderIdentity,
   INSPECTED_METADATA_FIELDS,
   formatBytes,
   mediaTypeForFolder,
@@ -138,6 +140,7 @@ interface MetadataEditorState {
   itemId: string;
   mediaType: string;
   mediaKind: string;
+  directMediaCount?: number;
   title: string;
   year: string;
   authors: string;
@@ -241,7 +244,10 @@ function normalizedMetadataValues(
     values[field] = metadata[field].trim();
   }
   for (const field of ["authors", "narrators", "genres", "writers"] as const) {
-    values[field] = commaSeparated(metadata[field]).join(", ");
+    values[field] =
+      field === "genres"
+        ? commaSeparated(metadata[field]).join(", ")
+        : personNames(metadata[field]).join("\n");
   }
   for (const field of [
     "year",
@@ -583,6 +589,7 @@ export const ItemEditor = component$<{
     metadata.mediaType = props.folder
       ? mediaTypeForFolder(selectedRoot?.category, props.folder.relativePath)
       : mediaTypeForItem(item);
+    metadata.directMediaCount = undefined;
     metadata.mediaKind =
       item?.mediaKind ?? mediaKindForMediaType(metadata.mediaType) ?? "";
     const filename =
@@ -661,6 +668,10 @@ export const ItemEditor = component$<{
         metadata.draftRevision !== loadRevision
       )
         return;
+      metadata.directMediaCount =
+        typeof details.directMediaCount === "number"
+          ? details.directMediaCount
+          : undefined;
       if (details.mediaType) metadata.mediaType = String(details.mediaType);
       if (details.mediaKind) metadata.mediaKind = String(details.mediaKind);
       if (details.title) metadata.title = String(details.title);
@@ -668,10 +679,10 @@ export const ItemEditor = component$<{
         metadata.year = String(details.year);
       if (details.series) metadata.series = String(details.series);
       metadata.authors = Array.isArray(details.authors)
-        ? (details.authors as string[]).join(", ")
+        ? (details.authors as string[]).join("\n")
         : metadata.authors;
       metadata.narrators = Array.isArray(details.narrators)
-        ? (details.narrators as string[]).join(", ")
+        ? (details.narrators as string[]).join("\n")
         : metadata.narrators;
       if (details.volumeNumber)
         metadata.volumeNumber = String(details.volumeNumber);
@@ -690,7 +701,7 @@ export const ItemEditor = component$<{
         ? (details.genres as string[]).join(", ")
         : metadata.genres;
       metadata.writers = Array.isArray(details.writers)
-        ? (details.writers as string[]).join(", ")
+        ? (details.writers as string[]).join("\n")
         : metadata.writers;
       if (details.premiereDate)
         metadata.premiereDate = String(details.premiereDate).slice(0, 10);
@@ -723,7 +734,7 @@ export const ItemEditor = component$<{
       metadata.sidecar = details.sidecar as
         | MetadataSidecarInspection
         | undefined;
-      metadata.lookupArtist = metadata.authors;
+      metadata.lookupArtist = personNames(metadata.authors).join(" / ");
       metadata.lookupTitle = metadata.title;
       metadata.baseline = normalizedMetadataValues(metadata);
       if (props.savedTitle)
@@ -840,10 +851,10 @@ export const ItemEditor = component$<{
     const fields: Record<string, unknown> = {
       mediaType: normalized.mediaType,
       title: normalized.title,
-      authors: commaSeparated(normalized.authors),
-      narrators: commaSeparated(normalized.narrators),
+      authors: personNames(normalized.authors),
+      narrators: personNames(normalized.narrators),
       genres: commaSeparated(normalized.genres),
-      writers: commaSeparated(normalized.writers),
+      writers: personNames(normalized.writers),
       providerIds: metadata.providerIds,
     };
     const optional: Array<[string, string]> = [
@@ -1871,8 +1882,23 @@ export const ItemEditor = component$<{
               <h4 class="metadata-group-heading">
                 Details used to find this online
               </h4>
+              {props.folder && (
+                <label class="metadata-lookup-field">
+                  <span>Folder type</span>
+                  <input
+                    readOnly
+                    value={folderIdentity(
+                      selectedRoot?.category,
+                      props.folder.relativePath,
+                      metadata.mediaType,
+                      metadata.series,
+                      metadata.directMediaCount,
+                    )}
+                  />
+                </label>
+              )}
               <label class="metadata-lookup-field">
-                <span>Media type</span>
+                <span>{props.folder ? "Contains" : "Media type"}</span>
                 <select
                   value={metadata.mediaType}
                   disabled={Boolean(props.folder)}
@@ -1898,7 +1924,17 @@ export const ItemEditor = component$<{
                     metadata.mediaType,
                   ).map((option) => (
                     <option key={option.value} value={option.value}>
-                      {option.label}
+                      {props.folder && option.value === "collection"
+                        ? ((
+                            {
+                              audiobooks: "Audiobooks",
+                              books: "Books",
+                              music: "Music",
+                              videos: "Videos",
+                              podcasts: "Podcasts",
+                            } as Record<string, string>
+                          )[selectedRoot?.category ?? ""] ?? "Media")
+                        : option.label}
                     </option>
                   ))}
                 </select>
@@ -1931,9 +1967,16 @@ export const ItemEditor = component$<{
               </label>
               {creatorLabel && (
                 <label class="metadata-lookup-field title-input">
-                  <span>{creatorLabel}</span>
-                  <input
-                    placeholder="Comma-separated"
+                  <span>
+                    {creatorLabel === "Artist"
+                      ? "Artists"
+                      : creatorLabel === "Author"
+                        ? "Authors"
+                        : "Creators"}
+                  </span>
+                  <textarea
+                    rows={2}
+                    placeholder="One name per line"
                     value={metadata.authors}
                     onInput$={(_, input) =>
                       updateMetadataDraftField(
@@ -2057,8 +2100,9 @@ export const ItemEditor = component$<{
               {showAdvancedAuthors && (
                 <label>
                   <span>Authors / artists</span>
-                  <input
-                    placeholder="Comma-separated"
+                  <textarea
+                    rows={2}
+                    placeholder="One name per line"
                     value={metadata.authors}
                     onInput$={(_, input) =>
                       updateMetadataDraftField(
@@ -2074,8 +2118,9 @@ export const ItemEditor = component$<{
               {applies("narrators") && (
                 <label>
                   <span>Narrators</span>
-                  <input
-                    placeholder="Comma-separated"
+                  <textarea
+                    rows={2}
+                    placeholder="One name per line"
                     value={metadata.narrators}
                     onInput$={(_, input) =>
                       updateMetadataDraftField(
@@ -2091,8 +2136,9 @@ export const ItemEditor = component$<{
               {applies("writers") && (
                 <label class="title-input">
                   <span>Writers</span>
-                  <input
-                    placeholder="Comma-separated"
+                  <textarea
+                    rows={2}
+                    placeholder="One name per line"
                     value={metadata.writers}
                     onInput$={(_, input) =>
                       updateMetadataDraftField(

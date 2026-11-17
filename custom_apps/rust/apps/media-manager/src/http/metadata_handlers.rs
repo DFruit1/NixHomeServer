@@ -7,6 +7,7 @@ struct VisibleMediaFolder {
     relative_path: String,
     category: LibraryCategory,
     has_direct_media: bool,
+    direct_media_count: Option<usize>,
     has_season_directory: bool,
 }
 
@@ -41,8 +42,8 @@ fn visible_media_folder(
                 )
             },
         )?;
-    let (has_direct_media, has_season_directory) = inspect_media_folder(&directory, root.category)
-        .map_err(|_| {
+    let (has_direct_media, has_season_directory, direct_media_count) =
+        inspect_media_folder(&directory, root.category).map_err(|_| {
             ApiError::without_request_id(
                 StatusCode::CONFLICT,
                 "folder_missing",
@@ -54,6 +55,7 @@ fn visible_media_folder(
         relative_path: query.relative_path.clone(),
         category: root.category,
         has_direct_media,
+        direct_media_count,
         has_season_directory,
     })
 }
@@ -61,12 +63,14 @@ fn visible_media_folder(
 fn inspect_media_folder(
     directory: &std::fs::File,
     category: LibraryCategory,
-) -> std::io::Result<(bool, bool)> {
+) -> std::io::Result<(bool, bool, Option<usize>)> {
     let mut has_direct_media = false;
+    let mut direct_media_count = Some(0);
     let mut has_season_directory = false;
     let directory_path = format!("/proc/self/fd/{}", directory.as_raw_fd());
     for (index, entry) in std::fs::read_dir(directory_path)?.enumerate() {
         if index >= 10_000 {
+            direct_media_count = None;
             break;
         }
         let entry = entry?;
@@ -92,17 +96,22 @@ fn inspect_media_folder(
             .to_ascii_lowercase();
         if classify(category, &extension).is_some_and(|kind| !kind.is_companion()) {
             has_direct_media = true;
+            if let Some(count) = direct_media_count.as_mut() {
+                *count += 1;
+            }
         }
     }
-    Ok((has_direct_media, has_season_directory))
+    Ok((has_direct_media, has_season_directory, direct_media_count))
 }
 
 fn folder_media_type(folder: &VisibleMediaFolder) -> &'static str {
     if season_number_from_folder(&folder.relative_path).is_some() {
         return "season";
     }
+    if folder.category == LibraryCategory::Videos && folder.has_season_directory {
+        return "series";
+    }
     match (folder.category, folder.has_direct_media) {
-        (LibraryCategory::Videos, true) if folder.has_season_directory => "series",
         (LibraryCategory::Videos, true) => "movie",
         (LibraryCategory::Music, true) => "music",
         (LibraryCategory::Audiobooks, true) => "audiobook",
@@ -2212,6 +2221,7 @@ pub(super) async fn folder_metadata(
     };
     let mut response = json!({
         "mediaType": media_type,
+        "directMediaCount": folder.direct_media_count,
         "title": title,
         "year": year,
         "series": null,

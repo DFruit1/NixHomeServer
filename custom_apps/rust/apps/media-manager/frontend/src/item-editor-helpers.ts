@@ -375,3 +375,56 @@ export function commaSeparated(value: string): string[] {
     .map((part) => part.trim())
     .filter(Boolean);
 }
+
+/** People are line-separated: commas can be part of a credited name. */
+export function personNames(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
+/** Describe the folder itself separately from the kind of media inside it. */
+export function folderIdentity(
+  category: string | undefined,
+  path: string,
+  mediaType: string,
+  series: string,
+  directMediaCount?: number,
+): string {
+  const parts = path.split("/").filter(Boolean);
+  if (parts[0]?.toLowerCase() === "_youtube") {
+    if (parts.length === 1) return "YouTube library";
+    if (parts.length === 2) return "YouTube channel";
+    return "YouTube download folder";
+  }
+  if (mediaType === "collection") {
+    if (category === "audiobooks")
+      return series.trim() ? "Audiobook series" : "Audiobook collection";
+    if (category === "books")
+      return series.trim() ? "Book series" : "Book collection";
+    if (category === "music") return "Music collection";
+    if (category === "podcasts") return "Podcast collection";
+    return "Media collection";
+  }
+  if (mediaType === "music" && directMediaCount === 1) return "Music track";
+  if (
+    mediaType === "movie" &&
+    directMediaCount !== undefined &&
+    directMediaCount > 1
+  )
+    return "Movie collection";
+  return (
+    (
+      {
+        audiobook: "Audiobook",
+        book: "Book",
+        music: "Music album",
+        podcast: "Podcast show",
+        series: "TV series",
+        season: "TV season",
+        movie: "Movie folder",
+      } as Record<string, string>
+    )[mediaType] ?? "Media folder"
+  );
+}

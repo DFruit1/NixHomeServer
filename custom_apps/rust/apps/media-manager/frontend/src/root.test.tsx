@@ -2956,7 +2956,11 @@ describe("Media Manager library browser", () => {
         (element) =>
           element.querySelector("span")?.textContent?.includes(labelText),
       );
-      return label?.querySelector("input")?.getAttribute("value") ?? null;
+      return (
+        label?.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+          "input, textarea",
+        )?.value ?? null
+      );
     };
     const sectionTab = (label: string): Element | null =>
       Array.from(screen.querySelectorAll(".metadata-section-tab")).find(
@@ -3745,7 +3749,7 @@ describe("metadata change review", () => {
               authors: Array.from(
                 { length: 33 },
                 (_, index) => `Author ${index + 1}`,
-              ).join(", "),
+              ).join("\n"),
               genres: `Drama, ${"x".repeat(501)}`,
               premiereDate: "2026-99-99",
             },

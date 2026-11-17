@@ -3143,6 +3143,9 @@ a:focus-visible {
   resize: vertical;
   line-height: 1.55;
 }
+.metadata-form textarea[rows="2"] {
+  min-height: 0;
+}
 .metadata-form select:focus,
 .metadata-form input:focus,
 .metadata-form textarea:focus,
@@ -3158,6 +3161,7 @@ a:focus-visible {
   grid-column: 1 / -1;
 }
 .editor-metadata-form {
+  align-items: start;
   padding: 16px 20px 20px;
   gap: 12px;
 }
@@ -3184,15 +3188,11 @@ a:focus-visible {
   font-weight: 600;
 }
 .metadata-form:disabled .metadata-lookup-field input,
+.metadata-form:disabled .metadata-lookup-field textarea,
 .metadata-form:disabled .metadata-lookup-field select,
 .metadata-form .metadata-lookup-field select:disabled {
   color: var(--ink);
   -webkit-text-fill-color: var(--ink);
-}
-.metadata-form .metadata-lookup-title input {
-  min-height: 48px;
-  font-family: var(--font-serif);
-  font-size: var(--title-sm);
 }
 .metadata-form .metadata-lookup-field.is-missing input {
   border-color: var(--warning-line);
