@@ -1377,9 +1377,16 @@ scores. Each step's reasoning is logged in the worker journal.
 Anything less is held. The ISO moves to `_Shared/_ISO/_DVDs/_NeedsIdentification`
 with an `X.iso.identify.json` evidence file, and Media Manager's Conversions
 page lists it under **Process, needs identifying** with the best guess. To
-confirm, rename the ISO in `_NeedsIdentification` to a Jellyfin TV name with
-the full episode range, for example
-`All Creatures Great and Small (1978) S01E05-E06.iso`. Within a
+confirm, give the ISO a Jellyfin TV name with the full episode range, for
+example `All Creatures Great and Small (1978) S01E05-E06.iso` (one held video
+takes one episode, such as `Show S01E05.iso`). Media Manager editors check or
+correct the prefilled name on the Conversions page and choose **Accept**. The
+page refuses a name whose episode count differs from the held videos, a name
+that already exists, or a disc that changed since the page loaded; Media
+Manager's filesystem broker then renames the ISO and its evidence file within
+about 30 seconds, never replacing a file. The web service itself stays
+read-only. Anyone with the share can instead rename the ISO in
+`_NeedsIdentification` in Files. Within a
 minute when idle, or after the disc it is converting, the worker moves the held
 videos into `_Shows` without re-encoding and archives the ISO in `_Processed`.
 The series folder keeps the provider identifier
