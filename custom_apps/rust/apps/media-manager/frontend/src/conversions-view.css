@@ -4,6 +4,10 @@
   gap: 24px;
   max-width: none;
 }
+/* No results to list yet: the task column takes the whole width. */
+.conversions-layout.conversions-layout--single {
+  grid-template-columns: minmax(0, 1fr);
+}
 .main-content--conversions {
   height: 100dvh;
   padding-bottom: 34px;

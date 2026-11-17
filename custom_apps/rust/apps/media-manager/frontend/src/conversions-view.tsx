@@ -161,8 +161,8 @@ const tasks: {
   {
     id: "comics",
     icon: "book",
-    title: "Make comics editable",
-    detail: "Convert CBR comics to CBZ so their details can be edited.",
+    title: "Fix comics that can't be edited",
+    detail: "Converts CBR comics to CBZ.",
   },
   {
     id: "videos",
@@ -454,7 +454,8 @@ export const ConversionsView = component$<{
         transcription.reason.status === 503
       ) {
         conv.transcriptions = undefined;
-        conv.transcriptionError = "Transcription is currently unavailable.";
+        conv.transcriptionError =
+          "Transcription is unavailable right now, so its jobs can't be shown.";
       } else conv.transcriptionError = readableError(transcription.reason);
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -594,7 +595,7 @@ export const ConversionsView = component$<{
       name: job.title || job.sourceIso || "DVD",
       icon: "disc" as const,
       label: "DVD conversion",
-      stage: job.detail || "Encoding a Jellyfin-compatible MKV",
+      stage: job.detail || "Making a video for your library",
       percent: job.percent,
     })),
     ...activeTranscripts.map((job) => ({
@@ -705,8 +706,20 @@ export const ConversionsView = component$<{
     ? inboxFailed.find((iso) => iso.name === logDialog.value)
     : undefined;
 
+  const shown = (items: HistoryItem[]) =>
+    items.some((item) => !dismissed.value.includes(item.key));
+  const hasSidebar =
+    inboxNeedsIdentification.length > 0 ||
+    shown(completedItems) ||
+    shown(failedItems);
+
   return (
-    <section class="conversions-layout">
+    <section
+      class={{
+        "conversions-layout": true,
+        "conversions-layout--single": !hasSidebar,
+      }}
+    >
       {failedIso && (
         <LogDialog
           key={failedIso.name}
@@ -787,6 +800,14 @@ export const ConversionsView = component$<{
             hideActiveJobs
           />
         )}
+        {/* Only transcription work depends on the transcription service. */}
+        {(task.value === "transcribe" || task.value === "subtitles") &&
+          props.transcriptionAvailable &&
+          conv.transcriptionError && (
+            <p class="quiet-copy" role="status">
+              {conv.transcriptionError}
+            </p>
+          )}
         {task.value && task.value !== "comics" && task.value !== "videos" && (
           <ConversionInput
             task={task.value}
@@ -812,16 +833,10 @@ export const ConversionsView = component$<{
                 ? "Processing"
                 : jobs.length || queuedEntries.length
                   ? "Waiting"
-                  : "Idle"}
+                  : "Nothing running"}
             </span>
           </header>
-          {[
-            ...new Set([
-              conv.transcriptionError,
-              conv.jobError,
-              conv.inputError,
-            ]),
-          ]
+          {[...new Set([conv.jobError, conv.inputError])]
             .filter(Boolean)
             .map((error) => (
               <p key={error} class="message error" role="alert">
@@ -859,42 +874,42 @@ export const ConversionsView = component$<{
           </div>
         </section>
       </div>
-      <aside class="conv-sidebar">
-        {inboxNeedsIdentification.length > 0 && (
-          <NeedsIdentificationCard
-            isos={inboxNeedsIdentification}
+      {hasSidebar && (
+        <aside class="conv-sidebar">
+          {inboxNeedsIdentification.length > 0 && (
+            <NeedsIdentificationCard
+              isos={inboxNeedsIdentification}
+              filesBaseUrl={filesBaseUrl}
+            />
+          )}
+          <HistoryCard
+            headingId="processed-heading"
+            title="Completed"
+            archive="_Processed"
+            items={completedItems}
             filesBaseUrl={filesBaseUrl}
+            canRequeue={canRequeue}
+            requeues={requeues}
+            dismissed={dismissed.value}
+            onDismiss$={dismiss}
+            onShowLog$={(name) => (logDialog.value = name)}
+            onRequeue$={requeue}
           />
-        )}
-        <HistoryCard
-          headingId="processed-heading"
-          title="Completed"
-          empty="No completed jobs yet."
-          archive="_Processed"
-          items={completedItems}
-          filesBaseUrl={filesBaseUrl}
-          canRequeue={canRequeue}
-          requeues={requeues}
-          dismissed={dismissed.value}
-          onDismiss$={dismiss}
-          onShowLog$={(name) => (logDialog.value = name)}
-          onRequeue$={requeue}
-        />
-        <HistoryCard
-          headingId="failed-heading"
-          title="Failed"
-          empty="No failed jobs."
-          archive="_Failed"
-          items={failedItems}
-          filesBaseUrl={filesBaseUrl}
-          canRequeue={canRequeue}
-          requeues={requeues}
-          dismissed={dismissed.value}
-          onDismiss$={dismiss}
-          onShowLog$={(name) => (logDialog.value = name)}
-          onRequeue$={requeue}
-        />
-      </aside>
+          <HistoryCard
+            headingId="failed-heading"
+            title="Failed"
+            archive="_Failed"
+            items={failedItems}
+            filesBaseUrl={filesBaseUrl}
+            canRequeue={canRequeue}
+            requeues={requeues}
+            dismissed={dismissed.value}
+            onDismiss$={dismiss}
+            onShowLog$={(name) => (logDialog.value = name)}
+            onRequeue$={requeue}
+          />
+        </aside>
+      )}
     </section>
   );
 });
@@ -1033,7 +1048,6 @@ function historyItems(
 const HistoryCard = component$<{
   headingId: string;
   title: string;
-  empty: string;
   archive: DvdArchive;
   items: HistoryItem[];
   filesBaseUrl: string;
@@ -1051,6 +1065,8 @@ const HistoryCard = component$<{
   const recent = visible.filter((item) => item.finishedMs >= cutoff);
   const older = visible.filter((item) => item.finishedMs < cutoff);
   const failed = props.archive === "_Failed";
+  // An empty history says nothing worth a panel; it appears with its first result.
+  if (visible.length === 0) return null;
 
   const Dismiss = (item: HistoryItem) => (
     <button
@@ -1175,20 +1191,12 @@ const HistoryCard = component$<{
         aria-labelledby={props.headingId}
         tabIndex={0}
       >
-        {visible.length === 0 ? (
-          <p class="quiet-copy">
-            {props.items.length > 0 ? "All results dismissed." : props.empty}
-          </p>
-        ) : (
-          <>
-            {recent.length > 0 && Rows(recent)}
-            {older.length > 0 && (
-              <details class="history-archive">
-                <summary>Older than 3 days ({older.length})</summary>
-                {Rows(older)}
-              </details>
-            )}
-          </>
+        {recent.length > 0 && Rows(recent)}
+        {older.length > 0 && (
+          <details class="history-archive">
+            <summary>Older than 3 days ({older.length})</summary>
+            {Rows(older)}
+          </details>
         )}
       </div>
     </section>

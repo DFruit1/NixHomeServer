@@ -224,8 +224,9 @@ struct ProviderDefinition {
     name: &'static str,
     logo_url: Option<&'static str>,
     media_domains: &'static [&'static str],
-    /// Media domains (a subset of `media_domains`) where this source is a
-    /// reputable, large and accurate first choice to set up.
+    /// Media domains (a subset of `media_domains`) where this source is the
+    /// one first choice to set up. Keep at most one source per media type so
+    /// the label stays meaningful.
     recommended_for: &'static [&'static str],
     setup_kind: SetupKind,
     implementation_status: ImplementationStatus,
@@ -509,7 +510,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         name: "TheTVDB",
         logo_url: Some("/assets/logos/tvdb.png"),
         media_domains: &["television", "movies"],
-        recommended_for: &["television"],
+        recommended_for: &[],
         setup_kind: SetupKind::Account,
         implementation_status: ImplementationStatus::Active,
         connection_test: Some(ConnectionTestAdapter::Additional("tvdb")),
@@ -554,7 +555,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         name: "Discogs",
         logo_url: Some("/assets/logos/discogs.svg"),
         media_domains: &["music"],
-        recommended_for: &["music"],
+        recommended_for: &[],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Active,
         connection_test: Some(ConnectionTestAdapter::Additional("discogs")),
@@ -689,7 +690,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         name: "AniList",
         logo_url: Some("/assets/logos/anilist.svg"),
         media_domains: &["television", "movies", "manga"],
-        recommended_for: &["manga"],
+        recommended_for: &[],
         setup_kind: SetupKind::Public,
         implementation_status: ImplementationStatus::Active,
         connection_test: None,

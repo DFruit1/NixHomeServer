@@ -272,7 +272,6 @@ export const ActivityView = component$<{ canEdit: boolean }>((props) => {
         <div class="panel">
           <div class="panel-heading">
             <div>
-              <h3>Recent changes</h3>
               <p class="activity-subtitle">
                 {activity.plans.length} recent change
                 {activity.plans.length === 1 ? "" : "s"}

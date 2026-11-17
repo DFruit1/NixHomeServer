@@ -326,19 +326,6 @@ a:focus-visible {
   .sidebar-footer:focus-within > div:nth-child(2) {
     opacity: 1;
   }
-  .sidebar-footer > .role-dot {
-    position: absolute;
-    left: calc(100% + 14px);
-    top: 50%;
-    transform: translateY(-50%);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 120ms ease-out;
-  }
-  .sidebar-footer:hover > .role-dot,
-  .sidebar-footer:focus-within > .role-dot {
-    opacity: 1;
-  }
 }
 .avatar {
   width: 32px;
@@ -352,11 +339,12 @@ a:focus-visible {
   font-size: 14px;
   font-weight: 700;
   cursor: pointer;
+  padding: 0;
+  border: 0;
 }
 .avatar:hover {
   opacity: 0.85;
 }
-.role-dot,
 .availability-dot {
   width: 7px;
   height: 7px;
@@ -364,7 +352,6 @@ a:focus-visible {
   background: var(--ink-faint);
   box-shadow: 0 0 0 3px rgba(33, 29, 21, 0.06);
 }
-.role-dot.editor,
 .availability-dot.available {
   background: var(--accent);
   box-shadow: 0 0 0 3px rgba(30, 77, 56, 0.14);
@@ -383,7 +370,9 @@ a:focus-visible {
 }
 .user-menu-item {
   display: block;
+  box-sizing: border-box;
   width: 100%;
+  text-decoration: none;
   padding: 8px 12px;
   border: none;
   background: none;
@@ -541,8 +530,7 @@ a:focus-visible {
 .root-row:hover > .icon {
   color: var(--accent);
 }
-.root-icon,
-.integration-icon {
+.root-icon {
   width: 36px;
   height: 36px;
   border: 1px solid var(--line);
@@ -791,12 +779,11 @@ a:focus-visible {
   min-width: 0;
   display: flex;
   align-items: center;
+  /* Wrap rather than scroll: on phones a clipped, scrolling row hid Books. */
+  flex-wrap: wrap;
   gap: 4px;
   width: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
   border-bottom: 1px solid var(--line);
-  scrollbar-width: thin;
 }
 .library-tab {
   position: relative;
@@ -1653,7 +1640,10 @@ a:focus-visible {
   font-weight: 600;
 }
 .rename-fields {
-  padding-bottom: 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 0 0 16px;
+  border: 0;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: end;
@@ -2281,6 +2271,19 @@ a:focus-visible {
   font-size: var(--text-lg);
   font-weight: 600;
 }
+/* What a source is for, after its brand name ("TMDB — movies & TV"). */
+.source-accordion-note {
+  color: var(--ink-soft);
+  font-size: var(--text-md);
+  font-weight: 400;
+}
+/* Less relevant and not-yet-set-up sources wait under one disclosure. */
+.more-sources-body {
+  padding-inline-start: 16px;
+}
+.more-sources-body > .source-accordion:first-child {
+  border-top: 1px solid var(--line);
+}
 .source-setup-link {
   min-height: 44px;
   display: inline-flex;
@@ -2383,6 +2386,12 @@ a:focus-visible {
 .source-search-options > .source-search-short,
 .subtitle-options > label.source-search-short {
   flex: 0 0 96px;
+}
+/* Language pickers show names ("Vietnamese"), not two-letter codes. */
+.source-search > .source-search-language,
+.source-search-options > .source-search-language,
+.subtitle-options > label.source-search-language {
+  flex: 0 1 180px;
 }
 .source-search > .primary-button {
   flex: 0 0 auto;
@@ -3072,7 +3081,8 @@ a:focus-visible {
 .metadata-form textarea:disabled,
 .metadata-form:disabled input,
 .metadata-form:disabled select,
-.metadata-form:disabled textarea {
+.metadata-form:disabled textarea,
+.rename-fields:disabled input {
   color: var(--ink-soft);
   -webkit-text-fill-color: var(--ink-soft);
   background: var(--paper-recess);
@@ -3407,74 +3417,6 @@ a:focus-visible {
   font-size: 12px;
   line-height: 1.55;
 }
-.integration-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-.integration-card {
-  padding: 20px;
-  display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 14px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
-  background: var(--card);
-  transition-property: border-color, background-color;
-  transition-duration: 150ms;
-  transition-timing-function: ease-out;
-}
-.integration-card.pending,
-.integration-card.success {
-  border-color: var(--accent-line);
-}
-.integration-card.pending {
-  background: linear-gradient(90deg, var(--accent-wash), var(--card) 34%);
-}
-.integration-card.error {
-  border-color: var(--danger-line);
-  background: linear-gradient(90deg, var(--danger-wash), var(--card) 34%);
-}
-.integration-card h3 {
-  font-family: var(--font-serif);
-  font-size: var(--title-sm);
-  font-weight: 500;
-}
-.integration-capabilities {
-  margin-top: 4px;
-  color: var(--ink-soft);
-  font-size: var(--text-sm);
-}
-.integration-capabilities:empty {
-  display: none;
-}
-.integration-icon.spinning .icon {
-  animation: refresh-spin 1s linear infinite;
-  will-change: transform;
-}
-.refresh-feedback {
-  margin-top: 10px;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: baseline;
-  gap: 8px;
-  font-size: var(--text-sm);
-  line-height: 1.45;
-}
-.refresh-feedback strong {
-  font-weight: 600;
-}
-.refresh-feedback span {
-  color: var(--ink-soft);
-}
-.refresh-feedback.pending,
-.refresh-feedback.success {
-  color: var(--accent);
-}
-.refresh-feedback.error {
-  color: var(--danger);
-}
 .compact-action {
   min-width: 104px;
   padding-inline: 12px;
@@ -3600,10 +3542,6 @@ a:focus-visible {
     margin-left: 0;
     margin-right: 8px;
   }
-  .app-shell.sidebar-right .sidebar-footer > .role-dot {
-    left: auto;
-    right: calc(100% + 14px);
-  }
 }
 
 @media (min-width: 641px) and (max-width: 1199px) {
@@ -3627,10 +3565,6 @@ a:focus-visible {
     justify-content: flex-start;
     gap: 10px;
     padding-inline: 0;
-  }
-  .sidebar-footer > .role-dot {
-    margin-left: auto;
-    flex-shrink: 0;
   }
 }
 
@@ -3715,7 +3649,9 @@ a:focus-visible {
 }
 .video-actions {
   display: flex;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   flex-wrap: wrap;
   gap: 8px;
 }
@@ -4475,7 +4411,8 @@ a:focus-visible {
   right: 0;
   z-index: 20;
   width: min(320px, calc(100vw - 32px));
-  max-height: min(60vh, 520px, var(--settings-space, 520px));
+  /* Never taller than the measured space; scroll inside only as a fallback. */
+  max-height: min(640px, var(--settings-space, 520px));
   overflow-y: auto;
   overscroll-behavior: contain;
   display: flex;
@@ -4488,6 +4425,8 @@ a:focus-visible {
   box-shadow: 0 10px 28px rgba(33, 29, 21, 0.2);
 }
 
+/* Above the phone sheet breakpoint (640px) the panel opens toward the side
+   whose space was measured, so placement and max-height always agree. */
 @media (min-width: 641px) {
   .player-settings[data-settings-placement="below"] .playback-settings {
     top: calc(100% + 10px);
@@ -4690,9 +4629,6 @@ a:focus-visible {
     align-items: stretch;
     flex-direction: column;
   }
-  .integration-grid {
-    grid-template-columns: 1fr;
-  }
   .metadata-form {
     grid-template-columns: 1fr;
   }
@@ -4734,7 +4670,10 @@ a:focus-visible {
     right: 12px;
     bottom: calc(94px + env(safe-area-inset-bottom, 0px));
     width: auto;
-    max-height: min(66vh, 520px);
+    max-height: min(
+      520px,
+      calc(100dvh - 118px - env(safe-area-inset-bottom, 0px))
+    );
   }
   .video-screen {
     max-height: none;
@@ -5294,7 +5233,10 @@ a:focus-visible {
 }
 .health-result-kind {
   display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--ink-soft);
+  font-size: 14px;
 }
 .health-review-link {
   flex-shrink: 0;
@@ -5591,6 +5533,38 @@ a:focus-visible {
 .health-no-suggestion {
   color: var(--ink-faint);
 }
+/* An empty field is one line: what is missing, then how to fill it. */
+.health-issue-table td.health-empty-cell {
+  grid-column: 1 / -1;
+}
+.health-empty-field {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+.health-inline-action {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.health-inline-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.health-empty-cell .health-auto-proposal small {
+  color: var(--ink-soft);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
 .health-value .health-auto-proposal small a {
   color: var(--accent);
   text-underline-offset: 3px;
@@ -5668,6 +5642,9 @@ a:focus-visible {
   font-weight: 400;
 }
 .health-lookup-dialog {
+  /* Wide enough for a provider row and its values on desktop; the backdrop's
+     24px padding still fits at phone widths. */
+  width: min(720px, calc(100vw - 48px));
   font-size: 14px;
   line-height: 1.5;
 }
@@ -6068,7 +6045,8 @@ a:focus-visible {
   width: 100%;
   min-height: var(--control-height);
   display: grid;
-  grid-template-columns: 16px 44px minmax(0, 1fr);
+  /* Wide enough for wordmark logos to stay legible. */
+  grid-template-columns: 16px 96px minmax(0, 1fr);
   align-items: center;
   column-gap: 12px;
   padding: 4px 8px;
@@ -6089,12 +6067,12 @@ a:focus-visible {
 }
 .provider-logo {
   grid-row: 1 / span 2;
-  width: 44px;
-  height: 36px;
+  width: 96px;
+  height: 40px;
   object-fit: contain;
 }
 .provider-logo.fallback {
-  width: 36px;
+  width: 40px;
   justify-self: center;
   display: grid;
   place-items: center;
@@ -6439,13 +6417,13 @@ a:focus-visible {
   .provider-row-summary > .provider-state {
     grid-column: 1;
     justify-self: start;
-    margin-left: 80px;
+    margin-left: 112px;
   }
   .provider-row-toggle {
-    grid-template-columns: 16px 32px minmax(0, 1fr);
+    grid-template-columns: 16px 64px minmax(0, 1fr);
   }
   .provider-logo {
-    width: 32px;
+    width: 64px;
     height: 32px;
   }
   .provider-logo.fallback {
@@ -7397,12 +7375,6 @@ a:focus-visible {
 /* Theatre mode: the player spans the content width and the library follows
    as a multi-column list; the page scrolls instead of the list pane. Phones
    and narrow windows already stack, so the toggle is desktop-only. */
-.video-theatre-button {
-  width: var(--control-height);
-  min-width: 0;
-  padding-inline: 0;
-  justify-content: center;
-}
 @media (max-width: 1000px) {
   .video-theatre-button {
     display: none;
@@ -7485,28 +7457,13 @@ a:focus-visible {
 @media (min-width: 641px) and (max-width: 1199px) and (hover: none) {
   .brand > div:last-child,
   .nav-item > span,
-  .sidebar-footer > div:nth-child(2),
-  .sidebar-footer > .role-dot {
+  .sidebar-footer > div:nth-child(2) {
     display: none;
   }
 }
 
-/* Phones stack the player above the library, so keep the title row to the
-   title and the icon-only controls. */
-@media (max-width: 640px),
-  (min-width: 641px) and (max-width: 1000px) and (orientation: landscape) and (max-height: 560px) {
-  .video-library-select,
-  .video-action-label {
-    display: none;
-  }
-  .video-pip-button,
-  .video-clip-button {
-    width: var(--control-height);
-    min-width: 0;
-    padding-inline: 0;
-    justify-content: center;
-  }
-}
+/* Video actions and the library selector keep their names on phones too;
+   the action row wraps under the title instead of turning into bare icons. */
 
 @media (max-width: 1000px) {
   .video-title h2 {

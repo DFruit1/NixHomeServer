@@ -1,13 +1,22 @@
 import { $, component$, useStore, useVisibleTask$ } from "@builder.io/qwik";
 import { api, readableError } from "./api";
+import { friendlyAppName } from "./display-names";
 import { Icon } from "./icon";
 import { refreshPresentation } from "./root-routing";
 import type { IconName, Integration, IntegrationRefresh } from "./root-types";
 import { EmptyState } from "./view-states";
+import "./refresh-view.css";
 
-const CAPABILITY_LABELS: Record<string, string> = {
-  "library-refresh": "Library scan",
-  "folder-rescan": "Folder rescan",
+// Both capabilities ask the app to look at its folders again; the page
+// calls either one "Refresh".
+const REFRESH_CAPABILITIES = ["library-refresh", "folder-rescan"];
+
+const APP_ICONS: Record<string, IconName> = {
+  audiobookshelf: "audiobookshelf",
+  jellyfin: "jellyfin",
+  kavita: "kavita",
+  radarr: "film",
+  sonarr: "video",
 };
 
 export const RefreshView = component$<{ integrations: Integration[] }>(
@@ -26,7 +35,7 @@ export const RefreshView = component$<{ integrations: Integration[] }>(
         (integration) =>
           integration.available &&
           integration.capabilities.some((capability) =>
-            ["library-refresh", "folder-rescan"].includes(capability),
+            REFRESH_CAPABILITIES.includes(capability),
           ),
       );
       const poll = async () => {
@@ -104,9 +113,6 @@ export const RefreshView = component$<{ integrations: Integration[] }>(
           integrationId: integration.id,
           state: "queued",
           requestId: result.requestId,
-          message: result.alreadyQueued
-            ? "This refresh was already waiting to run."
-            : "The refresh request is waiting to run.",
         };
         await followRefresh(integration.id);
       } catch (error) {
@@ -117,90 +123,107 @@ export const RefreshView = component$<{ integrations: Integration[] }>(
         };
       }
     });
+
     const refreshableIntegrations = props.integrations.filter((integration) =>
       integration.capabilities.some((capability) =>
-        ["library-refresh", "folder-rescan"].includes(capability),
+        REFRESH_CAPABILITIES.includes(capability),
       ),
     );
-    const integrationIconMap: Record<string, IconName> = {
-      audiobookshelf: "audiobookshelf",
-      jellyfin: "jellyfin",
-      kavita: "kavita",
-    };
+    const idleIntegrations = refreshableIntegrations.filter(
+      (integration) =>
+        integration.available &&
+        !refreshPresentation(refresh.statuses[integration.id]).busy,
+    );
+    const refreshAll = $(async () => {
+      await Promise.all(
+        refreshableIntegrations
+          .filter((integration) => integration.available)
+          .map((integration) => triggerRefresh(integration)),
+      );
+    });
+
+    if (refreshableIntegrations.length === 0) {
+      return (
+        <section class="single-column">
+          <EmptyState title="Nothing to refresh" />
+        </section>
+      );
+    }
 
     return (
-      <section class="single-column">
+      <section class="single-column refresh-apps">
         {refresh.error && (
           <div class="message error" role="alert">
             <Icon name="alert" size={18} />
             <span>{refresh.error}</span>
-            <button type="button" onClick$={() => (refresh.error = "")}>
+            <button
+              type="button"
+              aria-label="Dismiss error"
+              onClick$={() => (refresh.error = "")}
+            >
               ×
             </button>
           </div>
         )}
-        <div class="integration-grid">
+        {refreshableIntegrations.length > 1 && (
+          <div class="refresh-apps-toolbar">
+            <button
+              class="secondary-button"
+              type="button"
+              disabled={idleIntegrations.length === 0}
+              onClick$={refreshAll}
+            >
+              <Icon name="refresh" size={16} />
+              Refresh all
+            </button>
+          </div>
+        )}
+        <ul class="refresh-app-list">
           {refreshableIntegrations.map((integration) => {
-            const canRefresh = true;
-            const status = refresh.statuses[integration.id];
-            const presentation = refreshPresentation(status);
-            const appIcon = integrationIconMap[integration.id] ?? "refresh";
+            const presentation = refreshPresentation(
+              refresh.statuses[integration.id],
+            );
+            const name = friendlyAppName(integration.id, integration.label);
             return (
-              <article
-                class={{
-                  "integration-card": true,
-                  [presentation.tone]: canRefresh && integration.available,
-                }}
+              <li
+                class={["refresh-app-row", presentation.tone]}
                 aria-busy={presentation.busy ? "true" : undefined}
                 key={integration.id}
               >
-                <div
-                  class={{
-                    "integration-icon": true,
-                    spinning: status?.state === "running",
-                  }}
-                >
-                  <Icon name={appIcon} size={20} />
-                </div>
-                <div class="integration-copy">
-                  <h3>{integration.label}</h3>
-                  <p class="integration-capabilities">
-                    {integration.capabilities
-                      .map((capability) => CAPABILITY_LABELS[capability])
-                      .filter(Boolean)
-                      .join(" · ")}
+                <span class="refresh-app-icon" aria-hidden="true">
+                  <Icon
+                    name={APP_ICONS[integration.id] ?? "server"}
+                    size={20}
+                  />
+                </span>
+                <div class="refresh-app-copy">
+                  <h3 title={integration.label}>{name}</h3>
+                  <p
+                    class={["refresh-app-status", presentation.tone]}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {integration.available
+                      ? presentation.label
+                      : "Not available right now"}
+                    {integration.available && presentation.detail && (
+                      <span>{presentation.detail}</span>
+                    )}
                   </p>
-                  {canRefresh && integration.available && (
-                    <div
-                      class={{
-                        "refresh-feedback": true,
-                        [presentation.tone]: true,
-                      }}
-                      role="status"
-                      aria-live="polite"
-                    >
-                      <strong>{presentation.label}</strong>
-                      {presentation.detail && (
-                        <span>{presentation.detail}</span>
-                      )}
-                    </div>
-                  )}
                 </div>
                 <button
                   class="secondary-button"
                   type="button"
+                  aria-label={`Refresh ${name}`}
                   disabled={!integration.available || presentation.busy}
                   onClick$={() => triggerRefresh(integration)}
                 >
-                  {presentation.action}
+                  Refresh
                 </button>
-              </article>
+              </li>
             );
           })}
-        </div>
-        {refreshableIntegrations.length === 0 && (
-          <EmptyState title="Nothing to refresh" />
-        )}
+        </ul>
       </section>
     );
   },

@@ -27,7 +27,7 @@ export const LibraryMiniPlayer = component$<{
       aria-label={`Open music player: ${props.title}`}
     >
       <strong>{props.title || "Now playing"}</strong>
-      <span>{props.artist || "Music"}</span>
+      {props.artist && <span>{props.artist}</span>}
     </a>
     <button
       type="button"

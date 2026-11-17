@@ -214,3 +214,94 @@ describe("downloader deep links into the music player", () => {
     );
   });
 });
+
+describe("library item deep links", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // Regression: reloading `?view=library&item=…` listed the linked item twice
+  // when its own root's first page arrived while the item itself was being
+  // fetched, so the count went from 10 to 11.
+  it("lists a linked item once when its root's page races the item fetch", async () => {
+    const videoRoots = [
+      {
+        id: "personal-videos",
+        label: "My videos",
+        category: "videos",
+        scope: "personal",
+        available: true,
+      },
+      {
+        id: "shared-videos",
+        label: "Shared videos",
+        category: "videos",
+        scope: "shared",
+        available: true,
+      },
+    ];
+    const video = (id: string, relativePath: string) => ({
+      id,
+      rootId: "personal-videos",
+      relativePath,
+      mediaKind: "video",
+      sizeBytes: 1024,
+    });
+    const linked = video("linked", "Linked.mkv");
+    const other = video("other", "Other.mkv");
+    let itemRequested!: () => void;
+    const itemRequest = new Promise<void>((resolve) => {
+      itemRequested = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        if (path.endsWith("/status"))
+          return new Response(
+            wireJson({ mutationMode: "enabled", integrations: [] }),
+          );
+        if (path.endsWith("/session"))
+          return new Response(
+            wireJson({ username: "dsaw", groups: ["users"], canEdit: false }),
+          );
+        if (path.endsWith("/roots")) return new Response(wireJson(videoRoots));
+        if (path.includes("/items?rootId=shared-videos"))
+          return new Response(wireJson({ items: [], nextCursor: null }));
+        if (path.includes("/items?rootId=personal-videos")) {
+          // The linked item's own root answers while it is being fetched.
+          await itemRequest;
+          return new Response(
+            wireJson({ items: [linked, other], nextCursor: null }),
+          );
+        }
+        if (path.endsWith("/items/linked")) {
+          itemRequested();
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return new Response(wireJson(linked));
+        }
+        return new Response(wireJson({ available: false, progress: {} }));
+      }),
+    );
+    const { render, screen } = await createDOM();
+    await render(
+      <Root
+        initialView="library"
+        initialRootId="personal-videos"
+        initialItemId="linked"
+      />,
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          screen.querySelectorAll(".personal-pane .tree-row.file"),
+        ).toHaveLength(2),
+      { timeout: 3000 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(
+      screen.querySelectorAll(".personal-pane .tree-row.file"),
+    ).toHaveLength(2);
+    expect(
+      screen.querySelector(".personal-pane .pane-count")?.textContent,
+    ).toBe("2 items");
+  });
+});

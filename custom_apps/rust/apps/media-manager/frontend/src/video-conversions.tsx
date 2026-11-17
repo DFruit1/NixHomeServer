@@ -48,9 +48,9 @@ export const FORMAT_COPY: Record<VideoConversionFormatId, FormatCopy> = {
     codecs: "H.264 video, AAC audio",
     size: "Same as MP4.",
     devices:
-      "Jellyfin apps (including on iPhone), Android, Kodi, VLC and most smart TVs and streaming sticks. Apple's own video apps cannot open MKV.",
+      "The Videos app (including on iPhone), Android, Kodi, VLC and most smart TVs and streaming sticks. Apple's own video apps cannot open MKV.",
     browsers:
-      "Chrome, Edge and Firefox. Safari cannot open MKV, so Jellyfin repackages it as it plays.",
+      "Chrome, Edge and Firefox. Safari cannot open MKV, so the Videos app repackages it as it plays.",
     speed: "Fast, the same as MP4.",
     subtitles: "Keeps every subtitle track, including picture-based ones.",
   },
@@ -59,7 +59,7 @@ export const FORMAT_COPY: Record<VideoConversionFormatId, FormatCopy> = {
     codecs: "H.265 video, AAC audio, MKV",
     size: "About half the size of H.264 at similar quality.",
     devices:
-      "Most phones, TVs and streaming sticks from about 2016 on. Older devices cannot decode it, so Jellyfin has to convert it while they play.",
+      "Most phones, TVs and streaming sticks from about 2016 on. Older devices cannot decode it, so the Videos app has to convert it while they play.",
     browsers:
       "Chrome and Edge on hardware that decodes HEVC. Not Firefox, and not Safari, which cannot open MKV.",
     speed: "Slow: several times longer than H.264, often hours for a film.",
@@ -70,7 +70,7 @@ export const FORMAT_COPY: Record<VideoConversionFormatId, FormatCopy> = {
     codecs: "AV1 video, Opus audio, MKV",
     size: "Smallest: around half the size of H.264, often less.",
     devices:
-      "Recent devices only, mostly from 2020 on (iPhone 15 Pro and later). Older devices need Jellyfin to convert it while they play.",
+      "Recent devices only, mostly from 2020 on (iPhone 15 Pro and later). Older devices need the Videos app to convert it while they play.",
     browsers: "Chrome, Edge and Firefox. Not Safari.",
     speed: "Slowest: a film can take many hours at the server's low priority.",
     subtitles: "Keeps every subtitle track, including picture-based ones.",

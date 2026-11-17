@@ -1,6 +1,7 @@
 import {
   component$,
   type QRL,
+  Slot,
   useStore,
   useVisibleTask$,
 } from "@builder.io/qwik";
@@ -12,9 +13,11 @@ import { healthValueKey } from "./health-decisions";
 import { readableError } from "./api";
 import {
   automaticHealthMatch,
+  matchLabel,
   rankHealthCandidates,
   type RankedHealthMatch,
 } from "./health-provider-lookup";
+import { folderAuthorHint } from "./health-folder-author";
 import type { HealthLookupSession } from "./health-lookup-session";
 export type GetHealthLookupSession = QRL<() => HealthLookupSession>;
 
@@ -25,10 +28,16 @@ const QUIET_MESSAGES = new Set([
   "The available evidence is too weak to suggest a value automatically.",
 ]);
 
-/** Suggestions stay read-only until Use proposed follows the existing plan flow. */
+/**
+ * Suggestions stay read-only until Use proposed follows the existing plan flow.
+ * With `emptyLabel`, an empty field reads as one line ("No author yet — …")
+ * followed by the default slot's actions; a found suggestion is followed by
+ * the "found" slot instead.
+ */
 export const HealthAutoProposal = component$<{
   target: MetadataHealthResult;
   field: string;
+  emptyLabel?: string;
   query: string;
   queryFromFilename?: boolean;
   providers: ProviderDefinition[];
@@ -78,6 +87,7 @@ export const HealthAutoProposal = component$<{
         const context = {
           ...metadata,
           title: metadata.title || fallbackQuery.replace(/\.[^.\/]+$/, ""),
+          folderAuthor: folderAuthorHint(props.target) || undefined,
         };
         const query = String(context.title).trim();
         if (!query) {
@@ -138,17 +148,47 @@ export const HealthAutoProposal = component$<{
             </span>
           </button>
           <small>
-            {state.candidate.provider.name} · {state.candidate.confidence.score}
-            % estimate
+            {state.candidate.provider.name} ·{" "}
+            {matchLabel(state.candidate.confidence.score)}
           </small>
           <details class="health-lookup-details">
-            <summary>Confidence evidence</summary>
+            <summary>Why this matches</summary>
             <ul>
               {state.candidate.confidence.reasons.map((reason) => (
                 <li key={reason}>{reason}</li>
               ))}
+              <li>
+                Match score {state.candidate.confidence.score} out of 100 (an
+                estimate)
+              </li>
             </ul>
           </details>
+          {props.emptyLabel && <Slot name="found" />}
+        </>
+      ) : props.emptyLabel ? (
+        <>
+          <p class="health-empty-field">
+            {/* Only the text is announced; the actions stay outside it. */}
+            <span role="status">
+              {state.loading
+                ? `Looking online for the ${props.emptyLabel}…`
+                : `No ${props.emptyLabel} yet`}
+            </span>
+            {!state.loading && (
+              <>
+                {" — "}
+                <Slot />
+              </>
+            )}
+          </p>
+          {!state.loading && state.message === NO_SOURCES ? (
+            <small>
+              Set up a source in <a href="?view=accounts">Online services</a> to
+              get suggestions.
+            </small>
+          ) : !state.loading && !QUIET_MESSAGES.has(state.message) ? (
+            <small>{state.message}</small>
+          ) : null}
         </>
       ) : (
         <>
@@ -158,7 +198,7 @@ export const HealthAutoProposal = component$<{
           <small role="status">
             {state.loading ? null : state.message === NO_SOURCES ? (
               <>
-                Set up a source in <a href="?view=accounts">Metadata sources</a>{" "}
+                Set up a source in <a href="?view=accounts">Online services</a>{" "}
                 to get suggestions.
               </>
             ) : QUIET_MESSAGES.has(state.message) ? null : (

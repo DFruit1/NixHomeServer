@@ -164,6 +164,217 @@ pub fn filename_observation(fields: &Value) -> MetadataObservation {
     }
 }
 
+/// Metadata implied by a catalog file's name and folders (the "filename"
+/// source).
+///
+/// A TV episode such as
+/// `_Shows/Show (1984) [tmdbid-799]/Season 07/Show (1984) [tmdbid-799] S07E01 - Name.mkv`
+/// gives the show as the title (what provider search needs), the show's
+/// year, and the episode title separately. Provider tags (`[tmdbid-…]`,
+/// `[tvdbid-…]`, `[imdbid-…]`) in the file name or its folders become
+/// provider IDs and never remain in a title.
+pub fn filename_metadata(relative_path: &str, media_kind: MediaKind) -> Value {
+    let filename = relative_path.rsplit('/').next().unwrap_or(relative_path);
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(filename);
+    let mut title = stem.to_string();
+    let mut year = Value::Null;
+    let mut media_type = match media_kind {
+        MediaKind::Music => "music",
+        MediaKind::Audiobook => "audiobook",
+        MediaKind::Podcast => "podcast",
+        MediaKind::Book => "book",
+        _ => "movie",
+    };
+    let mut series = Value::Null;
+    let mut season = Value::Null;
+    let mut episode = Value::Null;
+    let mut episode_title = Value::Null;
+    let mut provider_ids = Map::new();
+    if media_kind == MediaKind::Video {
+        let (clean_stem, mut tags) = split_provider_id_tags(stem);
+        let folders = relative_path.rsplit('/').skip(1);
+        if let Some((marker_start, marker_end)) = split_episode_marker(&clean_stem) {
+            // The nearest folder's tag wins over those further up.
+            for folder in folders {
+                for (provider, id) in split_provider_id_tags(folder).1 {
+                    tags.entry(provider).or_insert(id);
+                }
+            }
+            media_type = "episode";
+            let marker = &clean_stem[marker_start..marker_end];
+            let digits = marker.trim_start_matches(['S', 's']);
+            if let Some((season_text, episode_text)) = digits.split_once(['E', 'e']) {
+                season = season_text
+                    .parse::<u32>()
+                    .map(Value::from)
+                    .unwrap_or(Value::Null);
+                episode = episode_text
+                    .parse::<u32>()
+                    .map(Value::from)
+                    .unwrap_or(Value::Null);
+            }
+            let prefix = clean_stem[..marker_start]
+                .trim()
+                .trim_end_matches('-')
+                .trim();
+            let suffix_title = clean_stem[marker_end..]
+                .trim()
+                .trim_start_matches('-')
+                .trim();
+            let (series_title, parsed_year) = strip_trailing_year(prefix);
+            series = Value::String(series_title.to_string());
+            title = series_title.to_string();
+            if !suffix_title.is_empty() {
+                episode_title = Value::String(suffix_title.to_string());
+            }
+            year = parsed_year.map(Value::from).unwrap_or(Value::Null);
+            // Tags on an episode name or its show folder identify the show.
+            // Only TMDB has a separate series ID in the metadata model.
+            if let Some(id) = tags.remove("tmdb") {
+                provider_ids.insert("tmdb-series".to_string(), Value::String(id));
+            }
+        } else {
+            let (parsed_title, parsed_year) = strip_trailing_year(&clean_stem);
+            title = parsed_title.to_string();
+            year = parsed_year.map(Value::from).unwrap_or(Value::Null);
+            // An extra or special inside a show's folders is not the film a
+            // show tag (a TV ID) would name, so it takes no IDs there. A movie
+            // inherits only its own folder's tag.
+            let folders = folders.collect::<Vec<_>>();
+            if !folders.iter().any(|folder| is_show_tree_folder(folder)) {
+                if let Some(parent) = folders.first() {
+                    for (provider, id) in split_provider_id_tags(parent).1 {
+                        tags.entry(provider).or_insert(id);
+                    }
+                }
+                for (provider, id) in tags {
+                    provider_ids.insert(provider, Value::String(id));
+                }
+            }
+        }
+    }
+    json!({
+        "mediaType": media_type, "title": title, "year": year, "series": series,
+        "season": season, "episode": episode, "episodeTitle": episode_title,
+        "description": null, "publisher": null, "language": null, "genres": [],
+        "writers": [], "premiereDate": null, "runtimeMinutes": null,
+        "officialRating": null, "communityRating": null, "providerIds": provider_ids,
+        "videoStreams": [], "audioStreams": [], "subtitleStreams": [],
+        "sources": ["filename"]
+    })
+}
+
+/// `_Shows`/`_TV` producer folders and `Season NN`/`Specials` folders mark a
+/// TV show's tree.
+pub(crate) fn is_show_tree_folder(name: &str) -> bool {
+    let name = name.trim();
+    if ["_shows", "_tv", "specials"]
+        .iter()
+        .any(|folder| name.eq_ignore_ascii_case(folder))
+    {
+        return true;
+    }
+    name.split_once(' ').is_some_and(|(prefix, number)| {
+        prefix.eq_ignore_ascii_case("season")
+            && !number.trim().is_empty()
+            && number.trim().bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+/// Removes `[tmdbid-799]`, `{imdb-tt0123456}`, `[tvdbid=81189]` and similar
+/// provider tags from a file or folder name, returning the cleaned name and
+/// the IDs keyed `tmdb`, `tvdb` and `imdb`.
+pub fn split_provider_id_tags(name: &str) -> (String, BTreeMap<String, String>) {
+    let mut ids = BTreeMap::new();
+    let mut cleaned = String::with_capacity(name.len());
+    let mut rest = name;
+    while let Some(open) = rest.find(['[', '{']) {
+        let close_char = if rest.as_bytes()[open] == b'[' {
+            ']'
+        } else {
+            '}'
+        };
+        let Some(close) = rest[open..].find(close_char).map(|offset| open + offset) else {
+            break;
+        };
+        match provider_id_tag(&rest[open + 1..close]) {
+            Some((provider, id)) => {
+                cleaned.push_str(&rest[..open]);
+                cleaned.push(' ');
+                ids.entry(provider.to_string()).or_insert(id);
+            }
+            None => cleaned.push_str(&rest[..=close]),
+        }
+        rest = &rest[close + 1..];
+    }
+    cleaned.push_str(rest);
+    let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    (cleaned, ids)
+}
+
+fn provider_id_tag(inner: &str) -> Option<(&'static str, String)> {
+    let lower = inner.trim().to_ascii_lowercase();
+    let (provider, rest) = [("tmdb", "tmdb"), ("tvdb", "tvdb"), ("imdb", "imdb")]
+        .into_iter()
+        .find_map(|(prefix, provider)| lower.strip_prefix(prefix).map(|rest| (provider, rest)))?;
+    let rest = rest.strip_prefix("id").unwrap_or(rest);
+    let id = rest.strip_prefix(['-', '=', ':', ' '])?.trim();
+    let valid = match provider {
+        "imdb" => {
+            id.len() > 2
+                && id.starts_with("tt")
+                && id[2..].bytes().all(|byte| byte.is_ascii_digit())
+        }
+        _ => !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()),
+    };
+    valid.then(|| (provider, id.to_string()))
+}
+
+/// The byte range of an `S01E02` marker in a file stem.
+pub(crate) fn split_episode_marker(stem: &str) -> Option<(usize, usize)> {
+    let bytes = stem.as_bytes();
+    for index in 0..bytes.len() {
+        if !matches!(bytes[index], b'S' | b's') {
+            continue;
+        }
+        let season_start = index + 1;
+        let mut cursor = season_start;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() && cursor - season_start < 3 {
+            cursor += 1;
+        }
+        if cursor == season_start || cursor >= bytes.len() || !matches!(bytes[cursor], b'E' | b'e')
+        {
+            continue;
+        }
+        cursor += 1;
+        let episode_start = cursor;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() && cursor - episode_start < 4 {
+            cursor += 1;
+        }
+        if cursor > episode_start {
+            return Some((index, cursor));
+        }
+    }
+    None
+}
+
+/// Splits a trailing ` (1984)` year from a name.
+pub(crate) fn strip_trailing_year(value: &str) -> (&str, Option<u16>) {
+    let value = value.trim();
+    if value.len() >= 7 && value.ends_with(')') {
+        let start = value.len() - 6;
+        if value.as_bytes().get(start) == Some(&b'(')
+            && let Ok(year) = value[start + 1..value.len() - 1].parse::<u16>()
+        {
+            return (value[..start].trim(), Some(year));
+        }
+    }
+    (value, None)
+}
+
 pub fn application_observation(source: &str, label: &str, fields: &Value) -> MetadataObservation {
     MetadataObservation {
         source: source.to_string(),
@@ -2188,6 +2399,67 @@ mod tests {
         assert_eq!(conflict.proposed_values[0].sources, ["embedded"]);
         assert!(issues.iter().any(|issue| issue.code == "missing-authors"));
         assert!(issues.iter().any(|issue| issue.code == "missing-narrators"));
+    }
+
+    #[test]
+    fn episode_filenames_keep_the_show_title_year_and_id_apart() {
+        let metadata = super::filename_metadata(
+            "_Shows/Sherlock Holmes (1984) [tmdbid-799]/Season 07/Sherlock Holmes (1984) [tmdbid-799] S07E01 - The Three Gables.mkv",
+            MediaKind::Video,
+        );
+        assert_eq!(metadata["mediaType"], "episode");
+        assert_eq!(metadata["title"], "Sherlock Holmes");
+        assert_eq!(metadata["series"], "Sherlock Holmes");
+        assert_eq!(metadata["year"], 1984);
+        assert_eq!(metadata["season"], 7);
+        assert_eq!(metadata["episode"], 1);
+        assert_eq!(metadata["episodeTitle"], "The Three Gables");
+        assert_eq!(metadata["providerIds"], json!({"tmdb-series": "799"}));
+
+        // The show folder's tag still applies to an untagged episode name.
+        let untagged = super::filename_metadata(
+            "_Shows/Sherlock Holmes (1984) [tmdbid-799]/Season 07/Sherlock Holmes - S07E02.mkv",
+            MediaKind::Video,
+        );
+        assert_eq!(untagged["title"], "Sherlock Holmes");
+        assert_eq!(untagged["episodeTitle"], serde_json::Value::Null);
+        assert_eq!(untagged["providerIds"], json!({"tmdb-series": "799"}));
+
+        // A show's extra is not the film a TV ID would name as a movie.
+        for extra in [
+            "_Shows/Sherlock Holmes (1984) [tmdbid-799]/Extras/Making Of.mkv",
+            "_Shows/Sherlock Holmes (1984) [tmdbid-799]/Making Of.mkv",
+            "Sherlock Holmes (1984) [tmdbid-799]/Season 01/Behind the Scenes.mkv",
+        ] {
+            let metadata = super::filename_metadata(extra, MediaKind::Video);
+            assert_eq!(metadata["mediaType"], "movie", "{extra}");
+            assert_eq!(metadata["providerIds"], json!({}), "{extra}");
+        }
+    }
+
+    #[test]
+    fn movie_filenames_expose_provider_tags_as_ids() {
+        let metadata = super::filename_metadata(
+            "_Movies/Arrival (2016) {imdb-tt2543164}/Arrival (2016) [tmdbid-329865].mkv",
+            MediaKind::Video,
+        );
+        assert_eq!(metadata["mediaType"], "movie");
+        assert_eq!(metadata["title"], "Arrival");
+        assert_eq!(metadata["year"], 2016);
+        assert_eq!(
+            metadata["providerIds"],
+            json!({"tmdb": "329865", "imdb": "tt2543164"})
+        );
+        // Only the movie's own folder lends its tag, not a collection above.
+        let nested = super::filename_metadata(
+            "_Movies/Collection [tmdbid-1]/Arrival (2016)/Arrival (2016).mkv",
+            MediaKind::Video,
+        );
+        assert_eq!(nested["providerIds"], json!({}));
+        // Ordinary brackets are part of the name.
+        let (name, ids) = super::split_provider_id_tags("Alien [Director's Cut] [tvdbid=81189]");
+        assert_eq!(name, "Alien [Director's Cut]");
+        assert_eq!(ids.get("tvdb").map(String::as_str), Some("81189"));
     }
 
     #[test]

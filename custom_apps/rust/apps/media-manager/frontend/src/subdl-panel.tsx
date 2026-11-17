@@ -3,6 +3,7 @@ import { $, component$, useStore, useTask$ } from "@builder.io/qwik";
 import { Icon } from "./icon";
 import { SourceSetupLink } from "./source-setup";
 import { api, readableError } from "./api";
+import { languageChoices, languageName } from "./display-names";
 import type {
   AdditionalProviderCandidate,
   AdditionalProviderLookupResponse,
@@ -151,7 +152,7 @@ export const SubdlPanel = component$<{
       if (revision === state.revision) {
         state.plan = undefined;
         state.download = undefined;
-        state.notice = "The SubDL subtitle installation was queued.";
+        state.notice = "The subtitles will be added shortly.";
       }
     } catch (error) {
       if (revision === state.revision) state.error = readableError(error);
@@ -181,17 +182,21 @@ export const SubdlPanel = component$<{
               }}
             />
           </label>
-          <label class="source-search-short">
+          <label class="source-search-language">
             <span>Language</span>
-            <input
+            <select
               value={state.language}
-              maxLength={15}
-              placeholder="en"
-              onInput$={(_, el) => {
+              onChange$={(_, el) => {
                 state.language = el.value;
                 state.plan = undefined;
               }}
-            />
+            >
+              {languageChoices(state.language, true).map((language) => (
+                <option key={language.code} value={language.code}>
+                  {language.name}
+                </option>
+              ))}
+            </select>
           </label>
           <button
             class="primary-button"
@@ -222,8 +227,12 @@ export const SubdlPanel = component$<{
                 <strong>{candidate.title}</strong>
                 <span>{candidate.subtitle}</span>
                 <span>
-                  Language: {candidate.evidence.Language} · Hearing impaired:{" "}
-                  {candidate.evidence["Hearing impaired"]}
+                  {candidate.evidence.Language
+                    ? languageName(candidate.evidence.Language)
+                    : "Unknown language"}
+                  {candidate.evidence["Hearing impaired"] === "Yes"
+                    ? " · Describes sounds"
+                    : ""}
                 </span>
               </div>
               <button
@@ -232,7 +241,7 @@ export const SubdlPanel = component$<{
                 disabled={state.loading || !props.canEdit}
                 onClick$={() => download(candidate)}
               >
-                Preview subtitle
+                View lines
               </button>
             </article>
           ))}
@@ -258,8 +267,9 @@ export const SubdlPanel = component$<{
         {state.download?.content && (
           <section class="subtitle-content">
             <p class="subtitle-content-meta">
-              {state.download.cueCount} cues ·{" "}
-              {state.download.format?.toUpperCase()} · {state.language}
+              {state.download.cueCount}{" "}
+              {state.download.cueCount === 1 ? "line" : "lines"} ·{" "}
+              {languageName(state.language)}
             </p>
             <pre>{state.download.content.slice(0, 6000)}</pre>
             {!state.plan ? (
@@ -269,12 +279,12 @@ export const SubdlPanel = component$<{
                 disabled={state.loading || !props.canEdit}
                 onClick$={prepare}
               >
-                Prepare subtitle installation
+                Preview adding subtitles
               </button>
             ) : (
               <div class="subtitle-install-confirm">
                 <p>
-                  Destination:{" "}
+                  Will be saved as:{" "}
                   {state.plan.actions
                     .map(
                       (action) =>
@@ -294,7 +304,7 @@ export const SubdlPanel = component$<{
                   disabled={state.loading || props.mutationMode !== "enabled"}
                   onClick$={confirm}
                 >
-                  Confirm subtitle installation
+                  Add subtitles
                 </button>
               </div>
             )}

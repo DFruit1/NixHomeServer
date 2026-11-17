@@ -377,16 +377,14 @@ it("names the recommended source for a missing field and lists the alternatives"
   const heading = header?.querySelector("h3");
   expect(heading?.className).toContain("health-result-title-file");
   expect(heading?.textContent).toBe("01_lawson");
-  expect(
-    header?.querySelector(".health-result-kind")?.getAttribute("aria-label"),
-  ).toBe("Audiobook");
-  expect(
-    screen.querySelector(".health-result-kind")?.getAttribute("role"),
-  ).toBe("img");
+  // The media type is spelled out beside its symbol, not left to the icon.
+  expect(header?.querySelector(".health-result-kind")?.textContent).toBe(
+    "Audiobook",
+  );
 
   await vi.waitFor(async () => {
     await userEvent(screen, "click");
-    expect(screen.textContent).toContain("Find from External Providers");
+    expect(screen.textContent).toContain("Find details online");
   });
 
   await userEvent(screen.querySelector(".health-source-trigger"), "click");
@@ -399,11 +397,9 @@ it("names the recommended source for a missing field and lists the alternatives"
     screen
       .querySelector('[role="dialog"] .health-lookup-note:not([role="status"])')
       ?.textContent?.replace(/\s+/g, " "),
-  ).toBe(
-    "Showing matches of at least 30%, best first. Confidence is an evidence estimate, not a verified probability.",
-  );
+  ).toBe("Best matches first. Results that don't fit this item are left out.");
   const dialog = screen.querySelector('[role="dialog"]');
-  expect(dialog?.textContent).toContain("Find from External Providers");
+  expect(dialog?.textContent).toContain("Find details online");
   expect(dialog?.textContent).toContain("Author or creator is missing");
   expect(dialog?.textContent).toContain("Open Library");
   expect(dialog?.textContent).toContain("Audnexus");
@@ -571,7 +567,7 @@ it("applies an album issue to the file that produced it", async () => {
     expect(screen.textContent).toContain("Lawson restored");
   });
   await userEvent(screen.querySelector(".health-lookup-select"), "click");
-  expect(secondIssue?.textContent).toContain("Selected online value");
+  expect(secondIssue?.textContent).toContain("Found online");
   expect(secondIssue?.textContent).toContain("Lawson restored");
   await userEvent(button ?? null, "click");
   await vi.waitFor(() =>

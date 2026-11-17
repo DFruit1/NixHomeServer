@@ -60,7 +60,10 @@ describe("Media Manager in-view library filter", () => {
     await render(<Root initialView="library" initialRootId="shared-videos" />);
 
     await vi.waitFor(() =>
-      expect(screen.textContent).toContain("Blade Runner (1982).mkv"),
+      expect(
+        screen.querySelector('.tree-name[title="Blade Runner (1982).mkv"]')
+          ?.textContent,
+      ).toBe("Blade Runner (1982)"),
     );
 
     const input = screen.querySelector<HTMLInputElement>(
@@ -72,9 +75,14 @@ describe("Media Manager in-view library filter", () => {
     await userEvent(input, "input");
 
     await vi.waitFor(() =>
-      expect(screen.textContent).not.toContain("Blade Runner (1982).mkv"),
+      expect(
+        screen.querySelector('[title="Blade Runner (1982).mkv"]'),
+      ).toBeFalsy(),
     );
-    expect(screen.textContent).toContain("Arrival (2016).mkv");
+    expect(
+      screen.querySelector('.tree-name[title="Arrival (2016).mkv"]')
+        ?.textContent,
+    ).toBe("Arrival (2016)");
     expect(screen.textContent).toContain("1 match");
     expect(
       fetchMock.mock.calls.some(([input]) => {
@@ -171,11 +179,14 @@ describe("Media Manager in-view library filter", () => {
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="library" initialRootId="shared-videos" />);
     await vi.waitFor(() =>
-      expect(screen.textContent).toContain("Blade Runner (1982).mkv"),
+      expect(
+        screen.querySelector('.tree-name[title="Blade Runner (1982).mkv"]')
+          ?.textContent,
+      ).toBe("Blade Runner (1982)"),
     );
 
     const refresh = Array.from(screen.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Refresh",
+      (button) => button.textContent?.trim() === "Rescan folders",
     );
     expect(refresh, "refresh button").toBeDefined();
     await userEvent(refresh ?? null, "click");

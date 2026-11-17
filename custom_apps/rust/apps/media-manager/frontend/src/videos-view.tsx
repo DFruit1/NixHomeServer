@@ -20,6 +20,12 @@ import { findTargetIndex, prepareBrowserPlayback } from "./playback-target";
 import type { CatalogItem, MediaRoot } from "./root-types";
 import { thumbnailSizes, thumbnailSrc, thumbnailSrcset } from "./thumbnail";
 import {
+  displayFolderName,
+  displayTitleFromFileName,
+  displayVideoTitleFromFileName,
+  friendlyFolderName,
+} from "./display-names";
+import {
   audioNeedsBrowserConversion,
   decodedAudioState,
   probeReportsNoAudio,
@@ -37,14 +43,150 @@ function fileName(relativePath: string): string {
   return relativePath.split("/").at(-1) ?? relativePath;
 }
 
-// The title shown for a video is its metadata title; the file name without the
-// extension is the fallback when no title has been set.
+const DVD_PART = /^VTS_(\d+)_(\d+)$/i;
+const EPISODE = /\bS(\d{1,2})\s?E(\d{1,3})(?:\s?-?\s?E\d{1,3})*\b/i;
+const SEASON_FOLDER = /^(?:season|series)\s*\d+$|^specials$/i;
+
 function fileStem(relativePath: string): string {
   const filename = fileName(relativePath);
   const extension = filename.match(/\.[^.\s]{1,5}$/)?.[0] ?? "";
   return extension && extension.length < filename.length
     ? filename.slice(0, -extension.length)
     : filename;
+}
+
+export interface VideoInfo {
+  /** Standalone name: the show is included for an episode. */
+  title: string;
+  /** Name inside its group, where the group already names the show. */
+  rowTitle: string;
+  group: string;
+  /** Season heading inside a show; empty otherwise. */
+  section: string;
+  /** Sort key inside the group. */
+  order: string;
+  /** Orders groups: Movies, shows, YouTube, DVDs, folders, then the rest. */
+  rank: number;
+}
+
+/**
+ * What a viewer reads for a video file when no metadata title is known: no
+ * extension, release noise or IDs; DVD `VTS_xx_y` parts take the disc
+ * folder's name; episodes group under their show and season, YouTube
+ * downloads under YouTube and films under Movies.
+ */
+export function videoInfo(relativePath: string): VideoInfo {
+  const parts = relativePath.split("/").filter(Boolean);
+  const file = parts.pop() ?? relativePath;
+  const stem = fileStem(file);
+  const lowerParts = parts.map((part) => part.toLowerCase());
+  const dvd = stem.match(DVD_PART);
+  let title = displayVideoTitleFromFileName(file);
+  if (dvd) {
+    const disc = [...parts]
+      .reverse()
+      .find((part) => !/^(?:VIDEO_TS|AUDIO_TS)$/i.test(part));
+    const set = Number(dvd[1]);
+    const part = Number(dvd[2]);
+    const suffix =
+      set === 1 && part <= 1
+        ? ""
+        : ` · title ${set}${part > 1 ? `, part ${part}` : ""}`;
+    title =
+      (disc ? displayTitleFromFileName(displayFolderName(disc)) : "DVD") +
+      suffix;
+  }
+  const episode = stem.match(EPISODE);
+  if (episode && !dvd) {
+    const season = Number(episode[1]);
+    const number = Number(episode[2]);
+    const showIndex = lowerParts.findIndex((part) =>
+      ["_shows", "_tv"].includes(part),
+    );
+    const showFolder =
+      showIndex >= 0
+        ? parts[showIndex + 1]
+        : [...parts].reverse().find((part) => !SEASON_FOLDER.test(part));
+    const before = stem.slice(0, episode.index).replace(/[\s._-]+$/, "");
+    const show =
+      (showFolder && displayFolderName(showFolder)) ||
+      (before && displayVideoTitleFromFileName(before)) ||
+      "TV shows";
+    const after = displayVideoTitleFromFileName(
+      stem
+        .slice((episode.index ?? 0) + episode[0].length)
+        .replace(/^[\s._-]+/, ""),
+    );
+    const episodeName = after;
+    const rowTitle = `Episode ${number}${episodeName ? `: ${episodeName}` : ""}`;
+    return {
+      title: `${show} · S${season} E${number}${episodeName ? ` · ${episodeName}` : ""}`,
+      rowTitle,
+      group: show,
+      section: season === 0 ? "Specials" : `Season ${season}`,
+      order: `${String(season).padStart(3, "0")}${String(number).padStart(4, "0")}`,
+      rank: 1,
+    };
+  }
+  const youtube =
+    lowerParts.includes("_youtube") ||
+    /\[(?!(?:tmdb|tvdb|imdb|mbid|isbn|asin))[A-Za-z0-9_-]{11}\]/i.test(stem);
+  const movie =
+    lowerParts.includes("_movies") ||
+    (!youtube && /\((?:19|20)\d{2}\)(?:\s·.*)?$/.test(title));
+  const [group, rank] = youtube
+    ? ["YouTube", 2]
+    : movie
+      ? ["Movies", 0]
+      : dvd
+        ? ["DVDs", 3]
+        : parts[0]?.startsWith("_")
+          ? [friendlyFolderName(parts[0]), 4]
+          : parts.length > 0
+            ? [displayFolderName(parts.at(-1) ?? ""), 4]
+            : ["Other videos", 5];
+  return { title, rowTitle: title, group, section: "", order: title, rank };
+}
+
+interface VideoGroup {
+  name: string;
+  sections: { name: string; items: { item: CatalogItem; info: VideoInfo }[] }[];
+}
+
+/** Lightweight library sections: Movies, each show by season, YouTube, folders. */
+export function groupVideos(items: CatalogItem[]): VideoGroup[] {
+  const groups = new Map<
+    string,
+    Map<string, { item: CatalogItem; info: VideoInfo }[]>
+  >();
+  const ranks = new Map<string, number>();
+  for (const item of items) {
+    const info = videoInfo(item.relativePath);
+    const sections = groups.get(info.group) ?? new Map();
+    groups.set(info.group, sections);
+    ranks.set(info.group, Math.min(ranks.get(info.group) ?? 9, info.rank));
+    const rows = sections.get(info.section) ?? [];
+    sections.set(info.section, rows);
+    rows.push({ item, info });
+  }
+  return [...groups.entries()]
+    .sort(
+      ([a], [b]) =>
+        (ranks.get(a) ?? 9) - (ranks.get(b) ?? 9) || a.localeCompare(b),
+    )
+    .map(([name, sections]) => ({
+      name,
+      sections: [...sections.entries()]
+        .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+        .map(([section, rows]) => ({
+          name: section,
+          items: rows.sort((a, b) =>
+            a.info.order.localeCompare(b.info.order, undefined, {
+              numeric: true,
+            }),
+          ),
+        })),
+    }));
 }
 
 // Module scope keeps the lookup usable inside task closures, which Qwik
@@ -55,23 +197,6 @@ function selectedItem(
 ): CatalogItem | undefined {
   return items.find((item) => item.id === selectedId);
 }
-
-// Rows show only the title: the extension stays in the tooltip and for screen
-// readers, and the folder remains searchable through the filter.
-const VideoListCopy = component$<{ relativePath: string }>((props) => {
-  const filename = fileName(props.relativePath);
-  const stem = fileStem(props.relativePath);
-  return (
-    <span class="video-list-copy">
-      <strong title={filename}>
-        {stem}
-        {stem !== filename && (
-          <span class="sr-only">{filename.slice(stem.length)}</span>
-        )}
-      </strong>
-    </span>
-  );
-});
 
 export const VideosView = component$<{
   roots: MediaRoot[];
@@ -531,7 +656,7 @@ export const VideosView = component$<{
   const displayTitle = () => {
     const item = selected();
     if (!item) return "";
-    return state.title || fileStem(item.relativePath);
+    return state.title || videoInfo(item.relativePath).title;
   };
   const streamUrl = () => {
     const item = selected();
@@ -541,10 +666,13 @@ export const VideosView = component$<{
   };
   const query = state.query.trim().toLowerCase();
   const visibleItems = query
-    ? state.items.filter((item) =>
-        item.relativePath.toLowerCase().includes(query),
+    ? state.items.filter(
+        (item) =>
+          item.relativePath.toLowerCase().includes(query) ||
+          videoInfo(item.relativePath).title.toLowerCase().includes(query),
       )
     : state.items;
+  const visibleGroups = groupVideos(visibleItems);
 
   useVisibleTask$(({ track, cleanup }) => {
     track(() => state.selectedId);
@@ -572,13 +700,12 @@ export const VideosView = component$<{
     }
     const item = selectedItem(state.items, state.selectedId);
     if (!item) return;
-    const filename = item.relativePath.split("/").at(-1) ?? "";
-    const folder = item.relativePath.split("/").slice(0, -1).join("/");
+    const info = videoInfo(item.relativePath);
     let sessionMetadata: MediaMetadata | null = null;
     const claimSession = () => {
       sessionMetadata = new MediaMetadata({
-        title: filename,
-        artist: folder,
+        title: state.title || info.title,
+        artist: info.group,
       });
       navigator.mediaSession.metadata = sessionMetadata;
       navigator.mediaSession.playbackState = "playing";
@@ -669,7 +796,7 @@ export const VideosView = component$<{
               )}
               {videoRoots.length > 1 && (
                 <label class="video-library-select">
-                  <span class="sr-only">Video library</span>
+                  <span>Show</span>
                   <select
                     value={state.rootId}
                     onChange$={(_, element) => (state.rootId = element.value)}
@@ -719,6 +846,7 @@ export const VideosView = component$<{
                   onClick$={toggleTheatre}
                 >
                   <Icon name="theatre" size={16} />
+                  <span class="video-action-label">Theatre mode</span>
                 </button>
                 {pipSupported.value && (
                   <button
@@ -832,7 +960,7 @@ export const VideosView = component$<{
                 </button>
               </div>
               <div class="dialog-body clip-form">
-                <p class="clip-source">{fileName(selected()!.relativePath)}</p>
+                <p class="clip-source">{displayTitle()}</p>
                 <p class="clip-range">
                   From {clipTime(clip.start)} · {clip.seconds}s clip
                 </p>
@@ -949,37 +1077,53 @@ export const VideosView = component$<{
           <p class="video-library-empty">No matching videos.</p>
         ) : (
           <ul class="video-list">
-            {visibleItems.map((item) => (
-              <li
-                key={item.id}
-                class={{ active: item.id === state.selectedId }}
-              >
-                <button
-                  type="button"
-                  aria-current={
-                    item.id === state.selectedId ? "true" : undefined
-                  }
-                  onClick$={() => chooseVideo(item.id)}
-                >
-                  <span class="video-list-icon">
-                    <Icon name="video" />
-                    <img
-                      src={thumbnailSrc(
-                        `/api/v1/items/${encodeURIComponent(item.id)}/image`,
-                      )}
-                      srcset={thumbnailSrcset(
-                        `/api/v1/items/${encodeURIComponent(item.id)}/image`,
-                      )}
-                      sizes={thumbnailSizes("76px")}
-                      alt=""
-                      loading="lazy"
-                      onError$={(_, image) => {
-                        image.hidden = true;
-                      }}
-                    />
-                  </span>
-                  <VideoListCopy relativePath={item.relativePath} />
-                </button>
+            {visibleGroups.map((group) => (
+              <li key={group.name} class="video-list-group">
+                <h3>{group.name}</h3>
+                {group.sections.map((section) => (
+                  <div key={section.name} class="video-list-section">
+                    {section.name && <h4>{section.name}</h4>}
+                    <ul>
+                      {section.items.map(({ item, info }) => (
+                        <li
+                          key={item.id}
+                          class={{ active: item.id === state.selectedId }}
+                        >
+                          <button
+                            type="button"
+                            aria-current={
+                              item.id === state.selectedId ? "true" : undefined
+                            }
+                            onClick$={() => chooseVideo(item.id)}
+                          >
+                            <span class="video-list-icon">
+                              <Icon name="video" />
+                              <img
+                                src={thumbnailSrc(
+                                  `/api/v1/items/${encodeURIComponent(item.id)}/image`,
+                                )}
+                                srcset={thumbnailSrcset(
+                                  `/api/v1/items/${encodeURIComponent(item.id)}/image`,
+                                )}
+                                sizes={thumbnailSizes("76px")}
+                                alt=""
+                                loading="lazy"
+                                onError$={(_, image) => {
+                                  image.hidden = true;
+                                }}
+                              />
+                            </span>
+                            <span class="video-list-copy">
+                              <strong title={fileName(item.relativePath)}>
+                                {info.rowTitle}
+                              </strong>
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
               </li>
             ))}
           </ul>

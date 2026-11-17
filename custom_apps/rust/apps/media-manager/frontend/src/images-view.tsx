@@ -41,11 +41,32 @@ const tagLabel = (tag: string) => tag.replaceAll("_", " ");
 // Short names for the compact sort control; the native picker keeps full names.
 const sortLabels: Record<string, string> = {
   capturedAt: "Date",
-  aesthetic: "Aesthetic",
-  keeper: "Keeper",
-  cover: "Cover",
-  scores: "Combined",
-  tag: "Tag",
+  aesthetic: "Looks good",
+  keeper: "Worth keeping",
+  cover: "Good cover photo",
+  scores: "Best overall",
+  tag: "Best tag match",
+};
+// Plain names for the three relative analysis scores (each 0–100).
+const scoreNames = {
+  aesthetic: "Looks good",
+  keeper: "Worth keeping",
+  cover: "Good cover photo",
+} as const;
+const scoreLine = (scores: EyeAnalysis["scores"]) =>
+  (["aesthetic", "keeper", "cover"] as const)
+    .map((score) => `${scoreNames[score]} ${Math.round(scores[score] * 100)}`)
+    .join(" · ");
+/** When the photo was taken; the file name only when no date is known. */
+const takenLabel = (image: ImmichImage, withTime = true): string => {
+  const date = image.capturedAt ? new Date(image.capturedAt) : undefined;
+  if (!date || Number.isNaN(date.getTime())) return image.filename;
+  return date.toLocaleString(
+    undefined,
+    withTime
+      ? { dateStyle: "medium", timeStyle: "short" }
+      : { dateStyle: "medium" },
+  );
 };
 
 export const ImagesView = component$<{
@@ -110,6 +131,7 @@ export const ImagesView = component$<{
     setupRequired: false,
     automaticConnection: false,
     notice: "",
+    unavailable: false,
     imageFailed: false,
     failedPreviews: [] as string[],
   });
@@ -130,6 +152,7 @@ export const ImagesView = component$<{
     else state.loading = true;
     state.error = "";
     state.setupRequired = false;
+    state.unavailable = false;
     try {
       const query = more ? state.appliedQuery : state.query.trim();
       const params = new URLSearchParams({
@@ -196,6 +219,9 @@ export const ImagesView = component$<{
         ["immich_account_required", "immich_provisioning_pending"].includes(
           error.code,
         );
+      // Disabled on the server: nothing a user can set up in Online services.
+      state.unavailable =
+        error instanceof ApiError && error.code === "immich_unavailable";
       state.automaticConnection =
         error instanceof ApiError &&
         error.code === "immich_provisioning_pending";
@@ -394,7 +420,7 @@ export const ImagesView = component$<{
         item.tagged = true;
         item.analysis = response.analysis;
       }
-      state.notice = "Analysis saved in Media Manager.";
+      state.notice = "Results saved.";
     } catch (error) {
       state.detailError = readableError(error);
     } finally {
@@ -421,7 +447,7 @@ export const ImagesView = component$<{
       if (state.selected?.id === image.id) {
         state.selected.tagged = result.tagged;
         state.notice =
-          "Marked for retagging. Analyze now or wait for the next library sweep (up to 30 minutes).";
+          "Marked to be checked again. Re-check now, or it happens automatically within 30 minutes.";
       }
     } catch (error) {
       if (state.selected?.id === image.id)
@@ -592,13 +618,15 @@ export const ImagesView = component$<{
                     class="image-detail-preview"
                     key={state.selected.id}
                     src={previewUrl(state.selected.id)}
-                    alt={state.selected.filename}
+                    alt="Selected photo"
                     onError$={() => (state.imageFailed = true)}
                   />
                 )}
               </div>
               <header class="image-detail-header">
-                <h2>{state.selected.filename}</h2>
+                <h2 title={state.selected.filename}>
+                  {takenLabel(state.selected)}
+                </h2>
                 {props.immichUrl && (
                   <a
                     href={`${props.immichUrl}/photos/${encodeURIComponent(state.selected.id)}`}
@@ -609,16 +637,15 @@ export const ImagesView = component$<{
                   </a>
                 )}
               </header>
-              <section class="image-eye" aria-labelledby="image-eye-heading">
+              <section class="image-eye" aria-label="Photo analysis">
                 <div class="image-eye-head">
-                  <h3 id="image-eye-heading">EYE</h3>
-                  <span class="image-eye-status" role="status">
+                  <p class="image-eye-status" role="status">
                     {state.analyzing
-                      ? "Analyzing…"
+                      ? "Analysing…"
                       : state.selected.tagged
-                        ? "Tagged"
-                        : "Awaiting tagging"}
-                  </span>
+                        ? "Analysed"
+                        : "Not analysed yet"}
+                  </p>
                   <div class="image-eye-actions">
                     <button
                       type="button"
@@ -626,7 +653,9 @@ export const ImagesView = component$<{
                       disabled={busy || state.selecting}
                       onClick$={analyze}
                     >
-                      {state.analysis ? "Analyze again" : "Analyze photo"}
+                      {state.analysis
+                        ? "Re-check this photo"
+                        : "Check this photo"}
                     </button>
                     <div class="image-more">
                       <button
@@ -637,7 +666,7 @@ export const ImagesView = component$<{
                         disabled={busy || state.selecting}
                         onClick$={() => (moreOpen.value = !moreOpen.value)}
                       >
-                        {state.markingForRetag ? "Marking…" : "More"}
+                        {state.markingForRetag ? "Marking…" : "More actions"}
                       </button>
                       {moreOpen.value && (
                         <ul id="image-more-actions" class="image-more-actions">
@@ -649,7 +678,7 @@ export const ImagesView = component$<{
                                 return state.selected && choose(state.selected);
                               }}
                             >
-                              Refresh analysis
+                              Reload saved results
                             </button>
                           </li>
                           {state.selected.tagged && (
@@ -661,7 +690,7 @@ export const ImagesView = component$<{
                                   return markForRetagging();
                                 }}
                               >
-                                Mark for retagging
+                                Check again later
                               </button>
                             </li>
                           )}
@@ -686,15 +715,10 @@ export const ImagesView = component$<{
                       {(["aesthetic", "keeper", "cover"] as const).map(
                         (score) => (
                           <div key={score}>
-                            <dt>
-                              {score === "aesthetic"
-                                ? "Aesthetic"
-                                : score === "keeper"
-                                  ? "Keeper"
-                                  : "Cover"}
-                            </dt>
+                            <dt>{scoreNames[score]}</dt>
                             <dd>
                               {Math.round(state.analysis!.scores[score] * 100)}
+                              <span class="image-score-scale"> out of 100</span>
                             </dd>
                           </div>
                         ),
@@ -845,7 +869,7 @@ export const ImagesView = component$<{
                   <Icon name="select" size={20} />
                 </button>
                 <CollectionViewControl
-                  label="View"
+                  label="Layout"
                   compact
                   value={layout.view.value}
                   onChange$={layout.change}
@@ -894,7 +918,8 @@ export const ImagesView = component$<{
                       {state.index && (
                         <li class="images-header-menu-note">
                           {state.index.analyzed.toLocaleString()} of{" "}
-                          {state.index.discovered.toLocaleString()} analyzed
+                          {state.index.discovered.toLocaleString()} photos
+                          analysed
                         </li>
                       )}
                     </ul>
@@ -964,11 +989,11 @@ export const ImagesView = component$<{
                         <option value="relevance">Relevance</option>
                       )}
                       <option value="capturedAt">Date taken</option>
-                      <option value="aesthetic">Aesthetic</option>
-                      <option value="keeper">Keeper</option>
-                      <option value="cover">Cover</option>
-                      <option value="scores">Combined scores</option>
-                      <option value="tag">Tag confidence</option>
+                      <option value="aesthetic">Looks good</option>
+                      <option value="keeper">Worth keeping</option>
+                      <option value="cover">Good cover photo</option>
+                      <option value="scores">Best overall</option>
+                      <option value="tag">Best tag match</option>
                     </select>
                   </label>
                   {!semanticActive && (
@@ -1124,10 +1149,10 @@ export const ImagesView = component$<{
                       ).map((key) => (
                         <label key={key}>
                           {key === "aestheticWeight"
-                            ? "Aesthetic"
+                            ? scoreNames.aesthetic
                             : key === "keeperWeight"
-                              ? "Keeper"
-                              : "Cover"}
+                              ? scoreNames.keeper
+                              : scoreNames.cover}
                           <input
                             type="number"
                             min={0}
@@ -1149,7 +1174,7 @@ export const ImagesView = component$<{
                 <fieldset class="images-filter-group">
                   <legend>
                     Minimum scores
-                    {!semanticSearch.value ? " and confidence" : ""} (0–100)
+                    {!semanticSearch.value ? " and tag match" : ""} (out of 100)
                   </legend>
                   <div
                     class={`images-filter-row images-filter-row--${semanticSearch.value ? 3 : 4}`}
@@ -1166,8 +1191,12 @@ export const ImagesView = component$<{
                     ).map((key) => (
                       <label key={key}>
                         {key === "confidence"
-                          ? "Tag confidence"
-                          : key.replace("min", "")}
+                          ? "Tag match"
+                          : key === "minAesthetic"
+                            ? scoreNames.aesthetic
+                            : key === "minKeeper"
+                              ? scoreNames.keeper
+                              : scoreNames.cover}
                         <input
                           type="number"
                           min={0}
@@ -1188,7 +1217,7 @@ export const ImagesView = component$<{
             </form>
             {state.index?.error && (
               <div class="message error" role="alert">
-                <span>Indexing needs attention: {state.index.error}</span>
+                <span>Photo analysis needs attention: {state.index.error}</span>
               </div>
             )}
             {state.index &&
@@ -1198,13 +1227,12 @@ export const ImagesView = component$<{
                 state.index.analyzed < state.index.discovered) && (
                 <p class="images-index-line">
                   <span role="status">
-                    {state.index.scanning ? "Indexing " : ""}
-                    {state.index.analyzed.toLocaleString()} of{" "}
-                    {state.index.discovered.toLocaleString()}
-                    {state.index.scanning ? "" : " analyzed"}
-                    {state.index.error ? " · retry scheduled" : ""}
+                    {state.index.scanning
+                      ? `Analysing ${state.index.analyzed.toLocaleString()} of ${state.index.discovered.toLocaleString()} photos`
+                      : `${state.index.analyzed.toLocaleString()} of ${state.index.discovered.toLocaleString()} photos analysed`}
+                    {state.index.error ? " · will try again shortly" : ""}
                     {state.index.failed
-                      ? ` · ${state.index.failed.toLocaleString()} to retry`
+                      ? ` · ${state.index.failed.toLocaleString()} failed`
                       : ""}
                   </span>
                   <button
@@ -1219,18 +1247,22 @@ export const ImagesView = component$<{
                   </button>
                 </p>
               )}
-            {state.error && (
+            {state.error && !state.setupRequired && !state.unavailable && (
               <div class="message error" role="alert">
                 <span>{state.error}</span>
               </div>
             )}
-            {state.setupRequired ? (
+            {state.unavailable ? (
               <div class="images-empty">
-                <h2>Connect your Immich library</h2>
+                <h2>Photos isn't available on this server</h2>
+              </div>
+            ) : state.setupRequired ? (
+              <div class="images-empty">
+                <h2>Photos isn't connected yet</h2>
                 <p>
                   {state.automaticConnection
                     ? "Sign into Photos once to create your account. Media Manager connects automatically within a few minutes, without an API key."
-                    : "Add your Immich API key under Metadata sources → Immich, then return here."}
+                    : "Add your Photos (Immich) API key under Online services, then come back here."}
                 </p>
                 <div class="images-empty-actions">
                   <a
@@ -1243,7 +1275,7 @@ export const ImagesView = component$<{
                   >
                     {state.automaticConnection
                       ? "Open Photos"
-                      : "Open Metadata sources"}
+                      : "Open Online services"}
                   </a>
                   <button
                     type="button"
@@ -1276,7 +1308,7 @@ export const ImagesView = component$<{
                               "tags",
                             )
                           ? "Try a different description, tags, scores or filename."
-                          : "Photos appear as background indexing discovers your library. Refresh to see progress."}
+                          : "Photos show up here as your library is scanned. Refresh to see progress."}
                     </p>
                   </div>
                 )}
@@ -1290,7 +1322,7 @@ export const ImagesView = component$<{
                     <button
                       key={image.id}
                       data-photo-id={image.id}
-                      aria-label={image.filename}
+                      aria-label={takenLabel(image)}
                       type="button"
                       class={{
                         "image-tile": true,
@@ -1303,7 +1335,7 @@ export const ImagesView = component$<{
                           ? selection.ids.includes(image.id)
                           : state.selected?.id === image.id
                       }
-                      title={tiles ? image.filename : undefined}
+                      title={tiles ? takenLabel(image) : undefined}
                       disabled={busy}
                       onClick$={() =>
                         selection.active ? togglePhoto(image.id) : choose(image)
@@ -1337,16 +1369,16 @@ export const ImagesView = component$<{
                           />
                         ))}
                       <span class={tiles ? "sr-only" : "image-item-copy"}>
-                        <span class="image-item-name">{image.filename}</span>
+                        <span class="image-item-name">{takenLabel(image)}</span>
                         {layout.view.value === "detailed-list" && (
                           <>
                             <span class="image-item-meta">
-                              {image.capturedAt.slice(0, 10)}
+                              {image.filename}
                             </span>
                             <span class="image-item-meta">
                               {image.analysis
-                                ? `Aesthetic ${Math.round(image.analysis.scores.aesthetic * 100)} · Keeper ${Math.round(image.analysis.scores.keeper * 100)} · Cover ${Math.round(image.analysis.scores.cover * 100)}`
-                                : "Not analyzed"}
+                                ? `${scoreLine(image.analysis.scores)} (out of 100)`
+                                : "Not analysed yet"}
                             </span>
                             {!!image.decisionTags?.length && (
                               <span class="image-item-meta">
@@ -1377,13 +1409,13 @@ export const ImagesView = component$<{
                     {state.loadingMore ? "Loading photos…" : "Load more photos"}
                   </button>
                 )}
-                {state.error && !state.setupRequired && (
+                {state.error && !state.setupRequired && !state.unavailable && (
                   <button
                     type="button"
                     class="secondary-button"
                     onClick$={() => load()}
                   >
-                    Retry loading photos
+                    Try again
                   </button>
                 )}
               </>

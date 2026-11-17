@@ -850,7 +850,7 @@ paths:
   /conversions/uploads:
     post:
       operationId: uploadConversionInput
-      description: Streams one file (at most 64 GiB) to staging. Partial uploads are removed. Editor access and enabled mutations required. Uploads remain in the job inbox or DVD archive; an optional library copy is saved only after successful transcription, without replacing existing files.
+      description: Streams one file (at most 64 GB) to staging. Partial uploads are removed. Editor access and enabled mutations required. Uploads remain in the job inbox or DVD archive; an optional library copy is saved only after successful transcription, without replacing existing files.
       parameters:
         - in: query
           name: options
@@ -2975,7 +2975,10 @@ components:
         sourcePriority:
           description: Ordered sources the application reads for this kind, highest priority first, so users know where the program gets its metadata.
           type: string
-        nativeUrl: { type: string, format: uri }
+        nativeUrl:
+          description: The app's own address for managing this item; null or absent when the app has no public URL.
+          type: [string, "null"]
+          format: uri
     MetadataHealthDecision:
       type: object
       additionalProperties: false

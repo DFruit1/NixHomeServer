@@ -421,7 +421,7 @@ export const ConversionInput = component$<{
               file &&
               file.size > (props.inputs?.maxUploadBytes ?? 0)
             ) {
-              form.error = "Files must be no larger than 64 GiB.";
+              form.error = "Files must be no larger than 64 GB.";
               return;
             }
             const options: ConversionInputOptions = {
@@ -539,7 +539,7 @@ export const ConversionInput = component$<{
                     <Icon name="upload" size={22} />
                     <span>
                       <strong>Upload from this device</strong>
-                      <small>Up to 64 GiB</small>
+                      <small>Up to 64 GB</small>
                     </span>
                   </label>
                 </>
@@ -579,7 +579,7 @@ export const ConversionInput = component$<{
             )}
             {kind === "transcription" && (
               <div class="conversion-field">
-                <label for="conversion-engine">Transcription engine</label>
+                <label for="conversion-engine">Spoken language</label>
                 <select
                   id="conversion-engine"
                   value={form.backend}
@@ -587,8 +587,8 @@ export const ConversionInput = component$<{
                     form.backend = el.value;
                   }}
                 >
-                  <option value="parakeet">Parakeet</option>
-                  <option value="whisper">Whisper</option>
+                  <option value="parakeet">English only (Parakeet)</option>
+                  <option value="whisper">Any language (Whisper)</option>
                 </select>
               </div>
             )}

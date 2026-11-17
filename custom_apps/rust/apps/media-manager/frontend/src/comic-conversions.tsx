@@ -34,15 +34,14 @@ export const ComicConversions = component$<{
       aria-labelledby="comic-conversions-heading"
     >
       <header class="panel-heading">
-        <h2 id="comic-conversions-heading">CBR comics</h2>
+        <h2 id="comic-conversions-heading">Comics that can't be edited</h2>
       </header>
       <div class="comic-conversions__body">
         <p>
-          CBR comics are stored in RAR, a proprietary format that free software
-          can read but not write, so their metadata cannot be edited. CBZ holds
-          the same pages in an open ZIP archive that Kavita and Media Manager
-          can update. Pages are copied unchanged and checked against the
-          original, which is kept in a superseded folder.
+          These comics are CBR files, a format whose details can be read but not
+          changed. Converting makes a CBZ copy with the same pages, which Kavita
+          and Media Manager can edit. Every page is checked against the
+          original, and the original is kept.
         </p>
         {state.list && !state.list.conversionAvailable && (
           <p class="message error">
@@ -55,9 +54,11 @@ export const ComicConversions = component$<{
             {state.error}
           </p>
         ) : !state.list ? (
-          <p class="quiet-copy">Looking for CBR comics…</p>
+          <p class="quiet-copy">Looking for comics that can't be edited…</p>
         ) : items.length === 0 ? (
-          <p class="quiet-copy">No CBR comics in your book libraries.</p>
+          <p class="quiet-copy">
+            Every comic in your book libraries can be edited.
+          </p>
         ) : (
           <ul class="comic-conversions__list">
             {items.map((item) => {

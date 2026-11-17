@@ -224,7 +224,7 @@ pub(super) async fn server_file(
         let before = opened_file_fingerprint(&file).map_err(|e| e.to_string())?;
         let size = file.metadata().map_err(|e| e.to_string())?.len();
         if size > intake::MAX_INPUT_BYTES {
-            return Err("Files must be no larger than 64 GiB.".into());
+            return Err("Files must be no larger than 64 GB.".into());
         }
         let mut staged = prepare(&config, &identity, &options)?;
         let copied = std::io::copy(
@@ -298,7 +298,7 @@ pub(super) async fn upload(
         return ApiError::new(
             StatusCode::PAYLOAD_TOO_LARGE,
             "file_too_large",
-            "Files must be no larger than 64 GiB.",
+            "Files must be no larger than 64 GB.",
             id,
         )
         .into_response();
@@ -329,7 +329,7 @@ pub(super) async fn upload(
             return ApiError::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "file_too_large",
-                "Files must be no larger than 64 GiB.",
+                "Files must be no larger than 64 GB.",
                 id,
             )
             .into_response();

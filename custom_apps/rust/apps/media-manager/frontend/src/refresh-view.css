@@ -1,0 +1,82 @@
+/* Refresh other apps: one divided list, one row per app. */
+.refresh-apps {
+  display: grid;
+  gap: 12px;
+}
+.refresh-apps-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+.refresh-apps-toolbar .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.refresh-app-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--card);
+}
+.refresh-app-row {
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 20px;
+}
+.refresh-app-row + .refresh-app-row {
+  border-top: 1px solid var(--line);
+}
+.refresh-app-row.pending {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.refresh-app-row.error {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.refresh-app-icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-soft);
+}
+.refresh-app-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.refresh-app-copy h3 {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.refresh-app-status {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+.refresh-app-status:empty {
+  display: none;
+}
+.refresh-app-status.pending {
+  color: var(--accent);
+}
+.refresh-app-status.error {
+  color: var(--danger);
+}
+.refresh-app-status span {
+  display: block;
+  color: var(--ink-soft);
+}
+@media (max-width: 640px) {
+  .refresh-app-row {
+    gap: 10px;
+    padding: 10px 12px;
+  }
+}

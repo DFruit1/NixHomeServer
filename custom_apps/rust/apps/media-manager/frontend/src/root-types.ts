@@ -144,14 +144,16 @@ export type NamingProfile =
   | "filename";
 
 export const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
-  { id: "library", label: "Manage library", icon: "library" },
+  { id: "library", label: "Library", icon: "library" },
   { id: "health", label: "Library health", icon: "tag" },
   { id: "conversions", label: "Conversions", icon: "disc" },
+  { id: "activity", label: "Recent changes", icon: "activity" },
   { id: "player", label: "Music", icon: "music-note" },
   { id: "videos", label: "Videos", icon: "video" },
   { id: "images", label: "Images", icon: "image" },
-  { id: "accounts", label: "Metadata sources", icon: "shield" },
-  { id: "refresh", label: "App refresh", icon: "refresh" },
+  // Route ids stay `accounts` and `refresh` so existing links keep working.
+  { id: "accounts", label: "Online services", icon: "shield" },
+  { id: "refresh", label: "Refresh other apps", icon: "refresh" },
 ];
 
 export type IconName =

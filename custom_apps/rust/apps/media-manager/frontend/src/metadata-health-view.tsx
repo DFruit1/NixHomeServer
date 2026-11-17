@@ -44,8 +44,14 @@ import {
 import {
   rankHealthCandidates,
   hasHealthValue,
+  matchLabel,
   type HealthMatch,
 } from "./health-provider-lookup";
+import {
+  FOLDER_AUTHOR_SOURCE,
+  folderAuthorHint,
+  withFolderAuthorProposal,
+} from "./health-folder-author";
 import {
   createHealthLookupSession,
   type HealthLookupSession,
@@ -172,6 +178,11 @@ function proposedProvenance(
   if (proposed.length === 0) return "";
   if (proposed.length > 1)
     return "Sources disagree; compare the attributed values before choosing.";
+  if (
+    proposed[0].sources.length === 1 &&
+    proposed[0].sources[0] === FOLDER_AUTHOR_SOURCE
+  )
+    return "Proposed from the folder name.";
   const sources = quotedList([
     ...new Set(proposed.flatMap((candidate) => candidate.sources)),
   ]);
@@ -454,6 +465,25 @@ function groupHeading(group: HealthGroup): {
   };
 }
 
+/** Review the single file, or the folder that holds a multi-file group. */
+function groupReviewHref(group: HealthGroup): string {
+  const first = group.results[0];
+  const root = `?view=library&root=${encodeURIComponent(group.rootId)}`;
+  return group.results.length > 1 && group.album
+    ? `${root}&path=${encodeURIComponent(group.album)}`
+    : `${root}&item=${encodeURIComponent(first.itemId)}`;
+}
+
+const FIELD_NOUNS: Record<string, string> = {
+  authors: "author",
+  narrators: "narrator",
+  volumeNumber: "volume number",
+};
+/** The field as a word in a sentence: "No author yet". */
+function fieldNoun(field: string): string {
+  return FIELD_NOUNS[field] ?? metadataFieldLabel(field).toLowerCase();
+}
+
 function renderCandidateFields(fields: [string, unknown][]) {
   return (
     <dl>
@@ -477,6 +507,7 @@ const ExternalProvidersDialog = component$<{
   rootId: string;
   query: string;
   queryFromFilename: boolean;
+  folderAuthor: string;
   onSelect$: QRL<(value: unknown, source: string) => void>;
   onClose$: QRL<() => void>;
 }>((props) => {
@@ -524,6 +555,8 @@ const ExternalProvidersDialog = component$<{
       // Prefer the item/album title when known; otherwise use the clarified
       // search title (filename stem, without extension) for matching.
       title: state.context.title || query,
+      // The item's folder often names the author when its metadata does not.
+      folderAuthor: props.folderAuthor || undefined,
     };
     const session = await getSession$();
     state.statuses = {};
@@ -562,11 +595,11 @@ const ExternalProvidersDialog = component$<{
         class="dialog health-lookup-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="Find values from external providers"
+        aria-label="Find details online"
         onClick$={(event) => event.stopPropagation()}
       >
         <div class="dialog-header">
-          <h3>Find from External Providers</h3>
+          <h3>Find details online</h3>
           <button
             type="button"
             class="dialog-close"
@@ -588,8 +621,8 @@ const ExternalProvidersDialog = component$<{
                 </p>
               )}
               <p class="health-lookup-note">
-                Showing matches of at least 30%, best first. Confidence is an
-                evidence estimate, not a verified probability.
+                Best matches first. Results that don't fit this item are left
+                out.
               </p>
               <form
                 class="health-lookup-query"
@@ -634,7 +667,10 @@ const ExternalProvidersDialog = component$<{
                 !state.error &&
                 !needsClarification.value &&
                 matches.length === 0 && (
-                  <p>No results supply this field with at least a 30% match.</p>
+                  <p>
+                    No close matches include the{" "}
+                    {fieldNoun(props.issue.field ?? "metadata")}.
+                  </p>
                 )}
               {!state.loading &&
                 !state.error &&
@@ -675,21 +711,20 @@ const ExternalProvidersDialog = component$<{
                           />
                         )}
                         <strong>{candidate.provider.name}</strong>
-                        <span
-                          class="health-confidence"
-                          title={confidence.reasons.join("; ")}
-                          tabIndex={0}
-                          aria-label={`Estimated confidence ${confidence.score} percent. ${confidence.reasons.join("; ")}`}
-                        >
-                          {confidence.score}% estimate
+                        <span class="health-confidence">
+                          {matchLabel(confidence.score)}
                         </span>
                       </div>
                       <details class="health-lookup-details">
-                        <summary>Confidence evidence</summary>
+                        <summary>Why this matches</summary>
                         <ul>
                           {confidence.reasons.map((reason) => (
                             <li key={reason}>{reason}</li>
                           ))}
+                          <li>
+                            Match score {confidence.score} out of 100 (an
+                            estimate)
+                          </li>
                         </ul>
                       </details>
                       <strong>{candidate.title}</strong>
@@ -715,8 +750,7 @@ const ExternalProvidersDialog = component$<{
                             await props.onClose$();
                           }}
                         >
-                          Compare{" "}
-                          {metadataFieldLabel(props.issue.field).toLowerCase()}
+                          Choose this result
                         </button>
                       ) : (
                         <small>
@@ -1037,12 +1071,15 @@ const HealthDecisionRow = component$<{
   canEdit: boolean;
   selections: HealthSelections;
   onApply$: ApplyHealthValue;
+  onFind$?: QRL<() => void>;
 }>((props) => {
   const { issue, target } = props.entries[0];
   const field = issue.field ?? "";
   const editable =
     props.canEdit && isSettableField(field) && target.mediaKind !== "podcast";
-  const autoEligible = editable && needsExternalProposal(props.entries);
+  // Nothing to compare yet: say so on one line beside the ways to fill it.
+  const empty = needsExternalProposal(props.entries);
+  const autoEligible = editable && empty;
   const currents = distinctValues(props.entries, false);
   const proposals = distinctValues(props.entries, true);
   const selectionEntries = props.album
@@ -1080,23 +1117,92 @@ const HealthDecisionRow = component$<{
     source: candidate.sources.join(" · ") || fallback,
     onApply$: props.onApply$,
   });
+  const fileHeading = props.showFile && (
+    <th scope="row">
+      <div class="health-file-heading">
+        <a
+          class="health-review-link health-file-link"
+          href={`?view=library&root=${encodeURIComponent(target.rootId)}&item=${encodeURIComponent(target.itemId)}`}
+        >
+          <span title={target.relativePath}>
+            {target.relativePath.split("/").at(-1)}
+          </span>
+        </a>
+      </div>
+      {issue.fileOverride && <small>Individual choice</small>}
+    </th>
+  );
+  if (empty) {
+    const noun = fieldNoun(field);
+    const typeHref = props.album
+      ? `?view=library&root=${encodeURIComponent(props.album.rootId)}&path=${encodeURIComponent(props.album.path)}`
+      : `?view=library&root=${encodeURIComponent(target.rootId)}&item=${encodeURIComponent(target.itemId)}`;
+    const typeIt = (
+      <a class="health-inline-action" href={typeHref}>
+        type it in
+      </a>
+    );
+    const findIt = props.onFind$ && (
+      <>
+        <button
+          type="button"
+          class="health-inline-action"
+          onClick$={props.onFind$}
+        >
+          find it online
+        </button>{" "}
+        or{" "}
+      </>
+    );
+    return (
+      <tr>
+        {fileHeading}
+        <td class="health-empty-cell" colSpan={3}>
+          {autoEligible ? (
+            <HealthAutoProposal
+              emptyLabel={noun}
+              target={target}
+              field={field}
+              query={props.query}
+              queryFromFilename={props.queryFromFilename}
+              providers={props.providers}
+              getSession$={props.getSession$}
+              selectedValueKey={proposedKey}
+              onUse$={async (value) => {
+                await apply$(value, "Proposed");
+              }}
+            >
+              {findIt}
+              {typeIt}
+              {props.onFind$ && (
+                <p q:slot="found" class="health-source">
+                  <button
+                    type="button"
+                    class="health-source-trigger"
+                    onClick$={props.onFind$}
+                  >
+                    Find details online
+                  </button>
+                </p>
+              )}
+            </HealthAutoProposal>
+          ) : (
+            // Read-only viewers, podcasts and fields Health cannot set get no
+            // actions that could not complete.
+            <p class="health-empty-field">No {noun} yet.</p>
+          )}
+          {failure && (
+            <p class="health-choice-error" role="alert">
+              {failure}
+            </p>
+          )}
+        </td>
+      </tr>
+    );
+  }
   return (
     <tr>
-      {props.showFile && (
-        <th scope="row">
-          <div class="health-file-heading">
-            <a
-              class="health-review-link health-file-link"
-              href={`?view=library&root=${encodeURIComponent(target.rootId)}&item=${encodeURIComponent(target.itemId)}`}
-            >
-              <span title={target.relativePath}>
-                {target.relativePath.split("/").at(-1)}
-              </span>
-            </a>
-          </div>
-          {issue.fileOverride && <small>Individual choice</small>}
-        </th>
-      )}
+      {fileHeading}
       <td class="health-value">
         {!editable && <span class="health-value-label">Current</span>}
         {currents.length > 1 && <small>Varies by file</small>}
@@ -1123,19 +1229,6 @@ const HealthDecisionRow = component$<{
               )}
             />
           ))
-        ) : autoEligible ? (
-          <HealthAutoProposal
-            target={target}
-            field={field}
-            query={props.query}
-            queryFromFilename={props.queryFromFilename}
-            providers={props.providers}
-            getSession$={props.getSession$}
-            selectedValueKey={proposedKey}
-            onUse$={async (value) => {
-              await apply$(value, "Proposed");
-            }}
-          />
         ) : (
           <p class="health-value-text health-no-suggestion">No suggestion</p>
         )}
@@ -1147,10 +1240,9 @@ const HealthDecisionRow = component$<{
       </td>
       <td
         class={{ "health-provenance": !props.sharedReason }}
-        hidden={props.sharedReason || autoEligible}
+        hidden={props.sharedReason}
       >
         {!props.sharedReason &&
-          !autoEligible &&
           [
             ...new Set(
               props.entries.map(({ issue }) =>
@@ -1612,6 +1704,13 @@ const HealthIssueReview = component$<{
   const primary = compares
     ? candidateSources(props.providers, target.mediaKind, field)[0]
     : undefined;
+  const find$ = $(() => {
+    if (primary)
+      props.onLookup$(props.group, props.grouped, issue, target, primary);
+  });
+  const onFind$ = primary && props.canEdit ? find$ : undefined;
+  // Empty rows carry the lookup inline, so the separate action would repeat it.
+  const allEmpty = !numbered && needsExternalProposal(entries);
   const files = [
     ...new Set(
       entries.flatMap(({ issue: entryIssue, target: entryTarget }) =>
@@ -1781,6 +1880,7 @@ const HealthIssueReview = component$<{
                       canEdit={props.canEdit}
                       selections={props.selections}
                       onApply$={props.onApply$}
+                      onFind$={onFind$}
                     />
                   ) : (
                     entries.map((entry) => (
@@ -1798,6 +1898,7 @@ const HealthIssueReview = component$<{
                         canEdit={props.canEdit}
                         selections={props.selections}
                         onApply$={props.onApply$}
+                        onFind$={onFind$}
                       />
                     ))
                   )}
@@ -1834,14 +1935,36 @@ const HealthIssueReview = component$<{
                 ref={selectionElement}
               >
                 <span class="health-issue-context">{issueTitle}</span>
-                <span class="health-value-label">Selected online value</span>
-                <p class="health-value-text">
-                  {renderValue(props.selectedOnline.value)}
-                </p>
-                <small>{props.selectedOnline.source}</small>
+                <span class="health-value-label">Found online</span>
+                <HealthValueCandidate
+                  value={props.selectedOnline.value}
+                  origin="Proposed"
+                  pressed={
+                    sharedSelectionKey(
+                      (album
+                        ? entries.filter((entry) => !entry.issue.fileOverride)
+                        : entries
+                      ).map(
+                        (entry) =>
+                          props.selections[
+                            healthEntryId(entry.target.itemId, entry.issue)
+                          ],
+                      ),
+                      "Proposed",
+                    ) === healthValueKey(props.selectedOnline.value)
+                  }
+                  field={field}
+                  issue={issue}
+                  target={target}
+                  album={album}
+                  editable={editable}
+                  showSource
+                  source={props.selectedOnline.source}
+                  onApply$={props.onApply$}
+                />
               </div>
             )}
-            {primary && (
+            {primary && !allEmpty && (
               <p class="health-source">
                 <button
                   type="button"
@@ -1862,7 +1985,7 @@ const HealthIssueReview = component$<{
                     )
                   }
                 >
-                  Find from External Providers
+                  Find details online
                 </button>
               </p>
             )}
@@ -2062,30 +2185,25 @@ const HealthResult = component$<{ group: HealthGroup; canEdit: boolean }>(
           ref={bannerElement}
           class={{ "health-result-banner": true, "is-sticky": sticky.value }}
         >
-          <HealthArtwork itemId={first.itemId} />
+          {/* One file's artwork names a single item; a chapter's own image
+              does not stand for a whole multi-file group. */}
+          {props.group.results.length === 1 && (
+            <HealthArtwork itemId={first.itemId} />
+          )}
           <div class="health-result-heading">
             <h3 class={{ "health-result-title-file": heading.fromFilename }}>
               {heading.text}
             </h3>
-            <span
-              class="health-result-kind"
-              role="img"
-              aria-label={kind.label}
-              title={kind.label}
-            >
+            <span class="health-result-kind">
               <Icon name={kind.icon} size={18} />
+              {kind.label}
             </span>
           </div>
           <div class="health-banner-actions">
             <HealthPlayButton target={first} />
-            {props.group.results.length === 1 && (
-              <a
-                class="health-review-link"
-                href={`?view=library&root=${encodeURIComponent(props.group.rootId)}&item=${encodeURIComponent(first.itemId)}`}
-              >
-                Review metadata
-              </a>
-            )}
+            <a class="health-review-link" href={groupReviewHref(props.group)}>
+              Review metadata
+            </a>
           </div>
         </header>
         <div class="health-result-issues" ref={issuesElement}>
@@ -2226,6 +2344,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
     rootId: string;
     query: string;
     queryFromFilename: boolean;
+    folderAuthor: string;
     selectionKey: string;
   } | null>(null);
   const onlineSelections = useStore<
@@ -2368,10 +2487,9 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
                 );
               inbox.results = [
                 ...inbox.results,
-                ...page.results.map((result) => ({
-                  ...result,
-                  rootId: root.id,
-                })),
+                ...page.results.map((result) =>
+                  withFolderAuthorProposal({ ...result, rootId: root.id }),
+                ),
               ];
               inbox.inspectedItems += page.inspectedItems;
               inbox.issueCount += page.issueCount;
@@ -2411,6 +2529,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
         rootId: target.rootId,
         query: heading.text,
         queryFromFilename: heading.fromFilename,
+        folderAuthor: folderAuthorHint(target),
         selectionKey: `${group.key}:${grouped.key}`,
       };
     },
@@ -2735,6 +2854,7 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
           rootId={dialog.rootId}
           query={dialog.query}
           queryFromFilename={dialog.queryFromFilename}
+          folderAuthor={dialog.folderAuthor}
           onSelect$={(value, source) => {
             const active = providersDialogFor.value;
             if (!active) return;

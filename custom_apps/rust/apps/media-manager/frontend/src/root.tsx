@@ -16,7 +16,7 @@ import type { ProviderTestResult } from "./api-contract.generated";
 import { ActivityView } from "./activity-view";
 import { ConversionsView } from "./conversions-view";
 import { Icon } from "./icon";
-import { AppNavigation } from "./app-navigation";
+import { AppNavigation, SIGN_OUT_URL } from "./app-navigation";
 import { coverColors } from "./cover-palette";
 import "./library-selection.css";
 import {
@@ -25,10 +25,17 @@ import {
   ItemEditor,
   profileForCategory,
   renameReady,
-  type EditorCommandAction,
 } from "./item-editor";
 import { isLibraryKind, supportsMediaAction } from "./media-capabilities";
 import { serverFolderSymbol } from "./server-folders";
+import {
+  displayTitleFromFileName,
+  friendlyAppName,
+  friendlyFolderName,
+  friendlyPath,
+  stripIdTags,
+  stripProviderIdTags,
+} from "./display-names";
 import { PlayerView } from "./player-view";
 import { TranscriptView } from "./transcript-view";
 import { VideosView } from "./videos-view";
@@ -134,6 +141,21 @@ async function loadRootItems(rootId: string, search = "", cursor?: string) {
   );
 }
 
+/**
+ * Add one fetched item to the loaded catalog, replacing a copy that a racing
+ * page load already added, so the library never lists an id twice.
+ */
+function withCatalogItem(
+  items: CatalogItem[],
+  item: CatalogItem,
+): CatalogItem[] {
+  const index = items.findIndex((candidate) => candidate.id === item.id);
+  if (index < 0) return [...items, item];
+  const next = [...items];
+  next[index] = item;
+  return next;
+}
+
 function beginItemEdit(
   state: DashboardState,
   roots: MediaRoot[],
@@ -146,13 +168,11 @@ function beginItemEdit(
   const tvEpisode =
     category === "videos" ? parseTvEpisodeFilename(filename) : undefined;
   state.editProfile = tvEpisode ? "tv" : profileForCategory(category);
-  state.editTitle =
-    tvEpisode?.title ??
-    filename.replace(/\.[A-Za-z0-9]+$/, "").replace(/ \([0-9]{4}\)$/, "");
+  // Provider tags such as `[tmdbid-799]` never belong in a title.
+  const bareName = stripProviderIdTags(filename.replace(/\.[A-Za-z0-9]+$/, ""));
+  state.editTitle = tvEpisode?.title ?? bareName.replace(/ \([0-9]{4}\)$/, "");
   state.editYear =
-    tvEpisode?.year ??
-    filename.match(/ \(([0-9]{4})\)(?:\.[^.]+)?$/)?.[1] ??
-    "";
+    tvEpisode?.year ?? bareName.match(/ \(([0-9]{4})\)$/)?.[1] ?? "";
   state.editCreator = "";
   state.editCollection = "";
   state.editSeason = tvEpisode?.season ?? "";
@@ -374,7 +394,8 @@ export default component$((props: RootProps) => {
           if (exactItem.rootId !== selectedRoot.id) {
             throw new Error("The linked item is not in the selected library.");
           }
-          state.items = [...state.items, exactItem];
+          // Another root's first page may have delivered it meanwhile.
+          state.items = withCatalogItem(state.items, exactItem);
           requestedItem = exactItem;
         }
         if (requestedItem) beginItemEdit(state, roots, requestedItem);
@@ -506,8 +527,7 @@ export default component$((props: RootProps) => {
                 "The linked item is not in the selected library.",
               );
             }
-            if (!state.items.some((i) => i.id === item.id))
-              state.items.push(item);
+            state.items = withCatalogItem(state.items, item);
             beginItemEdit(state, state.roots, item);
           } catch (error) {
             state.error = readableError(error);
@@ -616,23 +636,31 @@ export default component$((props: RootProps) => {
         <AppNavigation view={view.value} />
 
         <div class="sidebar-footer">
-          <div style={{ position: "relative" }}>
-            <div
+          <div
+            style={{ position: "relative" }}
+            onKeyDown$={(e: KeyboardEvent) => {
+              if (e.key === "Escape" && menuOpen.value) {
+                menuOpen.value = false;
+                (
+                  document.querySelector(
+                    ".sidebar-footer .avatar",
+                  ) as HTMLButtonElement | null
+                )?.focus();
+              }
+            }}
+          >
+            <button
+              type="button"
               class="avatar"
-              role="button"
-              tabIndex={0}
-              aria-label="User menu"
+              aria-label="Account menu"
+              aria-expanded={menuOpen.value}
+              aria-controls="account-menu"
               onClick$={() => (menuOpen.value = !menuOpen.value)}
-              onKeyDown$={(e: KeyboardEvent) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  menuOpen.value = !menuOpen.value;
-                }
-              }}
             >
               {(state.session?.username ?? "?").slice(0, 1).toUpperCase()}
-            </div>
+            </button>
             {menuOpen.value && (
-              <div class="user-menu">
+              <div class="user-menu" id="account-menu">
                 <button
                   type="button"
                   class="user-menu-item"
@@ -642,17 +670,16 @@ export default component$((props: RootProps) => {
                     ? "Move sidebar to right"
                     : "Move sidebar to left"}
                 </button>
+                <a class="user-menu-item" href={SIGN_OUT_URL}>
+                  Sign out
+                </a>
               </div>
             )}
           </div>
           <div>
             <strong>{state.session?.username ?? "Loading…"}</strong>
-            <span>{state.session?.canEdit ? "Editor" : "Viewer"}</span>
+            <span>{state.session?.canEdit ? "Can edit" : "View only"}</span>
           </div>
-          <span
-            class={{ "role-dot": true, editor: state.session?.canEdit }}
-            title={state.session?.canEdit ? "Editor access" : "Viewer access"}
-          />
         </div>
       </aside>
 
@@ -668,7 +695,7 @@ export default component$((props: RootProps) => {
       >
         <h1 class="sr-only">
           {NAV_ITEMS.find((item) => item.id === view.value)?.label ??
-            "Activity"}
+            "Media Manager"}
         </h1>
 
         {state.error && (
@@ -1102,7 +1129,7 @@ const ProviderAccountsView = component$(() => {
     );
   };
 
-  const renderRow = (provider: ProviderDefinition) => {
+  const renderRow = (provider: ProviderDefinition, group?: ProviderGroup) => {
     const status = providerAccountStatus(provider);
     const planned = provider.implementationStatus === "planned";
     const configured = provider.account.state === "configured";
@@ -1115,6 +1142,7 @@ const ProviderAccountsView = component$(() => {
       provider.credentialFields.length > 0;
     const detailsId = `provider-details-${provider.id}`;
     const recommendation = providerRecommendation(provider);
+    const types = providerRowTypes(provider, group);
     const toggle = $(async () => {
       if (editing) await closeProvider();
       accounts.expandedProviderId = expanded ? "" : provider.id;
@@ -1167,18 +1195,18 @@ const ProviderAccountsView = component$(() => {
                       >
                         ★
                       </span>
-                      {"\u00a0Highly recommended"}
+                      {"\u00a0Recommended"}
                     </span>
                     {recommendation.scope && ` for ${recommendation.scope}`}
                   </span>
                 )}
               </span>
-              <span class="provider-row-types">
-                {provider.mediaDomains.join(" · ")}
-              </span>
+              {types && <span class="provider-row-types">{types}</span>}
             </button>
           </h3>
+          {/* The Set up button already says the source is not set up. */}
           {!planned &&
+            !(status === "notSetUp" && canSetUp) &&
             (status === "noSetup" ? (
               <span class="provider-state quiet">No setup needed</span>
             ) : (
@@ -1316,7 +1344,7 @@ const ProviderAccountsView = component$(() => {
           <Icon name="search" size={16} />
           <input
             type="search"
-            aria-label="Filter metadata sources"
+            aria-label="Filter online services"
             placeholder="Find a source"
             value={accounts.query}
             onInput$={(_, input) => (accounts.query = input.value)}
@@ -1325,7 +1353,7 @@ const ProviderAccountsView = component$(() => {
         <div
           class="provider-filter-tabs"
           role="group"
-          aria-label="Show metadata sources"
+          aria-label="Show online services"
         >
           {(
             [
@@ -1360,7 +1388,7 @@ const ProviderAccountsView = component$(() => {
               ? "No sources are connected yet."
               : accounts.filter === "setup"
                 ? "Every source is set up."
-                : "No metadata sources available."}
+                : "No online services available."}
         </p>
       ) : (
         <div class="provider-list-panel">
@@ -1376,7 +1404,9 @@ const ProviderAccountsView = component$(() => {
               >
                 {group.label}
               </h2>
-              <ul class="provider-list">{group.providers.map(renderRow)}</ul>
+              <ul class="provider-list">
+                {group.providers.map((provider) => renderRow(provider, group))}
+              </ul>
             </section>
           ))}
           {showPlanned && (
@@ -1388,7 +1418,9 @@ const ProviderAccountsView = component$(() => {
                   {plannedProviders.length}
                 </span>
               </summary>
-              <ul class="provider-list">{plannedProviders.map(renderRow)}</ul>
+              <ul class="provider-list">
+                {plannedProviders.map((provider) => renderRow(provider))}
+              </ul>
             </details>
           )}
         </div>
@@ -1397,53 +1429,113 @@ const ProviderAccountsView = component$(() => {
   );
 });
 
-const PROVIDER_DOMAIN_ORDER = [
-  "movies",
-  "television",
-  "music",
-  "books",
-  "audiobooks",
-  "comics",
-  "manga",
-  "podcasts",
-  "subtitles",
-  "images",
+const PROVIDER_DOMAIN_LABELS: Record<string, string> = {
+  movies: "Movies",
+  television: "TV",
+  music: "Music",
+  books: "Books",
+  audiobooks: "Audiobooks",
+  comics: "Comics",
+  manga: "Manga",
+  podcasts: "Podcasts",
+  subtitles: "Subtitles",
+  images: "Photos",
+  people: "People",
+};
+
+const domainLabel = (domain: string) =>
+  PROVIDER_DOMAIN_LABELS[domain] ??
+  domain.charAt(0).toUpperCase() + domain.slice(1);
+
+/** Page sections, in order. Each media tag belongs to one section so TV
+ * sources sit with movies; Immich (the only "images" source) is the user's
+ * own photo library, not a metadata lookup. */
+const PROVIDER_GROUPS: ReadonlyArray<{
+  id: string;
+  label: string;
+  domains: readonly string[];
+}> = [
+  { id: "apps", label: "Your apps", domains: ["images"] },
+  { id: "video", label: "Movies & TV", domains: ["movies", "television"] },
+  { id: "music", label: "Music", domains: ["music"] },
+  {
+    id: "books",
+    label: "Books & audiobooks",
+    domains: ["books", "audiobooks"],
+  },
+  { id: "comics", label: "Comics & manga", domains: ["comics", "manga"] },
+  { id: "podcasts", label: "Podcasts", domains: ["podcasts"] },
+  { id: "subtitles", label: "Subtitles", domains: ["subtitles"] },
 ];
 
-const capitalized = (value: string) =>
-  value.charAt(0).toUpperCase() + value.slice(1);
+type ProviderGroup = {
+  id: string;
+  label: string;
+  domains: readonly string[];
+  providers: ProviderDefinition[];
+};
 
-/** Single-domain sources group under their media tag; sources with several
- * tags share one "Multiple" group. Recommended sources lead each group. */
-function groupProvidersByDomain(providers: ProviderDefinition[]) {
+/** A source joins the one section that holds all its media tags ("people"
+ * aside); a source spanning sections goes in a final "Several kinds" section.
+ * Recommended sources lead each section. */
+function groupProvidersByDomain(
+  providers: ProviderDefinition[],
+): ProviderGroup[] {
   const groups = new Map<string, ProviderDefinition[]>();
   for (const provider of providers) {
-    const id =
-      provider.mediaDomains.length === 1
-        ? provider.mediaDomains[0]
-        : "multiple";
+    const domains = provider.mediaDomains.filter(
+      (domain) => domain !== "people",
+    );
+    const matches = new Set(
+      domains.map(
+        (domain) =>
+          PROVIDER_GROUPS.find((group) => group.domains.includes(domain))?.id ??
+          "several",
+      ),
+    );
+    const id = matches.size === 1 ? [...matches][0] : "several";
     groups.set(id, [...(groups.get(id) ?? []), provider]);
   }
-  const rank = (id: string) =>
-    id === "multiple"
-      ? Number.MAX_SAFE_INTEGER
-      : PROVIDER_DOMAIN_ORDER.indexOf(id) === -1
-        ? PROVIDER_DOMAIN_ORDER.length
-        : PROVIDER_DOMAIN_ORDER.indexOf(id);
-  return [...groups]
-    .sort(
-      ([left], [right]) =>
-        rank(left) - rank(right) || left.localeCompare(right),
-    )
-    .map(([id, members]) => ({
-      id,
-      label: id === "multiple" ? "Multiple" : capitalized(id),
-      providers: [...members].sort(
-        (left, right) =>
-          Number((right.recommendedFor ?? []).length > 0) -
-          Number((left.recommendedFor ?? []).length > 0),
-      ),
-    }));
+  const several = {
+    id: "several",
+    label: "Several kinds",
+    domains: [] as string[],
+  };
+  return [...PROVIDER_GROUPS, several].flatMap((group) => {
+    const members = groups.get(group.id);
+    if (!members) return [];
+    return [
+      {
+        ...group,
+        providers: [...members].sort(
+          (left, right) =>
+            Number((right.recommendedFor ?? []).length > 0) -
+            Number((left.recommendedFor ?? []).length > 0),
+        ),
+      },
+    ];
+  });
+}
+
+/** Media types under a row's name, only where they add to the section
+ * heading: a TV-only source under "Movies & TV" reads "TV", a source covering
+ * the whole section shows nothing. */
+function providerRowTypes(
+  provider: ProviderDefinition,
+  group?: ProviderGroup,
+): string {
+  const domains =
+    group && group.domains.length > 0
+      ? provider.mediaDomains.filter((domain) => group.domains.includes(domain))
+      : provider.mediaDomains;
+  if (
+    group &&
+    group.id !== "apps" &&
+    group.domains.length > 0 &&
+    group.domains.every((domain) => domains.includes(domain))
+  )
+    return "";
+  return domains.map(domainLabel).join(" · ");
 }
 
 /** Names the recommended tags only when the source also covers other tags. */
@@ -1458,7 +1550,7 @@ function providerRecommendation(
     scope:
       recommended.length === provider.mediaDomains.length
         ? ""
-        : recommended.map(capitalized).join(" · "),
+        : recommended.map(domainLabel).join(" · "),
   };
 }
 
@@ -1545,8 +1637,68 @@ function itemFocusPath(item: CatalogItem): string {
   return slash > 0 ? item.relativePath.slice(0, slash) : "";
 }
 
+/** A folder name as people read it: no `_` prefix or `[tmdbid-…]` tags. */
 function folderDisplayName(folder: string): string {
-  return folder.replace(/^_+/, "") || folder;
+  return stripIdTags(friendlyFolderName(folder)) || folder;
+}
+
+const COMPANION_KINDS = new Set(["artwork", "subtitle"]);
+
+/**
+ * Subtitles and cover images beside media (or above it, like a show's
+ * poster) belong to that media, not the list. They stay in the catalog,
+ * where subtitle tools and artwork lookup read them. A lone image with no
+ * media around it is still listed so it can be found and replaced.
+ */
+function listedLibraryItems(items: CatalogItem[]): CatalogItem[] {
+  const mediaFolders = new Set<string>();
+  for (const item of items) {
+    if (COMPANION_KINDS.has(item.mediaKind)) continue;
+    const segments = item.relativePath.split("/").slice(0, -1);
+    for (let depth = 0; depth <= segments.length; depth += 1)
+      mediaFolders.add(segments.slice(0, depth).join("/"));
+  }
+  return items.filter(
+    (item) =>
+      !COMPANION_KINDS.has(item.mediaKind) ||
+      !mediaFolders.has(item.relativePath.split("/").slice(0, -1).join("/")),
+  );
+}
+
+const CHAPTER_NUMBER =
+  /^\s*\d{1,3}\b|\b(?:part|pt|chapter|chap|ch|track|disc|cd)\.?\s*\d{1,3}\b/i;
+
+/**
+ * An audiobook split into chapter files: a folder of two or more files that
+ * are all numbered parts or share one name apart from their numbers. Several
+ * `.m4b` files are whole books each. The list shows a split book as one row
+ * that opens the folder's metadata; its files stay one expand away.
+ */
+function isMultiFileBook(node: TreeNode): boolean {
+  const files = node.children;
+  if (files.length < 2 || !files.every((child) => child.item)) return false;
+  if (files.filter((file) => /\.m4b$/i.test(file.name)).length > 1)
+    return false;
+  const stems = files.map((file) => file.name.replace(/\.[^.]+$/, ""));
+  if (stems.every((stem) => CHAPTER_NUMBER.test(stem))) return true;
+  const shared = new Set(
+    stems.map((stem) => stem.replace(/\d+/g, "#").trim().toLowerCase()),
+  );
+  return shared.size === 1 && stems.every((stem) => /\d/.test(stem));
+}
+
+/** Items as the list presents them: a multi-file book counts once. */
+function listedItemCount(nodes: TreeNode[], groupBooks: boolean): number {
+  return nodes.reduce(
+    (count, node) =>
+      count +
+      (node.item
+        ? 1
+        : groupBooks && isMultiFileBook(node)
+          ? 1
+          : listedItemCount(node.children, groupBooks)),
+    0,
+  );
 }
 
 function artworkCandidateId(
@@ -1891,7 +2043,6 @@ const CoverArtCard = component$<{
 const ItemQuickActions = component$<{
   item: CatalogItem;
   state: DashboardState;
-  editorCommand: { action: EditorCommandAction; revision: number };
 }>((props) => {
   const playback = useStore<{
     itemId: string;
@@ -1928,10 +2079,6 @@ const ItemQuickActions = component$<{
   const startInPagePlayer = $(() => {
     props.state.miniPlayerItemId = props.item.id;
   });
-  const sendEditorCommand = $((action: EditorCommandAction) => {
-    props.editorCommand.action = action;
-    props.editorCommand.revision += 1;
-  });
   return (
     <div
       class="item-quick-actions"
@@ -1955,7 +2102,8 @@ const ItemQuickActions = component$<{
           rel="noreferrer"
         >
           <Icon name="play" size={17} />
-          Play in {playTarget.label}
+          {props.item.mediaKind === "book" ? "Read in" : "Play in"}{" "}
+          {friendlyAppName(playTarget.id, playTarget.label)}
         </a>
       ) : (
         <button
@@ -1972,14 +2120,6 @@ const ItemQuickActions = component$<{
           Play
         </button>
       )}
-      <button
-        class="quick-action-button"
-        type="button"
-        onClick$={() => sendEditorCommand("metadata")}
-      >
-        <Icon name="tag" size={17} />
-        Metadata
-      </button>
     </div>
   );
 });
@@ -2003,6 +2143,7 @@ const LibraryPane = component$<{
   items: CatalogItem[];
   focusPath?: string;
   hasMore?: boolean;
+  groupBooks?: boolean;
   selectedItemId: string;
   selectItem$: QRL<(item: CatalogItem) => void>;
   selectFolder$: QRL<(path: string) => void>;
@@ -2012,6 +2153,7 @@ const LibraryPane = component$<{
     ? findTreeNode(tree, props.focusPath)
     : undefined;
   const displayedTree = focusedNode ? [focusedNode] : tree;
+  const itemCount = listedItemCount(tree, Boolean(props.groupBooks));
   const lastWhitespaceTapAt = useSignal(0);
   return (
     <section
@@ -2024,9 +2166,9 @@ const LibraryPane = component$<{
     >
       <div class="pane-heading">
         <h3>{props.title}</h3>
-        {props.items.length > 0 && (
+        {itemCount > 0 && (
           <span class="pane-count">
-            {props.items.length} {props.items.length === 1 ? "item" : "items"}
+            {itemCount} {itemCount === 1 ? "item" : "items"}
             {props.hasMore ? " loaded" : ""}
           </span>
         )}
@@ -2095,6 +2237,7 @@ const LibraryPane = component$<{
                   siblingPaths={displayedTree
                     .filter((sibling) => !sibling.item)
                     .map((sibling) => sibling.path)}
+                  groupBooks={props.groupBooks}
                   key={node.path}
                 />
               ))}
@@ -2118,10 +2261,17 @@ const LibraryDetailPane = component$<{
   closeFolderEditor$: QRL<() => void>;
   closeSelection$: QRL<() => void>;
 }>((props) => {
-  const editorCommand = useStore<{
-    action: EditorCommandAction;
-    revision: number;
-  }>({ action: "", revision: 0 });
+  // The selected file's saved metadata title, reported by its editor. Only
+  // media kinds mount an editor, so the title is kept with the id it was
+  // reported for and cleared whenever the selection moves.
+  const savedTitle = useSignal("");
+  const savedTitleItemId = useSignal("");
+  useTask$(({ track }) => {
+    const itemId = track(() => props.selectedItem?.id ?? "");
+    if (savedTitleItemId.value === itemId) return;
+    savedTitleItemId.value = itemId;
+    savedTitle.value = "";
+  });
   const coverEditing = useSignal(false);
   useBackLayer(
     "cover-editor",
@@ -2211,12 +2361,36 @@ const LibraryDetailPane = component$<{
   const selectionContext =
     props.state.roots.find((root) => root.id === selectionRootId)?.label ??
     "Library details";
-  const selectionParent = (
+  const selectionSegments = (
     props.selectedItem?.relativePath ?? props.activeFolder
-  )
-    .split("/")
-    .slice(0, -1)
-    .join("/");
+  ).split("/");
+  const selectionParent = selectionSegments.slice(0, -1).join("/");
+  // The heading reads as a title; the real name stays available quietly.
+  const selectionName = selectionSegments.at(-1) ?? "";
+  const selectionCategory = props.state.roots.find(
+    (root) => root.id === props.selectedItem?.rootId,
+  )?.category;
+  // An episode is named by its own number and title; its show is context.
+  const episode =
+    props.selectedItem && selectionCategory === "videos"
+      ? parseTvEpisodeFilename(selectionName)
+      : undefined;
+  const episodeCode = episode
+    ? `S${episode.season.padStart(2, "0")}E${episode.episode.padStart(2, "0")}`
+    : "";
+  const savedTitleMatches =
+    Boolean(props.selectedItem) &&
+    savedTitleItemId.value === props.selectedItem?.id;
+  const heading = episode
+    ? [episodeCode, episode.episodeTitle].filter(Boolean).join(" · ")
+    : (savedTitleMatches && savedTitle.value) ||
+      props.imageTitle ||
+      "Choose a title or folder";
+  const selectionDetail = episode
+    ? `${episode.title}${episode.year ? ` (${episode.year})` : ""}`
+    : selectionParent
+      ? friendlyPath(selectionParent)
+      : "";
   return (
     <div
       class={{
@@ -2290,22 +2464,21 @@ const LibraryDetailPane = component$<{
           <span class="library-selection-context">{selectionContext}</span>
           <h2
             class={{
-              "library-selection-title--long": props.imageTitle.length > 48,
+              "library-selection-title--long": heading.length > 48,
             }}
           >
             <Icon
               name={props.selectedItem ? "file" : (folderSymbol ?? "folder")}
               size={16}
             />
-            <span>{props.imageTitle || "Choose a title or folder"}</span>
+            <span>{heading}</span>
           </h2>
-          {selectionParent && <p>{selectionParent}</p>}
+          {selectionDetail && <p>{selectionDetail}</p>}
+          {props.selectedItem && (
+            <p class="library-selection-file">{selectionName}</p>
+          )}
           {selectedMediaItem && (
-            <ItemQuickActions
-              item={selectedMediaItem}
-              state={props.state}
-              editorCommand={editorCommand}
-            />
+            <ItemQuickActions item={selectedMediaItem} state={props.state} />
           )}
         </div>
         <span class="cover-palette" aria-hidden="true" />
@@ -2327,7 +2500,7 @@ const LibraryDetailPane = component$<{
             state={props.state}
             previewRename$={props.previewRename$}
             confirmRename$={props.confirmRename$}
-            command={editorCommand}
+            savedTitle={savedTitle}
           />
         )}
       {props.selectedItem?.mediaKind === "artwork" && (
@@ -2468,11 +2641,15 @@ const LibraryView = component$<{
     (root) => root.scope === "personal",
   );
   const sharedRoots = categoryRoots.filter((root) => root.scope === "shared");
-  const personalItems = props.state.items.filter((item) =>
-    personalRoots.some((root) => root.id === item.rootId),
+  const personalItems = listedLibraryItems(
+    props.state.items.filter((item) =>
+      personalRoots.some((root) => root.id === item.rootId),
+    ),
   );
-  const sharedItems = props.state.items.filter((item) =>
-    sharedRoots.some((root) => root.id === item.rootId),
+  const sharedItems = listedLibraryItems(
+    props.state.items.filter((item) =>
+      sharedRoots.some((root) => root.id === item.rootId),
+    ),
   );
   const filterNeedle = filter.value.trim().toLowerCase();
   const filtering = filterNeedle.length > 0;
@@ -2507,11 +2684,12 @@ const LibraryView = component$<{
       : selectedItemRoot?.scope;
   const activeFocusPath =
     activeFolder || (selectedItem ? itemFocusPath(selectedItem) : "");
-  const imageTitle =
-    selectedItem?.relativePath.split("/").at(-1) ??
-    (activeFolder
+  const selectedFileName = selectedItem?.relativePath.split("/").at(-1);
+  const imageTitle = selectedFileName
+    ? displayTitleFromFileName(selectedFileName)
+    : activeFolder
       ? folderDisplayName(activeFolder.split("/").at(-1) ?? "")
-      : "");
+      : "";
   const activeFolderItems = personal.selectedFolder
     ? personalItems
     : sharedItems;
@@ -2674,7 +2852,7 @@ const LibraryView = component$<{
             );
             if (historyRevision.value !== revision) return;
             if (root && item.rootId !== root.id) return;
-            props.state.items = [...props.state.items, item];
+            props.state.items = withCatalogItem(props.state.items, item);
           } catch (error) {
             if (historyRevision.value !== revision) return;
             props.state.error = readableError(error);
@@ -2772,6 +2950,7 @@ const LibraryView = component$<{
         Boolean(props.state.itemCursors?.[root.id]),
       )}
       focusPath={activeScope === "personal" ? activeFocusPath : ""}
+      groupBooks={activeCategory === "audiobooks"}
       selectedItemId={props.state.selectedItemId}
       selectItem$={selectPersonalItem$}
       selectFolder$={selectPersonalFolder$}
@@ -2787,6 +2966,7 @@ const LibraryView = component$<{
         Boolean(props.state.itemCursors?.[root.id]),
       )}
       focusPath={activeScope === "shared" ? activeFocusPath : ""}
+      groupBooks={activeCategory === "audiobooks"}
       selectedItemId={props.state.selectedItemId}
       selectItem$={selectSharedItem$}
       selectFolder$={selectSharedFolder$}
@@ -2836,7 +3016,7 @@ const LibraryView = component$<{
           <input
             type="search"
             value={filter.value}
-            placeholder="Filter titles and filenames"
+            placeholder="Filter by name"
             aria-label="Filter titles and filenames in this library"
             onInput$={async (_, input) => {
               filter.value = input.value;
@@ -2873,14 +3053,13 @@ const LibraryView = component$<{
           type="button"
           disabled={refreshing.value}
           onClick$={refreshLibrary$}
-          title="Scan this library from disk now"
-          aria-label="Refresh this library from disk now"
+          title="Look for new, changed and removed files"
         >
           <Icon name={refreshDone.value ? "check" : "refresh"} size={16} />
-          {refreshing.value ? "Refreshing…" : "Refresh"}
+          {refreshing.value ? "Rescanning…" : "Rescan folders"}
         </button>
         <span class="sr-only" role="status">
-          {refreshDone.value ? "Library refreshed" : ""}
+          {refreshDone.value ? "Folders rescanned" : ""}
         </span>
         <div class="library-toolbar-trailing">
           {Object.values(props.state.itemCursors ?? {}).some(Boolean) && (
@@ -2922,12 +3101,14 @@ const LibraryView = component$<{
         }}
       >
         {layoutMode === "empty" ? (
+          // The catalog does not report whether a root has been scanned yet,
+          // so an empty library may simply be waiting for its first scan.
           <EmptyState
-            title={filtering ? "No matches" : `No ${categoryNoun} yet`}
+            title={filtering ? "No matches" : "Nothing found here yet"}
             detail={
               filtering
                 ? "Clear the filter to see every item."
-                : "Add files to your personal or shared media folder."
+                : "Use Rescan folders above to look for new files."
             }
           />
         ) : (
@@ -2997,6 +3178,7 @@ const TreeBranch = component$<{
   selectFolder$: QRL<(path: string) => void>;
   parentPath: string;
   siblingPaths: string[];
+  groupBooks?: boolean;
 }>((props) => {
   const node = props.node;
   if (node.item) {
@@ -3018,12 +3200,23 @@ const TreeBranch = component$<{
           props.selectItem$(node.item as CatalogItem);
         }}
       >
-        <span class="tree-name">{node.name}</span>
+        <span class="tree-name" title={node.name}>
+          {displayTitleFromFileName(node.name)}
+        </span>
         <span class="tabular muted">{formatBytes(node.item.sizeBytes)}</span>
       </button>
     );
   }
-  const expanded = props.browser.expanded[node.path] ?? props.depth === 0;
+  const book = Boolean(props.groupBooks) && isMultiFileBook(node);
+  const displayName = folderDisplayName(node.name);
+  // A multi-file book reads as one item; its files open only once it is
+  // the selection's own folder.
+  const expanded =
+    props.browser.expanded[node.path] ??
+    (props.depth === 0 &&
+      (!book ||
+        props.selectedFolder === node.path ||
+        treeContainsItem(node, props.selectedItemId)));
   const mutedBySibling =
     Boolean(props.browser.activeByParent[props.parentPath]) &&
     props.browser.activeByParent[props.parentPath] !== node.path;
@@ -3042,7 +3235,7 @@ const TreeBranch = component$<{
         <button
           class="tree-toggle"
           type="button"
-          aria-label={`${expanded ? "Collapse" : "Expand"} ${node.name}`}
+          aria-label={`${expanded ? "Collapse" : "Expand"} ${displayName}`}
           onClick$={(_, currentTarget) => {
             const willExpand = !expanded;
             props.browser.expanded[node.path] = willExpand;
@@ -3069,7 +3262,12 @@ const TreeBranch = component$<{
           type="button"
           onClick$={() => props.selectFolder$(node.path)}
         >
-          <span class="tree-name">{node.name}</span>
+          <span class="tree-name" title={node.name}>
+            {displayName}
+          </span>
+          {book && (
+            <span class="tabular muted">{node.children.length} files</span>
+          )}
         </button>
       </div>
       {expanded && (
@@ -3087,6 +3285,7 @@ const TreeBranch = component$<{
               siblingPaths={node.children
                 .filter((sibling) => !sibling.item)
                 .map((sibling) => sibling.path)}
+              groupBooks={props.groupBooks}
               key={child.path}
             />
           ))}

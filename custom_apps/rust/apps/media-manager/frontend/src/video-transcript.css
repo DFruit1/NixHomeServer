@@ -53,3 +53,51 @@
   color: inherit;
   opacity: 0.7;
 }
+
+/* Library sections: Movies, each show by season, YouTube, then folders. */
+.video-list .video-list-group {
+  margin: 0;
+  border: 0;
+  background: none;
+}
+.video-list-group + .video-list-group {
+  margin-top: 12px;
+}
+.video-list-group h3,
+.video-list-section h4 {
+  margin: 0;
+  padding: 8px 8px 4px;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.video-list-section h4 {
+  padding-top: 4px;
+  color: var(--ink-faint);
+  font-weight: 500;
+}
+.video-list-section > ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+@media (min-width: 1001px) {
+  .video-page--theatre .video-list:has(> .video-list-group) {
+    display: block;
+  }
+  .video-page--theatre .video-list-section > ul {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 4px;
+  }
+}
+
+/* "Show: All libraries" names what the selector filters. */
+.video-library-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(246, 243, 236, 0.76);
+  font-size: var(--text-sm);
+}
