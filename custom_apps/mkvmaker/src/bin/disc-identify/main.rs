@@ -17,6 +17,7 @@
 mod bonsai;
 mod content;
 mod menu;
+mod replay;
 mod text;
 mod tmdb;
 mod tvmaze;
@@ -137,6 +138,24 @@ struct ContentArgs {
     excerpt_start: u32,
     #[arg(long, default_value_t = 360)]
     excerpt_seconds: u32,
+    /// Subtitle phrase containment that names an episode (with --subtitle-margin).
+    #[arg(long, default_value_t = 0.06)]
+    subtitle_min_containment: f64,
+    /// How many times the runner-up's containment the best one must reach.
+    #[arg(long, default_value_t = 3.0)]
+    subtitle_margin: f64,
+    /// Containment that names an episode when it is the only one compared.
+    #[arg(long, default_value_t = 0.10)]
+    subtitle_single_min: f64,
+    /// Bonsai confidence needed when it agrees with the keyword ranking.
+    #[arg(long, default_value_t = 0.5)]
+    bonsai_min_confidence: f64,
+    /// Evaluation only: record transcripts, rankings and subtitle text here.
+    #[arg(long)]
+    replay_cache: Option<PathBuf>,
+    /// Evaluation only: answer from --replay-cache without contacting sources.
+    #[arg(long)]
+    replay_only: bool,
 }
 
 #[derive(Args)]
@@ -1204,6 +1223,7 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         .collect();
 
     let scratch = Scratch::new(args.common.work_dir.as_deref())?;
+    let replay = replay::Replay::new(args.replay_cache.as_deref(), args.replay_only)?;
     let asr = content::Asr {
         ffmpeg: &args.ffmpeg,
         parakeet,
@@ -1228,12 +1248,20 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             title: *title,
             ..TitleDiagnostics::default()
         };
-        let transcript = match content::transcribe_excerpt(
-            &asr,
+        let transcript = match replay.transcript(
             video,
-            &scratch.0,
+            model,
             args.excerpt_start,
             args.excerpt_seconds,
+            || {
+                content::transcribe_excerpt(
+                    &asr,
+                    video,
+                    &scratch.0,
+                    args.excerpt_start,
+                    args.excerpt_seconds,
+                )
+            },
         ) {
             Ok(text) => text,
             Err(error) => {
@@ -1293,7 +1321,10 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
                     )
                 })
                 .collect();
-            match client.rank_synopses(&text::clip(&transcript, 6000), &listing) {
+            let excerpt = text::clip(&transcript, 6000);
+            match replay.ranking(&args.common.bonsai_model, &excerpt, &listing, || {
+                client.rank_synopses(&excerpt, &listing)
+            }) {
                 Ok(Some((index, confidence))) => model_pick = Some((shortlist[index], confidence)),
                 Ok(None) => {}
                 Err(error) => {
@@ -1358,75 +1389,107 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
                     detail.subtitles.push(check);
                     continue;
                 }
-                // Past the budget (or the daily quota) only cached text is
-                // asked for; a cache hit never spends a download.
-                let cache_only = !downloads_allowed || downloads_left == 0;
-                let result = content::episode_subtitle_text(
-                    args.subtitle_socket.as_deref().unwrap_or(Path::new("")),
-                    args.owner.as_deref().unwrap_or(""),
+                // Evaluation replay: a recorded text counts as a cache hit and
+                // never spends a download; --replay-only never asks the broker.
+                let recorded = replay.subtitle(
                     imdb.as_deref().unwrap_or(""),
                     episode.season,
                     episode.number,
-                    cache_only,
                 );
-                // A fresh text or an empty result may have spent a download;
-                // a cache hit, a refusal or an unreachable broker did not
-                // (and the last two stop further downloads anyway).
-                let spent = !cache_only
-                    && matches!(
-                        result,
-                        content::SubtitleText::Text { cached: false, .. }
-                            | content::SubtitleText::NotFound
+                if let Some(recorded) = recorded {
+                    if recorded.is_some() {
+                        diagnostics.subtitle_downloads.cache_hits += 1;
+                        check.cached = true;
+                    }
+                    subtitle_cache.insert(candidate, recorded);
+                } else if replay.only() {
+                    check.skipped = Some("not cached");
+                    detail.subtitles.push(check);
+                    continue;
+                } else {
+                    // Past the budget (or the daily quota) only cached text is
+                    // asked for; a cache hit never spends a download.
+                    let cache_only = !downloads_allowed || downloads_left == 0;
+                    let result = content::episode_subtitle_text(
+                        args.subtitle_socket.as_deref().unwrap_or(Path::new("")),
+                        args.owner.as_deref().unwrap_or(""),
+                        imdb.as_deref().unwrap_or(""),
+                        episode.season,
+                        episode.number,
+                        cache_only,
                     );
-                if spent {
-                    downloads_left -= 1;
-                    diagnostics.subtitle_downloads.used += 1;
-                }
-                let text = match result {
-                    content::SubtitleText::Text { text, cached } => {
-                        if cached {
-                            diagnostics.subtitle_downloads.cache_hits += 1;
+                    // A fresh text or an empty result may have spent a download;
+                    // a cache hit, a refusal or an unreachable broker did not
+                    // (and the last two stop further downloads anyway).
+                    let spent = !cache_only
+                        && matches!(
+                            result,
+                            content::SubtitleText::Text { cached: false, .. }
+                                | content::SubtitleText::NotFound
+                        );
+                    if spent {
+                        downloads_left -= 1;
+                        diagnostics.subtitle_downloads.used += 1;
+                    }
+                    let text = match result {
+                        content::SubtitleText::Text { text, cached } => {
+                            if cached {
+                                diagnostics.subtitle_downloads.cache_hits += 1;
+                            }
+                            check.cached = cached;
+                            replay.record_subtitle(
+                                imdb.as_deref().unwrap_or(""),
+                                episode.season,
+                                episode.number,
+                                Some(&text),
+                            );
+                            Some(text)
                         }
-                        check.cached = cached;
-                        Some(text)
-                    }
-                    content::SubtitleText::NotFound => {
-                        check.skipped = Some("not found");
-                        None
-                    }
-                    content::SubtitleText::NotCached => {
-                        check.skipped = Some(if downloads_allowed { "budget" } else { "quota" });
-                        // Not remembered: nothing was learnt about the episode.
-                        detail.subtitles.push(check);
-                        continue;
-                    }
-                    content::SubtitleText::NoAccount => {
-                        outcome.reasons.push("The uploader has no OpenSubtitles account; subtitle comparison was skipped.".into());
-                        subtitles_usable = false;
-                        check.skipped = Some("no account");
-                        detail.subtitles.push(check);
-                        continue;
-                    }
-                    content::SubtitleText::Quota => {
-                        outcome
-                            .reasons
-                            .push("The OpenSubtitles daily download limit was reached.".into());
-                        downloads_allowed = false;
-                        check.skipped = Some("quota");
-                        detail.subtitles.push(check);
-                        continue;
-                    }
-                    content::SubtitleText::Unavailable(error) => {
-                        outcome.reasons.push(format!(
-                            "OpenSubtitles comparison is unavailable: {error:#}"
-                        ));
-                        subtitles_usable = false;
-                        check.skipped = Some("unavailable");
-                        detail.subtitles.push(check);
-                        continue;
-                    }
-                };
-                subtitle_cache.insert(candidate, text);
+                        content::SubtitleText::NotFound => {
+                            check.skipped = Some("not found");
+                            replay.record_subtitle(
+                                imdb.as_deref().unwrap_or(""),
+                                episode.season,
+                                episode.number,
+                                None,
+                            );
+                            None
+                        }
+                        content::SubtitleText::NotCached => {
+                            check.skipped =
+                                Some(if downloads_allowed { "budget" } else { "quota" });
+                            // Not remembered: nothing was learnt about the episode.
+                            detail.subtitles.push(check);
+                            continue;
+                        }
+                        content::SubtitleText::NoAccount => {
+                            outcome.reasons.push("The uploader has no OpenSubtitles account; subtitle comparison was skipped.".into());
+                            subtitles_usable = false;
+                            check.skipped = Some("no account");
+                            detail.subtitles.push(check);
+                            continue;
+                        }
+                        content::SubtitleText::Quota => {
+                            outcome
+                                .reasons
+                                .push("The OpenSubtitles daily download limit was reached.".into());
+                            downloads_allowed = false;
+                            check.skipped = Some("quota");
+                            detail.subtitles.push(check);
+                            continue;
+                        }
+                        content::SubtitleText::Unavailable(error) => {
+                            outcome.reasons.push(format!(
+                                "OpenSubtitles comparison is unavailable: {error:#}"
+                            ));
+                            subtitles_usable = false;
+                            check.skipped = Some("unavailable");
+                            detail.subtitles.push(check);
+                            continue;
+                        }
+                    };
+                    subtitle_cache.insert(candidate, text);
+                }
             }
             if let Some(Some(reference)) = subtitle_cache.get(&candidate) {
                 let score = text::trigram_containment(&transcript, reference);
@@ -1441,11 +1504,12 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
 
         let subtitle_pick = match containment.as_slice() {
             [(best, score), (_, second), ..]
-                if *score >= 0.06 && *score >= 3.0 * second.max(0.005) =>
+                if *score >= args.subtitle_min_containment
+                    && *score >= args.subtitle_margin * second.max(0.005) =>
             {
                 Some(*best)
             }
-            [(best, score)] if *score >= 0.10 => Some(*best),
+            [(best, score)] if *score >= args.subtitle_single_min => Some(*best),
             _ => None,
         };
         let pick = if let Some(best) = subtitle_pick {
@@ -1460,7 +1524,9 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             })
         } else {
             match (model_pick, keyword_top) {
-                (Some((chosen, confidence)), Some(top)) if chosen == top && confidence >= 0.5 => {
+                (Some((chosen, confidence)), Some(top))
+                    if chosen == top && confidence >= args.bonsai_min_confidence =>
+                {
                     detail.pick_rule = Some("summary agreement");
                     Some(Pick {
                         pool: chosen,
@@ -1489,7 +1555,7 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         // guess's contradiction is worded so the worker never treats it as one.
         if let (Some(proposed), Some((best, score))) = (proposed, containment.first())
             && *best != proposed
-            && *score >= 0.06
+            && *score >= args.subtitle_min_containment
         {
             let matched = episode_label(pool[*best].season, pool[*best].number, pool[*best].number);
             let source = proposal_source.as_deref().unwrap_or("disc-order");
@@ -2061,6 +2127,13 @@ fn main() {
             serde_json::to_string(&outcome)
         }),
         Command::Content(args) => run_content(args).map(|mut outcome| {
+            // Evaluation replay contacts no source, the broker included.
+            if args.replay_only {
+                outcome
+                    .reasons
+                    .push("Episode numbering was not checked against TMDB (replay only).".into());
+                return serde_json::to_string(&outcome);
+            }
             let socket = args
                 .common
                 .provider_socket
