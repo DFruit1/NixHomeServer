@@ -1715,15 +1715,24 @@ def iso_suggestion(series: dict[str, Any] | None, assignments: list[dict[str, An
     }
 
 
-def held_suggestion(result: dict[str, Any], count: int) -> dict[str, Any] | None:
+def held_suggestion(result: dict[str, Any], count: int, shows_root: Path | None = None,
+                    disc_outcome: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """The suggestion for a held result; none when its numbering is not Jellyfin's.
 
-    ``tmdbNumberingHeld`` marks a disc held because its episodes could not be
-    renumbered as TMDB numbers them: the guess is in TVmaze numbering.
+    ``tmdbNumberingHeld`` (on either stage's outcome: the content stage passes
+    an unconfirmed disc-stage proposal through unchanged) marks a disc held
+    because its episodes could not be renumbered as TMDB numbers them, so the
+    guess is in TVmaze numbering. Likewise a series not mapped to TMDB whose
+    library folder is TMDB-numbered: accepting the guess would publish TVmaze
+    numbers into it.
     """
-    if result.get("tmdbNumberingHeld"):
+    if result.get("tmdbNumberingHeld") or (disc_outcome or {}).get("tmdbNumberingHeld"):
         return None
-    return iso_suggestion(result.get("series"), result.get("assignments") or [], count)
+    series = result.get("series")
+    if (shows_root is not None and isinstance(series, dict)
+            and library_match(shows_root, series)[1] is not None):
+        return None
+    return iso_suggestion(series, result.get("assignments") or [], count)
 
 
 def held_record_key(path: Path) -> str:
@@ -1826,7 +1835,22 @@ def special_plan(args: argparse.Namespace, source: Path, hints: SourceHints,
         if isinstance(result, dict) and result.get("layout") == "tmdb" else {}
     specials = sorted((e, t) for (s, e), t in titles.items() if s == 0)
     ranked = special_candidates(rest, specials)
-    confident = [item for item in ranked if item[0] >= SPECIAL_MATCH_THRESHOLD]
+    listed = {
+        e.get("episode"): e for e in (result or {}).get("episodes") or []
+        if isinstance(e, dict) and e.get("season") == 0
+    } if titles else {}
+
+    def fits_year(episode: int) -> bool:
+        # A year in the name that is not the show's must be the special's own.
+        if hints.year is None or year is None or hints.year == year:
+            return True
+        airdate = str((listed.get(episode) or {}).get("airdate") or "")
+        return airdate[:4] == str(hints.year)
+
+    # Filed directly only when a differing year in the name is the special's
+    # own (``..._Hound_of_the_Baskervilles_1959`` is the film, not a 1988 special).
+    confident = [item for item in ranked
+                 if item[0] >= SPECIAL_MATCH_THRESHOLD and fits_year(item[1])]
     media = jellyfin_name(name, year, provider)
     if len(confident) == 1:
         _, episode, episode_name = confident[0]
@@ -1846,18 +1870,6 @@ def special_plan(args: argparse.Namespace, source: Path, hints: SourceHints,
         }
     if not identification_enabled(args):
         return None
-    listed = {
-        e.get("episode"): e for e in (result or {}).get("episodes") or []
-        if isinstance(e, dict) and e.get("season") == 0
-    } if titles else {}
-
-    def fits_year(episode: int) -> bool:
-        # A year in the name that is not the show's must be the special's own.
-        if hints.year is None or year is None or hints.year == year:
-            return True
-        airdate = str((listed.get(episode) or {}).get("airdate") or "")
-        return airdate[:4] == str(hints.year)
-
     guess = ranked[0] if ranked and ranked[0][0] >= 0.6 and fits_year(ranked[0][1]) else None
     if guess is None and specials:
         # Only a suggestion for the person: the one special of this length.
@@ -2514,7 +2526,7 @@ def finish_held(args: argparse.Namespace, source: Path, plan: dict[str, Any],
         "titles": plan["titles"],
         "summary": str(result.get("summary") or "The episodes could not be identified."),
         "reasons": reasons[:12],
-        "suggestion": held_suggestion(result, len(plan["titles"])),
+        "suggestion": held_suggestion(result, len(plan["titles"]), args.shows_dir, disc_outcome),
         "outcomes": {"disc": disc_outcome, "content": content_outcome},
         "retry": classify_reasons(reasons),
         # A person confirms specials; retries re-run the regular-episode stages.
@@ -3158,7 +3170,8 @@ def retry_transient_holds(args: argparse.Namespace, lock_path: Path, state_path:
             "schemaVersion": EVIDENCE_SCHEMA_VERSION,
             "summary": str(result.get("summary") or "The episodes could not be identified."),
             "reasons": reasons[:12],
-            "suggestion": held_suggestion(result, len(titles)),
+            "suggestion": held_suggestion(result, len(titles), args.shows_dir,
+                                          (outcomes or {}).get("disc")),
             "outcomes": outcomes,
             "lastRetryAt": int(time.time()),
         }
@@ -3705,6 +3718,14 @@ def special_and_layout_self_test() -> None:
                 film = plan("Sherlock_Holmes_A_Game_of_Shadows_2011.iso", [129], listing)
                 assert film["kind"] == "movie" and not film.get("held"), (listing, film)
                 assert (film["name"], film["year"]) == ("Sherlock Holmes A Game of Shadows", 2011)
+            # A confident special name with a different year is the film too,
+            # not filed straight into Season 00 (R2-3).
+            hound = episodes("tmdb", 799, [(0, 2, "The Hound of the Baskervilles"), (4, 1, "x")])
+            hound["episodes"][0].update(runtime=105, airdate="1988-08-31")
+            film = plan("Sherlock_Holmes_The_Hound_of_the_Baskervilles_1959.iso", [87], hound)
+            assert film["kind"] == "movie" and not film.get("held"), film
+            special = plan("Sherlock_Holmes_The_Hound_of_the_Baskervilles_1988.iso", [105], hound)
+            assert (special["kind"], special["season"], special["first_episode"]) == ("tv", 0, 2), special
             guessed = plan("Rumpole_of_the_Bailey_D4.iso", [103], rumpole_tmdb)
             assert guessed["held"] and guessed["kind"] == "tv", guessed
             assert iso_suggestion(guessed["identification"]["series"],
@@ -3775,6 +3796,12 @@ def special_and_layout_self_test() -> None:
             # suggestion in TVmaze numbers either.
             assert held_suggestion(dict(disc, status="uncertain", tmdbNumberingHeld=True), 2) is None
             assert held_suggestion(dict(disc, status="uncertain"), 2)["firstEpisode"] == 1
+            # An unconfirmed proposal passed through by the content stage keeps
+            # the disc stage's flag (R2-2), and a TVmaze series next to a
+            # TMDB-numbered folder gets no suggestion either (R2-1).
+            assert held_suggestion(dict(disc, status="uncertain"), 2, None,
+                                   dict(disc, tmdbNumberingHeld=True)) is None
+            assert held_suggestion(dict(disc, status="uncertain"), 2, shows) is None
         finally:
             globals()["tvmaze_match"] = original_tvmaze
 
