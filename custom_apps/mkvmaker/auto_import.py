@@ -2064,7 +2064,11 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
                 continue
             if hints.season is None or hints.episode is None:
                 continue
-            identify_path = directory / str(record.get("identify") or f"{iso.name}.identify.json")
+            # Media Manager renames the evidence with the ISO so its page keeps
+            # the disc's details; a rename in Files leaves the original name.
+            identify_path = directory / f"{iso.name}.identify.json"
+            if not identify_path.is_file() or identify_path.is_symlink():
+                identify_path = directory / str(record.get("identify") or identify_path.name)
             files = [Path(item) for item in record.get("files", [])]
             count = len(files)
             last = hints.last_episode if hints.last_episode is not None else hints.episode + count - 1

@@ -2460,6 +2460,84 @@ async fn conversions_inbox_lists_iso_groups_with_identification() {
 }
 
 #[tokio::test]
+async fn held_disc_rename_is_checked_queued_and_applied_by_the_broker() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    let needs = temp.path().join("shared/_ISO/_DVDs/_NeedsIdentification");
+    std::fs::create_dir_all(&needs).expect("needs identification");
+    std::fs::write(needs.join("DISC_1.iso"), test_iso("DISC_1")).expect("held iso");
+    std::fs::write(
+        needs.join("DISC_1.iso.identify.json"),
+        br#"{"heldFiles":["/a.mkv","/b.mkv"],"summary":"Two candidates."}"#,
+    )
+    .expect("evidence");
+    let listed = |app: axum::Router| async move {
+        let response = app
+            .oneshot(viewer_get_request("/api/v1/conversions/inbox"))
+            .await
+            .expect("inbox response");
+        let body = to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        let value: Value = serde_json::from_slice(&body).expect("inbox json");
+        value["needsIdentification"][0].clone()
+    };
+    let held = listed(app.clone()).await;
+    let body = |new_name: &str| {
+        Body::from(
+            serde_json::json!({
+                "name": "DISC_1.iso",
+                "sizeBytes": held["sizeBytes"],
+                "modifiedNs": held["modifiedNs"],
+                "newName": new_name,
+            })
+            .to_string(),
+        )
+    };
+    let uri = "/api/v1/conversions/inbox/identify";
+
+    let viewer = app
+        .clone()
+        .oneshot(viewer_post_request(uri, body("Show (1978) S01E05-E06.iso")))
+        .await
+        .expect("viewer response");
+    assert_eq!(viewer.status(), StatusCode::FORBIDDEN);
+    let short = app
+        .clone()
+        .oneshot(editor_post_request(uri, body("Show (1978) S01E05.iso")))
+        .await
+        .expect("short range response");
+    assert_eq!(short.status(), StatusCode::BAD_REQUEST);
+    let queued = app
+        .clone()
+        .oneshot(editor_post_request(uri, body("Show (1978) S01E05-E06.iso")))
+        .await
+        .expect("queue response");
+    assert_eq!(queued.status(), StatusCode::ACCEPTED);
+    assert!(
+        needs.join("DISC_1.iso").is_file(),
+        "the web service never renames"
+    );
+    assert_eq!(listed(app.clone()).await["rename"]["state"], "queued");
+
+    let mut config = AppConfig::for_test(
+        temp.path().join("shared").to_str().expect("shared path"),
+        temp.path().join("users").to_str().expect("users path"),
+    );
+    config.state_dir = temp.path().join("state");
+    config.mutation_mode = MutationMode::Enabled;
+    media_manager::held_disc_rename::reconcile(&config).expect("broker applies the rename");
+    assert!(needs.join("Show (1978) S01E05-E06.iso").is_file());
+    assert!(needs
+        .join("Show (1978) S01E05-E06.iso.identify.json")
+        .is_file());
+    let renamed = listed(app).await;
+    assert_eq!(renamed["name"], "Show (1978) S01E05-E06.iso");
+    assert_eq!(renamed["summary"], "Two candidates.");
+    assert_eq!(renamed["rename"]["state"], "applied");
+}
+
+#[tokio::test]
 async fn conversions_inbox_reports_unavailable_without_directory() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let app = test_app(&temp);

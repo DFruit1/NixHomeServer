@@ -864,6 +864,7 @@ export const ConversionsView = component$<{
           <NeedsIdentificationCard
             isos={inboxNeedsIdentification}
             filesBaseUrl={filesBaseUrl}
+            canRename={!!conv.inputs?.canSubmit}
           />
         )}
         <HistoryCard
@@ -899,6 +900,100 @@ export const ConversionsView = component$<{
   );
 });
 
+/** Per-disc rename draft, keyed by the ISO's current name. */
+type HeldDraft = { value: string; busy?: boolean; error?: string };
+
+/**
+ * Confirm one held disc by giving its ISO the episode name the importer
+ * publishes from. The server checks the name and episode count; the file
+ * broker renames it, so the result appears on a later refresh.
+ */
+const HeldDiscConfirm = component$<{
+  iso: InboxIso;
+  drafts: Record<string, HeldDraft>;
+}>((props) => {
+  const iso = props.iso;
+  const rename = iso.rename;
+  const fieldId = `held-name-${encodeURIComponent(iso.name)}`;
+  if (rename?.state === "queued")
+    return <p class="side-item-status">Renaming to {rename.name}…</p>;
+  if (rename?.state === "applied")
+    return (
+      <p class="side-item-status">
+        Renamed. The importer publishes its videos when it is next idle.
+      </p>
+    );
+  const draft = props.drafts[iso.name];
+  const value =
+    draft?.value ??
+    (rename?.state === "failed"
+      ? rename.name
+      : (iso.suggestedName ?? iso.name));
+  const error =
+    draft?.error ?? (rename?.state === "failed" ? rename.error : undefined);
+  return (
+    <form
+      class="held-confirm"
+      preventdefault:submit
+      onSubmit$={async () => {
+        const newName = value.trim();
+        if (!newName || draft?.busy) return;
+        const pending: HeldDraft = { value, busy: true };
+        props.drafts[iso.name] = pending;
+        try {
+          await api("/conversions/inbox/identify", {
+            method: "POST",
+            body: JSON.stringify({
+              name: iso.name,
+              sizeBytes: iso.sizeBytes,
+              modifiedNs: iso.modifiedNs,
+              newName,
+            }),
+          });
+          // Shown until the next refresh reports the queued rename itself.
+          iso.rename = { state: "queued", name: newName };
+          delete props.drafts[iso.name];
+        } catch (failure) {
+          props.drafts[iso.name] = { value, error: readableError(failure) };
+        }
+      }}
+    >
+      <label for={fieldId}>ISO name</label>
+      <div class="held-confirm__row">
+        <input
+          id={fieldId}
+          type="text"
+          value={value}
+          spellcheck={false}
+          autoComplete="off"
+          maxLength={200}
+          aria-invalid={error ? "true" : undefined}
+          aria-describedby={error ? `${fieldId}-error` : undefined}
+          onInput$={(_, el) => {
+            props.drafts[iso.name] = { value: el.value };
+          }}
+        />
+        <button
+          type="submit"
+          class="secondary-button"
+          disabled={draft?.busy || !value.trim()}
+        >
+          {draft?.busy ? "Accepting…" : "Accept"}
+        </button>
+      </div>
+      {error && (
+        <p
+          id={`${fieldId}-error`}
+          class="message error side-item-error"
+          role="alert"
+        >
+          {error}
+        </p>
+      )}
+    </form>
+  );
+});
+
 /**
  * TV discs the importer encoded but held back because it could not match
  * their episodes. Shown only while some exist: it is a to-do list, unlike
@@ -907,8 +1002,21 @@ export const ConversionsView = component$<{
 const NeedsIdentificationCard = component$<{
   isos: InboxIso[];
   filesBaseUrl: string;
+  canRename: boolean;
 }>((props) => {
   const folder = "_ISO/_DVDs/_NeedsIdentification";
+  const drafts = useStore<Record<string, HeldDraft>>({});
+  const folderLink = props.filesBaseUrl ? (
+    <a
+      href={`${props.filesBaseUrl}/files/_Shared/${sharedPath(folder)}/`}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      {folder}
+    </a>
+  ) : (
+    <code>{folder}</code>
+  );
   return (
     <section class="panel side-panel">
       <div class="panel-heading">
@@ -922,23 +1030,20 @@ const NeedsIdentificationCard = component$<{
         aria-labelledby="identify-heading"
         tabIndex={0}
       >
-        <p class="side-panel-instruction">
-          Rename the ISO in{" "}
-          {props.filesBaseUrl ? (
-            <a
-              href={`${props.filesBaseUrl}/files/_Shared/${sharedPath(folder)}/`}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {folder}
-            </a>
-          ) : (
-            <code>{folder}</code>
-          )}{" "}
-          to the show, season and episodes, such as{" "}
-          <code>Show (1978) S01E05-E06.iso</code>. Within a minute its videos
-          move into the TV library without re-encoding.
-        </p>
+        {props.canRename ? (
+          <p class="side-panel-instruction">
+            Name each disc with the show, season and episodes, such as{" "}
+            <code>Show (1978) S01E05-E06.iso</code>, and accept it, or rename
+            the ISO in {folderLink}. Within a minute its videos move into the TV
+            library without re-encoding.
+          </p>
+        ) : (
+          <p class="side-panel-instruction">
+            Rename the ISO in {folderLink} to the show, season and episodes,
+            such as <code>Show (1978) S01E05-E06.iso</code>. Within a minute its
+            videos move into the TV library without re-encoding.
+          </p>
+        )}
         <ul class="side-list">
           {props.isos.map((iso) => {
             const title = isoTitle(iso);
@@ -956,10 +1061,14 @@ const NeedsIdentificationCard = component$<{
                   {detail && <small>{detail}</small>}
                 </span>
                 {iso.summary && <p class="side-item-reason">{iso.summary}</p>}
-                {iso.suggestedName && (
-                  <p class="side-item-suggestion">
-                    Suggested name: <code>{iso.suggestedName}</code>
-                  </p>
+                {props.canRename ? (
+                  <HeldDiscConfirm iso={iso} drafts={drafts} />
+                ) : (
+                  iso.suggestedName && (
+                    <p class="side-item-suggestion">
+                      Suggested name: <code>{iso.suggestedName}</code>
+                    </p>
+                  )
                 )}
                 {iso.heldDir && props.filesBaseUrl ? (
                   <a
