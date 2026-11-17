@@ -228,6 +228,9 @@ in {
       };
       serviceConfig = {
         Type = "oneshot";
+        # Bounds the readiness wait below (2 × 3 min worst case plus the
+        # rerank call) so the probe cannot hold an activation indefinitely.
+        TimeoutStartSec = "8min";
         Restart = "on-failure";
         RestartSec = 20;
         User = "search";
@@ -263,11 +266,26 @@ in {
         rerank_url="http://${loopback}:${toString ports.searchReranker}"
         status=0
 
-        if ! "$curl" -fsS --max-time 20 "$embed_url/health" >/dev/null; then
+        # llama.cpp answers /health with 503 while a model loads, which is
+        # where a server restarted by activation is when this probe starts
+        # (a guarded deploy test failed on exactly that, 2026-11-17). Wait up
+        # to three minutes for each server to finish loading; a server that
+        # never becomes healthy still fails the probe.
+        ready() {
+          local url=$1 waited=0
+          until "$curl" -fsS --max-time 20 "$url/health" >/dev/null; do
+            if [ "$waited" -ge 180 ]; then
+              return 1
+            fi
+            sleep 5
+            waited=$((waited + 5))
+          done
+        }
+        if ! ready "$embed_url"; then
           echo "search-inference-health: embedder /health failed at $embed_url" >&2
           status=1
         fi
-        if ! "$curl" -fsS --max-time 20 "$rerank_url/health" >/dev/null; then
+        if ! ready "$rerank_url"; then
           echo "search-inference-health: reranker /health failed at $rerank_url" >&2
           status=1
         fi
