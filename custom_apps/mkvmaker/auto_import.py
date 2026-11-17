@@ -1040,6 +1040,9 @@ def run_identifier(
     common += ["--cache-dir", str(cache)]
     work = (args.staging_dir or args.state_dir) / f".identify-{os.getpid()}"
     common += ["--work-dir", str(work)]
+    # The broker socket also checks episode numbering against TMDB.
+    if getattr(args, "subtitle_socket", None):
+        common += ["--provider-socket", args.subtitle_socket]
     command = [args.identifier, *arguments, *common]
     print(f"Identifying episodes ({stage_label})")
     try:
@@ -1141,24 +1144,38 @@ def identified_assignments(result: dict[str, Any], titles: list[int]) -> list[di
 
 
 def library_identity(shows_root: Path, series: dict[str, Any]) -> tuple[str, int | None, str | None]:
-    """Reuse an existing library folder for the series, else its provider name."""
+    """Reuse an existing library folder for the series, else its provider name.
+
+    A folder tagged with any of the series' provider ids (``providerIds``:
+    TMDB, TVDB or IMDb, from the TMDB numbering check) is the series' folder
+    whatever it is called. Otherwise name and year must match, and a folder
+    tag of a kind the series knows must be one of its ids.
+    """
     name = str(series.get("name") or "").strip()
     year = series.get("year") if isinstance(series.get("year"), int) else None
     provider = series.get("provider") if isinstance(series.get("provider"), str) else None
+    known = {tag for tag in [provider, *(series.get("providerIds") or [])] if isinstance(tag, str) and tag}
+    kinds = {tag.split("-", 1)[0] for tag in known}
     if shows_root.is_dir():
         wanted = normalized_name(name)
+        tagged = []
         matches = []
         for entry in shows_root.iterdir():
             if not entry.is_dir():
                 continue
             candidate_name, candidate_year, candidate_provider = parse_jellyfin_folder(entry.name)
+            if candidate_provider in known:
+                tagged.append((candidate_name, candidate_year, candidate_provider))
             if normalized_name(candidate_name) != wanted:
                 continue
             if year is not None and candidate_year not in (None, year):
                 continue
-            if provider and candidate_provider and candidate_provider != provider:
+            if (candidate_provider and candidate_provider not in known
+                    and candidate_provider.split("-", 1)[0] in kinds):
                 continue
             matches.append((candidate_name, candidate_year, candidate_provider))
+        if len(tagged) == 1:
+            return tagged[0]
         if len(matches) == 1:
             return matches[0]
     return name, year, provider
@@ -2801,6 +2818,22 @@ def self_test() -> None:
         )
         # Without disambiguating metadata, equal matches are unsafe to reuse.
         assert find_existing_series(library, "Dune") is None
+
+        # TMDB-checked series carry every provider id: an existing folder
+        # tagged with any of them is reused, whatever its name.
+        (library / "Sherlock Holmes (1984) [tmdbid-799]").mkdir()
+        assert library_identity(library, {
+            "name": "Sherlock Holmes", "year": 1984, "provider": "tmdbid-799",
+            "providerIds": ["tmdbid-799", "tvdbid-77728"]}) == ("Sherlock Holmes", 1984, "tmdbid-799")
+        assert library_identity(library, {
+            "name": "The Adventures of Sherlock Holmes", "year": 1984, "provider": "tvdbid-77728",
+            "providerIds": []}) == ("The Adventures of Sherlock Holmes", 1984, "tvdbid-77728")
+        assert library_identity(library, {
+            "name": "Rumpole of the Bailey", "year": 1978, "provider": "tmdbid-4280",
+            "providerIds": ["tmdbid-4280", "tvdbid-7794"]}) == ("Rumpole Of The Bailey", 1978, "tvdbid-7794")
+        # A same-kind tag that differs is another series.
+        assert library_identity(library, {
+            "name": "Dune", "year": 1984, "provider": "tmdbid-1"}) == ("Dune", 1984, "tmdbid-1")
 
     titles = [Title(1, 2700, False), Title(2, 2680, False), Title(3, 5380, True)]
     selected, dominant, _ = select_titles(titles, 300, 0.85)

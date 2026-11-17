@@ -8,13 +8,17 @@
 //! uploader's OpenSubtitles subtitle text for the best candidates.
 //!
 //! Either stage prints one JSON object. `status` is `identified` only when the
-//! evidence names every title, in a single season, as consecutive episodes;
-//! anything less is `uncertain` with a best guess for a person to confirm.
+//! evidence names every title, in a single season, as consecutive episodes,
+//! and (when a TMDB key is configured) those episodes are still consecutive in
+//! TMDB's numbering, which Jellyfin uses; identified episodes are then
+//! renumbered to TMDB. Anything less is `uncertain` with a best guess for a
+//! person to confirm. `episodes` prints a series' layout as Jellyfin numbers it.
 
 mod bonsai;
 mod content;
 mod menu;
 mod text;
+mod tmdb;
 mod tvmaze;
 
 use anyhow::{bail, Context, Result};
@@ -43,6 +47,9 @@ enum Command {
     Disc(DiscArgs),
     /// Identify encoded titles from what they say.
     Content(ContentArgs),
+    /// Print a series' episode layout as Jellyfin numbers it (TMDB), or
+    /// TVmaze's when TMDB is not configured. Always exits 0.
+    Episodes(EpisodesArgs),
 }
 
 #[derive(Args)]
@@ -59,6 +66,9 @@ struct Common {
     bonsai_model: String,
     #[arg(long, default_value_t = 20)]
     http_timeout_seconds: u64,
+    /// Provider broker system socket (TMDB numbering, subtitles).
+    #[arg(long, overrides_with = "provider_socket")]
+    provider_socket: Option<PathBuf>,
     #[arg(long, default_value_t = 1200)]
     bonsai_timeout_seconds: u64,
     /// Scratch directory (created and removed by this run).
@@ -127,6 +137,19 @@ struct ContentArgs {
     excerpt_start: u32,
     #[arg(long, default_value_t = 360)]
     excerpt_seconds: u32,
+}
+
+#[derive(Args)]
+struct EpisodesArgs {
+    #[command(flatten)]
+    common: Common,
+    /// `tmdbid-N`, `tvdbid-N` or `imdbid-ttN`; empty to look up --name/--year.
+    #[arg(long, default_value = "")]
+    series: String,
+    #[arg(long, default_value = "")]
+    name: String,
+    #[arg(long)]
+    year: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -343,6 +366,8 @@ fn from_sidecar(
                 .as_str()
                 .filter(|id| !id.is_empty())
                 .map(str::to_string),
+            tmdb_id: None,
+            provider_ids: Vec::new(),
         });
     }
     outcome.assignments = titles
@@ -1141,18 +1166,401 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
     Ok(outcome)
 }
 
+const TMDB_UNCONFIGURED: &str =
+    "Episode numbering was not checked against TMDB (no TMDB key is configured).";
+
+/// Every TMDB lookup worth trying for a series, strongest first.
+fn series_refs(show: &Show) -> Vec<tmdb::SeriesRef> {
+    let mut refs: Vec<tmdb::SeriesRef> = show
+        .provider_ids
+        .iter()
+        .chain(show.provider.as_ref())
+        .filter_map(|tag| tmdb::SeriesRef::parse_provider(tag))
+        .chain(show.tmdb_id.map(tmdb::SeriesRef::Tmdb))
+        .chain(show.imdb_id.clone().map(tmdb::SeriesRef::Imdb))
+        .collect();
+    refs.sort_by_key(|series| match series {
+        tmdb::SeriesRef::Tmdb(_) => 0,
+        tmdb::SeriesRef::Tvdb(_) => 1,
+        tmdb::SeriesRef::Imdb(_) => 2,
+        tmdb::SeriesRef::Name(..) => 3,
+    });
+    refs.dedup();
+    if !show.name.trim().is_empty() {
+        refs.push(tmdb::SeriesRef::Name(show.name.clone(), show.year));
+    }
+    refs
+}
+
+/// Hold an identification whose numbering Jellyfin may not share.
+fn hold_for_numbering(outcome: &mut Outcome, show: &Show, reason: String) {
+    outcome.status = "uncertain";
+    outcome.reasons.push(reason);
+    outcome.summary = format!(
+        "{} — the episode numbers Jellyfin (TMDB) uses need confirming.",
+        show_label(show)
+    );
+}
+
+/// Renumber an identified disc as TMDB (Jellyfin) numbers it, or hold it.
+///
+/// The stages identify episodes in TVmaze (or TheDiscDB) numbering, which
+/// can differ from TMDB's season layout. A disc is published only when every
+/// title maps to one TMDB episode by title (and air date) and the mapped
+/// episodes are still consecutive in one TMDB season. Held discs keep their
+/// original numbering, which the content stage compares against.
+fn check_tmdb_numbering(outcome: &mut Outcome, common: &Common, socket: Option<&Path>) {
+    if outcome.status != "identified" {
+        return;
+    }
+    let Some(show) = outcome.series.clone() else {
+        return;
+    };
+    let Some(socket) = socket else {
+        outcome.reasons.push(
+            "Episode numbering was not checked against TMDB (the provider broker socket is not configured)."
+                .into(),
+        );
+        return;
+    };
+    let series = match tmdb::resolve(socket, &series_refs(&show)) {
+        tmdb::Lookup::Found(series) => series,
+        tmdb::Lookup::Unconfigured => {
+            outcome.reasons.push(TMDB_UNCONFIGURED.into());
+            return;
+        }
+        tmdb::Lookup::Unavailable(error) => {
+            return hold_for_numbering(outcome, &show, format!("TMDB is unavailable: {error}"));
+        }
+        tmdb::Lookup::NotFound => {
+            let reason = format!("TMDB has no series matching {}.", show_label(&show));
+            return hold_for_numbering(outcome, &show, reason);
+        }
+        tmdb::Lookup::Ambiguous(count) => {
+            let reason = format!("{count} TMDB series match {}.", show_label(&show));
+            return hold_for_numbering(outcome, &show, reason);
+        }
+    };
+    // Air dates and runtimes come from TVmaze when it lists the same episode.
+    let listed: Vec<Episode> = match show.tvmaze_id {
+        0 => Vec::new(),
+        id => tvmaze(common)
+            .and_then(|tv| tv.episodes(id))
+            .unwrap_or_default(),
+    };
+    let source: Vec<tmdb::SourceEpisode> = outcome
+        .assignments
+        .iter()
+        .map(|assignment| {
+            let known = listed.iter().find(|episode| {
+                episode.season == assignment.season
+                    && episode.number == assignment.episode
+                    && (assignment.name.is_empty()
+                        || text::similarity(&episode.name, &assignment.name) >= 0.85)
+            });
+            tmdb::SourceEpisode {
+                season: assignment.season,
+                episode: assignment.episode,
+                name: match known {
+                    Some(episode) if assignment.name.is_empty() => episode.name.clone(),
+                    _ => assignment.name.clone(),
+                },
+                airdate: known.and_then(|episode| episode.airdate.clone()),
+                runtime: known.and_then(|episode| episode.runtime),
+            }
+        })
+        .collect();
+    let mapped = match tmdb::map_episodes(&source, &series.episodes) {
+        Ok(mapped) => mapped,
+        Err(reason) => return hold_for_numbering(outcome, &show, reason),
+    };
+    for (assignment, mapping) in outcome.assignments.iter_mut().zip(&mapped) {
+        let target = &series.episodes[mapping.index];
+        assignment.evidence = format!(
+            "{}; TMDB {} \"{}\" (tmdbid-{}) matched by {} to identified {}",
+            assignment.evidence,
+            tmdb::code(target),
+            target.name,
+            series.tmdb_id,
+            mapping.basis,
+            episode_label(assignment.season, assignment.episode, assignment.episode),
+        );
+        assignment.season = target.season;
+        assignment.episode = target.episode;
+        if !target.name.is_empty() {
+            assignment.name = target.name.clone();
+        }
+    }
+    let provider = format!("tmdbid-{}", series.tmdb_id);
+    let mut provider_ids = vec![provider.clone()];
+    for tag in show
+        .provider
+        .iter()
+        .cloned()
+        .chain(series.tvdb_id.map(|id| format!("tvdbid-{id}")))
+        .chain(
+            series
+                .imdb_id
+                .clone()
+                .or(show.imdb_id.clone())
+                .map(|id| format!("imdbid-{id}")),
+        )
+    {
+        if !provider_ids.contains(&tag) {
+            provider_ids.push(tag);
+        }
+    }
+    let renamed = Show {
+        tvmaze_id: show.tvmaze_id,
+        name: series.name.clone(),
+        year: series.year.or(show.year),
+        provider: Some(provider),
+        imdb_id: show.imdb_id.clone().or(series.imdb_id.clone()),
+        tmdb_id: Some(series.tmdb_id),
+        provider_ids,
+    };
+    let first = &outcome.assignments[0];
+    let last = &outcome.assignments[outcome.assignments.len() - 1];
+    outcome.season = Some(first.season);
+    outcome.summary = format!(
+        "{} Jellyfin (TMDB) numbering: {} {}.",
+        outcome.summary,
+        show_label(&renamed),
+        episode_label(first.season, first.episode, last.episode)
+    );
+    outcome.series = Some(renamed);
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EpisodesOutput {
+    schema_version: u32,
+    layout: &'static str,
+    series: Option<EpisodesSeries>,
+    episodes: Vec<EpisodeRow>,
+    reasons: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EpisodesSeries {
+    name: String,
+    year: Option<i32>,
+    provider: Option<String>,
+    tmdb_id: Option<u64>,
+    tvmaze_id: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct EpisodeRow {
+    season: u32,
+    episode: u32,
+    name: String,
+    airdate: Option<String>,
+    runtime: Option<u32>,
+}
+
+fn run_episodes(args: &EpisodesArgs) -> EpisodesOutput {
+    let mut out = EpisodesOutput {
+        schema_version: 1,
+        layout: "none",
+        series: None,
+        episodes: Vec::new(),
+        reasons: Vec::new(),
+    };
+    let reference = args.series.trim();
+    let given = match reference {
+        "" => None,
+        tag => {
+            let parsed = tmdb::SeriesRef::parse_provider(tag);
+            if parsed.is_none() {
+                out.reasons.push(format!(
+                    "The series reference {tag:?} is not tmdbid-N, tvdbid-N or imdbid-ttN."
+                ));
+            }
+            parsed
+        }
+    };
+    let name = args.name.trim();
+    let refs: Vec<tmdb::SeriesRef> = given
+        .clone()
+        .into_iter()
+        .chain((!name.is_empty()).then(|| tmdb::SeriesRef::Name(name.to_string(), args.year)))
+        .collect();
+    let Some(wanted) = refs.first().map(tmdb::SeriesRef::label) else {
+        out.reasons
+            .push("No series reference or name was given.".into());
+        return out;
+    };
+    let lookup = match args.common.provider_socket.as_deref() {
+        Some(socket) => tmdb::resolve(socket, &refs),
+        None => {
+            out.reasons
+                .push("The provider broker socket is not configured.".into());
+            tmdb::Lookup::Unconfigured
+        }
+    };
+    match lookup {
+        tmdb::Lookup::Found(series) => {
+            out.layout = "tmdb";
+            out.series = Some(EpisodesSeries {
+                name: series.name,
+                year: series.year,
+                provider: Some(format!("tmdbid-{}", series.tmdb_id)),
+                tmdb_id: Some(series.tmdb_id),
+                tvmaze_id: None,
+            });
+            out.episodes = series
+                .episodes
+                .into_iter()
+                .map(|episode| EpisodeRow {
+                    season: episode.season,
+                    episode: episode.episode,
+                    name: episode.name,
+                    airdate: episode.airdate,
+                    runtime: episode.runtime,
+                })
+                .collect();
+        }
+        tmdb::Lookup::Unconfigured => {
+            out.reasons.push(
+                "TMDB is not configured (no TMDB key), so episodes use TVmaze numbering, which has no specials."
+                    .into(),
+            );
+            episodes_from_tvmaze(args, &refs, given.as_ref(), &mut out);
+        }
+        tmdb::Lookup::Unavailable(error) => {
+            out.reasons.push(format!("TMDB is unavailable: {error}"));
+        }
+        tmdb::Lookup::NotFound => {
+            out.reasons
+                .push(format!("TMDB has no series matching {wanted}."));
+        }
+        tmdb::Lookup::Ambiguous(count) => out.reasons.push(format!(
+            "{count} TMDB series match {wanted}; give a provider id or year."
+        )),
+    }
+    out
+}
+
+fn episodes_from_tvmaze(
+    args: &EpisodesArgs,
+    refs: &[tmdb::SeriesRef],
+    given: Option<&tmdb::SeriesRef>,
+    out: &mut EpisodesOutput,
+) {
+    let tv = match tvmaze(&args.common) {
+        Ok(tv) => tv,
+        Err(error) => {
+            out.reasons
+                .push(format!("TVmaze is unavailable: {error:#}"));
+            return;
+        }
+    };
+    let mut show: Option<Show> = None;
+    for series in refs {
+        let found = match series {
+            tmdb::SeriesRef::Tvdb(id) => tv.lookup("thetvdb", &id.to_string()),
+            tmdb::SeriesRef::Imdb(id) => tv.lookup("imdb", id),
+            // TVmaze cannot look up TMDB ids; the name (if given) is next.
+            tmdb::SeriesRef::Tmdb(_) => continue,
+            tmdb::SeriesRef::Name(name, year) => tv.search(name).map(|shows| {
+                let exact: Vec<Show> = shows
+                    .into_iter()
+                    .filter(|show| text::normalize(&show.name) == text::normalize(name))
+                    .filter(|show| year.is_none() || show.year == *year)
+                    .collect();
+                if exact.len() > 1 {
+                    out.reasons.push(format!(
+                        "{} TVmaze series match {}.",
+                        exact.len(),
+                        series.label()
+                    ));
+                }
+                (exact.len() == 1).then(|| exact[0].clone())
+            }),
+        };
+        match found {
+            Ok(Some(found)) => {
+                show = Some(found);
+                break;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                out.reasons
+                    .push(format!("TVmaze is unavailable: {error:#}"));
+                return;
+            }
+        }
+    }
+    let Some(show) = show else {
+        out.reasons.push(format!(
+            "TVmaze has no series matching {}.",
+            refs.iter()
+                .map(tmdb::SeriesRef::label)
+                .collect::<Vec<_>>()
+                .join(" or ")
+        ));
+        return;
+    };
+    let episodes = match tv.episodes(show.tvmaze_id) {
+        Ok(episodes) => episodes,
+        Err(error) => {
+            out.reasons
+                .push(format!("TVmaze is unavailable: {error:#}"));
+            return;
+        }
+    };
+    out.layout = "tvmaze";
+    out.episodes = episodes
+        .into_iter()
+        .filter(|episode| episode.season > 0)
+        .map(|episode| EpisodeRow {
+            season: episode.season,
+            episode: episode.number,
+            name: episode.name,
+            airdate: episode.airdate,
+            runtime: episode.runtime,
+        })
+        .collect();
+    out.series = Some(EpisodesSeries {
+        name: show.name,
+        year: show.year,
+        // The caller's own tag names its library folder.
+        provider: given.map(tmdb::SeriesRef::label).or(show.provider),
+        tmdb_id: match given {
+            Some(tmdb::SeriesRef::Tmdb(id)) => Some(*id),
+            _ => None,
+        },
+        tvmaze_id: Some(show.tvmaze_id),
+    });
+}
+
 fn main() {
     let cli = Cli::parse();
     let result = match &cli.command {
-        Command::Disc(args) => run_disc(args),
-        Command::Content(args) => run_content(args),
+        Command::Disc(args) => run_disc(args).map(|mut outcome| {
+            check_tmdb_numbering(
+                &mut outcome,
+                &args.common,
+                args.common.provider_socket.as_deref(),
+            );
+            serde_json::to_string(&outcome)
+        }),
+        Command::Content(args) => run_content(args).map(|mut outcome| {
+            let socket = args
+                .common
+                .provider_socket
+                .as_deref()
+                .or(args.subtitle_socket.as_deref());
+            check_tmdb_numbering(&mut outcome, &args.common, socket);
+            serde_json::to_string(&outcome)
+        }),
+        Command::Episodes(args) => Ok(serde_json::to_string(&run_episodes(args))),
     };
     match result {
-        Ok(outcome) => {
-            println!(
-                "{}",
-                serde_json::to_string(&outcome).expect("outcome serializes")
-            );
+        Ok(printed) => {
+            println!("{}", printed.expect("outcome serializes"));
         }
         Err(error) => {
             eprintln!("disc-identify: {error:#}");
@@ -1171,6 +1579,8 @@ mod tests {
             number,
             name: name.into(),
             summary: String::new(),
+            airdate: None,
+            runtime: None,
         }
     }
 

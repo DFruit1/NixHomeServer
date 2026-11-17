@@ -30,6 +30,10 @@ pub fn provider_system_router(state: ProviderBrokerState) -> Router {
             "/system/v1/opensubtitles/episode-text",
             post(opensubtitles_episode_text),
         )
+        .route(
+            "/system/v1/tmdb/tv-episodes",
+            post(super::system_tmdb::tv_episodes),
+        )
         .layer(DefaultBodyLimit::max(4 * 1024))
         .layer(middleware::from_fn(no_store_responses))
         .with_state(state);

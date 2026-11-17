@@ -268,6 +268,28 @@ impl TmdbClient {
         decode_json::<TmdbEpisodeDetails>(response, "TV episode details").await
     }
 
+    /// The TMDB series for a TVDB (`tvdb_id`) or IMDb (`imdb_id`) identifier.
+    pub async fn find_tv_show(
+        &self,
+        external_id: &str,
+        external_source: &str,
+    ) -> Result<Option<TmdbTvShow>, ProviderError> {
+        self.throttle().await;
+        let url = self
+            .tmdb_api_base
+            .join(&format!("find/{external_id}"))
+            .map_err(|error| ProviderError::new(format!("build find URL: {error}")))?;
+        let response = self
+            .provider_request(self.client.get(url))
+            .query(&[("external_source", external_source), ("language", "en-US")])
+            .send()
+            .await
+            .map_err(|error| ProviderError::new(format!("find request failed: {error}")))?;
+        let response = require_success(response, "TMDB find").await?;
+        let payload = decode_json::<TmdbFindResponse>(response, "find response").await?;
+        Ok(payload.tv_results.into_iter().find(|show| show.id != 0))
+    }
+
     async fn throttle(&self) {
         let gap = self.request_gap;
         if gap.is_zero() {
@@ -455,6 +477,14 @@ pub struct TmdbTvShowDetails {
     pub show_type: Option<String>,
     #[serde(rename = "in_production")]
     pub in_production: bool,
+    pub seasons: Vec<TmdbSeasonSummary>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TmdbSeasonSummary {
+    pub season_number: u32,
+    pub episode_count: u32,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -489,6 +519,7 @@ pub struct TmdbSeasonEpisode {
     pub season_number: u32,
     #[serde(rename = "still_path")]
     pub still_path: Option<String>,
+    pub runtime: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -608,6 +639,14 @@ pub struct TmdbExternalIds {
     pub instagram_id: Option<String>,
     #[serde(rename = "twitter_id")]
     pub twitter_id: Option<String>,
+    #[serde(rename = "tvdb_id")]
+    pub tvdb_id: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TmdbFindResponse {
+    #[serde(default)]
+    tv_results: Vec<TmdbTvShow>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -663,24 +702,35 @@ async fn require_success(
         _ if status.is_server_error() => "provider service is unavailable",
         _ => "provider rejected the request",
     };
-    Err(ProviderError::new(format!(
-        "{operation}: {category} (HTTP {})",
-        status.as_u16()
-    )))
+    Err(ProviderError {
+        message: format!("{operation}: {category} (HTTP {})", status.as_u16()),
+        status: Some(status.as_u16()),
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProviderError(String);
+pub struct ProviderError {
+    message: String,
+    status: Option<u16>,
+}
 
 impl ProviderError {
     fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self {
+            message: message.into(),
+            status: None,
+        }
+    }
+
+    /// TMDB answered that the requested record does not exist.
+    pub fn is_not_found(&self) -> bool {
+        self.status == Some(404)
     }
 }
 
 impl fmt::Display for ProviderError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 

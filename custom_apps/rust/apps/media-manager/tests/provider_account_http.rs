@@ -1370,3 +1370,161 @@ async fn repeated_metadata_searches_reuse_one_cached_provider_response() {
     assert_eq!(CALLS.load(Ordering::SeqCst), 2);
     mock.abort();
 }
+
+/// DVD episode numbering trusts this layout to publish into Jellyfin, so a
+/// dropped specials season or a wrong find resolution would silently misfile.
+#[tokio::test]
+async fn system_tmdb_layout_resolves_a_tvdb_id_and_lists_every_season() {
+    use axum::{
+        extract::{Path, Query},
+        http::HeaderMap,
+        routing::get,
+        Json, Router,
+    };
+    use media_manager::provider_account_http::provider_system_router;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static UPSTREAM_CALLS: AtomicUsize = AtomicUsize::new(0);
+    fn authorized(headers: &HeaderMap) {
+        UPSTREAM_CALLS.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer host-token")
+        );
+    }
+    async fn find(
+        headers: HeaderMap,
+        Path(id): Path<String>,
+        Query(query): Query<HashMap<String, String>>,
+    ) -> Json<Value> {
+        authorized(&headers);
+        assert_eq!(id, "77728");
+        assert_eq!(
+            query.get("external_source").map(String::as_str),
+            Some("tvdb_id")
+        );
+        Json(serde_json::json!({
+            "movie_results": [],
+            "tv_results": [{"id": 799, "name": "Sherlock Holmes", "first_air_date": "1984-04-24"}]
+        }))
+    }
+    async fn show(headers: HeaderMap) -> Json<Value> {
+        authorized(&headers);
+        Json(serde_json::json!({
+            "id": 799,
+            "name": "Sherlock Holmes",
+            "first_air_date": "1984-04-24",
+            "external_ids": {"imdb_id": "tt0086661", "tvdb_id": 77728},
+            "seasons": [
+                {"season_number": 1, "episode_count": 2},
+                {"season_number": 0, "episode_count": 1}
+            ]
+        }))
+    }
+    async fn season(headers: HeaderMap, Path(number): Path<u32>) -> Json<Value> {
+        authorized(&headers);
+        let episodes = match number {
+            0 => serde_json::json!([
+                {"id": 9, "name": "Behind the Scenes", "episode_number": 1, "season_number": 0, "air_date": null, "runtime": null}
+            ]),
+            1 => serde_json::json!([
+                {"id": 2, "name": "The Dancing Men", "episode_number": 2, "season_number": 1, "air_date": "1984-05-01", "runtime": 51},
+                {"id": 1, "name": "A Scandal in Bohemia", "episode_number": 1, "season_number": 1, "air_date": "1984-04-24", "runtime": 51}
+            ]),
+            _ => panic!("unexpected season {number}"),
+        };
+        Json(serde_json::json!({"id": number, "season_number": number, "episodes": episodes}))
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock listener");
+    let address = listener.local_addr().expect("mock address");
+    let mock = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new()
+                .route("/3/find/{id}", get(find))
+                .route("/3/tv/799", get(show))
+                .route("/3/tv/799/season/{number}", get(season)),
+        )
+        .await
+        .expect("mock provider");
+    });
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let state = || {
+        let store = ProviderAccountStore::open(
+            &temp.path().join("provider-accounts.sqlite3"),
+            &temp.path().join("master.key"),
+        )
+        .expect("provider account store");
+        ProviderBrokerState::with_test_endpoints(
+            Arc::new(store),
+            ProviderTestEndpoints {
+                tmdb_api_base: format!("http://127.0.0.1:{}/3/", address.port()),
+                ..ProviderTestEndpoints::default()
+            },
+        )
+        .expect("provider broker state")
+        .with_lookup_cache(&temp.path().join("lookup-cache.sqlite3"))
+        .expect("lookup cache")
+    };
+    let request = |body: &'static str| {
+        Request::builder()
+            .method("POST")
+            .uri("/system/v1/tmdb/tv-episodes")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .expect("request")
+    };
+
+    let unconfigured = provider_system_router(state())
+        .oneshot(request(r#"{"tvdbId":77728}"#))
+        .await
+        .expect("unconfigured response");
+    assert_eq!(unconfigured.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response_json(unconfigured).await["error"],
+        "tmdb_unconfigured"
+    );
+    assert_eq!(UPSTREAM_CALLS.load(Ordering::SeqCst), 0);
+
+    let app = provider_system_router(
+        state()
+            .with_system_tmdb_key("host-token".into())
+            .expect("system TMDB"),
+    );
+    let response = app
+        .clone()
+        .oneshot(request(r#"{"tvdbId":77728}"#))
+        .await
+        .expect("layout response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let layout = response_json(response).await;
+    assert_eq!(layout["series"]["tmdbId"], 799);
+    assert_eq!(layout["series"]["year"], 1984);
+    assert_eq!(layout["series"]["tvdbId"], 77728);
+    assert_eq!(layout["seasons"][0]["season"], 0);
+    assert_eq!(
+        layout["seasons"][0]["episodes"][0]["name"],
+        "Behind the Scenes"
+    );
+    assert_eq!(layout["seasons"][1]["episodes"][0]["episode"], 1);
+    assert_eq!(layout["seasons"][1]["episodes"][0]["airdate"], "1984-04-24");
+    assert_eq!(layout["seasons"][1]["episodes"][1]["runtime"], 51);
+    let calls = UPSTREAM_CALLS.load(Ordering::SeqCst);
+    assert_eq!(calls, 4);
+
+    // Both the id resolution and the layout come from the cache next time.
+    let again = app
+        .oneshot(request(r#"{"tvdbId":77728}"#))
+        .await
+        .expect("cached response");
+    assert_eq!(again.status(), StatusCode::OK);
+    assert_eq!(response_json(again).await, layout);
+    assert_eq!(UPSTREAM_CALLS.load(Ordering::SeqCst), calls);
+    mock.abort();
+}
