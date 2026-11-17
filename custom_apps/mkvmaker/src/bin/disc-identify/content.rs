@@ -84,37 +84,56 @@ pub fn transcribe_excerpt(
 
 #[derive(Debug)]
 pub enum SubtitleText {
-    Text(String),
+    /// `cached` is true when the broker served it from its cache, which
+    /// spends none of the owner's OpenSubtitles downloads.
+    Text {
+        text: String,
+        cached: bool,
+    },
     NoAccount,
     NotFound,
+    /// A cache-only request found nothing cached.
+    NotCached,
     Quota,
     Unavailable(String),
 }
 
 /// Ask the provider broker's system socket for an episode's subtitle text,
 /// using the OpenSubtitles account of `owner` (the person who uploaded the
-/// disc). The broker never returns credentials.
+/// disc). The broker never returns credentials. With `cache_only` the broker
+/// answers from its cache and never contacts OpenSubtitles.
 pub fn episode_subtitle_text(
     socket: &Path,
     owner: &str,
     imdb_id: &str,
     season: u32,
     episode: u32,
+    cache_only: bool,
 ) -> SubtitleText {
-    let body = json!({
+    let mut request = json!({
         "owner": owner,
         "parentImdbId": imdb_id,
         "season": season,
         "episode": episode,
         "language": "en",
-    })
-    .to_string();
+    });
+    if cache_only {
+        // An older broker rejects the unknown field (400) rather than
+        // downloading, so this never spends quota by accident.
+        request["cacheOnly"] = json!(true);
+    }
+    let body = request.to_string();
     match post_unix(socket, "/system/v1/opensubtitles/episode-text", &body) {
         Ok((200, value)) => match value["text"].as_str() {
-            Some(text) if !text.trim().is_empty() => SubtitleText::Text(text.to_string()),
+            Some(text) if !text.trim().is_empty() => SubtitleText::Text {
+                text: text.to_string(),
+                // A broker that does not say is assumed to have downloaded.
+                cached: value["cached"].as_bool().unwrap_or(false),
+            },
             _ => SubtitleText::NotFound,
         },
         Ok((404, value)) if value["error"] == "no_account" => SubtitleText::NoAccount,
+        Ok((404, value)) if value["error"] == "not_cached" => SubtitleText::NotCached,
         Ok((404, _)) => SubtitleText::NotFound,
         Ok((429, _)) => SubtitleText::Quota,
         Ok((status, value)) => SubtitleText::Unavailable(format!(
