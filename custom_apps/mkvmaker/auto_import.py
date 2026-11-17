@@ -2865,6 +2865,36 @@ def bonsai_gate_busy(args: argparse.Namespace) -> bool:
     return bool(health.get("queued")) or health.get("available_permits") == 0
 
 
+# How long retries defer to other Bonsai work. Media Manager's photo-tag
+# review (2026-11-17) kept the gate's queue full for hours, which would
+# have postponed every retry indefinitely; after this long one retry joins
+# the queue like any other request, then the wait starts again.
+BUSY_GATE_PATIENCE_SECONDS = 3600
+
+
+def postpone_for_busy_gate(args: argparse.Namespace, now: int) -> bool:
+    """True when a retry should wait for the Bonsai gate to be idle."""
+    marker = args.state_dir / "retry-bonsai-busy-since"
+    if not bonsai_gate_busy(args):
+        marker.unlink(missing_ok=True)
+        return False
+    try:
+        since = int(marker.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        since = now
+        try:
+            marker.write_text(str(now), encoding="utf-8")
+        except OSError:
+            pass
+    if now - since < BUSY_GATE_PATIENCE_SECONDS:
+        print("Bonsai is busy; postponing an automatic re-identification")
+        return True
+    print("Bonsai has been busy for over an hour; re-identifying anyway (the request waits "
+          "in its queue)")
+    marker.unlink(missing_ok=True)
+    return False
+
+
 def update_held_evidence(identify_path: Path, updates: dict[str, Any]) -> None:
     evidence = read_evidence(identify_path) or {"schemaVersion": 1}
     evidence.update(updates)
@@ -3079,8 +3109,7 @@ def retry_transient_holds(args: argparse.Namespace, lock_path: Path, state_path:
         atomic_json(state_path, state)
     if chosen is None:
         return
-    if bonsai_gate_busy(args):
-        print("Bonsai is busy; postponing an automatic re-identification")
+    if postpone_for_busy_gate(args, int(time.time())):
         return
 
     lease_id = secrets.token_hex(16)
@@ -4472,6 +4501,20 @@ def self_test() -> None:
             retry_transient_holds(retry_args, lock_path, state_path, processed)
             assert calls == [] and retry_of(key_h)["attempts"] == 0
             globals()["bonsai_gate_busy"] = original_busy
+
+            # A gate that stays busy for an hour no longer blocks retries:
+            # one goes ahead, then the wait starts again.
+            globals()["bonsai_gate_busy"] = lambda _args: True
+            marker = state_dir / "retry-bonsai-busy-since"
+            marker.unlink(missing_ok=True)
+            start = int(time.time())
+            assert postpone_for_busy_gate(retry_args, start) and marker.is_file()
+            assert postpone_for_busy_gate(retry_args, start + BUSY_GATE_PATIENCE_SECONDS - 1)
+            assert not postpone_for_busy_gate(retry_args, start + BUSY_GATE_PATIENCE_SECONDS)
+            assert not marker.exists()
+            assert postpone_for_busy_gate(retry_args, start + BUSY_GATE_PATIENCE_SECONDS + 1)
+            globals()["bonsai_gate_busy"] = original_busy
+            assert not postpone_for_busy_gate(retry_args, start) and not marker.exists()
 
             # A shutdown gives the attempt back and releases the lease.
             def stop(_iso: Path, _record: Any) -> Any:
