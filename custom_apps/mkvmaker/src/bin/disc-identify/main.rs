@@ -17,6 +17,7 @@
 mod bonsai;
 mod content;
 mod menu;
+mod replay;
 mod text;
 mod tmdb;
 mod tvmaze;
@@ -137,6 +138,24 @@ struct ContentArgs {
     excerpt_start: u32,
     #[arg(long, default_value_t = 360)]
     excerpt_seconds: u32,
+    /// Subtitle phrase containment that names an episode (with --subtitle-margin).
+    #[arg(long, default_value_t = 0.06)]
+    subtitle_min_containment: f64,
+    /// How many times the runner-up's containment the best one must reach.
+    #[arg(long, default_value_t = 3.0)]
+    subtitle_margin: f64,
+    /// Containment that names an episode when it is the only one compared.
+    #[arg(long, default_value_t = 0.10)]
+    subtitle_single_min: f64,
+    /// Bonsai confidence needed when it agrees with the keyword ranking.
+    #[arg(long, default_value_t = 0.5)]
+    bonsai_min_confidence: f64,
+    /// Evaluation only: record transcripts, rankings and subtitle text here.
+    #[arg(long)]
+    replay_cache: Option<PathBuf>,
+    /// Evaluation only: answer from --replay-cache without contacting sources.
+    #[arg(long)]
+    replay_only: bool,
 }
 
 #[derive(Args)]
@@ -349,12 +368,16 @@ struct SubtitleCheck {
 #[serde(rename_all = "camelCase")]
 struct Decision {
     /// "proposal confirmed", "all titles matched", "subtitle anchor",
-    /// "not identified" or "not compared".
+    /// "summary contradiction held", "not identified" or "not compared".
     rule: &'static str,
     confirmed: usize,
     contradicted: usize,
     /// The title whose subtitle match anchored disc order ("subtitle anchor").
     anchor_title: Option<u32>,
+    /// Titles whose pick contradicted the proposal on summary agreement
+    /// alone, with no subtitle match behind it; such a disc is held.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    summary_only_contradictions: Vec<u32>,
 }
 
 struct Scratch(PathBuf);
@@ -1092,6 +1115,50 @@ fn anchored_order(
     (confirmed * 2 >= picks.len()).then_some((anchor, order, confirmed))
 }
 
+/// Titles (indices) whose pick contradicts the proposal on episode summaries
+/// alone. Summary agreement may confirm a proposal but never overrule it:
+/// Bonsai's confidence does not track correctness (All Creatures S05E01 was
+/// once published as S05E02 that way). A summary pick is backed by the
+/// subtitles only when it falls in the disc order of another title's subtitle
+/// match that itself departs from the proposal. `planned` is each title's
+/// proposed (season, episode).
+fn unsupported_summary_contradictions(
+    picks: &[Option<Pick>],
+    planned: &[Option<(u32, u32)>],
+    pool: &[PoolEpisode],
+) -> Vec<usize> {
+    let contradicts = |index: usize| match (&picks[index], planned.get(index).copied().flatten()) {
+        (Some(pick), Some(planned)) => {
+            let e = &pool[pick.pool];
+            (e.season, e.number) != planned
+        }
+        _ => false,
+    };
+    let anchors: Vec<(usize, &PoolEpisode)> = picks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, pick)| {
+            let pick = pick.as_ref().filter(|p| p.subtitle_score.is_some())?;
+            let departs = planned.get(index).copied().flatten().is_none() || contradicts(index);
+            departs.then(|| (index, &pool[pick.pool]))
+        })
+        .collect();
+    (0..picks.len())
+        .filter(|&index| {
+            let Some(pick) = picks[index].as_ref().filter(|p| p.subtitle_score.is_none()) else {
+                return false;
+            };
+            let e = &pool[pick.pool];
+            let backed = anchors.iter().any(|(anchor, base)| {
+                base.show == e.show
+                    && base.season == e.season
+                    && i64::from(e.number) - i64::from(base.number) == index as i64 - *anchor as i64
+            });
+            contradicts(index) && !backed
+        })
+        .collect()
+}
+
 fn run_content(args: &ContentArgs) -> Result<Outcome> {
     if args.videos.len() != args.titles.len() {
         bail!("--video and --title must be given the same number of times");
@@ -1204,6 +1271,7 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         .collect();
 
     let scratch = Scratch::new(args.common.work_dir.as_deref())?;
+    let replay = replay::Replay::new(args.replay_cache.as_deref(), args.replay_only)?;
     let asr = content::Asr {
         ffmpeg: &args.ffmpeg,
         parakeet,
@@ -1228,12 +1296,20 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             title: *title,
             ..TitleDiagnostics::default()
         };
-        let transcript = match content::transcribe_excerpt(
-            &asr,
+        let transcript = match replay.transcript(
             video,
-            &scratch.0,
+            model,
             args.excerpt_start,
             args.excerpt_seconds,
+            || {
+                content::transcribe_excerpt(
+                    &asr,
+                    video,
+                    &scratch.0,
+                    args.excerpt_start,
+                    args.excerpt_seconds,
+                )
+            },
         ) {
             Ok(text) => text,
             Err(error) => {
@@ -1293,7 +1369,10 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
                     )
                 })
                 .collect();
-            match client.rank_synopses(&text::clip(&transcript, 6000), &listing) {
+            let excerpt = text::clip(&transcript, 6000);
+            match replay.ranking(&args.common.bonsai_model, &excerpt, &listing, || {
+                client.rank_synopses(&excerpt, &listing)
+            }) {
                 Ok(Some((index, confidence))) => model_pick = Some((shortlist[index], confidence)),
                 Ok(None) => {}
                 Err(error) => {
@@ -1358,75 +1437,107 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
                     detail.subtitles.push(check);
                     continue;
                 }
-                // Past the budget (or the daily quota) only cached text is
-                // asked for; a cache hit never spends a download.
-                let cache_only = !downloads_allowed || downloads_left == 0;
-                let result = content::episode_subtitle_text(
-                    args.subtitle_socket.as_deref().unwrap_or(Path::new("")),
-                    args.owner.as_deref().unwrap_or(""),
+                // Evaluation replay: a recorded text counts as a cache hit and
+                // never spends a download; --replay-only never asks the broker.
+                let recorded = replay.subtitle(
                     imdb.as_deref().unwrap_or(""),
                     episode.season,
                     episode.number,
-                    cache_only,
                 );
-                // A fresh text or an empty result may have spent a download;
-                // a cache hit, a refusal or an unreachable broker did not
-                // (and the last two stop further downloads anyway).
-                let spent = !cache_only
-                    && matches!(
-                        result,
-                        content::SubtitleText::Text { cached: false, .. }
-                            | content::SubtitleText::NotFound
+                if let Some(recorded) = recorded {
+                    if recorded.is_some() {
+                        diagnostics.subtitle_downloads.cache_hits += 1;
+                        check.cached = true;
+                    }
+                    subtitle_cache.insert(candidate, recorded);
+                } else if replay.only() {
+                    check.skipped = Some("not cached");
+                    detail.subtitles.push(check);
+                    continue;
+                } else {
+                    // Past the budget (or the daily quota) only cached text is
+                    // asked for; a cache hit never spends a download.
+                    let cache_only = !downloads_allowed || downloads_left == 0;
+                    let result = content::episode_subtitle_text(
+                        args.subtitle_socket.as_deref().unwrap_or(Path::new("")),
+                        args.owner.as_deref().unwrap_or(""),
+                        imdb.as_deref().unwrap_or(""),
+                        episode.season,
+                        episode.number,
+                        cache_only,
                     );
-                if spent {
-                    downloads_left -= 1;
-                    diagnostics.subtitle_downloads.used += 1;
-                }
-                let text = match result {
-                    content::SubtitleText::Text { text, cached } => {
-                        if cached {
-                            diagnostics.subtitle_downloads.cache_hits += 1;
+                    // A fresh text or an empty result may have spent a download;
+                    // a cache hit, a refusal or an unreachable broker did not
+                    // (and the last two stop further downloads anyway).
+                    let spent = !cache_only
+                        && matches!(
+                            result,
+                            content::SubtitleText::Text { cached: false, .. }
+                                | content::SubtitleText::NotFound
+                        );
+                    if spent {
+                        downloads_left -= 1;
+                        diagnostics.subtitle_downloads.used += 1;
+                    }
+                    let text = match result {
+                        content::SubtitleText::Text { text, cached } => {
+                            if cached {
+                                diagnostics.subtitle_downloads.cache_hits += 1;
+                            }
+                            check.cached = cached;
+                            replay.record_subtitle(
+                                imdb.as_deref().unwrap_or(""),
+                                episode.season,
+                                episode.number,
+                                Some(&text),
+                            );
+                            Some(text)
                         }
-                        check.cached = cached;
-                        Some(text)
-                    }
-                    content::SubtitleText::NotFound => {
-                        check.skipped = Some("not found");
-                        None
-                    }
-                    content::SubtitleText::NotCached => {
-                        check.skipped = Some(if downloads_allowed { "budget" } else { "quota" });
-                        // Not remembered: nothing was learnt about the episode.
-                        detail.subtitles.push(check);
-                        continue;
-                    }
-                    content::SubtitleText::NoAccount => {
-                        outcome.reasons.push("The uploader has no OpenSubtitles account; subtitle comparison was skipped.".into());
-                        subtitles_usable = false;
-                        check.skipped = Some("no account");
-                        detail.subtitles.push(check);
-                        continue;
-                    }
-                    content::SubtitleText::Quota => {
-                        outcome
-                            .reasons
-                            .push("The OpenSubtitles daily download limit was reached.".into());
-                        downloads_allowed = false;
-                        check.skipped = Some("quota");
-                        detail.subtitles.push(check);
-                        continue;
-                    }
-                    content::SubtitleText::Unavailable(error) => {
-                        outcome.reasons.push(format!(
-                            "OpenSubtitles comparison is unavailable: {error:#}"
-                        ));
-                        subtitles_usable = false;
-                        check.skipped = Some("unavailable");
-                        detail.subtitles.push(check);
-                        continue;
-                    }
-                };
-                subtitle_cache.insert(candidate, text);
+                        content::SubtitleText::NotFound => {
+                            check.skipped = Some("not found");
+                            replay.record_subtitle(
+                                imdb.as_deref().unwrap_or(""),
+                                episode.season,
+                                episode.number,
+                                None,
+                            );
+                            None
+                        }
+                        content::SubtitleText::NotCached => {
+                            check.skipped =
+                                Some(if downloads_allowed { "budget" } else { "quota" });
+                            // Not remembered: nothing was learnt about the episode.
+                            detail.subtitles.push(check);
+                            continue;
+                        }
+                        content::SubtitleText::NoAccount => {
+                            outcome.reasons.push("The uploader has no OpenSubtitles account; subtitle comparison was skipped.".into());
+                            subtitles_usable = false;
+                            check.skipped = Some("no account");
+                            detail.subtitles.push(check);
+                            continue;
+                        }
+                        content::SubtitleText::Quota => {
+                            outcome
+                                .reasons
+                                .push("The OpenSubtitles daily download limit was reached.".into());
+                            downloads_allowed = false;
+                            check.skipped = Some("quota");
+                            detail.subtitles.push(check);
+                            continue;
+                        }
+                        content::SubtitleText::Unavailable(error) => {
+                            outcome.reasons.push(format!(
+                                "OpenSubtitles comparison is unavailable: {error:#}"
+                            ));
+                            subtitles_usable = false;
+                            check.skipped = Some("unavailable");
+                            detail.subtitles.push(check);
+                            continue;
+                        }
+                    };
+                    subtitle_cache.insert(candidate, text);
+                }
             }
             if let Some(Some(reference)) = subtitle_cache.get(&candidate) {
                 let score = text::trigram_containment(&transcript, reference);
@@ -1441,11 +1552,12 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
 
         let subtitle_pick = match containment.as_slice() {
             [(best, score), (_, second), ..]
-                if *score >= 0.06 && *score >= 3.0 * second.max(0.005) =>
+                if *score >= args.subtitle_min_containment
+                    && *score >= args.subtitle_margin * second.max(0.005) =>
             {
                 Some(*best)
             }
-            [(best, score)] if *score >= 0.10 => Some(*best),
+            [(best, score)] if *score >= args.subtitle_single_min => Some(*best),
             _ => None,
         };
         let pick = if let Some(best) = subtitle_pick {
@@ -1460,7 +1572,9 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             })
         } else {
             match (model_pick, keyword_top) {
-                (Some((chosen, confidence)), Some(top)) if chosen == top && confidence >= 0.5 => {
+                (Some((chosen, confidence)), Some(top))
+                    if chosen == top && confidence >= args.bonsai_min_confidence =>
+                {
                     detail.pick_rule = Some("summary agreement");
                     Some(Pick {
                         pool: chosen,
@@ -1489,7 +1603,7 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         // guess's contradiction is worded so the worker never treats it as one.
         if let (Some(proposed), Some((best, score))) = (proposed, containment.first())
             && *best != proposed
-            && *score >= 0.06
+            && *score >= args.subtitle_min_containment
         {
             let matched = episode_label(pool[*best].season, pool[*best].number, pool[*best].number);
             let source = proposal_source.as_deref().unwrap_or("disc-order");
@@ -1567,6 +1681,48 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         }
     }
 
+    // Summary agreement alone never overrules a proposal (of any source):
+    // without subtitle evidence for the change, the disc is held with the
+    // proposal as its best guess.
+    if !proposal.is_empty() {
+        let planned: Vec<Option<(u32, u32)>> = args
+            .titles
+            .iter()
+            .map(|title| {
+                proposal
+                    .iter()
+                    .find(|a| a.title == *title)
+                    .map(|a| (a.season, a.episode))
+            })
+            .collect();
+        let refused = unsupported_summary_contradictions(&picks, &planned, &pool);
+        if !refused.is_empty() {
+            let source = proposal_source.as_deref().unwrap_or("disc-order");
+            for &index in &refused {
+                let (Some(pick), Some((season, episode))) = (&picks[index], planned[index]) else {
+                    continue;
+                };
+                let e = &pool[pick.pool];
+                outcome.reasons.push(format!(
+                    "Title {}: the episode summaries point to {}, but summaries alone cannot overrule the {source} proposal ({}); no subtitle match supports the change.",
+                    args.titles[index],
+                    episode_label(e.season, e.number, e.number),
+                    episode_label(season, episode, episode),
+                ));
+            }
+            diagnostics.decision.rule = "summary contradiction held";
+            diagnostics.decision.summary_only_contradictions =
+                refused.iter().map(|&index| args.titles[index]).collect();
+            outcome.assignments = proposal;
+            outcome.summary = match &series {
+                Some(show) => format!("{} — episodes need confirming.", show_label(show)),
+                None => "The episodes could not be confirmed.".into(),
+            };
+            outcome.content_diagnostics = Some(diagnostics);
+            return Ok(outcome);
+        }
+    }
+
     let chosen: Vec<(u32, &Pick)> = args
         .titles
         .iter()
@@ -1637,6 +1793,7 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             confirmed,
             contradicted: 0,
             anchor_title: Some(anchor_title),
+            summary_only_contradictions: Vec::new(),
         };
         outcome.content_diagnostics = Some(diagnostics);
         return Ok(outcome);
@@ -2061,6 +2218,13 @@ fn main() {
             serde_json::to_string(&outcome)
         }),
         Command::Content(args) => run_content(args).map(|mut outcome| {
+            // Evaluation replay contacts no source, the broker included.
+            if args.replay_only {
+                outcome
+                    .reasons
+                    .push("Episode numbering was not checked against TMDB (replay only).".into());
+                return serde_json::to_string(&outcome);
+            }
             let socket = args
                 .common
                 .provider_socket
@@ -2228,6 +2392,42 @@ mod tests {
         }
         let printed = serde_json::to_value(Outcome::new("disc")).unwrap();
         assert!(printed.get("tmdbNumberingHeld").is_none());
+    }
+
+    #[test]
+    fn summary_agreement_never_overrules_a_proposal() {
+        // All Creatures S05E01: a correct menu proposal, but Bonsai and the
+        // keyword ranking agreed on S05E02. That was once published.
+        let pool = pool_of(5, 1..=10);
+        let planned = [Some((5, 1))];
+        assert_eq!(
+            unsupported_summary_contradictions(&[summary(&pool, 2)], &planned, &pool),
+            vec![0]
+        );
+        // Summaries may still confirm the proposal.
+        assert!(
+            unsupported_summary_contradictions(&[summary(&pool, 1)], &planned, &pool).is_empty()
+        );
+        // A subtitle match keeps its power to overrule.
+        assert!(
+            unsupported_summary_contradictions(&[subtitle(&pool, 2, 0.4)], &planned, &pool)
+                .is_empty()
+        );
+        let planned = [Some((5, 1)), Some((5, 2))];
+        // A summary pick in the disc order of a contradicting subtitle match
+        // is backed by it.
+        let shifted = [subtitle(&pool, 3, 0.4), summary(&pool, 4)];
+        assert!(unsupported_summary_contradictions(&shifted, &planned, &pool).is_empty());
+        // One that only disagrees with a confirming subtitle match is not.
+        let against = [subtitle(&pool, 1, 0.4), summary(&pool, 5)];
+        assert_eq!(
+            unsupported_summary_contradictions(&against, &planned, &pool),
+            vec![1]
+        );
+        // Without a proposal summaries decide as before.
+        assert!(
+            unsupported_summary_contradictions(&[summary(&pool, 2)], &[None], &pool).is_empty()
+        );
     }
 
     #[test]
