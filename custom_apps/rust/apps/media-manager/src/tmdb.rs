@@ -26,7 +26,15 @@ impl TmdbCredentials {
         let bytes = std::fs::read(path)
             .map_err(|error| ProviderError::new(format!("read TMDB key: {error}")))?;
         let credentials = serde_json::from_slice::<Self>(&bytes)
-            .map_err(|error| ProviderError::new(format!("parse TMDB key JSON: {error}")))?;
+            // serde's message quotes the offending value, which can be the
+            // key itself (a bare JSON string); report only where it failed.
+            .map_err(|error| {
+                ProviderError::new(format!(
+                    "parse TMDB key JSON: expected {{\"apiKey\": …}} (line {}, column {})",
+                    error.line(),
+                    error.column()
+                ))
+            })?;
         if credentials.api_key.trim().is_empty() {
             return Err(ProviderError::new(
                 "TMDB credentials require a non-empty apiKey",

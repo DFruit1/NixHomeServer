@@ -471,11 +471,24 @@ pub fn reconcile(config: &AppConfig) -> Result<(), String> {
 /// Rename the evidence first: until the ISO carries an episode name the
 /// importer ignores it, so it never sees a renamed ISO without its evidence
 /// beside it. A failed ISO rename puts the evidence back.
+///
+/// A broker stopped between the two renames (or before saving the result)
+/// is resumed on the next tick: evidence already under the new name beside
+/// the unrenamed ISO is put back and the checks run again, and a rename that
+/// fully happened is reported as applied.
 pub fn apply(folder: &Dir, request: &Request) -> Result<(), String> {
-    check(folder, &request.from, &request.to, &request.fingerprint)
-        .map_err(|refusal| refusal.message().to_owned())?;
     let evidence_from = format!("{}{EVIDENCE_SUFFIX}", request.from);
     let evidence_to = format!("{}{EVIDENCE_SUFFIX}", request.to);
+    let present = |name: &str| folder.file(name).is_ok();
+    if !present(&evidence_from) && present(&evidence_to) {
+        if present(&request.from) && !present(&request.to) {
+            folder.rename_new(&evidence_from, folder, &evidence_to)?;
+        } else if !present(&request.from) && renamed_disc_matches(folder, request) {
+            return Ok(());
+        }
+    }
+    check(folder, &request.from, &request.to, &request.fingerprint)
+        .map_err(|refusal| refusal.message().to_owned())?;
     folder.rename_new(&evidence_to, folder, &evidence_from)?;
     if let Err(error) = folder.rename_new(&request.to, folder, &request.from) {
         if folder
@@ -489,6 +502,24 @@ pub fn apply(folder: &Dir, request: &Request) -> Result<(), String> {
         return Err(error);
     }
     Ok(())
+}
+
+/// The ISO already carries the requested name and is the disc the request
+/// was made for (same size and time, and inode when recorded).
+fn renamed_disc_matches(folder: &Dir, request: &Request) -> bool {
+    let Ok(metadata) = folder
+        .file(&request.to)
+        .and_then(|file| file.metadata().map_err(|error| error.to_string()))
+    else {
+        return false;
+    };
+    let current = fingerprint_of(&metadata);
+    let expected = &request.fingerprint;
+    current.size_bytes == expected.size_bytes
+        && current.modified_ns.abs_diff(expected.modified_ns) <= MODIFIED_TOLERANCE_NS
+        && expected
+            .inode
+            .is_none_or(|inode| Some(inode) == current.inode)
 }
 
 fn log(level: &str, event: &str, request: &Request, error: Option<&str>) {
@@ -631,6 +662,36 @@ mod tests {
             b"other"
         );
         assert!(temp.path().join("DISC.iso.identify.json").is_file());
+    }
+
+    #[test]
+    fn resumes_a_rename_interrupted_between_its_two_steps() {
+        let temp = tempfile::tempdir().unwrap();
+        let print = held(temp.path(), "DISC.iso", 2);
+        let folder = Dir::open(temp.path()).unwrap();
+        let to = "Show S01E05-E06.iso";
+        let request = request("DISC.iso", to, print);
+        // Stopped after the evidence rename: finished on the next tick.
+        std::fs::rename(
+            temp.path().join(format!("DISC.iso{EVIDENCE_SUFFIX}")),
+            temp.path().join(format!("{to}{EVIDENCE_SUFFIX}")),
+        )
+        .unwrap();
+        assert_eq!(apply(&folder, &request), Ok(()));
+        assert!(temp.path().join(to).is_file());
+        assert!(temp.path().join(format!("{to}{EVIDENCE_SUFFIX}")).is_file());
+        assert!(!temp.path().join("DISC.iso").exists());
+        // Stopped after both renames, before the result was saved.
+        assert_eq!(apply(&folder, &request), Ok(()));
+        // A different disc under the new name is not taken as done.
+        let other = Request {
+            fingerprint: Fingerprint {
+                size_bytes: print.size_bytes + 7,
+                ..print
+            },
+            ..request
+        };
+        assert!(apply(&folder, &other).is_err());
     }
 
     #[test]

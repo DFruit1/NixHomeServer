@@ -929,8 +929,13 @@ const HeldDiscConfirm = component$<{
     (rename?.state === "failed"
       ? rename.name
       : (iso.suggestedName ?? iso.name));
-  const error =
-    draft?.error ?? (rename?.state === "failed" ? rename.error : undefined);
+  // Once the person edits the name, the broker's earlier refusal no longer
+  // describes it; only the draft's own error shows.
+  const error = draft
+    ? draft.error
+    : rename?.state === "failed"
+      ? rename.error
+      : undefined;
   return (
     <form
       class="held-confirm"
