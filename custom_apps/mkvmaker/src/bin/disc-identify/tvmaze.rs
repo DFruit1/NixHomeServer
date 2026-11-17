@@ -22,6 +22,14 @@ pub struct Show {
     pub year: Option<i32>,
     pub provider: Option<String>,
     pub imdb_id: Option<String>,
+    /// Set once the numbering has been checked against TMDB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmdb_id: Option<u64>,
+    /// Every provider tag known for the series (`tmdbid-N`, `tvdbid-N`,
+    /// `imdbid-ttN`), so an existing library folder tagged with any of them
+    /// is recognised.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -31,6 +39,10 @@ pub struct Episode {
     pub name: String,
     #[serde(skip)]
     pub summary: String,
+    #[serde(skip)]
+    pub airdate: Option<String>,
+    #[serde(skip)]
+    pub runtime: Option<u32>,
 }
 
 pub struct TvMaze {
@@ -114,6 +126,13 @@ impl TvMaze {
             .unwrap_or_default())
     }
 
+    /// The show TVmaze files under a TVDB (`thetvdb`) or IMDb (`imdb`) id.
+    pub fn lookup(&self, source: &str, id: &str) -> Result<Option<Show>> {
+        let encoded: String = form_urlencoded::byte_serialize(id.as_bytes()).collect();
+        let value = self.get(&format!("/lookup/shows?{source}={encoded}"))?;
+        Ok(parse_show(&value))
+    }
+
     pub fn episodes(&self, id: u64) -> Result<Vec<Episode>> {
         let value = self.get(&format!("/shows/{id}/episodes"))?;
         let mut episodes: Vec<Episode> = value
@@ -127,6 +146,13 @@ impl TvMaze {
                             number: u32::try_from(item["number"].as_u64()?).ok()?,
                             name: item["name"].as_str().unwrap_or_default().trim().to_string(),
                             summary: strip_html(item["summary"].as_str().unwrap_or_default()),
+                            airdate: item["airdate"]
+                                .as_str()
+                                .filter(|date| !date.is_empty())
+                                .map(str::to_string),
+                            runtime: item["runtime"]
+                                .as_u64()
+                                .and_then(|minutes| u32::try_from(minutes).ok()),
                         })
                     })
                     .collect()
@@ -162,5 +188,7 @@ fn parse_show(value: &Value) -> Option<Show> {
             .as_str()
             .filter(|id| id.starts_with("tt"))
             .map(str::to_string),
+        tmdb_id: None,
+        provider_ids: Vec::new(),
     })
 }

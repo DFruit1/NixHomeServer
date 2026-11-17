@@ -299,8 +299,9 @@ fn main() -> Result<()> {
     if args.movie_disc == Some(0) {
         bail!("movie disc number must be at least 1");
     }
-    if args.season == Some(0) || args.first_episode == Some(0) {
-        bail!("season and first episode numbers must be at least 1");
+    // Season 0 is Jellyfin's specials season; episode numbers start at 1.
+    if args.first_episode == Some(0) {
+        bail!("first episode number must be at least 1");
     }
     let raw_name = match args.name {
         Some(n) => n,
@@ -1913,8 +1914,8 @@ fn remove_container_muxing_date(path: &Path) -> Result<()> {
 }
 
 fn relay_log<R: std::io::Read>(reader: R, log: Arc<Mutex<fs::File>>) -> Result<()> {
-    for line in BufReader::new(reader).lines() {
-        let line = line?;
+    let mut reader = BufReader::new(reader);
+    while let Some(line) = progress::read_lossy_line(&mut reader)? {
         writeln!(
             log.lock()
                 .map_err(|_| anyhow::anyhow!("log lock poisoned"))?,

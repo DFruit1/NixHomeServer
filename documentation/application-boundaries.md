@@ -104,11 +104,17 @@ Host system jobs never use the broker's forwarded-identity HTTP API. Listing a
 Unix user in `repo.mediaManager.providerSystemClients` adds it to
 `media-manager-provider-system` and makes the broker also listen on
 `/run/media-manager-provider-system/system.sock` (directory `2750`, socket
-`0660`; the group is the authorization boundary). The socket serves only
+`0660`; the group is the authorization boundary). The socket serves
 `POST /system/v1/opensubtitles/episode-text`: the caller names the user whose
 saved OpenSubtitles account to use (for a DVD, its uploader) and receives one
 episode's plain dialogue text, never credentials. Errors are `no_account`,
 `not_found`, `quota` and `provider_error`. Successful texts are cached in the
 broker's lookup cache for a week, so repeated identification does not spend the
-owner's daily download quota. With the list empty (the default) no socket
+owner's daily download quota. It also serves `POST /system/v1/tmdb/tv-episodes`
+(one of `tmdbId`, `tvdbId`, `imdbId`, or `name` with optional `year`), which
+returns a series' TMDB seasons, specials included, with each episode's number,
+name, air date and runtime. It uses the host key in
+`repo.mediaManager.tmdbApiKeyFile` rather than a person's account; errors are
+`tmdb_unconfigured` (503, no key), `not_found`, `ambiguous` (409, with
+candidates) and `provider_error`. With the list empty (the default) no socket
 exists.

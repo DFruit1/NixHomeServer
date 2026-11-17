@@ -1,4 +1,5 @@
 use super::*;
+use crate::held_disc_rename::{self, Fingerprint, Refusal};
 
 pub(super) async fn conversions(
     State(state): State<Arc<AppState>>,
@@ -82,6 +83,28 @@ pub(super) async fn conversions_inbox(
                 );
                 return ApiError::internal(request_id).into_response();
             }
+        }
+    }
+    // Show each held disc's pending, refused or just-applied rename beside it.
+    let config = state.config.clone();
+    let renames = tokio::task::spawn_blocking(move || held_disc_rename::statuses(&config))
+        .await
+        .unwrap_or_default();
+    for entry in groups[3].1.iter_mut() {
+        let name = entry["name"].as_str().unwrap_or_default().to_owned();
+        let latest = renames
+            .iter()
+            .rev()
+            .find(|request| match request.state.as_str() {
+                "applied" => request.to == name,
+                _ => request.from == name,
+            });
+        if let Some(request) = latest {
+            entry["rename"] = json!({
+                "state": request.state,
+                "name": request.to,
+                "error": request.error,
+            });
         }
     }
     let mut body = json!({
@@ -447,4 +470,87 @@ async fn iso_volume_id(path: &FilePath, request_id: &str) -> Option<String> {
         return None;
     }
     Some(volume_id)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct IdentifyRequest {
+    name: String,
+    size_bytes: u64,
+    modified_ns: i64,
+    new_name: String,
+}
+
+/// Confirm a held TV disc by giving its ISO the episode name the importer
+/// publishes from. The web service only checks and queues; the filesystem
+/// broker repeats the checks and renames within _NeedsIdentification.
+pub(super) async fn identify_held_disc(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    payload: Result<Json<IdentifyRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match editor_identity(&state.config, &headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    if state.config.mutation_mode != MutationMode::Enabled {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "read_only",
+            "Changes are disabled.",
+            request_id,
+        )
+        .into_response();
+    }
+    let Ok(Json(request)) = payload else {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_identify_name",
+            "Supply the disc's current name, size, modification time and new name.",
+            request_id,
+        )
+        .into_response();
+    };
+    let config = state.config.clone();
+    let queued = tokio::task::spawn_blocking(move || {
+        held_disc_rename::queue(
+            &config,
+            &identity,
+            &request.name,
+            &request.new_name,
+            Fingerprint {
+                size_bytes: request.size_bytes,
+                modified_ns: request.modified_ns,
+                inode: None,
+            },
+        )
+    })
+    .await;
+    match queued {
+        Ok(Ok(queued)) => {
+            log_event(
+                "held_disc_rename_queued",
+                &request_id,
+                json!({ "from": queued.from, "to": queued.to, "owner": queued.owner }),
+            );
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "rename": { "state": queued.state, "name": queued.to, "error": null },
+                    "requestId": request_id,
+                })),
+            )
+                .into_response()
+        }
+        Ok(Err(refusal)) => {
+            let (status, code) = match refusal {
+                Refusal::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid_identify_name"),
+                Refusal::Conflict(_) => (StatusCode::CONFLICT, "held_disc_conflict"),
+                Refusal::Missing(_) => (StatusCode::NOT_FOUND, "held_disc_missing"),
+            };
+            ApiError::new(status, code, refusal.message(), request_id).into_response()
+        }
+        Err(_) => ApiError::internal(request_id).into_response(),
+    }
 }

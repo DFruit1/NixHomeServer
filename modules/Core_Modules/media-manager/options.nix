@@ -101,6 +101,18 @@ in
         opens no Unix socket.
       '';
     };
+    tmdbApiKeyFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/run/agenix/mediaManagerTmdbApiKey";
+      description = ''
+        Host TMDB key file (JSON `{"apiKey": "<v4 read access token>"}`)
+        that the provider broker uses for system jobs on its Unix socket,
+        such as checking DVD episode numbering against TMDB, which Jellyfin
+        uses. It is loaded as a systemd credential, never a person's saved
+        account. When null, those requests answer `tmdb_unconfigured`.
+      '';
+    };
     providerSystemGroup = lib.mkOption {
       type = lib.types.str;
       default = "media-manager-provider-system";

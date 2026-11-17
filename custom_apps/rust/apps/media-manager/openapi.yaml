@@ -2040,6 +2040,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SavedResponse'
+  /conversions/inbox/identify:
+    post:
+      operationId: identifyHeldDisc
+      description: >-
+        Confirms a TV disc held in _NeedsIdentification by renaming its ISO
+        and identification record to a Jellyfin TV name (Show (Year)
+        [provider-id] SxxEyy or SxxEyy-Ezz, .iso; year and provider optional)
+        whose episode count matches the held videos. The web service checks
+        and queues the request; the filesystem broker repeats the checks and
+        renames within that folder without replacing any file. MKVMaker then
+        publishes the held videos. Requires editor access and enabled mutations.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, sizeBytes, modifiedNs, newName]
+              properties:
+                name: { type: string, description: The ISO's name as listed. }
+                sizeBytes: { type: integer, minimum: 0, description: The listed size; a different current size is refused. }
+                modifiedNs: { type: integer, description: The listed modification time; a different current time is refused. }
+                newName: { type: string, maxLength: 200 }
+      responses:
+        "202":
+          description: Rename checked and queued for the filesystem broker.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rename]
+                properties:
+                  rename: { $ref: "#/components/schemas/HeldDiscRename" }
+                  requestId: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /conversions/inbox/error:
     get:
       responses:
@@ -2815,6 +2854,18 @@ components:
           type: string
           maxLength: 255
           description: The importer's best guess at a Jellyfin TV ISO name with season and episode range.
+        rename: { $ref: "#/components/schemas/HeldDiscRename" }
+    HeldDiscRename:
+      type: object
+      required: [state, name]
+      description: The latest Conversions-page rename of a held disc. Queued and failed renames appear under the original name, a rename applied in the last ten minutes under the new one.
+      properties:
+        state: { type: string, enum: [queued, applied, failed] }
+        name: { type: string, description: The requested ISO name. }
+        error:
+          type: string
+          nullable: true
+          description: Why the broker refused the rename.
     IntegrationRefresh:
       type: object
       required: [integrationId, state]

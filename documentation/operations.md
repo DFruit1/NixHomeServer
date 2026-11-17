@@ -1311,7 +1311,14 @@ as TV.
 
 A TV disc reaches Jellyfin only when its episodes are identified with
 certainty. An ISO name that already carries a season and episode range, such as
-`Rumpole_of_the_Bailey_S02E04-E06.iso`, is trusted as written. Otherwise
+`Rumpole_of_the_Bailey_S02E04-E06.iso`, is trusted as written: its folder and
+numbers are kept exactly, and episode titles come from `disc-identify episodes`
+only when that list uses the folder's numbering. Jellyfin numbers episodes as
+TMDB does, so a TMDB list always fits; the TVmaze fallback (used without a TMDB
+key) is not used for a `[tmdbid-…]` folder, whose seasons can differ (Sherlock
+Holmes (1984): four on TVmaze, seven on TMDB). Without a fitting list the
+episodes keep `DVD Title NN` placeholders. `S00Exx` names Jellyfin's specials
+season. Otherwise
 `disc-identify` (part of the mkvmaker package) works through these in order:
 
 1. **Exact disc** – the ripper's `<name>.jellyfin.json` sidecar, when
@@ -1329,20 +1336,71 @@ certainty. An ISO name that already carries a season and episode range, such as
    Parakeet model and compared with TVmaze summaries (ranked by Bonsai) and,
    for the best candidates, with OpenSubtitles subtitle text fetched through
    the provider broker with the **uploading user's** OpenSubtitles account. At
-   most six subtitle downloads are spent per disc, and results are cached. If
-   the uploader has no OpenSubtitles account the comparison is skipped.
+   most six subtitle downloads are spent per disc; subtitles already in the
+   broker's cache are free and do not count. If the uploader has no
+   OpenSubtitles account the comparison is skipped.
+
+When the series is known but the disc named no episodes, the worker may
+propose them from the series' `_Shows` folder (**library order**): when
+exactly one run of missing episodes, within TVmaze's season episode counts
+(and the disc's season, if known), has room for the disc's titles, the first
+episodes of that run. When several runs fit (a partly collected series) no
+guess is made. With no library episodes (in that season) the disc number in
+the file name gives an estimate instead (**disc number**). Such a guess is
+accepted when the dialogue confirms at least one title and contradicts none.
+Contradicted by the subtitles or unconfirmed, it is dropped and the dialogue
+alone decides, as without a proposal, and its contradiction does not stop
+automatic retries (a contradicted menu or TheDiscDB proposal still does).
+Episode summaries (Bonsai agreeing with the keyword ranking) may confirm any
+proposal but never overrule it: when only the summaries disagree, with no
+subtitle match behind the change, the disc is held with the proposal as its
+suggestion. Without a proposal,
+every title must match consecutive episodes of one season, except that one
+confident subtitle match can fix the disc order when at least half the titles
+agree with it and none disagrees.
 
 Identification is complete only when every title maps to consecutive episodes
-of one season. Identified episodes are published to `_Shows` with TVmaze
-episode titles, and the ISO is archived in `_Processed` with its sidecar under
-the name it arrived with. Each step's reasoning is logged in the worker journal.
+of one season. TVmaze and TheDiscDB can number a series differently from TMDB,
+which Jellyfin uses (TVmaze has The Adventures of Sherlock Holmes in 4 seasons,
+TMDB in 7), so each identified disc is then mapped onto TMDB's season layout by
+episode title and air date, fetched through the provider broker's system socket
+(`/system/v1/tmdb/tv-episodes`, cached for a week). The disc is published only
+when every title maps to one TMDB episode and they are still consecutive in one
+TMDB season; the files and new series folders then use TMDB numbering, titles
+and `[tmdbid-N]`, and an existing folder tagged with any of the series' TMDB,
+TVDB or IMDb ids is reused. A mapping that is ambiguous or not consecutive is
+held without a suggested name (its guess is in TVmaze numbering); `TMDB is
+unavailable` holds are transient. `disc-identify episodes
+--series tvdbid-N --provider-socket …` prints a series' layout as JSON.
+
+The broker uses the host TMDB key from `repo.mediaManager.tmdbApiKeyFile`
+(JSON `{"apiKey": "…"}`, loaded as a systemd credential; not a person's saved
+account). No key is configured today: numbering then stays as TVmaze or
+TheDiscDB gives it, and the evidence says
+`Episode numbering was not checked against TMDB (no TMDB key is configured).`
+Such a disc is never published into an existing `[tmdbid-N]` folder found by
+name and year (for example a TVmaze-identified Sherlock Holmes disc beside
+`Sherlock Holmes (1984) [tmdbid-799]`), nor into a second folder for the same
+series: it is held, without the dialogue step or a suggested name, with the
+reason `The existing library folder … uses TMDB episode numbering …`.
+
+Identified episodes are published to `_Shows`, and the ISO is archived in
+`_Processed` with its sidecar and an `.identify.json` recording both stages'
+scores. Each step's reasoning is logged in the worker journal.
 
 Anything less is held. The ISO moves to `_Shared/_ISO/_DVDs/_NeedsIdentification`
 with an `X.iso.identify.json` evidence file, and Media Manager's Conversions
 page lists it under **Process, needs identifying** with the best guess. To
-confirm, rename the ISO in `_NeedsIdentification` to a Jellyfin TV name with
-the full episode range, for example
-`All Creatures Great and Small (1978) S01E05-E06.iso`. Within a
+confirm, give the ISO a Jellyfin TV name with the full episode range, for
+example `All Creatures Great and Small (1978) S01E05-E06.iso` (one held video
+takes one episode, such as `Show S01E05.iso`). Media Manager editors check or
+correct the prefilled name on the Conversions page and choose **Accept**. The
+page refuses a name whose episode count differs from the held videos, a name
+that already exists, or a disc that changed since the page loaded; Media
+Manager's filesystem broker then renames the ISO and its evidence file within
+about 30 seconds, never replacing a file. The web service itself stays
+read-only. Anyone with the share can instead rename the ISO in
+`_NeedsIdentification` in Files. Within a
 minute when idle, or after the disc it is converting, the worker moves the held
 videos into `_Shows` without re-encoding and archives the ISO in `_Processed`.
 The series folder keeps the provider identifier
@@ -1353,6 +1411,42 @@ A range that does not match the number of held videos is refused and the
 reason appears on the Conversions page. Deleting
 an ISO from `_NeedsIdentification` leaves its held videos in `_Unidentified`
 for manual handling.
+
+A disc held only because something was temporarily unavailable (Bonsai busy
+or failing, or a Bonsai label split or menu reading cut off at its token
+limit, a TVmaze or TMDB request, the OpenSubtitles quota or broker, or the
+identifier crashing or timing out) is identified again automatically after 1,
+6 and 24 hours, from its ISO and the already-encoded held videos, never
+re-encoding. Retries wait while the Bonsai gate is busy, and stop once the
+evidence contradicts the disc or the three attempts are used, including an
+attempt cut short by a killed worker; a rename by a person always takes
+precedence. Held specials are never retried. If the ISO cannot be archived
+after its episodes were published, the error is recorded on the retry and in
+the evidence summary, other holds carry on, and archiving is tried again an
+hour later. The evidence file's `retry` object shows which
+reasons were temporary and when the next attempt is due, and its `outcomes`
+hold each stage's per-title scores (transcript length, keyword and Bonsai
+picks, every subtitle checked and the rule that decided).
+
+A disc with one dominant title whose name is an existing `_Shows` folder's
+(`Rumpole_of_the_Bailey_D4.iso`) or that folder's name plus a subtitle
+(`Rumpole of the Bailey - Rumpole's Return.iso`) may be a feature-length
+special. When the TMDB-numbered season 0 has exactly one special named like
+the subtitle, it is filed as
+`Rumpole of the Bailey (1978) [tvdbid-72995]/Season 00/Rumpole of the Bailey (1978) S00E03 - Rumpole's Return.mkv`.
+When a special's name fits fairly or exactly one special has the title's
+runtime, it is held as above, without the dialogue step, with a suggested
+name such as `Rumpole of the Bailey (1978) S00E03.iso`. A name that adds a
+subtitle but has no such season-0 evidence is a film: only TMDB numbers
+specials, so without a TMDB key `Rumpole of the Bailey - Rumpole's Return.iso`
+goes to `_Movies` as before. A year in the name that is not the show's must
+be the special's own air year, so
+`Sherlock_Holmes_A_Game_of_Shadows_2011.iso` beside
+`Sherlock Holmes (1984) [tmdbid-799]` is a film. A disc named only after the
+show (`Rumpole_of_the_Bailey_D4.iso`) is held for a person even without a TMDB
+list, with no suggested name. A bare number after the show name stays part of
+a film title (`Mission Impossible 2`), as does a name that a `_Movies` folder
+already has.
 
 Without the Bonsai app the menu step is skipped; without the transcribe app the
 dialogue step is skipped. Discs are then held more often, never guessed.
@@ -1385,7 +1479,9 @@ MKV is moved out of Jellyfin into `_Duplicate/_Movies` or
 MKV remains in place. A sibling `.iso.duplicate.json` report identifies the
 canonical ISO and every quarantined output for manual review. Ambiguous files
 are left untouched. Other conversion failures are preserved in `_Failed`
-beside an `.error.txt` file after three attempts.
+beside an `.error.txt` file after three attempts. When the ISO is moved out of
+`_Failed` to retry it, the worker removes its now-orphaned `.iso.error.txt` on
+its next run and logs the removal.
 
 While an encode runs, the partially written MKV is staged in
 `_Shared/.mkvmaker-staging` outside the Jellyfin library so the library never

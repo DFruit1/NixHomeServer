@@ -352,6 +352,50 @@
   color: var(--ink);
   user-select: all;
 }
+/* Confirm a held disc: its name, editable, beside a plain Accept. */
+.conversions-layout .held-confirm {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  min-width: 0;
+}
+.conversions-layout .held-confirm label {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+.conversions-layout .held-confirm__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.conversions-layout .held-confirm input {
+  flex: 1 1 14rem;
+  min-width: 0;
+  min-height: var(--control-height);
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  outline: none;
+  color: var(--ink);
+  background: var(--card);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.conversions-layout .held-confirm input:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-wash);
+}
+.conversions-layout .held-confirm input[aria-invalid="true"] {
+  border-color: var(--danger, var(--line-strong));
+}
+.conversions-layout .held-confirm .secondary-button {
+  flex: none;
+}
+.conversions-layout .side-list p.side-item-status {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
 .conversions-layout .transcript-artifacts a {
   min-height: var(--control-height);
   display: inline-flex;

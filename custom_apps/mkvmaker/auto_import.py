@@ -166,6 +166,38 @@ def write_failure_report(
     )
 
 
+FAILURE_REPORT_SUFFIX = ".iso.error.txt"
+
+
+def prune_orphaned_failure_reports(failed_dir: Path) -> None:
+    """Drop ``X.iso.error.txt`` reports in _Failed whose ISO has left it.
+
+    A person retries a failure by moving its ISO out; the report then
+    describes nothing. Reports are written after their ISO is archived, so a
+    report without its ISO is never one being written. Nothing else is
+    touched: not ISOs, links, structured reports, or other files.
+    """
+    try:
+        entries = list(failed_dir.iterdir())
+    except OSError:
+        return
+    isos = {entry.name[:-4].casefold() for entry in entries if entry.name.casefold().endswith(".iso")}
+    for entry in entries:
+        if not entry.name.endswith(FAILURE_REPORT_SUFFIX) or entry.is_symlink() or not entry.is_file():
+            continue
+        stem = entry.name[:-len(FAILURE_REPORT_SUFFIX)]
+        # Re-checked: the listing is not atomic with an ISO arriving.
+        if stem.casefold() in isos or any(
+                (failed_dir / f"{stem}{suffix}").exists() for suffix in (".iso", ".ISO")):
+            continue
+        try:
+            entry.unlink()
+        except OSError as error:
+            print(f"Could not remove stale failure report {entry}: {error}", file=sys.stderr)
+        else:
+            print(f"Removed stale failure report {entry.name}; its ISO is no longer in {failed_dir}")
+
+
 def request_shutdown(signum: int, _frame: Any) -> None:
     global shutdown_signal
     shutdown_signal = signum
@@ -273,7 +305,10 @@ def detect_season(stem: str) -> tuple[int | None, int | None, bool]:
     season_match = _SEASON_RE.search(stem)
     if season_match:
         candidate = int(season_match.group(1))
-        if 1 <= candidate <= 99:
+        # Season 0 holds Jellyfin specials; only an explicit S00Exx names it.
+        if 1 <= candidate <= 99 or (
+            candidate == 0 and re.search(r"(?i)e\d", season_match.group(0))
+        ):
             season = candidate
             explicit_marker = True
     if season is None:
@@ -704,6 +739,28 @@ def looks_like_episode_set(titles: list[Title]) -> bool:
     return 8 * 60 <= shortest and longest <= 75 * 60 and longest / shortest <= 1.5
 
 
+def episode_core(titles: list[Title]) -> list[Title] | None:
+    """Episode-length titles of a disc that also carries short extras.
+
+    ``ALL_CREATURES_GREAT_AND_SMALL.iso`` (2026-11-17) held two 54-minute
+    episodes and 9- and 5-minute extras; the extras broke
+    ``looks_like_episode_set`` and the disc was filed as a film. Returns the
+    episodes when at least two similar episode-length titles exist and every
+    other title is clearly shorter (under 35% of the longest episode).
+    """
+    if not titles:
+        return None
+    longest = max(title.seconds for title in titles)
+    core = [title for title in titles
+            if title.seconds >= 0.6 * longest and 8 * 60 <= title.seconds <= 75 * 60]
+    rest = [title for title in titles if title not in core]
+    if len(core) < 2 or not rest or not looks_like_episode_set(core):
+        return None
+    if any(title.seconds >= 0.35 * longest for title in rest):
+        return None
+    return core
+
+
 def source_hints(path: Path) -> SourceHints:
     stem = _RIPPER_SUFFIX_RE.sub("", path.stem)
     parens_year = _PARENS_YEAR_RE.search(stem)
@@ -1040,6 +1097,9 @@ def run_identifier(
     common += ["--cache-dir", str(cache)]
     work = (args.staging_dir or args.state_dir) / f".identify-{os.getpid()}"
     common += ["--work-dir", str(work)]
+    # The broker socket also checks episode numbering against TMDB.
+    if getattr(args, "subtitle_socket", None):
+        common += ["--provider-socket", args.subtitle_socket]
     command = [args.identifier, *arguments, *common]
     print(f"Identifying episodes ({stage_label})")
     try:
@@ -1088,7 +1148,8 @@ def run_identifier(
 
 
 def identify_disc(args: argparse.Namespace, source: Path, selected: list[Title],
-                  hints: SourceHints, renew_lease: Any | None) -> dict[str, Any]:
+                  hints: SourceHints, renew_lease: Any | None,
+                  sidecar: Path | None = None) -> dict[str, Any]:
     arguments = ["disc", "--iso", str(source), "--name-hint", hints.name,
                  "--sevenzip", args.sevenzip, "--ffmpeg", args.ffmpeg]
     for title in selected:
@@ -1098,7 +1159,7 @@ def identify_disc(args: argparse.Namespace, source: Path, selected: list[Title],
     aspects = [title.aspect for title in selected if title.aspect]
     if aspects:
         arguments += ["--display-aspect", f"{sorted(aspects)[len(aspects) // 2]:.2f}"]
-    sidecar = ripper_sidecar(source)
+    sidecar = sidecar or ripper_sidecar(source)
     if sidecar.is_file():
         arguments += ["--sidecar", str(sidecar)]
     return run_identifier(args, arguments, renew_lease, "disc menus")
@@ -1110,7 +1171,13 @@ def identify_content(args: argparse.Namespace, source: Path, plan: dict[str, Any
         return uncertain(plan.get("identification", {}).get("summary") or "Episodes need confirming.",
                          "speech transcription is not configured")
     context = args.state_dir / f".identify-context-{os.getpid()}.json"
-    atomic_json(context, plan.get("identification") or {})
+    disc_outcome = dict(plan.get("identification") or {})
+    proposal = order_proposal(args, source, disc_outcome, list(plan["titles"]))
+    if proposal is not None:
+        disc_outcome.update(assignments=proposal["assignments"],
+                            proposalSource=proposal["proposalSource"])
+        print(f"  identification: {proposal['reason']}")
+    atomic_json(context, disc_outcome)
     arguments = ["content", "--context", str(context), "--ffmpeg", args.ffmpeg,
                  "--parakeet", args.parakeet, "--parakeet-model", args.parakeet_model,
                  "--threads", str(args.identify_threads)]
@@ -1120,9 +1187,12 @@ def identify_content(args: argparse.Namespace, source: Path, plan: dict[str, Any
     if owner and getattr(args, "subtitle_socket", None):
         arguments += ["--owner", owner, "--subtitle-socket", args.subtitle_socket]
     try:
-        return run_identifier(args, arguments, renew_lease, "dialogue")
+        result = run_identifier(args, arguments, renew_lease, "dialogue")
     finally:
         context.unlink(missing_ok=True)
+    if proposal is not None:
+        result["reasons"] = [proposal["reason"], *(result.get("reasons") or [])]
+    return result
 
 
 def identified_assignments(result: dict[str, Any], titles: list[int]) -> list[dict[str, Any]] | None:
@@ -1140,28 +1210,326 @@ def identified_assignments(result: dict[str, Any], titles: list[int]) -> list[di
     return assignments
 
 
-def library_identity(shows_root: Path, series: dict[str, Any]) -> tuple[str, int | None, str | None]:
-    """Reuse an existing library folder for the series, else its provider name."""
+# Hold reasons that a later attempt can change: a busy or failed service, or
+# the identifier itself failing. Matched against reason text from both
+# stages and from this worker.
+TRANSIENT_REASONS = [re.compile(pattern) for pattern in (
+    r"Bonsai (?:could not [a-z ]+|ranking failed): .*(?:HTTP (?:429|5\d\d)|timed out|timeout"
+    r"|error sending request|connection|POST https?://)",
+    # Label splitting failed on every disc from 2026-11-15 to 2026-11-17
+    # because Bonsai's reasoning used the whole token budget (fixed in
+    # disc-identify since). Those holds, and any later cut-off, are retried.
+    r"^Bonsai could not split the label: Bonsai reply (?:is not the requested JSON|was cut off)",
+    # A menu reading cut off at its token limit (long reasoning) is a
+    # sampling accident like the label split above, not a verdict on the menu.
+    r"^Bonsai could not read the menus: Bonsai reply was cut off",
+    r"^TVmaze (?:search failed|episodes for .+ failed)",
+    r"^The OpenSubtitles daily download limit was reached",
+    r"^OpenSubtitles comparison is unavailable",
+    r"^TMDB is unavailable",
+    r"^the identifier exceeded its deadline",
+    r"^identifier error:",
+    r"^could not start the identifier",
+    r"^the identifier printed invalid JSON",
+    r"^Title \d+: transcription failed: (?!the excerpt contains too little speech)",
+)]
+# Reasons that say the evidence disagrees, which no retry changes.
+SUBSTANTIVE_REASONS = [re.compile(pattern) for pattern in (
+    # A library-order or disc-number guess is only a guess: the content
+    # stage falls back to the dialogue alone when it is contradicted.
+    r"rather than the (?!library order |disc number ).*guess",
+    r"^The matched episodes are not consecutive",
+    r"^The episodes named on the menu are not consecutive",
+    r"different series equally well",
+    r"TV series share this name",
+    r"^The disc menu lists \d+ episodes but",
+    r"^TheDiscDB places these episodes",
+    r"^publishing failed:",
+    r"converter's outputs could not be matched",
+    r"^the disc's titles changed",
+)]
+# Automatic re-identification of a hold whose blockers were all transient:
+# the delay before attempt 1, 2 and 3; after that a person decides.
+RETRY_DELAYS = (3600, 6 * 3600, 24 * 3600)
+# `.identify.json` evidence schema. 2 added `status`, `outcomes`, `retry`
+# and `resolution`; the schema-1 fields keep their meaning.
+EVIDENCE_SCHEMA_VERSION = 2
+
+
+def classify_reasons(reasons: list[Any]) -> dict[str, Any]:
+    """Split hold reasons into transient and substantive blockers.
+
+    ``retryable`` is true when something temporary went wrong and nothing
+    contradicts the disc; other reasons (no match, unreadable menus) only
+    follow from the evidence that was available and block nothing alone.
+    """
+    texts = [str(reason) for reason in reasons]
+    transient = [text for text in texts if any(p.search(text) for p in TRANSIENT_REASONS)]
+    substantive = [text for text in texts if any(p.search(text) for p in SUBSTANTIVE_REASONS)]
+    return {
+        "retryable": bool(transient) and not substantive,
+        "transientReasons": transient,
+        "substantiveReasons": substantive,
+    }
+
+
+def library_to_provider_episode(series: dict[str, Any], season: int,
+                                episode: int) -> tuple[int, int]:
+    """Convert library (Jellyfin folder) numbering into the identifier's.
+
+    The library is numbered like TVmaze for now. This is the one place a
+    numbering map (e.g. TMDB/TVDB orderings) has to be applied.
+    """
+    del series  # the mapping does not depend on the series yet
+    return season, episode
+
+
+_LIBRARY_EPISODE_RE = re.compile(r"(?i)S(\d{1,2})E(\d{1,3})(?:-?E(\d{1,3}))?")
+
+
+def library_episode_numbers(series_dir: Path) -> set[tuple[int, int]]:
+    """Every (season, episode) a library series folder holds (ranges expanded)."""
+    present: set[tuple[int, int]] = set()
+    try:
+        folders = [entry for entry in series_dir.iterdir()
+                   if entry.is_dir() and re.fullmatch(r"Season \d{1,3}", entry.name)]
+    except OSError:
+        return present
+    for folder in folders:
+        for path in folder.glob("*.mkv"):
+            match = _LIBRARY_EPISODE_RE.search(path.name)
+            if match:
+                season, first = int(match.group(1)), int(match.group(2))
+                last = max(first, int(match.group(3) or first))
+                present.update((season, number) for number in range(first, last + 1))
+    return present
+
+
+def library_gaps(present: set[tuple[int, int]], counts: dict[int, int],
+                 season: int | None) -> list[tuple[int, int, int]]:
+    """Runs of missing episodes (season, first, last) within the provider's counts."""
+    runs: list[tuple[int, int, int]] = []
+    for number in sorted(counts):
+        if number < 1 or (season is not None and number != season):
+            continue
+        first = None
+        for episode in range(1, counts[number] + 2):
+            missing = episode <= counts[number] and (number, episode) not in present
+            if missing and first is None:
+                first = episode
+            elif not missing and first is not None:
+                runs.append((number, first, episode - 1))
+                first = None
+    return runs
+
+
+def order_proposal(args: argparse.Namespace, source: Path, identification: dict[str, Any],
+                   titles: list[int]) -> dict[str, Any] | None:
+    """Propose episodes for a disc whose series is known but episodes are not.
+
+    From the library ("library order"): when exactly one run of missing
+    episodes (within the provider's season counts, and the disc's season if
+    known) has room for the disc's titles, its first episodes; with several
+    the dialogue alone decides. Without counts, the episodes after the known
+    season's last one. With no library episodes (in that season), an
+    estimate from the disc number in the file name ("disc number"). The
+    content stage only accepts it when the dialogue confirms a title and
+    contradicts none, and falls back to the dialogue alone otherwise.
+    """
+    series = identification.get("series")
+    if (identification.get("status") == "identified" or identification.get("assignments")
+            or not isinstance(series, dict) or not series.get("tvmazeId") or not titles):
+        return None
+    counts: dict[int, int] = {}
+    raw_counts = identification.get("seasonEpisodeCounts")
+    for key, value in (raw_counts.items() if isinstance(raw_counts, dict) else []):
+        if str(key).isdigit() and isinstance(value, int):
+            counts[int(key)] = value
+    known_season = identification.get("season") if isinstance(identification.get("season"), int) else None
+    count = len(titles)
+    start: tuple[int, int] | None = None
+    origin = ""
+    note = ""
+    name, year, provider = library_identity(args.shows_dir, series)
+    series_dir = args.shows_dir / safe_name(jellyfin_name(name, year, provider))
+    present = library_episode_numbers(series_dir) if series_dir.is_dir() else set()
+    in_scope = {number for number in present if known_season in (None, number[0])}
+    if in_scope:
+        origin = "library order"
+        if counts:
+            fitting = [run for run in library_gaps(present, counts, known_season)
+                       if run[2] - run[1] + 1 >= count]
+            if len(fitting) == 1:
+                season, first, _ = fitting[0]
+                start = (season, first)
+                before = max((number for number in present if number < start), default=None)
+                note = "the library's only gap with room for the disc" + (
+                    f", after S{before[0]:02d}E{before[1]:02d}" if before else "")
+        elif known_season is not None:
+            last = max(in_scope)
+            start = (known_season, last[1] + 1)
+            note = f"after S{last[0]:02d}E{last[1]:02d} in the library"
+    else:
+        # No library episodes to continue from (in this season).
+        try:
+            disc = source_hints(source).disc
+        except ValueError:
+            disc = None
+        if disc:
+            season = known_season or 1
+            start = (season, (disc - 1) * count + 1)
+            origin = "disc number"
+            note = f"disc {disc} of season {season}"
+    if start is None:
+        return None
+    season, first = start
+    numbers = [library_to_provider_episode(series, season, first + offset) for offset in range(count)]
+    if any(n[0] != numbers[0][0] or n[1] != numbers[0][1] + i for i, n in enumerate(numbers)):
+        return None
+    provider_season, provider_first = numbers[0]
+    # A disc never crosses a season; past the provider's count it cannot fit.
+    if counts and provider_first + count - 1 > counts.get(provider_season, 0):
+        return None
+    assignments = [
+        {"title": title, "season": s, "episode": e, "name": "", "evidence": origin}
+        for title, (s, e) in zip(titles, numbers)
+    ]
+    episodes = f"S{provider_season:02d}E{provider_first:02d}" + (
+        f"-E{provider_first + count - 1:02d}" if count > 1 else "")
+    return {
+        "proposalSource": origin,
+        "assignments": assignments,
+        "reason": f"Proposed {episodes} from the {origin} ({note}); the dialogue must confirm it.",
+    }
+
+
+def evidence_resolution(by: str, name: str, year: int | None, provider: str | None,
+                        season: int, first: int, count: int) -> dict[str, Any]:
+    """How a disc's episodes were finally decided, for the evaluation harness.
+
+    ``by`` is "identifier" (identified on first pass), "automatic retry" or
+    "rename" (a person named the ISO).
+    """
+    return {"by": by, "series": name, "year": year, "provider": provider,
+            "season": season, "firstEpisode": first, "lastEpisode": first + count - 1}
+
+
+def write_processed_evidence(archived: Path, plan: dict[str, Any]) -> None:
+    """Keep an identified disc's evidence beside its archived ISO.
+
+    Same document as a held disc's ``.identify.json`` (schema 2) with
+    ``status`` "identified" and a ``resolution``; best effort.
+    """
+    outcomes = plan.get("identify_outcomes")
+    if not isinstance(outcomes, dict):
+        outcomes = {"disc": plan.get("identification"), "content": None}
+    titles = plan.get("titles") or []
+    evidence = {
+        "schemaVersion": EVIDENCE_SCHEMA_VERSION,
+        "status": "identified",
+        "sourceIso": plan.get("source_iso") or "",
+        "titles": titles,
+        "summary": str((plan.get("identification") or {}).get("summary") or ""),
+        "reasons": [str(r) for r in ((plan.get("identification") or {}).get("reasons") or [])][:12],
+        "outcomes": outcomes,
+        # Automatic retries archive their evidence in complete_retry_publish.
+        "resolution": evidence_resolution(
+            "identifier", str(plan.get("name") or ""), plan.get("year"), plan.get("provider"),
+            int(plan["season"]) if isinstance(plan.get("season"), int) else 1,
+            int(plan.get("first_episode") or 1), len(titles)),
+        "finishedAt": int(time.time()),
+    }
+    try:
+        atomic_json(archived.with_name(archived.name + ".identify.json"), evidence)
+    except OSError as error:
+        print(f"Could not record identification evidence for {archived.name}: {error}",
+              file=sys.stderr)
+
+
+def library_match(shows_root: Path, series: dict[str, Any]
+                  ) -> tuple[tuple[str, int | None, str | None], str | None]:
+    """The library folder identity for a series, and a TMDB-numbering conflict.
+
+    A folder tagged with any of the series' provider ids (``providerIds``:
+    TMDB, TVDB or IMDb, from the TMDB numbering check) is the series' folder
+    whatever it is called. Otherwise name and year must match, and a folder
+    tag of a kind the series knows must be one of its ids.
+
+    A ``tmdbid`` folder is numbered like TMDB, which can differ from TVmaze
+    (Sherlock Holmes (1984): 4 TVmaze seasons, 7 on TMDB). Only a series
+    whose numbering was mapped to TMDB (``tmdbId``) may reuse it by name; for
+    any other the second value names that folder, and the disc is held:
+    publishing into it would misnumber it, and a second folder would split
+    the series in Jellyfin.
+    """
     name = str(series.get("name") or "").strip()
     year = series.get("year") if isinstance(series.get("year"), int) else None
     provider = series.get("provider") if isinstance(series.get("provider"), str) else None
+    known = {tag for tag in [provider, *(series.get("providerIds") or [])] if isinstance(tag, str) and tag}
+    kinds = {tag.split("-", 1)[0] for tag in known}
+    tmdb_numbered = isinstance(series.get("tmdbId"), int) and not isinstance(series.get("tmdbId"), bool)
     if shows_root.is_dir():
         wanted = normalized_name(name)
+        tagged = []
         matches = []
-        for entry in shows_root.iterdir():
+        unmapped_tmdb_folders = []
+        for entry in sorted(shows_root.iterdir()):
             if not entry.is_dir():
                 continue
             candidate_name, candidate_year, candidate_provider = parse_jellyfin_folder(entry.name)
+            if candidate_provider in known:
+                tagged.append((candidate_name, candidate_year, candidate_provider))
             if normalized_name(candidate_name) != wanted:
                 continue
             if year is not None and candidate_year not in (None, year):
                 continue
-            if provider and candidate_provider and candidate_provider != provider:
+            if (candidate_provider and candidate_provider not in known
+                    and candidate_provider.split("-", 1)[0] in kinds):
+                continue
+            if (candidate_provider and candidate_provider.startswith("tmdbid-")
+                    and candidate_provider not in known and not tmdb_numbered):
+                unmapped_tmdb_folders.append(entry.name)
                 continue
             matches.append((candidate_name, candidate_year, candidate_provider))
+        if len(tagged) == 1:
+            return tagged[0], None
+        if unmapped_tmdb_folders:
+            return (name, year, provider), unmapped_tmdb_folders[0]
         if len(matches) == 1:
-            return matches[0]
-    return name, year, provider
+            return matches[0], None
+    return (name, year, provider), None
+
+
+def library_identity(shows_root: Path, series: dict[str, Any]) -> tuple[str, int | None, str | None]:
+    """Reuse an existing library folder for the series, else its provider name.
+
+    See library_match; callers that publish check numbering_hold first.
+    """
+    return library_match(shows_root, series)[0]
+
+
+def numbering_hold(shows_root: Path, result: dict[str, Any]) -> dict[str, Any] | None:
+    """An identified result held because its numbering does not fit the folder.
+
+    None when the series may be published (see library_match). The held
+    result keeps no assignments: its TVmaze numbers would name the wrong
+    episodes in the TMDB-numbered folder if a person accepted them.
+    """
+    series = result.get("series")
+    if not isinstance(series, dict):
+        return None
+    folder = library_match(shows_root, series)[1]
+    if folder is None:
+        return None
+    unconfigured = any("no TMDB key is configured" in str(reason)
+                       for reason in result.get("reasons") or [])
+    why = "no TMDB key is configured" if unconfigured else "they were not mapped to TMDB"
+    reason = (f"The existing library folder {folder} uses TMDB episode numbering, but these "
+              f"episodes have TVmaze numbering ({why}); they are held rather than published "
+              "into it or into a second folder for the series.")
+    return dict(result, status="uncertain", assignments=[],
+                reasons=[*(result.get("reasons") or []), reason],
+                summary=f"{folder} needs TMDB episode numbering; the episodes need confirming.")
 
 
 def safe_name(value: str) -> str:
@@ -1232,19 +1600,28 @@ def stage_episode(file: Path, staged: Path) -> bool:
     return True
 
 
-def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, year: int | None,
-                     provider: str | None, season: int, first: int, names: list[str]) -> Path:
-    """Move held episode files into the TV library, all or nothing."""
+def episode_targets(args: argparse.Namespace, count: int, name: str, year: int | None,
+                    provider: str | None, season: int, first: int,
+                    names: list[str]) -> tuple[Path, list[Path]]:
+    """The season folder and library file names publish_episodes uses."""
     media_name = safe_name(jellyfin_name(name, year, provider))
     # Jellyfin reads the series identifier from the folder; repeating it in
     # every episode file only makes the library harder to read.
     episode_series = safe_name(jellyfin_name(name, year, None))
     season_dir = args.shows_dir / media_name / f"Season {season:02d}"
     targets = []
-    for offset, _ in enumerate(files):
+    for offset in range(count):
         title = safe_name(names[offset]) if offset < len(names) and names[offset] else ""
         stem = f"{episode_series} S{season:02d}E{first + offset:02d}"
         targets.append(season_dir / (f"{stem} - {title}.mkv" if title else f"{stem}.mkv"))
+    return season_dir, targets
+
+
+def publish_episodes(args: argparse.Namespace, files: list[Path], name: str, year: int | None,
+                     provider: str | None, season: int, first: int, names: list[str]) -> Path:
+    """Move held episode files into the TV library, all or nothing."""
+    season_dir, targets = episode_targets(args, len(files), name, year, provider, season,
+                                          first, names)
     # Recover from a publish of this disc that was killed part-way. A target
     # that is the same file as this disc's staging name is its own link; a
     # target with neither staging nor held file left was already cleaned up.
@@ -1360,6 +1737,26 @@ def iso_suggestion(series: dict[str, Any] | None, assignments: list[dict[str, An
     }
 
 
+def held_suggestion(result: dict[str, Any], count: int, shows_root: Path | None = None,
+                    disc_outcome: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """The suggestion for a held result; none when its numbering is not Jellyfin's.
+
+    ``tmdbNumberingHeld`` (on either stage's outcome: the content stage passes
+    an unconfirmed disc-stage proposal through unchanged) marks a disc held
+    because its episodes could not be renumbered as TMDB numbers them, so the
+    guess is in TVmaze numbering. Likewise a series not mapped to TMDB whose
+    library folder is TMDB-numbered: accepting the guess would publish TVmaze
+    numbers into it.
+    """
+    if result.get("tmdbNumberingHeld") or (disc_outcome or {}).get("tmdbNumberingHeld"):
+        return None
+    series = result.get("series")
+    if (shows_root is not None and isinstance(series, dict)
+            and library_match(shows_root, series)[1] is not None):
+        return None
+    return iso_suggestion(series, result.get("assignments") or [], count)
+
+
 def held_record_key(path: Path) -> str:
     """Survives the person renaming the ISO (same inode and size).
 
@@ -1369,6 +1766,178 @@ def held_record_key(path: Path) -> str:
     info = path.stat()
     return f"{info.st_ino}:{info.st_size}"
 
+
+
+_DISC_TOKEN_RE = re.compile(r"(?i)(?:d|disc|disk|dvd) ?\d{1,2}")
+SPECIAL_MATCH_THRESHOLD = 0.85
+
+
+def show_for_feature(shows_root: Path, movies_root: Path,
+                     hints: SourceHints) -> tuple[tuple[str, int | None, str | None], str] | None:
+    """The existing show a single-feature disc is named after, and the rest of its name.
+
+    ``Rumpole of the Bailey D4`` names the show itself; ``Rumpole of the
+    Bailey - Rumpole's Return`` names the show plus a subtitle. A bare number
+    after a show name is a film sequel (``Mission Impossible 2``), and a name
+    a ``_Movies`` folder already has stays a film.
+    """
+    if not shows_root.is_dir():
+        return None
+    query = normalized_name(hints.name)
+    if not query:
+        return None
+    if movies_root.is_dir():
+        for entry in movies_root.iterdir():
+            base, year, _ = parse_jellyfin_folder(entry.name)
+            if entry.is_dir() and normalized_name(base) == query and hints.year in (None, year):
+                return None
+    matches: list[tuple[int, tuple[str, int | None, str | None], str]] = []
+    for entry in shows_root.iterdir():
+        if not entry.is_dir():
+            continue
+        base, year, provider = parse_jellyfin_folder(entry.name)
+        wanted = normalized_name(base)
+        if not wanted or (hints.provider is not None and provider != hints.provider):
+            continue
+        if query == wanted:
+            rest = ""
+        elif query.startswith(wanted + " "):
+            rest = query[len(wanted) + 1:]
+            if rest.isdigit() or _roman_to_int(rest) is not None:
+                continue
+            if _DISC_TOKEN_RE.fullmatch(rest):
+                rest = ""
+        else:
+            continue
+        # The whole name is the show's: a year in it must be the show's. A
+        # subtitle's year may be the special's own air date.
+        if not rest and hints.year is not None and year != hints.year:
+            continue
+        matches.append((len(wanted), (base, year, provider), rest))
+    if not matches:
+        return None
+    longest = max(length for length, _, _ in matches)
+    best = [match for match in matches if match[0] == longest]
+    if len(best) != 1:
+        return None
+    return best[0][1], best[0][2]
+
+
+def special_candidates(rest: str, specials: list[tuple[int, str]]) -> list[tuple[float, int, str]]:
+    """Season-0 episodes ranked by how well their name matches the disc's subtitle."""
+    ranked = []
+    words = f" {rest} "
+    for episode, title in specials:
+        wanted = normalized_name(title)
+        score = match_score(rest, title) if rest else 0.0
+        if rest and len(wanted.split()) >= 2 and f" {wanted} " in words:
+            score = max(score, 0.95)  # ``Christmas Special - Rumpole's Return``
+        ranked.append((score, episode, title))
+    return sorted(ranked, key=lambda item: (-item[0], item[1]))
+
+
+def special_plan(args: argparse.Namespace, source: Path, hints: SourceHints,
+                 title: Title, ratio: float) -> dict[str, Any] | None:
+    """File a feature-length special of an existing show at its S00Exx, or hold it.
+
+    None leaves the disc a movie: its name is not an existing show's,
+    identification (and its holding area) is not configured, or a name that
+    adds a subtitle to the show's has no season-0 evidence. Only a TMDB list
+    has season 0 (TVmaze numbers no specials), so without TMDB such a disc
+    is a film named after the show (``Sherlock Holmes A Game of Shadows
+    (2011)`` beside ``Sherlock Holmes (1984)``), as before specials existed.
+    A disc named only after the show (``Rumpole of the Bailey D4``) is held.
+    """
+    match = show_for_feature(args.shows_dir, args.movies_dir, hints)
+    if match is None:
+        return None
+    (name, year, provider), rest = match
+    result = provider_episodes(args, name, year, provider)
+    titles = library_episodes(result, year, provider) \
+        if isinstance(result, dict) and result.get("layout") == "tmdb" else {}
+    specials = sorted((e, t) for (s, e), t in titles.items() if s == 0)
+    ranked = special_candidates(rest, specials)
+    listed = {
+        e.get("episode"): e for e in (result or {}).get("episodes") or []
+        if isinstance(e, dict) and e.get("season") == 0
+    } if titles else {}
+
+    def fits_year(episode: int) -> bool:
+        # A year in the name that is not the show's must be the special's own.
+        if hints.year is None or year is None or hints.year == year:
+            return True
+        airdate = str((listed.get(episode) or {}).get("airdate") or "")
+        return airdate[:4] == str(hints.year)
+
+    # Filed directly only when a differing year in the name is the special's
+    # own (``..._Hound_of_the_Baskervilles_1959`` is the film, not a 1988 special).
+    confident = [item for item in ranked
+                 if item[0] >= SPECIAL_MATCH_THRESHOLD and fits_year(item[1])]
+    media = jellyfin_name(name, year, provider)
+    if len(confident) == 1:
+        _, episode, episode_name = confident[0]
+        print(f"Filing {source.name} as {media} S00E{episode:02d} - {episode_name}")
+        return {
+            "kind": "tv",
+            "name": name,
+            "year": year,
+            "provider": provider,
+            "season": 0,
+            "first_episode": episode,
+            "last_episode": episode,
+            "episode_names": [episode_name],
+            "titles": [title.index],
+            "dominant_ratio": ratio,
+            "output": str(args.shows_dir),
+        }
+    if not identification_enabled(args):
+        return None
+    guess = ranked[0] if ranked and ranked[0][0] >= 0.6 and fits_year(ranked[0][1]) else None
+    if guess is None and specials:
+        # Only a suggestion for the person: the one special of this length.
+        runtimes = {e: (listed.get(e) or {}).get("runtime") for e, _ in specials}
+        close = [(0.0, e, t) for e, t in specials
+                 if isinstance(runtimes.get(e), int) and fits_year(e)
+                 and abs(runtimes[e] * 60 - title.seconds) <= max(300, title.seconds / 10)]
+        guess = close[0] if len(close) == 1 else None
+    if rest and guess is None and not any(fits_year(e) for _, e, _ in confident):
+        return None  # a subtitle with no season-0 evidence: a film
+    if not specials:
+        layout = result.get("layout") if isinstance(result, dict) else "unavailable"
+        reason = f"no season 0 list in Jellyfin's numbering for {media} (episode list: {layout})"
+    elif len(confident) > 1:
+        reason = "several specials match: " + ", ".join(
+            f"S00E{e:02d} {t}" for _, e, t in confident[:4])
+    elif rest:
+        reason = f"no special of {media} is named like {rest!r}"
+    else:
+        reason = f"the disc name gives no special title to match against {media}'s season 0"
+    print(f"Holding {source.name}: one feature-length title named after {media}; {reason}")
+    identification = {
+        "status": "uncertain",
+        "summary": f"A feature-length title named after {media}; confirm which special it is.",
+        "reasons": [reason],
+        "assignments": [{"title": title.index, "season": 0, "episode": guess[1]}] if guess else [],
+        "candidates": [],
+        "series": {"name": name, "year": year, "provider": provider},
+    }
+    return {
+        "kind": "tv",
+        "name": safe_name(source.stem),
+        "year": None,
+        "provider": None,
+        "season": 1,
+        "first_episode": 1,
+        "last_episode": None,
+        "episode_names": [f"DVD Title {title.index:02d}"],
+        "titles": [title.index],
+        "dominant_ratio": ratio,
+        "output": str(args.held_dir),
+        "held": True,
+        # Dialogue comparison ranks regular episodes; a person confirms specials.
+        "special": True,
+        "identification": identification,
+    }
 
 
 def build_plan(args: argparse.Namespace, source: Path,
@@ -1390,11 +1959,18 @@ def build_plan(args: argparse.Namespace, source: Path,
     # M1: when the ISO filename already carries Jellyfin-style signals the user
     # curated, bypass TVmaze so the user's chosen library name is preserved
     # instead of being silently overridden by the looked-up series name.
+    episode_like = looks_like_episode_set(selected)
+    # Episodes plus short extras. Not for a name with an explicit episode
+    # range: the person counted the titles, and `prepare_titles` already
+    # checked that count. Applied only once the disc is filed as TV.
+    core = None
+    if not dominant and not episode_like and hints.last_episode is None:
+        core = episode_core(selected)
+        episode_like = core is not None
     if not hints.is_jellyfin_named:
-        metadata = tvmaze_match(hints, len(selected), args.metadata_timeout)
+        metadata = tvmaze_match(hints, len(core or selected), args.metadata_timeout)
     else:
         metadata = None
-    episode_like = looks_like_episode_set(selected)
     # A bare trailing series identifier (e.g. ``Rumpole ... IV``) only encodes
     # the season when the disc content is actually TV-like (episode durations).
     # Movie sequels keep their title number (``Mission Impossible 2``).
@@ -1408,6 +1984,11 @@ def build_plan(args: argparse.Namespace, source: Path,
     )
     season = hints.season if hints.season is not None else trailing_season
     is_tv = season is not None or (tv_content and hints.trailing_series is None)
+    if is_tv and core is not None:
+        print(f"Treating DVD titles {[title.index for title in core]} as episodes; "
+              f"the shorter titles {[title.index for title in selected if title not in core]} "
+              "are extras")
+        selected = core
 
     if is_tv:
         tv_name = strip_trailing_series_token(hints.name, season)
@@ -1433,7 +2014,7 @@ def build_plan(args: argparse.Namespace, source: Path,
             provider = provider_id(show)
         else:
             name, year, provider = tv_name, hints.year, hints.provider
-        season = season or 1
+        season = 1 if season is None else season
         # A person who wrote explicit episode numbers into the ISO name has
         # already identified the disc. Everything else is identified from the
         # disc itself, and held out of the library when that is not certain.
@@ -1442,6 +2023,10 @@ def build_plan(args: argparse.Namespace, source: Path,
             identification = identify_disc(args, source, selected, hints, renew_lease)
             titles = [title.index for title in selected]
             assignments = identified_assignments(identification, titles)
+            numbering = numbering_hold(args.shows_dir, identification) \
+                if assignments is not None else None
+            if numbering is not None:
+                identification, assignments = numbering, None
             if assignments is not None:
                 name, year, provider = library_identity(args.shows_dir, identification["series"])
                 return {
@@ -1476,6 +2061,8 @@ def build_plan(args: argparse.Namespace, source: Path,
                 "dominant_ratio": ratio,
                 "output": str(args.held_dir),
                 "held": True,
+                # The dialogue could only confirm the same TVmaze numbering.
+                **({"numbering_conflict": True} if numbering is not None else {}),
                 "identification": identification,
             }
         media_name = jellyfin_name(name, year, provider)
@@ -1487,8 +2074,13 @@ def build_plan(args: argparse.Namespace, source: Path,
             for episode in (metadata or {}).get("episodes", [])
             if episode.get("season") is not None and episode.get("number") is not None
         }
+        # A curated name skips TVmaze above; its titles come from the list
+        # that matches the folder's numbering, else stay placeholders.
+        looked_up = (episode_names_for(args, name, year, provider, season, first, len(selected))
+                     if metadata is None else [""] * len(selected))
         names = [
-            by_number.get((season, first + offset)) or f"DVD Title {title.index:02d}"
+            by_number.get((season, first + offset)) or looked_up[offset]
+            or f"DVD Title {title.index:02d}"
             for offset, title in enumerate(selected)
         ]
         return {
@@ -1505,6 +2097,12 @@ def build_plan(args: argparse.Namespace, source: Path,
             "output": str(args.shows_dir),
         }
 
+    # A single feature named after an existing show is one of its specials
+    # (``Rumpole's Return`` is Rumpole of the Bailey S00E03), not a film.
+    if dominant and len(selected) == 1:
+        special = special_plan(args, source, hints, selected[0], ratio)
+        if special is not None:
+            return special
     existing = find_existing_for_hints(
         args.movies_dir,
         hints,
@@ -1812,18 +2410,23 @@ def archive_source(source: Path, directory: Path, plan: dict[str, Any] | None = 
         except OSError as error:
             print(f"Could not move {sidecar.name} with its ISO: {error}", file=sys.stderr)
     if plan:
+        # Informational only, and the ISO has already moved: a failure here
+        # must not make the caller treat the archive as undone.
         manifest = destination.with_name(destination.name + ".output.json")
-        manifest.write_text(
-            json.dumps({
-                "sourceIso": source.name,
-                "outputDir": plan.get("output", ""),
-                "title": plan.get("name", ""),
-                "kind": plan.get("kind", ""),
-                "mediaDir": plan.get("media_dir", ""),
-                "finishedAt": int(time.time()),
-            }),
-            encoding="utf-8",
-        )
+        try:
+            manifest.write_text(
+                json.dumps({
+                    "sourceIso": source.name,
+                    "outputDir": plan.get("output", ""),
+                    "title": plan.get("name", ""),
+                    "kind": plan.get("kind", ""),
+                    "mediaDir": plan.get("media_dir", ""),
+                    "finishedAt": int(time.time()),
+                }),
+                encoding="utf-8",
+            )
+        except OSError as error:
+            print(f"Could not write {manifest.name}: {error}", file=sys.stderr)
     return destination
 
 
@@ -1899,15 +2502,24 @@ def process_source(
 def finish_held(args: argparse.Namespace, source: Path, plan: dict[str, Any],
                 videos: list[str], renew_lease: Any | None) -> None:
     """Compare a held disc's dialogue, then publish it or park it for a person."""
+    disc_outcome = plan.get("identification") or None
+    content_outcome: dict[str, Any] | None = None
     if len(videos) != len(plan["titles"]):
         result = dict(plan.get("identification") or {})
-        result.setdefault("reasons", []).append("the converter's outputs could not be matched to the titles")
+        result["reasons"] = [*(result.get("reasons") or []),
+                             "the converter's outputs could not be matched to the titles"]
+    elif plan.get("special") or plan.get("numbering_conflict"):
+        result = dict(plan.get("identification") or {})
     else:
         result = identify_content(args, source, plan, videos, renew_lease)
+        content_outcome = result
         # Keep what the menus showed alongside what the dialogue showed.
         earlier = (plan.get("identification") or {}).get("reasons") or []
         result["reasons"] = list(dict.fromkeys([*earlier, *(result.get("reasons") or [])]))
         assignments = identified_assignments(result, plan["titles"])
+        numbering = numbering_hold(args.shows_dir, result) if assignments is not None else None
+        if numbering is not None:
+            result, assignments = numbering, None
         if assignments is not None:
             name, year, provider = library_identity(args.shows_dir, result["series"])
             try:
@@ -1931,40 +2543,70 @@ def finish_held(args: argparse.Namespace, source: Path, plan: dict[str, Any],
                 first_episode=assignments[0]["episode"], output=str(args.shows_dir),
                 media_dir=str(season_dir.parent), held=False, published=True,
                 identification=result,
+                identify_outcomes={"disc": disc_outcome, "content": content_outcome},
             )
             if renew_lease is not None:
                 renew_lease()  # persist "published" before the ISO is archived
             return
     shared_root = args.held_dir.parent.parent
     held_folder = Path(videos[0]).parent.parent if videos else args.held_dir / plan["name"]
+    reasons = [str(reason) for reason in (result.get("reasons") or [])]
     plan["needs_identification"] = {
-        "schemaVersion": 1,
+        "schemaVersion": EVIDENCE_SCHEMA_VERSION,
+        "status": "held",
         "sourceIso": source.name,
         "heldDir": os.path.relpath(held_folder, shared_root),
         "heldFiles": videos,
         "titles": plan["titles"],
         "summary": str(result.get("summary") or "The episodes could not be identified."),
-        "reasons": [str(reason) for reason in (result.get("reasons") or [])][:12],
-        "suggestion": iso_suggestion(result.get("series"), result.get("assignments") or [],
-                                     len(plan["titles"])),
+        "reasons": reasons[:12],
+        "suggestion": held_suggestion(result, len(plan["titles"]), args.shows_dir, disc_outcome),
+        "outcomes": {"disc": disc_outcome, "content": content_outcome},
+        "retry": classify_reasons(reasons),
+        # A person confirms specials; retries re-run the regular-episode stages.
+        **({"special": True} if plan.get("special") else {}),
     }
     if renew_lease is not None:
         renew_lease()
+
+
+def initial_retry(classification: Any, now: int) -> dict[str, Any]:
+    """Queue-state retry schedule for a newly held disc."""
+    if isinstance(classification, dict) and classification.get("retryable"):
+        return {"state": "scheduled", "attempts": 0, "nextAt": now + RETRY_DELAYS[0]}
+    return {"state": "not retryable", "attempts": 0}
+
+
+def retry_view(classification: dict[str, Any], retry: dict[str, Any]) -> dict[str, Any]:
+    """The evidence file's `retry` object: why, and what happens next."""
+    return {
+        **{key: classification.get(key) for key in
+           ("retryable", "transientReasons", "substantiveReasons")},
+        "state": retry.get("state"),
+        "attempts": int(retry.get("attempts") or 0),
+        "maxAttempts": len(RETRY_DELAYS),
+        "nextAttemptAt": retry.get("nextAt") if retry.get("state") == "scheduled" else None,
+    }
 
 
 def park_for_identification(args: argparse.Namespace, source: Path,
                             record: dict[str, Any], state: dict[str, Any]) -> Path:
     """Move the ISO to _NeedsIdentification with its evidence for the UI."""
     archived = archive_source(source, needs_dir(args))
-    evidence = dict(record, finishedAt=int(time.time()))
+    now = int(time.time())
+    classification = record.get("retry") if isinstance(record.get("retry"), dict) else {}
+    retry = initial_retry({} if record.get("special") else classification, now)
+    evidence = dict(record, finishedAt=now, retry=retry_view(classification, retry))
     identify_path = archived.with_name(archived.name + ".identify.json")
     atomic_json(identify_path, evidence)
     state.setdefault("held", {})[held_record_key(archived)] = {
+        "retry": retry,
         "identify": identify_path.name,
         "sidecar": ripper_sidecar(archived).name,
         "files": record.get("heldFiles", []),
         "titles": record.get("titles", []),
         "heldDir": record.get("heldDir", ""),
+        **({"special": True} if record.get("special") else {}),
         # Renaming keeps the modification time; a different ISO that later
         # reuses the inode number does not, so it never publishes these videos.
         "mtimeNs": archived.stat().st_mtime_ns,
@@ -1991,6 +2633,34 @@ def held_provider(identify_path: Path) -> str | None:
     return provider
 
 
+def read_evidence(identify_path: Path) -> dict[str, Any]:
+    """A held disc's evidence; {} when missing, unreadable or a link.
+
+    The folder is writable by people; never follow a link placed there.
+    """
+    if identify_path.is_symlink():
+        return {}
+    try:
+        evidence = json.loads(identify_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return evidence if isinstance(evidence, dict) else {}
+
+
+def move_evidence(identify_path: Path, destination: Path, updates: dict[str, Any]) -> None:
+    """Archive a held disc's evidence beside its ISO, recording how it ended."""
+    if not identify_path.is_file() and not identify_path.is_symlink():
+        return
+    evidence = read_evidence(identify_path)
+    evidence.update(updates)
+    try:
+        atomic_json(destination, evidence)
+    except OSError as error:
+        print(f"Could not archive {identify_path.name}: {error}", file=sys.stderr)
+        return
+    identify_path.unlink(missing_ok=True)
+
+
 def note_identification_problem(identify_path: Path, message: str) -> None:
     # The folder is writable by people; never follow a link placed there.
     evidence: Any = {"schemaVersion": 1}
@@ -2010,23 +2680,88 @@ def note_identification_problem(identify_path: Path, message: str) -> None:
         pass
 
 
-def episode_names_for(args: argparse.Namespace, hints: SourceHints, season: int,
-                      first: int, count: int) -> list[str]:
-    """Best-effort TVmaze titles for episodes a person has numbered."""
+EPISODE_LOOKUP_SECONDS = 30
+
+
+def provider_episodes(args: argparse.Namespace, name: str, year: int | None,
+                      provider: str | None) -> dict[str, Any] | None:
+    """A series' episode list from ``disc-identify episodes``, or None.
+
+    Best-effort: a missing identifier or broker, an error, or a timeout only
+    costs the episode titles, never the conversion.
+    """
+    identifier = getattr(args, "identifier", None)
+    socket = getattr(args, "subtitle_socket", None)
+    if not identifier or not socket:
+        return None
+    command = [identifier, "episodes", "--series", provider or "",
+               "--provider-socket", socket,
+               "--cache-dir", str(args.state_dir / "identify-cache")]
+    if name:
+        command += ["--name", name]
+    if year:
+        command += ["--year", str(year)]
     try:
-        metadata = tvmaze_match(hints, count, args.metadata_timeout)
-    except Exception:  # noqa: BLE001 - names are optional
-        metadata = None
-    if not metadata:
-        return [""] * count
-    premiered = str(metadata["show"].get("premiered") or "")[:4]
-    if hints.year is not None and premiered.isdigit() and int(premiered) != hints.year:
-        return [""] * count
-    by_number = {
-        (episode.get("season"), episode.get("number")): str(episode.get("name") or "")
-        for episode in metadata.get("episodes", [])
-    }
-    return [by_number.get((season, first + offset), "") for offset in range(count)]
+        completed = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=EPISODE_LOOKUP_SECONDS, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"Episode list unavailable for {name!r}: {error}", file=sys.stderr)
+        return None
+    try:
+        result = json.loads(completed.stdout) if completed.returncode == 0 else None
+    except json.JSONDecodeError:
+        result = None
+    if not isinstance(result, dict) or result.get("schemaVersion") != 1:
+        detail = (completed.stderr or "").strip()[-300:] or (
+            f"status {completed.returncode}" if completed.returncode else "unexpected output")
+        print(f"Episode list unavailable for {name!r}: {detail}", file=sys.stderr)
+        return None
+    for reason in result.get("reasons") or []:
+        print(f"  episode list: {reason}")
+    return result
+
+
+def library_episodes(result: dict[str, Any] | None, year: int | None,
+                     provider: str | None) -> dict[tuple[int, int], str]:
+    """Episode titles by (season, episode), only where they fit the folder.
+
+    Jellyfin numbers episodes as TMDB does, so a "tmdb" list always fits. A
+    TVmaze list fits only a folder without a ``tmdbid`` tag: that folder is
+    in TMDB's layout, which can differ (Sherlock Holmes (1984) has 4 TVmaze
+    seasons but 7 on TMDB), so its S/E titles would name the wrong episodes.
+    """
+    if not isinstance(result, dict):
+        return {}
+    tmdb_folder = isinstance(provider, str) and provider.startswith("tmdbid-")
+    layout = result.get("layout")
+    if layout != "tmdb" and not (layout == "tvmaze" and not tmdb_folder):
+        return {}
+    series = result.get("series") if isinstance(result.get("series"), dict) else {}
+    if tmdb_folder and isinstance(series.get("tmdbId"), int) \
+            and f"tmdbid-{series['tmdbId']}" != provider:
+        return {}
+    if provider is None and year is not None and isinstance(series.get("year"), int) \
+            and series["year"] != year:
+        return {}
+    titles: dict[tuple[int, int], str] = {}
+    for episode in result.get("episodes") or []:
+        if not isinstance(episode, dict):
+            continue
+        number = (episode.get("season"), episode.get("episode"))
+        title = episode.get("name")
+        if all(isinstance(n, int) and not isinstance(n, bool) for n in number) \
+                and isinstance(title, str) and title.strip():
+            titles[number] = title.strip()
+    return titles
+
+
+def episode_names_for(args: argparse.Namespace, name: str, year: int | None,
+                      provider: str | None, season: int, first: int, count: int) -> list[str]:
+    """Best-effort titles for episodes whose numbers a person chose; "" if unknown."""
+    titles = library_episodes(provider_episodes(args, name, year, provider), year, provider)
+    return [titles.get((season, first + offset), "") for offset in range(count)]
 
 
 def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path: Path,
@@ -2056,6 +2791,8 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
             record = records.get(key)
             if not isinstance(record, dict):
                 continue
+            if isinstance(record.get("retry"), dict) and record["retry"].get("publishing"):
+                continue  # an automatic retry's publish is finished first
             if isinstance(record.get("mtimeNs"), int) and iso.stat().st_mtime_ns != record["mtimeNs"]:
                 continue
             try:
@@ -2064,7 +2801,11 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
                 continue
             if hints.season is None or hints.episode is None:
                 continue
-            identify_path = directory / str(record.get("identify") or f"{iso.name}.identify.json")
+            # Media Manager renames the evidence with the ISO so its page keeps
+            # the disc's details; a rename in Files leaves the original name.
+            identify_path = directory / f"{iso.name}.identify.json"
+            if not identify_path.is_file() or identify_path.is_symlink():
+                identify_path = directory / str(record.get("identify") or identify_path.name)
             files = [Path(item) for item in record.get("files", [])]
             count = len(files)
             last = hints.last_episode if hints.last_episode is not None else hints.episode + count - 1
@@ -2083,7 +2824,8 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
                 # person's name stays readable; the disc's own evidence still
                 # carries it into the series folder Jellyfin matches on.
                 provider = held_provider(identify_path)
-            names = episode_names_for(args, hints, hints.season, hints.episode, count)
+            names = episode_names_for(args, name, year, provider,
+                                      hints.season, hints.episode, count)
             try:
                 season_dir = publish_episodes(args, files, name, year, provider,
                                               hints.season, hints.episode, names)
@@ -2094,8 +2836,11 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
                 "kind": "tv", "name": name, "output": str(args.shows_dir),
                 "media_dir": str(season_dir.parent),
             })
-            if identify_path.is_file():
-                os.replace(identify_path, archived.with_name(archived.name + ".identify.json"))
+            move_evidence(identify_path, archived.with_name(archived.name + ".identify.json"), {
+                "status": "confirmed",
+                "resolution": evidence_resolution("rename", name, year, provider,
+                                                  hints.season, hints.episode, count),
+            })
             # The ripper's evidence keeps the ISO's original name.
             original_sidecar = directory / str(record.get("sidecar") or "")
             if record.get("sidecar") and original_sidecar.is_file():
@@ -2114,6 +2859,434 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
             if not any(Path(str(item)).is_file() for item in files):
                 del records[stale]
         state["held"] = records
+        atomic_json(state_path, state)
+
+
+def held_iso_for_key(directory: Path, key: str) -> Path | None:
+    """The ISO in _NeedsIdentification that a held record belongs to, by inode."""
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return None
+    for path in entries:
+        if path.suffix.lower() != ".iso" or path.is_symlink() or not path.is_file():
+            continue
+        try:
+            if held_record_key(path) == key:
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def bonsai_gate_busy(args: argparse.Namespace) -> bool:
+    """True while the Bonsai gate is serving or queueing someone else's work.
+
+    A retry is background work, so it waits for an idle gate instead of
+    adding to its queue. An unreachable gate is not "busy": the attempt runs
+    and fails as a transient problem, which keeps the retries bounded.
+    """
+    url = getattr(args, "bonsai_url", None)
+    if not url:
+        return False
+    base = url.rstrip("/").removesuffix("/v1")
+    try:
+        health = fetch_json(f"{base}/health", 5)
+    except Exception:  # noqa: BLE001 - no health endpoint means no gate to honour
+        return False
+    if not isinstance(health, dict):
+        return False
+    return bool(health.get("queued")) or health.get("available_permits") == 0
+
+
+# How long retries defer to other Bonsai work. Media Manager's photo-tag
+# review (2026-11-17) kept the gate's queue full for hours, which would
+# have postponed every retry indefinitely; after this long one retry joins
+# the queue like any other request, then the wait starts again.
+BUSY_GATE_PATIENCE_SECONDS = 3600
+
+
+# Attempts given back because Bonsai was only busy, per hold (about a day
+# of hourly forced retries) before busy failures count like any other.
+BUSY_GATE_REFUNDS = 24
+_BUSY_GATE_RE = re.compile(
+    r"^(?:Title \d+: )?Bonsai (?:could not [a-z ]+|ranking failed): .*HTTP (?:429|503|504)")
+
+
+def busy_gate_only(classification: dict[str, Any]) -> bool:
+    """Every temporary blocker was the Bonsai gate answering busy."""
+    transient = classification.get("transientReasons") or []
+    return bool(transient) and all(_BUSY_GATE_RE.search(str(r)) for r in transient)
+
+
+def postpone_for_busy_gate(args: argparse.Namespace, now: int) -> bool:
+    """True when a retry should wait for the Bonsai gate to be idle."""
+    marker = args.state_dir / "retry-bonsai-busy-since"
+    if not bonsai_gate_busy(args):
+        marker.unlink(missing_ok=True)
+        return False
+    try:
+        since = int(marker.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        since = None
+    if since is None or since > now:  # missing, unreadable, or from a clock that moved back
+        since = now
+        try:
+            marker.write_text(str(now), encoding="utf-8")
+        except OSError:
+            pass
+    if now - since < BUSY_GATE_PATIENCE_SECONDS:
+        print("Bonsai is busy; postponing an automatic re-identification")
+        return True
+    # The gate queues two requests and answers 429/504 beyond that; the
+    # identifier retries those for about eleven minutes. An attempt lost
+    # only to a busy gate is given back (see `busy_gate_only`).
+    print("Bonsai has been busy for over an hour; re-identifying anyway")
+    marker.unlink(missing_ok=True)
+    return False
+
+
+def update_held_evidence(identify_path: Path, updates: dict[str, Any]) -> None:
+    evidence = read_evidence(identify_path) or {"schemaVersion": 1}
+    evidence.update(updates)
+    try:
+        atomic_json(identify_path, evidence)
+    except OSError as error:
+        print(f"Could not update {identify_path.name}: {error}", file=sys.stderr)
+
+
+def reidentify_held(args: argparse.Namespace, directory: Path, iso: Path, record: dict[str, Any],
+                    renew: Any) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]] | None]:
+    """Identify a held disc again from its ISO and its already-encoded videos.
+
+    Returns the final result, both stages' outcomes and the validated
+    assignments (None when still uncertain). Nothing is re-encoded.
+    """
+    titles = [int(title) for title in record.get("titles") or []]
+    files = [str(item) for item in record.get("files") or []]
+    scanned = {title.index: title for title in scan_titles(
+        args.handbrake, iso, renew, getattr(args, "lease_seconds", 120) / 3)}
+    if not titles or any(title not in scanned for title in titles) or len(files) != len(titles):
+        result = uncertain("The disc no longer matches its held videos.",
+                           "the disc's titles changed since it was encoded")
+        return result, {"disc": None, "content": None}, None
+    hints = source_hints(iso)  # parseable: checked when the hold was chosen
+    sidecar = directory / str(record.get("sidecar") or "")
+    disc = identify_disc(args, iso, [scanned[title] for title in titles], hints, renew,
+                         sidecar if record.get("sidecar") else None)
+    assignments = identified_assignments(disc, titles)
+    if assignments is not None:
+        numbering = numbering_hold(args.shows_dir, disc)
+        if numbering is not None:
+            return numbering, {"disc": disc, "content": None}, None
+        return disc, {"disc": disc, "content": None}, assignments
+    content = identify_content(args, iso, {"titles": titles, "identification": disc}, files, renew)
+    content["reasons"] = list(dict.fromkeys([*(disc.get("reasons") or []),
+                                             *(content.get("reasons") or [])]))
+    assignments = identified_assignments(content, titles)
+    numbering = numbering_hold(args.shows_dir, content) if assignments is not None else None
+    if numbering is not None:
+        return numbering, {"disc": disc, "content": content}, None
+    return content, {"disc": disc, "content": content}, assignments
+
+
+def complete_retry_publish(args: argparse.Namespace, directory: Path, processed_dir: Path,
+                           records: dict[str, Any], key: str) -> bool:
+    """Publish a re-identified hold and archive its ISO; the caller holds
+    queue.lock and saves the state afterwards.
+
+    `retry.publishing` is saved before anything moves, so a run killed at any
+    point resumes here: publish_episodes undoes or finishes its own partial
+    work, an already published disc is only archived, and a disc whose ISO
+    was already archived is only forgotten.
+
+    False when the ISO could not be archived: `publishing` stays set, the
+    error is recorded on the retry, and the caller tries again later.
+    """
+    record = records[key]
+    retry = record["retry"]
+    job = retry["publishing"]
+    files = [Path(str(item)) for item in record.get("files") or []]
+    titles = list(record.get("titles") or [])
+    names = [str(name) for name in job.get("names") or []]
+    season_dir, targets = episode_targets(args, len(files), job["name"], job.get("year"),
+                                          job.get("provider"), job["season"], job["first"], names)
+    published = bool(files) and all(target.exists() for target in targets) and not any(
+        file.exists() or staging_name(target, file).exists()
+        for file, target in zip(files, targets))
+    identify_path = directory / str(record.get("identify") or "")
+    if not published:
+        try:
+            publish_episodes(args, files, job["name"], job.get("year"), job.get("provider"),
+                             job["season"], job["first"], names)
+        except (OSError, RuntimeError) as error:
+            retry.pop("publishing", None)
+            retry.update(state="stopped", stoppedBecause=f"publishing failed: {error}")
+            if record.get("identify"):
+                update_held_evidence(identify_path, {
+                    "summary": f"Identified automatically, but could not publish: {error}",
+                    "retry": dict(read_evidence(identify_path).get("retry") or {},
+                                  state="stopped", nextAttemptAt=None),
+                })
+            print(f"Could not publish re-identified episodes: {error}", file=sys.stderr)
+            return True
+    iso = held_iso_for_key(directory, key)
+    if iso is not None:
+        plan = {
+            "kind": "tv", "name": job["name"], "year": job.get("year"),
+            "provider": job.get("provider"), "season": job["season"],
+            "first_episode": job["first"], "titles": titles,
+            "identification": {"status": "identified"},
+            "output": str(args.shows_dir), "media_dir": str(season_dir.parent),
+        }
+        try:
+            archived = archive_source(iso, processed_dir, plan, identified_iso_name(plan))
+        except OSError as error:
+            retry.update(publishError=f"archiving the ISO failed: {error}",
+                         publishFailedAt=int(time.time()))
+            if record.get("identify"):
+                update_held_evidence(identify_path, {
+                    "summary": "Published to the library automatically, but the ISO could "
+                               f"not be archived yet: {error}"})
+            print(f"Could not archive {iso.name} after publishing it: {error}", file=sys.stderr)
+            return False
+        if record.get("identify"):
+            move_evidence(identify_path, archived.with_name(archived.name + ".identify.json"), {
+                "status": "identified",
+                "resolution": evidence_resolution("automatic retry", job["name"], job.get("year"),
+                                                  job.get("provider"), job["season"],
+                                                  job["first"], len(files)),
+                "finishedAt": int(time.time()),
+            })
+        original_sidecar = directory / str(record.get("sidecar") or "")
+        if record.get("sidecar") and original_sidecar.is_file():
+            try:
+                os.replace(original_sidecar, ripper_sidecar(archived))
+            except OSError as error:
+                print(f"Could not move {original_sidecar.name} with its ISO: {error}",
+                      file=sys.stderr)
+        print(f"Published held episodes of {iso.name} to {season_dir} after re-identifying them")
+    del records[key]
+    return True
+
+
+def retry_transient_holds(args: argparse.Namespace, lock_path: Path, state_path: Path,
+                          processed_dir: Path) -> None:
+    """Re-identify one held disc whose blockers were all temporary.
+
+    Runs between claims, like resolve_renamed_holds. queue.lock is held only
+    to choose, lease and settle the record, never while the identifier runs.
+    The attempt is counted when it starts, so a crash cannot retry forever;
+    a shutdown gives it back. A person's rename or deletion always wins: the
+    record or ISO is re-checked before anything is published.
+    """
+    if shutdown_signal is not None:
+        raise ShutdownRequested("shutdown before re-identifying held discs")
+    directory = needs_dir(args)
+    if not directory.is_dir():
+        return
+    now = int(time.time())
+
+    def candidate(records: dict[str, Any]) -> tuple[str, Path] | None:
+        for key in sorted(records):
+            record = records[key]
+            retry = record.get("retry") if isinstance(record, dict) else None
+            if not isinstance(retry, dict) or retry.get("state") != "scheduled":
+                continue
+            if record.get("special"):
+                retry.pop("lease", None)
+                retry.update(state="stopped", stoppedBecause="a person confirms specials")
+                continue
+            lease = retry.get("lease")
+            if isinstance(lease, dict) and int(lease.get("expiresAt") or 0) > now:
+                continue  # another worker is on it
+            if int(retry.get("nextAt") or 0) > now:
+                continue
+            iso = held_iso_for_key(directory, key)
+            if iso is None or (isinstance(record.get("mtimeNs"), int)
+                               and iso.stat().st_mtime_ns != record["mtimeNs"]):
+                continue
+            try:
+                named = source_hints(iso)
+            except ValueError:
+                continue
+            if named.season is not None and named.episode is not None:
+                continue  # the person named it; resolve_renamed_holds publishes
+            if not all(Path(str(item)).is_file() for item in record.get("files") or [None]):
+                retry.pop("lease", None)
+                retry.update(state="stopped", stoppedBecause="the held videos are missing")
+                continue
+            return key, iso
+        return None
+
+    with locked_queue(lock_path):
+        state = load_state(state_path)
+        records = state.get("held")
+        if not isinstance(records, dict) or not records:
+            return
+        for key, record in list(records.items()):
+            if not isinstance(record, dict):
+                continue
+            if "retry" not in record:
+                # Held before automatic retries existed: judge its evidence.
+                evidence = read_evidence(directory / str(record.get("identify") or ""))
+                held_at = int(evidence.get("finishedAt") or now)
+                record["retry"] = initial_retry(classify_reasons(evidence.get("reasons") or []),
+                                                held_at)
+            retry = record["retry"]
+            lease = retry.get("lease") if isinstance(retry, dict) else None
+            if (isinstance(retry, dict) and retry.get("state") == "scheduled"
+                    and int(retry.get("attempts") or 0) >= len(RETRY_DELAYS)
+                    and not (isinstance(lease, dict) and int(lease.get("expiresAt") or 0) > now)):
+                # Only a run killed mid-attempt leaves a used-up record
+                # scheduled; it would otherwise be retried forever.
+                retry.pop("lease", None)
+                retry.update(state="stopped", stoppedBecause="automatic attempts used up")
+                if record.get("identify"):
+                    identify_path = directory / str(record["identify"])
+                    update_held_evidence(identify_path, {"retry": dict(
+                        read_evidence(identify_path).get("retry") or {},
+                        state="stopped", nextAttemptAt=None)})
+            if isinstance(record["retry"], dict) and record["retry"].get("publishing"):
+                # A publish was interrupted; finish it before anything else,
+                # unless it failed recently: then the other holds go on.
+                failed_at = int(record["retry"].get("publishFailedAt") or 0)
+                if failed_at and now - failed_at < RETRY_DELAYS[0]:
+                    continue
+                if complete_retry_publish(args, directory, processed_dir, records, key):
+                    atomic_json(state_path, state)
+                    return
+        chosen = candidate(records)
+        atomic_json(state_path, state)
+    if chosen is None:
+        return
+    if postpone_for_busy_gate(args, int(time.time())):
+        return
+
+    lease_id = secrets.token_hex(16)
+    with locked_queue(lock_path):
+        state = load_state(state_path)
+        records = state.get("held")
+        again = candidate(records) if isinstance(records, dict) else None
+        if again is None or again[0] != chosen[0]:
+            atomic_json(state_path, state)
+            return
+        key, iso = again
+        retry = records[key]["retry"]
+        retry["attempts"] = int(retry.get("attempts") or 0) + 1
+        retry["lease"] = {"workerId": args.worker_id, "leaseId": lease_id,
+                          "expiresAt": int(time.time()) + args.lease_seconds}
+        retry["lastAttemptAt"] = int(time.time())
+        record = dict(records[key])
+        atomic_json(state_path, state)
+
+    def owned(state: dict[str, Any]) -> dict[str, Any] | None:
+        held = state.get("held")
+        current = held.get(key) if isinstance(held, dict) else None
+        retry = current.get("retry") if isinstance(current, dict) else None
+        lease = retry.get("lease") if isinstance(retry, dict) else None
+        if isinstance(lease, dict) and lease.get("workerId") == args.worker_id \
+                and lease.get("leaseId") == lease_id:
+            return current
+        return None
+
+    def renew() -> bool:
+        with locked_queue(lock_path):
+            state = load_state(state_path)
+            current = owned(state)
+            if current is None:
+                return False
+            current["retry"]["lease"]["expiresAt"] = int(time.time()) + args.lease_seconds
+            atomic_json(state_path, state)
+            return True
+
+    print(f"Re-identifying held disc {iso.name} "
+          f"(automatic attempt {retry['attempts']} of {len(RETRY_DELAYS)})")
+    try:
+        result, outcomes, assignments = reidentify_held(args, directory, iso, record, renew)
+    except ShutdownRequested:
+        with locked_queue(lock_path):
+            state = load_state(state_path)
+            current = owned(state)
+            if current is not None:
+                # Not this disc's fault: give the attempt back.
+                current["retry"]["attempts"] = max(0, int(current["retry"]["attempts"]) - 1)
+                current["retry"].pop("lease", None)
+                atomic_json(state_path, state)
+        raise
+    except LeaseLost as error:
+        print(f"Stopped re-identifying {iso.name}: {error}", file=sys.stderr)
+        return
+    except Exception as error:  # noqa: BLE001 - becomes a transient failure
+        result = uncertain("Episode identification failed.", f"identifier error: {error}")
+        outcomes, assignments = {"disc": None, "content": None}, None
+
+    with locked_queue(lock_path):
+        state = load_state(state_path)
+        current = owned(state)
+        if current is None:
+            print(f"{iso.name} was resolved or removed while it was being re-identified")
+            return
+        retry = current["retry"]
+        retry.pop("lease", None)
+        records = state["held"]
+        identify_path = directory / str(current.get("identify") or "")
+        live_iso = held_iso_for_key(directory, key)
+        if live_iso is None:
+            retry.update(state="stopped", stoppedBecause="the ISO left _NeedsIdentification")
+            atomic_json(state_path, state)
+            return
+        try:
+            named = source_hints(live_iso)
+        except ValueError:
+            named = None
+        if named is not None and named.season is not None and named.episode is not None:
+            atomic_json(state_path, state)  # the person's name wins
+            return
+        reasons = [str(reason) for reason in (result.get("reasons") or [])]
+        classification = classify_reasons(reasons)
+        titles = list(current.get("titles") or [])
+        evidence = {
+            "schemaVersion": EVIDENCE_SCHEMA_VERSION,
+            "summary": str(result.get("summary") or "The episodes could not be identified."),
+            "reasons": reasons[:12],
+            "suggestion": held_suggestion(result, len(titles), args.shows_dir,
+                                          (outcomes or {}).get("disc")),
+            "outcomes": outcomes,
+            "lastRetryAt": int(time.time()),
+        }
+        if assignments is None:
+            if (classification["retryable"] and busy_gate_only(classification)
+                    and int(retry.get("busyRefunds") or 0) < BUSY_GATE_REFUNDS):
+                # Lost only to a full Bonsai queue: the attempt does not count.
+                retry["attempts"] = max(0, int(retry.get("attempts") or 0) - 1)
+                retry["busyRefunds"] = int(retry.get("busyRefunds") or 0) + 1
+            attempts = int(retry.get("attempts") or 0)
+            if classification["retryable"] and attempts < len(RETRY_DELAYS):
+                retry.update(state="scheduled", nextAt=int(time.time()) + RETRY_DELAYS[attempts])
+            else:
+                retry.update(state="stopped", stoppedBecause=(
+                    "automatic attempts used up" if classification["retryable"]
+                    else "no longer a temporary problem"))
+            if current.get("identify"):
+                update_held_evidence(identify_path, dict(
+                    evidence, status="held", retry=retry_view(classification, retry)))
+            atomic_json(state_path, state)
+            print(f"  {live_iso.name} is still held: {evidence['summary']}")
+            return
+        name, year, provider = library_identity(args.shows_dir, result["series"])
+        retry["publishing"] = {
+            "name": name, "year": year, "provider": provider,
+            "season": assignments[0]["season"], "first": assignments[0]["episode"],
+            "names": [str(a.get("name") or "") for a in assignments],
+        }
+        retry["state"] = "identified"
+        if current.get("identify"):
+            update_held_evidence(identify_path, dict(
+                evidence, status="held", retry=retry_view(classification, retry)))
+        # Durable before any file moves; see complete_retry_publish.
+        atomic_json(state_path, state)
+        complete_retry_publish(args, directory, processed_dir, records, key)
         atomic_json(state_path, state)
 
 
@@ -2174,6 +3347,7 @@ def run(args: argparse.Namespace) -> int:
     processed_dir.mkdir(exist_ok=True)
     failed_dir.mkdir(exist_ok=True)
     duplicate_dir.mkdir(exist_ok=True)
+    prune_orphaned_failure_reports(failed_dir)
 
     state_path = args.state_dir / "queue.json"
     lock_path = args.state_dir / "queue.lock"
@@ -2290,21 +3464,27 @@ def run(args: argparse.Namespace) -> int:
             atomic_json(state_path, state)
             return True
 
-    if identification_enabled(args):
+    def tend_holds() -> None:
         try:
             resolve_renamed_holds(args, lock_path, state_path, processed_dir)
         except Exception as error:  # noqa: BLE001 - never block new conversions
             print(f"Could not process renamed ISOs awaiting identification: {error}", file=sys.stderr)
+        try:
+            retry_transient_holds(args, lock_path, state_path, processed_dir)
+        except ShutdownRequested:
+            raise
+        except Exception as error:  # noqa: BLE001 - never block new conversions
+            print(f"Could not re-identify a held disc: {error}", file=sys.stderr)
+
+    if identification_enabled(args):
+        tend_holds()
     public_status(args, "idle", queued=pending_titles())
     failures = 0
     first_claim = True
     while True:
         if identification_enabled(args) and not first_claim:
             # A long queue would otherwise delay renamed holds until it ends.
-            try:
-                resolve_renamed_holds(args, lock_path, state_path, processed_dir)
-            except Exception as error:  # noqa: BLE001 - never block new conversions
-                print(f"Could not process renamed ISOs awaiting identification: {error}", file=sys.stderr)
+            tend_holds()
         first_claim = False
         claim = claim_next()
         if claim is None:
@@ -2462,6 +3642,9 @@ def run(args: argparse.Namespace) -> int:
                     archived = archive_source(source, processed_dir, finished_plan,
                                               identified_iso_name(finished_plan))
                     print(f"Completed {source.name}; preserved the ISO at {archived}")
+                    if finished_plan.get("identification") and finished_plan.get("kind") == "tv":
+                        write_processed_evidence(archived, dict(finished_plan,
+                                                                source_iso=source.name))
                     state.setdefault("processed_hashes", {})[archived.name] = digest
                 del state["sources"][source.name]
                 atomic_json(state_path, state)
@@ -2524,6 +3707,356 @@ def run(args: argparse.Namespace) -> int:
             public_status(args, "idle", queued=pending_titles())
     release_source_lock(active_source_lock)
     return 1 if failures else 0
+
+
+def special_and_layout_self_test() -> None:
+    """Specials and episode-title numbering: both misfiled real discs.
+
+    Rumpole's Return (2026-11) went to _Movies instead of S00E03, and TVmaze
+    S/E titles in a tmdbid-tagged folder (Sherlock Holmes (1984): 4 TVmaze
+    seasons, 7 on TMDB) would name the wrong episodes.
+    """
+    special = source_hints(Path("Rumpole of the Bailey (1978) S00E03.iso"))
+    assert (special.season, special.episode, special.last_episode) == (0, 3, None)
+    assert source_hints(Path("Show S00 Disc 1.iso")).season is None
+
+    def episodes(layout: str, tmdb_id: int | None, entries: list[tuple[int, int, str]]) -> dict[str, Any]:
+        return {"schemaVersion": 1, "layout": layout,
+                "series": {"name": "X", "year": None, "provider": None, "tmdbId": tmdb_id, "tvmazeId": 1},
+                "episodes": [{"season": s, "episode": e, "name": n, "airdate": None, "runtime": None}
+                             for s, e, n in entries],
+                "reasons": []}
+
+    tvmaze_sherlock = episodes("tvmaze", None, [(4, 1, "The Sign of Four"), (2, 1, "The Sign of Four")])
+    tmdb_sherlock = episodes("tmdb", 799, [(4, 1, "The Sign of Four")])
+    assert library_episodes(tvmaze_sherlock, 1984, "tmdbid-799") == {}
+    assert library_episodes(tmdb_sherlock, 1984, "tmdbid-799") == {(4, 1): "The Sign of Four"}
+    assert library_episodes(episodes("tmdb", 800, [(4, 1, "x")]), 1984, "tmdbid-799") == {}
+    assert library_episodes(tvmaze_sherlock, None, "tvdbid-72995")[(4, 1)] == "The Sign of Four"
+    assert library_episodes(episodes("none", None, [(1, 1, "x")]), None, None) == {}
+    assert library_episodes(None, None, None) == {}
+
+    with tempfile.TemporaryDirectory() as work:
+        root = Path(work)
+        titles_file, episodes_file, calls = root / "titles.json", root / "episodes.json", root / "calls"
+        handbrake, identifier = root / "handbrake", root / "disc-identify"
+        handbrake.write_text(f"#!/bin/sh\nprintf 'JSON Title Set: '\ncat '{titles_file}'\n", encoding="utf-8")
+        identifier.write_text(f"#!/bin/sh\necho \"$@\" >> '{calls}'\ncat '{episodes_file}'\n",
+                              encoding="utf-8")
+        handbrake.chmod(0o755)
+        identifier.chmod(0o755)
+        shows, movies, held, state = root / "Shows", root / "Movies", root / "_Unidentified", root / "state"
+        for folder in (shows / "Rumpole of the Bailey (1978) [tvdbid-72995]",
+                       shows / "Sherlock Holmes (1984) [tmdbid-799]",
+                       shows / "Mission Impossible (1966)", movies / "Rumpole of the Bailey (1975)",
+                       held, state):
+            folder.mkdir(parents=True)
+        args = argparse.Namespace(
+            handbrake=str(handbrake), lease_seconds=120, shows_dir=shows, movies_dir=movies,
+            min_duration=300, dominant_ratio=0.85, metadata_timeout=1, identifier=str(identifier),
+            held_dir=held, subtitle_socket=str(root / "broker.sock"), state_dir=state,
+            staging_dir=None, input_dir=root / "inbox", sevenzip="7z", ffmpeg="ffmpeg",
+        )
+
+        def plan(iso: str, minutes: list[int], listing: dict[str, Any]) -> dict[str, Any]:
+            titles_file.write_text(json.dumps({"MainFeature": 1, "TitleList": [
+                {"Index": i + 1, "Duration": {"Hours": 0, "Minutes": m, "Seconds": 0}}
+                for i, m in enumerate(minutes)]}), encoding="utf-8")
+            episodes_file.write_text(json.dumps(listing), encoding="utf-8")
+            return build_plan(args, root / iso)
+
+        rumpole_tmdb = episodes("tmdb", 1, [(0, 1, "Rumpole of the Bailey"), (0, 3, "Rumpole's Return"),
+                                            (4, 1, "Rumpole and the Old, Old Story")])
+        for entry in rumpole_tmdb["episodes"]:
+            entry["runtime"] = {(0, 1): 65, (0, 3): 105}.get((entry["season"], entry["episode"]))
+        original_tvmaze = globals()["tvmaze_match"]
+        globals()["tvmaze_match"] = lambda *_args: None  # no network in self-tests
+        try:
+            filed = plan("Rumpole_of_the_Bailey_-_Rumpole's_Return.iso", [103, 3], rumpole_tmdb)
+            assert (filed["kind"], filed["season"], filed["first_episode"]) == ("tv", 0, 3), filed
+            assert (filed["name"], filed["year"], filed["provider"]) == (
+                "Rumpole of the Bailey", 1978, "tvdbid-72995")
+            assert filed["episode_names"] == ["Rumpole's Return"] and not filed.get("held")
+            assert "--series tvdbid-72995" in calls.read_text(encoding="utf-8")
+            assert "--provider-socket" in calls.read_text(encoding="utf-8")
+
+            # Only TMDB numbers specials. Without its list (no TMDB key: a
+            # TVmaze list, or none) a subtitle is no season-0 evidence, so the
+            # disc follows the film path; a disc named only after the show is
+            # held for a person, with nothing to suggest.
+            for listing in (episodes("tvmaze", None, [(4, 1, "x")]), {"broken": True}):
+                film = plan("Rumpole of the Bailey - Rumpole's Return.iso", [103], listing)
+                assert film["kind"] == "movie" and not film.get("held"), film
+                parked = plan("Rumpole_of_the_Bailey_D4.iso", [103], listing)
+                assert parked["held"] and parked["special"] and parked["output"] == str(held), parked
+                assert parked["identification"]["assignments"] == [], parked
+            # A fair title match is still evidence: held with its guess.
+            parked = plan("Rumpole of the Bailey - Rumpoles Return Special.iso", [103], rumpole_tmdb)
+            assert parked["held"] and parked["identification"]["assignments"][0]["episode"] == 3, parked
+
+            # A film named "<show> <subtitle>" with a year of its own is not a
+            # special of the show (Sherlock Holmes (1984) [tmdbid-799]), with
+            # or without a TMDB list, even when one special has its length.
+            sherlock_specials = episodes("tmdb", 799, [(0, 1, "The Sign of Four"), (4, 1, "x")])
+            sherlock_specials["episodes"][0].update(runtime=125, airdate="1987-12-29")
+            for listing in (tvmaze_sherlock, tmdb_sherlock, sherlock_specials, {"broken": True}):
+                film = plan("Sherlock_Holmes_A_Game_of_Shadows_2011.iso", [129], listing)
+                assert film["kind"] == "movie" and not film.get("held"), (listing, film)
+                assert (film["name"], film["year"]) == ("Sherlock Holmes A Game of Shadows", 2011)
+            # A confident special name with a different year is the film too,
+            # not filed straight into Season 00 (R2-3).
+            hound = episodes("tmdb", 799, [(0, 2, "The Hound of the Baskervilles"), (4, 1, "x")])
+            hound["episodes"][0].update(runtime=105, airdate="1988-08-31")
+            film = plan("Sherlock_Holmes_The_Hound_of_the_Baskervilles_1959.iso", [87], hound)
+            assert film["kind"] == "movie" and not film.get("held"), film
+            special = plan("Sherlock_Holmes_The_Hound_of_the_Baskervilles_1988.iso", [105], hound)
+            assert (special["kind"], special["season"], special["first_episode"]) == ("tv", 0, 2), special
+            # Episodes plus short extras: TV with the extras dropped, unless
+            # the person named the full range, which keeps every title.
+            extras = plan("ALL_CREATURES_GREAT_AND_SMALL.iso", [54, 54, 9, 5], {"broken": True})
+            assert extras["kind"] == "tv" and extras["titles"] == [1, 2], extras
+            ranged = plan("All Creatures Great and Small (2020) S05E01-E04.iso", [54, 54, 9, 5],
+                          {"broken": True})
+            assert ranged["titles"] == [1, 2, 3, 4] and ranged["last_episode"] == 4, ranged
+            guessed = plan("Rumpole_of_the_Bailey_D4.iso", [103], rumpole_tmdb)
+            assert guessed["held"] and guessed["kind"] == "tv", guessed
+            assert iso_suggestion(guessed["identification"]["series"],
+                                  guessed["identification"]["assignments"], 1)["isoName"] == (
+                "Rumpole of the Bailey (1978) S00E03.iso")
+            # Held without a dialogue comparison, which ranks regular episodes.
+            finish_held(args, root / "Rumpole_of_the_Bailey_D4.iso", guessed,
+                        [str(held / "D4" / "Season 01" / "D4 S01E01.mkv")], None)
+            record = guessed["needs_identification"]
+            assert record["suggestion"]["isoName"] == "Rumpole of the Bailey (1978) S00E03.iso"
+            assert record["suggestion"]["provider"] == "tvdbid-72995"
+
+            # Films whose names are not an existing show's stay films.
+            for iso in ("MISSION_IMPOSSIBLE_2.iso", "Mission_Impossible_2_Disc_1.iso",
+                        "The Flight of Dragons (1982).iso", "Rumpole of the Bailey (1975).iso",
+                        "Rumpole of the Bailey.iso"):
+                film = plan(iso, [98], rumpole_tmdb)
+                assert film["kind"] == "movie" and not film.get("held"), (iso, film)
+
+            # Curated numbers keep their folder and numbers; titles only from
+            # the list in that folder's numbering.
+            named = plan("Sherlock Holmes (1984) [tmdbid-799] S04E01-E02.iso", [52, 51], tvmaze_sherlock)
+            assert named["episode_names"] == ["DVD Title 01", "DVD Title 02"], named
+            assert (named["season"], named["first_episode"]) == (4, 1)
+            named = plan("Sherlock Holmes (1984) [tmdbid-799] S04E01-E02.iso", [52, 51], tmdb_sherlock)
+            assert named["episode_names"] == ["The Sign of Four", "DVD Title 02"], named
+            assert named["provider"] == "tmdbid-799"
+            named = plan("Rumpole of the Bailey (1978) S04E01.iso", [50], rumpole_tmdb)
+            assert named["episode_names"] == ["Rumpole and the Old, Old Story"], named
+            assert (named["provider"], named["season"]) == ("tvdbid-72995", 4)
+            identifier.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+            named = plan("Rumpole of the Bailey (1978) S04E01.iso", [50], rumpole_tmdb)
+            assert named["episode_names"] == ["DVD Title 01"], named
+            identifier.write_text(f"#!/bin/sh\ncat '{episodes_file}'\n", encoding="utf-8")
+
+            # A TVmaze-numbered identification never lands in a TMDB-numbered
+            # folder, nor in a second folder beside it: it is held, with no
+            # suggestion carrying TVmaze numbers. Sherlock Holmes (1984) has
+            # 4 TVmaze seasons and 7 on TMDB (TMDB unconfigured here).
+            tvmaze_series = {"name": "Sherlock Holmes", "year": 1984, "provider": "tvdbid-79588",
+                             "tvmazeId": 1}
+            assert library_identity(shows, tvmaze_series) == ("Sherlock Holmes", 1984, "tvdbid-79588")
+            assert library_match(shows, tvmaze_series)[1] == "Sherlock Holmes (1984) [tmdbid-799]"
+            mapped = dict(tvmaze_series, provider="tmdbid-799", tmdbId=799,
+                          providerIds=["tmdbid-799", "tvdbid-79588"])
+            assert library_match(shows, mapped) == (("Sherlock Holmes", 1984, "tmdbid-799"), None)
+            assert library_match(shows, dict(tvmaze_series, name="Mission Impossible", year=1966))[1] is None
+            disc = {"schemaVersion": 2, "stage": "disc", "status": "identified", "series": tvmaze_series,
+                    "season": 4, "candidates": [], "summary": "Identified from the disc menu.",
+                    "reasons": ["Episode numbering was not checked against TMDB (no TMDB key is configured)."],
+                    "assignments": [{"title": 1, "season": 4, "episode": 1, "name": "The Sign of Four"},
+                                    {"title": 2, "season": 4, "episode": 2, "name": "The Devil's Foot"}]}
+            sherlock = plan("SHERLOCK_HOLMES_D7.iso", [52, 51], disc)
+            assert sherlock["held"] and sherlock["numbering_conflict"], sherlock
+            assert sherlock["identification"]["assignments"] == []
+            assert any("[tmdbid-799] uses TMDB episode numbering" in r and "no TMDB key" in r
+                       for r in sherlock["identification"]["reasons"]), sherlock
+            calls.write_text("", encoding="utf-8")
+            finish_held(args, root / "SHERLOCK_HOLMES_D7.iso", sherlock,
+                        [str(held / "D7" / "Season 01" / f"D7 S01E0{n}.mkv") for n in (1, 2)], None)
+            assert sherlock["needs_identification"]["suggestion"] is None
+            assert "content" not in calls.read_text(encoding="utf-8"), "the dialogue cannot help"
+            assert not (shows / "Sherlock Holmes (1984) [tvdbid-79588]").exists()
+            assert sorted(p.name for p in shows.iterdir()) == [
+                "Mission Impossible (1966)", "Rumpole of the Bailey (1978) [tvdbid-72995]",
+                "Sherlock Holmes (1984) [tmdbid-799]"]
+            # A disc held because TMDB could not renumber it offers no
+            # suggestion in TVmaze numbers either.
+            assert held_suggestion(dict(disc, status="uncertain", tmdbNumberingHeld=True), 2) is None
+            assert held_suggestion(dict(disc, status="uncertain"), 2)["firstEpisode"] == 1
+            # An unconfirmed proposal passed through by the content stage keeps
+            # the disc stage's flag (R2-2), and a TVmaze series next to a
+            # TMDB-numbered folder gets no suggestion either (R2-1).
+            assert held_suggestion(dict(disc, status="uncertain"), 2, None,
+                                   dict(disc, tmdbNumberingHeld=True)) is None
+            assert held_suggestion(dict(disc, status="uncertain"), 2, shows) is None
+        finally:
+            globals()["tvmaze_match"] = original_tvmaze
+
+        # A held special is published by renaming its ISO to one S00 episode.
+        needs = args.input_dir / "_NeedsIdentification"
+        needs.mkdir(parents=True)
+        video = held / "disc" / "Season 01" / "disc S01E01 - DVD Title 01.mkv"
+        video.parent.mkdir(parents=True)
+        video.write_bytes(b"video")
+        iso = needs / "Rumpole of the Bailey (1978) S00E03.iso"
+        iso.write_bytes(b"iso")
+        state_path = state / "queue.json"
+        atomic_json(state_path, {"version": STATE_VERSION, "sources": {}, "held": {
+            held_record_key(iso): {"identify": "disc.iso.identify.json", "files": [str(video)],
+                                   "titles": [1], "mtimeNs": iso.stat().st_mtime_ns}}})
+        episodes_file.write_text(json.dumps(rumpole_tmdb), encoding="utf-8")
+        resolve_renamed_holds(args, state / "queue.lock", state_path, args.input_dir / "_Processed")
+        published = (shows / "Rumpole of the Bailey (1978) [tvdbid-72995]" / "Season 00"
+                     / "Rumpole of the Bailey (1978) S00E03 - Rumpole's Return.mkv")
+        assert published.is_file() and not video.exists()
+        assert (args.input_dir / "_Processed" / iso.name).is_file()
+
+        # Only a failure text report whose ISO has left _Failed is removed.
+        failed = root / "_Failed"
+        failed.mkdir()
+        for name in ("GONE.iso.error.txt", "GONE.iso.error.json", "KEPT.iso", "KEPT.iso.error.txt",
+                     "UPPER.ISO", "UPPER.iso.error.txt", "notes.txt", "GONE.iso.error.txt.bak"):
+            (failed / name).write_text("x", encoding="utf-8")
+        (failed / "LINK.iso.error.txt").symlink_to(failed / "notes.txt")
+        prune_orphaned_failure_reports(failed)
+        assert sorted(path.name for path in failed.iterdir()) == [
+            "GONE.iso.error.json", "GONE.iso.error.txt.bak", "KEPT.iso", "KEPT.iso.error.txt",
+            "LINK.iso.error.txt", "UPPER.ISO", "UPPER.iso.error.txt", "notes.txt"]
+
+
+def live_shaped_retry_self_test() -> None:
+    """The held All Creatures discs (2026-11-14/15), retried end to end.
+
+    Nine discs were held only because Bonsai's label split failed; they are
+    retried automatically. The library already holds S01E01-06, S04 (less
+    E04) and S05, so no single gap places a 2- or 3-title disc and no guess
+    is made: a guess after the library's last episode (S05) would be
+    contradicted and, worded as a contradiction, would stop the retry. The
+    dialogue alone then decides, and the episodes are published.
+    """
+    with tempfile.TemporaryDirectory() as work:
+        root = Path(work)
+        inbox, held, shows, state_dir = root / "_DVDs", root / "_Unidentified", root / "_Shows", root / "state"
+        needs, processed = inbox / "_NeedsIdentification", inbox / "_Processed"
+        for folder in (needs, processed, held, shows, state_dir):
+            folder.mkdir(parents=True)
+        media = "All Creatures Great and Small (1978)"
+        series_dir = shows / f"{media} [tvdbid-78289]"
+        (series_dir / "Season 03").mkdir(parents=True)
+        library = [(1, e, f"{media} [tvdbid-78289]") for e in range(1, 7)]
+        library += [(4, e, media) for e in (1, 2, 3, 5, 6, 7)] + [(5, e, media) for e in range(1, 13)]
+        for season, episode, prefix in library:
+            folder = series_dir / f"Season {season:02d}"
+            folder.mkdir(exist_ok=True)
+            (folder / f"{prefix} S{season:02d}E{episode:02d} - x.mkv").write_bytes(b"")
+        counts = {"1": 13, "2": 14, "3": 14, "4": 10, "5": 12, "6": 12, "7": 12}
+        series = {"tvmazeId": 8090, "name": "All Creatures Great and Small", "year": 1978,
+                  "provider": "tvdbid-78289"}
+        disc = {"schemaVersion": 2, "stage": "disc", "status": "uncertain", "series": series,
+                "season": None, "assignments": [], "candidates": [series],
+                "seasonEpisodeCounts": counts, "summary": "episodes need confirming.",
+                "reasons": ["TheDiscDB has no record of this exact disc (no_match).",
+                            "The disc menus do not name any All Creatures Great and Small (1978) episode."]}
+        order_args = argparse.Namespace(shows_dir=shows)
+        unnamed = Path("ALLCREATURESGREATANDSMALL_20261114-162720_1TbgkU.iso")
+        assert order_proposal(order_args, unnamed, disc, [3, 4]) is None
+        assert order_proposal(order_args, unnamed, disc, [3, 4, 5]) is None
+        # With only S04E08-E10 missing, that gap is the guess for 3 titles.
+        complete = dict(disc, seasonEpisodeCounts={"1": 6, "4": 10, "5": 12})
+        guess = order_proposal(order_args, unnamed, complete, [3, 4, 5])
+        assert [(a["season"], a["episode"]) for a in guess["assignments"]] == [(4, 8), (4, 9), (4, 10)]
+        # A one-episode hole (S04E04) has no room for two titles.
+        guess = order_proposal(order_args, unnamed, complete, [3, 4])
+        assert [(a["season"], a["episode"]) for a in guess["assignments"]] == [(4, 8), (4, 9)]
+
+        titles_file, contexts, disc_file = root / "titles.json", root / "contexts", root / "disc.json"
+        disc_file.write_text(json.dumps(disc), encoding="utf-8")
+        titles_file.write_text(json.dumps({"MainFeature": 3, "TitleList": [
+            {"Index": i, "Duration": {"Hours": 0, "Minutes": 50, "Seconds": 0}} for i in range(1, 6)]}),
+            encoding="utf-8")
+        handbrake, identifier = root / "handbrake", root / "disc-identify"
+        handbrake.write_text(f"#!/bin/sh\nprintf 'JSON Title Set: '\ncat '{titles_file}'\n",
+                             encoding="utf-8")
+        # The fake identifier answers both stages; the content stage records
+        # its context and "matches" the dialogue to S02E01-02 or S02E03-05.
+        identifier.write_text(f"""#!/usr/bin/env python3
+import json, sys
+argv = sys.argv[1:]
+if argv[0] == "disc":
+    print(open({str(disc_file)!r}).read())
+    raise SystemExit
+context = json.load(open(argv[argv.index("--context") + 1]))
+with open({str(contexts)!r}, "a") as log:
+    log.write(json.dumps(context) + "\\n")
+titles = [int(argv[i + 1]) for i, a in enumerate(argv) if a == "--title"]
+first = 1 if len(titles) == 2 else 3
+print(json.dumps({{"schemaVersion": 2, "stage": "content", "status": "identified",
+                   "series": context["series"], "season": 2, "candidates": [],
+                   "summary": "Identified from the dialogue.",
+                   "reasons": ["Episode numbering was not checked against TMDB (no TMDB key is configured)."],
+                   "assignments": [{{"title": t, "season": 2, "episode": first + i, "name": "Ep"}}
+                                   for i, t in enumerate(titles)]}}))
+""", encoding="utf-8")
+        handbrake.chmod(0o755)
+        identifier.chmod(0o755)
+        args = argparse.Namespace(
+            input_dir=inbox, needs_dir=needs, held_dir=held, shows_dir=shows, state_dir=state_dir,
+            identifier=str(identifier), worker_id="test", lease_seconds=60, bonsai_url=None,
+            handbrake=str(handbrake), parakeet="parakeet", parakeet_model="model",
+            identify_threads=1, ffmpeg="ffmpeg", sevenzip="7z", subtitle_socket=None,
+            staging_dir=None)
+        lock_path, state_path = state_dir / "queue.lock", state_dir / "queue.json"
+        label_split = ["TheDiscDB has no record of this exact disc (no_match).",
+                       "Bonsai could not split the label: Bonsai reply is not the requested JSON",
+                       "No TV series on TVmaze matches the disc's name.",
+                       "There is no TV series to compare the episodes against."]
+        held_records = {}
+        for stem, titles in (("ALLCREATURESGREATANDSMALL_20261114-162720_1TbgkU", [3, 4]),
+                             ("ALLCREATURESGREATANDSMALL_20261114-180405_25Tx4H", [3, 4, 5])):
+            iso = needs / f"{stem}.iso"
+            iso.write_bytes(stem.encode())
+            files = []
+            for offset, title in enumerate(titles):
+                video = held / stem / "Season 01" / f"{stem} S01E{offset + 1:02d} - DVD Title {title:02d}.mkv"
+                video.parent.mkdir(parents=True, exist_ok=True)
+                video.write_bytes(f"{stem}-{title}".encode())
+                files.append(str(video))
+            # As on the server: schema-1 evidence and a record from before
+            # automatic retries existed (no "retry").
+            atomic_json(needs / f"{iso.name}.identify.json", {
+                "schemaVersion": 1, "sourceIso": iso.name, "titles": titles, "heldFiles": files,
+                "summary": "The series could not be determined.", "reasons": label_split,
+                "suggestion": None, "finishedAt": int(time.time()) - 2 * RETRY_DELAYS[0]})
+            (needs / f"{stem}.jellyfin.json").write_text("{}", encoding="utf-8")
+            held_records[held_record_key(iso)] = {
+                "identify": f"{iso.name}.identify.json", "sidecar": f"{stem}.jellyfin.json",
+                "files": files, "titles": titles, "heldDir": f"_Unidentified/{stem}",
+                "mtimeNs": iso.stat().st_mtime_ns}
+        atomic_json(state_path, {"version": STATE_VERSION, "sources": {}, "held": held_records})
+        original_busy = bonsai_gate_busy
+        globals()["bonsai_gate_busy"] = lambda _args: False
+        try:
+            for _ in held_records:
+                retry_transient_holds(args, lock_path, state_path, processed)
+        finally:
+            globals()["bonsai_gate_busy"] = original_busy
+        logged = [json.loads(line) for line in contexts.read_text(encoding="utf-8").splitlines()]
+        assert len(logged) == 2 and all(not c.get("assignments") and "proposalSource" not in c
+                                        for c in logged), logged
+        season_two = sorted(path.name for path in (series_dir / "Season 02").glob("*.mkv"))
+        assert season_two == [f"{media} S02E0{n} - Ep.mkv" for n in range(1, 6)], season_two
+        assert load_state(state_path)["held"] == {}
+        assert sorted(path.name for path in needs.iterdir()) == []
+        for name in ("S02E01-E02", "S02E03-E05"):
+            archived = processed / f"{media} [tvdbid-78289] {name}.iso"
+            assert archived.is_file(), sorted(processed.iterdir())
+            evidence = read_evidence(Path(f"{archived}.identify.json"))
+            assert evidence["resolution"]["by"] == "automatic retry", evidence
 
 
 def self_test() -> None:
@@ -2802,6 +4335,22 @@ def self_test() -> None:
         # Without disambiguating metadata, equal matches are unsafe to reuse.
         assert find_existing_series(library, "Dune") is None
 
+        # TMDB-checked series carry every provider id: an existing folder
+        # tagged with any of them is reused, whatever its name.
+        (library / "Sherlock Holmes (1984) [tmdbid-799]").mkdir()
+        assert library_identity(library, {
+            "name": "Sherlock Holmes", "year": 1984, "provider": "tmdbid-799",
+            "providerIds": ["tmdbid-799", "tvdbid-77728"]}) == ("Sherlock Holmes", 1984, "tmdbid-799")
+        assert library_identity(library, {
+            "name": "The Adventures of Sherlock Holmes", "year": 1984, "provider": "tvdbid-77728",
+            "providerIds": []}) == ("The Adventures of Sherlock Holmes", 1984, "tvdbid-77728")
+        assert library_identity(library, {
+            "name": "Rumpole of the Bailey", "year": 1978, "provider": "tmdbid-4280",
+            "providerIds": ["tmdbid-4280", "tvdbid-7794"]}) == ("Rumpole Of The Bailey", 1978, "tvdbid-7794")
+        # A same-kind tag that differs is another series.
+        assert library_identity(library, {
+            "name": "Dune", "year": 1984, "provider": "tmdbid-1"}) == ("Dune", 1984, "tmdbid-1")
+
     titles = [Title(1, 2700, False), Title(2, 2680, False), Title(3, 5380, True)]
     selected, dominant, _ = select_titles(titles, 300, 0.85)
     assert not dominant and [title.index for title in selected] == [1, 2]
@@ -2811,6 +4360,14 @@ def self_test() -> None:
         [Title(2, 1326, True), Title(3, 1705, False), Title(4, 1638, False), Title(5, 1523, False)]
     )
     assert not looks_like_episode_set([Title(1, 5400, True), Title(2, 1200, False), Title(3, 900, False)])
+    # Two episodes plus short extras are TV with the extras dropped; a film
+    # with featurettes, or one episode with extras, is not.
+    creatures = [Title(1, 3250, True), Title(2, 3271, False), Title(3, 548, False), Title(4, 334, False)]
+    assert [title.index for title in episode_core(creatures)] == [1, 2]
+    assert episode_core([Title(1, 6100, True), Title(2, 548, False), Title(3, 334, False)]) is None
+    assert episode_core([Title(1, 3250, True), Title(2, 548, False)]) is None
+    assert episode_core([Title(1, 3250, True), Title(2, 3271, False), Title(3, 1500, False)]) is None
+    assert episode_core([Title(1, 3250, True), Title(2, 3271, False)]) is None
     with tempfile.TemporaryDirectory() as scan_dir:
         fake_handbrake = Path(scan_dir) / "fake-handbrake"
         fake_handbrake.write_bytes(
@@ -2821,6 +4378,421 @@ def self_test() -> None:
         fake_handbrake.chmod(0o755)
         scanned = scan_titles(str(fake_handbrake), Path(scan_dir) / "disc.iso")
         assert scanned == [Title(index=1, seconds=3000, main_feature=True)]
+    # Hold reasons: only temporary failures with nothing contradicting the
+    # disc are retried. All Creatures S01E05-E06 (2026-11-15) was held after a
+    # Bonsai 504 with no other blocker.
+    creatures_reasons = [
+        "TheDiscDB has no record of this exact disc (no_match).",
+        "Bonsai could not read the menus: Bonsai returned HTTP 504 Gateway Timeout",
+        "The disc menus do not name any All Creatures Great and Small (1978) episode.",
+        "Title 3: the dialogue did not clearly match one episode.",
+    ]
+    assert classify_reasons(creatures_reasons)["retryable"]
+    assert classify_reasons(["TMDB is unavailable: 503", "Title 3: x"])["retryable"]
+    assert classify_reasons(["the identifier exceeded its deadline"])["retryable"]
+    assert classify_reasons(["The OpenSubtitles daily download limit was reached."])["retryable"]
+    assert not classify_reasons(creatures_reasons[:1] + creatures_reasons[2:])["retryable"]
+    assert classify_reasons(
+        ["Bonsai could not split the label: Bonsai reply is not the requested JSON",
+         "No TV series on TVmaze matches the disc's name."])["retryable"]
+    assert not classify_reasons(
+        ["Title 4: transcription failed: the excerpt contains too little speech to compare"]
+    )["retryable"]
+    contradicted = classify_reasons(creatures_reasons + [
+        "Title 3: dialogue matches S01E09 rather than the disc menu guess."])
+    assert not contradicted["retryable"] and len(contradicted["substantiveReasons"]) == 1
+    # A library-order or disc-number guess is only a guess: neither today's
+    # wording nor the earlier one blocks a retry.
+    for guess in ("Title 3: dialogue matches S01E09, not the library order guess.",
+                  "Title 3: dialogue matches S01E09 rather than the library order guess.",
+                  "Title 3: dialogue matches S01E09 rather than the disc number guess."):
+        assert classify_reasons(creatures_reasons + [guess])["retryable"], guess
+    # A menu reading cut off at its token limit is retried like a label split.
+    assert classify_reasons([
+        "Bonsai could not read the menus: Bonsai reply was cut off at its 2048-token "
+        "limit before the answer"])["retryable"]
+
+    # Library order: the one run of missing episodes with room for the disc,
+    # rolling into the next season once the provider says one is complete.
+    with tempfile.TemporaryDirectory() as order_dir:
+        root = Path(order_dir)
+        shows = root / "Shows"
+        series_dir = shows / "All Creatures Great and Small (1978) [tvdbid-78289]"
+        season_one = series_dir / "Season 01"
+        season_one.mkdir(parents=True)
+        for number in range(1, 5):
+            (season_one / f"All Creatures Great and Small (1978) S01E{number:02d} - x.mkv").write_bytes(b"")
+        order_args = argparse.Namespace(shows_dir=shows)
+        series = {"tvmazeId": 1, "name": "All Creatures Great and Small", "year": 1978,
+                  "provider": "tvdbid-78289"}
+        disc_outcome = {"status": "uncertain", "series": series, "season": None,
+                        "assignments": [], "seasonEpisodeCounts": {"1": 6}}
+        unnamed = Path("ALLCREATURESGREATANDSMALL_20261114-162720_1TbgkU.iso")
+        proposal = order_proposal(order_args, unnamed, disc_outcome, [3, 4])
+        assert proposal["proposalSource"] == "library order", proposal
+        assert [(a["title"], a["season"], a["episode"]) for a in proposal["assignments"]] == [
+            (3, 1, 5), (4, 1, 6)]
+        assert "S01E05-E06" in proposal["reason"] and "S01E04" in proposal["reason"]
+        # Three titles have no room in the six-episode season: no proposal.
+        assert order_proposal(order_args, unnamed, disc_outcome, [3, 4, 5]) is None
+        # An unstarted second season also has room: two gaps, no guess.
+        two_seasons = dict(disc_outcome, seasonEpisodeCounts={"1": 6, "2": 6})
+        assert order_proposal(order_args, unnamed, two_seasons, [3, 4]) is None
+        for number in (5, 6):
+            (season_one / f"All Creatures Great and Small (1978) S01E{number:02d} - x.mkv").write_bytes(b"")
+        rolled = order_proposal(order_args, unnamed, two_seasons, [3, 4])
+        assert [(a["season"], a["episode"]) for a in rolled["assignments"]] == [(2, 1), (2, 2)]
+        # A season named on the disc is not rolled past.
+        assert order_proposal(order_args, unnamed, dict(two_seasons, season=1), [3, 4]) is None
+        # A hole inside a season is filled, not skipped.
+        (season_one / "All Creatures Great and Small (1978) S01E03 - x.mkv").unlink()
+        (season_one / "All Creatures Great and Small (1978) S01E04 - x.mkv").unlink()
+        hole = order_proposal(order_args, unnamed, dict(two_seasons, season=1), [3, 4])
+        assert [(a["season"], a["episode"]) for a in hole["assignments"]] == [(1, 3), (1, 4)], hole
+        assert "after S01E02" in hole["reason"], hole
+        # Anything the disc stage already proposed or identified is kept.
+        assert order_proposal(order_args, unnamed, dict(
+            disc_outcome, assignments=[{"title": 3, "season": 1, "episode": 1}]), [3, 4]) is None
+        assert order_proposal(order_args, unnamed, dict(disc_outcome, series=None), [3, 4]) is None
+        # No library folder: the disc number estimates the episodes instead.
+        other = dict(disc_outcome, series=dict(series, name="Rumpole of the Bailey", year=1978,
+                                               provider="tvdbid-7794"))
+        by_disc = order_proposal(order_args, Path("RUMPOLE_OF_THE_BAILEY_DISC_3.iso"), other, [1, 2])
+        assert by_disc["proposalSource"] == "disc number"
+        assert [(a["season"], a["episode"]) for a in by_disc["assignments"]] == [(1, 5), (1, 6)]
+        assert order_proposal(order_args, Path("RUMPOLE_OF_THE_BAILEY.iso"), other, [1, 2]) is None
+        assert library_to_provider_episode(series, 1, 5) == (1, 5)
+
+    # Automatic re-identification of transient holds. Concurrency and data
+    # risk (publishing into the library, archiving ISOs, racing a person's
+    # rename or deletion and shutdowns), so every transition is exercised.
+    with tempfile.TemporaryDirectory() as retry_dir:
+        root = Path(retry_dir)
+        inbox = root / "_DVDs"
+        needs = inbox / "_NeedsIdentification"
+        processed = inbox / "_Processed"
+        held = root / "_Unidentified"
+        shows = root / "_Shows"
+        state_dir = root / "state"
+        for folder in (needs, processed, held, shows, state_dir):
+            folder.mkdir(parents=True)
+        retry_args = argparse.Namespace(
+            input_dir=inbox, needs_dir=needs, held_dir=held, shows_dir=shows,
+            state_dir=state_dir, identifier="disc-identify", worker_id="test",
+            lease_seconds=60, bonsai_url=None, handbrake="HandBrakeCLI")
+        lock_path = state_dir / "queue.lock"
+        state_path = state_dir / "queue.json"
+        series = {"tvmazeId": 1, "name": "All Creatures Great and Small", "year": 1978,
+                  "provider": "tvdbid-78289"}
+
+        def hold(name: str, reasons: list[str]) -> tuple[Path, str, list[Path]]:
+            iso = inbox / f"{name}.iso"
+            iso.write_bytes(name.encode())
+            folder = held / name / "Season 01"
+            folder.mkdir(parents=True)
+            files = []
+            for offset, title in enumerate((3, 4)):
+                video = folder / f"{name} S01E{offset + 1:02d} - DVD Title {title:02d}.mkv"
+                video.write_bytes(f"{name}-{title}".encode())
+                files.append(video)
+            record = {
+                "schemaVersion": EVIDENCE_SCHEMA_VERSION, "status": "held",
+                "sourceIso": iso.name, "heldDir": f"_Unidentified/{name}",
+                "heldFiles": [str(f) for f in files], "titles": [3, 4],
+                "summary": "held", "reasons": reasons, "suggestion": None,
+                "outcomes": {"disc": None, "content": None},
+                "retry": classify_reasons(reasons),
+            }
+            with locked_queue(lock_path):
+                state = load_state(state_path)
+                archived = park_for_identification(retry_args, iso, record, state)
+                atomic_json(state_path, state)
+            return archived, held_record_key(archived), files
+
+        def retry_of(key: str) -> dict[str, Any] | None:
+            record = load_state(state_path).get("held", {}).get(key)
+            return record.get("retry") if record else None
+
+        def make_due(key: str) -> None:
+            state = load_state(state_path)
+            state["held"][key]["retry"]["nextAt"] = 0
+            atomic_json(state_path, state)
+
+        calls: list[str] = []
+
+        def scripted(answer: Any) -> None:
+            def fake(_args: Any, _directory: Path, iso: Path, record: dict[str, Any],
+                     renew: Any) -> Any:
+                calls.append(iso.name)
+                assert renew(), "the retry lease must be renewable while identifying"
+                return answer(iso, record)
+            globals()["reidentify_held"] = fake
+
+        # Not only a busy gate (whose attempts are given back, tested below).
+        transient = {"status": "uncertain", "series": series, "summary": "still busy",
+                     "assignments": [], "reasons": creatures_reasons + [
+                         "TVmaze search failed: operation timed out"]}
+
+        def identified(first: int) -> dict[str, Any]:
+            return {"status": "identified", "series": series, "summary": "Identified",
+                    "reasons": [], "assignments": [
+                        {"title": 3, "season": 1, "episode": first, "name": "One"},
+                        {"title": 4, "season": 1, "episode": first + 1, "name": "Two"}]}
+
+        original_reidentify = reidentify_held
+        original_busy = bonsai_gate_busy
+        try:
+            # Backoff: 1 h, 6 h, 24 h, then the disc is left for a person.
+            iso_a, key_a, files_a = hold("A", creatures_reasons)
+            assert retry_of(key_a)["state"] == "scheduled"
+            assert retry_of(key_a)["nextAt"] - int(time.time()) in range(3590, 3601)
+            assert read_evidence(Path(f"{iso_a}.identify.json"))["retry"]["nextAttemptAt"]
+            scripted(lambda iso, record: (dict(transient), {"disc": transient, "content": None}, None))
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert calls == [], "a hold is not retried before its delay"
+            for attempt, delay in ((1, RETRY_DELAYS[1]), (2, RETRY_DELAYS[2])):
+                make_due(key_a)
+                retry_transient_holds(retry_args, lock_path, state_path, processed)
+                current = retry_of(key_a)
+                assert current["attempts"] == attempt and current["state"] == "scheduled"
+                assert current["nextAt"] - int(time.time()) in range(delay - 10, delay + 1)
+                assert "lease" not in current
+            make_due(key_a)
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert retry_of(key_a)["state"] == "stopped" and retry_of(key_a)["attempts"] == 3
+            evidence_a = read_evidence(Path(f"{iso_a}.identify.json"))
+            assert evidence_a["retry"]["state"] == "stopped" and evidence_a["outcomes"]["disc"]
+            make_due(key_a)
+            calls.clear()
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert calls == [] and all(f.is_file() for f in files_a)
+
+            # The gate is busy: wait without spending an attempt.
+            iso_h, key_h, _ = hold("H", creatures_reasons)
+            make_due(key_h)
+            globals()["bonsai_gate_busy"] = lambda _args: True
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert calls == [] and retry_of(key_h)["attempts"] == 0
+            globals()["bonsai_gate_busy"] = original_busy
+
+            # A gate that stays busy for an hour no longer blocks retries:
+            # one goes ahead, then the wait starts again.
+            globals()["bonsai_gate_busy"] = lambda _args: True
+            marker = state_dir / "retry-bonsai-busy-since"
+            marker.unlink(missing_ok=True)
+            start = int(time.time())
+            assert postpone_for_busy_gate(retry_args, start) and marker.is_file()
+            assert postpone_for_busy_gate(retry_args, start + BUSY_GATE_PATIENCE_SECONDS - 1)
+            assert not postpone_for_busy_gate(retry_args, start + BUSY_GATE_PATIENCE_SECONDS)
+            assert not marker.exists()
+            assert postpone_for_busy_gate(retry_args, start + BUSY_GATE_PATIENCE_SECONDS + 1)
+            globals()["bonsai_gate_busy"] = original_busy
+            assert not postpone_for_busy_gate(retry_args, start) and not marker.exists()
+            marker.write_text(str(start + 86400), encoding="utf-8")  # a clock that moved back
+            globals()["bonsai_gate_busy"] = lambda _args: True
+            assert postpone_for_busy_gate(retry_args, start)
+            assert int(marker.read_text(encoding="utf-8")) == start
+            globals()["bonsai_gate_busy"] = original_busy
+            busy = classify_reasons(["Bonsai could not read the menus: Bonsai returned HTTP 504 Gateway Timeout"])
+            assert busy["retryable"] and busy_gate_only(busy)
+            ranking = classify_reasons(busy["transientReasons"] + [
+                "Title 2: Bonsai ranking failed: Bonsai returned HTTP 429 Too Many Requests"])
+            assert ranking["retryable"] and busy_gate_only(ranking)
+            assert not busy_gate_only(classify_reasons(creatures_reasons + [
+                "TVmaze search failed: timed out"]))
+
+            # A shutdown gives the attempt back and releases the lease.
+            def stop(_iso: Path, _record: Any) -> Any:
+                raise ShutdownRequested("test")
+            scripted(stop)
+            try:
+                retry_transient_holds(retry_args, lock_path, state_path, processed)
+            except ShutdownRequested:
+                pass
+            else:
+                raise AssertionError("a shutdown must reach the worker")
+            assert retry_of(key_h)["attempts"] == 0 and "lease" not in retry_of(key_h)
+
+            # Now dialogue contradicts the disc: stop, never publish.
+            scripted(lambda iso, record: (dict(transient, reasons=creatures_reasons + [
+                "Title 3: dialogue matches S01E09 rather than the disc menu guess."]),
+                {"disc": None, "content": None}, None))
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert retry_of(key_h)["state"] == "stopped" and iso_h.is_file()
+
+            # A person named the ISO: the rename is theirs to resolve.
+            iso_c, key_c, _ = hold("C", creatures_reasons)
+            make_due(key_c)
+            renamed_c = iso_c.with_name("All Creatures Great and Small (1978) S01E07-E08.iso")
+            os.rename(iso_c, renamed_c)
+            calls.clear()
+            scripted(lambda iso, record: (identified(7), {}, identified(7)["assignments"]))
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert calls == [] and renamed_c.is_file() and retry_of(key_c)["attempts"] == 0
+            renamed_c.unlink()
+
+            # Identified: published without re-encoding and archived as a
+            # confirmed rename would be, with its evidence beside it.
+            iso_d, key_d, files_d = hold("D", creatures_reasons)
+            make_due(key_d)
+            result_d = identified(5)
+            scripted(lambda iso, record: (result_d, {"disc": transient, "content": result_d},
+                                          result_d["assignments"]))
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            season_dir = shows / "All Creatures Great and Small (1978) [tvdbid-78289]" / "Season 01"
+            assert sorted(path.name for path in season_dir.glob("*.mkv")) == [
+                "All Creatures Great and Small (1978) S01E05 - One.mkv",
+                "All Creatures Great and Small (1978) S01E06 - Two.mkv"]
+            assert not any(f.exists() for f in files_d) and not iso_d.exists()
+            archived_d = processed / "All Creatures Great and Small (1978) [tvdbid-78289] S01E05-E06.iso"
+            assert archived_d.is_file()
+            evidence_d = read_evidence(Path(f"{archived_d}.identify.json"))
+            assert evidence_d["status"] == "identified"
+            assert evidence_d["resolution"]["by"] == "automatic retry"
+            assert evidence_d["resolution"]["firstEpisode"] == 5
+            assert evidence_d["outcomes"]["content"]["status"] == "identified"
+            assert not Path(f"{iso_d}.identify.json").exists()
+            assert key_d not in load_state(state_path).get("held", {})
+
+            # Resolved elsewhere while identifying (a person's rename handled
+            # by another worker removes the record): nothing is published.
+            iso_f, key_f, files_f = hold("F", creatures_reasons)
+            make_due(key_f)
+
+            def resolved_elsewhere(iso: Path, record: Any) -> Any:
+                with locked_queue(lock_path):
+                    state = load_state(state_path)
+                    del state["held"][key_f]
+                    atomic_json(state_path, state)
+                return identified(9), {}, identified(9)["assignments"]
+            globals()["reidentify_held"] = lambda a, d, iso, r, renew: resolved_elsewhere(iso, r)
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert all(f.is_file() for f in files_f) and iso_f.is_file()
+            assert not (season_dir / "All Creatures Great and Small (1978) S01E09 - One.mkv").exists()
+
+            # The person deleted the ISO meanwhile: stop, keep the videos.
+            iso_j, key_j, files_j = hold("J", creatures_reasons)
+            make_due(key_j)
+
+            def deleted(iso: Path, record: Any) -> Any:
+                iso.unlink()
+                return identified(11), {}, identified(11)["assignments"]
+            scripted(deleted)
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert retry_of(key_j)["state"] == "stopped" and all(f.is_file() for f in files_j)
+
+            # Killed after publishing but before archiving: the next run only
+            # archives. A person's rename meanwhile does not interfere.
+            iso_g, key_g, files_g = hold("G", creatures_reasons)
+            job = {"name": series["name"], "year": 1978, "provider": "tvdbid-78289",
+                   "season": 2, "first": 1, "names": ["", ""]}
+            state = load_state(state_path)
+            state["held"][key_g]["retry"].update(state="identified", publishing=job)
+            atomic_json(state_path, state)
+            publish_episodes(retry_args, files_g, series["name"], 1978, "tvdbid-78289", 2, 1, ["", ""])
+            renamed_g = iso_g.with_name("All Creatures Great and Small (1978) S03E01-E02.iso")
+            os.rename(iso_g, renamed_g)
+            resolve_renamed_holds(retry_args, lock_path, state_path, processed)
+            assert renamed_g.is_file() and key_g in load_state(state_path)["held"]
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert not renamed_g.exists() and key_g not in load_state(state_path).get("held", {})
+            assert (processed / "All Creatures Great and Small (1978) [tvdbid-78289] S02E01-E02.iso").is_file()
+
+            # Killed before publishing: the next run publishes, then archives.
+            iso_k, key_k, files_k = hold("K", creatures_reasons)
+            state = load_state(state_path)
+            state["held"][key_k]["retry"].update(state="identified", publishing=dict(job, first=3))
+            atomic_json(state_path, state)
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert not any(f.exists() for f in files_k) and not iso_k.exists()
+            assert (shows / "All Creatures Great and Small (1978) [tvdbid-78289]" / "Season 02"
+                    / "All Creatures Great and Small (1978) S02E03.mkv").is_file()
+
+            # Held before retries existed: judged from its evidence once.
+            iso_l, key_l, _ = hold("L", creatures_reasons)
+            state = load_state(state_path)
+            del state["held"][key_l]["retry"]
+            atomic_json(state_path, state)
+            calls.clear()
+            scripted(lambda iso, record: (dict(transient), {}, None))
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert retry_of(key_l)["state"] == "scheduled"
+
+            # Killed during its last attempt (the lease expired, still
+            # "scheduled"): stopped, never retried again, and the next due
+            # hold is re-identified in the same run.
+            iso_m, key_m, _ = hold("M", creatures_reasons)
+            iso_n, key_n, _ = hold("N", creatures_reasons)
+            state = load_state(state_path)
+            state["held"][key_m]["retry"].update(attempts=len(RETRY_DELAYS), nextAt=0, lease={
+                "workerId": "gone", "leaseId": "x", "expiresAt": 1})
+            state["held"][key_n]["retry"]["nextAt"] = 0
+            atomic_json(state_path, state)
+            calls.clear()
+            scripted(lambda iso, record: (dict(transient), {}, None))
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert retry_of(key_m)["state"] == "stopped" and "lease" not in retry_of(key_m)
+            assert retry_of(key_m)["stoppedBecause"] == "automatic attempts used up"
+            assert read_evidence(Path(f"{iso_m}.identify.json"))["retry"]["state"] == "stopped"
+            assert calls == [iso_n.name], calls
+
+            # Archiving fails after publishing: recorded on the retry, other
+            # holds go on, and a later run archives it.
+            iso_p, key_p, files_p = hold("P", creatures_reasons)
+            state = load_state(state_path)
+            state["held"][key_p]["retry"].update(state="identified", publishing=dict(job, first=5))
+            state["held"][key_n]["retry"]["nextAt"] = 0
+            atomic_json(state_path, state)
+            original_archive = archive_source
+
+            def failing_archive(*_args: Any, **_kwargs: Any) -> Path:
+                raise PermissionError("read-only _Processed")
+            globals()["archive_source"] = failing_archive
+            calls.clear()
+            try:
+                retry_transient_holds(retry_args, lock_path, state_path, processed)
+            finally:
+                globals()["archive_source"] = original_archive
+            pending = retry_of(key_p)
+            assert pending["publishing"] and "read-only _Processed" in pending["publishError"], pending
+            assert not any(f.exists() for f in files_p) and iso_p.is_file()
+            assert "could not be archived" in read_evidence(Path(f"{iso_p}.identify.json"))["summary"]
+            assert calls == [iso_n.name], "the failed archive must not block other holds"
+            calls.clear()
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert retry_of(key_p)["publishing"], "not retried before its delay"
+            state = load_state(state_path)
+            state["held"][key_p]["retry"]["publishFailedAt"] = 1
+            atomic_json(state_path, state)
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert not iso_p.exists() and key_p not in load_state(state_path).get("held", {})
+            assert (processed / "All Creatures Great and Small (1978) [tvdbid-78289] S02E05-E06.iso").is_file()
+
+            # A held special is never re-identified as regular episodes.
+            iso_s = inbox / "S.iso"
+            iso_s.write_bytes(b"S")
+            with locked_queue(lock_path):
+                state = load_state(state_path)
+                archived_s = park_for_identification(retry_args, iso_s, {
+                    "titles": [1], "heldFiles": [str(files_d[0])], "reasons": creatures_reasons,
+                    "retry": classify_reasons(creatures_reasons), "special": True}, state)
+                atomic_json(state_path, state)
+            key_s = held_record_key(archived_s)
+            assert retry_of(key_s)["state"] == "not retryable"
+            assert load_state(state_path)["held"][key_s]["special"]
+            state = load_state(state_path)
+            state["held"][key_s]["retry"] = {"state": "scheduled", "attempts": 0, "nextAt": 0}
+            atomic_json(state_path, state)
+            calls.clear()
+            retry_transient_holds(retry_args, lock_path, state_path, processed)
+            assert calls == [] and retry_of(key_s)["state"] == "stopped"
+        finally:
+            globals()["reidentify_held"] = original_reidentify
+            globals()["bonsai_gate_busy"] = original_busy
+
+    live_shaped_retry_self_test()
+
+    special_and_layout_self_test()
     assert match_score("The Wire", "The Wire") == 1.0
     assert natural_key("disc2.iso") < natural_key("disc10.iso")
     with tempfile.NamedTemporaryFile() as handle:

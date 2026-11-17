@@ -50,8 +50,18 @@ impl Bonsai {
         })
     }
 
-    fn chat_json(&self, content: Vec<Value>, schema: Value, max_tokens: u32) -> Result<Value> {
-        let body = json!({
+    /// `think` false asks the model to answer without a reasoning trace.
+    /// Bonsai reasons by default, and on a short budget the trace can use
+    /// every token before any answer: label splitting (400 tokens) failed
+    /// this way on every disc from 2026-11-15 to 2026-11-17.
+    fn chat_json(
+        &self,
+        content: Vec<Value>,
+        schema: Value,
+        max_tokens: u32,
+        think: bool,
+    ) -> Result<Value> {
+        let mut body = json!({
             "model": self.model,
             "temperature": 0,
             "max_tokens": max_tokens,
@@ -61,6 +71,9 @@ impl Bonsai {
             },
             "messages": [{"role": "user", "content": content}],
         });
+        if !think {
+            body["chat_template_kwargs"] = json!({"enable_thinking": false});
+        }
         let url = format!("{}/chat/completions", self.base);
         // The local gate admits one request, queues two (429 beyond that)
         // and answers 504 when a queued request waits over a minute, which a
@@ -93,10 +106,15 @@ impl Bonsai {
             bail!("Bonsai returned HTTP {status}");
         }
         let reply: Value = response.json().context("Bonsai returned invalid JSON")?;
-        let text = reply["choices"][0]["message"]["content"]
-            .as_str()
-            .context("Bonsai reply has no content")?;
-        parse_json_object(text).context("Bonsai reply is not the requested JSON")
+        let choice = &reply["choices"][0];
+        let text = choice["message"]["content"].as_str().unwrap_or_default();
+        match parse_json_object(text) {
+            Some(value) => Ok(value),
+            None if choice["finish_reason"] == "length" => {
+                bail!("Bonsai reply was cut off at its {max_tokens}-token limit before the answer")
+            }
+            None => bail!("Bonsai reply is not the requested JSON"),
+        }
     }
 
     /// Read episode listings from menu frames, four frames per request.
@@ -128,7 +146,7 @@ impl Bonsai {
                     "image_url": {"url": format!("data:image/jpeg;base64,{encoded}")}
                 }));
             }
-            let answer = self.chat_json(content, schema.clone(), 1500)?;
+            let answer = self.chat_json(content, schema.clone(), 1500, true)?;
             reading.frames_read += batch.len();
             if reading.series_title.is_none() {
                 reading.series_title = answer["series_title"]
@@ -191,7 +209,12 @@ impl Bonsai {
 Insert spaces to recover the programme title, in title case. Do not add, remove or \
 change any letters or digits."
         );
-        let answer = self.chat_json(vec![json!({"type": "text", "text": prompt})], schema, 400)?;
+        let answer = self.chat_json(
+            vec![json!({"type": "text", "text": prompt})],
+            schema,
+            400,
+            false,
+        )?;
         let title = answer["title"]
             .as_str()
             .unwrap_or_default()
@@ -241,7 +264,12 @@ from? Rely on names, places, animals, events and situations that appear in both.
 if the transcript does not clearly fit one candidate. Give confidence between 0 and 1.\n\n\
 TRANSCRIPT:\n{transcript}\n\nCANDIDATES:\n{listing}"
         );
-        let answer = self.chat_json(vec![json!({"type": "text", "text": prompt})], schema, 1200)?;
+        let answer = self.chat_json(
+            vec![json!({"type": "text", "text": prompt})],
+            schema,
+            1200,
+            true,
+        )?;
         let chosen = answer["episode"].as_str().unwrap_or("none");
         let confidence = answer["confidence"].as_f64().unwrap_or(0.0).clamp(0.0, 1.0);
         Ok(keys

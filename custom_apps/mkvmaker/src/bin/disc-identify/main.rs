@@ -8,13 +8,18 @@
 //! uploader's OpenSubtitles subtitle text for the best candidates.
 //!
 //! Either stage prints one JSON object. `status` is `identified` only when the
-//! evidence names every title, in a single season, as consecutive episodes;
-//! anything less is `uncertain` with a best guess for a person to confirm.
+//! evidence names every title, in a single season, as consecutive episodes,
+//! and (when a TMDB key is configured) those episodes are still consecutive in
+//! TMDB's numbering, which Jellyfin uses; identified episodes are then
+//! renumbered to TMDB. Anything less is `uncertain` with a best guess for a
+//! person to confirm. `episodes` prints a series' layout as Jellyfin numbers it.
 
 mod bonsai;
 mod content;
 mod menu;
+mod replay;
 mod text;
+mod tmdb;
 mod tvmaze;
 
 use anyhow::{bail, Context, Result};
@@ -43,6 +48,9 @@ enum Command {
     Disc(DiscArgs),
     /// Identify encoded titles from what they say.
     Content(ContentArgs),
+    /// Print a series' episode layout as Jellyfin numbers it (TMDB), or
+    /// TVmaze's when TMDB is not configured. Always exits 0.
+    Episodes(EpisodesArgs),
 }
 
 #[derive(Args)]
@@ -59,6 +67,9 @@ struct Common {
     bonsai_model: String,
     #[arg(long, default_value_t = 20)]
     http_timeout_seconds: u64,
+    /// Provider broker system socket (TMDB numbering, subtitles).
+    #[arg(long, overrides_with = "provider_socket")]
+    provider_socket: Option<PathBuf>,
     #[arg(long, default_value_t = 1200)]
     bonsai_timeout_seconds: u64,
     /// Scratch directory (created and removed by this run).
@@ -127,6 +138,37 @@ struct ContentArgs {
     excerpt_start: u32,
     #[arg(long, default_value_t = 360)]
     excerpt_seconds: u32,
+    /// Subtitle phrase containment that names an episode (with --subtitle-margin).
+    #[arg(long, default_value_t = 0.06)]
+    subtitle_min_containment: f64,
+    /// How many times the runner-up's containment the best one must reach.
+    #[arg(long, default_value_t = 3.0)]
+    subtitle_margin: f64,
+    /// Containment that names an episode when it is the only one compared.
+    #[arg(long, default_value_t = 0.10)]
+    subtitle_single_min: f64,
+    /// Bonsai confidence needed when it agrees with the keyword ranking.
+    #[arg(long, default_value_t = 0.5)]
+    bonsai_min_confidence: f64,
+    /// Evaluation only: record transcripts, rankings and subtitle text here.
+    #[arg(long)]
+    replay_cache: Option<PathBuf>,
+    /// Evaluation only: answer from --replay-cache without contacting sources.
+    #[arg(long)]
+    replay_only: bool,
+}
+
+#[derive(Args)]
+struct EpisodesArgs {
+    #[command(flatten)]
+    common: Common,
+    /// `tmdbid-N`, `tvdbid-N` or `imdbid-ttN`; empty to look up --name/--year.
+    #[arg(long, default_value = "")]
+    series: String,
+    #[arg(long, default_value = "")]
+    name: String,
+    #[arg(long)]
+    year: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -138,6 +180,12 @@ struct Assignment {
     name: String,
     evidence: String,
 }
+
+/// Outcome schema. 2 added `discDiagnostics`, `contentDiagnostics` and
+/// `seasonEpisodeCounts`; every schema-1 field keeps its meaning. The import
+/// worker stores this object in each disc's `.identify.json` evidence, which
+/// the evaluation harness reads, so fields are only ever added.
+const OUTCOME_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -155,12 +203,25 @@ struct Outcome {
     reasons: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     menu: Option<MenuReading>,
+    /// Provider episode count per season of the chosen series (disc stage),
+    /// keyed by season number; lets the worker continue a library season.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    season_episode_counts: BTreeMap<u32, u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disc_diagnostics: Option<DiscDiagnostics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_diagnostics: Option<ContentDiagnostics>,
+    /// Held because the episodes could not be renumbered as TMDB (Jellyfin)
+    /// numbers them. The assignments, if any, are in the identifier's own
+    /// numbering and must not be offered for publishing.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    tmdb_numbering_held: bool,
 }
 
 impl Outcome {
     fn new(stage: &'static str) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: OUTCOME_SCHEMA_VERSION,
             stage,
             status: "uncertain",
             series: None,
@@ -170,8 +231,153 @@ impl Outcome {
             summary: String::new(),
             reasons: Vec::new(),
             menu: None,
+            season_episode_counts: BTreeMap::new(),
+            disc_diagnostics: None,
+            content_diagnostics: None,
+            tmdb_numbering_held: false,
         }
     }
+}
+
+/// What the disc stage compared (schema 2).
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscDiagnostics {
+    /// The sidecar's TheDiscDB lookup status ("matched", "no_match", ...),
+    /// "unreadable", or null when no sidecar was uploaded.
+    sidecar: Option<String>,
+    /// TVmaze searches made, in order.
+    queries: Vec<String>,
+    /// Candidate series, best name match first.
+    series: Vec<SeriesDiagnostics>,
+    /// "sidecar", "menu" or "name" (strong name match); null when no series
+    /// was chosen.
+    chosen_by: Option<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SeriesDiagnostics {
+    tvmaze_id: u64,
+    name: String,
+    year: Option<i32>,
+    name_similarity: f64,
+    era_plausible: bool,
+    /// Provider episodes known for the series (0 when the lookup failed).
+    episodes_known: usize,
+    /// One row per menu entry Bonsai read.
+    menu_matches: Vec<MenuMatch>,
+}
+
+/// How one menu entry compared with a series' episodes.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MenuMatch {
+    entry: String,
+    printed_season: Option<u32>,
+    printed_episode: Option<u32>,
+    /// The most similar episode title, with its similarity (0..=1).
+    best_title: Option<ScoredEpisode>,
+    /// The episode this entry was taken to name, if any.
+    matched: Option<EpisodeRef>,
+    /// "title" (similarity >= 0.85) or "printed number" (number agrees and
+    /// the title is at least half similar); null when unmatched.
+    rule: Option<&'static str>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EpisodeRef {
+    season: u32,
+    episode: u32,
+    name: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScoredEpisode {
+    #[serde(flatten)]
+    episode: EpisodeRef,
+    score: f64,
+}
+
+/// What the content stage compared (schema 2).
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContentDiagnostics {
+    /// Where the proposal came from: "disc menu", "library order",
+    /// "disc number"; null without a proposal.
+    proposal_source: Option<String>,
+    /// Candidate episodes compared against.
+    pool_size: usize,
+    subtitle_downloads: SubtitleBudget,
+    titles: Vec<TitleDiagnostics>,
+    decision: Decision,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SubtitleBudget {
+    limit: u32,
+    /// Downloads that spent OpenSubtitles quota.
+    used: u32,
+    /// Subtitles the broker served from its cache (free).
+    cache_hits: u32,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TitleDiagnostics {
+    title: u32,
+    /// Words in the transcript excerpt; 0 when transcription failed.
+    transcript_words: usize,
+    transcript_error: Option<String>,
+    /// Best three keyword scores against the TVmaze summaries.
+    keyword_top: Vec<ScoredEpisode>,
+    /// The keyword ranking preferred one episode outright.
+    keyword_decisive: bool,
+    bonsai_pick: Option<EpisodeRef>,
+    bonsai_confidence: Option<f64>,
+    bonsai_error: Option<String>,
+    /// Every subtitle candidate considered, in the order checked.
+    subtitles: Vec<SubtitleCheck>,
+    /// The episode the proposal assigns to this title.
+    proposed: Option<EpisodeRef>,
+    pick: Option<EpisodeRef>,
+    /// "subtitles" or "summary agreement"; null when nothing was picked.
+    pick_rule: Option<&'static str>,
+    /// Against the proposal: "confirmed", "contradicted" or "unconfirmed".
+    verdict: Option<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SubtitleCheck {
+    #[serde(flatten)]
+    episode: EpisodeRef,
+    /// Share of transcript phrases found in the subtitles; null if skipped.
+    containment: Option<f64>,
+    /// Served from the broker's cache (no quota spent).
+    cached: bool,
+    /// Why it was not compared: "budget", "no imdb id", "not found",
+    /// "not cached", "no account", "quota", "unavailable".
+    skipped: Option<&'static str>,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Decision {
+    /// "proposal confirmed", "all titles matched", "subtitle anchor",
+    /// "summary contradiction held", "not identified" or "not compared".
+    rule: &'static str,
+    confirmed: usize,
+    contradicted: usize,
+    /// The title whose subtitle match anchored disc order ("subtitle anchor").
+    anchor_title: Option<u32>,
+    /// Titles whose pick contradicted the proposal on summary agreement
+    /// alone, with no subtitle match behind it; such a disc is held.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    summary_only_contradictions: Vec<u32>,
 }
 
 struct Scratch(PathBuf);
@@ -262,6 +468,14 @@ fn from_sidecar(
 ) -> Result<bool> {
     let sidecar: Value = serde_json::from_slice(&fs::read(path)?)?;
     let resolution = &sidecar["resolution"];
+    if let Some(diagnostics) = outcome.disc_diagnostics.as_mut() {
+        diagnostics.sidecar = Some(
+            resolution["lookup_status"]
+                .as_str()
+                .unwrap_or("not looked up")
+                .to_string(),
+        );
+    }
     if resolution["lookup_status"] != "matched" {
         outcome.reasons.push(format!(
             "TheDiscDB has no record of this exact disc ({}).",
@@ -343,6 +557,8 @@ fn from_sidecar(
                 .as_str()
                 .filter(|id| !id.is_empty())
                 .map(str::to_string),
+            tmdb_id: None,
+            provider_ids: Vec::new(),
         });
     }
     outcome.assignments = titles
@@ -359,6 +575,9 @@ fn from_sidecar(
     outcome.season = Some(episodes[0].0);
     outcome.series = series;
     outcome.status = "identified";
+    if let Some(diagnostics) = outcome.disc_diagnostics.as_mut() {
+        diagnostics.chosen_by = Some("sidecar");
+    }
     Ok(true)
 }
 
@@ -369,34 +588,68 @@ struct SeriesFit {
     episodes: Vec<Episode>,
     /// Provider episodes the menu names, as (season, episode).
     menu_matches: Vec<(u32, u32)>,
+    menu_details: Vec<MenuMatch>,
 }
 
-fn menu_matches(reading: &MenuReading, episodes: &[Episode]) -> Vec<(u32, u32)> {
-    let mut found: Vec<(u32, u32)> = Vec::new();
-    for entry in &reading.entries {
-        let by_title = episodes
-            .iter()
-            .map(|episode| (episode, text::similarity(&entry.title, &episode.name)))
-            .max_by(|a, b| a.1.total_cmp(&b.1));
-        let numbered = match (entry.season, entry.episode) {
-            (Some(season), Some(number)) => episodes
+fn episode_ref(episode: &Episode) -> EpisodeRef {
+    EpisodeRef {
+        season: episode.season,
+        episode: episode.number,
+        name: episode.name.clone(),
+    }
+}
+
+/// How each menu entry compares with the series' episodes.
+fn menu_match_details(reading: &MenuReading, episodes: &[Episode]) -> Vec<MenuMatch> {
+    reading
+        .entries
+        .iter()
+        .map(|entry| {
+            let by_title = episodes
                 .iter()
-                .find(|episode| episode.season == season && episode.number == number),
-            _ => None,
-        };
-        let chosen = match (by_title, numbered) {
-            (Some((episode, score)), _) if score >= 0.85 => Some(episode),
-            // The printed number agrees with a title that is only slightly off.
-            (_, Some(episode)) if text::similarity(&entry.title, &episode.name) >= 0.5 => {
-                Some(episode)
+                .map(|episode| (episode, text::similarity(&entry.title, &episode.name)))
+                .max_by(|a, b| a.1.total_cmp(&b.1));
+            let numbered = match (entry.season, entry.episode) {
+                (Some(season), Some(number)) => episodes
+                    .iter()
+                    .find(|episode| episode.season == season && episode.number == number),
+                _ => None,
+            };
+            let chosen = match (by_title, numbered) {
+                (Some((episode, score)), _) if score >= 0.85 => Some((episode, "title")),
+                // The printed number agrees with a title that is only slightly off.
+                (_, Some(episode)) if text::similarity(&entry.title, &episode.name) >= 0.5 => {
+                    Some((episode, "printed number"))
+                }
+                _ => None,
+            };
+            MenuMatch {
+                entry: entry.title.clone(),
+                printed_season: entry.season,
+                printed_episode: entry.episode,
+                best_title: by_title.map(|(episode, score)| ScoredEpisode {
+                    episode: episode_ref(episode),
+                    score,
+                }),
+                matched: chosen.map(|(episode, _)| episode_ref(episode)),
+                rule: chosen.map(|(_, rule)| rule),
             }
-            _ => None,
-        };
-        if let Some(episode) = chosen {
-            let key = (episode.season, episode.number);
-            if !found.contains(&key) {
-                found.push(key);
-            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn menu_matches(reading: &MenuReading, episodes: &[Episode]) -> Vec<(u32, u32)> {
+    matched_episodes(&menu_match_details(reading, episodes))
+}
+
+/// The distinct provider episodes the menu names, as (season, episode).
+fn matched_episodes(details: &[MenuMatch]) -> Vec<(u32, u32)> {
+    let mut found: Vec<(u32, u32)> = Vec::new();
+    for matched in details.iter().filter_map(|detail| detail.matched.as_ref()) {
+        let key = (matched.season, matched.episode);
+        if !found.contains(&key) {
+            found.push(key);
         }
     }
     found.sort();
@@ -411,6 +664,7 @@ fn run_disc(args: &DiscArgs) -> Result<Outcome> {
     let count = titles.len();
     let tv = tvmaze(&args.common)?;
     let mut outcome = Outcome::new("disc");
+    outcome.disc_diagnostics = Some(DiscDiagnostics::default());
 
     if let Some(sidecar) = args.sidecar.as_deref().filter(|p| p.is_file()) {
         match from_sidecar(sidecar, &titles, &tv, &mut outcome) {
@@ -419,9 +673,14 @@ fn run_disc(args: &DiscArgs) -> Result<Outcome> {
                 return Ok(outcome);
             }
             Ok(false) => {}
-            Err(error) => outcome
-                .reasons
-                .push(format!("The ripper's sidecar could not be read: {error:#}")),
+            Err(error) => {
+                if let Some(diagnostics) = outcome.disc_diagnostics.as_mut() {
+                    diagnostics.sidecar = Some("unreadable".into());
+                }
+                outcome
+                    .reasons
+                    .push(format!("The ripper's sidecar could not be read: {error:#}"))
+            }
         }
     }
 
@@ -515,6 +774,9 @@ fn run_disc(args: &DiscArgs) -> Result<Outcome> {
                 .push(format!("TVmaze search failed: {error:#}")),
         }
     }
+    if let Some(diagnostics) = outcome.disc_diagnostics.as_mut() {
+        diagnostics.queries = queries.clone();
+    }
     let mut fits: Vec<SeriesFit> = shows
         .into_values()
         .map(|show| {
@@ -535,6 +797,7 @@ fn run_disc(args: &DiscArgs) -> Result<Outcome> {
                 era_plausible,
                 episodes: Vec::new(),
                 menu_matches: Vec::new(),
+                menu_details: Vec::new(),
             }
         })
         .filter(|fit| fit.name_similarity >= 0.55)
@@ -550,11 +813,26 @@ fn run_disc(args: &DiscArgs) -> Result<Outcome> {
             )),
         }
         if let Some(menu) = &reading {
-            fit.menu_matches = menu_matches(menu, &fit.episodes);
+            fit.menu_details = menu_match_details(menu, &fit.episodes);
+            fit.menu_matches = matched_episodes(&fit.menu_details);
         }
     }
     outcome.candidates = fits.iter().map(|fit| fit.show.clone()).collect();
     outcome.menu = reading.clone();
+    if let Some(diagnostics) = outcome.disc_diagnostics.as_mut() {
+        diagnostics.series = fits
+            .iter_mut()
+            .map(|fit| SeriesDiagnostics {
+                tvmaze_id: fit.show.tvmaze_id,
+                name: fit.show.name.clone(),
+                year: fit.show.year,
+                name_similarity: fit.name_similarity,
+                era_plausible: fit.era_plausible,
+                episodes_known: fit.episodes.len(),
+                menu_matches: std::mem::take(&mut fit.menu_details),
+            })
+            .collect();
+    }
 
     let best_menu = fits
         .iter()
@@ -620,6 +898,15 @@ fn run_disc(args: &DiscArgs) -> Result<Outcome> {
     // Keep only the chosen series for the content stage when the menu chose it.
     if best_menu > 0 {
         outcome.candidates = vec![fit.show.clone()];
+    }
+    if let Some(diagnostics) = outcome.disc_diagnostics.as_mut() {
+        diagnostics.chosen_by = Some(if best_menu > 0 { "menu" } else { "name" });
+    }
+    for episode in &fit.episodes {
+        *outcome
+            .season_episode_counts
+            .entry(episode.season)
+            .or_default() += 1;
     }
     let name_of = |season: u32, number: u32| {
         fit.episodes
@@ -708,14 +995,29 @@ fn run_disc(args: &DiscArgs) -> Result<Outcome> {
     Ok(outcome)
 }
 
-/// Series, season, proposed assignments and candidate series from the disc stage.
-type DiscContext = (Option<Show>, Option<u32>, Vec<Assignment>, Vec<Show>);
+/// What the content stage starts from: the disc stage's outcome, possibly
+/// with a proposal the import worker added (`proposalSource`).
+struct DiscContext {
+    series: Option<Show>,
+    season: Option<u32>,
+    proposal: Vec<Assignment>,
+    candidates: Vec<Show>,
+    /// "disc menu", "library order" or "disc number"; None without a proposal.
+    proposal_source: Option<String>,
+}
+
+/// Proposals that only follow the library or the disc number say nothing
+/// about which episodes are on this disc, so they are compared against the
+/// whole series: a disc from elsewhere in it then contradicts the guess.
+fn weak_proposal(source: Option<&str>) -> bool {
+    matches!(source, Some("library order" | "disc number"))
+}
 
 fn read_context(path: &Path) -> Result<DiscContext> {
     let value: Value = serde_json::from_slice(&fs::read(path)?)?;
     let series: Option<Show> = serde_json::from_value(value["series"].clone()).ok();
     let season = value["season"].as_u64().and_then(|s| u32::try_from(s).ok());
-    let assignments = value["assignments"]
+    let proposal: Vec<Assignment> = value["assignments"]
         .as_array()
         .into_iter()
         .flatten()
@@ -735,7 +1037,17 @@ fn read_context(path: &Path) -> Result<DiscContext> {
         .flatten()
         .filter_map(|item| serde_json::from_value::<Show>(item.clone()).ok())
         .collect();
-    Ok((series, season, assignments, candidates))
+    let proposal_source = value["proposalSource"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| (!proposal.is_empty()).then(|| "disc menu".to_string()));
+    Ok(DiscContext {
+        series,
+        season,
+        proposal,
+        candidates,
+        proposal_source,
+    })
 }
 
 struct PoolEpisode {
@@ -746,10 +1058,105 @@ struct PoolEpisode {
     summary: String,
 }
 
+impl PoolEpisode {
+    fn reference(&self) -> EpisodeRef {
+        EpisodeRef {
+            season: self.season,
+            episode: self.number,
+            name: self.name.clone(),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Pick {
     pool: usize,
     evidence: String,
+    /// Containment score when the subtitles decided the pick.
+    subtitle_score: Option<f64>,
+}
+
+/// Without a proposal, one confident subtitle match fixes disc order: title
+/// `i` is the anchor's episode shifted by its distance from the anchor. The
+/// result is accepted when at least half the titles agree with that order
+/// (the anchor included) and none disagrees. Returns (anchor index, pool
+/// index for every title).
+fn anchored_order(
+    picks: &[Option<Pick>],
+    pool: &[PoolEpisode],
+) -> Option<(usize, Vec<usize>, usize)> {
+    let (anchor, anchor_pick) = picks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, pick)| {
+            pick.as_ref()
+                .and_then(|p| p.subtitle_score.map(|score| (index, p, score)))
+        })
+        .max_by(|a, b| a.2.total_cmp(&b.2))
+        .map(|(index, pick, _)| (index, pick))?;
+    let base = &pool[anchor_pick.pool];
+    let order: Option<Vec<usize>> = (0..picks.len())
+        .map(|index| {
+            let number = i64::from(base.number) + index as i64 - anchor as i64;
+            let number = u32::try_from(number).ok().filter(|n| *n >= 1)?;
+            pool.iter()
+                .position(|e| e.show == base.show && e.season == base.season && e.number == number)
+        })
+        .collect();
+    let order = order?;
+    let mut confirmed = 0;
+    for (pick, expected) in picks.iter().zip(&order) {
+        match pick {
+            Some(pick) if pick.pool == *expected => confirmed += 1,
+            Some(_) => return None,
+            None => {}
+        }
+    }
+    (confirmed * 2 >= picks.len()).then_some((anchor, order, confirmed))
+}
+
+/// Titles (indices) whose pick contradicts the proposal on episode summaries
+/// alone. Summary agreement may confirm a proposal but never overrule it:
+/// Bonsai's confidence does not track correctness (All Creatures S05E01 was
+/// once published as S05E02 that way). A summary pick is backed by the
+/// subtitles only when it falls in the disc order of another title's subtitle
+/// match that itself departs from the proposal. `planned` is each title's
+/// proposed (season, episode).
+fn unsupported_summary_contradictions(
+    picks: &[Option<Pick>],
+    planned: &[Option<(u32, u32)>],
+    pool: &[PoolEpisode],
+) -> Vec<usize> {
+    let contradicts = |index: usize| match (&picks[index], planned.get(index).copied().flatten()) {
+        (Some(pick), Some(planned)) => {
+            let e = &pool[pick.pool];
+            (e.season, e.number) != planned
+        }
+        _ => false,
+    };
+    let anchors: Vec<(usize, &PoolEpisode)> = picks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, pick)| {
+            let pick = pick.as_ref().filter(|p| p.subtitle_score.is_some())?;
+            let departs = planned.get(index).copied().flatten().is_none() || contradicts(index);
+            departs.then(|| (index, &pool[pick.pool]))
+        })
+        .collect();
+    (0..picks.len())
+        .filter(|&index| {
+            let Some(pick) = picks[index].as_ref().filter(|p| p.subtitle_score.is_none()) else {
+                return false;
+            };
+            let e = &pool[pick.pool];
+            let backed = anchors.iter().any(|(anchor, base)| {
+                base.show == e.show
+                    && base.season == e.season
+                    && i64::from(e.number) - i64::from(base.number) == index as i64 - *anchor as i64
+            });
+            contradicts(index) && !backed
+        })
+        .collect()
 }
 
 fn run_content(args: &ContentArgs) -> Result<Outcome> {
@@ -757,7 +1164,26 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         bail!("--video and --title must be given the same number of times");
     }
     let mut outcome = Outcome::new("content");
-    let (series, season, proposal, mut candidates) = read_context(&args.context)?;
+    let DiscContext {
+        series,
+        season,
+        proposal,
+        mut candidates,
+        proposal_source,
+    } = read_context(&args.context)?;
+    let weak = weak_proposal(proposal_source.as_deref());
+    let mut diagnostics = ContentDiagnostics {
+        proposal_source: proposal_source.clone(),
+        subtitle_downloads: SubtitleBudget {
+            limit: args.max_subtitle_downloads,
+            ..SubtitleBudget::default()
+        },
+        decision: Decision {
+            rule: "not compared",
+            ..Decision::default()
+        },
+        ..ContentDiagnostics::default()
+    };
     if let Some(show) = &series
         && !candidates.iter().any(|c| c.tvmaze_id == show.tvmaze_id)
     {
@@ -774,6 +1200,7 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             .reasons
             .push("There is no TV series to compare the episodes against.".into());
         outcome.summary = "The series could not be determined.".into();
+        outcome.content_diagnostics = Some(diagnostics);
         return Ok(outcome);
     }
     let (Some(parakeet), Some(model)) = (&args.parakeet, &args.parakeet_model) else {
@@ -782,13 +1209,15 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             "Speech transcription is unavailable, so the episodes could not be compared.".into(),
         );
         outcome.summary = "Episodes need confirming.".into();
+        outcome.content_diagnostics = Some(diagnostics);
         return Ok(outcome);
     };
     let tv = tvmaze(&args.common)?;
     let model_client = bonsai(&args.common)?;
 
-    // Candidate episodes: around the proposal when the menu gave one,
-    // otherwise the known season, otherwise every episode.
+    // Candidate episodes: around the proposal when the menu gave one, the
+    // whole series for a library-order or disc-number guess, otherwise the
+    // known season, otherwise every episode.
     let mut pool: Vec<PoolEpisode> = Vec::new();
     for (index, show) in candidates.iter().enumerate() {
         let episodes = match tv.episodes(show.tvmaze_id) {
@@ -806,9 +1235,10 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
                 (proposal.first(), proposal.last(), &series)
             {
                 show.tvmaze_id == series.tvmaze_id
-                    && episode.season == first.season
-                    && episode.number + 2 >= first.episode
-                    && episode.number <= last.episode + 2
+                    && (weak
+                        || (episode.season == first.season
+                            && episode.number + 2 >= first.episode
+                            && episode.number <= last.episode + 2))
             } else if let Some(season) = season {
                 episode.season == season
             } else {
@@ -825,12 +1255,14 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             }
         }
     }
+    diagnostics.pool_size = pool.len();
     if pool.is_empty() {
         outcome.assignments = proposal;
         outcome
             .reasons
             .push("TVmaze lists no candidate episodes.".into());
         outcome.summary = "Episodes need confirming.".into();
+        outcome.content_diagnostics = Some(diagnostics);
         return Ok(outcome);
     }
     let documents: Vec<String> = pool
@@ -839,6 +1271,7 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         .collect();
 
     let scratch = Scratch::new(args.common.work_dir.as_deref())?;
+    let replay = replay::Replay::new(args.replay_cache.as_deref(), args.replay_only)?;
     let asr = content::Asr {
         ffmpeg: &args.ffmpeg,
         parakeet,
@@ -846,7 +1279,10 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         threads: args.threads,
     };
     let mut downloads_left = args.max_subtitle_downloads;
+    // The broker's cache stays usable after the download budget or the
+    // daily quota is spent; an account or broker failure stops both.
     let mut subtitles_usable = args.subtitle_socket.is_some() && args.owner.is_some();
+    let mut downloads_allowed = subtitles_usable;
     if !subtitles_usable {
         outcome
             .reasons
@@ -856,25 +1292,48 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
     let mut picks: Vec<Option<Pick>> = Vec::new();
 
     for (video, title) in args.videos.iter().zip(&args.titles) {
-        let transcript = match content::transcribe_excerpt(
-            &asr,
+        let mut detail = TitleDiagnostics {
+            title: *title,
+            ..TitleDiagnostics::default()
+        };
+        let transcript = match replay.transcript(
             video,
-            &scratch.0,
+            model,
             args.excerpt_start,
             args.excerpt_seconds,
+            || {
+                content::transcribe_excerpt(
+                    &asr,
+                    video,
+                    &scratch.0,
+                    args.excerpt_start,
+                    args.excerpt_seconds,
+                )
+            },
         ) {
             Ok(text) => text,
             Err(error) => {
                 outcome
                     .reasons
                     .push(format!("Title {title}: transcription failed: {error:#}"));
+                detail.transcript_error = Some(format!("{error:#}"));
+                diagnostics.titles.push(detail);
                 picks.push(None);
                 continue;
             }
         };
+        detail.transcript_words = transcript.split_whitespace().count();
         let scores = text::keyword_scores(&transcript, &documents);
         let mut order: Vec<usize> = (0..pool.len()).collect();
         order.sort_by(|a, b| scores[*b].total_cmp(&scores[*a]));
+        detail.keyword_top = order
+            .iter()
+            .take(3)
+            .map(|&i| ScoredEpisode {
+                episode: pool[i].reference(),
+                score: scores[i],
+            })
+            .collect();
         // The keyword signal only counts when it actually prefers one
         // episode; with nothing heard in common every score is zero.
         let keyword_top = order
@@ -886,6 +1345,7 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
                     .get(1)
                     .is_none_or(|&second| scores[top] > scores[second])
             });
+        detail.keyword_decisive = keyword_top.is_some();
         // Bonsai sees the shortlist in broadcast order, not keyword order, so
         // a model that favours the first option cannot simply echo the
         // keyword ranking and pass as a second, independent signal.
@@ -909,13 +1369,23 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
                     )
                 })
                 .collect();
-            match client.rank_synopses(&text::clip(&transcript, 6000), &listing) {
+            let excerpt = text::clip(&transcript, 6000);
+            match replay.ranking(&args.common.bonsai_model, &excerpt, &listing, || {
+                client.rank_synopses(&excerpt, &listing)
+            }) {
                 Ok(Some((index, confidence))) => model_pick = Some((shortlist[index], confidence)),
                 Ok(None) => {}
-                Err(error) => outcome
-                    .reasons
-                    .push(format!("Title {title}: Bonsai ranking failed: {error:#}")),
+                Err(error) => {
+                    outcome
+                        .reasons
+                        .push(format!("Title {title}: Bonsai ranking failed: {error:#}"));
+                    detail.bonsai_error = Some(format!("{error:#}"));
+                }
             }
+        }
+        if let Some((chosen, confidence)) = model_pick {
+            detail.bonsai_pick = Some(pool[chosen].reference());
+            detail.bonsai_confidence = Some(confidence);
         }
 
         // Compare dialogue with the published subtitles of the best guesses.
@@ -928,6 +1398,7 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
                     && e.number == a.episode
             })
         });
+        detail.proposed = proposed.map(|index| pool[index].reference());
         let mut to_check: Vec<usize> = Vec::new();
         for candidate in [
             model_pick.map(|p| p.0),
@@ -944,97 +1415,205 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         }
         let mut containment: Vec<(usize, f64)> = Vec::new();
         for candidate in to_check {
+            let mut check = SubtitleCheck {
+                episode: pool[candidate].reference(),
+                containment: None,
+                cached: false,
+                skipped: None,
+            };
             if !subtitle_cache.contains_key(&candidate) {
-                if !subtitles_usable || downloads_left == 0 {
+                let episode = &pool[candidate];
+                let imdb = candidates[episode.show].imdb_id.clone();
+                let skipped = if !subtitles_usable {
+                    Some("unavailable")
+                } else if imdb.is_none() {
+                    subtitle_cache.insert(candidate, None);
+                    Some("no imdb id")
+                } else {
+                    None
+                };
+                if let Some(reason) = skipped {
+                    check.skipped = Some(reason);
+                    detail.subtitles.push(check);
                     continue;
                 }
-                let episode = &pool[candidate];
-                let Some(imdb) = candidates[episode.show].imdb_id.clone() else {
-                    subtitle_cache.insert(candidate, None);
-                    continue;
-                };
-                downloads_left -= 1;
-                let result = content::episode_subtitle_text(
-                    args.subtitle_socket.as_deref().unwrap_or(Path::new("")),
-                    args.owner.as_deref().unwrap_or(""),
-                    &imdb,
+                // Evaluation replay: a recorded text counts as a cache hit and
+                // never spends a download; --replay-only never asks the broker.
+                let recorded = replay.subtitle(
+                    imdb.as_deref().unwrap_or(""),
                     episode.season,
                     episode.number,
                 );
-                let text = match result {
-                    content::SubtitleText::Text(text) => Some(text),
-                    content::SubtitleText::NotFound => None,
-                    content::SubtitleText::NoAccount => {
-                        outcome.reasons.push("The uploader has no OpenSubtitles account; subtitle comparison was skipped.".into());
-                        subtitles_usable = false;
-                        None
+                if let Some(recorded) = recorded {
+                    if recorded.is_some() {
+                        diagnostics.subtitle_downloads.cache_hits += 1;
+                        check.cached = true;
                     }
-                    content::SubtitleText::Quota => {
-                        outcome
-                            .reasons
-                            .push("The OpenSubtitles daily download limit was reached.".into());
-                        subtitles_usable = false;
-                        None
+                    subtitle_cache.insert(candidate, recorded);
+                } else if replay.only() {
+                    check.skipped = Some("not cached");
+                    detail.subtitles.push(check);
+                    continue;
+                } else {
+                    // Past the budget (or the daily quota) only cached text is
+                    // asked for; a cache hit never spends a download.
+                    let cache_only = !downloads_allowed || downloads_left == 0;
+                    let result = content::episode_subtitle_text(
+                        args.subtitle_socket.as_deref().unwrap_or(Path::new("")),
+                        args.owner.as_deref().unwrap_or(""),
+                        imdb.as_deref().unwrap_or(""),
+                        episode.season,
+                        episode.number,
+                        cache_only,
+                    );
+                    // A fresh text or an empty result may have spent a download;
+                    // a cache hit, a refusal or an unreachable broker did not
+                    // (and the last two stop further downloads anyway).
+                    let spent = !cache_only
+                        && matches!(
+                            result,
+                            content::SubtitleText::Text { cached: false, .. }
+                                | content::SubtitleText::NotFound
+                        );
+                    if spent {
+                        downloads_left -= 1;
+                        diagnostics.subtitle_downloads.used += 1;
                     }
-                    content::SubtitleText::Unavailable(error) => {
-                        outcome.reasons.push(format!(
-                            "OpenSubtitles comparison is unavailable: {error:#}"
-                        ));
-                        subtitles_usable = false;
-                        None
-                    }
-                };
-                subtitle_cache.insert(candidate, text);
+                    let text = match result {
+                        content::SubtitleText::Text { text, cached } => {
+                            if cached {
+                                diagnostics.subtitle_downloads.cache_hits += 1;
+                            }
+                            check.cached = cached;
+                            replay.record_subtitle(
+                                imdb.as_deref().unwrap_or(""),
+                                episode.season,
+                                episode.number,
+                                Some(&text),
+                            );
+                            Some(text)
+                        }
+                        content::SubtitleText::NotFound => {
+                            check.skipped = Some("not found");
+                            replay.record_subtitle(
+                                imdb.as_deref().unwrap_or(""),
+                                episode.season,
+                                episode.number,
+                                None,
+                            );
+                            None
+                        }
+                        content::SubtitleText::NotCached => {
+                            check.skipped =
+                                Some(if downloads_allowed { "budget" } else { "quota" });
+                            // Not remembered: nothing was learnt about the episode.
+                            detail.subtitles.push(check);
+                            continue;
+                        }
+                        content::SubtitleText::NoAccount => {
+                            outcome.reasons.push("The uploader has no OpenSubtitles account; subtitle comparison was skipped.".into());
+                            subtitles_usable = false;
+                            check.skipped = Some("no account");
+                            detail.subtitles.push(check);
+                            continue;
+                        }
+                        content::SubtitleText::Quota => {
+                            outcome
+                                .reasons
+                                .push("The OpenSubtitles daily download limit was reached.".into());
+                            downloads_allowed = false;
+                            check.skipped = Some("quota");
+                            detail.subtitles.push(check);
+                            continue;
+                        }
+                        content::SubtitleText::Unavailable(error) => {
+                            outcome.reasons.push(format!(
+                                "OpenSubtitles comparison is unavailable: {error:#}"
+                            ));
+                            subtitles_usable = false;
+                            check.skipped = Some("unavailable");
+                            detail.subtitles.push(check);
+                            continue;
+                        }
+                    };
+                    subtitle_cache.insert(candidate, text);
+                }
             }
             if let Some(Some(reference)) = subtitle_cache.get(&candidate) {
-                containment.push((candidate, text::trigram_containment(&transcript, reference)));
+                let score = text::trigram_containment(&transcript, reference);
+                containment.push((candidate, score));
+                check.containment = Some(score);
+            } else if check.skipped.is_none() {
+                check.skipped = Some("not found");
             }
+            detail.subtitles.push(check);
         }
         containment.sort_by(|a, b| b.1.total_cmp(&a.1));
 
         let subtitle_pick = match containment.as_slice() {
             [(best, score), (_, second), ..]
-                if *score >= 0.06 && *score >= 3.0 * second.max(0.005) =>
+                if *score >= args.subtitle_min_containment
+                    && *score >= args.subtitle_margin * second.max(0.005) =>
             {
                 Some(*best)
             }
-            [(best, score)] if *score >= 0.10 => Some(*best),
+            [(best, score)] if *score >= args.subtitle_single_min => Some(*best),
             _ => None,
         };
         let pick = if let Some(best) = subtitle_pick {
+            detail.pick_rule = Some("subtitles");
             Some(Pick {
                 pool: best,
                 evidence: format!(
                     "dialogue matches the episode's subtitles ({:.0}% of phrases)",
                     containment[0].1 * 100.0
                 ),
+                subtitle_score: Some(containment[0].1),
             })
         } else {
             match (model_pick, keyword_top) {
-                (Some((chosen, confidence)), Some(top)) if chosen == top && confidence >= 0.5 => {
+                (Some((chosen, confidence)), Some(top))
+                    if chosen == top && confidence >= args.bonsai_min_confidence =>
+                {
+                    detail.pick_rule = Some("summary agreement");
                     Some(Pick {
                         pool: chosen,
                         evidence: "dialogue matches the episode summary".into(),
+                        subtitle_score: None,
                     })
                 }
                 _ => None,
             }
         };
+        detail.pick = pick.as_ref().map(|p| pool[p.pool].reference());
+        if proposed.is_some() || !proposal.is_empty() {
+            detail.verdict = Some(match (&pick, proposed) {
+                (Some(p), Some(planned)) if p.pool == planned => "confirmed",
+                (Some(_), _) => "contradicted",
+                (None, _) => "unconfirmed",
+            });
+        }
         if pick.is_none() {
             outcome.reasons.push(format!(
                 "Title {title}: the dialogue did not clearly match one episode."
             ));
         }
-        // A contradicted subtitle comparison is worth reporting even without a pick.
+        // A contradicted subtitle comparison is worth reporting even without a
+        // pick. Only a menu (or TheDiscDB) proposal is evidence; a weak
+        // guess's contradiction is worded so the worker never treats it as one.
         if let (Some(proposed), Some((best, score))) = (proposed, containment.first())
             && *best != proposed
-            && *score >= 0.06
+            && *score >= args.subtitle_min_containment
         {
-            outcome.reasons.push(format!(
-                "Title {title}: dialogue matches {} rather than the disc-order guess.",
-                episode_label(pool[*best].season, pool[*best].number, pool[*best].number)
-            ));
+            let matched = episode_label(pool[*best].season, pool[*best].number, pool[*best].number);
+            let source = proposal_source.as_deref().unwrap_or("disc-order");
+            outcome.reasons.push(if weak {
+                format!("Title {title}: dialogue matches {matched}, not the {source} guess.")
+            } else {
+                format!("Title {title}: dialogue matches {matched} rather than the {source} guess.")
+            });
         }
+        diagnostics.titles.push(detail);
         picks.push(pick);
     }
 
@@ -1049,8 +1628,8 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         }
     };
 
-    // With a menu-based proposal: confirmed when at least one title's
-    // dialogue confirms it and none contradicts it.
+    // With a proposal: confirmed when at least one title's dialogue
+    // confirms it and none contradicts it.
     if !proposal.is_empty() && proposal.len() == args.titles.len() {
         let mut confirmed = 0;
         let mut contradicted = 0;
@@ -1064,6 +1643,8 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
                 }
             }
         }
+        diagnostics.decision.confirmed = confirmed;
+        diagnostics.decision.contradicted = contradicted;
         if confirmed > 0 && contradicted == 0 {
             outcome.assignments = proposal
                 .iter()
@@ -1082,10 +1663,73 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             let first = &outcome.assignments[0];
             let last = &outcome.assignments[outcome.assignments.len() - 1];
             outcome.summary = format!(
-                "Identified as {} {}.",
+                "Identified as {} {}{}.",
                 series.as_ref().map(show_label).unwrap_or_default(),
-                episode_label(first.season, first.episode, last.episode)
+                episode_label(first.season, first.episode, last.episode),
+                if weak {
+                    format!(
+                        " ({} confirmed by the dialogue)",
+                        proposal_source.as_deref().unwrap_or_default()
+                    )
+                } else {
+                    String::new()
+                }
             );
+            diagnostics.decision.rule = "proposal confirmed";
+            outcome.content_diagnostics = Some(diagnostics);
+            return Ok(outcome);
+        }
+    }
+
+    // Summary agreement alone never overrules a proposal (of any source):
+    // without subtitle evidence for the change, the disc is held with the
+    // proposal as its best guess.
+    if !proposal.is_empty() {
+        let planned: Vec<Option<(u32, u32)>> = args
+            .titles
+            .iter()
+            .map(|title| {
+                proposal
+                    .iter()
+                    .find(|a| a.title == *title)
+                    .map(|a| (a.season, a.episode))
+            })
+            .collect();
+        let refused = unsupported_summary_contradictions(&picks, &planned, &pool);
+        if !refused.is_empty() {
+            let source = proposal_source.as_deref().unwrap_or("disc-order");
+            for &index in &refused {
+                let (Some(pick), Some((season, episode))) = (&picks[index], planned[index]) else {
+                    continue;
+                };
+                let e = &pool[pick.pool];
+                outcome.reasons.push(format!(
+                    "Title {}: the episode summaries point to {}, but summaries alone cannot overrule the {source} proposal ({}); no subtitle match supports the change.",
+                    args.titles[index],
+                    episode_label(e.season, e.number, e.number),
+                    episode_label(season, episode, episode),
+                ));
+            }
+            diagnostics.decision.rule = "summary contradiction held";
+            diagnostics.decision.summary_only_contradictions =
+                refused.iter().map(|&index| args.titles[index]).collect();
+            // A weak guess that a subtitle match already contradicts is no
+            // suggestion for a person either (as in the "not identified" path).
+            let subtitle_contradicts = picks.iter().zip(&planned).any(|(pick, planned)| {
+                matches!((pick, planned), (Some(pick), Some((season, episode)))
+                    if pick.subtitle_score.is_some()
+                        && (pool[pick.pool].season, pool[pick.pool].number) != (*season, *episode))
+            });
+            outcome.assignments = if weak && subtitle_contradicts {
+                Vec::new()
+            } else {
+                proposal
+            };
+            outcome.summary = match &series {
+                Some(show) => format!("{} — episodes need confirming.", show_label(show)),
+                None => "The episodes could not be confirmed.".into(),
+            };
+            outcome.content_diagnostics = Some(diagnostics);
             return Ok(outcome);
         }
     }
@@ -1118,6 +1762,51 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             show_label(&show),
             episode_label(pairs[0].0, pairs[0].1, pairs[pairs.len() - 1].1)
         );
+        diagnostics.decision.rule = "all titles matched";
+        diagnostics.decision.confirmed = chosen.len();
+        outcome.content_diagnostics = Some(diagnostics);
+        return Ok(outcome);
+    }
+    // A weak guess that was not confirmed says nothing about the disc, so
+    // the dialogue alone decides, as without a proposal.
+    if (proposal.is_empty() || weak)
+        && let Some((anchor, order, confirmed)) = anchored_order(&picks, &pool)
+    {
+        let anchor_title = args.titles[anchor];
+        outcome.assignments = args
+            .titles
+            .iter()
+            .zip(&order)
+            .zip(&picks)
+            .map(|((title, index), pick)| {
+                let evidence = pick
+                    .as_ref()
+                    .map(|p| p.evidence.clone())
+                    .unwrap_or_else(|| {
+                        format!("disc order from title {anchor_title}'s subtitle match")
+                    });
+                assignment(*title, *index, evidence)
+            })
+            .collect();
+        let base = &pool[order[0]];
+        let show = candidates[base.show].clone();
+        let last = &pool[order[order.len() - 1]];
+        outcome.series = Some(show.clone());
+        outcome.season = Some(base.season);
+        outcome.status = "identified";
+        outcome.summary = format!(
+            "Identified from the dialogue as {} {} (disc order from title {anchor_title}).",
+            show_label(&show),
+            episode_label(base.season, base.number, last.number)
+        );
+        diagnostics.decision = Decision {
+            rule: "subtitle anchor",
+            confirmed,
+            contradicted: 0,
+            anchor_title: Some(anchor_title),
+            summary_only_contradictions: Vec::new(),
+        };
+        outcome.content_diagnostics = Some(diagnostics);
         return Ok(outcome);
     }
     if all_picked && !consecutive(&pairs) {
@@ -1125,8 +1814,14 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
             .reasons
             .push("The matched episodes are not consecutive in disc order.".into());
     }
-    // Best guess for a person to confirm: the proposal, else whatever matched.
-    outcome.assignments = if !proposal.is_empty() {
+    diagnostics.decision.rule = "not identified";
+    if proposal.is_empty() {
+        diagnostics.decision.confirmed = chosen.len();
+    }
+    // Best guess for a person to confirm: the proposal, else whatever
+    // matched; a weak guess the dialogue contradicted is no longer one.
+    let guess_contradicted = weak && diagnostics.decision.contradicted > 0;
+    outcome.assignments = if !proposal.is_empty() && !guess_contradicted {
         proposal
     } else {
         chosen
@@ -1138,21 +1833,422 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
         Some(show) => format!("{} — episodes need confirming.", show_label(show)),
         None => "The episodes could not be confirmed.".into(),
     };
+    outcome.content_diagnostics = Some(diagnostics);
     Ok(outcome)
+}
+
+const TMDB_UNCONFIGURED: &str =
+    "Episode numbering was not checked against TMDB (no TMDB key is configured).";
+
+/// Every TMDB lookup worth trying for a series, strongest first.
+fn series_refs(show: &Show) -> Vec<tmdb::SeriesRef> {
+    let mut refs: Vec<tmdb::SeriesRef> = show
+        .provider_ids
+        .iter()
+        .chain(show.provider.as_ref())
+        .filter_map(|tag| tmdb::SeriesRef::parse_provider(tag))
+        .chain(show.tmdb_id.map(tmdb::SeriesRef::Tmdb))
+        .chain(show.imdb_id.clone().map(tmdb::SeriesRef::Imdb))
+        .collect();
+    refs.sort_by_key(|series| match series {
+        tmdb::SeriesRef::Tmdb(_) => 0,
+        tmdb::SeriesRef::Tvdb(_) => 1,
+        tmdb::SeriesRef::Imdb(_) => 2,
+        tmdb::SeriesRef::Name(..) => 3,
+    });
+    refs.dedup();
+    if !show.name.trim().is_empty() {
+        refs.push(tmdb::SeriesRef::Name(show.name.clone(), show.year));
+    }
+    refs
+}
+
+/// Hold an identification whose numbering Jellyfin may not share.
+///
+/// The assignments are in TVmaze (or TheDiscDB) numbering, which would name
+/// the wrong episodes in a TMDB-numbered folder if a person accepted them.
+/// The disc stage keeps them as the content stage's proposal (it compares
+/// the same numbering); the content stage's outcome is final, so it drops
+/// them. Either way the outcome is flagged so no suggestion is offered.
+fn hold_for_numbering(outcome: &mut Outcome, show: &Show, reason: String) {
+    outcome.status = "uncertain";
+    outcome.tmdb_numbering_held = true;
+    if outcome.stage == "content" {
+        outcome.assignments.clear();
+    }
+    outcome.reasons.push(reason);
+    outcome.summary = format!(
+        "{} — the episode numbers Jellyfin (TMDB) uses need confirming.",
+        show_label(show)
+    );
+}
+
+/// Renumber an identified disc as TMDB (Jellyfin) numbers it, or hold it.
+///
+/// The stages identify episodes in TVmaze (or TheDiscDB) numbering, which
+/// can differ from TMDB's season layout. A disc is published only when every
+/// title maps to one TMDB episode by title (and air date) and the mapped
+/// episodes are still consecutive in one TMDB season. Held discs keep their
+/// original numbering, which the content stage compares against.
+fn check_tmdb_numbering(outcome: &mut Outcome, common: &Common, socket: Option<&Path>) {
+    if outcome.status != "identified" {
+        return;
+    }
+    let Some(show) = outcome.series.clone() else {
+        return;
+    };
+    let Some(socket) = socket else {
+        outcome.reasons.push(
+            "Episode numbering was not checked against TMDB (the provider broker socket is not configured)."
+                .into(),
+        );
+        return;
+    };
+    let series = match tmdb::resolve(socket, &series_refs(&show)) {
+        tmdb::Lookup::Found(series) => series,
+        tmdb::Lookup::Unconfigured => {
+            outcome.reasons.push(TMDB_UNCONFIGURED.into());
+            return;
+        }
+        tmdb::Lookup::Unavailable(error) => {
+            return hold_for_numbering(outcome, &show, format!("TMDB is unavailable: {error}"));
+        }
+        tmdb::Lookup::NotFound => {
+            let reason = format!("TMDB has no series matching {}.", show_label(&show));
+            return hold_for_numbering(outcome, &show, reason);
+        }
+        tmdb::Lookup::Ambiguous(count) => {
+            let reason = format!("{count} TMDB series match {}.", show_label(&show));
+            return hold_for_numbering(outcome, &show, reason);
+        }
+    };
+    // Air dates and runtimes come from TVmaze when it lists the same episode.
+    let listed: Vec<Episode> = match show.tvmaze_id {
+        0 => Vec::new(),
+        id => tvmaze(common)
+            .and_then(|tv| tv.episodes(id))
+            .unwrap_or_default(),
+    };
+    let source: Vec<tmdb::SourceEpisode> = outcome
+        .assignments
+        .iter()
+        .map(|assignment| {
+            let known = listed.iter().find(|episode| {
+                episode.season == assignment.season
+                    && episode.number == assignment.episode
+                    && (assignment.name.is_empty()
+                        || text::similarity(&episode.name, &assignment.name) >= 0.85)
+            });
+            tmdb::SourceEpisode {
+                season: assignment.season,
+                episode: assignment.episode,
+                name: match known {
+                    Some(episode) if assignment.name.is_empty() => episode.name.clone(),
+                    _ => assignment.name.clone(),
+                },
+                airdate: known.and_then(|episode| episode.airdate.clone()),
+                runtime: known.and_then(|episode| episode.runtime),
+            }
+        })
+        .collect();
+    let mapped = match tmdb::map_episodes(&source, &series.episodes) {
+        Ok(mapped) => mapped,
+        Err(reason) => return hold_for_numbering(outcome, &show, reason),
+    };
+    for (assignment, mapping) in outcome.assignments.iter_mut().zip(&mapped) {
+        let target = &series.episodes[mapping.index];
+        assignment.evidence = format!(
+            "{}; TMDB {} \"{}\" (tmdbid-{}) matched by {} to identified {}",
+            assignment.evidence,
+            tmdb::code(target),
+            target.name,
+            series.tmdb_id,
+            mapping.basis,
+            episode_label(assignment.season, assignment.episode, assignment.episode),
+        );
+        assignment.season = target.season;
+        assignment.episode = target.episode;
+        if !target.name.is_empty() {
+            assignment.name = target.name.clone();
+        }
+    }
+    let provider = format!("tmdbid-{}", series.tmdb_id);
+    let mut provider_ids = vec![provider.clone()];
+    for tag in show
+        .provider
+        .iter()
+        .cloned()
+        .chain(series.tvdb_id.map(|id| format!("tvdbid-{id}")))
+        .chain(
+            series
+                .imdb_id
+                .clone()
+                .or(show.imdb_id.clone())
+                .map(|id| format!("imdbid-{id}")),
+        )
+    {
+        if !provider_ids.contains(&tag) {
+            provider_ids.push(tag);
+        }
+    }
+    let renamed = Show {
+        tvmaze_id: show.tvmaze_id,
+        name: series.name.clone(),
+        year: series.year.or(show.year),
+        provider: Some(provider),
+        imdb_id: show.imdb_id.clone().or(series.imdb_id.clone()),
+        tmdb_id: Some(series.tmdb_id),
+        provider_ids,
+    };
+    let first = &outcome.assignments[0];
+    let last = &outcome.assignments[outcome.assignments.len() - 1];
+    outcome.season = Some(first.season);
+    outcome.summary = format!(
+        "{} Jellyfin (TMDB) numbering: {} {}.",
+        outcome.summary,
+        show_label(&renamed),
+        episode_label(first.season, first.episode, last.episode)
+    );
+    outcome.series = Some(renamed);
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EpisodesOutput {
+    schema_version: u32,
+    layout: &'static str,
+    series: Option<EpisodesSeries>,
+    episodes: Vec<EpisodeRow>,
+    reasons: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EpisodesSeries {
+    name: String,
+    year: Option<i32>,
+    provider: Option<String>,
+    tmdb_id: Option<u64>,
+    tvmaze_id: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct EpisodeRow {
+    season: u32,
+    episode: u32,
+    name: String,
+    airdate: Option<String>,
+    runtime: Option<u32>,
+}
+
+fn run_episodes(args: &EpisodesArgs) -> EpisodesOutput {
+    let mut out = EpisodesOutput {
+        schema_version: 1,
+        layout: "none",
+        series: None,
+        episodes: Vec::new(),
+        reasons: Vec::new(),
+    };
+    let reference = args.series.trim();
+    let given = match reference {
+        "" => None,
+        tag => {
+            let parsed = tmdb::SeriesRef::parse_provider(tag);
+            if parsed.is_none() {
+                out.reasons.push(format!(
+                    "The series reference {tag:?} is not tmdbid-N, tvdbid-N or imdbid-ttN."
+                ));
+            }
+            parsed
+        }
+    };
+    let name = args.name.trim();
+    let refs: Vec<tmdb::SeriesRef> = given
+        .clone()
+        .into_iter()
+        .chain((!name.is_empty()).then(|| tmdb::SeriesRef::Name(name.to_string(), args.year)))
+        .collect();
+    let Some(wanted) = refs.first().map(tmdb::SeriesRef::label) else {
+        out.reasons
+            .push("No series reference or name was given.".into());
+        return out;
+    };
+    let lookup = match args.common.provider_socket.as_deref() {
+        Some(socket) => tmdb::resolve(socket, &refs),
+        None => {
+            out.reasons
+                .push("The provider broker socket is not configured.".into());
+            tmdb::Lookup::Unconfigured
+        }
+    };
+    match lookup {
+        tmdb::Lookup::Found(series) => {
+            out.layout = "tmdb";
+            out.series = Some(EpisodesSeries {
+                name: series.name,
+                year: series.year,
+                provider: Some(format!("tmdbid-{}", series.tmdb_id)),
+                tmdb_id: Some(series.tmdb_id),
+                tvmaze_id: None,
+            });
+            out.episodes = series
+                .episodes
+                .into_iter()
+                .map(|episode| EpisodeRow {
+                    season: episode.season,
+                    episode: episode.episode,
+                    name: episode.name,
+                    airdate: episode.airdate,
+                    runtime: episode.runtime,
+                })
+                .collect();
+        }
+        tmdb::Lookup::Unconfigured => {
+            out.reasons.push(
+                "TMDB is not configured (no TMDB key), so episodes use TVmaze numbering, which has no specials."
+                    .into(),
+            );
+            episodes_from_tvmaze(args, &refs, given.as_ref(), &mut out);
+        }
+        tmdb::Lookup::Unavailable(error) => {
+            out.reasons.push(format!("TMDB is unavailable: {error}"));
+        }
+        tmdb::Lookup::NotFound => {
+            out.reasons
+                .push(format!("TMDB has no series matching {wanted}."));
+        }
+        tmdb::Lookup::Ambiguous(count) => out.reasons.push(format!(
+            "{count} TMDB series match {wanted}; give a provider id or year."
+        )),
+    }
+    out
+}
+
+fn episodes_from_tvmaze(
+    args: &EpisodesArgs,
+    refs: &[tmdb::SeriesRef],
+    given: Option<&tmdb::SeriesRef>,
+    out: &mut EpisodesOutput,
+) {
+    let tv = match tvmaze(&args.common) {
+        Ok(tv) => tv,
+        Err(error) => {
+            out.reasons
+                .push(format!("TVmaze is unavailable: {error:#}"));
+            return;
+        }
+    };
+    let mut show: Option<Show> = None;
+    for series in refs {
+        let found = match series {
+            tmdb::SeriesRef::Tvdb(id) => tv.lookup("thetvdb", &id.to_string()),
+            tmdb::SeriesRef::Imdb(id) => tv.lookup("imdb", id),
+            // TVmaze cannot look up TMDB ids; the name (if given) is next.
+            tmdb::SeriesRef::Tmdb(_) => continue,
+            tmdb::SeriesRef::Name(name, year) => tv.search(name).map(|shows| {
+                let exact: Vec<Show> = shows
+                    .into_iter()
+                    .filter(|show| text::normalize(&show.name) == text::normalize(name))
+                    .filter(|show| year.is_none() || show.year == *year)
+                    .collect();
+                if exact.len() > 1 {
+                    out.reasons.push(format!(
+                        "{} TVmaze series match {}.",
+                        exact.len(),
+                        series.label()
+                    ));
+                }
+                (exact.len() == 1).then(|| exact[0].clone())
+            }),
+        };
+        match found {
+            Ok(Some(found)) => {
+                show = Some(found);
+                break;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                out.reasons
+                    .push(format!("TVmaze is unavailable: {error:#}"));
+                return;
+            }
+        }
+    }
+    let Some(show) = show else {
+        out.reasons.push(format!(
+            "TVmaze has no series matching {}.",
+            refs.iter()
+                .map(tmdb::SeriesRef::label)
+                .collect::<Vec<_>>()
+                .join(" or ")
+        ));
+        return;
+    };
+    let episodes = match tv.episodes(show.tvmaze_id) {
+        Ok(episodes) => episodes,
+        Err(error) => {
+            out.reasons
+                .push(format!("TVmaze is unavailable: {error:#}"));
+            return;
+        }
+    };
+    out.layout = "tvmaze";
+    out.episodes = episodes
+        .into_iter()
+        .filter(|episode| episode.season > 0)
+        .map(|episode| EpisodeRow {
+            season: episode.season,
+            episode: episode.number,
+            name: episode.name,
+            airdate: episode.airdate,
+            runtime: episode.runtime,
+        })
+        .collect();
+    out.series = Some(EpisodesSeries {
+        name: show.name,
+        year: show.year,
+        // The caller's own tag names its library folder.
+        provider: given.map(tmdb::SeriesRef::label).or(show.provider),
+        tmdb_id: match given {
+            Some(tmdb::SeriesRef::Tmdb(id)) => Some(*id),
+            _ => None,
+        },
+        tvmaze_id: Some(show.tvmaze_id),
+    });
 }
 
 fn main() {
     let cli = Cli::parse();
     let result = match &cli.command {
-        Command::Disc(args) => run_disc(args),
-        Command::Content(args) => run_content(args),
+        Command::Disc(args) => run_disc(args).map(|mut outcome| {
+            check_tmdb_numbering(
+                &mut outcome,
+                &args.common,
+                args.common.provider_socket.as_deref(),
+            );
+            serde_json::to_string(&outcome)
+        }),
+        Command::Content(args) => run_content(args).map(|mut outcome| {
+            // Evaluation replay contacts no source, the broker included.
+            if args.replay_only {
+                outcome
+                    .reasons
+                    .push("Episode numbering was not checked against TMDB (replay only).".into());
+                return serde_json::to_string(&outcome);
+            }
+            let socket = args
+                .common
+                .provider_socket
+                .as_deref()
+                .or(args.subtitle_socket.as_deref());
+            check_tmdb_numbering(&mut outcome, &args.common, socket);
+            serde_json::to_string(&outcome)
+        }),
+        Command::Episodes(args) => Ok(serde_json::to_string(&run_episodes(args))),
     };
     match result {
-        Ok(outcome) => {
-            println!(
-                "{}",
-                serde_json::to_string(&outcome).expect("outcome serializes")
-            );
+        Ok(printed) => {
+            println!("{}", printed.expect("outcome serializes"));
         }
         Err(error) => {
             eprintln!("disc-identify: {error:#}");
@@ -1171,6 +2267,8 @@ mod tests {
             number,
             name: name.into(),
             summary: String::new(),
+            airdate: None,
+            runtime: None,
         }
     }
 
@@ -1214,6 +2312,171 @@ mod tests {
             frames_read: 2,
         };
         assert_eq!(menu_matches(&reading, &episodes), vec![(1, 5), (1, 6)]);
+    }
+
+    fn pool_of(season: u32, numbers: std::ops::RangeInclusive<u32>) -> Vec<PoolEpisode> {
+        numbers
+            .map(|number| PoolEpisode {
+                show: 0,
+                season,
+                number,
+                name: format!("E{number}"),
+                summary: String::new(),
+            })
+            .collect()
+    }
+
+    fn subtitle(pool: &[PoolEpisode], number: u32, score: f64) -> Option<Pick> {
+        Some(Pick {
+            pool: pool.iter().position(|e| e.number == number).unwrap(),
+            evidence: "subtitles".into(),
+            subtitle_score: Some(score),
+        })
+    }
+
+    fn summary(pool: &[PoolEpisode], number: u32) -> Option<Pick> {
+        Some(Pick {
+            pool: pool.iter().position(|e| e.number == number).unwrap(),
+            evidence: "summary".into(),
+            subtitle_score: None,
+        })
+    }
+
+    #[test]
+    fn one_subtitle_match_anchors_a_two_title_disc() {
+        // All Creatures S01E05-E06: title 3 unclear, title 4 matched E06.
+        let pool = pool_of(1, 1..=13);
+        let picks = vec![None, subtitle(&pool, 6, 0.21)];
+        let (anchor, order, confirmed) = anchored_order(&picks, &pool).unwrap();
+        assert_eq!((anchor, confirmed), (1, 1));
+        let numbers: Vec<u32> = order.iter().map(|&i| pool[i].number).collect();
+        assert_eq!(numbers, vec![5, 6]);
+    }
+
+    #[test]
+    fn an_anchor_needs_half_the_titles_and_no_contradiction() {
+        let pool = pool_of(1, 1..=13);
+        // One of three titles is too few.
+        assert!(anchored_order(&[None, subtitle(&pool, 6, 0.3), None], &pool).is_none());
+        // A summary pick that agrees with the order counts towards half.
+        let agreeing = [summary(&pool, 5), subtitle(&pool, 6, 0.3), None];
+        assert_eq!(anchored_order(&agreeing, &pool).unwrap().2, 2);
+        // Out-of-order dialogue contradicts the anchor and holds the disc.
+        let contradicting = [summary(&pool, 9), subtitle(&pool, 6, 0.3), None];
+        assert!(anchored_order(&contradicting, &pool).is_none());
+        // Summary picks alone never anchor.
+        assert!(anchored_order(&[summary(&pool, 5), summary(&pool, 6)], &pool).is_none());
+        // The order must stay inside the season.
+        assert!(anchored_order(&[None, subtitle(&pool, 13, 0.3)], &pool).is_some());
+        assert!(anchored_order(&[subtitle(&pool, 13, 0.3), None], &pool).is_none());
+        assert!(anchored_order(&[None, subtitle(&pool, 1, 0.3)], &pool).is_none());
+    }
+
+    #[test]
+    fn a_numbering_hold_offers_no_tvmaze_numbered_guess() {
+        let show = Show {
+            tvmaze_id: 1,
+            name: "Sherlock Holmes".into(),
+            year: Some(1984),
+            provider: Some("tvdbid-79588".into()),
+            imdb_id: None,
+            tmdb_id: None,
+            provider_ids: Vec::new(),
+        };
+        let guess = Assignment {
+            title: 1,
+            season: 4,
+            episode: 1,
+            name: "The Sign of Four".into(),
+            evidence: "dialogue".into(),
+        };
+        for (stage, kept) in [("disc", 1), ("content", 0)] {
+            let mut outcome = Outcome::new(stage);
+            outcome.status = "identified";
+            outcome.assignments = vec![guess.clone()];
+            hold_for_numbering(&mut outcome, &show, "TMDB is unavailable: x".into());
+            assert_eq!(outcome.status, "uncertain");
+            // The disc stage's numbering is the content stage's proposal.
+            assert_eq!(outcome.assignments.len(), kept, "{stage}");
+            let printed = serde_json::to_value(&outcome).unwrap();
+            assert_eq!(printed["tmdbNumberingHeld"], true);
+        }
+        let printed = serde_json::to_value(Outcome::new("disc")).unwrap();
+        assert!(printed.get("tmdbNumberingHeld").is_none());
+    }
+
+    #[test]
+    fn summary_agreement_never_overrules_a_proposal() {
+        // All Creatures S05E01: a correct menu proposal, but Bonsai and the
+        // keyword ranking agreed on S05E02. That was once published.
+        let pool = pool_of(5, 1..=10);
+        let planned = [Some((5, 1))];
+        assert_eq!(
+            unsupported_summary_contradictions(&[summary(&pool, 2)], &planned, &pool),
+            vec![0]
+        );
+        // Summaries may still confirm the proposal.
+        assert!(
+            unsupported_summary_contradictions(&[summary(&pool, 1)], &planned, &pool).is_empty()
+        );
+        // A subtitle match keeps its power to overrule.
+        assert!(
+            unsupported_summary_contradictions(&[subtitle(&pool, 2, 0.4)], &planned, &pool)
+                .is_empty()
+        );
+        let planned = [Some((5, 1)), Some((5, 2))];
+        // A summary pick in the disc order of a contradicting subtitle match
+        // is backed by it.
+        let shifted = [subtitle(&pool, 3, 0.4), summary(&pool, 4)];
+        assert!(unsupported_summary_contradictions(&shifted, &planned, &pool).is_empty());
+        // One that only disagrees with a confirming subtitle match is not.
+        let against = [subtitle(&pool, 1, 0.4), summary(&pool, 5)];
+        assert_eq!(
+            unsupported_summary_contradictions(&against, &planned, &pool),
+            vec![1]
+        );
+        // Without a proposal summaries decide as before.
+        assert!(
+            unsupported_summary_contradictions(&[summary(&pool, 2)], &[None], &pool).is_empty()
+        );
+    }
+
+    #[test]
+    fn library_and_disc_number_proposals_are_weak() {
+        assert!(weak_proposal(Some("library order")));
+        assert!(weak_proposal(Some("disc number")));
+        assert!(!weak_proposal(Some("disc menu")));
+        assert!(!weak_proposal(None));
+    }
+
+    #[test]
+    fn menu_details_record_how_each_entry_matched() {
+        let episodes = vec![
+            episode(1, 5, "Out of Practice"),
+            episode(1, 6, "Nothing Like Experience"),
+        ];
+        let reading = MenuReading {
+            entries: vec![
+                bonsai::MenuEntry {
+                    season: Some(1),
+                    episode: Some(6),
+                    title: "Nothing Like Experiance".into(),
+                },
+                bonsai::MenuEntry {
+                    season: None,
+                    episode: None,
+                    title: "Scene Selection".into(),
+                },
+            ],
+            ..MenuReading::default()
+        };
+        let details = menu_match_details(&reading, &episodes);
+        assert_eq!(details[0].rule, Some("title"));
+        assert_eq!(details[0].matched.as_ref().map(|m| m.episode), Some(6));
+        assert!(details[1].matched.is_none() && details[1].best_title.is_some());
+        let json = serde_json::to_value(&details[0]).unwrap();
+        assert_eq!(json["bestTitle"]["episode"], 6);
+        assert!(json["bestTitle"]["score"].as_f64().unwrap() > 0.85);
     }
 
     #[test]

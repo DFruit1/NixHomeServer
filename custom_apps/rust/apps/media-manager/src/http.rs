@@ -385,6 +385,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/conversions/inbox/error",
             get(conversions::conversions_inbox_error),
         )
+        .route(
+            "/api/v1/conversions/inbox/identify",
+            post(conversions::identify_held_disc),
+        )
         .route("/api/v1/scans", post(plans::scan))
         .route("/api/v1/catalog/refresh", post(plans::refresh_root))
         .route(
