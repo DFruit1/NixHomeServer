@@ -426,7 +426,8 @@ cleanup_local_archive() {
 
 trap cleanup_local_archive EXIT
 
-repo_archive="$(mktemp /tmp/nixhomeserver-deploy.XXXXXX.tar)"
+# Honour TMPDIR: /tmp is a size-capped tmpfs that other work can fill.
+repo_archive="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-deploy.XXXXXX.tar")"
 create_deploy_repo_archive "$repo_archive"
 
 if [[ "$build_locally" == "true" ]]; then
