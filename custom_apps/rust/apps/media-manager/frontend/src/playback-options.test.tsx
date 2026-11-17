@@ -148,18 +148,25 @@ describe("music player playback options", () => {
     expect(screen.querySelector('input[aria-label="Volume"]')).toBeTruthy();
   });
 
-  it("keeps shuffle in the options menu and shows the active scope", async () => {
+  it("shows quick controls and keeps the active shuffle scope in sync", async () => {
     vi.stubGlobal("fetch", playerFetch());
 
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="player" />);
 
     await vi.waitFor(() => expect(screen.textContent).toContain("First Light"));
-    // The transport has no separate shuffle, repeat or stop toggles.
+    // Restore the full transport alongside the detailed options menu.
     const transport = Array.from(
       screen.querySelectorAll(".player-controls > button"),
     ).map((button) => button.getAttribute("aria-label"));
-    expect(transport).toEqual(["Previous track", "Play", "Next track"]);
+    expect(transport).toEqual([
+      "Loop off",
+      "Stop after this track",
+      "Previous track",
+      "Play",
+      "Next track",
+      "Shuffle off",
+    ]);
     expect(screen.querySelector(".playback-status")).toBeFalsy();
 
     await openOptions(screen, userEvent);
