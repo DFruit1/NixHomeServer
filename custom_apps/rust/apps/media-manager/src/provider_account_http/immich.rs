@@ -1246,6 +1246,7 @@ pub(super) async fn server_status(state: &ProviderBrokerState, identity: &Identi
             "logoUrl": "/assets/logos/immich.svg",
             "status": status,
             "message": message,
+            "metadataSources": [],
         })
     };
     let Some(runtime) = state.images.clone() else {

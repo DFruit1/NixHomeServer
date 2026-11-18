@@ -1378,9 +1378,18 @@ const ProviderAccountsView = component$(() => {
             <span class="provider-row-title">
               <span class="provider-row-name">{service.name}</span>
             </span>
-            {service.status !== "connected" && service.message && (
-              <span class="provider-server-message">{service.message}</span>
-            )}
+            {service.status !== "connected" &&
+              service.status !== "running" &&
+              service.message && (
+                <span class="provider-server-message">{service.message}</span>
+              )}
+            {service.metadataSources.length > 0 &&
+              service.status !== "notEnabled" && (
+                <span class="provider-server-message">
+                  Uses {listInWords(service.metadataSources)} for movie and show
+                  details and artwork inside {service.name}. No setup needed.
+                </span>
+              )}
           </div>
           <span class={["provider-state", SERVER_STATUS_TONES[service.status]]}>
             {SERVER_STATUS_LABELS[service.status]}
@@ -1390,27 +1399,16 @@ const ProviderAccountsView = component$(() => {
     );
   };
 
+  // Until the check answers, or if it fails, the known services still show.
   const serverServices: ServerServiceRow[] =
     accounts.server ??
-    (accounts.serverError
-      ? [
-          {
-            id: SERVER_IMMICH_ID,
-            name: "Immich",
-            logoUrl: "/assets/logos/immich.svg",
-            status: "unknown",
-            message: `Its status could not be checked: ${accounts.serverError}`,
-          },
-        ]
-      : [
-          {
-            id: SERVER_IMMICH_ID,
-            name: "Immich",
-            logoUrl: "/assets/logos/immich.svg",
-            status: "checking",
-            message: "",
-          },
-        ]);
+    SERVER_SERVICE_PLACEHOLDERS.map((service) => ({
+      ...service,
+      status: accounts.serverError ? "unknown" : "checking",
+      message: accounts.serverError
+        ? `Its status could not be checked: ${accounts.serverError}`
+        : "",
+    }));
 
   return (
     <section class="provider-accounts-page">
@@ -1658,8 +1656,32 @@ type ServerServiceRow = Omit<ServerService, "status"> & {
   status: ServerServiceStatus;
 };
 
+const SERVER_SERVICE_PLACEHOLDERS: ReadonlyArray<
+  Pick<ServerService, "id" | "name" | "logoUrl" | "metadataSources">
+> = [
+  {
+    id: SERVER_IMMICH_ID,
+    name: "Immich",
+    logoUrl: "/assets/logos/immich.svg",
+    metadataSources: [],
+  },
+  {
+    id: "jellyfin",
+    name: "Jellyfin",
+    logoUrl: "/assets/logos/jellyfin.svg",
+    metadataSources: [],
+  },
+];
+
+/** "TMDB, TheTVDB and Fanart.tv". */
+function listInWords(items: readonly string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
 const SERVER_STATUS_LABELS: Record<ServerServiceStatus, string> = {
   connected: "Connected",
+  running: "Running",
   notConnected: "Not connected",
   notReachable: "Not reachable",
   notEnabled: "Not enabled",
@@ -1669,6 +1691,7 @@ const SERVER_STATUS_LABELS: Record<ServerServiceStatus, string> = {
 
 const SERVER_STATUS_TONES: Record<ServerServiceStatus, string> = {
   connected: "connected",
+  running: "connected",
   notConnected: "attention",
   notReachable: "attention",
   notEnabled: "",

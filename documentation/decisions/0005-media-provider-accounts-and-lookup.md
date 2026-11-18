@@ -129,7 +129,9 @@ The unused build-time leftovers were archived: the agenix OpenSubtitles and
 AcoustID secrets, and the web service's host-key fallbacks and TMDB routes (see
 [the archive](../archive/declarative-metadata-providers/README.md)). Immich
 runs on this server, so Online services shows it under "On this server" with
-only its status, not as an online provider. The broker's host TMDB key for the
+only its status, not as an online provider. Jellyfin sits beside it with its
+status and the metadata sources NixOS configures inside Jellyfin
+(`modules/jellyfin/metadata-fetchers.nix`); those need no account here. The broker's host TMDB key for the
 DVD identifier's system socket remains until the owner chooses a replacement.
 
 ## Rejected alternatives

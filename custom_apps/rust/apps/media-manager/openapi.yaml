@@ -367,7 +367,10 @@ paths:
         Reports services that run on this server rather than online providers.
         Immich is notEnabled when NixOS does not enable it, notReachable when it
         is enabled but not answering, notConnected when the caller's own Immich
-        connection is missing or rejected, and connected otherwise.
+        connection is missing or rejected, and connected otherwise. Jellyfin
+        needs no personal account, so it is running when it answers, and it
+        lists the online metadata sources NixOS configures inside Jellyfin for
+        movies and shows.
       responses:
         "200":
           description: Status of each service on this server for the caller.
@@ -2643,13 +2646,18 @@ components:
     ServerService:
       type: object
       additionalProperties: false
-      required: [id, name, logoUrl, status, message]
+      required: [id, name, logoUrl, status, message, metadataSources]
       properties:
         id: { type: string }
         name: { type: string }
         logoUrl: { type: string }
-        status: { enum: [notEnabled, notReachable, notConnected, connected] }
+        status: { enum: [notEnabled, notReachable, notConnected, connected, running] }
         message: { type: string }
+        metadataSources:
+          description: Online metadata sources this service uses itself; empty when none.
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 64 }
     ProviderDefinition:
       type: object
       additionalProperties: false

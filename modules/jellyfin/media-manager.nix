@@ -6,6 +6,19 @@ let
   jellyfinMetadataAvailable = cfg.integrations.jellyfin.available or false;
   jellyfinMetadataCache = "/var/cache/media-manager-jellyfin/metadata.json";
   jellyfinApiKeyMirror = "/var/cache/media-manager-jellyfin/api-key";
+  jellyfinBaseUrl = "http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.jellyfin}";
+  # Online sources Jellyfin itself uses for movies and shows, by display name.
+  fetchers = import ./metadata-fetchers.nix;
+  sourceNames = {
+    TheMovieDb = "TMDB";
+    TheTVDB = "TheTVDB";
+    Fanart = "Fanart.tv";
+  };
+  videoKinds = [ "Movie" "Series" ];
+  jellyfinMetadataSources = lib.unique (map (fetcher: sourceNames.${fetcher})
+    (lib.filter (fetcher: sourceNames ? ${fetcher})
+      (lib.concatMap (kind: fetchers.${kind}.MetadataFetcherOrder) videoKinds
+        ++ lib.concatMap (kind: fetchers.${kind}.ImageFetcherOrder) videoKinds)));
   jellyfinRefreshAvailable = (cfg.integrations.jellyfin.available or false)
     && builtins.elem "library-refresh" cfg.integrations.jellyfin.capabilities;
   jellyfinRefresh = pkgs.writeShellApplication {
@@ -40,11 +53,17 @@ in
     };
     environment = {
       MEDIA_MANAGER_JELLYFIN_METADATA_CACHE_FILE = jellyfinMetadataCache;
-      MEDIA_MANAGER_JELLYFIN_BASE_URL = "http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.jellyfin}";
+      MEDIA_MANAGER_JELLYFIN_BASE_URL = jellyfinBaseUrl;
       MEDIA_MANAGER_JELLYFIN_API_KEY_FILE = jellyfinApiKeyMirror;
       MEDIA_MANAGER_JELLYFIN_PUBLIC_URL = "https://videos.${vars.domain}";
     };
     readOnlyPaths = [ "-/var/cache/media-manager-jellyfin" ];
+  };
+  # Online services shows Jellyfin beside Immich under "On this server", with
+  # the metadata sources it already uses inside Jellyfin.
+  systemd.services.media-manager-provider-broker.environment = {
+    MEDIA_MANAGER_JELLYFIN_BASE_URL = jellyfinBaseUrl;
+    MEDIA_MANAGER_JELLYFIN_METADATA_SOURCES = lib.concatStringsSep "," jellyfinMetadataSources;
   };
   systemd.services.media-manager-refresh-jellyfin = lib.mkIf jellyfinRefreshAvailable {
     description = "Run and follow the Jellyfin media-library scan task";

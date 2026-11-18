@@ -29,6 +29,7 @@ mod additional;
 mod artwork_lookups;
 mod google_books;
 mod immich;
+mod server_services;
 mod system;
 mod system_tmdb;
 mod tmdb_lookups;
@@ -49,6 +50,8 @@ pub struct ProviderBrokerState {
     pub(crate) lookup_cache: Arc<LookupCache>,
     /// The host's own TMDB key, used only by system jobs on the Unix socket.
     system_tmdb: Option<Arc<crate::tmdb::TmdbClient>>,
+    /// Jellyfin on this server, reported under "On this server" only.
+    jellyfin: Option<Arc<server_services::Jellyfin>>,
 }
 
 #[derive(Clone, Debug)]
@@ -127,7 +130,18 @@ impl ProviderBrokerState {
             images: None,
             lookup_cache: Arc::new(LookupCache::disabled()),
             system_tmdb: None,
+            jellyfin: None,
         })
+    }
+
+    /// Deployment-owned Jellyfin address and the metadata sources NixOS gives
+    /// Jellyfin for movies and shows, shown beside Immich.
+    pub fn with_jellyfin(mut self, base: &str, metadata_sources: &str) -> Result<Self, String> {
+        self.jellyfin = Some(Arc::new(server_services::Jellyfin::new(
+            base,
+            metadata_sources,
+        )?));
+        Ok(self)
     }
 
     /// Give system jobs TMDB access with the host's key. Without it the
@@ -844,7 +858,7 @@ pub fn provider_account_router(state: ProviderBrokerState) -> Router {
         )
         .route(
             "/api/v1/provider-accounts/server-services",
-            get(accounts::server_services),
+            get(server_services::list),
         )
         .route(
             "/api/v1/provider-accounts/{provider_id}",

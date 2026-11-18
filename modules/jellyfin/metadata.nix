@@ -26,22 +26,8 @@ let
     '') jellyfinMetadataPlugins;
   };
 
-  metadataConfigJson = pkgs.writeText "jellyfin-metadata-config.json" ''
-    {
-      "Movie": {
-        "MetadataFetcherOrder": ["TheMovieDb"],
-        "ImageFetcherOrder": ["Fanart", "TheMovieDb", "Screen Grabber", "Embedded Image Extraction"]
-      },
-      "Series": {
-        "MetadataFetcherOrder": ["TheMovieDb", "TheTVDB"],
-        "ImageFetcherOrder": ["Fanart", "TheMovieDb", "TheTVDB", "Screen Grabber", "Embedded Image Extraction"]
-      },
-      "MusicAlbum": {
-        "MetadataFetcherOrder": ["MusicBrainz", "TheAudioDB"],
-        "ImageFetcherOrder": ["Cover Art Archive", "Embedded Image Extraction", "Screen Grabber"]
-      }
-    }
-  '';
+  metadataConfigJson = pkgs.writeText "jellyfin-metadata-config.json"
+    (builtins.toJSON (import ./metadata-fetchers.nix));
 in
 {
   config = {
