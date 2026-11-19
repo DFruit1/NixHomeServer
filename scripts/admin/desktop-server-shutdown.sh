@@ -22,6 +22,13 @@ STATUS_FILE="/run/nixhomeserver-shutdown-guard/status"
 TIMEOUT_MIN=60
 GRACE_MIN=60
 LOCAL_GRACE_MIN=5
+# A server that cannot be contacted at all - typically suspended by its nightly
+# power schedule - cannot host the guarded countdown. The desktop then retries
+# contact across the usual timeout window and, if the server stays away, trades
+# the server's work grace for a shorter offline grace so it still powers off on
+# its own: 60 + 30 minutes plus the final countdown by default.
+OFFLINE_GRACE_MIN=30
+OFFLINE_RETRY_SEC=300
 POLL_SEC=30
 POLL_TIMEOUT_MIN=90
 DRY_RUN=false
@@ -60,6 +67,10 @@ Options:
                         Default 60.
   --local-grace MIN     Minutes before this PC powers off after the server is
                         down. Default 5.
+  --offline-grace MIN   Minutes to keep retrying an unreachable server before
+                        this PC powers off anyway. Default 30.
+  --offline-retry SEC   Seconds between contact attempts while the server is
+                        unreachable. Default 300.
   --poll SEC            Seconds between server status polls. Default 30.
   --poll-timeout MIN    Poll budget after the pending server grace window.
                         Default 90; valid guard extensions move this budget too.
@@ -278,6 +289,16 @@ while (($# > 0)); do
       LOCAL_GRACE_MIN="$2"
       shift 2
       ;;
+    --offline-grace)
+      [[ $# -ge 2 ]] || die "--offline-grace requires a value"
+      OFFLINE_GRACE_MIN="$2"
+      shift 2
+      ;;
+    --offline-retry)
+      [[ $# -ge 2 ]] || die "--offline-retry requires a value"
+      OFFLINE_RETRY_SEC="$2"
+      shift 2
+      ;;
     --poll)
       [[ $# -ge 2 ]] || die "--poll requires a value"
       POLL_SEC="$2"
@@ -326,6 +347,8 @@ done
 require_minutes "$TIMEOUT_MIN" "--timeout"
 require_minutes "$GRACE_MIN" "--grace"
 require_minutes "$LOCAL_GRACE_MIN" "--local-grace"
+require_minutes "$OFFLINE_GRACE_MIN" "--offline-grace"
+require_seconds "$OFFLINE_RETRY_SEC" "--offline-retry"
 require_seconds "$POLL_SEC" "--poll"
 require_minutes "$POLL_TIMEOUT_MIN" "--poll-timeout"
 
@@ -512,15 +535,67 @@ EOF
   LOCAL_COUNTDOWN_COMPLETED=true
 }
 
+# An unreachable server cannot host the guarded countdown, and abandoning the
+# desktop there left it running after the 2026-11-20 nightly suspend. Contact is
+# retried across the timeout window and the offline grace instead; the local
+# countdown is scheduled so this PC still powers off at the offline deadline.
+# Returns 0 only when the server answers and its sleep hold is restored, which
+# resumes the normal guarded sequence. Otherwise it schedules the poweroff and
+# exits; the offline deadline replaces the server's work grace by design.
+wait_for_unreachable_server() {
+  local now step reason
+  local offline_deadline=$(( WAIT_DEADLINE + OFFLINE_GRACE_MIN * 60 ))
+  local countdown_at=$(( offline_deadline - LOCAL_GRACE_MIN * 60 ))
+  local offline_minutes=$(( TIMEOUT_MIN + OFFLINE_GRACE_MIN ))
+
+  printf 'Server %s is not reachable; retrying every %ss for %sm, then powering off this PC.\n' \
+    "$HOST" "$OFFLINE_RETRY_SEC" "$OFFLINE_GRACE_MIN" >&2
+  while :; do
+    now="$(date +%s)"
+    if (( now >= countdown_at )); then
+      if [[ "$LOCAL_SHUTDOWN" != true ]]; then
+        printf 'Server %s stayed unreachable for %sm; local shutdown is disabled, leaving this PC running.\n' \
+          "$HOST" "$offline_minutes"
+        exit 0
+      fi
+      printf 'Server %s stayed unreachable for %sm; shutting down this PC.\n' \
+        "$HOST" "$offline_minutes"
+      reason="$(desktop_work_reason)"
+      if [[ "$reason" != idle ]]; then
+        printf 'Desktop work is still active (%s); the offline deadline takes precedence.\n' "$reason" >&2
+      fi
+      broadcast_local_shutdown "$LOCAL_GRACE_MIN"
+      exit 0
+    fi
+    step="$OFFLINE_RETRY_SEC"
+    (( step > countdown_at - now )) && step=$(( countdown_at - now ))
+    (( step < 1 )) && step=1
+    sleep "$step"
+    now="$(date +%s)"
+    (( now < countdown_at )) || continue
+    if server_reachable; then
+      printf 'Server %s answered again; resuming the guarded shutdown.\n' "$HOST" >&2
+      if protect_server_sleep; then
+        return 0
+      fi
+      printf 'Server %s answered but cannot hold its sleep protection yet; continuing to retry.\n' \
+        "$HOST" >&2
+    fi
+  done
+}
+
 command -v ssh >/dev/null 2>&1 || die "ssh is required"
 if ! command -v elogind-inhibit >/dev/null 2>&1 && ! command -v systemd-inhibit >/dev/null 2>&1; then
   die "systemd-inhibit or elogind-inhibit is required for desktop sleep protection"
 fi
 
 if [[ "$DRY_RUN" == true ]]; then
-  printf 'dry-run: host=%s timeout=%sm grace=%sm poll=%ss poll_timeout=%sm local_grace=%sm local_shutdown=%s\n' \
-    "$HOST" "$TIMEOUT_MIN" "$GRACE_MIN" "$POLL_SEC" "$POLL_TIMEOUT_MIN" "$LOCAL_GRACE_MIN" "$LOCAL_SHUTDOWN"
+  printf 'dry-run: host=%s timeout=%sm grace=%sm poll=%ss poll_timeout=%sm local_grace=%sm offline_grace=%sm offline_retry=%ss local_shutdown=%s\n' \
+    "$HOST" "$TIMEOUT_MIN" "$GRACE_MIN" "$POLL_SEC" "$POLL_TIMEOUT_MIN" "$LOCAL_GRACE_MIN" \
+    "$OFFLINE_GRACE_MIN" "$OFFLINE_RETRY_SEC" "$LOCAL_SHUTDOWN"
   printf 'dry-run: would inhibit desktop idle/sleep while running and renew a two-hour server sleep hold, with each renewal due ahead of the shutdown deadline.\n'
+  printf 'dry-run: an unreachable server would be retried every %ss for %sm after the timeout, then this PC would power off about %sm after launch.\n' \
+    "$OFFLINE_RETRY_SEC" "$OFFLINE_GRACE_MIN" "$((TIMEOUT_MIN + OFFLINE_GRACE_MIN))"
   printf 'dry-run: would run: ssh %s sudo %s start --timeout %s --grace %s\n' \
     "$HOST" "$GUARD" "$TIMEOUT_MIN" "$GRACE_MIN"
   exit 0
@@ -571,7 +646,17 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 
 WAIT_DEADLINE=$(( $(date +%s) + TIMEOUT_MIN * 60 ))
-protect_server_sleep || die "could not acquire server sleep protection; shutdown not started"
+if ! protect_server_sleep; then
+  # A server that answers but cannot hold its sleep protection is a real fault:
+  # continuing would let its nightly suspend race the guarded countdown. An
+  # unreachable server instead keeps the desktop shut down on its own schedule.
+  if [[ "$LOCAL_SHUTDOWN" != true ]] || server_reachable; then
+    die "could not acquire server sleep protection; shutdown not started"
+  fi
+  wait_for_unreachable_server
+  # Contact is back: run the normal sequence with a fresh server window.
+  WAIT_DEADLINE=$(( $(date +%s) + TIMEOUT_MIN * 60 ))
+fi
 printf 'Sleep protection active: desktop inhibitor and renewable two-hour server hold.\n'
 
 printf 'Requesting guarded shutdown on %s in %s minutes (grace %s minutes)...\n' \

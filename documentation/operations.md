@@ -674,8 +674,21 @@ relay after its original 90-minute budget. A cancelled server guard stops the
 runner. Cancel
 the local poweroff with Ctrl-C in that window or `loginctl -c`.
 
+A server that never answers cannot host the countdown, so the desktop no longer
+abandons the shutdown for it. This is the ordinary case once the nightly power
+schedule has suspended the host. Contact is retried every `--offline-retry`
+seconds (default 300) across the timeout window and an `--offline-grace`
+(default 30 minutes) that replaces the server's work grace, then this PC powers
+off on its own: 60 + 30 minutes plus the countdown by default. The offline
+deadline takes precedence over desktop work it cannot relay, and it is reported
+in the countdown output. A server that answers again resumes the normal guarded
+sequence with a fresh timeout window. A server that answers but cannot hold its
+sleep protection remains a real fault and still stops the sequence, as does an
+unreachable server for a `--no-local-shutdown` run.
+
 ```bash
 scripts/admin/desktop-server-shutdown.sh --timeout 60 --grace 60 --local-grace 5
+scripts/admin/desktop-server-shutdown.sh --timeout 60 --offline-grace 30 --offline-retry 300
 ```
 
 The runner blocks desktop idle/sleep with `systemd-inhibit` or
@@ -687,7 +700,9 @@ cannot race the update. This postpones nightly suspend without changing the
 configured schedule. The server hold expires automatically, including after
 cancellation; desktop protection ends with the runner. Failure to acquire either
 protection, or to renew the hold while the server must still answer, stops the
-sequence. A renewal that fails in the last minute before the deadline, or after
+sequence, except that an unreachable server continues to the bounded offline
+deadline described above instead of abandoning the desktop poweroff. A renewal
+that fails in the last minute before the deadline, or after
 it, is expected because the server may already be powering off; the runner keeps
 polling so an accepted server shutdown is not abandoned before the desktop
 countdown is scheduled. The runner acquires its single-instance lock inside the

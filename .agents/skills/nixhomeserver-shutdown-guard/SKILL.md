@@ -97,11 +97,21 @@ do not ask again. A request to implement the skill alone does not.
    timing. The timeout is not a guaranteed poweroff deadline: desktop activity
    markers expire after five minutes, then the server requires five quiet minutes.
    A grace deadline never forces shutdown through active work. The runner refuses
-   concurrent instances (including `--force`), exits on failed sleep-hold renewal,
-   and cancels its server request and local poweroff on interruption. Starting the runner
+   concurrent instances (including `--force`), exits on failed sleep-hold renewal
+   while the server must still answer, and cancels its server request and local
+   poweroff on interruption. Starting the runner
    is not proof either machine has powered off.
    If launch fails, inspect the failure and server status before retrying;
    never bypass guard checks or shorten timing to obtain a successful result.
+
+An unreachable server does not abandon the desktop poweroff: a suspended host is
+the ordinary case after the nightly schedule. The runner retries contact every
+`--offline-retry` seconds (default 300) across the timeout window plus an
+`--offline-grace` (default 30 minutes) that replaces the server's work grace, and
+then schedules the local countdown, so both-machine requests still end with this
+PC off about 90 minutes after launch. Contact regained during that window
+resumes the normal guarded sequence. Do not add another timer or power the
+desktop off by hand while that countdown is pending; `loginctl -c` cancels it.
 
 The script waits for server shutdown, checks repeated failed SSH probes, then
 opens a visible desktop countdown. Ctrl-C or closing that countdown cancels

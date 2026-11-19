@@ -134,6 +134,11 @@ EOF
 cat >"$mock_bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${MOCK_FLAGS}/ssh.log"
+[[ ! -e "${MOCK_FLAGS}/ssh_unreachable" ]] || exit 1
+if [[ -e "${MOCK_FLAGS}/ssh_back_at" && -e "${MOCK_FLAGS}/now" ]] &&
+   (( $(cat "${MOCK_FLAGS}/now") < $(cat "${MOCK_FLAGS}/ssh_back_at") )); then
+  exit 1
+fi
 [[ "$*" != *'sudo bash -s'* || ! -e "${MOCK_FLAGS}/hold_fail" ]] || exit 1
 if [[ "$*" == *'sudo bash -s'* && -e "${MOCK_FLAGS}/hold_fail_at" && -e "${MOCK_FLAGS}/now" ]] &&
    (( $(cat "${MOCK_FLAGS}/now") >= $(cat "${MOCK_FLAGS}/hold_fail_at") )); then
@@ -141,6 +146,9 @@ if [[ "$*" == *'sudo bash -s'* && -e "${MOCK_FLAGS}/hold_fail_at" && -e "${MOCK_
 fi
 if [[ "$*" == *' true' ]]; then
   if [[ -e "${MOCK_FLAGS}/ssh_down_at" ]] && (( $(cat "${MOCK_FLAGS}/now") < $(cat "${MOCK_FLAGS}/ssh_down_at") )); then
+    exit 0
+  fi
+  if [[ -e "${MOCK_FLAGS}/ssh_back_at" ]] && (( $(cat "${MOCK_FLAGS}/now") >= $(cat "${MOCK_FLAGS}/ssh_back_at") )); then
     exit 0
   fi
   exit 1
@@ -534,5 +542,70 @@ if rg -q 'poweroff ' "$flags/loginctl.log"; then
   exit 1
 fi
 rm -f "$flags/now" "$flags/hold_fail_at" "$flags/ssh_down_at"
+
+# A server that never answers (for example suspended by the nightly power
+# schedule) must no longer abandon the desktop. Contact is retried across the
+# timeout window and a shorter offline grace, then this PC powers off on its own
+# at 60 + 30 minutes instead of the server's usual 60-minute work grace.
+: >"$flags/ssh.log"
+: >"$flags/loginctl.log"
+touch "$flags/ssh_unreachable"
+printf '1000\n' >"$flags/now"
+if ! MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh \
+  --timeout 60 --offline-grace 30 --offline-retry 300 --local-grace 0 \
+  >"$tmpdir/offline.out" 2>&1; then
+  echo "❌ An unreachable server must not abandon the desktop shutdown." >&2
+  exit 1
+fi
+require_fixed "$tmpdir/offline.out" 'not reachable; retrying every 300s for 30m' \
+  'The runner should report the offline retry plan.'
+if rg -q ' start | cancel' "$flags/ssh.log"; then
+  echo "❌ An offline server must not receive guard commands." >&2
+  exit 1
+fi
+require_fixed "$flags/loginctl.log" 'poweroff +0' \
+  'The offline deadline must still schedule the desktop countdown.'
+expect_equal "$(cat "$flags/now")" "6400" \
+  'The offline deadline must land 90 minutes after launch.'
+rm -f "$flags/now" "$flags/ssh_unreachable"
+
+# Contact restored during the offline grace resumes the guarded sequence instead
+# of powering off the desktop.
+: >"$flags/ssh.log"
+: >"$flags/loginctl.log"
+printf '1000\n' >"$flags/now"
+printf '1100\n' >"$flags/ssh_back_at"
+if MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh \
+  --timeout 2 --offline-grace 2 --offline-retry 60 --poll-timeout 1 --local-grace 0 \
+  >"$tmpdir/offline-resume.out" 2>&1; then
+  echo "❌ The resumed run should still fail without a server shutdown." >&2
+  exit 1
+fi
+require_fixed "$tmpdir/offline-resume.out" 'answered again; resuming the guarded shutdown' \
+  'A returning server must resume the guarded sequence.'
+require_fixed "$flags/ssh.log" 'sudo nixhomeserver-shutdown-guard start --timeout 2' \
+  'A resumed run must request the server shutdown.'
+if rg -q 'poweroff ' "$flags/loginctl.log"; then
+  echo "❌ A resumed guarded run must not power off the desktop early." >&2
+  exit 1
+fi
+rm -f "$flags/now" "$flags/ssh_back_at"
+
+# A server-only run keeps failing closed when the server is unreachable: there is
+# no desktop poweroff to preserve, and its exit is what the caller expects.
+: >"$flags/ssh.log"
+: >"$flags/loginctl.log"
+touch "$flags/ssh_unreachable"
+printf '1000\n' >"$flags/now"
+if MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh \
+  --timeout 1 --offline-grace 1 --no-local-shutdown >"$tmpdir/offline-disabled.out" 2>&1; then
+  echo "❌ A server-only run must fail when the server is unreachable." >&2
+  exit 1
+fi
+if rg -q 'poweroff ' "$flags/loginctl.log"; then
+  echo "❌ A server-only run must never schedule a desktop poweroff." >&2
+  exit 1
+fi
+rm -f "$flags/now" "$flags/ssh_unreachable"
 
 echo "✅ Shutdown guard schedules, detects critical tasks, and enforces the grace window."
