@@ -184,7 +184,8 @@ struct Assignment {
 
 /// Outcome schema. 2 added `discDiagnostics`, `contentDiagnostics` and
 /// `seasonEpisodeCounts`, and later the nested `menu.warnings` list (frame
-/// batches lost to a Bonsai failure); every schema-1 field keeps its
+/// batches lost to a Bonsai failure) and `proposalSource` (a disc-stage
+/// guess the content stage must confirm); every schema-1 field keeps its
 /// meaning. The import worker stores this object in each disc's
 /// `.identify.json` evidence, which the evaluation harness reads, so fields
 /// are only ever added.
@@ -214,6 +215,12 @@ struct Outcome {
     disc_diagnostics: Option<DiscDiagnostics>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content_diagnostics: Option<ContentDiagnostics>,
+    /// Set when the disc stage leaves a best guess the content stage must
+    /// confirm instead of an identification: "TheDiscDB" here; the import
+    /// worker's ordering proposal writes "library order" or "disc number".
+    /// Anything but those two may only be contradicted by a subtitle match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proposal_source: Option<String>,
     /// Held because the episodes could not be renumbered as TMDB (Jellyfin)
     /// numbers them. The assignments, if any, are in the identifier's own
     /// numbering and must not be offered for publishing.
@@ -237,6 +244,7 @@ impl Outcome {
             season_episode_counts: BTreeMap::new(),
             disc_diagnostics: None,
             content_diagnostics: None,
+            proposal_source: None,
             tmdb_numbering_held: false,
         }
     }
@@ -462,7 +470,21 @@ fn parse_titles(raw: &[String]) -> Result<Vec<(u32, u32)>> {
         .collect()
 }
 
+/// How far a TheDiscDB exact match can be trusted to publish on its own:
+/// every episode's DVD title must be one of the selected titles, in
+/// episode order. Missing or foreign title indexes leave a multi-title
+/// disc's order an unverified assumption; a single title has none.
+fn sidecar_order_trusted(indexed: Option<&[u32]>, selected: &[u32]) -> bool {
+    selected.len() <= 1 || indexed == Some(selected)
+}
+
 /// An exact TheDiscDB match recorded by the desktop ripper.
+///
+/// The episodes are trusted to publish on their own only when TheDiscDB
+/// also says which DVD title holds each one and those titles are the
+/// selected ones in episode order; otherwise the pairing of titles with
+/// episodes is an unverified assumption, kept as a proposal the content
+/// stage's dialogue comparison must confirm.
 fn from_sidecar(
     path: &Path,
     titles: &[(u32, u32)],
@@ -572,16 +594,35 @@ fn from_sidecar(
             season: *season,
             episode: *episode,
             name: name.clone(),
-            evidence: "TheDiscDB exact disc match".into(),
+            evidence: if sidecar_order_trusted(indexed.as_deref(), &selected) {
+                "TheDiscDB exact disc match".into()
+            } else {
+                "TheDiscDB exact disc match (title order unverified)".into()
+            },
         })
         .collect();
     outcome.season = Some(episodes[0].0);
     outcome.series = series;
-    outcome.status = "identified";
     if let Some(diagnostics) = outcome.disc_diagnostics.as_mut() {
         diagnostics.chosen_by = Some("sidecar");
     }
-    Ok(true)
+    if sidecar_order_trusted(indexed.as_deref(), &selected) {
+        outcome.status = "identified";
+        return Ok(true);
+    }
+    outcome.proposal_source = Some("TheDiscDB".into());
+    outcome.reasons.push(match indexed.as_deref() {
+        None => "TheDiscDB does not say which DVD title holds which episode; \
+                 the order above follows disc order and needs the dialogue to confirm it."
+            .into(),
+        Some(other) => format!(
+            "TheDiscDB places these episodes in DVD titles {other:?}, not the selected titles \
+             {selected:?}; the order above follows disc order and needs the dialogue to confirm it."
+        ),
+    });
+    outcome.summary =
+        "TheDiscDB names the episodes; which DVD title holds which needs confirming.".into();
+    Ok(false)
 }
 
 struct SeriesFit {
@@ -2483,7 +2524,19 @@ mod tests {
         assert!(weak_proposal(Some("library order")));
         assert!(weak_proposal(Some("disc number")));
         assert!(!weak_proposal(Some("disc menu")));
+        assert!(!weak_proposal(Some("TheDiscDB")));
         assert!(!weak_proposal(None));
+    }
+
+    #[test]
+    fn multi_title_sidecar_matches_need_verified_title_order() {
+        let selected = [3u32, 4];
+        assert!(sidecar_order_trusted(Some(&selected), &selected));
+        // Missing or foreign title indexes leave the order unverified.
+        assert!(!sidecar_order_trusted(None, &selected));
+        assert!(!sidecar_order_trusted(Some(&[3, 5]), &selected));
+        // A single title has no order to get wrong.
+        assert!(sidecar_order_trusted(None, &[3]));
     }
 
     #[test]

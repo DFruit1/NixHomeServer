@@ -372,6 +372,13 @@ def parse_args() -> argparse.Namespace:
     identify.add_argument("--subtitle-socket")
     identify.add_argument("--sevenzip", default="7zz")
     identify.add_argument("--ffmpeg", default="ffmpeg")
+    identify.add_argument(
+        "--max-menu-frames",
+        type=int,
+        default=32,
+        help="Menu frames the identifier may read (its own default is 20; box-set "
+             "discs with per-episode submenus need more pages).",
+    )
     identify.add_argument("--identify-threads", type=int, default=4)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
@@ -1161,7 +1168,8 @@ def identify_disc(args: argparse.Namespace, source: Path, selected: list[Title],
         if compact(existing[0]) == compact(hints.name):
             name_hint = existing[0]
     arguments = ["disc", "--iso", str(source), "--name-hint", name_hint,
-                 "--sevenzip", args.sevenzip, "--ffmpeg", args.ffmpeg]
+                 "--sevenzip", args.sevenzip, "--ffmpeg", args.ffmpeg,
+                 "--max-menu-frames", str(getattr(args, "max_menu_frames", 32))]
     for title in selected:
         arguments += ["--title", f"{title.index}:{title.seconds}"]
     if hints.season is not None:

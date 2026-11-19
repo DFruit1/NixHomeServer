@@ -120,6 +120,24 @@ fn difference(left: &[u8], right: &[u8]) -> f64 {
     total as f64 / left.len().max(1) as f64
 }
 
+/// The frames to show Bonsai: the still text pages first, then evenly
+/// spread moving frames to fill the budget. An animated menu page never
+/// holds still, so its text can only come from the moving frames; the
+/// spread keeps one long animation from crowding out the other pages.
+fn fill_frame_budget(stable: Vec<Vec<u8>>, moving: &[Vec<u8>], limit: usize) -> Vec<Vec<u8>> {
+    let mut chosen = stable;
+    let room = limit.saturating_sub(chosen.len()).min(moving.len());
+    let stride = moving.len() as f64 / room.max(1) as f64;
+    let mut index = 0.0;
+    for _ in 0..room {
+        let pick = (index as usize).min(moving.len() - 1);
+        chosen.push(moving[pick].clone());
+        index += stride;
+    }
+    chosen.truncate(limit);
+    chosen
+}
+
 /// Return up to `limit` distinct, non-blank JPEG frames from the menus.
 pub fn menu_frames(tools: &Tools, iso: &Path, work: &Path, limit: usize) -> Result<Vec<Vec<u8>>> {
     let files = list_menu_files(tools, iso)?;
@@ -216,17 +234,14 @@ pub fn menu_frames(tools: &Tools, iso: &Path, work: &Path, limit: usize) -> Resu
             target.push((print, bytes));
         }
     }
-    let mut chosen: Vec<Vec<u8>> = stable.into_iter().map(|(_, bytes)| bytes).collect();
-    if chosen.is_empty() {
-        chosen = moving.into_iter().map(|(_, bytes)| bytes).collect();
-    }
-    chosen.truncate(limit);
-    Ok(chosen)
+    let stable_bytes: Vec<Vec<u8>> = stable.into_iter().map(|(_, bytes)| bytes).collect();
+    let moving_bytes: Vec<Vec<u8>> = moving.into_iter().map(|(_, bytes)| bytes).collect();
+    Ok(fill_frame_budget(stable_bytes, &moving_bytes, limit))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_menu_vob;
+    use super::{fill_frame_budget, is_menu_vob};
 
     #[test]
     fn only_menu_vobs_are_selected() {
@@ -236,5 +251,37 @@ mod tests {
         assert!(!is_menu_vob("VIDEO_TS/VTS_01_1.VOB"));
         assert!(!is_menu_vob("VIDEO_TS/VTS_01_0.IFO"));
         assert!(!is_menu_vob("AUDIO_TS/VTS_01_0.VOB"));
+    }
+
+    #[test]
+    fn moving_frames_fill_the_budget_when_still_pages_are_few() {
+        let stable: Vec<Vec<u8>> = (0..3).map(|i| vec![i]).collect();
+        let moving: Vec<Vec<u8>> = (10..20).map(|i| vec![i]).collect();
+        // Three still pages, then five animated samples spread across all
+        // ten, not the first five.
+        assert_eq!(
+            fill_frame_budget(stable, &moving, 8),
+            [
+                vec![0],
+                vec![1],
+                vec![2],
+                vec![10],
+                vec![12],
+                vec![14],
+                vec![16],
+                vec![18]
+            ]
+        );
+        // No still pages at all: the moving samples fill the whole budget.
+        assert_eq!(
+            fill_frame_budget(Vec::new(), &moving, 4),
+            [vec![10], vec![12], vec![15], vec![17]]
+        );
+        // More still pages than the budget: nothing moving is added.
+        let crowded: Vec<Vec<u8>> = (0..6).map(|i| vec![i]).collect();
+        assert_eq!(
+            fill_frame_budget(crowded, &moving, 4),
+            [vec![0], vec![1], vec![2], vec![3]]
+        );
     }
 }
