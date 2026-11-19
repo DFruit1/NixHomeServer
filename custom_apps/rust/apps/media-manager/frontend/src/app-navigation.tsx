@@ -19,6 +19,7 @@ export const SIGN_OUT_URL = "/oauth2/sign_out";
 const navigationOrder: View[] = [
   "player",
   "videos",
+  "video-editing",
   "images",
   "library",
   "health",

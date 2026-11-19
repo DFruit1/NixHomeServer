@@ -110,9 +110,11 @@ function jobStatus(job: VideoConversionJob): string {
     case "encoding":
       return "Converting";
     case "installing":
-      return job.destinationRootId
-        ? "Saving audio copy"
-        : "Replacing the original";
+      return job.mode === "copy"
+        ? "Saving the copy beside the original"
+        : job.destinationRootId
+          ? "Saving audio copy"
+          : "Replacing the original";
     case "completed": {
       const sizes =
         job.outputBytes != null

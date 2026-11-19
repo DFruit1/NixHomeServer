@@ -20,6 +20,10 @@ pub const ORIGINALS_DIRECTORY: &str = "_Originals";
 /// Intake subfolder holding finished encodes until the broker installs them.
 pub const STAGING_DIRECTORY: &str = "video-conversions";
 const JOBS_DIRECTORY: &str = "video-conversions";
+/// Default conversion jobs keep the original in `_Originals`; editor jobs
+/// write a new file and never touch the original.
+pub const MODE_REPLACE: &str = "replace";
+pub const MODE_COPY: &str = "copy";
 /// The worker's systemd path unit watches this directory for new work.
 pub const WAKE_DIRECTORY: &str = "video-conversion-requests";
 const MAX_JOB_BYTES: u64 = 64 * 1024;
@@ -281,6 +285,18 @@ pub fn plan(
     source_extension: &str,
     probe: &SourceProbe,
 ) -> Result<EncodePlan, String> {
+    plan_for_edit(format, source_extension, probe, false)
+}
+
+/// An edit must decode the kept range, so a trimmed copy re-encodes video and
+/// audio instead of stream-copying around the cut. Untrimmed copies keep the
+/// stream-copy optimisation when the source already fits the target format.
+pub fn plan_for_edit(
+    format: Format,
+    source_extension: &str,
+    probe: &SourceProbe,
+    trimmed: bool,
+) -> Result<EncodePlan, String> {
     if format == Format::AudioMp3 {
         let audio = probe
             .of_kind("audio")
@@ -320,8 +336,9 @@ pub fn plan(
     // Video: exactly the first real picture stream (cover art is dropped).
     push(&["-map", &format!("0:{}", video.index)]);
     let eight_bit = matches!(video.pix_fmt.as_deref(), Some("yuv420p" | "yuvj420p"));
-    let copy_video =
-        video.codec == format.video_codec() && (format.video_codec() != "h264" || eight_bit);
+    let copy_video = !trimmed
+        && video.codec == format.video_codec()
+        && (format.video_codec() != "h264" || eight_bit);
     if copy_video {
         push(&["-c:v", "copy"]);
         if format == Format::CompatibleMp4 && video.codec == "hevc" {
@@ -381,9 +398,13 @@ pub fn plan(
     }
 
     // Audio: every track, in order, so commentary and other languages survive.
-    let copyable_audio: &[&str] = match format {
-        Format::ModernAv1 => &["opus", "aac"],
-        _ => &["aac", "mp3"],
+    let copyable_audio: &[&str] = if trimmed {
+        &[]
+    } else {
+        match format {
+            Format::ModernAv1 => &["opus", "aac"],
+            _ => &["aac", "mp3"],
+        }
     };
     let mut audio_streams = 0;
     for stream in probe.of_kind("audio") {
@@ -442,7 +463,8 @@ pub fn plan(
     }
     push(&["-max_muxing_queue_size", "4096"]);
 
-    let unchanged = copy_video
+    let unchanged = !trimmed
+        && copy_video
         && source_extension.eq_ignore_ascii_case(format.extension())
         && !args.iter().any(|arg| {
             matches!(
@@ -496,6 +518,10 @@ pub fn verify_output(
 // Jobs
 // ---------------------------------------------------------------------------
 
+fn default_mode() -> String {
+    MODE_REPLACE.to_string()
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Job {
@@ -508,6 +534,17 @@ pub struct Job {
     pub format: String,
     #[serde(default)]
     pub destination_root_id: Option<String>,
+    /// `replace` (default) archives and replaces; `copy` writes a new file.
+    #[serde(default = "default_mode")]
+    pub mode: String,
+    /// New leaf name for a copy job, stored beside the source.
+    #[serde(default)]
+    pub output_name: Option<String>,
+    /// Kept playback range for an edited copy.
+    #[serde(default)]
+    pub trim_start_seconds: Option<f64>,
+    #[serde(default)]
+    pub trim_end_seconds: Option<f64>,
     /// Fingerprint when queued; a changed file is never converted.
     pub expected_source: String,
     pub source_bytes: u64,
@@ -539,6 +576,46 @@ impl Job {
         matches!(self.state.as_str(), "queued" | "encoding" | "installing")
     }
 
+    pub fn copies_only(&self) -> bool {
+        self.mode == MODE_COPY
+    }
+
+    /// Keep the chosen fragment; a missing duration cannot bound the end yet.
+    pub fn trim_bounds(&self, duration: Option<f64>) -> Result<Option<(f64, f64)>, String> {
+        match (self.trim_start_seconds, self.trim_end_seconds) {
+            (None, None) => Ok(None),
+            (Some(start), Some(end)) => {
+                if !start.is_finite() || !end.is_finite() || start < 0.0 {
+                    return Err("Choose a valid start and end time.".into());
+                }
+                let end = match duration {
+                    Some(duration) if end > duration + 0.5 => {
+                        return Err("The end time is past the end of the video.".into());
+                    }
+                    Some(duration) => end.min(duration),
+                    None => end,
+                };
+                if end - start < 1.0 {
+                    return Err("Choose a range of at least one second.".into());
+                }
+                Ok(Some((start, end)))
+            }
+            _ => Err("Choose both a start and end time, or neither.".into()),
+        }
+    }
+
+    /// Where an edited copy is installed: beside the source, under its name.
+    pub fn copy_relative_path(&self) -> Result<String, String> {
+        let name = self
+            .output_name
+            .as_deref()
+            .ok_or("Choose a name for the copy.")?;
+        Ok(match self.relative_path.rsplit_once('/') {
+            Some((folder, _)) if !folder.is_empty() => format!("{folder}/{name}"),
+            _ => name.to_string(),
+        })
+    }
+
     /// Where the broker keeps the original, beneath the owner's `_Originals`.
     /// Deterministic so the broker can validate it and recover after a crash.
     pub fn archived_relative_path(&self) -> String {
@@ -554,6 +631,9 @@ impl Job {
             "relativePath": self.relative_path,
             "format": self.format,
             "destinationRootId": self.destination_root_id,
+            "mode": if self.mode.is_empty() { MODE_REPLACE } else { &self.mode },
+            "trimStartSeconds": self.trim_start_seconds,
+            "trimEndSeconds": self.trim_end_seconds,
             "state": self.state,
             "createdAt": self.created_at,
             "startedAt": self.started_at,
@@ -563,7 +643,11 @@ impl Job {
             "sourceBytes": self.source_bytes,
             "outputBytes": self.output_bytes,
             "outputRelativePath": self.output_relative_path,
-            "archivedPath": format!("{ORIGINALS_DIRECTORY}/{}", self.archived_relative_path()),
+            "archivedPath": if self.copies_only() {
+                Value::Null
+            } else {
+                json!(format!("{ORIGINALS_DIRECTORY}/{}", self.archived_relative_path()))
+            },
             "droppedSubtitles": self.dropped_subtitles,
         })
     }
@@ -578,6 +662,27 @@ impl Job {
 
 pub fn archived_relative_path(root_id: &str, relative_path: &str) -> String {
     format!("Videos/{root_id}/{relative_path}")
+}
+
+/// A copy beside the source whose name people can tell apart from the original.
+pub fn default_copy_name(relative_path: &str, format: Format) -> String {
+    let file = relative_path.rsplit('/').next().unwrap_or(relative_path);
+    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    format!("{stem} (edited).{}", format.extension())
+}
+
+/// A copy name is one leaf with the chosen format's extension and no traversal.
+pub fn valid_copy_name(name: &str, format: Format) -> bool {
+    !name.is_empty()
+        && name.len() <= 200
+        && name != "."
+        && name != ".."
+        && !name.starts_with('.')
+        && !name.contains(['/', '\\'])
+        && !name.chars().any(char::is_control)
+        && name.rsplit_once('.').is_some_and(|(stem, extension)| {
+            !stem.is_empty() && extension.eq_ignore_ascii_case(format.extension())
+        })
 }
 
 /// The converted file's library path: same folder and name, new extension.
@@ -843,6 +948,38 @@ mod tests {
         };
         assert!(plan(Format::CompatibleMp4, "mp4", &converted).is_err());
         assert!(plan(Format::CompatibleMp4, "avi", &converted).is_ok());
+    }
+
+    #[test]
+    fn trimmed_copies_reencode_instead_of_stream_copying_around_the_cut() {
+        let converted = SourceProbe {
+            duration_seconds: Some(600.0),
+            streams: vec![
+                SourceStream {
+                    pix_fmt: Some("yuv420p".into()),
+                    ..stream(0, "video", "h264")
+                },
+                stream(1, "audio", "aac"),
+            ],
+        };
+        assert!(plan(Format::CompatibleMp4, "mp4", &converted).is_err());
+        let trimmed = plan_for_edit(Format::CompatibleMp4, "mp4", &converted, true).unwrap();
+        let args = trimmed.args.join(" ");
+        assert!(args.contains("libx264") && args.contains("-c:a:0 aac"));
+        assert!(!args.contains("-c:v copy") && !args.contains("-c:a:0 copy"));
+    }
+
+    #[test]
+    fn copy_names_stay_beside_the_source_and_match_the_format() {
+        assert_eq!(
+            default_copy_name("Films/Old (1999)/Old.mkv", Format::CompatibleMp4),
+            "Old (edited).mp4"
+        );
+        assert!(valid_copy_name("Old (edited).mp4", Format::CompatibleMp4));
+        assert!(!valid_copy_name("Old (edited).mkv", Format::CompatibleMp4));
+        assert!(!valid_copy_name("../Old.mp4", Format::CompatibleMp4));
+        assert!(!valid_copy_name(".Old.mp4", Format::CompatibleMp4));
+        assert!(valid_copy_name("Old edit.MKV", Format::CompatibleMkv));
     }
 
     #[test]

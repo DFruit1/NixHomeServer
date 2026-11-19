@@ -43,6 +43,7 @@ import {
 import { PlayerView } from "./player-view";
 import { TranscriptView } from "./transcript-view";
 import { VideosView } from "./videos-view";
+import { VideoEditingView } from "./video-editing-view";
 import { ImagesView } from "./images-view";
 import { RefreshView } from "./refresh-view";
 import {
@@ -696,6 +697,7 @@ export default component$((props: RootProps) => {
           "main-content--library": view.value === "library",
           "main-content--conversions": view.value === "conversions",
           "main-content--videos": view.value === "videos",
+          "main-content--video-editing": view.value === "video-editing",
           "main-content--images": view.value === "images",
         }}
       >
@@ -790,6 +792,19 @@ export default component$((props: RootProps) => {
             initialItemId={route.initialItemId}
             initialPath={route.initialPath}
             initialRootId={route.initialRootId}
+          />
+        ) : view.value === "video-editing" ? (
+          <VideoEditingView
+            roots={state.roots}
+            initialItemId={route.initialItemId}
+            immichUrl={
+              state.status?.integrations.find(
+                (integration) =>
+                  integration.id === "immich" && integration.available,
+              )?.url ?? undefined
+            }
+            session={state.session}
+            status={state.status}
           />
         ) : view.value === "transcript" ? (
           <TranscriptView

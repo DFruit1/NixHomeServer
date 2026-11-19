@@ -137,6 +137,7 @@ export const Icon = component$<{ name: IconName; size?: number }>((props) => {
       "M18 11a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z",
     ],
     "picture-in-picture": ["M4 4h16v16H4z", "M13 13h6v5h-6z"],
+    pencil: ["M12 20h9", "M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"],
     theatre: ["M2 6h20v12H2z"],
   };
   return (

@@ -4,7 +4,7 @@
 use crate::{
     broker::{
         file_fingerprint, open_regular_file_beneath, opened_file_fingerprint, BrokerAction,
-        ConvertVideoAction, InstallSubtitleAction,
+        ConvertVideoAction, CopyVideoAction, InstallSubtitleAction,
     },
     catalog::{Catalog, CatalogHandle, ConfirmPlanOutcome, MutationPlanDraft},
     config::{AppConfig, Identity, RootScope},
@@ -13,8 +13,8 @@ use crate::{
     transcription::fs::Dir,
     video_conversion::{
         all_jobs, available_space, cancel_marker, cancel_requested, not_enough_space, now,
-        output_relative_path, owner_dir, plan, prune_history, verify_output, EncodePlan, Format,
-        Job, SourceProbe, STAGING_DIRECTORY,
+        output_relative_path, owner_dir, plan_for_edit, prune_history, verify_output, EncodePlan,
+        Format, Job, SourceProbe, STAGING_DIRECTORY,
     },
 };
 use serde_json::json;
@@ -185,8 +185,13 @@ fn convert(config: &AppConfig, ffmpeg: &Path, ffprobe: &Path, job: &mut Job) -> 
         .relative_path
         .rsplit_once('.')
         .map_or("", |(_, extension)| extension);
-    let plan = plan(format, extension, &source_probe)?;
-    let output_path = output_relative_path(&job.relative_path, format);
+    let trim = job.trim_bounds(source_probe.duration_seconds)?;
+    let plan = plan_for_edit(format, extension, &source_probe, trim.is_some())?;
+    let output_path = if job.copies_only() {
+        job.copy_relative_path()?
+    } else {
+        output_relative_path(&job.relative_path, format)
+    };
     if job.destination_root_id.is_none() && output_path != job.relative_path {
         let (_, root_path) = open_source(config, job)?;
         if std::fs::symlink_metadata(root_path.join(&output_path)).is_ok() {
@@ -197,11 +202,15 @@ fn convert(config: &AppConfig, ffmpeg: &Path, ffprobe: &Path, job: &mut Job) -> 
         }
     }
 
-    // Peak use: the encode, the archived original and the library copy of the
-    // conversion, each estimated at the source's size. The broker re-checks
+    // Peak use: the encode plus an archived original and library copy for a
+    // replacement; an edited copy adds only its new file. The broker re-checks
     // its share with exact sizes before copying anything.
     let reserve = config.free_space_reserve_bytes;
-    let needed = job.source_bytes.saturating_mul(3).saturating_add(reserve);
+    let needed = if job.copies_only() {
+        job.source_bytes.saturating_add(reserve)
+    } else {
+        job.source_bytes.saturating_mul(3).saturating_add(reserve)
+    };
     let available = available_space(&crate::conversion_jobs::staging_root(config))?;
     if available < needed {
         return Err(not_enough_space(needed, reserve, available));
@@ -224,7 +233,16 @@ fn convert(config: &AppConfig, ffmpeg: &Path, ffprobe: &Path, job: &mut Job) -> 
     let _ = staging.remove(&partial_name);
     let _ = staging.remove(&staging_filename);
     let partial = staging_path.join(&partial_name);
-    let result = encode(config, ffmpeg, source, &plan, &partial, &source_probe, job);
+    let result = encode(
+        config,
+        ffmpeg,
+        source,
+        &plan,
+        &partial,
+        &source_probe,
+        job,
+        trim,
+    );
     if let Err(error) = result {
         let _ = staging.remove(&partial_name);
         if job.state == "cancelled" {
@@ -250,7 +268,11 @@ fn convert(config: &AppConfig, ffmpeg: &Path, ffprobe: &Path, job: &mut Job) -> 
     };
     let output_probe =
         probe(ffprobe, staging.file(&staging_filename).map_err(discard)?).map_err(discard)?;
-    verify_output(&source_probe, &output_probe, &plan).map_err(discard)?;
+    let mut expected_source = source_probe.clone();
+    if let Some((start, end)) = trim {
+        expected_source.duration_seconds = Some(end - start);
+    }
+    verify_output(&expected_source, &output_probe, &plan).map_err(discard)?;
     let expected_replacement =
         file_fingerprint(&staged_path).map_err(|error| discard(error.to_string()))?;
     // The library file must still be the one that was encoded.
@@ -265,7 +287,19 @@ fn convert(config: &AppConfig, ffmpeg: &Path, ffprobe: &Path, job: &mut Job) -> 
     } else {
         output_path
     };
-    let action = if let Some(destination_root_id) = &job.destination_root_id {
+    let action = if job.copies_only() {
+        if format == Format::AudioMp3 {
+            return Err(discard("Missing video format".into()));
+        }
+        BrokerAction::CopyVideo(CopyVideoAction {
+            staging_filename: staging_filename.clone(),
+            root_id: job.root_id.clone(),
+            source_relative_path: job.relative_path.clone(),
+            destination_relative_path: output_path.clone(),
+            expected_source: job.expected_source.clone(),
+            expected: expected_replacement,
+        })
+    } else if let Some(destination_root_id) = &job.destination_root_id {
         if format != Format::AudioMp3 {
             return Err(discard("Invalid audio format".into()));
         }
@@ -315,8 +349,13 @@ fn encode(
     partial: &Path,
     source_probe: &SourceProbe,
     job: &mut Job,
+    trim: Option<(f64, f64)>,
 ) -> Result<(), String> {
-    let mut child = Command::new(ffmpeg)
+    let mut command = Command::new(ffmpeg);
+    if let Some((start, _)) = trim {
+        command.args(["-ss", &format!("{start:.3}")]);
+    }
+    command
         .args([
             "-hide_banner",
             "-nostdin",
@@ -325,7 +364,11 @@ fn encode(
             "-fflags",
             "+genpts",
         ])
-        .args(["-i", "/proc/self/fd/0"])
+        .args(["-i", "/proc/self/fd/0"]);
+    if let Some((start, end)) = trim {
+        command.args(["-t", &format!("{:.3}", end - start)]);
+    }
+    let mut child = command
         .args(&plan.args)
         .args([
             "-progress",
@@ -366,9 +409,13 @@ fn encode(
     let mut last_save = Instant::now();
     let mut last_change = Instant::now();
     let mut last_position = 0;
-    let duration_us = source_probe
-        .duration_seconds
-        .map(|seconds| (seconds * 1_000_000.0) as u64);
+    let duration_us = trim
+        .map(|(start, end)| ((end - start) * 1_000_000.0) as u64)
+        .or_else(|| {
+            source_probe
+                .duration_seconds
+                .map(|seconds| (seconds * 1_000_000.0) as u64)
+        });
     let outcome = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),

@@ -88,6 +88,7 @@ describe("Media Manager navigation", () => {
       ["Library", "?view=library"],
       ["Library health", "?view=health"],
       ["Conversions", "?view=conversions"],
+      ["Video editing", "?view=video-editing"],
       ["Recent changes", "?view=activity"],
       ["Online services", "?view=accounts"],
       ["Refresh other apps", "?view=refresh"],
@@ -108,6 +109,7 @@ describe("Media Manager navigation", () => {
     ).toEqual([
       "?view=player",
       "?view=videos",
+      "?view=video-editing",
       "?view=images",
       "?view=library",
       "?view=health",

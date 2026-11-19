@@ -116,6 +116,11 @@ describe("video categories", () => {
     await vi.waitFor(() => expect(categorySelect(screen)).toBeTruthy());
     expect(categorySelect(screen)?.getAttribute("value")).toBe("videos");
     await vi.waitFor(() => expect(rowTitles(screen)).toContain("Trip"));
+    expect(
+      screen
+        .querySelector('a[aria-label="Edit this video"]')
+        ?.getAttribute("href"),
+    ).toBe("?view=video-editing&item=youtube-video");
     expect(rowTitles(screen)).toContain("Clip");
     expect(rowTitles(screen)).not.toContain("Arrival (2016)");
     expect(rowTitles(screen)).not.toContain("Episode 1");

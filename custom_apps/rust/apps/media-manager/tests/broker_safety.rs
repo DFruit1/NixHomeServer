@@ -6,8 +6,9 @@ use media_manager::{
         apply_replace_artwork, apply_replace_metadata_sidecar, discard_staged_broker_action,
         file_fingerprint, move_destination_matches, open_regular_file_beneath,
         recover_broker_action, ArchiveEmbeddedArtworkAction, BrokerAction, ConvertVideoAction,
-        InstallArtworkAction, InstallMetadataSidecarAction, InstallSubtitleAction, MoveAction,
-        ReplaceArtworkAction, ReplaceEmbeddedMetadataAction, ReplaceMetadataSidecarAction,
+        CopyVideoAction, InstallArtworkAction, InstallMetadataSidecarAction, InstallSubtitleAction,
+        MoveAction, ReplaceArtworkAction, ReplaceEmbeddedMetadataAction,
+        ReplaceMetadataSidecarAction,
     },
     config::AppConfig,
 };
@@ -679,6 +680,53 @@ fn video_conversion_archives_the_original_before_replacing_it() {
     // A broker restart after completion recovers instead of failing.
     assert!(recover_broker_action(&fixture.config, "editor", &action).expect("recover"));
     apply_broker_action(&fixture.config, "editor", &action).expect("idempotent re-run");
+}
+
+#[test]
+fn edited_copy_keeps_the_original_and_installs_a_new_file() {
+    let fixture = video_fixture("Trip.mkv");
+    let action = BrokerAction::CopyVideo(CopyVideoAction {
+        staging_filename: "job.mkv".into(),
+        root_id: "shared-videos".into(),
+        source_relative_path: "Movies/Trip.mkv".into(),
+        destination_relative_path: "Movies/Trip (edited).mkv".into(),
+        expected_source: file_fingerprint(&fixture.library.join("Trip.mkv"))
+            .expect("source fingerprint"),
+        expected: file_fingerprint(&fixture.staging.join("job.mkv")).expect("staged fingerprint"),
+    });
+    apply_broker_action(&fixture.config, "editor", &action).expect("save edited copy");
+    assert_eq!(
+        fs::read(fixture.library.join("Trip.mkv")).expect("original"),
+        b"original video"
+    );
+    assert_eq!(
+        fs::read(fixture.library.join("Trip (edited).mkv")).expect("edited copy"),
+        b"converted video"
+    );
+    assert!(!fixture.originals.join("Videos").exists());
+    assert!(!fixture.staging.join("job.mkv").exists());
+    assert!(recover_broker_action(&fixture.config, "editor", &action).expect("recover"));
+    apply_broker_action(&fixture.config, "editor", &action).expect("idempotent re-run");
+
+    let collapse = video_fixture("Trip.mkv");
+    let mut action = action;
+    let BrokerAction::CopyVideo(copy) = &mut action else {
+        unreachable!()
+    };
+    copy.expected_source =
+        file_fingerprint(&collapse.library.join("Trip.mkv")).expect("second source fingerprint");
+    copy.expected =
+        file_fingerprint(&collapse.staging.join("job.mkv")).expect("second staged fingerprint");
+    fs::write(collapse.library.join("Trip (edited).mkv"), b"keep me").expect("collision");
+    assert!(apply_broker_action(&collapse.config, "editor", &action).is_err());
+    assert_eq!(
+        fs::read(collapse.library.join("Trip (edited).mkv")).expect("collision kept"),
+        b"keep me"
+    );
+    assert_eq!(
+        fs::read(collapse.library.join("Trip.mkv")).expect("original kept"),
+        b"original video"
+    );
 }
 
 #[test]

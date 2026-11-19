@@ -11,6 +11,9 @@ const MAX_QUEUED_PER_REQUEST: usize = 500;
 #[serde(rename_all = "camelCase")]
 pub(super) struct ListQuery {
     item_id: Option<String>,
+    /// The editor only needs the caller's jobs; skip the library-wide scan.
+    #[serde(default)]
+    jobs_only: bool,
 }
 
 #[derive(Deserialize)]
@@ -19,6 +22,12 @@ pub(super) struct QueueRequest {
     item_ids: Vec<String>,
     format: String,
     destination_root_id: Option<String>,
+    /// `replace` (default) or `copy`; copy jobs leave the original untouched.
+    mode: Option<String>,
+    /// New leaf name for a copy job; defaults to "<name> (edited).<ext>".
+    output_name: Option<String>,
+    trim_start_seconds: Option<f64>,
+    trim_end_seconds: Option<f64>,
 }
 
 fn available(config: &AppConfig) -> bool {
@@ -64,8 +73,25 @@ pub(super) async fn list(
     let catalog = state.catalog.clone();
     let lookup_identity = identity.clone();
     let selected_id = query.item_id.filter(|id| valid_object_id(id));
+    let jobs_only = query.jobs_only;
     let listed = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let identity = lookup_identity;
+        if jobs_only {
+            let jobs = conversion::jobs(&config, &identity.username)?
+                .iter()
+                .map(Job::view)
+                .collect::<Vec<_>>();
+            return Ok(json!({
+                "available": available(&config),
+                "canConvert": identity.can_edit(&config.editor_group),
+                "formats": conversion::formats_view(),
+                "candidates": [],
+                "selected": null,
+                "jobs": jobs,
+                "probePending": 0,
+                "truncated": false,
+            }));
+        }
         let catalog = catalog.open().map_err(|error| error.to_string())?;
         let active = conversion::all_jobs(&config)?
             .into_iter()
@@ -203,6 +229,72 @@ pub(super) async fn queue(
         .into_response();
     };
     let audio = format == Format::AudioMp3;
+    let mode = request
+        .mode
+        .clone()
+        .unwrap_or_else(|| conversion::MODE_REPLACE.to_string());
+    if !matches!(
+        mode.as_str(),
+        conversion::MODE_REPLACE | conversion::MODE_COPY
+    ) {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_video_mode",
+            "Choose whether to replace the original or save a copy.",
+            request_id,
+        )
+        .into_response();
+    }
+    let copy = mode == conversion::MODE_COPY;
+    if copy
+        && (audio
+            || request.item_ids.len() != 1
+            || request.destination_root_id.is_some()
+            || request
+                .output_name
+                .as_deref()
+                .is_some_and(|name| !conversion::valid_copy_name(name, format)))
+    {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_video_copy",
+            "Save a copy for one video at a time, using a file name with the chosen format's extension beside the original.",
+            request_id,
+        )
+        .into_response();
+    }
+    if !copy
+        && (request.output_name.is_some()
+            || request.trim_start_seconds.is_some()
+            || request.trim_end_seconds.is_some())
+    {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_video_edit",
+            "A replacement conversion cannot take an edit name or trim range.",
+            request_id,
+        )
+        .into_response();
+    }
+    if copy
+        && (request.trim_start_seconds.is_some() != request.trim_end_seconds.is_some()
+            || request
+                .trim_start_seconds
+                .is_some_and(|start| !start.is_finite() || start < 0.0)
+            || request.trim_end_seconds.is_some_and(|end| !end.is_finite())
+            || matches!(
+                (request.trim_start_seconds, request.trim_end_seconds),
+                (Some(start), Some(end)) if end - start < 1.0
+            ))
+    {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_video_trim",
+            "Choose a start and end at least one second apart, or leave both empty.",
+            request_id,
+        )
+        .into_response();
+    }
     let destination = request
         .destination_root_id
         .as_deref()
@@ -283,6 +375,26 @@ pub(super) async fn queue(
                     continue;
                 }
             };
+            let output_name = copy.then(|| {
+                request
+                    .output_name
+                    .clone()
+                    .unwrap_or_else(|| conversion::default_copy_name(&item.relative_path, format))
+            });
+            if let Some(name) = &output_name {
+                let path = match item.relative_path.rsplit_once('/') {
+                    Some((folder, _)) => format!("{folder}/{name}"),
+                    None => name.clone(),
+                };
+                if std::fs::symlink_metadata(std::path::Path::new(&root.resolved_path).join(&path))
+                    .is_ok()
+                {
+                    skipped.push(reject(
+                        "A file with that name already exists beside this video. Choose another name.",
+                    ));
+                    continue;
+                }
+            }
             let job = Job {
                 id: homelab_common::random_hex(12),
                 owner: identity.username.clone(),
@@ -292,6 +404,10 @@ pub(super) async fn queue(
                 relative_path: item.relative_path.clone(),
                 format: format.id().to_string(),
                 destination_root_id: request.destination_root_id.clone(),
+                mode: mode.clone(),
+                output_name,
+                trim_start_seconds: request.trim_start_seconds,
+                trim_end_seconds: request.trim_end_seconds,
                 expected_source,
                 source_bytes: u64::try_from(item.size_bytes).unwrap_or(0),
                 state: "queued".into(),

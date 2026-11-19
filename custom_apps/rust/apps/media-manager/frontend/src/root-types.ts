@@ -67,6 +67,7 @@ export type View =
   | "refresh"
   | "player"
   | "videos"
+  | "video-editing"
   | "images"
   | "transcript";
 
@@ -150,6 +151,7 @@ export const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
   { id: "activity", label: "Recent changes", icon: "activity" },
   { id: "player", label: "Music", icon: "music-note" },
   { id: "videos", label: "Videos", icon: "video" },
+  { id: "video-editing", label: "Video editing", icon: "pencil" },
   { id: "images", label: "Images", icon: "image" },
   // Route ids stay `accounts` and `refresh` so existing links keep working.
   { id: "accounts", label: "Online services", icon: "shield" },
@@ -205,4 +207,5 @@ export type IconName =
   | "gear"
   | "album"
   | "picture-in-picture"
+  | "pencil"
   | "theatre";

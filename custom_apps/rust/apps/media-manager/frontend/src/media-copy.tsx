@@ -1,4 +1,4 @@
-import { $, component$, useStore, useTask$ } from "@builder.io/qwik";
+import { $, component$, type QRL, useStore, useTask$ } from "@builder.io/qwik";
 import { api, readableError } from "./api";
 import type {
   Root,
@@ -14,6 +14,12 @@ import "./media-copy.css";
 export const MediaCopy = component$<{
   canEdit: boolean;
   jobs?: VideoConversionJob[];
+  /** Keep one video selected instead of showing the library picker. */
+  initialItemId?: string;
+  /** Render inside another section without its own card and heading. */
+  embedded?: boolean;
+  /** Notify the surrounding editor that a new job should be polled. */
+  onQueued$?: QRL<() => void>;
 }>((props) => {
   const state = useStore({
     roots: [] as Root[],
@@ -21,25 +27,36 @@ export const MediaCopy = component$<{
     destination: "",
     search: "",
     items: [] as CatalogItem[],
+    fixed: undefined as CatalogItem | undefined,
     cursor: null as string | null,
     loading: true,
     busy: "",
     error: "",
     notice: "",
   });
-  useTask$(async () => {
+  useTask$(async ({ track }) => {
+    track(() => props.initialItemId);
     try {
-      state.roots = (await api<Root[]>("/roots")).filter(
-        (root) => root.available,
-      );
-      state.source =
-        state.roots.find((root) => root.category === "videos")?.id ?? "";
+      const [roots, fixed] = await Promise.all([
+        api<Root[]>("/roots"),
+        props.initialItemId
+          ? api<CatalogItem>(
+              `/items/${encodeURIComponent(props.initialItemId)}`,
+            )
+          : Promise.resolve(undefined),
+      ]);
+      state.roots = roots.filter((root) => root.available);
+      state.fixed = fixed?.mediaKind === "video" ? fixed : undefined;
+      state.source = state.fixed
+        ? state.fixed.rootId
+        : (state.roots.find((root) => root.category === "videos")?.id ?? "");
       state.destination =
         state.roots.find((root) => root.category === "podcasts")?.id ??
         state.roots.find((root) =>
           ["music", "audiobooks"].includes(root.category),
         )?.id ??
         "";
+      if (state.fixed) state.items = [state.fixed];
     } catch (error) {
       state.error = readableError(error);
     } finally {
@@ -47,6 +64,8 @@ export const MediaCopy = component$<{
     }
   });
   useTask$(({ track, cleanup }) => {
+    const fixed = track(() => state.fixed?.id);
+    if (fixed) return;
     const source = track(() => state.source);
     const search = track(() => state.search);
     const controller = new AbortController();
@@ -119,6 +138,7 @@ export const MediaCopy = component$<{
       state.notice = result.jobs.length
         ? `Audio copy of ${item.relativePath} queued for ${destination}. Progress appears in Processing jobs.`
         : result.skipped.map((skip) => skip.reason).join(" ");
+      if (result.jobs.length) await props.onQueued$?.();
     } catch (error) {
       state.error = readableError(error);
     } finally {
@@ -127,36 +147,56 @@ export const MediaCopy = component$<{
   });
   return (
     <section
-      class="panel comic-conversions media-copy"
-      aria-labelledby="media-copy-heading"
+      class={{
+        "comic-conversions": true,
+        "media-copy": true,
+        panel: !props.embedded,
+      }}
+      aria-label="Copy audio to another library"
     >
-      <header class="panel-heading">
-        <h2 id="media-copy-heading">Copy audio to another library</h2>
-      </header>
+      {!props.embedded && (
+        <header class="panel-heading">
+          <h2>Copy audio to another library</h2>
+        </header>
+      )}
       <div class="comic-conversions__body">
         <p class="quiet-copy">
           Keep the video and save its first audio track as an MP3. Existing
           files are kept.
         </p>
         <div class="media-copy-fields">
-          <label>
-            Video library
-            <select
-              aria-label="Video library"
-              value={state.source}
-              onChange$={(_, element) => {
-                state.source = element.value;
-              }}
-            >
-              {state.roots
-                .filter((root) => root.category === "videos")
-                .map((root) => (
-                  <option key={root.id} value={root.id}>
-                    {root.label}
-                  </option>
-                ))}
-            </select>
-          </label>
+          {!state.fixed && (
+            <>
+              <label>
+                Video library
+                <select
+                  aria-label="Video library"
+                  value={state.source}
+                  onChange$={(_, element) => {
+                    state.source = element.value;
+                  }}
+                >
+                  {state.roots
+                    .filter((root) => root.category === "videos")
+                    .map((root) => (
+                      <option key={root.id} value={root.id}>
+                        {root.label}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label>
+                Find a video
+                <input
+                  type="search"
+                  value={state.search}
+                  onInput$={(_, element) => {
+                    state.search = element.value;
+                  }}
+                />
+              </label>
+            </>
+          )}
           <label>
             Copy to
             <select
@@ -177,16 +217,6 @@ export const MediaCopy = component$<{
                   </option>
                 ))}
             </select>
-          </label>
-          <label>
-            Find a video
-            <input
-              type="search"
-              value={state.search}
-              onInput$={(_, element) => {
-                state.search = element.value;
-              }}
-            />
           </label>
         </div>
         {!state.loading && !state.source && (

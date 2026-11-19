@@ -1,7 +1,6 @@
 import {
   $,
   component$,
-  useComputed$,
   useSignal,
   useStore,
   useTask$,
@@ -9,12 +8,9 @@ import {
 } from "@builder.io/qwik";
 import "./video-transcript.css";
 import { api, catalogItems, readableError } from "./api";
-import { useBackLayer } from "./back-layers";
 import type {
-  ImmichAlbumList,
   ImmichVideo,
   ImmichVideoPage,
-  VideoClip,
   VideoTranscript,
 } from "./api-contract.generated";
 import { Icon } from "./icon";
@@ -34,9 +30,8 @@ import {
 } from "./video-audio";
 
 const THEATRE_STORAGE_KEY = "media-manager.videos.theatre";
-const CLIP_MAX_SECONDS = 30;
 
-function clipTime(seconds: number): string {
+function clockTime(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds));
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
@@ -269,20 +264,6 @@ export const VideosView = component$<{
   const pipSupported = useSignal(false);
   const pipActive = useSignal(false);
   const theatre = useSignal(false);
-  const clip = useStore({
-    open: false,
-    busy: false,
-    loadingAlbums: false,
-    error: "",
-    start: 0,
-    seconds: 5,
-    albums: [] as ImmichAlbumList["albums"],
-    albumId: "",
-    albumName: "GIF",
-  });
-  const clipNotice = useSignal<{ albumId: string; albumName: string } | null>(
-    null,
-  );
   // Position to restore when the converted copy replaces the original, so a
   // long conversion does not send the viewer back to the start.
   const resumeAt = useSignal(0);
@@ -506,10 +487,6 @@ export const VideosView = component$<{
     transcript.error = "";
     resumeAt.value = 0;
     resumePlaying.value = false;
-    clip.open = false;
-    clip.busy = false;
-    clip.error = "";
-    clipNotice.value = null;
     if (category === "immich") {
       if (!state.immichLoaded) void loadImmichVideos(false);
       return;
@@ -533,10 +510,6 @@ export const VideosView = component$<{
     transcript.error = "";
     resumeAt.value = 0;
     resumePlaying.value = false;
-    clip.open = false;
-    clip.busy = false;
-    clip.error = "";
-    clipNotice.value = null;
   });
 
   const chooseVideo = $((id: string) => {
@@ -551,10 +524,6 @@ export const VideosView = component$<{
     deepLinkNotice.value = "";
     resumeAt.value = 0;
     resumePlaying.value = false;
-    clip.open = false;
-    clip.busy = false;
-    clip.error = "";
-    clipNotice.value = null;
   });
 
   // A finished download can reach the library before the next scheduled scan
@@ -725,100 +694,6 @@ export const VideosView = component$<{
       localStorage.setItem(THEATRE_STORAGE_KEY, theatre.value ? "1" : "0");
     } catch {
       // Keep the choice for this visit only.
-    }
-  });
-
-  const closeClipDialog = $(() => {
-    clip.open = false;
-    clip.error = "";
-  });
-
-  const clipDialogOpen = useComputed$(() => clip.open);
-  useBackLayer("gif-dialog", clipDialogOpen, closeClipDialog);
-
-  const chooseClipAlbum = $((value: string) => {
-    clip.albumId = value;
-    if (!value) {
-      clip.albumName = "GIF";
-      return;
-    }
-    const album = clip.albums.find((entry) => entry.id === value);
-    if (album) clip.albumName = album.name;
-  });
-
-  const openClipDialog = $(async () => {
-    if (!videoRef.value || !selectedItem(state.items, state.selectedId)) return;
-    const video = videoRef.value;
-    const remaining = Number.isFinite(video.duration)
-      ? Math.max(0, video.duration - video.currentTime)
-      : CLIP_MAX_SECONDS;
-    clip.open = true;
-    clip.error = "";
-    clip.start = video.currentTime;
-    // Default to five seconds, but never ask for more than the video has left.
-    clip.seconds = Math.min(
-      CLIP_MAX_SECONDS,
-      Math.max(1, Math.floor(Math.min(5, remaining))),
-    );
-    clipNotice.value = null;
-    clip.loadingAlbums = true;
-    clip.albums = [];
-    clip.albumId = "";
-    clip.albumName = "GIF";
-    try {
-      const payload = await api<ImmichAlbumList>(
-        "/provider-lookups/immich/albums",
-      );
-      clip.albums = payload.albums;
-      const gif = payload.albums.find(
-        (album) => album.name.trim().toLowerCase() === "gif",
-      );
-      if (gif) {
-        clip.albumId = gif.id;
-        clip.albumName = gif.name;
-      }
-    } catch (error) {
-      // A missing album list must not block the default GIF album; the upload
-      // creates it on demand unless creating it is itself forbidden.
-      clip.error = readableError(error);
-    } finally {
-      clip.loadingAlbums = false;
-    }
-  });
-
-  const createClip = $(async () => {
-    const item = selectedItem(state.items, state.selectedId);
-    if (!item || clip.busy) return;
-    const seconds = Math.min(
-      CLIP_MAX_SECONDS,
-      Math.max(1, Math.floor(clip.seconds)),
-    );
-    clip.seconds = seconds;
-    clip.busy = true;
-    clip.error = "";
-    try {
-      const created = await api<VideoClip>(
-        `/items/${encodeURIComponent(item.id)}/clips`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            startSeconds: clip.start,
-            durationSeconds: seconds,
-            albumId: clip.albumId || null,
-            albumName: clip.albumName || "GIF",
-          }),
-        },
-        180_000,
-      );
-      clip.open = false;
-      clipNotice.value = {
-        albumId: created.albumId,
-        albumName: created.albumName,
-      };
-    } catch (error) {
-      clip.error = readableError(error);
-    } finally {
-      clip.busy = false;
     }
   });
 
@@ -1086,16 +961,16 @@ export const VideosView = component$<{
                     Transcript
                   </button>
                 )}
-                {props.immichUrl && selected() && (
-                  <button
-                    type="button"
-                    class="secondary-button compact-action video-action-button video-clip-button"
-                    aria-haspopup="dialog"
-                    onClick$={openClipDialog}
+                {selected() && (
+                  <a
+                    class="secondary-button compact-action video-action-button video-edit-button"
+                    href={`?view=video-editing&item=${encodeURIComponent(selected()!.id)}`}
+                    aria-label="Edit this video"
+                    title="Edit this video"
                   >
-                    <Icon name="film" size={14} />
-                    <span class="video-action-label">Create GIF</span>
-                  </button>
+                    <Icon name="pencil" size={15} />
+                    <span class="video-action-label">Edit</span>
+                  </a>
                 )}
                 <button
                   type="button"
@@ -1171,7 +1046,7 @@ export const VideosView = component$<{
                         if (video) video.currentTime = cue.startMs / 1000;
                       }}
                     >
-                      <time>{clipTime(cue.startMs / 1000)}</time>
+                      <time>{clockTime(cue.startMs / 1000)}</time>
                       <span>{cue.text}</span>
                     </button>
                   </li>
@@ -1184,104 +1059,6 @@ export const VideosView = component$<{
                   .includes(transcript.query.trim().toLocaleLowerCase()),
               ) && <p role="status">No matching dialogue.</p>}
           </section>
-        )}
-        {clipNotice.value && props.immichUrl && (
-          <p class="video-clip-status" role="status">
-            GIF saved to{" "}
-            <a
-              href={`${props.immichUrl.replace(/\/+$/, "")}/albums/${encodeURIComponent(clipNotice.value.albumId)}`}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {clipNotice.value.albumName}
-            </a>
-          </p>
-        )}
-        {clip.open && selected() && (
-          <div class="dialog-backdrop" onClick$={closeClipDialog}>
-            <form
-              class="dialog clip-dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="clip-dialog-heading"
-              onClick$={(event) => event.stopPropagation()}
-              preventdefault:submit
-              onSubmit$={createClip}
-            >
-              <div class="dialog-header">
-                <h3 id="clip-dialog-heading">Create GIF</h3>
-                <button
-                  type="button"
-                  class="dialog-close"
-                  aria-label="Close"
-                  onClick$={closeClipDialog}
-                >
-                  ×
-                </button>
-              </div>
-              <div class="dialog-body clip-form">
-                <p class="clip-source">{displayTitle()}</p>
-                <p class="clip-range">
-                  From {clipTime(clip.start)} · {clip.seconds}s clip
-                </p>
-                <label class="clip-field">
-                  <span>Length (seconds)</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={CLIP_MAX_SECONDS}
-                    value={clip.seconds}
-                    disabled={clip.busy}
-                    onInput$={(_, element) => {
-                      clip.seconds = Number(element.value) || 1;
-                    }}
-                  />
-                </label>
-                <label class="clip-field">
-                  <span>Album</span>
-                  <select
-                    value={clip.albumId}
-                    disabled={clip.busy || clip.loadingAlbums}
-                    onChange$={(_, element) => chooseClipAlbum(element.value)}
-                  >
-                    {clip.albums.map((album) => (
-                      <option key={album.id} value={album.id}>
-                        {album.name}
-                      </option>
-                    ))}
-                    {!clip.albums.some(
-                      (album) => album.name.trim().toLowerCase() === "gif",
-                    ) && <option value="">GIF (new album)</option>}
-                  </select>
-                </label>
-                {clip.loadingAlbums && (
-                  <p class="quiet-copy">Loading albums…</p>
-                )}
-                {clip.error && (
-                  <p class="message error" role="alert">
-                    {clip.error}
-                  </p>
-                )}
-                <div class="clip-dialog-actions">
-                  <button
-                    type="button"
-                    class="secondary-button"
-                    disabled={clip.busy}
-                    onClick$={closeClipDialog}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    class="primary-button"
-                    disabled={clip.busy}
-                  >
-                    {clip.busy ? "Creating GIF…" : "Create GIF"}
-                  </button>
-                </div>
-              </div>
-            </form>
-          </div>
         )}
         {state.transcodeLoading && (
           <p role="status" class="video-conversion-status">

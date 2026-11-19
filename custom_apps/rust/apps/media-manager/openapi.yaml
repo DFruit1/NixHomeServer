@@ -988,6 +988,11 @@ paths:
           name: itemId
           required: false
           schema: { type: string }
+        - in: query
+          name: jobsOnly
+          required: false
+          description: Return only the caller's jobs and capabilities, without scanning the video libraries.
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: Videos needing conversion, the offered formats and the caller's jobs.
@@ -1018,6 +1023,23 @@ paths:
                 destinationRootId:
                   type: string
                   description: Required for audio-mp3. Visible music, podcast or audiobook library; the video is preserved. Other formats must omit this.
+                mode:
+                  type: string
+                  enum: [replace, copy]
+                  default: replace
+                  description: Copy writes a new file beside the original and never changes the original. Copy mode accepts one item at a time.
+                outputName:
+                  type: string
+                  maxLength: 200
+                  description: Copy mode only. New leaf name with the chosen format's extension; defaults to "<name> (edited).<ext>". The file is saved in the source's folder.
+                trimStartSeconds:
+                  type: number
+                  minimum: 0
+                  description: Copy mode only. Kept range start; omit both trim fields to copy the whole video.
+                trimEndSeconds:
+                  type: number
+                  minimum: 0
+                  description: Copy mode only. Kept range end; must be at least one second after the start.
       responses:
         "202":
           description: Jobs queued, and videos that were skipped with the reason.
@@ -3389,7 +3411,7 @@ components:
           description: Picture-based subtitle tracks, which MP4 cannot hold.
     VideoConversionJob:
       type: object
-      required: [id, itemId, rootId, rootLabel, relativePath, format, state, createdAt, sourceBytes, archivedPath, droppedSubtitles]
+      required: [id, itemId, rootId, rootLabel, relativePath, format, mode, state, createdAt, sourceBytes, archivedPath, droppedSubtitles]
       properties:
         id: { type: string }
         itemId: { type: string }
@@ -3398,6 +3420,9 @@ components:
         relativePath: { type: string }
         format: { $ref: "#/components/schemas/VideoConversionFormatId" }
         destinationRootId: { type: string, nullable: true }
+        mode: { type: string, enum: [replace, copy], description: "Copy jobs write a new file and never change the original." }
+        trimStartSeconds: { type: number, nullable: true }
+        trimEndSeconds: { type: number, nullable: true }
         state: { type: string, enum: [queued, encoding, installing, completed, failed, cancelled] }
         createdAt: { type: integer }
         startedAt: { type: integer, nullable: true }
@@ -3407,9 +3432,7 @@ components:
         sourceBytes: { type: integer }
         outputBytes: { type: integer, nullable: true }
         outputRelativePath: { type: string, nullable: true }
-        archivedPath:
-          type: string
-          description: Where the original is kept, relative to the user's own folder.
+        archivedPath: { type: [string, "null"], description: "Where a replaced original is kept; null for an edited copy." }
         droppedSubtitles: { type: integer }
     VideoConversionList:
       type: object

@@ -22,6 +22,7 @@ const ROOT_VIEWS: Set<View> = new Set<View>([
   "refresh",
   "player",
   "videos",
+  "video-editing",
   "images",
   "transcript",
 ]);

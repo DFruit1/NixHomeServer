@@ -93,6 +93,19 @@ pub struct ConvertVideoAction {
     pub expected_replacement: String,
 }
 
+/// Install an edited copy beside a video without changing the original.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyVideoAction {
+    /// Finished encode in the conversion staging spool's video folder.
+    pub staging_filename: String,
+    pub root_id: String,
+    pub source_relative_path: String,
+    pub destination_relative_path: String,
+    pub expected_source: String,
+    pub expected: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BrokerAction {
@@ -109,6 +122,8 @@ pub enum BrokerAction {
     /// Archive a video in its owner's originals folder and install its
     /// conversion in the library.
     ConvertVideo(ConvertVideoAction),
+    /// Install an edited copy beside its source; the source is never touched.
+    CopyVideo(CopyVideoAction),
     /// Install an audio copy without modifying the source video.
     CopyVideoAudio(InstallSubtitleAction),
 }
@@ -249,6 +264,7 @@ pub fn apply_broker_action(
             apply_replace_file(config, username, action)
         }
         BrokerAction::ConvertVideo(action) => apply_convert_video(config, username, action),
+        BrokerAction::CopyVideo(action) => apply_copy_video(config, username, action),
         BrokerAction::CopyVideoAudio(action) => {
             copy_video_audio(config, username, action, false).map(|_| ())
         }
@@ -286,6 +302,7 @@ pub fn recover_broker_action(
             recover_replaced_file(config, username, action)
         }
         BrokerAction::ConvertVideo(action) => recover_converted_video(config, username, action),
+        BrokerAction::CopyVideo(action) => recover_copied_video(config, username, action),
         BrokerAction::CopyVideoAudio(action) => copy_video_audio(config, username, action, true),
     }
 }
@@ -338,6 +355,11 @@ pub fn discard_staged_broker_action(
             &video_staging_root(config),
             &action.staging_filename,
             &action.expected_replacement,
+        ),
+        BrokerAction::CopyVideo(action) => discard_staged_file_in(
+            &video_staging_root(config),
+            &action.staging_filename,
+            &action.expected,
         ),
     }
 }
@@ -1680,7 +1702,7 @@ fn copy_staged_into(
     let source_stat = file_stat(source_fd.as_raw_fd())?;
     if fingerprint_from_stat(&source_stat) != expected {
         return Err(BrokerError::new(
-            "staged artwork changed after the mutation preview",
+            "staged file changed after the mutation preview",
         ));
     }
     let (temporary_name, temporary_fd) = create_temporary_file(destination_parent_fd)?;
@@ -1956,6 +1978,159 @@ fn validate_convert_video_action<'a>(
         archive_parent,
         archive_leaf,
     })
+}
+
+#[cfg(target_os = "linux")]
+struct CopyVideoPaths<'a> {
+    root_path: String,
+    parent: Vec<&'a str>,
+    source_leaf: &'a str,
+    destination_leaf: &'a str,
+}
+
+/// An edited copy keeps the source folder and takes a new video name; no
+/// archive and no replacement path are involved.
+#[cfg(target_os = "linux")]
+fn validate_copy_video_action<'a>(
+    config: &AppConfig,
+    username: &str,
+    action: &'a CopyVideoAction,
+) -> Result<CopyVideoPaths<'a>, BrokerError> {
+    if !safe_component(&action.staging_filename) {
+        return Err(BrokerError::new("staging filename is not a safe component"));
+    }
+    let identity = Identity::try_new(username, ["users"])
+        .map_err(|_| BrokerError::new("plan owner is not a safe identity component"))?;
+    let root = config
+        .resolve_visible_root(&identity, &action.root_id)
+        .ok_or_else(|| BrokerError::new("video root ID is not registered"))?;
+    if root.category != LibraryCategory::Videos {
+        return Err(BrokerError::new(
+            "edited copies may only be saved in a video root",
+        ));
+    }
+    let (source_parent, source_leaf) = safe_parent_and_leaf(&action.source_relative_path)?;
+    let (destination_parent, destination_leaf) =
+        safe_parent_and_leaf(&action.destination_relative_path)?;
+    let video_extension = |leaf: &str| {
+        leaf.rsplit_once('.')
+            .map(|(_, extension)| extension.to_ascii_lowercase())
+            .filter(|extension| {
+                crate::media::MediaKind::Video
+                    .extensions()
+                    .contains(&extension.as_str())
+            })
+    };
+    if source_parent != destination_parent
+        || source_leaf == destination_leaf
+        || video_extension(source_leaf).is_none()
+        || video_extension(destination_leaf).is_none()
+    {
+        return Err(BrokerError::new(
+            "an edited copy must be a new video file beside its source",
+        ));
+    }
+    Ok(CopyVideoPaths {
+        root_path: root.resolved_path,
+        parent: source_parent,
+        source_leaf,
+        destination_leaf,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn apply_copy_video(
+    config: &AppConfig,
+    username: &str,
+    action: &CopyVideoAction,
+) -> Result<(), BrokerError> {
+    if recover_copied_video(config, username, action)? {
+        return Ok(());
+    }
+    let paths = validate_copy_video_action(config, username, action)?;
+    let root_fd = open_root(Path::new(&paths.root_path))?;
+    let parent_fd = open_directory_chain(root_fd.as_raw_fd(), &paths.parent, false)?;
+    let parent = parent_fd.as_raw_fd();
+    if fingerprint_optional_at(parent, paths.source_leaf)?.as_deref()
+        != Some(action.expected_source.as_str())
+    {
+        return Err(BrokerError::new(
+            "the video changed after its edit was queued; no copy was saved",
+        ));
+    }
+    if fingerprint_optional_at(parent, paths.destination_leaf)?.is_some() {
+        return Err(BrokerError::new(
+            "a file with the copy name already exists beside this video",
+        ));
+    }
+    use crate::video_conversion::{available_space, not_enough_space};
+    let reserve = config.free_space_reserve_bytes;
+    let needed = fingerprint_size(&action.expected).saturating_add(reserve);
+    let available = available_space(Path::new(&paths.root_path)).map_err(BrokerError::new)?;
+    if available < needed {
+        return Err(BrokerError::new(not_enough_space(
+            needed, reserve, available,
+        )));
+    }
+    let staging_root_fd = open_root(&video_staging_root(config))?;
+    let temporary = copy_staged_into(
+        staging_root_fd.as_raw_fd(),
+        &action.staging_filename,
+        &action.expected,
+        parent,
+    )?;
+    if let Err(error) = rename_noreplace(
+        parent,
+        &temporary,
+        parent,
+        paths.destination_leaf,
+        "install edited video",
+    ) {
+        unlink_at_if_present(parent, &temporary);
+        return Err(error);
+    }
+    sync_directory(parent)?;
+    if fingerprint_at(parent, paths.destination_leaf)? != action.expected {
+        return Err(BrokerError::new(
+            "the saved copy's size or timestamp does not match the finished edit",
+        ));
+    }
+    recover_copied_video(config, username, action)?;
+    Ok(())
+}
+
+/// True once the copy is installed and the staging file has been removed.
+#[cfg(target_os = "linux")]
+fn recover_copied_video(
+    config: &AppConfig,
+    username: &str,
+    action: &CopyVideoAction,
+) -> Result<bool, BrokerError> {
+    let paths = validate_copy_video_action(config, username, action)?;
+    let root_fd = open_root(Path::new(&paths.root_path))?;
+    let Ok(parent_fd) = open_directory_chain(root_fd.as_raw_fd(), &paths.parent, false) else {
+        return Ok(false);
+    };
+    let parent = parent_fd.as_raw_fd();
+    if fingerprint_optional_at(parent, paths.destination_leaf)?.as_deref()
+        != Some(action.expected.as_str())
+    {
+        return Ok(false);
+    }
+    let staging_root_fd = open_root(&video_staging_root(config))?;
+    match fingerprint_optional_at(staging_root_fd.as_raw_fd(), &action.staging_filename)? {
+        Some(fingerprint) if fingerprint == action.expected => {
+            unlink_regular_at(staging_root_fd.as_raw_fd(), &action.staging_filename)?;
+            sync_directory(staging_root_fd.as_raw_fd())?;
+        }
+        Some(_) => {
+            return Err(BrokerError::new(
+                "completed edited copy has a changed staged file",
+            ))
+        }
+        None => {}
+    }
+    Ok(true)
 }
 
 #[cfg(target_os = "linux")]

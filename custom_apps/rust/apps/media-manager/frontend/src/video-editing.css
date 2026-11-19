@@ -1,0 +1,236 @@
+/* The per-video editing workspace: a bounded video picker beside one
+   scrolling stack of editing sections. */
+.video-editing-page {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+  max-width: 1180px;
+}
+.video-edit-picker {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 120px);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--card);
+}
+.video-edit-picker .video-list {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.video-edit-main {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+.video-edit-preview {
+  display: grid;
+  gap: 12px;
+}
+.video-edit-preview video {
+  display: block;
+  width: 100%;
+  max-height: min(62dvh, 620px);
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  border-radius: 12px;
+  background: var(--ink);
+}
+.video-edit-identity {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.video-edit-identity h2 {
+  overflow-wrap: anywhere;
+  font-family: var(--font-serif);
+  font-size: var(--title-sm);
+  font-weight: 500;
+}
+.video-edit-identity p {
+  overflow-wrap: anywhere;
+  color: var(--ink-faint);
+  font-size: var(--text-xs);
+}
+.video-edit-section {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--card);
+}
+.video-edit-section > h2 {
+  font-family: var(--font-serif);
+  font-size: var(--title-sm);
+  font-weight: 500;
+}
+.video-edit-times {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.video-edit-times label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 4px 8px;
+}
+.video-edit-times label > span,
+.video-edit-fields label > span,
+.video-edit-album > span,
+.video-edit-transcript label > span {
+  grid-column: 1 / -1;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.video-edit-times input,
+.video-edit-fields input,
+.video-edit-fields select,
+.video-edit-album select,
+.video-edit-transcript select {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height);
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-md);
+}
+.video-edit-times input:focus-visible,
+.video-edit-fields input:focus-visible,
+.video-edit-fields select:focus-visible,
+.video-edit-album select:focus-visible,
+.video-edit-transcript select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.video-edit-times small {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.video-edit-times .text-button {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+.video-edit-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 12px;
+}
+.video-edit-fields label,
+.video-edit-album,
+.video-edit-transcript label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.video-edit-section > .primary-button,
+.video-edit-section > .secondary-button {
+  justify-self: start;
+}
+.video-edit-jobs {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.video-edit-jobs li {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.video-edit-jobs li > div:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  font-size: var(--text-sm);
+}
+.video-edit-jobs li strong {
+  font-weight: 500;
+}
+.video-edit-jobs li span {
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+.video-edit-progress {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--paper-deep);
+}
+.video-edit-progress span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: left;
+  background: var(--accent);
+}
+.video-edit-transcript {
+  display: grid;
+  gap: 12px;
+}
+.video-edit-check {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+}
+.video-edit-check input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+.video-edit-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+.video-edit-section .subtitle-layout--embedded {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+.video-edit-section .media-copy-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (max-width: 920px) {
+  .video-editing-page {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .video-edit-picker {
+    position: static;
+    max-height: 36vh;
+  }
+}
+@media (max-width: 640px) {
+  .video-edit-section {
+    padding: 14px;
+  }
+  .video-edit-times,
+  .video-edit-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .video-edit-section .media-copy-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .video-edit-times input,
+  .video-edit-fields input,
+  .video-edit-fields select,
+  .video-edit-album select,
+  .video-edit-transcript select {
+    font-size: 16px;
+  }
+}

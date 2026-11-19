@@ -297,10 +297,10 @@ fails closed. Other metadata providers remain independent of EYE.
 
 ## Video GIFs
 
-Open **Videos**, play a video, and choose **Create GIF** beside the title. The
-dialog captures the current position, a length from 1 to 30 seconds, and an
-album. The picker lists albums you own and defaults to one named `GIF`, created
-on demand. The server encodes the clip and uploads it as an archived asset, so it
+Open **Video editing** (or choose **Edit** beside a video in **Videos**) and
+use **Create a GIF** for the selected video. The form captures a start
+position, a length from 1 to 30 seconds, and an album. The picker lists albums
+you own and defaults to one named `GIF`, created on demand. The server encodes the clip and uploads it as an archived asset, so it
 does not enter the Immich timeline, then adds it to that album; the confirmation
 links to the album in Photos.
 

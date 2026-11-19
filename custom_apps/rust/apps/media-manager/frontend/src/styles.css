@@ -7491,68 +7491,6 @@ a:focus-visible {
   border-color: rgba(246, 243, 236, 0.7);
   background: rgba(246, 243, 236, 0.22);
 }
-.video-clip-status {
-  margin: 12px 8px 4px;
-  color: rgba(246, 243, 236, 0.82);
-  font-size: var(--text-sm);
-  overflow-wrap: anywhere;
-}
-.video-clip-status a {
-  color: #f2d58d;
-  font-weight: 500;
-  text-underline-offset: 3px;
-}
-.clip-dialog {
-  width: min(100%, 440px);
-}
-.clip-form {
-  display: grid;
-  gap: 14px;
-}
-.clip-source {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: var(--text-sm);
-  overflow-wrap: anywhere;
-}
-.clip-range {
-  margin: 0;
-  font-size: var(--text-sm);
-  font-variant-numeric: tabular-nums;
-}
-.clip-field {
-  display: grid;
-  gap: 6px;
-}
-.clip-field > span {
-  color: var(--ink-soft);
-  font-size: var(--text-sm);
-  font-weight: 500;
-}
-.clip-field input,
-.clip-field select {
-  width: 100%;
-  min-height: var(--control-height);
-  padding: 8px 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-control);
-  background: var(--card);
-  color: var(--ink);
-  font: inherit;
-  font-size: var(--text-md);
-}
-.clip-field input:focus-visible,
-.clip-field select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-.clip-dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 4px;
-}
-
 /* Theatre mode: the player spans the content width and the library follows
    as a multi-column list; the page scrolls instead of the list pane. Phones
    and narrow windows already stack, so the toggle is desktop-only. */
