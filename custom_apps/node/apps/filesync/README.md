@@ -43,17 +43,21 @@ folder; native sharing is Android-only. Shared payloads expire from private cach
 after one hour, with abandoned copies swept after one day.
 Offline Media also offers its configured personal video folders when present.
 Choose the direction when creating a pair, then use **Sync now**. It copies
-files in that direction, creates missing parent folders, replaces same-name
-destination files, and never propagates deletions. SHA-256 comparison avoids
-transferring unchanged files, at the cost of reading the selected files during
-each scan. Android also checks saved pairs with WorkManager about every 15
-minutes on unmetered networks. Android may defer checks; active transfers show
-a system notification and use the selected SAF tree grant. Two-way conflict
-handling is not implemented. Android transfers stage
-one file at a time in private app cache before/after streaming it, and require
-the selected SAF provider to support safe rename when replacing an existing
-file. Folder selection is recorded in native secure storage; removing the pair
-forgets that authorization and releases Android's persisted URI grant.
+files in that direction, creates missing parent folders, and replaces same-name
+destination files. File Sync compares metadata and uses SHA-256 where needed
+to avoid transferring unchanged files. Android checks saved pairs on unmetered
+networks, with the delay growing from 15 minutes to two hours while idle.
+Android may defer checks based on battery, storage, and network conditions.
+Active transfers show a system notification and use the selected SAF tree
+grant. Android stages uploads in private app cache and streams sync downloads
+to a temporary file in the destination folder. The SAF provider must support
+safe rename to replace an existing file. Folder selection is recorded in
+native secure storage. Removing the pair forgets that authorization and
+releases Android's persisted URI grant.
+
+Deletions never propagate in either direction by design. A file deleted on the
+server stays on the phone, and a file deleted on the phone stays on the server.
+
 Pairs are tied to the Kanidm username that created them; switching accounts
 requires separate pairs. Older unbound prototype pairs must be recreated.
 Installs signed in before device keys existed upgrade their Kanidm session to a
