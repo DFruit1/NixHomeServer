@@ -1846,7 +1846,7 @@ export const ItemEditor = component$<{
             aria-label="Close item editor"
             onClick$={closeEditor}
           >
-            ×
+            <Icon name="close" size={18} />
           </button>
         </div>
       </div>

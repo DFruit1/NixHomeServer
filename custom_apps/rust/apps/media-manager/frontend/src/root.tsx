@@ -2094,7 +2094,7 @@ const CoverArtCard = component$<{
             aria-label={props.closeLabel}
             onClick$={props.close$}
           >
-            ×
+            <Icon name="close" size={18} />
           </button>
         </div>
       )}
@@ -2238,7 +2238,7 @@ const ItemQuickActions = component$<{
           type="button"
           onClick$={startInPagePlayer}
         >
-          <Icon name="play" size={17} />
+          <Icon name="play" size={16} />
           Play
         </button>
       ) : playTarget?.url ? (
@@ -2248,7 +2248,7 @@ const ItemQuickActions = component$<{
           target="_blank"
           rel="noreferrer"
         >
-          <Icon name="play" size={17} />
+          <Icon name="play" size={16} />
           {props.item.mediaKind === "book" ? "Read in" : "Play in"}{" "}
           {friendlyAppName(playTarget.id, playTarget.label)}
         </a>
@@ -2263,7 +2263,7 @@ const ItemQuickActions = component$<{
               : "No connected playback app for this file"
           }
         >
-          <Icon name="play" size={17} />
+          <Icon name="play" size={16} />
           Play
         </button>
       )}
@@ -3189,7 +3189,7 @@ const LibraryView = component$<{
                 await props.loadCategoryItems$(props.state.selectedCategory);
               }}
             >
-              ×
+              <Icon name="close" size={14} />
             </button>
           )}
         </label>

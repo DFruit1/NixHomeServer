@@ -190,7 +190,7 @@ export const SubtitleCard = component$<{
               aria-label="Close installed subtitle preview"
               onClick$={() => (inspector.content = undefined)}
             >
-              ×
+              <Icon name="close" size={18} />
             </button>
           </div>
           {inspector.content.validation.issues.length > 0 && (
@@ -1142,7 +1142,7 @@ export const SubtitleView = component$<{
                     aria-label="Close subtitle content preview"
                     onClick$={() => (subtitle.content = undefined)}
                   >
-                    ×
+                    <Icon name="close" size={18} />
                   </button>
                 </div>
                 <ol class="subtitle-cue-list">
@@ -1323,7 +1323,7 @@ export const SubtitleView = component$<{
               aria-label="Discard subtitle preview"
               onClick$={() => (subtitle.preview = undefined)}
             >
-              ×
+              <Icon name="close" size={18} />
             </button>
           </div>
           <div class="subtitle-preview-body">

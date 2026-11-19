@@ -877,6 +877,14 @@ a:focus-visible {
 .detail-shared {
   grid-area: shared;
 }
+/* The detail pane starts with a breadcrumb; offset the opposite list so both
+   cards share one top edge instead of the list starting a row higher. */
+@media (min-width: 921px) {
+  .library-layout--personal > .personal-pane,
+  .library-layout--shared > .shared-pane {
+    margin-top: calc(var(--control-height) + 18px);
+  }
+}
 .library-detail-pane {
   min-width: 0;
   min-height: 0;
@@ -3520,6 +3528,12 @@ a:focus-visible {
     height: 55vh;
     min-height: 0;
   }
+  /* Two stacked libraries: a short one shrinks to its contents so the
+     second starts on screen; 55vh stays the cap for a long one. */
+  .library-layout--dual > .catalog-panel {
+    height: auto;
+    max-height: 55vh;
+  }
   .metadata-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3704,6 +3718,13 @@ a:focus-visible {
   max-width: 100%;
   flex-wrap: wrap;
   gap: 8px;
+}
+/* Beside the title, the action row settles onto the library-selector line so
+   the dark player card closes cleanly instead of leaving a gap under it. */
+@media (min-width: 1001px) {
+  .video-actions {
+    align-self: flex-end;
+  }
 }
 .video-conversion-status {
   margin-top: 12px;
@@ -6944,6 +6965,7 @@ a:focus-visible {
   flex: 1 1 260px;
   min-width: 0;
   max-width: 460px;
+  height: var(--control-height);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -6963,7 +6985,7 @@ a:focus-visible {
 .library-filter input {
   flex: 1;
   min-width: 0;
-  height: 44px;
+  height: 100%;
   border: 0;
   outline: none;
   color: var(--ink);
@@ -6971,16 +6993,23 @@ a:focus-visible {
   font: inherit;
   font-size: var(--text-md);
 }
+/* The field owns one clear control; hide the browser's duplicate X. */
+.library-filter input::-webkit-search-cancel-button,
+.library-filter input::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
 .library-filter-clear {
   flex: none;
   width: 32px;
   height: 32px;
+  display: grid;
+  place-items: center;
   border: 0;
   border-radius: var(--radius-control);
   color: var(--ink-faint);
   background: transparent;
   cursor: pointer;
-  font-size: 17px;
   line-height: 1;
 }
 .library-filter-clear:hover {
@@ -7036,6 +7065,18 @@ a:focus-visible {
   .library-refresh.is-done .icon path {
     animation: none;
     stroke-dashoffset: 0;
+  }
+}
+
+@media (min-width: 921px) {
+  /* Search belongs to the library; the rescan action belongs to the page.
+     Ordering the existing flex row keeps the trailing count/load-more group
+     and the sr-only status span out of the visual arrangement. */
+  .library-toolbar-trailing {
+    order: 2;
+  }
+  .library-refresh {
+    order: 3;
   }
 }
 
@@ -7235,8 +7276,21 @@ a:focus-visible {
   background: var(--paper-recess);
 }
 .tree-row.selected {
+  position: relative;
   background: var(--accent-wash);
-  box-shadow: inset 3px 0 0 var(--accent);
+  box-shadow: none;
+}
+/* A rounded inset bar: the old inset shadow was clipped by the row's
+   corner radius and read as a broken bracket. */
+.tree-row.selected::before {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 0;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  content: "";
 }
 .tree-row.selected .tree-name {
   color: var(--accent);
@@ -7390,8 +7444,8 @@ a:focus-visible {
   box-shadow: 0 3px 9px rgba(33, 29, 21, 0.1);
 }
 .album-artwork.album-active {
-  outline: 3px solid var(--accent);
-  outline-offset: 3px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .video-player-column {

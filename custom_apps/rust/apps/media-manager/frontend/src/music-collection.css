@@ -117,6 +117,32 @@
   .library-search-field input {
     font-size: 16px;
   }
+  /* The phone header has no room for a right-aligned tool cluster: stretch
+     the three tools across the album grid's left and right edges. */
+  .player-sidebar-header {
+    justify-content: flex-start;
+  }
+  .sidebar-header-actions {
+    flex: 1 1 100%;
+    width: 100%;
+    margin-left: 0;
+    justify-content: stretch;
+  }
+  .sidebar-header-actions > .library-tool:first-child,
+  .sidebar-header-actions > .library-tool-button--labelled {
+    flex: 1 1 0;
+  }
+  .sidebar-header-actions > .library-tool:first-child > .library-tool-button {
+    width: 100%;
+  }
+  .sidebar-header-actions > .library-tool:last-child {
+    flex: 0 0 44px;
+  }
+  /* Open the search field from the left edge so it stays on screen. */
+  .sidebar-header-actions > .library-tool:first-child .library-tool-popover {
+    right: auto;
+    left: 0;
+  }
 }
 .music-collection .album-copy {
   display: grid;
@@ -224,11 +250,13 @@
 /* Search and Play carry their names; View stays a standard icon toggle. */
 .library-tool-button--labelled {
   display: inline-flex;
-  gap: 6px;
+  justify-content: center;
+  gap: 8px;
   width: auto;
-  padding: 0 14px 0 12px;
+  padding: 0 16px;
   font: inherit;
   font-size: var(--text-md);
+  font-weight: 500;
   white-space: nowrap;
 }
 .playback-status {

@@ -102,12 +102,13 @@
 }
 .library-selection-copy .quick-action-button {
   min-height: var(--control-height);
-  padding-inline: 14px;
-  gap: 6px;
+  padding-inline: 16px;
+  gap: 8px;
   border-radius: var(--radius-control);
   box-shadow: none;
   font-family: var(--font-sans);
   font-size: var(--text-md);
+  font-weight: 500;
   letter-spacing: normal;
   text-transform: none;
   white-space: nowrap;
