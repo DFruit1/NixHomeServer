@@ -1371,14 +1371,16 @@ and `[tmdbid-N]`, and an existing folder tagged with any of the series' TMDB,
 TVDB or IMDb ids is reused. A mapping that is ambiguous or not consecutive is
 held without a suggested name (its guess is in TVmaze numbering); `TMDB is
 unavailable` holds are transient. `disc-identify episodes
---series tvdbid-N --provider-socket …` prints a series' layout as JSON.
+--series tvdbid-N --provider-socket … --owner USER` prints a series' layout as
+JSON.
 
-The broker uses the host TMDB key from `repo.mediaManager.tmdbApiKeyFile`
-(JSON `{"apiKey": "…"}`, loaded as a systemd credential; not a person's saved
-account). No key is configured today: numbering then stays as TVmaze or
-TheDiscDB gives it, and the evidence says
-`Episode numbering was not checked against TMDB (no TMDB key is configured).`
-Such a disc is never published into an existing `[tmdbid-N]` folder found by
+The broker looks TMDB up with the uploader's own TMDB account, saved in Media
+Manager → Online services; the ISO's file owner names the uploader. There is no
+host TMDB key (`repo.mediaManager.tmdbApiKeyFile` was removed on 2026-11-19).
+When the uploader has no TMDB account, numbering stays as TVmaze or TheDiscDB
+gives it, and the evidence says `Episode numbering was not checked against TMDB
+(USER has no TMDB account saved in Media Manager's Online services).` Such a
+disc is never published into an existing `[tmdbid-N]` folder found by
 name and year (for example a TVmaze-identified Sherlock Holmes disc beside
 `Sherlock Holmes (1984) [tmdbid-799]`), nor into a second folder for the same
 series: it is held, without the dialogue step or a suggested name, with the
@@ -1438,7 +1440,7 @@ When a special's name fits fairly or exactly one special has the title's
 runtime, it is held as above, without the dialogue step, with a suggested
 name such as `Rumpole of the Bailey (1978) S00E03.iso`. A name that adds a
 subtitle but has no such season-0 evidence is a film: only TMDB numbers
-specials, so without a TMDB key `Rumpole of the Bailey - Rumpole's Return.iso`
+specials, so without the uploader's TMDB account `Rumpole of the Bailey - Rumpole's Return.iso`
 goes to `_Movies` as before. A year in the name that is not the show's must
 be the special's own air year, so
 `Sherlock_Holmes_A_Game_of_Shadows_2011.iso` beside

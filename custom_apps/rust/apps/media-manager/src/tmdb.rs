@@ -2,7 +2,6 @@ use reqwest::{header, Client, StatusCode, Url};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     fmt,
-    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -12,37 +11,6 @@ use zeroize::Zeroize;
 pub const TMDB_API_BASE: &str = "https://api.themoviedb.org/3/";
 const MAX_CANDIDATES: usize = 10;
 const MAX_PROVIDER_JSON_BYTES: usize = 4 * 1024 * 1024;
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TmdbCredentials {
-    pub api_key: String,
-    #[serde(default)]
-    pub user_agent: Option<String>,
-}
-
-impl TmdbCredentials {
-    pub fn from_file(path: &Path) -> Result<Self, ProviderError> {
-        let bytes = std::fs::read(path)
-            .map_err(|error| ProviderError::new(format!("read TMDB key: {error}")))?;
-        let credentials = serde_json::from_slice::<Self>(&bytes)
-            // serde's message quotes the offending value, which can be the
-            // key itself (a bare JSON string); report only where it failed.
-            .map_err(|error| {
-                ProviderError::new(format!(
-                    "parse TMDB key JSON: expected {{\"apiKey\": …}} (line {}, column {})",
-                    error.line(),
-                    error.column()
-                ))
-            })?;
-        if credentials.api_key.trim().is_empty() {
-            return Err(ProviderError::new(
-                "TMDB credentials require a non-empty apiKey",
-            ));
-        }
-        Ok(credentials)
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct TmdbClientConfig {
@@ -352,15 +320,6 @@ async fn decode_json<T: DeserializeOwned>(
 impl Drop for TmdbClient {
     fn drop(&mut self) {
         self.api_key.zeroize();
-    }
-}
-
-impl Drop for TmdbCredentials {
-    fn drop(&mut self) {
-        self.api_key.zeroize();
-        if let Some(user_agent) = &mut self.user_agent {
-            user_agent.zeroize();
-        }
     }
 }
 
@@ -746,15 +705,7 @@ impl std::error::Error for ProviderError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{is_trusted_origin, TmdbCredentials};
-
-    #[test]
-    fn tmdb_credentials_reject_an_empty_key() {
-        let temp = tempfile::tempdir().expect("temporary directory");
-        let file = temp.path().join("key.json");
-        std::fs::write(&file, r#"{"apiKey":"  "}"#).expect("write key");
-        assert!(TmdbCredentials::from_file(&file).is_err());
-    }
+    use super::is_trusted_origin;
 
     #[test]
     fn trusted_origins_allow_https_and_loopback_http_only() {

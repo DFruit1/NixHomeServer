@@ -96,21 +96,10 @@ in
       description = ''
         Unix users whose system jobs may call the provider broker's system
         socket to act with a named user's saved provider account (for example
-        fetching episode subtitles with the uploader's OpenSubtitles account).
+        fetching episode subtitles with the uploader's OpenSubtitles account,
+        or checking DVD episode numbering with their TMDB account).
         Each listed user joins `providerSystemGroup`. When empty, the broker
         opens no Unix socket.
-      '';
-    };
-    tmdbApiKeyFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      example = "/run/agenix/mediaManagerTmdbApiKey";
-      description = ''
-        Host TMDB key file (JSON `{"apiKey": "<v4 read access token>"}`)
-        that the provider broker uses for system jobs on its Unix socket,
-        such as checking DVD episode numbering against TMDB, which Jellyfin
-        uses. It is loaded as a systemd credential, never a person's saved
-        account. When null, those requests answer `tmdb_unconfigured`.
       '';
     };
     providerSystemGroup = lib.mkOption {

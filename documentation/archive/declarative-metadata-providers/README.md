@@ -25,11 +25,10 @@ age key. Their SHA256 sums are:
 f3837db01220459471be47622d44ccd68adf233d8267a735dce34c77e018c527  openSubtitlesCredentials.age
 ```
 
-Still declarative at the time of archiving, pending an owner decision: the
-provider broker's host TMDB key, `repo.mediaManager.tmdbApiKeyFile`. Only the
-DVD identifier's TMDB episode-numbering check
-(`POST /system/v1/tmdb/tv-episodes` on the broker's system socket) reads it, and
-it is unset.
+The provider broker's host TMDB key, `repo.mediaManager.tmdbApiKeyFile`
+(never set), was removed on 2026-11-19, the last declarative piece. The DVD
+identifier's TMDB episode-numbering check (`POST /system/v1/tmdb/tv-episodes`
+on the broker's system socket) now uses the uploader's saved TMDB account.
 
-To restore any of it, revert the archiving commit or copy the pieces back from
+To restore any of it, revert the archiving commits or copy the pieces back from
 `13ae0fd`.

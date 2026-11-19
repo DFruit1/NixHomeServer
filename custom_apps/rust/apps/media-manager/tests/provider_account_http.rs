@@ -1374,7 +1374,7 @@ async fn repeated_metadata_searches_reuse_one_cached_provider_response() {
 /// DVD episode numbering trusts this layout to publish into Jellyfin, so a
 /// dropped specials season or a wrong find resolution would silently misfile.
 #[tokio::test]
-async fn system_tmdb_layout_resolves_a_tvdb_id_and_lists_every_season() {
+async fn system_tmdb_layout_uses_the_owners_account_and_lists_every_season() {
     use axum::{
         extract::{Path, Query},
         http::HeaderMap,
@@ -1392,7 +1392,7 @@ async fn system_tmdb_layout_resolves_a_tvdb_id_and_lists_every_season() {
             headers
                 .get("authorization")
                 .and_then(|value| value.to_str().ok()),
-            Some("Bearer host-token")
+            Some("Bearer sydney-token")
         );
     }
     async fn find(
@@ -1481,25 +1481,36 @@ async fn system_tmdb_layout_resolves_a_tvdb_id_and_lists_every_season() {
             .expect("request")
     };
 
-    let unconfigured = provider_system_router(state())
+    let invalid = provider_system_router(state())
         .oneshot(request(r#"{"tvdbId":77728}"#))
         .await
-        .expect("unconfigured response");
-    assert_eq!(unconfigured.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(
-        response_json(unconfigured).await["error"],
-        "tmdb_unconfigured"
-    );
+        .expect("ownerless response");
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+    // The owner has not saved a TMDB account yet.
+    let no_account = provider_system_router(state())
+        .oneshot(request(r#"{"owner":"sydney","tvdbId":77728}"#))
+        .await
+        .expect("no-account response");
+    assert_eq!(no_account.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response_json(no_account).await["error"], "no_account");
     assert_eq!(UPSTREAM_CALLS.load(Ordering::SeqCst), 0);
 
-    let app = provider_system_router(
-        state()
-            .with_system_tmdb_key("host-token".into())
-            .expect("system TMDB"),
-    );
+    let saved = provider_account_router(state())
+        .oneshot(account_request(
+            "PUT",
+            "/api/v1/provider-accounts/tmdb",
+            "sydney-subject",
+            Body::from(r#"{"credentials":{"apiKey":"sydney-token"}}"#),
+        ))
+        .await
+        .expect("save response");
+    assert_eq!(saved.status(), StatusCode::OK);
+
+    let app = provider_system_router(state());
     let response = app
         .clone()
-        .oneshot(request(r#"{"tvdbId":77728}"#))
+        .oneshot(request(r#"{"owner":"sydney","tvdbId":77728}"#))
         .await
         .expect("layout response");
     assert_eq!(response.status(), StatusCode::OK);
@@ -1520,7 +1531,7 @@ async fn system_tmdb_layout_resolves_a_tvdb_id_and_lists_every_season() {
 
     // Both the id resolution and the layout come from the cache next time.
     let again = app
-        .oneshot(request(r#"{"tvdbId":77728}"#))
+        .oneshot(request(r#"{"owner":"sydney","tvdbId":77728}"#))
         .await
         .expect("cached response");
     assert_eq!(again.status(), StatusCode::OK);

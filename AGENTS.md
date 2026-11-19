@@ -227,6 +227,24 @@ protection. Never bypass the helper or change allocation to obtain a pass.
 * `secrets/` — agenix-managed encrypted `.age` files only. Never read or print plaintext `secrets/unencrypted/`.
 * `documentation/` — operator runbooks. `operations.md` is the most commonly relevant.
 
+## Provider Accounts Live on the Server
+
+* Media Manager's metadata and subtitle providers (TMDB, OpenSubtitles,
+  AcoustID, Google Books and the rest) are set by each user in the app under
+  Online services. The provider broker stores them encrypted per user in
+  `/var/lib/media-manager-provider/provider-accounts.sqlite3` on the server.
+  They are not in the repo, Nix options, agenix secrets or environment
+  variables, so repository searches cannot show whether one is set up.
+* Before saying a provider is missing or "not configured", list the saved
+  accounts (non-secret columns only):
+  `ssh dsaw@192.168.8.12 "sudo -n sqlite3 'file:/var/lib/media-manager-provider/provider-accounts.sqlite3?mode=ro' 'select provider_id, owner_username, last_test_status from provider_accounts;'"`
+* Server jobs that need a provider call the broker's system socket and name
+  the user whose saved account to use (the DVD identifier names the ISO's
+  uploader). Do not add host-level provider keys; the declarative ones are
+  archived in `documentation/archive/declarative-metadata-providers/`.
+
+---
+
 ## Do Not Read (unless debugging a specific issue)
 
 These are large, generated, or low-signal. Target reads instead:

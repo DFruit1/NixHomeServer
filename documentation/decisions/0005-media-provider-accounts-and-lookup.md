@@ -131,8 +131,12 @@ AcoustID secrets, and the web service's host-key fallbacks and TMDB routes (see
 runs on this server, so Online services shows it under "On this server" with
 only its status, not as an online provider. Jellyfin sits beside it with its
 status and the metadata sources NixOS configures inside Jellyfin
-(`modules/jellyfin/metadata-fetchers.nix`); those need no account here. The broker's host TMDB key for the
-DVD identifier's system socket remains until the owner chooses a replacement.
+(`modules/jellyfin/metadata-fetchers.nix`); those need no account here.
+
+On 2026-11-19 the last host key went too: the DVD identifier's TMDB numbering
+check now uses the uploader's saved TMDB account through the broker's system
+socket, as OpenSubtitles episode text already did, and
+`repo.mediaManager.tmdbApiKeyFile` was removed.
 
 ## Rejected alternatives
 

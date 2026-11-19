@@ -1,7 +1,6 @@
 use media_manager::{
     provider_account_http::{provider_account_router, provider_system_router, ProviderBrokerState},
     provider_accounts::ProviderAccountStore,
-    tmdb::TmdbCredentials,
 };
 use serde_json::json;
 use std::{
@@ -52,22 +51,6 @@ async fn run() -> Result<(), String> {
         .map_err(|error| format!("initialize provider client: {error}"))?
         .with_lookup_cache(&state_dir.join("lookup-cache.sqlite3"))
         .map_err(|error| format!("initialize provider lookup cache: {error}"))?;
-    // The host's TMDB key serves system jobs (DVD episode numbering) only;
-    // a missing or unreadable key leaves TMDB answers `tmdb_unconfigured`.
-    if let Some(path) = std::env::var_os("MEDIA_MANAGER_TMDB_API_KEY_FILE") {
-        match TmdbCredentials::from_file(Path::new(&path)) {
-            Ok(credentials) => state = state.with_system_tmdb_key(credentials.api_key.clone())?,
-            Err(error) => eprintln!(
-                "{}",
-                json!({
-                    "level": "warn",
-                    "service": "media-manager-provider-broker",
-                    "event": "system_tmdb_key_unavailable",
-                    "error": error.to_string(),
-                })
-            ),
-        }
-    }
     if let Ok(base) = std::env::var("MEDIA_MANAGER_JELLYFIN_BASE_URL") {
         state = state.with_jellyfin(
             &base,

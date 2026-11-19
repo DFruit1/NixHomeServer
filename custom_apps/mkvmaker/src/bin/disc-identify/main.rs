@@ -9,7 +9,7 @@
 //!
 //! Either stage prints one JSON object. `status` is `identified` only when the
 //! evidence names every title, in a single season, as consecutive episodes,
-//! and (when a TMDB key is configured) those episodes are still consecutive in
+//! and (when the uploader has a TMDB account) those episodes are still consecutive in
 //! TMDB's numbering, which Jellyfin uses; identified episodes are then
 //! renumbered to TMDB. Anything less is `uncertain` with a best guess for a
 //! person to confirm. `episodes` prints a series' layout as Jellyfin numbers it.
@@ -70,6 +70,10 @@ struct Common {
     /// Provider broker system socket (TMDB numbering, subtitles).
     #[arg(long, overrides_with = "provider_socket")]
     provider_socket: Option<PathBuf>,
+    /// Username of the person who uploaded the disc; the broker uses their
+    /// saved TMDB and OpenSubtitles accounts.
+    #[arg(long)]
+    owner: Option<String>,
     #[arg(long, default_value_t = 1200)]
     bonsai_timeout_seconds: u64,
     /// Scratch directory (created and removed by this run).
@@ -118,9 +122,6 @@ struct ContentArgs {
     /// JSON written by the `disc` stage for this image.
     #[arg(long)]
     context: PathBuf,
-    /// Username of the person who uploaded the disc (for their OpenSubtitles account).
-    #[arg(long)]
-    owner: Option<String>,
     /// Provider broker system socket.
     #[arg(long)]
     subtitle_socket: Option<PathBuf>,
@@ -1281,7 +1282,7 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
     let mut downloads_left = args.max_subtitle_downloads;
     // The broker's cache stays usable after the download budget or the
     // daily quota is spent; an account or broker failure stops both.
-    let mut subtitles_usable = args.subtitle_socket.is_some() && args.owner.is_some();
+    let mut subtitles_usable = args.subtitle_socket.is_some() && args.common.owner.is_some();
     let mut downloads_allowed = subtitles_usable;
     if !subtitles_usable {
         outcome
@@ -1460,7 +1461,7 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
                     let cache_only = !downloads_allowed || downloads_left == 0;
                     let result = content::episode_subtitle_text(
                         args.subtitle_socket.as_deref().unwrap_or(Path::new("")),
-                        args.owner.as_deref().unwrap_or(""),
+                        args.common.owner.as_deref().unwrap_or(""),
                         imdb.as_deref().unwrap_or(""),
                         episode.season,
                         episode.number,
@@ -1837,8 +1838,13 @@ fn run_content(args: &ContentArgs) -> Result<Outcome> {
     Ok(outcome)
 }
 
-const TMDB_UNCONFIGURED: &str =
-    "Episode numbering was not checked against TMDB (no TMDB key is configured).";
+/// Why numbering stayed unchecked when the uploader has no TMDB account. The
+/// import worker matches "no TMDB account saved" in it.
+fn tmdb_no_account(owner: &str) -> String {
+    format!(
+        "Episode numbering was not checked against TMDB ({owner} has no TMDB account saved in Media Manager's Online services)."
+    )
+}
 
 /// Every TMDB lookup worth trying for a series, strongest first.
 fn series_refs(show: &Show) -> Vec<tmdb::SeriesRef> {
@@ -1904,10 +1910,17 @@ fn check_tmdb_numbering(outcome: &mut Outcome, common: &Common, socket: Option<&
         );
         return;
     };
-    let series = match tmdb::resolve(socket, &series_refs(&show)) {
+    let Some(owner) = common.owner.as_deref() else {
+        outcome.reasons.push(
+            "Episode numbering was not checked against TMDB (the disc's uploader is unknown, so no TMDB account could be used)."
+                .into(),
+        );
+        return;
+    };
+    let series = match tmdb::resolve(socket, owner, &series_refs(&show)) {
         tmdb::Lookup::Found(series) => series,
-        tmdb::Lookup::Unconfigured => {
-            outcome.reasons.push(TMDB_UNCONFIGURED.into());
+        tmdb::Lookup::NoAccount => {
+            outcome.reasons.push(tmdb_no_account(owner));
             return;
         }
         tmdb::Lookup::Unavailable(error) => {
@@ -2073,12 +2086,28 @@ fn run_episodes(args: &EpisodesArgs) -> EpisodesOutput {
             .push("No series reference or name was given.".into());
         return out;
     };
-    let lookup = match args.common.provider_socket.as_deref() {
-        Some(socket) => tmdb::resolve(socket, &refs),
-        None => {
+    let lookup = match (
+        args.common.provider_socket.as_deref(),
+        args.common.owner.as_deref(),
+    ) {
+        (Some(socket), Some(owner)) => {
+            let lookup = tmdb::resolve(socket, owner, &refs);
+            if matches!(lookup, tmdb::Lookup::NoAccount) {
+                out.reasons.push(format!(
+                    "{owner} has no TMDB account saved in Media Manager's Online services."
+                ));
+            }
+            lookup
+        }
+        (None, _) => {
             out.reasons
                 .push("The provider broker socket is not configured.".into());
-            tmdb::Lookup::Unconfigured
+            tmdb::Lookup::NoAccount
+        }
+        (Some(_), None) => {
+            out.reasons
+                .push("No uploader was given, so no TMDB account could be used.".into());
+            tmdb::Lookup::NoAccount
         }
     };
     match lookup {
@@ -2103,9 +2132,9 @@ fn run_episodes(args: &EpisodesArgs) -> EpisodesOutput {
                 })
                 .collect();
         }
-        tmdb::Lookup::Unconfigured => {
+        tmdb::Lookup::NoAccount => {
             out.reasons.push(
-                "TMDB is not configured (no TMDB key), so episodes use TVmaze numbering, which has no specials."
+                "TMDB was not used, so episodes use TVmaze numbering, which has no specials."
                     .into(),
             );
             episodes_from_tvmaze(args, &refs, given.as_ref(), &mut out);

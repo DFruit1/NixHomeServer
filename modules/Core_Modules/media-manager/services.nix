@@ -41,8 +41,6 @@ let
     MEDIA_MANAGER_PROVIDER_STATE_DIR = cfg.providerStateDir;
   } // lib.optionalAttrs providerSystemEnabled {
     MEDIA_MANAGER_PROVIDER_SYSTEM_SOCKET = cfg.providerSystemSocket;
-  } // lib.optionalAttrs (cfg.tmdbApiKeyFile != null) {
-    MEDIA_MANAGER_TMDB_API_KEY_FILE = "%d/tmdb-api-key";
   };
   refreshCases = lib.concatStringsSep "\n" (lib.mapAttrsToList
     (id: integration:
@@ -216,7 +214,6 @@ in
       Group = "media-manager-provider";
       DynamicUser = false;
       ExecStart = lib.getExe' cfg.package "media-manager-provider-broker";
-      LoadCredential = lib.optional (cfg.tmdbApiKeyFile != null) "tmdb-api-key:${cfg.tmdbApiKeyFile}";
       Restart = "on-failure";
       RestartSec = "5s";
       StateDirectory = "media-manager-provider";

@@ -1,5 +1,5 @@
 //! TMDB season layouts, fetched through the provider broker's system socket
-//! (which holds the host's TMDB key), and the mapping of TVmaze-numbered
+//! with the uploader's own saved TMDB account, and the mapping of TVmaze-numbered
 //! episodes onto them. Jellyfin numbers TV episodes from TMDB, so a disc is
 //! only published with numbers TMDB agrees on.
 
@@ -41,13 +41,15 @@ impl SeriesRef {
         }
     }
 
-    fn body(&self) -> Value {
-        match self {
+    fn body(&self, owner: &str) -> Value {
+        let mut body = match self {
             Self::Tmdb(id) => json!({ "tmdbId": id }),
             Self::Tvdb(id) => json!({ "tvdbId": id }),
             Self::Imdb(id) => json!({ "imdbId": id }),
             Self::Name(name, year) => json!({ "name": name, "year": year }),
-        }
+        };
+        body["owner"] = json!(owner);
+        body
     }
 }
 
@@ -74,26 +76,27 @@ pub struct TmdbSeries {
 #[derive(Debug)]
 pub enum Lookup {
     Found(TmdbSeries),
-    /// The broker has no TMDB key.
-    Unconfigured,
+    /// The owner has no TMDB account saved in Media Manager.
+    NoAccount,
     NotFound,
     Ambiguous(usize),
     /// Transient: the broker or TMDB could not answer.
     Unavailable(String),
 }
 
-/// One request to the broker for `series`' full season layout.
-pub fn lookup(socket: &Path, series: &SeriesRef) -> Lookup {
+/// One request to the broker for `series`' full season layout, using the
+/// TMDB account `owner` saved in Media Manager.
+pub fn lookup(socket: &Path, owner: &str, series: &SeriesRef) -> Lookup {
     match post_unix(
         socket,
         "/system/v1/tmdb/tv-episodes",
-        &series.body().to_string(),
+        &series.body(owner).to_string(),
     ) {
         Ok((200, value)) => match parse_layout(&value) {
             Some(series) => Lookup::Found(series),
             None => Lookup::Unavailable("the broker returned an unreadable TMDB layout".into()),
         },
-        Ok((_, value)) if value["error"] == "tmdb_unconfigured" => Lookup::Unconfigured,
+        Ok((_, value)) if value["error"] == "no_account" => Lookup::NoAccount,
         Ok((404, _)) => Lookup::NotFound,
         Ok((409, value)) => Lookup::Ambiguous(value["candidates"].as_array().map_or(2, Vec::len)),
         Ok((status, value)) => Lookup::Unavailable(format!(
@@ -104,14 +107,14 @@ pub fn lookup(socket: &Path, series: &SeriesRef) -> Lookup {
     }
 }
 
-/// Try each reference in turn until TMDB knows one of them. Unconfigured and
+/// Try each reference in turn until TMDB knows one of them. No-account and
 /// unavailable answers stop the search: they hold for every reference.
-pub fn resolve(socket: &Path, refs: &[SeriesRef]) -> Lookup {
+pub fn resolve(socket: &Path, owner: &str, refs: &[SeriesRef]) -> Lookup {
     let mut last = Lookup::NotFound;
     for series in refs {
-        match lookup(socket, series) {
+        match lookup(socket, owner, series) {
             found @ Lookup::Found(_) => return found,
-            stop @ (Lookup::Unconfigured | Lookup::Unavailable(_)) => return stop,
+            stop @ (Lookup::NoAccount | Lookup::Unavailable(_)) => return stop,
             other => last = other,
         }
     }

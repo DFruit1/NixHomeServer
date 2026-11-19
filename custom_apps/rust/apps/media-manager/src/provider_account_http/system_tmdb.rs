@@ -1,11 +1,12 @@
 //! TMDB television layouts for host system jobs (system socket only).
 //!
 //! Jellyfin numbers TV episodes from TMDB, so the DVD identifier checks its
-//! episode numbering against the season layout returned here. The broker
-//! uses the host's own TMDB key (`MEDIA_MANAGER_TMDB_API_KEY_FILE`), never a
-//! person's saved account; without a key every answer is `tmdb_unconfigured`.
+//! episode numbering against the season layout returned here. The caller
+//! names the person whose saved TMDB account to use (for a DVD, its
+//! uploader); without one the answer is `no_account`. Layouts are public TMDB
+//! data, so a cached layout serves every account.
 
-use super::ProviderBrokerState;
+use super::{tmdb_lookups, ProviderBrokerState};
 use crate::tmdb::{ProviderError, TmdbClient, TmdbTvShow};
 use axum::{
     extract::{rejection::JsonRejection, State},
@@ -24,6 +25,7 @@ const MAX_SEASONS: usize = 100;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct TvEpisodesRequest {
+    owner: String,
     tmdb_id: Option<u32>,
     tvdb_id: Option<u64>,
     imdb_id: Option<String>,
@@ -52,7 +54,23 @@ impl SeriesRef {
     }
 }
 
-fn validated(request: TvEpisodesRequest) -> Option<SeriesRef> {
+/// Usernames as the account store records them.
+fn valid_owner(owner: &str) -> bool {
+    (1..=64).contains(&owner.len())
+        && owner.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
+}
+
+fn validated(request: TvEpisodesRequest) -> Option<(String, SeriesRef)> {
+    if !valid_owner(&request.owner) {
+        return None;
+    }
+    let owner = request.owner.clone();
+    series_ref(request).map(|series| (owner, series))
+}
+
+fn series_ref(request: TvEpisodesRequest) -> Option<SeriesRef> {
     if let Some(id) = request.tmdb_id {
         return (id > 0).then_some(SeriesRef::Tmdb(id));
     }
@@ -76,7 +94,7 @@ pub(super) async fn tv_episodes(
     payload: Result<Json<TvEpisodesRequest>, JsonRejection>,
 ) -> Response {
     let request_id = request_id();
-    let Some(series) = payload.ok().and_then(|Json(request)| validated(request)) else {
+    let Some((owner, series)) = payload.ok().and_then(|Json(request)| validated(request)) else {
         return outcome(
             &request_id,
             None,
@@ -85,14 +103,47 @@ pub(super) async fn tv_episodes(
             None,
         );
     };
-    let Some(client) = state.system_tmdb.clone() else {
-        return outcome(
-            &request_id,
-            Some(&series),
-            StatusCode::SERVICE_UNAVAILABLE,
-            "tmdb_unconfigured",
+    let no_account = |request_id: &str, series: &SeriesRef| {
+        outcome(
+            request_id,
+            Some(series),
+            StatusCode::NOT_FOUND,
+            "no_account",
             None,
-        );
+        )
+    };
+    let identity = match state.store.account_identity_for_username("tmdb", &owner) {
+        Ok(Some(identity)) => identity,
+        Ok(None) => return no_account(&request_id, &series),
+        Err(_) => {
+            return outcome(
+                &request_id,
+                Some(&series),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storage_error",
+                None,
+            )
+        }
+    };
+    let client = match tmdb_lookups::client_for(&state, &identity, &request_id) {
+        Ok(client) => client,
+        Err(error)
+            if matches!(
+                error.status(),
+                StatusCode::PRECONDITION_REQUIRED | StatusCode::UNPROCESSABLE_ENTITY
+            ) =>
+        {
+            return no_account(&request_id, &series)
+        }
+        Err(_) => {
+            return outcome(
+                &request_id,
+                Some(&series),
+                StatusCode::BAD_GATEWAY,
+                "provider_error",
+                None,
+            )
+        }
     };
     let tmdb_id = match resolve(&state, &client, &series).await {
         Ok(Resolved::Found(id)) => id,

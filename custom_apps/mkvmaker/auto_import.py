@@ -1172,6 +1172,10 @@ def identify_disc(args: argparse.Namespace, source: Path, selected: list[Title],
     sidecar = sidecar or ripper_sidecar(source)
     if sidecar.is_file():
         arguments += ["--sidecar", str(sidecar)]
+    # The uploader's saved TMDB account checks the episode numbering.
+    owner = iso_owner(source)
+    if owner:
+        arguments += ["--owner", owner]
     return run_identifier(args, arguments, renew_lease, "disc menus")
 
 
@@ -1194,8 +1198,10 @@ def identify_content(args: argparse.Namespace, source: Path, plan: dict[str, Any
     for video, title in zip(videos, plan["titles"]):
         arguments += ["--video", video, "--title", str(title)]
     owner = iso_owner(source)
+    if owner:
+        arguments += ["--owner", owner]
     if owner and getattr(args, "subtitle_socket", None):
-        arguments += ["--owner", owner, "--subtitle-socket", args.subtitle_socket]
+        arguments += ["--subtitle-socket", args.subtitle_socket]
     try:
         result = run_identifier(args, arguments, renew_lease, "dialogue")
     finally:
@@ -1531,9 +1537,10 @@ def numbering_hold(shows_root: Path, result: dict[str, Any]) -> dict[str, Any] |
     folder = library_match(shows_root, series)[1]
     if folder is None:
         return None
-    unconfigured = any("no TMDB key is configured" in str(reason)
-                       for reason in result.get("reasons") or [])
-    why = "no TMDB key is configured" if unconfigured else "they were not mapped to TMDB"
+    no_account = any("no TMDB account saved" in str(reason)
+                     for reason in result.get("reasons") or [])
+    why = ("the uploader has no TMDB account saved in Media Manager" if no_account
+           else "they were not mapped to TMDB")
     reason = (f"The existing library folder {folder} uses TMDB episode numbering, but these "
               f"episodes have TVmaze numbering ({why}); they are held rather than published "
               "into it or into a second folder for the series.")
@@ -1862,7 +1869,7 @@ def special_plan(args: argparse.Namespace, source: Path, hints: SourceHints,
     if match is None:
         return None
     (name, year, provider), rest = match
-    result = provider_episodes(args, name, year, provider)
+    result = provider_episodes(args, name, year, provider, iso_owner(source))
     titles = library_episodes(result, year, provider) \
         if isinstance(result, dict) and result.get("layout") == "tmdb" else {}
     specials = sorted((e, t) for (s, e), t in titles.items() if s == 0)
@@ -2086,7 +2093,8 @@ def build_plan(args: argparse.Namespace, source: Path,
         }
         # A curated name skips TVmaze above; its titles come from the list
         # that matches the folder's numbering, else stay placeholders.
-        looked_up = (episode_names_for(args, name, year, provider, season, first, len(selected))
+        looked_up = (episode_names_for(args, name, year, provider, season, first,
+                                       len(selected), iso_owner(source))
                      if metadata is None else [""] * len(selected))
         names = [
             by_number.get((season, first + offset)) or looked_up[offset]
@@ -2694,7 +2702,7 @@ EPISODE_LOOKUP_SECONDS = 30
 
 
 def provider_episodes(args: argparse.Namespace, name: str, year: int | None,
-                      provider: str | None) -> dict[str, Any] | None:
+                      provider: str | None, owner: str | None) -> dict[str, Any] | None:
     """A series' episode list from ``disc-identify episodes``, or None.
 
     Best-effort: a missing identifier or broker, an error, or a timeout only
@@ -2707,6 +2715,9 @@ def provider_episodes(args: argparse.Namespace, name: str, year: int | None,
     command = [identifier, "episodes", "--series", provider or "",
                "--provider-socket", socket,
                "--cache-dir", str(args.state_dir / "identify-cache")]
+    # TMDB answers with the uploader's saved account.
+    if owner:
+        command += ["--owner", owner]
     if name:
         command += ["--name", name]
     if year:
@@ -2768,9 +2779,11 @@ def library_episodes(result: dict[str, Any] | None, year: int | None,
 
 
 def episode_names_for(args: argparse.Namespace, name: str, year: int | None,
-                      provider: str | None, season: int, first: int, count: int) -> list[str]:
+                      provider: str | None, season: int, first: int, count: int,
+                      owner: str | None) -> list[str]:
     """Best-effort titles for episodes whose numbers a person chose; "" if unknown."""
-    titles = library_episodes(provider_episodes(args, name, year, provider), year, provider)
+    titles = library_episodes(provider_episodes(args, name, year, provider, owner),
+                              year, provider)
     return [titles.get((season, first + offset), "") for offset in range(count)]
 
 
@@ -2835,7 +2848,7 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
                 # carries it into the series folder Jellyfin matches on.
                 provider = held_provider(identify_path)
             names = episode_names_for(args, name, year, provider,
-                                      hints.season, hints.episode, count)
+                                      hints.season, hints.episode, count, iso_owner(iso))
             try:
                 season_dir = publish_episodes(args, files, name, year, provider,
                                               hints.season, hints.episode, names)
@@ -3773,6 +3786,7 @@ def special_and_layout_self_test() -> None:
                 {"Index": i + 1, "Duration": {"Hours": 0, "Minutes": m, "Seconds": 0}}
                 for i, m in enumerate(minutes)]}), encoding="utf-8")
             episodes_file.write_text(json.dumps(listing), encoding="utf-8")
+            (root / iso).touch()  # its owner names the uploader's TMDB account
             return build_plan(args, root / iso)
 
         rumpole_tmdb = episodes("tmdb", 1, [(0, 1, "Rumpole of the Bailey"), (0, 3, "Rumpole's Return"),
@@ -3789,8 +3803,9 @@ def special_and_layout_self_test() -> None:
             assert filed["episode_names"] == ["Rumpole's Return"] and not filed.get("held")
             assert "--series tvdbid-72995" in calls.read_text(encoding="utf-8")
             assert "--provider-socket" in calls.read_text(encoding="utf-8")
+            assert "--owner" in calls.read_text(encoding="utf-8")
 
-            # Only TMDB numbers specials. Without its list (no TMDB key: a
+            # Only TMDB numbers specials. Without its list (no TMDB account: a
             # TVmaze list, or none) a subtitle is no season-0 evidence, so the
             # disc follows the film path; a disc named only after the show is
             # held for a person, with nothing to suggest.
@@ -3877,13 +3892,13 @@ def special_and_layout_self_test() -> None:
             assert library_match(shows, dict(tvmaze_series, name="Mission Impossible", year=1966))[1] is None
             disc = {"schemaVersion": 2, "stage": "disc", "status": "identified", "series": tvmaze_series,
                     "season": 4, "candidates": [], "summary": "Identified from the disc menu.",
-                    "reasons": ["Episode numbering was not checked against TMDB (no TMDB key is configured)."],
+                    "reasons": ["Episode numbering was not checked against TMDB (dsaw has no TMDB account saved in Media Manager's Online services)."],
                     "assignments": [{"title": 1, "season": 4, "episode": 1, "name": "The Sign of Four"},
                                     {"title": 2, "season": 4, "episode": 2, "name": "The Devil's Foot"}]}
             sherlock = plan("SHERLOCK_HOLMES_D7.iso", [52, 51], disc)
             assert sherlock["held"] and sherlock["numbering_conflict"], sherlock
             assert sherlock["identification"]["assignments"] == []
-            assert any("[tmdbid-799] uses TMDB episode numbering" in r and "no TMDB key" in r
+            assert any("[tmdbid-799] uses TMDB episode numbering" in r and "no TMDB account saved" in r
                        for r in sherlock["identification"]["reasons"]), sherlock
             calls.write_text("", encoding="utf-8")
             finish_held(args, root / "SHERLOCK_HOLMES_D7.iso", sherlock,
@@ -4009,7 +4024,7 @@ first = 1 if len(titles) == 2 else 3
 print(json.dumps({{"schemaVersion": 2, "stage": "content", "status": "identified",
                    "series": context["series"], "season": 2, "candidates": [],
                    "summary": "Identified from the dialogue.",
-                   "reasons": ["Episode numbering was not checked against TMDB (no TMDB key is configured)."],
+                   "reasons": ["Episode numbering was not checked against TMDB (dsaw has no TMDB account saved in Media Manager's Online services)."],
                    "assignments": [{{"title": t, "season": 2, "episode": first + i, "name": "Ep"}}
                                    for i, t in enumerate(titles)]}}))
 """, encoding="utf-8")
