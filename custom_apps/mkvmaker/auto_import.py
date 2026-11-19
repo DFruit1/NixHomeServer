@@ -1537,10 +1537,13 @@ def numbering_hold(shows_root: Path, result: dict[str, Any]) -> dict[str, Any] |
     folder = library_match(shows_root, series)[1]
     if folder is None:
         return None
-    no_account = any("no TMDB account saved" in str(reason)
-                     for reason in result.get("reasons") or [])
-    why = ("the uploader has no TMDB account saved in Media Manager" if no_account
-           else "they were not mapped to TMDB")
+    reasons = [str(reason) for reason in result.get("reasons") or []]
+    if any("no TMDB account saved" in reason for reason in reasons):
+        why = "the uploader has no TMDB account saved in Media Manager"
+    elif any("uploader is unknown" in reason for reason in reasons):
+        why = "the uploader is unknown, so no TMDB account could be used"
+    else:
+        why = "they were not mapped to TMDB"
     reason = (f"The existing library folder {folder} uses TMDB episode numbering, but these "
               f"episodes have TVmaze numbering ({why}); they are held rather than published "
               "into it or into a second folder for the series.")

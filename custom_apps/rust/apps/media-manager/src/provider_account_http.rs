@@ -133,12 +133,12 @@ impl ProviderBrokerState {
 
     /// Deployment-owned Jellyfin address and the metadata sources NixOS gives
     /// Jellyfin for movies and shows, shown beside Immich.
-    pub fn with_jellyfin(mut self, base: &str, metadata_sources: &str) -> Result<Self, String> {
+    pub fn with_jellyfin(mut self, base: &str, metadata_sources: &str) -> Self {
         self.jellyfin = Some(Arc::new(server_services::Jellyfin::new(
             base,
             metadata_sources,
-        )?));
-        Ok(self)
+        )));
+        self
     }
 
     /// Persist successful provider lookups so repeated item searches reuse one

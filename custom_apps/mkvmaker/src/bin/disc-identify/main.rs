@@ -48,8 +48,8 @@ enum Command {
     Disc(DiscArgs),
     /// Identify encoded titles from what they say.
     Content(ContentArgs),
-    /// Print a series' episode layout as Jellyfin numbers it (TMDB), or
-    /// TVmaze's when TMDB is not configured. Always exits 0.
+    /// Print a series' episode layout as Jellyfin numbers it (TMDB, with the
+    /// --owner's saved TMDB account), or TVmaze's without one. Always exits 0.
     Episodes(EpisodesArgs),
 }
 

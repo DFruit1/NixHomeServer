@@ -55,7 +55,7 @@ async fn run() -> Result<(), String> {
         state = state.with_jellyfin(
             &base,
             &env_string("MEDIA_MANAGER_JELLYFIN_METADATA_SOURCES", ""),
-        )?;
+        );
     }
     if let Ok(base) = std::env::var("MEDIA_MANAGER_IMMICH_API_BASE") {
         let socket = PathBuf::from(env_string(

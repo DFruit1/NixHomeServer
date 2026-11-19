@@ -8,16 +8,20 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 const MAX_METADATA_SOURCES: usize = 8;
 
 pub(super) struct Jellyfin {
-    base: reqwest::Url,
+    /// None when the configured address is not a trusted one; the row then
+    /// says so instead of the broker refusing to start over a status line.
+    base: Option<reqwest::Url>,
     metadata_sources: Vec<String>,
 }
 
 impl Jellyfin {
-    pub(super) fn new(base: &str, metadata_sources: &str) -> Result<Self, String> {
-        let mut base = trusted_provider_base(base)?;
-        if !base.path().ends_with('/') {
-            base.set_path(&format!("{}/", base.path()));
-        }
+    pub(super) fn new(base: &str, metadata_sources: &str) -> Self {
+        let base = trusted_provider_base(base).ok().map(|mut base| {
+            if !base.path().ends_with('/') {
+                base.set_path(&format!("{}/", base.path()));
+            }
+            base
+        });
         let metadata_sources = metadata_sources
             .split(',')
             .map(str::trim)
@@ -25,10 +29,10 @@ impl Jellyfin {
             .take(MAX_METADATA_SOURCES)
             .map(str::to_string)
             .collect();
-        Ok(Self {
+        Self {
             base,
             metadata_sources,
-        })
+        }
     }
 }
 
@@ -48,9 +52,9 @@ async fn jellyfin_status(state: &ProviderBrokerState) -> Value {
     let Some(jellyfin) = state.jellyfin.as_ref() else {
         return status("notEnabled", "Jellyfin is not enabled on this server.", &[]);
     };
-    let ping = match jellyfin.base.join("System/Ping") {
-        Ok(url) => state.client.get(url).timeout(PROBE_TIMEOUT).send().await,
-        Err(_) => {
+    let ping = match jellyfin.base.as_ref().map(|base| base.join("System/Ping")) {
+        Some(Ok(url)) => state.client.get(url).timeout(PROBE_TIMEOUT).send().await,
+        _ => {
             return status(
                 "notReachable",
                 "Jellyfin's address on this server is invalid.",
