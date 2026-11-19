@@ -1317,48 +1317,51 @@ async fn download(
         .get(header::IF_RANGE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    let file = tokio::task::spawn_blocking(
-        move || -> io::Result<OpenedDownload> {
-            let root = Dir::open_ambient_dir(base, ambient_authority())?;
-            let mut file = root.open(relative).map(cap_std::fs::File::into_std)?;
-            use std::os::unix::fs::MetadataExt;
-            let metadata = file.metadata().ok();
-            let length = metadata.as_ref().map(|value| value.len());
-            // A strong validator for resumed downloads. It is finer-grained
-            // than the millisecond mtimes the manifest compares with, and the
-            // inode catches a same-size same-mtime replace. The client only
-            // ever resumes when this matches the file it started from, so it
-            // cannot join bytes of two different versions.
-            let etag = metadata.map(|value| {
-                format!(
-                    "\"{:x}-{:x}-{:x}\"",
-                    value.len(),
-                    value.mtime_nsec(),
-                    value.ino()
-                )
-            });
-            let start = match (
-                range.as_deref(),
-                if_range.as_deref(),
-                length,
-                etag.as_deref(),
-            ) {
-                // A matching If-Range says the file is the same one the client
-                // started from, so the suffix may be joined to its prefix.
-                (Some(range), Some(validator), Some(length), Some(etag)) if validator == etag => {
-                    open_ended_range_start(range, length)
-                }
-                (Some(range), None, Some(length), _) => open_ended_range_start(range, length),
-                // A stale or absent validator, an unreadable file: serve the
-                // whole body and let the client start over.
-                _ => None,
-            };
-            if let Some(start) = start {
-                file.seek(SeekFrom::Start(start))?;
+    let file = tokio::task::spawn_blocking(move || -> io::Result<OpenedDownload> {
+        let root = Dir::open_ambient_dir(base, ambient_authority())?;
+        let mut file = root.open(relative).map(cap_std::fs::File::into_std)?;
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata().ok();
+        let length = metadata.as_ref().map(|value| value.len());
+        // A strong validator for resumed downloads. It is finer-grained
+        // than the millisecond mtimes the manifest compares with, and the
+        // inode catches a same-size same-mtime replace. The client only
+        // ever resumes when this matches the file it started from, so it
+        // cannot join bytes of two different versions.
+        let etag = metadata.map(|value| {
+            format!(
+                "\"{:x}-{:x}-{:x}-{:x}\"",
+                value.len(),
+                // mtime() is whole seconds and mtime_nsec() only the
+                // sub-second part; both are needed, or an in-place
+                // rewrite preserving seconds but not the fraction could
+                // keep the same validator.
+                value.mtime(),
+                value.mtime_nsec(),
+                value.ino()
+            )
+        });
+        let start = match (
+            range.as_deref(),
+            if_range.as_deref(),
+            length,
+            etag.as_deref(),
+        ) {
+            // A matching If-Range says the file is the same one the client
+            // started from, so the suffix may be joined to its prefix.
+            (Some(range), Some(validator), Some(length), Some(etag)) if validator == etag => {
+                open_ended_range_start(range, length)
             }
-            Ok((file, length, start, etag))
-        },
-    )
+            (Some(range), None, Some(length), _) => open_ended_range_start(range, length),
+            // A stale or absent validator, an unreadable file: serve the
+            // whole body and let the client start over.
+            _ => None,
+        };
+        if let Some(start) = start {
+            file.seek(SeekFrom::Start(start))?;
+        }
+        Ok((file, length, start, etag))
+    })
     .await;
     match file {
         Ok(Ok((file, length, start, etag))) => {
