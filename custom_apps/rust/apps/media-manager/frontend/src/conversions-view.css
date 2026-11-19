@@ -58,17 +58,20 @@
   font-weight: 500;
   line-height: 1.25;
 }
+/* Compact tiles, as many across as fit, so the chosen task's form starts
+   near the top instead of below two rows of large cards. */
 .conversion-task-list {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
 }
 .conversion-task {
   min-width: 0;
   display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
   align-content: start;
   gap: 12px;
-  padding: 18px;
+  padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   color: var(--ink);
@@ -205,7 +208,7 @@
   font-weight: 500;
   line-height: 1.25;
 }
-.conversion-focus :is(.conversion-copy p, .empty-state p),
+.conversion-focus .conversion-copy p,
 .transcript-card .conversion-copy p {
   margin: 0;
   color: var(--navigation-muted);
@@ -236,17 +239,6 @@
 .conversion-focus .conversion-queue__heading,
 .conversion-focus :is(.conversion-queue__number, .conversion-queue__file) {
   color: var(--navigation-muted);
-}
-.conversion-focus .empty-state {
-  min-height: 96px;
-}
-.conversion-focus .empty-glyph {
-  display: none;
-}
-.conversion-focus .empty-state h4 {
-  font-family: var(--font-serif);
-  font-size: var(--text-lg);
-  font-weight: 500;
 }
 .conversion-help {
   border-top: 1px solid var(--line);
@@ -774,10 +766,6 @@
   .conversion-task-list {
     grid-template-columns: minmax(0, 1fr);
     gap: 8px;
-  }
-  .conversion-task {
-    grid-template-columns: 24px minmax(0, 1fr);
-    padding: 14px 16px;
   }
   .conversion-tasks h2 {
     font-size: var(--title-sm);

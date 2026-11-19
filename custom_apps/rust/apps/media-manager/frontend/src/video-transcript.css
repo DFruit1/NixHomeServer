@@ -63,19 +63,22 @@
 .video-list-group + .video-list-group {
   margin-top: 12px;
 }
+/* Headings outrank the rows they organise: full ink for a group, a quiet
+   regular label for a season or folder inside it. */
 .video-list-group h3,
 .video-list-section h4 {
   margin: 0;
   padding: 8px 8px 4px;
-  color: var(--ink-soft);
-  font-size: var(--text-sm);
+  color: var(--ink);
+  font-size: var(--text-md);
   font-weight: 600;
   overflow-wrap: anywhere;
 }
 .video-list-section h4 {
   padding-top: 4px;
   color: var(--ink-faint);
-  font-weight: 500;
+  font-size: var(--text-sm);
+  font-weight: 400;
 }
 .video-list-section > ul {
   margin: 0;

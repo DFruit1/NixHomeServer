@@ -1874,7 +1874,17 @@ export const ItemEditor = component$<{
           ))}
         </div>
         <fieldset
-          class="metadata-form editor-metadata-form"
+          class={{
+            "metadata-form": true,
+            "editor-metadata-form": true,
+            // Type, title and year are the whole lookup group for a film or
+            // single video, so they share one row instead of orphaning Year.
+            "editor-metadata-form--lookup-row":
+              section.value === "basics" &&
+              !props.folder &&
+              !creatorLabel &&
+              metadata.mediaType !== "episode",
+          }}
           disabled={!metadata.isDraft}
         >
           {section.value === "basics" && (

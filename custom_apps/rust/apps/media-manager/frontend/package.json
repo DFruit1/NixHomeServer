@@ -16,6 +16,8 @@
   },
   "dependencies": {
     "@builder.io/qwik": "1.16.0",
+    "@fontsource-variable/gelasio": "5.3.0",
+    "@fontsource-variable/public-sans": "5.3.0",
     "extract-colors": "4.2.1"
   },
   "devDependencies": {

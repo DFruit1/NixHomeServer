@@ -4,7 +4,7 @@ let
   frontendDependencies = rustLib.mkPnpmDeps {
     name = "media-manager-frontend";
     srcDir = ./frontend;
-    hash = "sha256-CPe8sGi3TE3tKg6KpgmcNHcSW5ndfHCcwfO6cQee+h8=";
+    hash = "sha256-aKMyvxlTyjR0PINqnvthoOHOQ0BBAXGkTdGjPqisGv0=";
   };
   frontendDist = rustLib.mkPnpmFrontend {
     name = "media-manager-frontend";

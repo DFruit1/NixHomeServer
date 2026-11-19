@@ -4,7 +4,7 @@
   z-index: 4;
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: 88px fit-content(62%) minmax(0, 1fr);
+  grid-template-columns: 88px minmax(0, 1fr) 56px;
   gap: 0 12px;
   min-width: 0;
   border: 1px solid var(--line);
@@ -117,12 +117,13 @@
   font-weight: 600;
 }
 /* This is a separate grid cell, never a background beneath readable content.
-   Its width naturally gives way to long text and wrapped controls. */
+   A narrow edge accent: the title, path and actions get the width instead. */
 .cover-palette {
   grid-column: 3;
   grid-row: 1;
   min-width: 0;
   align-self: stretch;
+  opacity: 0.7;
   background: linear-gradient(
     100deg,
     var(--card),
@@ -161,7 +162,7 @@
 }
 @media (max-width: 640px) {
   .library-selection-hero {
-    grid-template-columns: 64px fit-content(62%) minmax(0, 1fr);
+    grid-template-columns: 64px minmax(0, 1fr) 32px;
     gap: 0 10px;
   }
   .library-selection-hero .media-image {

@@ -186,6 +186,14 @@
 .music-collection[data-view^="tiles-"] .track-item {
   border: 0;
 }
+/* One long title must not double its whole row; the full title stays in the
+   player and the list views. */
+.music-collection[data-view^="tiles-"] :is(.album-name, .track-name) {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
 .music-collection[data-view^="tiles-"] .playing-indicator {
   position: absolute;
   top: 12px;
@@ -255,9 +263,7 @@
   object-fit: contain;
 }
 .now-playing .track-title,
-.now-playing .track-artist-album,
-.up-next-copy strong,
-.up-next-copy > span:last-child {
+.now-playing .track-artist-album {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -269,13 +275,19 @@
 .now-playing .track-artist-album {
   height: 2.9em;
 }
+/* The fixed card height is what stops the page shifting between skips. One
+   line each for title and artist, centred on the artwork and buttons. */
 .up-next {
   box-sizing: border-box;
-  height: 114px;
+  height: 84px;
 }
-.up-next-copy strong {
-  height: 2.8em;
+.up-next-copy {
+  align-content: center;
 }
+.up-next-copy strong,
 .up-next-copy > span:last-child {
-  height: 2.8em;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
