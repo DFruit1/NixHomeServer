@@ -5,6 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#f6f3ec" />
     <title>Media Manager</title>
+    <!-- Fetch the two everyday font files alongside the script, so text does
+         not repaint in a different face once the app has rendered. -->
+    <link
+      rel="preload"
+      as="font"
+      type="font/woff2"
+      crossorigin
+      href="/node_modules/@fontsource-variable/public-sans/files/public-sans-latin-wght-normal.woff2"
+    />
+    <link
+      rel="preload"
+      as="font"
+      type="font/woff2"
+      crossorigin
+      href="/node_modules/@fontsource-variable/gelasio/files/gelasio-latin-wght-normal.woff2"
+    />
   </head>
   <body>
     <div id="media-manager-app"></div>

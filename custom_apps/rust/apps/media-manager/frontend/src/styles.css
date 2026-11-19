@@ -46,10 +46,13 @@
   --warning-strong: #5f400c;
   --warning-wash: rgba(160, 110, 24, 0.1);
   --warning-line: rgba(122, 83, 18, 0.36);
+  /* Both faces ship with the app (entry.tsx) so every device gets the same
+     letterforms and real 500/600 weights; the system stacks are fallbacks. */
   --font-sans:
-    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
-  --font-serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+    "Public Sans Variable", ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-serif:
+    "Gelasio Variable", Georgia, "Iowan Old Style", "Times New Roman", serif;
   --font-mono:
     ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono",
     monospace;
@@ -779,7 +782,8 @@ a:focus-visible {
   min-width: 0;
   display: flex;
   align-items: center;
-  /* Wrap rather than scroll: on phones a clipped, scrolling row hid Books. */
+  /* Wrap rather than scroll: a clipped, scrolling row hid Books. Phones get
+     symbol-over-label tabs below, which fit one row without either. */
   flex-wrap: wrap;
   gap: 4px;
   width: 100%;
@@ -833,6 +837,33 @@ a:focus-visible {
   display: block;
   text-align: center;
   white-space: nowrap;
+}
+.library-tab .icon {
+  display: none;
+}
+@media (max-width: 640px) {
+  .library-tabs {
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 0;
+  }
+  .library-tab {
+    flex: 1 1 auto;
+    display: grid;
+    justify-items: center;
+    align-content: center;
+    gap: 2px;
+    min-height: 58px;
+    padding: 6px 2px 8px;
+    font-size: var(--text-xs);
+  }
+  .library-tab .icon {
+    display: block;
+  }
+  .library-tab.active::after {
+    right: 6px;
+    left: 6px;
+  }
 }
 .personal-pane {
   grid-area: personal;
@@ -1233,10 +1264,13 @@ a:focus-visible {
   color: var(--accent);
   background: var(--accent-wash);
 }
+/* Selected, not primary: the tint shared with selected library rows keeps
+   the solid fill for the one main action on screen. Weight stays the same
+   so choosing a tab never nudges its neighbours. */
 .metadata-section-tab.active {
-  border-color: var(--accent);
-  color: var(--accent-ink);
-  background: var(--accent);
+  border-color: var(--accent-line);
+  color: var(--accent);
+  background: var(--accent-wash);
 }
 .metadata-section-tab:active {
   scale: 0.96;
@@ -2306,7 +2340,9 @@ a:focus-visible {
   color: var(--ink-faint);
   transition: transform 120ms ease-out;
 }
-.source-accordion[open] .source-accordion-chevron,
+/* Direct child only: an open group must not flip the arrows of the closed
+   sources nested inside it. */
+.source-accordion[open] > .source-accordion-summary .source-accordion-chevron,
 .source-accordion-summary[aria-expanded="true"] .source-accordion-chevron {
   transform: rotate(180deg);
 }
@@ -3165,6 +3201,14 @@ a:focus-visible {
   padding: 16px 20px 20px;
   gap: 12px;
 }
+@media (min-width: 1100px) {
+  .editor-metadata-form--lookup-row {
+    grid-template-columns: 150px minmax(0, 1fr) 92px;
+  }
+  .editor-metadata-form--lookup-row .metadata-lookup-title {
+    grid-column: auto;
+  }
+}
 .metadata-group-heading {
   grid-column: 1 / -1;
   margin: 8px 0 0;
@@ -3501,6 +3545,12 @@ a:focus-visible {
   .library-layout--single > .catalog-panel {
     height: max(48vh, calc(100dvh - 300px));
   }
+  /* Two stacked libraries: a short one shrinks to its contents so the
+     second starts on screen; 48vh stays the cap for a long one. */
+  .library-layout--dual > .catalog-panel {
+    height: auto;
+    max-height: 48vh;
+  }
 }
 
 /* Sidebar right-side variant */
@@ -3767,9 +3817,11 @@ a:focus-visible {
 .video-list-copy span {
   overflow-wrap: anywhere;
 }
+/* Regular weight, selected or not: the row tint marks the selection, and a
+   weight change could re-wrap a long title and move the rows below it. */
 .video-list-copy strong {
   font-size: var(--text-md);
-  font-weight: 550;
+  font-weight: 400;
   line-height: 1.35;
 }
 .video-list-copy span,
@@ -4107,12 +4159,20 @@ a:focus-visible {
 }
 
 /* ── Player sidebar ── */
+/* The album browser runs to the same 34px bottom margin as the Library and
+   Videos panes: 28px page top padding + 34px. Single-column widths reset
+   max-height below and keep the ordinary page padding. */
 .player-sidebar {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-height: calc(100vh - 200px);
+  max-height: calc(100dvh - 62px);
   min-height: 300px;
+}
+@media (min-width: 1001px) {
+  .main-content--player {
+    padding-bottom: 34px;
+  }
 }
 
 .player-sidebar-header {
@@ -6008,9 +6068,9 @@ a:focus-visible {
   border-color: var(--accent);
 }
 .provider-filter-tab.active {
-  border-color: var(--accent);
-  color: var(--accent-ink);
-  background: var(--accent);
+  border-color: var(--accent-line);
+  color: var(--accent);
+  background: var(--accent-wash);
 }
 .provider-list-panel {
   border: 1px solid var(--line);
@@ -6070,6 +6130,11 @@ a:focus-visible {
   width: 96px;
   height: 40px;
   object-fit: contain;
+}
+/* With no second line the name spans both rows, so it centres on the logo. */
+.provider-row-toggle > .provider-row-title:last-child,
+.provider-server-name > .provider-row-title:last-child {
+  grid-row: 1 / span 2;
 }
 .provider-logo.fallback {
   width: 40px;

@@ -4,6 +4,12 @@ import { render } from "@builder.io/qwik";
 // this import the client-rendered app displays but ignores all interaction.
 import "@builder.io/qwik/qwikloader.js";
 import Root, { initialRouteFromSearch } from "./root";
+// Bundled faces behind --font-sans and --font-serif. Browsers fetch only the
+// subsets and styles a page actually uses.
+import "@fontsource-variable/public-sans/wght.css";
+import "@fontsource-variable/public-sans/wght-italic.css";
+import "@fontsource-variable/gelasio/wght.css";
+import "@fontsource-variable/gelasio/wght-italic.css";
 import "./styles.css";
 import "./images-view.css";
 import "./conversions-view.css";

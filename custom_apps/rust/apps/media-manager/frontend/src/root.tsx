@@ -94,6 +94,7 @@ import {
 import {
   type ConversionEnvelope,
   type DashboardState,
+  type IconName,
   type Integration,
   type IntegrationRefresh,
   type MediaRoot,
@@ -691,6 +692,7 @@ export default component$((props: RootProps) => {
         class={{
           "main-content": true,
           "main-content--health": view.value === "health",
+          "main-content--player": view.value === "player",
           "main-content--library": view.value === "library",
           "main-content--conversions": view.value === "conversions",
           "main-content--videos": view.value === "videos",
@@ -2269,12 +2271,13 @@ const ItemQuickActions = component$<{
   );
 });
 
-const CATEGORY_TABS: Array<{ id: string; label: string }> = [
-  { id: "videos", label: "Videos" },
-  { id: "music", label: "Music" },
-  { id: "audiobooks", label: "Audiobooks" },
-  { id: "podcasts", label: "Podcasts" },
-  { id: "books", label: "Books" },
+// The symbols show on phones only, where five text tabs do not fit one row.
+const CATEGORY_TABS: Array<{ id: string; label: string; icon: IconName }> = [
+  { id: "videos", label: "Videos", icon: "video" },
+  { id: "music", label: "Music", icon: "music-note" },
+  { id: "audiobooks", label: "Audiobooks", icon: "headphones" },
+  { id: "podcasts", label: "Podcasts", icon: "mic" },
+  { id: "books", label: "Books", icon: "book" },
 ];
 
 const LibraryPane = component$<{
@@ -3150,6 +3153,7 @@ const LibraryView = component$<{
               disabled={!hasRoots}
               onClick$={() => props.loadCategoryItems$(tab.id)}
             >
+              <Icon name={tab.icon} size={24} />
               <span class="library-tab-label">{tab.label}</span>
             </button>
           );

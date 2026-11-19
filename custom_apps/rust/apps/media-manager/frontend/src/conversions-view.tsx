@@ -33,7 +33,6 @@ import type {
   IconName,
   InboxIso,
 } from "./root-types";
-import { EmptyState } from "./view-states";
 
 /** Encode each segment of a shared-folder path for a Files link. */
 const sharedPath = (path: string) =>
@@ -723,6 +722,13 @@ export const ConversionsView = component$<{
     inboxNeedsIdentification.length > 0 ||
     shown(completedItems) ||
     shown(failedItems);
+  // The panel exists to show work in progress (or why it could not start);
+  // with neither, the task choice stays the only thing asking for attention.
+  const processingErrors = [
+    ...new Set([conv.jobError, conv.inputError]),
+  ].filter(Boolean);
+  const hasProcessing =
+    jobs.length > 0 || queuedEntries.length > 0 || processingErrors.length > 0;
 
   return (
     <section
@@ -842,57 +848,53 @@ export const ConversionsView = component$<{
               }}
             />
           )}
-        <section
-          class="panel conversion-focus"
-          aria-labelledby="processing-heading"
-        >
-          <header class="panel-heading">
-            <h2 id="processing-heading">Processing jobs</h2>
-            <span class="conversion-state">
-              {jobs.some((job) => !job.waiting)
-                ? "Processing"
-                : jobs.length || queuedEntries.length
-                  ? "Waiting"
-                  : "Nothing running"}
-            </span>
-          </header>
-          {[...new Set([conv.jobError, conv.inputError])]
-            .filter(Boolean)
-            .map((error) => (
+        {hasProcessing && (
+          <section
+            class="panel conversion-focus"
+            aria-labelledby="processing-heading"
+          >
+            <header class="panel-heading">
+              <h2 id="processing-heading">Processing jobs</h2>
+              <span class="conversion-state">
+                {jobs.some((job) => !job.waiting)
+                  ? "Processing"
+                  : jobs.length || queuedEntries.length
+                    ? "Waiting"
+                    : "Nothing running"}
+              </span>
+            </header>
+            {processingErrors.map((error) => (
               <p key={error} class="message error" role="alert">
                 {error}
               </p>
             ))}
-          <div class="conversion-list">
-            {jobs.map((job) => (
-              <JobProgress key={job.id} job={job} onCancel$={cancelVideo} />
-            ))}
-            {queuedEntries.length > 0 && (
-              <div class="conversion-queue" aria-label="DVD discs waiting">
-                <span class="conversion-queue__heading">
-                  In queue ({queuedEntries.length})
-                </span>
-                <ol class="conversion-queue__list">
-                  {queuedEntries.map((job, index) => (
-                    <li key={job.isoName}>
-                      <span class="conversion-queue__number">{index + 1}.</span>
-                      <Icon name="disc" size={16} />
-                      <span class="conversion-queue__title">
-                        {job.title} <small>· DVD conversion · Waiting</small>
-                      </span>
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            )}
-            {!jobs.length && !queuedEntries.length && (
-              <EmptyState
-                title="No processing jobs"
-                detail="Choose a task above to start."
-              />
-            )}
-          </div>
-        </section>
+            <div class="conversion-list">
+              {jobs.map((job) => (
+                <JobProgress key={job.id} job={job} onCancel$={cancelVideo} />
+              ))}
+              {queuedEntries.length > 0 && (
+                <div class="conversion-queue" aria-label="DVD discs waiting">
+                  <span class="conversion-queue__heading">
+                    In queue ({queuedEntries.length})
+                  </span>
+                  <ol class="conversion-queue__list">
+                    {queuedEntries.map((job, index) => (
+                      <li key={job.isoName}>
+                        <span class="conversion-queue__number">
+                          {index + 1}.
+                        </span>
+                        <Icon name="disc" size={16} />
+                        <span class="conversion-queue__title">
+                          {job.title} <small>· DVD conversion · Waiting</small>
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
       </div>
       {hasSidebar && (
         <aside class="conv-sidebar">
