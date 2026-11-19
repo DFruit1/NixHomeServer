@@ -25,7 +25,9 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -43,8 +45,13 @@ private const val EXTERNAL_STORAGE_PROVIDER = "com.android.externalstorage.docum
 private const val PAIRS_SLOT = "background-sync-pairs"
 private const val SESSION_SLOT = "oidc-session"
 private const val STATUS_SLOT = "background-sync-status"
+private const val SCHEDULE_SLOT = "background-sync-schedule"
 private const val PERIODIC_WORK = "filesync-periodic"
 private const val IMMEDIATE_WORK = "filesync-immediate"
+private const val NEXT_WORK = "filesync-next-check"
+private const val WAKE = "wake"
+private const val MIN_CHECK_MINUTES = 15L
+private const val MAX_CHECK_MINUTES = 120L
 private const val HTTP_TIMEOUT_MS = 30_000
 // The size check may hash changed files on the server before it answers.
 private const val ESTIMATE_TIMEOUT_MS = 180_000
@@ -62,39 +69,114 @@ private const val MANUAL_NOTIFICATION_ID = 42
 private const val DOWNLOAD_SPACE_FRACTION = 0.99
 
 internal object BackgroundSyncScheduler {
+  // A reset during a check takes precedence over that check's idle result.
+  // Persist only spacing and enabled state. A worker cannot finish in a
+  // different process, so the reset generation can stay in memory.
+  private var generation = 0L
+
+  private val constraints = Constraints.Builder()
+    .setRequiredNetworkType(NetworkType.UNMETERED)
+    .setRequiresBatteryNotLow(true)
+    .setRequiresStorageNotLow(true)
+    .build()
+
+  private fun schedule(context: Context): JSONObject =
+    SecureSecrets.load(context, SCHEDULE_SLOT)?.let { JSONObject(it) } ?: JSONObject()
+
+  @Synchronized
   fun update(context: Context, enabled: Boolean) {
+    generation++
+    val state = JSONObject().put("enabled", enabled).put("minutes", MIN_CHECK_MINUTES)
+    SecureSecrets.store(context, SCHEDULE_SLOT, state.toString())
     val manager = WorkManager.getInstance(context)
+    manager.cancelUniqueWork(NEXT_WORK)
     if (!enabled) {
       manager.cancelUniqueWork(PERIODIC_WORK)
       manager.cancelUniqueWork(IMMEDIATE_WORK)
       return
     }
-    val constraints = Constraints.Builder()
-      .setRequiredNetworkType(NetworkType.UNMETERED)
-      .build()
-    val periodic = PeriodicWorkRequestBuilder<BackgroundSyncWorker>(15, TimeUnit.MINUTES)
+    val periodic = PeriodicWorkRequestBuilder<BackgroundSyncWorker>(MAX_CHECK_MINUTES, TimeUnit.MINUTES)
+      .setInitialDelay(MAX_CHECK_MINUTES, TimeUnit.MINUTES)
+      .setInputData(workDataOf(WAKE to true))
       .setConstraints(constraints)
       .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
       .build()
     manager.enqueueUniquePeriodicWork(PERIODIC_WORK, ExistingPeriodicWorkPolicy.UPDATE, periodic)
-    val immediate = OneTimeWorkRequestBuilder<BackgroundSyncWorker>()
+    enqueueImmediate(manager)
+  }
+
+  private fun enqueueImmediate(manager: WorkManager) =
+    manager.enqueueUniqueWork(IMMEDIATE_WORK, ExistingWorkPolicy.KEEP, OneTimeWorkRequestBuilder<BackgroundSyncWorker>()
       .setConstraints(constraints)
       .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+      .build())
+
+  @Synchronized
+  fun wake(context: Context): androidx.work.Operation? {
+    if (!schedule(context).optBoolean("enabled", true)) return null
+    return enqueueImmediate(WorkManager.getInstance(context))
+  }
+
+  @Synchronized
+  fun beginCheck(context: Context): Long? =
+    if (schedule(context).optBoolean("enabled", true)) generation else null
+
+  @Synchronized
+  fun finishCheck(context: Context, startedGeneration: Long, transferred: Int) {
+    val state = schedule(context)
+    if (!state.optBoolean("enabled", true)) return
+    val minutes = if (startedGeneration != generation || transferred > 0) MIN_CHECK_MINUTES
+      else (2 * state.optLong("minutes", MIN_CHECK_MINUTES)).coerceIn(MIN_CHECK_MINUTES, MAX_CHECK_MINUTES)
+    queueNext(context, state, minutes)
+  }
+
+  @Synchronized
+  fun resetSpacing(context: Context) {
+    generation++
+    val state = schedule(context)
+    if (state.optBoolean("enabled")) queueNext(context, state, MIN_CHECK_MINUTES)
+  }
+
+  private fun queueNext(context: Context, state: JSONObject, minutes: Long) {
+    state.put("enabled", true).put("minutes", minutes)
+    SecureSecrets.store(context, SCHEDULE_SLOT, state.toString())
+    // Timers only dispatch the unique sync. Replacing a timer never cancels
+    // a transfer or replaces the worker that is scheduling its successor.
+    val next = OneTimeWorkRequestBuilder<BackgroundSyncWorker>()
+      .setInputData(workDataOf(WAKE to true))
+      .setConstraints(constraints)
+      .setInitialDelay(minutes, TimeUnit.MINUTES)
       .build()
-    manager.enqueueUniqueWork(IMMEDIATE_WORK, ExistingWorkPolicy.REPLACE, immediate)
+    WorkManager.getInstance(context).enqueueUniqueWork(NEXT_WORK, ExistingWorkPolicy.REPLACE, next)
   }
 }
 
 @Keep
 internal class BackgroundSyncWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
   override suspend fun doWork(): androidx.work.ListenableWorker.Result {
+    if (inputData.getBoolean(WAKE, false)) {
+      return withContext(Dispatchers.IO) {
+        try {
+          BackgroundSyncScheduler.wake(applicationContext)?.result?.get()
+          androidx.work.ListenableWorker.Result.success()
+        } catch (error: kotlinx.coroutines.CancellationException) {
+          throw error
+        } catch (_: Exception) {
+          androidx.work.ListenableWorker.Result.retry()
+        }
+      }
+    }
     // Android 12+ refuses to start a foreground service from the background
     // for ordinary periodic work. The sync can still run as a normal worker,
     // so a refusal must not end the run before it starts.
     runCatching { setForeground(foregroundInfo()) }
     return withContext(Dispatchers.IO) {
       try {
-        SyncEngine.syncAll(applicationContext)
+        val generation = BackgroundSyncScheduler.beginCheck(applicationContext)
+          ?: return@withContext androidx.work.ListenableWorker.Result.success()
+        val transferred = SyncEngine.syncAll(applicationContext)
+        ensureActive()
+        BackgroundSyncScheduler.finishCheck(applicationContext, generation, transferred)
         androidx.work.ListenableWorker.Result.success()
       } catch (error: SyncFailure) {
         SyncEngine.writeStatus(applicationContext, error.message ?: "Background sync could not finish.")
@@ -246,7 +328,8 @@ internal object SyncEngine {
       reportProgress(context, MANUAL_NOTIFICATION_ID, pairName, listOf(pairName),
         pair.optString("direction"), "", 0, 0)
       val result = syncOne(context, tokens, pair, MANUAL_NOTIFICATION_ID)
-      writeStatus(context, "Last sync finished: ${result["transferred"] as Int} files copied.")
+      val summary = "Last sync finished: ${result["transferred"] as Int} files copied."
+      writeStatus(context, listOfNotNull(summary, result["warning"]).joinToString(" "))
       return result
     } catch (error: InterruptedException) {
       Thread.currentThread().interrupt()
@@ -260,11 +343,14 @@ internal object SyncEngine {
       throw SyncFailure("Sync could not finish: ${error.message ?: "check the server and folder access"}.", true)
     } finally {
       clearProgress(context, MANUAL_NOTIFICATION_ID)
-      if (locked) syncLock.release()
+      if (locked) {
+        runCatching { BackgroundSyncScheduler.resetSpacing(context) }
+        syncLock.release()
+      }
     }
   }
 
-  fun syncAll(context: Context) {
+  fun syncAll(context: Context): Int {
     var locked = false
     try {
       syncLock.acquire()
@@ -273,7 +359,7 @@ internal object SyncEngine {
       val pairs = if (config.isNullOrBlank()) JSONArray() else JSONArray(config)
       if (pairs.length() == 0) {
         writeStatus(context, "Background sync is off because no folder pairs are saved.")
-        return
+        return 0
       }
       val tokens = TokenSource(context)
       cleanupStagedFiles(context)
@@ -286,8 +372,8 @@ internal object SyncEngine {
       for (index in 0 until pairs.length()) {
         val pair = pairs.getJSONObject(index)
         try {
-          val result = syncOne(context, tokens, pair, WORKER_NOTIFICATION_ID, activeNames)
-          transferred += result["transferred"] as Int
+          val result = syncOne(context, tokens, pair, WORKER_NOTIFICATION_ID, activeNames) { transferred++ }
+          result["warning"]?.let { warnings.add("${activeNames[index]}: $it") }
           completedPairs++
         } catch (error: SyncFailure) {
           if (error.needsSignIn) throw error
@@ -298,13 +384,17 @@ internal object SyncEngine {
       if (completedPairs == 0 && warnings.isNotEmpty()) {
         // Keep WorkManager's retry and periodic checks alive after temporary
         // server failures. Only persistent pair errors require user repair.
-        if (retryableFailure) throw SyncFailure(warnings.joinToString(" "), true)
+        if (retryableFailure) {
+          if (transferred > 0) BackgroundSyncScheduler.resetSpacing(context)
+          throw SyncFailure(warnings.joinToString(" "), true)
+        }
         BackgroundSyncScheduler.update(context, false)
         writeStatus(context, warnings.joinToString(" "))
       } else {
         val summary = "Background sync finished: $transferred files copied."
         writeStatus(context, if (warnings.isEmpty()) summary else "$summary ${warnings.joinToString(" ")}")
       }
+      return transferred
     } catch (error: InterruptedException) {
       Thread.currentThread().interrupt()
       throw SyncFailure("Background sync was interrupted.", true)
@@ -542,8 +632,10 @@ internal object SyncEngine {
       if (plan.deviceSubpath.isEmpty()) relative else "${plan.deviceSubpath}/$relative"
   }
 
-  private fun localView(context: Context, plan: SyncPlan): LocalView {
-    val all = listLocalFiles(context, plan.folderUri).associateBy { it.path }
+  private fun localView(context: Context, plan: SyncPlan, sweep: Boolean = false): LocalView {
+    val internalFiles = mutableListOf<Entry>()
+    val all = listLocalFiles(context, plan.folderUri, internalFiles).associateBy { it.path }
+    if (sweep) sweepInternalFiles(context, Uri.parse(plan.folderUri), internalFiles)
     val prefix = if (plan.deviceSubpath.isEmpty()) "" else "${plan.deviceSubpath}/"
     val files = all.values
       .filter { it.kind == "file" && it.path.startsWith(prefix) }
@@ -591,13 +683,13 @@ internal object SyncEngine {
     val local = view.files.map { (relative, entry) -> LocalFile(relative, entry.size, entry.modifiedUnixMs, null) }
       .sortedBy { it.path }
     var data = postEstimate(tokens, view.plan, local, list)
-    if (data.needsHash.isNotEmpty()) {
+    if (data.needsHash.isNotEmpty() && !(list && data.truncated)) {
       val wanted = data.needsHash.toSet()
       val settled = local.map { file ->
         if (file.path in wanted) file.copy(hash = localHash(context, view, cache, file.path)) else file
       }
       data = postEstimate(tokens, view.plan, settled, list)
-      if (data.needsHash.isNotEmpty()) {
+      if (data.needsHash.isNotEmpty() && !(list && data.truncated)) {
         throw SyncFailure(
           "${data.needsHash.take(3).joinToString(", ")} could not be compared with the server. Sync to review it.",
           true,
@@ -613,6 +705,7 @@ internal object SyncEngine {
     pair: JSONObject,
     notificationId: Int,
     activePairs: List<String>? = null,
+    onTransfer: () -> Unit = {},
   ): Map<String, Any> {
     val plan = loadPlan(context, tokens, pair)
     val names = activePairs ?: listOf(plan.pairName)
@@ -624,14 +717,18 @@ internal object SyncEngine {
     progress("")
     val cache = HashCache.open(context, plan)
     try {
-      val view = localView(context, plan)
+      val view = localView(context, plan, sweep = true)
       cache.retainOnly(view.files.keys.map { view.devicePath(it) }.toSet())
       val data = diffWithServer(context, tokens, view, cache, list = true)
       val pending = data.pending
       // Servers without the pending list, or a folder too large to walk in
       // one go, fall back to comparing full listings.
       if (pending == null || data.truncated) {
-        return legacySync(context, tokens, view, cache, ::progress, { transferred = it }, { skipped = it })
+        val result = legacySync(context, tokens, view, cache, ::progress, {
+          transferred++
+          onTransfer()
+        }, { skipped = it })
+        return if (data.truncated) result + ("warning" to "Folder exceeds the server's walk limits; full comparison used.") else result
       }
       skipped = data.skipped
       if (plan.direction == "phone-to-server") {
@@ -643,6 +740,7 @@ internal object SyncEngine {
           progress(relative)
           uploadOne(context, tokens, view, cache, relative)
           transferred++
+          onTransfer()
         }
       } else {
         val blockLimit = checkDownloadSpace(context, plan, data.pendingBytes)
@@ -653,8 +751,9 @@ internal object SyncEngine {
           if (item.path.split('/').any { it.startsWith(INTERNAL_FILE_PREFIX) }) continue
           progress(item.path)
           writtenBytes += downloadOne(context, tokens, view, cache, docIndex, item.path, item.mtimeUnixMs)
-          if (writtenBytes > blockLimit) throw outOfSpace(plan.pairName, writtenBytes)
           transferred++
+          onTransfer()
+          if (writtenBytes > blockLimit) throw outOfSpace(plan.pairName, writtenBytes)
         }
         if (data.unreadable.isNotEmpty()) {
           throw SyncFailure(
@@ -753,7 +852,7 @@ internal object SyncEngine {
     view: LocalView,
     cache: HashCache,
     progress: (String) -> Unit,
-    setTransferred: (Int) -> Unit,
+    onTransfer: () -> Unit,
     setSkipped: (Int) -> Unit,
   ): Map<String, Any> {
     val plan = view.plan
@@ -768,7 +867,7 @@ internal object SyncEngine {
         progress(relative)
         uploadOne(context, tokens, view, cache, relative)
         transferred++
-        setTransferred(transferred)
+        onTransfer()
       }
     } else {
       val pending = remoteEntries.filter { (relative, entry) ->
@@ -782,9 +881,9 @@ internal object SyncEngine {
       for ((relative, entry) in pending) {
         progress(relative)
         writtenBytes += downloadOne(context, tokens, view, cache, docIndex, relative, entry.modifiedUnixMs, entry.sha256)
-        if (writtenBytes > blockLimit) throw outOfSpace(plan.pairName, writtenBytes)
         transferred++
-        setTransferred(transferred)
+        onTransfer()
+        if (writtenBytes > blockLimit) throw outOfSpace(plan.pairName, writtenBytes)
       }
     }
     return mapOf("transferred" to transferred, "skipped" to skipped, "direction" to plan.direction)
@@ -825,9 +924,11 @@ internal object SyncEngine {
    * an interrupted install could otherwise leave one behind to be uploaded,
    * and a size check running during a sync would count half-written files.
    */
-  private fun listLocalFiles(context: Context, folderUri: String): List<Entry> {
+  private fun listLocalFiles(context: Context, folderUri: String, internalFiles: MutableList<Entry>): List<Entry> {
     val tree = Uri.parse(folderUri)
-    if (tree.scheme == "file") return listLocalFilesFile(File(requireNotNull(tree.path) { "The selected folder is invalid." }))
+    if (tree.scheme == "file") {
+      return listLocalFilesFile(File(requireNotNull(tree.path) { "The selected folder is invalid." }), internalFiles)
+    }
     val result = mutableListOf<Entry>()
     val projection = arrayOf(
       DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -848,16 +949,19 @@ internal object SyncEngine {
           if (!usableName(name)) continue
           val path = join(prefix, name)
           val kind = if (it.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR) "directory" else "file"
-          result.add(
-            Entry(
-              path,
-              kind,
-              "",
-              if (kind == "file" && !it.isNull(3)) it.getLong(3) else 0L,
-              if (kind == "file" && !it.isNull(4)) it.getLong(4) else 0L,
-              id,
-            ),
+          val entry = Entry(
+            path,
+            kind,
+            "",
+            if (kind == "file" && !it.isNull(3)) it.getLong(3) else 0L,
+            if (kind == "file" && !it.isNull(4)) it.getLong(4) else 0L,
+            id,
           )
+          if (name.startsWith(INTERNAL_FILE_PREFIX)) {
+            if (kind == "file") internalFiles.add(entry)
+            continue
+          }
+          result.add(entry)
           if (kind == "directory") directories.add(id to path)
         }
       }
@@ -869,7 +973,7 @@ internal object SyncEngine {
     return result
   }
 
-  private fun listLocalFilesFile(dir: File): List<Entry> {
+  private fun listLocalFilesFile(dir: File, internalFiles: MutableList<Entry>): List<Entry> {
     if (!dir.isDirectory) throw SyncFailure("The selected folder cannot be listed. Reauthorize it in File Sync.", false)
     val result = mutableListOf<Entry>()
     fun walk(dir: File, prefix: String) {
@@ -879,6 +983,10 @@ internal object SyncEngine {
         if (!usableName(name)) continue
         if (java.nio.file.Files.isSymbolicLink(child.toPath())) continue
         val path = join(prefix, name)
+        if (name.startsWith(INTERNAL_FILE_PREFIX)) {
+          if (child.isFile) internalFiles.add(Entry(path, "file", "", child.length(), child.lastModified()))
+          continue
+        }
         if (child.isDirectory) {
           result.add(Entry(path, "directory", "", 0L, 0L))
           walk(child, path)
@@ -892,7 +1000,19 @@ internal object SyncEngine {
   }
 
   private fun usableName(name: String): Boolean =
-    name.isNotBlank() && name != "." && name != ".." && !name.contains('/') && !name.startsWith(INTERNAL_FILE_PREFIX)
+    name.isNotBlank() && name != "." && name != ".." && !name.contains('/')
+
+  private fun sweepInternalFiles(context: Context, tree: Uri, internalFiles: List<Entry>) {
+    val cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1)
+    for (entry in internalFiles) {
+      // Some providers cannot report mtimes. Leave those files alone.
+      if (entry.modifiedUnixMs <= 0L || entry.modifiedUnixMs >= cutoff) continue
+      runCatching {
+        if (tree.scheme == "file") File(requireNotNull(tree.path), entry.path).delete()
+        else DocumentsContract.deleteDocument(context.contentResolver, documentUri(context, tree, entry.path, entry))
+      }
+    }
+  }
 
   private fun hashDocument(context: Context, uri: Uri): String {
     val digest = MessageDigest.getInstance("SHA-256")
@@ -1481,49 +1601,57 @@ internal object SyncEngine {
 
     private data class CachedHash(val size: Long, val modifiedUnixMs: Long, val sha256: String)
 
+    @Synchronized
     fun get(path: String, size: Long, modifiedUnixMs: Long): String? {
       if (modifiedUnixMs <= 0L) return null
       val cached = entries[path] ?: return null
       return if (cached.size == size && cached.modifiedUnixMs == modifiedUnixMs) cached.sha256 else null
     }
 
+    @Synchronized
     fun put(path: String, size: Long, modifiedUnixMs: Long, sha256: String) {
       // Without an mtime a changed file could look unchanged; do not cache it.
       if (modifiedUnixMs <= 0L) return
       entries[path] = CachedHash(size, modifiedUnixMs, sha256)
-      if (++unsaved >= SAVE_EVERY) save()
+      // Bound the number of full rewrites as large libraries fill the cache.
+      if (++unsaved >= maxOf(200, entries.size / 10)) save()
     }
 
     /** Forget files that no longer exist, so the cache tracks the folder. */
+    @Synchronized
     fun retainOnly(paths: Set<String>) {
       if (entries.keys.retainAll(paths)) unsaved++
     }
 
+    @Synchronized
     fun save() {
       if (unsaved == 0) return
       val json = JSONObject()
       for ((path, value) in entries) json.put(path, JSONArray().put(value.size).put(value.modifiedUnixMs).put(value.sha256))
-      synchronized(HashCache::class.java) {
-        runCatching {
-          file.parentFile?.mkdirs()
-          val temporary = File(file.parentFile, "${file.name}.tmp")
+      runCatching {
+        file.parentFile?.mkdirs()
+        val temporary = File(file.parentFile, "${file.name}.tmp")
+        try {
           temporary.writeText(json.toString(), Charsets.UTF_8)
-          if (!temporary.renameTo(file)) temporary.delete()
+          if (temporary.renameTo(file)) unsaved = 0
+        } finally {
+          temporary.delete()
         }
       }
-      unsaved = 0
     }
 
     companion object {
-      private const val SAVE_EVERY = 200
+      private val caches = HashMap<String, HashCache>()
 
-      // One cache per pair: pairs can share a device folder, and each prunes
-      // its cache to its own files.
+      // Estimates share the sync's map and save path. Hits still require the
+      // same path, size, and mtime, so an older listing cannot serve a hash
+      // for a newer version of a file.
+      @Synchronized
       fun open(context: Context, plan: SyncPlan): HashCache {
         val key = "${plan.folderUri}\u0000${plan.deviceSubpath}"
         val name = MessageDigest.getInstance("SHA-256").digest(key.toByteArray()).toHex().take(32)
-        val cache = HashCache(File(File(context.filesDir, "filesync-hashes"), "$name.json"))
-        synchronized(HashCache::class.java) {
+        return caches.getOrPut(name) {
+          val cache = HashCache(File(File(context.filesDir, "filesync-hashes"), "$name.json"))
           runCatching {
             if (!cache.file.isFile) return@runCatching
             val json = JSONObject(cache.file.readText(Charsets.UTF_8))
@@ -1532,8 +1660,8 @@ internal object SyncEngine {
               cache.entries[path] = CachedHash(value.optLong(0), value.optLong(1), value.optString(2))
             }
           }
+          cache
         }
-        return cache
       }
     }
   }
