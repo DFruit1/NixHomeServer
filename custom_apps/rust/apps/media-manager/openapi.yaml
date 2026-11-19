@@ -73,6 +73,54 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DecisionAssessment" }
+  /provider-lookups/immich/videos:
+    get:
+      operationId: listImmichVideos
+      description: Browse the caller's Immich timeline videos through its API, without storage access.
+      parameters:
+        - { in: query, name: page, schema: { type: integer, minimum: 1, maximum: 100000 } }
+        - { in: query, name: query, schema: { type: string, maxLength: 200 } }
+      responses:
+        "200":
+          description: A bounded page of Immich videos.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImmichVideoPage" }
+  /provider-lookups/immich/videos/{id}/playback:
+    get:
+      operationId: playImmichVideo
+      description: Stream Immich's browser-playable rendition for a timeline video, forwarding Range requests for seeking.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+        - { in: header, name: Range, schema: { type: string } }
+      responses:
+        "200":
+          description: The playable video stream.
+          content:
+            video/mp4:
+              schema: { type: string, format: binary }
+        "206":
+          description: A requested byte range of the playable video.
+          content:
+            video/mp4:
+              schema: { type: string, format: binary }
+  /provider-lookups/immich/videos/{id}/thumbnail:
+    get:
+      operationId: previewImmichVideo
+      description: An authenticated, size-bounded Immich thumbnail for a timeline video.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+        - in: query
+          name: size
+          required: false
+          description: Thumbnail shortest side in pixels. Snaps up to 160, 320 or 640.
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Authenticated, size-bounded video thumbnail. No-store; never an original download.
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
   /provider-lookups/immich/images:
     get:
       operationId: listImmichImages
@@ -2426,6 +2474,20 @@ components:
         items: { type: array, maxItems: 48, items: { $ref: "#/components/schemas/ImmichImage" } }
         nextPage: { type: [integer, "null"], minimum: 1, maximum: 100000 }
         canTag: { type: boolean }
+        requestId: { type: string }
+    ImmichVideo:
+      type: object
+      required: [id, filename, capturedAt]
+      properties:
+        id: { type: string, format: uuid }
+        filename: { type: string }
+        capturedAt: { type: string }
+    ImmichVideoPage:
+      type: object
+      required: [items, nextPage, requestId]
+      properties:
+        items: { type: array, maxItems: 48, items: { $ref: "#/components/schemas/ImmichVideo" } }
+        nextPage: { type: [integer, "null"], minimum: 1, maximum: 100000 }
         requestId: { type: string }
     ImmichImageResponse:
       type: object

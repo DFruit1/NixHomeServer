@@ -82,7 +82,7 @@ in
     repo.mediaManager.integrations.immich = {
       label = "Immich";
       available = true;
-      capabilities = [ "image-library" "image-tags" ];
+      capabilities = [ "image-library" "image-tags" "video-library" ];
       url = "https://photos.${vars.domain}";
     };
     users.groups.media-manager-eye = { };

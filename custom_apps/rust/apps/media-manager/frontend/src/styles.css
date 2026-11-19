@@ -3741,6 +3741,44 @@ a:focus-visible {
   font: inherit;
   font-size: var(--text-sm);
 }
+.video-category-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.video-category-select > span {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.video-category-select select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-sm);
+}
+.video-category-select select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.video-library-more {
+  margin: 8px 12px 12px;
+  min-height: var(--control-height);
+}
+.video-library-error {
+  display: grid;
+  gap: 8px;
+  margin: 10px 12px;
+}
 .video-library-filter {
   display: block;
   padding: 10px 12px;
@@ -6631,6 +6669,7 @@ a:focus-visible {
 @media (max-width: 640px) {
   .collection-view-choice select,
   .video-library-select select,
+  .video-category-select select,
   .video-library-filter input,
   .metadata-form input,
   .metadata-form select,

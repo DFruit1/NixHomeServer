@@ -12,6 +12,7 @@ pub(super) mod decisions;
 pub(super) mod downloads;
 mod indexing;
 mod tag_review;
+pub(super) mod videos;
 pub(super) use indexing::{indexed, run_indexer};
 pub(super) use tag_review::{run_tag_review, Bonsai};
 const MAX_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
@@ -147,7 +148,7 @@ fn load_account(
             error(
                 StatusCode::PRECONDITION_REQUIRED,
                 if runtime.managed { "immich_provisioning_pending" } else { "immich_account_required" },
-                if runtime.managed { "Sign into Photos once to create your Immich account. Media Manager connects automatically within a few minutes." } else { "Connect your Immich API key in Metadata sources to browse your photos." },
+                if runtime.managed { "Sign into Photos once to create your Immich account. Media Manager connects automatically within a few minutes." } else { "Connect your Immich API key in Online services to browse your photos and videos." },
                 id,
             )
         })?;
@@ -159,7 +160,7 @@ fn load_account(
         error(
             StatusCode::PRECONDITION_REQUIRED,
             "immich_account_required",
-            "Replace your saved Immich API key in Metadata sources.",
+            "Replace your saved Immich API key in Online services.",
             id,
         )
     })?);
@@ -295,6 +296,91 @@ impl Account {
             return Err(upstream_error(id));
         }
         Ok(asset)
+    }
+
+    /// A video the caller may still see. Playback and thumbnails recheck this
+    /// on every request so trashed, locked or replaced assets stop streaming.
+    async fn video(
+        &self,
+        state: &ProviderBrokerState,
+        asset_id: &str,
+        id: &str,
+    ) -> Result<Asset, ApiError> {
+        if !valid_mbid(asset_id) {
+            return Err(error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "immich_video_invalid",
+                "Supply a valid Immich video ID.",
+                id,
+            ));
+        }
+        let asset: Asset = self
+            .json(state, Method::GET, &format!("assets/{asset_id}"), None, id)
+            .await?;
+        if asset.id != asset_id
+            || asset.kind != "VIDEO"
+            || asset.is_trashed
+            || !matches!(asset.visibility.as_str(), "timeline" | "archive")
+        {
+            return Err(error(
+                StatusCode::NOT_FOUND,
+                "immich_video_not_found",
+                "This video is not available in the Immich timeline.",
+                id,
+            ));
+        }
+        if !asset.valid() {
+            return Err(upstream_error(id));
+        }
+        Ok(asset)
+    }
+
+    /// Stream Immich's browser-playable rendition. The caller's Range header
+    /// is forwarded so seeking works without buffering the whole video here.
+    async fn video_playback(
+        &self,
+        asset_id: &str,
+        range: Option<&str>,
+        id: &str,
+    ) -> Result<reqwest::Response, ApiError> {
+        let url = self
+            .runtime
+            .base
+            .join(&format!("assets/{asset_id}/video/playback"))
+            .map_err(|_| unavailable(id))?;
+        let mut key = HeaderValue::from_str(&self.key).map_err(|_| upstream_error(id))?;
+        key.set_sensitive(true);
+        let mut request = self.runtime.download.get(url).header("x-api-key", key);
+        if let Some(range) = range {
+            request = request.header(header::RANGE, range);
+        }
+        let response = request.send().await.map_err(|_| upstream_error(id))?;
+        match response.status() {
+            status
+                if status.is_success() || status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE =>
+            {
+                Ok(response)
+            }
+            reqwest::StatusCode::NOT_FOUND => Err(error(
+                StatusCode::NOT_FOUND,
+                "immich_video_not_found",
+                "This video is no longer available in your Immich library.",
+                id,
+            )),
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => Err(error(
+                StatusCode::FORBIDDEN,
+                "immich_permission_denied",
+                "Your Immich API key does not permit this video. Check its permissions in Immich.",
+                id,
+            )),
+            reqwest::StatusCode::TOO_MANY_REQUESTS => Err(error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "immich_rate_limited",
+                "Immich is busy. Try again shortly.",
+                id,
+            )),
+            _ => Err(upstream_error(id)),
+        }
     }
 
     /// Immich 3.x updateAsset: PATCH /assets/:id with visibility=archive.
@@ -699,6 +785,10 @@ impl Asset {
     fn public(self) -> Value {
         json!({ "id": self.id, "filename": self.original_file_name, "capturedAt": self.file_created_at, "tags": self.tags })
     }
+    /// List shape for the Videos page; Immich video tags are not shown there.
+    fn video_public(self) -> Value {
+        json!({ "id": self.id, "filename": self.original_file_name, "capturedAt": self.file_created_at })
+    }
 }
 
 #[derive(Deserialize)]
@@ -710,6 +800,34 @@ pub(super) struct ListQuery {
 }
 fn first_page() -> u32 {
     1
+}
+
+/// Immich pages photos and videos through the same bounded query shape, so
+/// both list handlers reject malformed pages and filename searches alike.
+pub(super) fn validated_list_query(
+    query: Result<Query<ListQuery>, axum::extract::rejection::QueryRejection>,
+    id: &str,
+) -> Result<Query<ListQuery>, ApiError> {
+    let Query(query) = query.map_err(|_| {
+        error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "immich_query_invalid",
+            "Supply a valid page and filename search.",
+            id,
+        )
+    })?;
+    if !(1..=100_000).contains(&query.page)
+        || query.query.len() > 200
+        || query.query.chars().any(char::is_control)
+    {
+        return Err(error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "immich_query_invalid",
+            "Supply a valid page and a filename search of at most 200 characters.",
+            id,
+        ));
+    }
+    Ok(Query(query))
 }
 
 #[derive(Deserialize)]
@@ -730,25 +848,7 @@ pub(super) async fn list(
 ) -> Result<Json<Value>, ApiError> {
     let id = request_id();
     let identity = identity_from_headers(&headers, &id)?;
-    let Query(query) = query.map_err(|_| {
-        error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "immich_query_invalid",
-            "Supply a valid page and filename search.",
-            &id,
-        )
-    })?;
-    if !(1..=100_000).contains(&query.page)
-        || query.query.len() > 200
-        || query.query.chars().any(char::is_control)
-    {
-        return Err(error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "immich_query_invalid",
-            "Supply a valid page and a filename search of at most 200 characters.",
-            &id,
-        ));
-    }
+    let Query(query) = validated_list_query(query, &id)?;
     let account = account(&state, &identity, &id)?;
     let mut body = json!({ "type": "IMAGE", "visibility": "timeline", "page": query.page, "size": PAGE_SIZE, "withExif": false, "withPeople": false });
     if !query.query.trim().is_empty() {

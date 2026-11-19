@@ -12,6 +12,8 @@ import { api, catalogItems, readableError } from "./api";
 import { useBackLayer } from "./back-layers";
 import type {
   ImmichAlbumList,
+  ImmichVideo,
+  ImmichVideoPage,
   VideoClip,
   VideoTranscript,
 } from "./api-contract.generated";
@@ -55,6 +57,8 @@ function fileStem(relativePath: string): string {
     : filename;
 }
 
+export type VideoCategory = "videos" | "youtube" | "movies" | "shows" | "dvds";
+
 export interface VideoInfo {
   /** Standalone name: the show is included for an episode. */
   title: string;
@@ -65,6 +69,8 @@ export interface VideoInfo {
   section: string;
   /** Sort key inside the group. */
   order: string;
+  /** Category the Videos page's selector reads. */
+  category: VideoCategory;
   /** Orders groups: Movies, shows, YouTube, DVDs, folders, then the rest. */
   rank: number;
 }
@@ -125,6 +131,7 @@ export function videoInfo(relativePath: string): VideoInfo {
       group: show,
       section: season === 0 ? "Specials" : `Season ${season}`,
       order: `${String(season).padStart(3, "0")}${String(number).padStart(4, "0")}`,
+      category: "shows",
       rank: 1,
     };
   }
@@ -134,18 +141,26 @@ export function videoInfo(relativePath: string): VideoInfo {
   const movie =
     lowerParts.includes("_movies") ||
     (!youtube && /\((?:19|20)\d{2}\)(?:\s·.*)?$/.test(title));
-  const [group, rank] = youtube
-    ? ["YouTube", 2]
+  const [group, rank, category]: [string, number, VideoCategory] = youtube
+    ? ["YouTube", 2, "youtube"]
     : movie
-      ? ["Movies", 0]
+      ? ["Movies", 0, "movies"]
       : dvd
-        ? ["DVDs", 3]
+        ? ["DVDs", 3, "dvds"]
         : parts[0]?.startsWith("_")
-          ? [friendlyFolderName(parts[0]), 4]
+          ? [friendlyFolderName(parts[0]), 4, "videos"]
           : parts.length > 0
-            ? [displayFolderName(parts.at(-1) ?? ""), 4]
-            : ["Other videos", 5];
-  return { title, rowTitle: title, group, section: "", order: title, rank };
+            ? [displayFolderName(parts.at(-1) ?? ""), 4, "videos"]
+            : ["Other videos", 5, "videos"];
+  return {
+    title,
+    rowTitle: title,
+    group,
+    section: "",
+    order: title,
+    category,
+    rank,
+  };
 }
 
 interface VideoGroup {
@@ -189,6 +204,35 @@ export function groupVideos(items: CatalogItem[]): VideoGroup[] {
     }));
 }
 
+export type VideoCategoryChoice = VideoCategory | "immich";
+
+export const VIDEO_CATEGORY_OPTIONS: ReadonlyArray<{
+  id: VideoCategoryChoice;
+  label: string;
+}> = [
+  { id: "videos", label: "Videos" },
+  { id: "youtube", label: "YouTube" },
+  { id: "movies", label: "Movies" },
+  { id: "shows", label: "TV shows" },
+  { id: "dvds", label: "DVDs" },
+  { id: "immich", label: "Videos in Photos" },
+];
+
+/**
+ * Videos is the default because Jellyfin already covers the film and episode
+ * folders. It deliberately includes YouTube: those downloads never reach
+ * Jellyfin, so they belong with the everyday videos rather than hidden behind
+ * another choice. The YouTube entry narrows the same content further.
+ */
+export function inVideoCategory(
+  info: VideoInfo,
+  category: VideoCategory,
+): boolean {
+  return category === "videos"
+    ? info.category === "videos" || info.category === "youtube"
+    : info.category === category;
+}
+
 // Module scope keeps the lookup usable inside task closures, which Qwik
 // cannot serialize while it captures a component-local function.
 function selectedItem(
@@ -196,6 +240,16 @@ function selectedItem(
   selectedId: string,
 ): CatalogItem | undefined {
   return items.find((item) => item.id === selectedId);
+}
+
+function itemsInVideoCategory(
+  items: CatalogItem[],
+  category: VideoCategoryChoice,
+): CatalogItem[] {
+  if (category === "immich") return [];
+  return items.filter((item) =>
+    inVideoCategory(videoInfo(item.relativePath), category),
+  );
 }
 
 export const VideosView = component$<{
@@ -239,6 +293,13 @@ export const VideosView = component$<{
     title: "",
     rootId: "",
     query: "",
+    category: "videos" as VideoCategoryChoice,
+    immichItems: [] as ImmichVideo[],
+    immichSelectedId: "",
+    immichNextPage: null as number | null,
+    immichLoading: false,
+    immichLoaded: false,
+    immichError: "",
     loading: true,
     error: "",
     transcode: false,
@@ -247,6 +308,7 @@ export const VideosView = component$<{
   });
   useTask$(({ track, cleanup }) => {
     const id = track(() => state.selectedId);
+    const category = track(() => state.category);
     let stopped = false;
     cleanup(() => {
       stopped = true;
@@ -255,7 +317,7 @@ export const VideosView = component$<{
     transcript.query = "";
     transcript.cues = [];
     transcript.error = "";
-    if (!id) return;
+    if (!id || category === "immich") return;
     void api<VideoTranscript>(`/items/${encodeURIComponent(id)}/transcript`)
       .then((result) => {
         if (!stopped) transcript.cues = result.cues;
@@ -272,6 +334,7 @@ export const VideosView = component$<{
   );
 
   const loadGeneration = useSignal(0);
+  const immichGeneration = useSignal(0);
   const preparationGeneration = useSignal(0);
   const titleGeneration = useSignal(0);
   const deepLinkRefresh = useSignal("");
@@ -335,13 +398,30 @@ export const VideosView = component$<{
           props.initialItemId,
           props.initialPath,
         );
-        state.selectedId =
-          requestedIndex >= 0
-            ? state.items[requestedIndex]!.id
-            : (state.items[0]?.id ?? "");
+        const target =
+          requestedIndex >= 0 ? state.items[requestedIndex] : undefined;
+        if (target) {
+          // A library or downloader link names one video; open the category
+          // that holds it so the selected row is visible in the list.
+          state.category = videoInfo(target.relativePath).category;
+          state.selectedId = target.id;
+        } else if (state.category !== "immich") {
+          state.selectedId =
+            itemsInVideoCategory(state.items, state.category)[0]?.id ?? "";
+        }
         state.transcode = false;
         state.transcodeLoading = false;
         state.audioChecked = false;
+      } else if (state.category !== "immich") {
+        // The default Videos category may not contain an item selected from a
+        // previous visit; fall back to its first video.
+        const visible = itemsInVideoCategory(state.items, state.category);
+        if (!visible.some((item) => item.id === state.selectedId)) {
+          state.selectedId = visible[0]?.id ?? "";
+          state.transcode = false;
+          state.transcodeLoading = false;
+          state.audioChecked = false;
+        }
       }
     } catch (error) {
       if (current()) state.error = readableError(error);
@@ -354,6 +434,109 @@ export const VideosView = component$<{
     track(() => state.rootId);
     track(() => props.roots.map((root) => root.id).join("|"));
     await loadVideos();
+  });
+
+  // A rescan can empty the chosen category or disable Photos; keep the page on
+  // the default rather than showing a select with no matching option.
+  useTask$(({ track }) => {
+    track(() => state.items.map((item) => item.id).join("|"));
+    track(() => props.immichUrl);
+    track(() => state.loading);
+    if (state.category === "immich") {
+      if (!props.immichUrl) {
+        state.category = "videos";
+        state.query = "";
+        state.immichError = "";
+      }
+      return;
+    }
+    if (
+      state.category !== "videos" &&
+      !state.loading &&
+      itemsInVideoCategory(state.items, state.category).length === 0
+    ) {
+      state.category = "videos";
+      state.query = "";
+    }
+  });
+
+  const loadImmichVideos = $(async (more: boolean) => {
+    if (!props.immichUrl) return;
+    const generation = ++immichGeneration.value;
+    const page = more ? (state.immichNextPage ?? 1) : 1;
+    const current = () => generation === immichGeneration.value;
+    state.immichLoading = true;
+    state.immichError = "";
+    try {
+      const result = await api<ImmichVideoPage>(
+        `/provider-lookups/immich/videos?page=${page}`,
+      );
+      if (!current()) return;
+      state.immichItems = more
+        ? [...state.immichItems, ...result.items]
+        : result.items;
+      state.immichNextPage = result.nextPage;
+      state.immichLoaded = true;
+      if (
+        !state.immichItems.some((asset) => asset.id === state.immichSelectedId)
+      ) {
+        state.immichSelectedId = state.immichItems[0]?.id ?? "";
+      }
+    } catch (error) {
+      if (current()) state.immichError = readableError(error);
+    } finally {
+      if (current()) state.immichLoading = false;
+    }
+  });
+
+  const chooseCategory = $((value: string) => {
+    const category = value as VideoCategoryChoice;
+    if (category === state.category) return;
+    state.category = category;
+    state.query = "";
+    state.title = "";
+    state.error = "";
+    state.transcode = false;
+    state.transcodeLoading = false;
+    state.audioChecked = false;
+    state.immichError = "";
+    transcript.open = false;
+    transcript.query = "";
+    transcript.cues = [];
+    transcript.error = "";
+    resumeAt.value = 0;
+    resumePlaying.value = false;
+    clip.open = false;
+    clip.busy = false;
+    clip.error = "";
+    clipNotice.value = null;
+    if (category === "immich") {
+      if (!state.immichLoaded) void loadImmichVideos(false);
+      return;
+    }
+    const visible = itemsInVideoCategory(state.items, category);
+    if (!visible.some((item) => item.id === state.selectedId)) {
+      state.selectedId = visible[0]?.id ?? "";
+    }
+  });
+
+  const chooseImmichVideo = $((id: string) => {
+    state.immichSelectedId = id;
+    state.title = "";
+    state.transcode = false;
+    state.transcodeLoading = false;
+    state.audioChecked = false;
+    state.error = "";
+    transcript.open = false;
+    transcript.query = "";
+    transcript.cues = [];
+    transcript.error = "";
+    resumeAt.value = 0;
+    resumePlaying.value = false;
+    clip.open = false;
+    clip.busy = false;
+    clip.error = "";
+    clipNotice.value = null;
   });
 
   const chooseVideo = $((id: string) => {
@@ -421,7 +604,9 @@ export const VideosView = component$<{
     }
     // loadVideos keeps an unrelated sibling selected when one was already
     // present, so move the selection onto the refreshed link explicitly.
-    await chooseVideo(state.items[index]!.id);
+    const target = state.items[index]!;
+    state.category = videoInfo(target.relativePath).category;
+    await chooseVideo(target.id);
   });
 
   useVisibleTask$(
@@ -470,6 +655,8 @@ export const VideosView = component$<{
 
   useTask$(({ track }) => {
     track(() => state.selectedId);
+    track(() => state.category);
+    if (state.category === "immich") return;
     const item = selectedItem(state.items, state.selectedId);
     if (!item || !audioNeedsBrowserConversion(item.videoProbe)) return;
     // Preparing polls until the server has the file, which takes minutes for a
@@ -486,6 +673,7 @@ export const VideosView = component$<{
     const video = videoRef.value;
     if (
       !video ||
+      state.category === "immich" ||
       state.transcode ||
       state.transcodeLoading ||
       state.audioChecked
@@ -502,11 +690,12 @@ export const VideosView = component$<{
 
   useTask$(async ({ track }) => {
     track(() => state.selectedId);
+    track(() => state.category);
     const itemId = state.selectedId;
     const generation = ++titleGeneration.value;
     const current = () => generation === titleGeneration.value;
     state.title = "";
-    if (!itemId) return;
+    if (!itemId || state.category === "immich") return;
     try {
       const metadata = await api<{ title?: string }>(
         `/items/${encodeURIComponent(itemId)}/metadata`,
@@ -652,30 +841,78 @@ export const VideosView = component$<{
   });
 
   const selected = () =>
-    state.items.find((item) => item.id === state.selectedId);
+    state.category === "immich"
+      ? undefined
+      : state.items.find((item) => item.id === state.selectedId);
+  const selectedImmich = () =>
+    state.category === "immich"
+      ? state.immichItems.find((asset) => asset.id === state.immichSelectedId)
+      : undefined;
+  const hasSelection = () => Boolean(selected() ?? selectedImmich());
   const displayTitle = () => {
     const item = selected();
-    if (!item) return "";
-    return state.title || videoInfo(item.relativePath).title;
+    if (item) return state.title || videoInfo(item.relativePath).title;
+    const asset = selectedImmich();
+    return asset ? displayVideoTitleFromFileName(asset.filename) : "";
   };
+  const playbackLabel = () =>
+    selected()
+      ? fileName(selected()!.relativePath)
+      : (selectedImmich()?.filename ?? "");
+  const playbackKey = () =>
+    selected()
+      ? `${state.selectedId}-${state.transcode ? "transcoded" : "original"}`
+      : `immich-${state.immichSelectedId}`;
   const streamUrl = () => {
     const item = selected();
-    if (!item) return "";
-    const suffix = state.transcode ? "?transcode=1" : "";
-    return `/api/v1/items/${encodeURIComponent(item.id)}/stream${suffix}`;
+    if (item) {
+      const suffix = state.transcode ? "?transcode=1" : "";
+      return `/api/v1/items/${encodeURIComponent(item.id)}/stream${suffix}`;
+    }
+    const asset = selectedImmich();
+    return asset
+      ? `/api/v1/provider-lookups/immich/videos/${encodeURIComponent(asset.id)}/playback`
+      : "";
   };
+  /** Keep categories that hold something, plus the two always-useful ones. */
+  const categoryChoices = () =>
+    VIDEO_CATEGORY_OPTIONS.filter((option) => {
+      const category = option.id;
+      if (category === "videos") return true;
+      if (category === "immich") return Boolean(props.immichUrl);
+      return state.items.some((item) =>
+        inVideoCategory(videoInfo(item.relativePath), category),
+      );
+    });
   const query = state.query.trim().toLowerCase();
+  const categoryItems = itemsInVideoCategory(state.items, state.category);
   const visibleItems = query
-    ? state.items.filter(
+    ? categoryItems.filter(
         (item) =>
           item.relativePath.toLowerCase().includes(query) ||
           videoInfo(item.relativePath).title.toLowerCase().includes(query),
       )
-    : state.items;
+    : categoryItems;
   const visibleGroups = groupVideos(visibleItems);
+  const visibleImmichVideos = query
+    ? state.immichItems.filter(
+        (asset) =>
+          asset.filename.toLowerCase().includes(query) ||
+          displayVideoTitleFromFileName(asset.filename)
+            .toLowerCase()
+            .includes(query),
+      )
+    : state.immichItems;
+  // The chosen category already names its only group in these cases.
+  const headingRepeatsCategory = (groupName: string) =>
+    (state.category === "movies" && groupName === "Movies") ||
+    (state.category === "youtube" && groupName === "YouTube") ||
+    (state.category === "dvds" && groupName === "DVDs");
 
   useVisibleTask$(({ track, cleanup }) => {
     track(() => state.selectedId);
+    track(() => state.immichSelectedId);
+    track(() => state.category);
     track(() => state.transcode);
     pipSupported.value =
       typeof document !== "undefined" &&
@@ -694,18 +931,29 @@ export const VideosView = component$<{
 
   useVisibleTask$(({ track, cleanup }) => {
     track(() => state.selectedId);
+    track(() => state.immichSelectedId);
+    track(() => state.category);
     track(() => state.transcode);
     if (typeof navigator === "undefined" || !("mediaSession" in navigator)) {
       return;
     }
     const item = selectedItem(state.items, state.selectedId);
-    if (!item) return;
-    const info = videoInfo(item.relativePath);
+    const asset =
+      state.category === "immich"
+        ? state.immichItems.find(
+            (candidate) => candidate.id === state.immichSelectedId,
+          )
+        : undefined;
+    if (state.category === "immich" ? !asset : !item) return;
+    const info = item ? videoInfo(item.relativePath) : undefined;
     let sessionMetadata: MediaMetadata | null = null;
     const claimSession = () => {
       sessionMetadata = new MediaMetadata({
-        title: state.title || info.title,
-        artist: info.group,
+        title:
+          state.title ||
+          info?.title ||
+          (asset ? displayVideoTitleFromFileName(asset.filename) : ""),
+        artist: info?.group ?? "Photos",
       });
       navigator.mediaSession.metadata = sessionMetadata;
       navigator.mediaSession.playbackState = "playing";
@@ -749,18 +997,23 @@ export const VideosView = component$<{
       aria-label="Video player"
     >
       <div class="video-player-column">
-        {selected() ? (
+        {hasSelection() ? (
           <video
-            key={`${state.selectedId}-${state.transcode ? "transcoded" : "original"}`}
+            key={playbackKey()}
             ref={videoRef}
             class="video-screen"
-            aria-label={selected()!.relativePath.split("/").at(-1)}
+            aria-label={playbackLabel()}
             controls
             playsInline
             preload="metadata"
             src={streamUrl()}
             onError$={async () => {
               if (state.transcodeLoading) return;
+              if (state.category === "immich" || !state.selectedId) {
+                state.error =
+                  "This video could not be played from Photos. Try again, or check that it still exists in Photos.";
+                return;
+              }
               if (state.transcode) {
                 state.error =
                   "This video could not be played after conversion.";
@@ -783,18 +1036,25 @@ export const VideosView = component$<{
         ) : (
           <div class="video-screen video-screen-empty">
             <Icon name="video" size={42} />
-            <p>{state.loading ? "Loading videos…" : "No videos found"}</p>
+            <p>
+              {state.loading ||
+              (state.category === "immich" &&
+                state.immichLoading &&
+                state.immichItems.length === 0)
+                ? "Loading videos…"
+                : state.category === "videos"
+                  ? "No regular videos here"
+                  : "No videos found"}
+            </p>
           </div>
         )}
-        {(selected() || videoRoots.length > 1) && (
+        {(hasSelection() || videoRoots.length > 1) && (
           <div class="video-title">
             <div class="video-title-text">
-              {selected() && (
-                <h2 title={fileName(selected()!.relativePath)}>
-                  {displayTitle()}
-                </h2>
+              {hasSelection() && (
+                <h2 title={playbackLabel()}>{displayTitle()}</h2>
               )}
-              {videoRoots.length > 1 && (
+              {videoRoots.length > 1 && state.category !== "immich" && (
                 <label class="video-library-select">
                   <span>Show</span>
                   <select
@@ -811,7 +1071,7 @@ export const VideosView = component$<{
                 </label>
               )}
             </div>
-            {selected() && (
+            {hasSelection() && (
               <div class="video-actions">
                 {(transcript.cues.length > 0 || transcript.error) && (
                   <button
@@ -826,7 +1086,7 @@ export const VideosView = component$<{
                     Transcript
                   </button>
                 )}
-                {props.immichUrl && (
+                {props.immichUrl && selected() && (
                   <button
                     type="button"
                     class="secondary-button compact-action video-action-button video-clip-button"
@@ -1049,6 +1309,19 @@ export const VideosView = component$<{
       </div>
 
       <aside class="video-library" aria-label="Video library">
+        <label class="video-category-select">
+          <span>Category</span>
+          <select
+            value={state.category}
+            onChange$={(_, element) => chooseCategory(element.value)}
+          >
+            {categoryChoices().map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <label class="video-library-filter">
           <span class="sr-only">Filter videos by title or folder</span>
           <input
@@ -1063,7 +1336,92 @@ export const VideosView = component$<{
             {deepLinkNotice.value}
           </p>
         )}
-        {state.loading ? (
+        {state.category === "immich" ? (
+          <>
+            {state.immichError && (
+              <div class="video-library-error">
+                <p class="message error" role="alert">
+                  {state.immichError}
+                </p>
+                <button
+                  type="button"
+                  class="secondary-button"
+                  disabled={state.immichLoading}
+                  onClick$={() => loadImmichVideos(false)}
+                >
+                  Try again
+                </button>
+              </div>
+            )}
+            {state.immichLoading && state.immichItems.length === 0 ? (
+              <p class="video-library-empty">Loading videos from Photos…</p>
+            ) : state.immichItems.length === 0 ? (
+              !state.immichError && (
+                <p class="video-library-empty">No videos in Photos.</p>
+              )
+            ) : (
+              <>
+                {visibleImmichVideos.length === 0 ? (
+                  <p class="video-library-empty">No matching videos.</p>
+                ) : (
+                  <ul class="video-list">
+                    {visibleImmichVideos.map((asset) => (
+                      <li
+                        key={asset.id}
+                        class={{
+                          active: asset.id === state.immichSelectedId,
+                        }}
+                      >
+                        <button
+                          type="button"
+                          aria-current={
+                            asset.id === state.immichSelectedId
+                              ? "true"
+                              : undefined
+                          }
+                          onClick$={() => chooseImmichVideo(asset.id)}
+                        >
+                          <span class="video-list-icon">
+                            <Icon name="video" />
+                            <img
+                              src={thumbnailSrc(
+                                `/api/v1/provider-lookups/immich/videos/${encodeURIComponent(asset.id)}/thumbnail`,
+                              )}
+                              srcset={thumbnailSrcset(
+                                `/api/v1/provider-lookups/immich/videos/${encodeURIComponent(asset.id)}/thumbnail`,
+                              )}
+                              sizes={thumbnailSizes("76px")}
+                              alt=""
+                              loading="lazy"
+                              onError$={(_, image) => {
+                                image.hidden = true;
+                              }}
+                            />
+                          </span>
+                          <span class="video-list-copy">
+                            <strong title={asset.filename}>
+                              {displayVideoTitleFromFileName(asset.filename)}
+                            </strong>
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {state.immichNextPage !== null && (
+                  <button
+                    type="button"
+                    class="secondary-button video-library-more"
+                    disabled={state.immichLoading}
+                    onClick$={() => loadImmichVideos(true)}
+                  >
+                    {state.immichLoading ? "Loading videos…" : "Load more"}
+                  </button>
+                )}
+              </>
+            )}
+          </>
+        ) : state.loading ? (
           <p class="video-library-empty">Loading videos…</p>
         ) : state.items.length === 0 ? (
           <p class="video-library-empty">
@@ -1074,12 +1432,18 @@ export const VideosView = component$<{
                 : "No videos in this library."}
           </p>
         ) : visibleItems.length === 0 ? (
-          <p class="video-library-empty">No matching videos.</p>
+          <p class="video-library-empty">
+            {query
+              ? "No matching videos."
+              : state.category === "videos"
+                ? "No regular videos here."
+                : "No videos in this category."}
+          </p>
         ) : (
           <ul class="video-list">
             {visibleGroups.map((group) => (
               <li key={group.name} class="video-list-group">
-                <h3>{group.name}</h3>
+                {!headingRepeatsCategory(group.name) && <h3>{group.name}</h3>}
                 {group.sections.map((section) => (
                   <div key={section.name} class="video-list-section">
                     {section.name && <h4>{section.name}</h4>}
