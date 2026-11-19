@@ -34,6 +34,8 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -60,6 +62,7 @@ private const val NETWORK_ATTEMPTS = 3
 private const val RETRY_DELAY_MS = 2_000L
 private const val PROGRESS_NOTIFY_INTERVAL_MS = 750L
 private const val COPY_BUFFER_BYTES = 128 * 1024
+private val CONTENT_RANGE = Regex("bytes ([0-9]+)-([0-9]+)/([0-9]+)")
 // Temporary and backup names File Sync writes into the user's folder.
 private const val INTERNAL_FILE_PREFIX = ".filesync-"
 private const val SYNC_CHANNEL_ID = "filesync-sync"
@@ -95,6 +98,11 @@ internal object BackgroundSyncScheduler {
       manager.cancelUniqueWork(IMMEDIATE_WORK)
       return
     }
+    enqueueHeartbeat(manager)
+    enqueueImmediate(manager)
+  }
+
+  private fun enqueueHeartbeat(manager: WorkManager) {
     val periodic = PeriodicWorkRequestBuilder<BackgroundSyncWorker>(MAX_CHECK_MINUTES, TimeUnit.MINUTES)
       .setInitialDelay(MAX_CHECK_MINUTES, TimeUnit.MINUTES)
       .setInputData(workDataOf(WAKE to true))
@@ -102,7 +110,6 @@ internal object BackgroundSyncScheduler {
       .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
       .build()
     manager.enqueueUniquePeriodicWork(PERIODIC_WORK, ExistingPeriodicWorkPolicy.UPDATE, periodic)
-    enqueueImmediate(manager)
   }
 
   private fun enqueueImmediate(manager: WorkManager) =
@@ -125,6 +132,9 @@ internal object BackgroundSyncScheduler {
   fun finishCheck(context: Context, startedGeneration: Long, transferred: Int) {
     val state = schedule(context)
     if (!state.optBoolean("enabled", true)) return
+    // Migrate an already scheduled 15-minute worker even before the app opens
+    // and re-registers its pairs after an upgrade.
+    if (!state.has("enabled")) enqueueHeartbeat(WorkManager.getInstance(context))
     val minutes = if (startedGeneration != generation || transferred > 0) MIN_CHECK_MINUTES
       else (2 * state.optLong("minutes", MIN_CHECK_MINUTES)).coerceIn(MIN_CHECK_MINUTES, MAX_CHECK_MINUTES)
     queueNext(context, state, minutes)
@@ -711,6 +721,8 @@ internal object SyncEngine {
     val names = activePairs ?: listOf(plan.pairName)
     var transferred = 0
     var skipped = 0
+    val warnings = mutableListOf<String>()
+    val vanished = VanishedFiles()
     fun progress(currentFile: String) {
       reportProgress(context, notificationId, plan.pairName, names, plan.direction, currentFile, transferred, skipped)
     }
@@ -724,11 +736,12 @@ internal object SyncEngine {
       // Servers without the pending list, or a folder too large to walk in
       // one go, fall back to comparing full listings.
       if (pending == null || data.truncated) {
+        if (data.truncated) warnings.add("Folder exceeds the server's walk limits; full comparison used.")
         val result = legacySync(context, tokens, view, cache, ::progress, {
           transferred++
           onTransfer()
-        }, { skipped = it })
-        return if (data.truncated) result + ("warning" to "Folder exceeds the server's walk limits; full comparison used.") else result
+        }, { skipped = it }, vanished)
+        return result.withWarnings(warnings + listOfNotNull(vanished.warning()))
       }
       skipped = data.skipped
       if (plan.direction == "phone-to-server") {
@@ -750,7 +763,12 @@ internal object SyncEngine {
           // A server-side upload in progress (or abandoned) is not user data.
           if (item.path.split('/').any { it.startsWith(INTERNAL_FILE_PREFIX) }) continue
           progress(item.path)
-          writtenBytes += downloadOne(context, tokens, view, cache, docIndex, item.path, item.mtimeUnixMs)
+          val downloaded = downloadOne(context, tokens, view, cache, docIndex, item.path, item.mtimeUnixMs, item.sha256)
+          if (downloaded == null) {
+            vanished.add(item.path)
+            continue
+          }
+          writtenBytes += downloaded
           transferred++
           onTransfer()
           if (writtenBytes > blockLimit) throw outOfSpace(plan.pairName, writtenBytes)
@@ -763,8 +781,34 @@ internal object SyncEngine {
         }
       }
       return mapOf("transferred" to transferred, "skipped" to skipped, "direction" to plan.direction)
+        .withWarnings(listOfNotNull(vanished.warning()))
+    } catch (error: SyncFailure) {
+      vanished.warning()?.let(warnings::add)
+      if (warnings.isEmpty()) throw error
+      throw SyncFailure(
+        (listOfNotNull(error.message) + warnings).joinToString(" "), error.retryable, error.needsSignIn,
+      )
     } finally {
       cache.save()
+    }
+  }
+
+  private fun Map<String, Any>.withWarnings(warnings: List<String>): Map<String, Any> =
+    if (warnings.isEmpty()) this else this + ("warning" to warnings.joinToString(" "))
+
+  private class VanishedFiles {
+    private val examples = mutableListOf<String>()
+    private var count = 0
+
+    fun add(path: String) {
+      if (examples.size < 3) examples.add(path)
+      count++
+    }
+
+    fun warning(): String? {
+      if (count == 0) return null
+      val more = if (count > examples.size) " and ${count - examples.size} more" else ""
+      return "Vanished on the server: ${examples.joinToString(", ")}$more. Skipped."
     }
   }
 
@@ -791,26 +835,28 @@ internal object SyncEngine {
   private fun uploadOne(context: Context, tokens: TokenSource, view: LocalView, cache: HashCache, relative: String) {
     val plan = view.plan
     val entry = view.files[relative] ?: return
-    withRetries(relative) {
-      val (staged, hash) = localStep("read $relative") { stageLocalFile(context, view, relative) }
-      try {
+    // Every PUT sends the same snapshot and checksum even if the source
+    // changes or a connection drops partway through an upload.
+    val (staged, hash) = localStep("read $relative") { stageLocalFile(context, view, relative) }
+    try {
+      withRetries(relative) {
         val response = authed(
           tokens, fileUrl(plan.apiBase, join(plan.serverPath, relative), plan.root), "PUT",
           file = staged, checksum = hash, readTimeoutMs = TRANSFER_READ_TIMEOUT_MS,
         )
         if (response.code !in 200..299) failHttp(response.code, "The server could not save $relative")
-        // Only cache the hash if the file did not change while it was copied;
-        // otherwise the next sync compares it afresh.
-        if (localMetadata(context, view, relative, entry) == Installed(entry.size, entry.modifiedUnixMs)) {
-          cache.put(view.devicePath(relative), entry.size, entry.modifiedUnixMs, hash)
-        }
-      } finally {
-        staged.delete()
       }
+      // Only cache the hash if the file did not change while it was copied;
+      // otherwise the next sync compares it afresh.
+      if (localMetadata(context, view, relative, entry) == Installed(entry.size, entry.modifiedUnixMs)) {
+        cache.put(view.devicePath(relative), entry.size, entry.modifiedUnixMs, hash)
+      }
+    } finally {
+      staged.delete()
     }
   }
 
-  /** Download and install one server file; returns the bytes written. */
+  /** Download and install one server file. Null means it vanished on the server. */
   private fun downloadOne(
     context: Context,
     tokens: TokenSource,
@@ -820,23 +866,35 @@ internal object SyncEngine {
     relative: String,
     serverMtime: Long,
     expectedHash: String? = null,
-  ): Long {
+  ): Long? {
     val plan = view.plan
-    return withRetries(relative) {
-      val download = downloadToCache(context, tokens, fileUrl(plan.apiBase, join(plan.serverPath, relative), plan.root), relative)
-      try {
-        if (expectedHash != null && download.sha256 != expectedHash) {
+    val url = fileUrl(plan.apiBase, join(plan.serverPath, relative), plan.root)
+    val devicePath = view.devicePath(relative)
+    var target: DownloadTarget? = null
+    var installed = false
+    val progress = DownloadProgress()
+    try {
+      val downloaded = withRetries(relative) {
+        val result = streamDownload(tokens, url, relative, progress) {
+          target ?: localStep("save $relative") {
+            prepareDownloadTarget(context, plan.folderUri, devicePath, serverMtime, docIndex)
+          }.also { target = it }
+        }
+        if (result != null && !expectedHash.isNullOrBlank() && !result.sha256.equals(expectedHash, ignoreCase = true)) {
+          // A corrupt prefix cannot be repaired with another ranged GET.
+          progress.bytes = 0L
           throw SyncFailure("Downloaded file failed its checksum: $relative", true)
         }
-        val devicePath = view.devicePath(relative)
-        val installed = localStep("save $relative") {
-          installLocalFile(context, plan.folderUri, devicePath, download.file, serverMtime, docIndex)
-        }
-        cache.put(devicePath, installed.size, installed.modifiedUnixMs, download.sha256)
-        download.file.length()
-      } finally {
-        download.file.delete()
-      }
+        result
+      } ?: return null
+      val destination = checkNotNull(target)
+      val metadata = withRetries(relative) { localStep("save $relative", destination.install) }
+      installed = true
+      cache.put(devicePath, metadata.size, metadata.modifiedUnixMs, downloaded.sha256)
+      return downloaded.bytes
+    } finally {
+      // A SAF provider may keep the document URI stable across a rename.
+      if (!installed) runCatching { target?.delete?.invoke() }
     }
   }
 
@@ -854,6 +912,7 @@ internal object SyncEngine {
     progress: (String) -> Unit,
     onTransfer: () -> Unit,
     setSkipped: (Int) -> Unit,
+    vanished: VanishedFiles,
   ): Map<String, Any> {
     val plan = view.plan
     val remoteEntries = fetchRemoteTree(tokens, plan.apiBase, plan.serverPath, plan.root)
@@ -880,7 +939,12 @@ internal object SyncEngine {
       var writtenBytes = 0L
       for ((relative, entry) in pending) {
         progress(relative)
-        writtenBytes += downloadOne(context, tokens, view, cache, docIndex, relative, entry.modifiedUnixMs, entry.sha256)
+        val downloaded = downloadOne(context, tokens, view, cache, docIndex, relative, entry.modifiedUnixMs, entry.sha256)
+        if (downloaded == null) {
+          vanished.add(relative)
+          continue
+        }
+        writtenBytes += downloaded
         transferred++
         onTransfer()
         if (writtenBytes > blockLimit) throw outOfSpace(plan.pairName, writtenBytes)
@@ -1015,12 +1079,8 @@ internal object SyncEngine {
   }
 
   private fun hashDocument(context: Context, uri: Uri): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-    context.contentResolver.openInputStream(uri)?.use { input ->
-      val buffer = ByteArray(COPY_BUFFER_BYTES)
-      while (true) { val count = input.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
-    } ?: throw SyncFailure("A file in the selected folder cannot be read.", false)
-    return digest.digest().toHex()
+    return context.contentResolver.openInputStream(uri)?.use(::hashContents)?.sha256
+      ?: throw SyncFailure("A file in the selected folder cannot be read.", false)
   }
 
   /**
@@ -1040,12 +1100,14 @@ internal object SyncEngine {
       context.contentResolver.openInputStream(documentUri(context, tree, devicePath, view.files[relative]))
         ?: throw SyncFailure("A selected file could not be opened.", false)
     }
-    val target = File.createTempFile("filesync-", ".upload", context.cacheDir)
-    try {
-      val hash = input.use { copyHashing(it, target) }
-      return target to hash
+    var target: File? = null
+    return try {
+      input.use { source ->
+        val staged = File.createTempFile("filesync-", ".upload", context.cacheDir).also { target = it }
+        staged to copyHashing(source, staged)
+      }
     } catch (error: Exception) {
-      target.delete()
+      target?.delete()
       throw error
     }
   }
@@ -1086,19 +1148,25 @@ internal object SyncEngine {
 
   private data class Installed(val size: Long, val modifiedUnixMs: Long)
 
-  private fun installLocalFile(
+  private class DownloadTarget(
+    val openOutput: (append: Boolean) -> OutputStream,
+    val read: () -> Downloaded,
+    val install: () -> Installed,
+    val delete: () -> Unit,
+  )
+
+  private fun prepareDownloadTarget(
     context: Context,
     folderUri: String,
     relative: String,
-    staged: File,
     serverMtime: Long,
     index: DocumentIndex?,
-  ): Installed {
+  ): DownloadTarget {
     val tree = Uri.parse(folderUri)
-    if (tree.scheme == "file") {
-      return installLocalFileFile(File(requireNotNull(tree.path) { "The selected folder is invalid." }), safePath(relative).split('/'), staged, serverMtime)
-    }
     val parts = safePath(relative).split('/')
+    if (tree.scheme == "file") {
+      return prepareFileTarget(File(requireNotNull(tree.path) { "The selected folder is invalid." }), parts, relative, serverMtime)
+    }
     var parentId = DocumentsContract.getTreeDocumentId(tree)
     var parentPath = ""
     for (part in parts.dropLast(1)) {
@@ -1124,10 +1192,31 @@ internal object SyncEngine {
     val parent = DocumentsContract.buildDocumentUriUsingTree(tree, parentId)
     val temporary = DocumentsContract.createDocument(context.contentResolver, parent, "application/octet-stream", "$INTERNAL_FILE_PREFIX${System.nanoTime()}.tmp")
       ?: throw SyncFailure("Could not create a temporary destination file.", true)
+    return DownloadTarget(
+      openOutput = { append ->
+        context.contentResolver.openOutputStream(temporary, if (append) "wa" else "wt")
+          ?: throw SyncFailure("The destination file cannot be opened for writing.", false)
+      },
+      read = {
+        context.contentResolver.openInputStream(temporary)?.use(::hashContents)
+          ?: throw SyncFailure("The temporary destination file could not be opened for verification.", false)
+      },
+      install = { installDocument(context, tree, temporary, relative, parts.last(), parentId, parentPath, index) },
+      delete = { DocumentsContract.deleteDocument(context.contentResolver, temporary) },
+    )
+  }
+
+  private fun installDocument(
+    context: Context,
+    tree: Uri,
+    temporary: Uri,
+    relative: String,
+    finalName: String,
+    parentId: String,
+    parentPath: String,
+    index: DocumentIndex?,
+  ): Installed {
     try {
-      context.contentResolver.openOutputStream(temporary, "wt")?.use { output -> FileInputStream(staged).use { it.copyTo(output, COPY_BUFFER_BYTES) } }
-        ?: throw SyncFailure("The destination file cannot be opened for writing.", false)
-      val finalName = parts.last()
       val knownFinal = index?.get(relative)
       // A name missing from the index is looked up only in folders that
       // existed before this sync, so a file that appeared since is replaced
@@ -1158,7 +1247,6 @@ internal object SyncEngine {
       index?.set(relative, DocumentsContract.getDocumentId(installed))
       return documentMetadata(context, installed)
     } catch (error: Exception) {
-      runCatching { DocumentsContract.deleteDocument(context.contentResolver, temporary) }
       index?.remove(relative)
       throw error
     }
@@ -1181,34 +1269,36 @@ internal object SyncEngine {
     }.getOrNull() ?: Installed(0L, 0L)
   }
 
-  private fun installLocalFileFile(dir: File, parts: List<String>, staged: File, serverMtime: Long): Installed {
+  private fun prepareFileTarget(dir: File, parts: List<String>, relative: String, serverMtime: Long): DownloadTarget {
     var current = dir
     for (part in parts.dropLast(1)) {
       current = File(current, part)
       if (!current.isDirectory && !current.mkdir()) throw SyncFailure("Could not create a destination folder: $part", true)
     }
     val target = File(current, parts.last())
-    if (target.isDirectory) throw SyncFailure("A folder on this device has the same name as a server file: ${parts.joinToString("/")}", false)
     val temporary = File.createTempFile(INTERNAL_FILE_PREFIX, ".tmp", current)
-    try {
-      FileInputStream(staged).use { input -> FileOutputStream(temporary).use { input.copyTo(it, COPY_BUFFER_BYTES) } }
-      val existing = if (target.isFile) target else null
-      if (existing != null) {
-        val backup = File(current, "$INTERNAL_FILE_PREFIX${System.nanoTime()}.backup")
-        if (!existing.renameTo(backup)) throw SyncFailure("The selected folder cannot safely replace an existing file.", false)
-        try {
-          if (!temporary.renameTo(target)) throw SyncFailure("Could not install the downloaded file.", true)
-        } catch (error: Exception) {
-          backup.renameTo(target)
-          throw error
-        }
-        backup.delete()
-      } else if (!temporary.renameTo(target)) {
-        throw SyncFailure("Could not install the downloaded file.", true)
+    return DownloadTarget(
+      openOutput = { append -> FileOutputStream(temporary, append) },
+      read = { FileInputStream(temporary).use(::hashContents) },
+      install = { installFile(temporary, target, relative, serverMtime) },
+      delete = { temporary.delete() },
+    )
+  }
+
+  private fun installFile(temporary: File, target: File, relative: String, serverMtime: Long): Installed {
+    if (target.isDirectory) throw SyncFailure("A folder on this device has the same name as a server file: $relative", false)
+    if (target.isFile) {
+      val backup = File(target.parentFile, "$INTERNAL_FILE_PREFIX${System.nanoTime()}.backup")
+      if (!target.renameTo(backup)) throw SyncFailure("The selected folder cannot safely replace an existing file.", false)
+      try {
+        if (!temporary.renameTo(target)) throw SyncFailure("Could not install the downloaded file.", true)
+      } catch (error: Exception) {
+        runCatching { backup.renameTo(target) }
+        throw error
       }
-    } catch (error: Exception) {
-      temporary.delete()
-      throw error
+      backup.delete()
+    } else if (!temporary.renameTo(target)) {
+      throw SyncFailure("Could not install the downloaded file.", true)
     }
     // Keeping the server's mtime lets later checks match this file by size and
     // mtime alone, so neither side has to read it again.
@@ -1323,11 +1413,25 @@ internal object SyncEngine {
     return documentMetadata(context, documentUri(context, tree, view.devicePath(relative), entry))
   }
 
-  private data class Download(val file: File, val sha256: String)
+  private data class Downloaded(val bytes: Long, val sha256: String)
+  private class DownloadProgress(var bytes: Long = 0L, var etag: String? = null)
 
-  /** Stream a server file into private cache, hashing it and checking its length. */
-  private fun downloadToCache(context: Context, tokens: TokenSource, url: URL, relative: String): Download {
-    fun open(token: String): HttpURLConnection = connect(url, "GET", token, TRANSFER_READ_TIMEOUT_MS)
+  private fun streamDownload(
+    tokens: TokenSource,
+    url: URL,
+    relative: String,
+    progress: DownloadProgress,
+    destination: () -> DownloadTarget,
+  ): Downloaded? {
+    val offset = progress.bytes
+    fun open(token: String): HttpURLConnection = connect(url, "GET", token, TRANSFER_READ_TIMEOUT_MS).apply {
+      // Range offsets address the bytes on disk, so opt out of HTTP encoding.
+      setRequestProperty("Accept-Encoding", "identity")
+      if (offset > 0) {
+        setRequestProperty("Range", "bytes=$offset-")
+        progress.etag?.let { setRequestProperty("If-Range", it) }
+      }
+    }
     val token = tokens.token()
     var connection = open(token)
     try {
@@ -1340,22 +1444,87 @@ internal object SyncEngine {
         connection = open(tokens.refreshAfterRejection(token, keyRevoked = errorCode == "DEVICE_KEY_REVOKED"))
       }
       val code = connection.responseCode
-      if (code !in 200..299) failHttp(code, "The server could not provide $relative")
-      val expected = connection.contentLengthLong
-      val staged = File.createTempFile("filesync-", ".download", context.cacheDir)
-      try {
-        val hash = connection.inputStream.use { copyHashing(it, staged) }
-        if (expected >= 0 && staged.length() != expected) {
-          throw SyncFailure("The download of $relative was cut short.", true)
-        }
-        return Download(staged, hash)
-      } catch (error: Exception) {
-        staged.delete()
-        throw error
+      if (code == HttpURLConnection.HTTP_NOT_FOUND) return null
+      if (code == 416 && offset > 0) {
+        progress.bytes = 0L
+        throw SyncFailure("The server rejected the download offset for $relative. Restarting the download.", true)
       }
+      val append = code == HttpURLConnection.HTTP_PARTIAL
+      if (!append && code != HttpURLConnection.HTTP_OK) failHttp(code, "The server could not provide $relative")
+      val contentLength = connection.contentLengthLong
+      val etag = connection.getHeaderField("ETag")?.takeIf { it.startsWith('"') && it.endsWith('"') }
+      val expectedBytes = if (append) {
+        // A partial response must cover the requested suffix before it can
+        // be joined to the prefix. An optional strong ETag guards retries
+        // when the server supplies one.
+        val remaining = suffixLength(connection.getHeaderField("Content-Range"), offset)
+        if (remaining == null || (contentLength >= 0 && remaining != contentLength) ||
+          (etag != null && progress.etag != null && etag != progress.etag)
+        ) {
+          progress.bytes = 0L
+          throw SyncFailure("The server returned an invalid download range for $relative.", true)
+        }
+        remaining
+      } else {
+        contentLength
+      }
+      val target = destination()
+      val digest = if (append) null else MessageDigest.getInstance("SHA-256")
+      val action = "save $relative"
+      connection.inputStream.use { input ->
+        val output = try {
+          localStep(action) { target.openOutput(append) }
+        } catch (error: SyncFailure) {
+          if (!append) throw error
+          // Some SAF providers can write a new document but cannot append.
+          progress.bytes = 0L
+          throw SyncFailure("Could not resume $relative on this device. Restarting the download.", true)
+        }
+        try {
+          if (!append) {
+            // A server that ignores Range sends a full body. Discard the
+            // old prefix by opening the same temporary file in truncate mode.
+            progress.bytes = 0L
+            progress.etag = etag
+          }
+          val buffer = ByteArray(COPY_BUFFER_BYTES)
+          while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            localStep(action) { output.write(buffer, 0, count) }
+            progress.bytes += count
+            digest?.update(buffer, 0, count)
+          }
+        } finally {
+          localStep(action) { output.close() }
+        }
+      }
+      val received = progress.bytes - (if (append) offset else 0L)
+      if (expectedBytes >= 0 && received != expectedBytes) {
+        if (received > expectedBytes) progress.bytes = 0L
+        throw SyncFailure("The download of $relative did not match the expected length.", true)
+      }
+      if (digest != null) return Downloaded(progress.bytes, digest.digest().toHex())
+      // After a resume the hash needs the complete file, including the prefix.
+      // Count the bytes in the same pass to catch providers that did not append.
+      val complete = localStep("verify $relative", target.read)
+      if (complete.bytes != progress.bytes) {
+        progress.bytes = 0L
+        throw SyncFailure("The resumed download of $relative did not match the expected length.", true)
+      }
+      return complete
     } finally {
       connection.disconnect()
     }
+  }
+
+  private fun suffixLength(header: String?, offset: Long): Long? {
+    if (header == null || offset <= 0) return null
+    val range = CONTENT_RANGE.matchEntire(header) ?: return null
+    val start = range.groupValues[1].toLongOrNull()
+    val end = range.groupValues[2].toLongOrNull()
+    val total = range.groupValues[3].toLongOrNull() ?: return null
+    return if (start == offset && total > offset && end == total - 1) total - offset else null
   }
 
   private fun connect(url: URL, method: String, accessToken: String?, readTimeoutMs: Int): HttpURLConnection {
@@ -1436,12 +1605,19 @@ internal object SyncEngine {
   private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
   private fun epochSeconds(): Long = System.currentTimeMillis() / 1000L
   private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).toHex()
-  private fun sha256(file: File): String = MessageDigest.getInstance("SHA-256").let { digest ->
-    FileInputStream(file).use { input ->
-      val buffer = ByteArray(COPY_BUFFER_BYTES)
-      while (true) { val count = input.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
+  private fun sha256(file: File): String = FileInputStream(file).use(::hashContents).sha256
+
+  private fun hashContents(input: InputStream): Downloaded {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val buffer = ByteArray(COPY_BUFFER_BYTES)
+    var bytes = 0L
+    while (true) {
+      val count = input.read(buffer)
+      if (count < 0) break
+      bytes += count
+      digest.update(buffer, 0, count)
     }
-    digest.digest().toHex()
+    return Downloaded(bytes, digest.digest().toHex())
   }
 
   private val HEX = "0123456789abcdef".toCharArray()
@@ -1526,7 +1702,7 @@ internal object SyncEngine {
     val hash: String?,
   )
 
-  private data class PendingFile(val path: String, val size: Long, val mtimeUnixMs: Long)
+  private data class PendingFile(val path: String, val size: Long, val mtimeUnixMs: Long, val sha256: String?)
 
   private data class EstimateData(
     val pendingBytes: Long,
@@ -1565,7 +1741,10 @@ internal object SyncEngine {
     val pending = data.optJSONArray("pending")?.let { array ->
       (0 until array.length()).map { index ->
         val item = array.getJSONObject(index)
-        PendingFile(item.getString("path"), item.optLong("size"), item.optLong("mtimeUnixMs"))
+        PendingFile(
+          item.getString("path"), item.optLong("size"), item.optLong("mtimeUnixMs"),
+          (item.opt("sha256") as? String)?.takeIf { it.isNotBlank() },
+        )
       }
     }
     return EstimateData(
