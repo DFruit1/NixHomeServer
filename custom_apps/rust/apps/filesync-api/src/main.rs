@@ -7,7 +7,10 @@ use axum::{
     Json, Router,
 };
 use cap_std::{ambient_authority, fs::Dir};
-use futures_util::StreamExt;
+use futures_util::{
+    future::{BoxFuture, Shared},
+    stream, FutureExt, StreamExt, TryStreamExt,
+};
 use jsonwebtoken::{
     decode, decode_header,
     jwk::{Jwk, JwkSet},
@@ -19,9 +22,12 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     env,
-    io::{self, Read},
+    io::{self, Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -41,7 +47,29 @@ const SERVICE: &str = "filesync-api";
 
 /// One estimate request carries one `(path, size, mtime)` record per device
 /// file, so a large library can exceed axum's 2 MiB default body limit.
-const ESTIMATE_BODY_LIMIT: usize = 64 * 1024 * 1024;
+///
+/// Sized to the manifest's entry cap: a library at that cap (one million files)
+/// sends roughly 90-100 MB of JSON records, and a request the server refuses
+/// would push the device onto the far costlier hashed-listing fallback.
+const ESTIMATE_BODY_LIMIT: usize = 192 * 1024 * 1024;
+
+/// How many cached manifests the server keeps, and how many entries they may
+/// hold in total. The folder cap alone allowed 256 libraries at the walk's
+/// entry cap each; the entry bound keeps the cache's memory proportional to
+/// what it actually holds.
+const MAX_CACHED_MANIFESTS: usize = 256;
+const MAX_CACHED_ENTRIES: usize = 2_000_000;
+
+/// How many library roots one sizes request walks at once.
+const LIBRARY_SIZE_WALKS: usize = 4;
+
+/// The outcome of one folder walk, shared by every request waiting on it.
+type WalkResult = Result<Arc<manifest::Manifest>, String>;
+
+/// Walks currently running, keyed by folder, with an id so a finished walk
+/// only ever removes its own registration.
+type InflightWalks =
+    std::sync::Mutex<HashMap<ManifestKey, (u64, Shared<BoxFuture<'static, WalkResult>>)>>;
 
 /// Minimum spacing between JWKS refreshes triggered by an unknown `kid`.
 const JWKS_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(60);
@@ -102,6 +130,10 @@ struct AppState {
     /// Holds the recursive walk and any hashes it produced so a repeated
     /// estimate costs one directory walk instead of one hashed read per file.
     manifests: RwLock<HashMap<ManifestKey, CachedManifest>>,
+    /// Folder walks in progress. Requests for the same folder that arrive
+    /// while one runs wait for it instead of walking the tree again.
+    walks: Arc<InflightWalks>,
+    walk_ids: AtomicU64,
     devices: DeviceStore,
 }
 
@@ -253,6 +285,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         jwks_refreshed_at: RwLock::new(Instant::now()),
         identities: RwLock::new(HashMap::new()),
         manifests: RwLock::new(HashMap::new()),
+        walks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        walk_ids: AtomicU64::new(0),
         devices,
     });
 
@@ -775,38 +809,45 @@ fn manifest_root(base: PathBuf, relative: &Path) -> PathBuf {
 /// Return the manifest for one already-scoped folder, plus the directory that
 /// on-demand hashing must read from.
 ///
-/// The walk runs in a blocking task and reuses a cached manifest when one is
-/// still fresh. The cache is not written here: the caller owns the manifest
-/// because diffing it records the hashes it had to read.
+/// Every call is answered by a walk that was running or started when the call
+/// arrived: the cached manifest is only ever a source of hashes for unchanged
+/// files, never served as the listing. Concurrent calls for the same folder (the app estimates every
+/// pair at once, and pairs can share a folder) share one walk, then each
+/// carries cached hashes onto its own copy. The cache is not written here: the
+/// caller owns its copy because diffing it records the hashes it had to read.
 async fn manifest_for(
     state: &AppState,
     key: &ManifestKey,
     base: PathBuf,
 ) -> Result<(manifest::Manifest, PathBuf), Response> {
+    let walk = shared_walk(state, key, base.clone());
+    let fresh = match walk.await {
+        Ok(fresh) => fresh,
+        Err(message) => {
+            return Err(api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "IO_ERROR",
+                &message,
+            ))
+        }
+    };
     // The cached manifest is used as a hash source regardless of age: a hash is
     // only carried over when size and mtime still agree, so a stale entry is
     // still valid. Freshness only governs eviction in `store_manifest`.
     let cached = {
         let manifests = state.manifests.read().await;
-        manifests.get(key).cloned()
+        manifests.get(key).map(|entry| Arc::clone(&entry.manifest))
     };
-    let root = base.clone();
-    let walk = tokio::task::spawn_blocking(move || {
-        let mut fresh =
-            manifest::scan(&root).map_err(|_| "The server folder could not be read.".to_owned())?;
-        manifest::reuse_hashes(
-            &mut fresh,
-            cached.as_ref().map(|entry| entry.manifest.as_ref()),
-        );
-        Ok::<_, String>(fresh)
-    });
-    match walk.await {
-        Ok(Ok(fresh)) => Ok((fresh, base)),
-        Ok(Err(message)) => Err(api_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "IO_ERROR",
-            &message,
-        )),
+    // Copying a large manifest and merging hashes onto it is linear work with
+    // no I/O, but still too long to hold an async worker for.
+    let merged = tokio::task::spawn_blocking(move || {
+        let mut fresh = manifest::Manifest::clone(&fresh);
+        manifest::reuse_hashes(&mut fresh, cached.as_deref());
+        fresh
+    })
+    .await;
+    match merged {
+        Ok(fresh) => Ok((fresh, base)),
         Err(_) => Err(api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "IO_ERROR",
@@ -815,25 +856,101 @@ async fn manifest_for(
     }
 }
 
-/// Keep the cache bounded so many users or deep paths cannot grow it without
-/// limit: when it is full, the least recently scanned folder goes.
+/// Join the walk of `key` already in progress, or start one.
+///
+/// The walk runs in its own task so a caller that disconnects cannot strand
+/// the others waiting on it, and it deregisters itself when it ends, failed
+/// or not, so the next request after a failure walks again instead of
+/// inheriting the error.
+fn shared_walk(
+    state: &AppState,
+    key: &ManifestKey,
+    root: PathBuf,
+) -> Shared<BoxFuture<'static, WalkResult>> {
+    let mut walks = state
+        .walks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, walk)) = walks.get(key) {
+        return walk.clone();
+    }
+    let id = state.walk_ids.fetch_add(1, Ordering::Relaxed);
+    let guard = WalkRegistration {
+        walks: Arc::clone(&state.walks),
+        key: key.clone(),
+        id,
+    };
+    let task = tokio::spawn(async move {
+        let _registration = guard;
+        let scanned = tokio::task::spawn_blocking(move || {
+            manifest::scan(&root).map_err(|_| "The server folder could not be read.".to_owned())
+        })
+        .await
+        .map_err(|_| "The server folder could not be read.".to_owned())
+        .and_then(|result| result)?;
+        if scanned.swept > 0 {
+            eprintln!(
+                "{SERVICE}: removed {} abandoned upload file(s) during a folder walk",
+                scanned.swept
+            );
+        }
+        Ok(Arc::new(scanned))
+    });
+    let walk = task
+        .map(|joined| {
+            joined
+                .map_err(|_| "The server folder could not be read.".to_owned())
+                .and_then(|result| result)
+        })
+        .boxed()
+        .shared();
+    walks.insert(key.clone(), (id, walk.clone()));
+    walk
+}
+
+/// Removes a walk from the in-flight registry when the walk's task ends,
+/// including by panic or runtime shutdown.
+struct WalkRegistration {
+    walks: Arc<InflightWalks>,
+    key: ManifestKey,
+    id: u64,
+}
+
+impl Drop for WalkRegistration {
+    fn drop(&mut self) {
+        let mut walks = self
+            .walks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if walks.get(&self.key).is_some_and(|(id, _)| *id == self.id) {
+            walks.remove(&self.key);
+        }
+    }
+}
+
+/// Keep the cache bounded so many users, deep paths or huge libraries cannot
+/// grow it without limit: the least recently scanned folders go first until
+/// both the folder count and the total entry count fit.
 async fn store_manifest(state: &AppState, key: ManifestKey, manifest: manifest::Manifest) {
-    const MAX_CACHED: usize = 256;
+    let incoming = manifest.entries.len();
     let mut manifests = state.manifests.write().await;
     // Every request rescans the folder, so an old manifest is never served as
     // the listing; it is only the source of hashes for files whose size and
     // mtime have not changed. Dropping it after a few minutes forced the next
     // check to re-read every synced file, so entries now leave only to make
-    // room, oldest first.
-    while manifests.len() >= MAX_CACHED && !manifests.contains_key(&key) {
+    // room, oldest first. The folder being stored replaces its own entry and
+    // is never evicted to make room for itself.
+    manifests.remove(&key);
+    let mut total: usize = manifests.values().map(|entry| entry.entries).sum();
+    while manifests.len() >= MAX_CACHED_MANIFESTS
+        || total.saturating_add(incoming) > MAX_CACHED_ENTRIES
+    {
         let oldest = manifests
             .iter()
             .min_by_key(|(_, entry)| entry.scanned_at)
             .map(|(key, _)| key.clone());
-        match oldest {
-            Some(key) => {
-                manifests.remove(&key);
-            }
+        match oldest.and_then(|key| manifests.remove(&key)) {
+            Some(evicted) => total = total.saturating_sub(evicted.entries),
             None => break,
         }
     }
@@ -842,6 +959,7 @@ async fn store_manifest(state: &AppState, key: ManifestKey, manifest: manifest::
         CachedManifest {
             manifest: Arc::new(manifest),
             scanned_at: SystemTime::now(),
+            entries: incoming,
         },
     );
 }
@@ -871,42 +989,55 @@ async fn library_sizes(
     };
     let started = Instant::now();
 
-    let mut sizes: HashMap<String, manifest::LibrarySize> = HashMap::new();
-    for root in &state.settings.roots {
-        if query
-            .root
-            .as_deref()
-            .is_some_and(|wanted| wanted != root.id)
-        {
-            continue;
-        }
-        let base = state.settings.users_root.join(&username).join(&root.folder);
-        if !base.join(&root.server_path).is_dir() {
-            continue;
-        }
-        let target = manifest_root(base, Path::new(&root.server_path));
-        let key: ManifestKey = (username.clone(), root.id.clone(), root.server_path.clone());
-        let (manifest, _) = match manifest_for(&state, &key, target).await {
-            Ok(value) => value,
-            Err(response) => return response,
-        };
-        sizes.insert(
-            root.id.clone(),
-            manifest::LibrarySize {
-                bytes: manifest.total_bytes,
-                files: manifest.files,
-                directories: manifest.directories,
-                truncated: manifest.truncated,
-            },
-        );
-        store_manifest(&state, key, manifest).await;
-    }
+    // Roots live on the same pool but in different trees, so a few walks at
+    // once finish well before the same walks one after another, without
+    // letting one request occupy every blocking thread.
+    let walks: Vec<_> = state
+        .settings
+        .roots
+        .iter()
+        .filter(|root| query.root.as_deref().is_none_or(|wanted| wanted == root.id))
+        .map(|root| library_size(Arc::clone(&state), username.clone(), root.clone()))
+        .collect();
+    let sizes: Vec<Option<(String, manifest::LibrarySize)>> = match stream::iter(walks)
+        .buffer_unordered(LIBRARY_SIZE_WALKS)
+        .try_collect()
+        .await
+    {
+        Ok(sizes) => sizes,
+        Err(response) => return response,
+    };
+    let sizes: HashMap<String, manifest::LibrarySize> = sizes.into_iter().flatten().collect();
 
     Json(json!({
         "data": sizes,
         "elapsedMs": started.elapsed().as_millis() as u64,
     }))
     .into_response()
+}
+
+/// Walk one library root for `library_sizes`, or `None` when the user has no
+/// such folder yet.
+async fn library_size(
+    state: Arc<AppState>,
+    username: String,
+    root: SyncRoot,
+) -> Result<Option<(String, manifest::LibrarySize)>, Response> {
+    let base = state.settings.users_root.join(&username).join(&root.folder);
+    if !base.join(&root.server_path).is_dir() {
+        return Ok(None);
+    }
+    let target = manifest_root(base, Path::new(&root.server_path));
+    let key: ManifestKey = (username, root.id.clone(), root.server_path.clone());
+    let (manifest, _) = manifest_for(&state, &key, target).await?;
+    let size = manifest::LibrarySize {
+        bytes: manifest.total_bytes,
+        files: manifest.files,
+        directories: manifest.directories,
+        truncated: manifest.truncated,
+    };
+    store_manifest(&state, key, manifest).await;
+    Ok(Some((root.id, size)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1135,21 +1266,45 @@ async fn download(
             Ok(value) => value,
             Err(message) => return api_error(StatusCode::BAD_REQUEST, "INVALID_PATH", message),
         };
-    let file = tokio::task::spawn_blocking(move || -> io::Result<std::fs::File> {
-        let root = Dir::open_ambient_dir(base, ambient_authority())?;
-        root.open(relative).map(cap_std::fs::File::into_std)
-    })
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let file = tokio::task::spawn_blocking(
+        move || -> io::Result<(std::fs::File, Option<u64>, Option<u64>)> {
+            let root = Dir::open_ambient_dir(base, ambient_authority())?;
+            let mut file = root.open(relative).map(cap_std::fs::File::into_std)?;
+            let length = file.metadata().map(|metadata| metadata.len()).ok();
+            let start = match (range.as_deref(), length) {
+                (Some(range), Some(length)) => open_ended_range_start(range, length),
+                _ => None,
+            };
+            if let Some(start) = start {
+                file.seek(SeekFrom::Start(start))?;
+            }
+            Ok((file, length, start))
+        },
+    )
     .await;
     match file {
-        Ok(Ok(file)) => {
-            let length = file.metadata().map(|metadata| metadata.len()).ok();
+        Ok(Ok((file, length, start))) => {
             let file = tokio::fs::File::from_std(file);
             let mut builder = Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/octet-stream");
-            if let Some(length) = length {
-                builder = builder.header(header::CONTENT_LENGTH, length.to_string());
-            }
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .header(header::ACCEPT_RANGES, "bytes");
+            builder = match (length, start) {
+                (Some(length), Some(start)) => builder
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header(
+                        header::CONTENT_RANGE,
+                        format!("bytes {start}-{}/{length}", length - 1),
+                    )
+                    .header(header::CONTENT_LENGTH, (length - start).to_string()),
+                (Some(length), None) => builder
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_LENGTH, length.to_string()),
+                (None, _) => builder.status(StatusCode::OK),
+            };
             builder
                 .body(Body::from_stream(ReaderStream::with_capacity(
                     file,
@@ -1343,6 +1498,21 @@ fn safe_relative_path(value: &str) -> Result<PathBuf, &'static str> {
     Ok(path.to_path_buf())
 }
 
+/// The start offset of a `Range: bytes=N-` request that can be served.
+///
+/// Only the single open-ended form is honoured, because that is what resuming
+/// an interrupted download needs. Every other form (suffix, closed or multiple
+/// ranges, anything malformed, or a start at or past the end) yields `None`,
+/// and the caller serves the whole file as an ordinary 200, which HTTP permits
+/// for any range it chooses not to satisfy.
+fn open_ended_range_start(value: &str, length: u64) -> Option<u64> {
+    let start = value.strip_prefix("bytes=")?.strip_suffix('-')?;
+    if start.is_empty() || !start.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    start.parse::<u64>().ok().filter(|start| *start < length)
+}
+
 fn safe_file_path(value: Option<&str>) -> Result<PathBuf, &'static str> {
     let Some(value) = value.filter(|value| !value.is_empty()) else {
         return Err("A relative file path is required.");
@@ -1353,8 +1523,8 @@ fn safe_file_path(value: Option<&str>) -> Result<PathBuf, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        safe_file_path, safe_relative_path, split_home_path, valid_username, AccessTokenClaims,
-        SyncRoot, UserInfoClaims,
+        open_ended_range_start, safe_file_path, safe_relative_path, split_home_path,
+        valid_username, AccessTokenClaims, SyncRoot, UserInfoClaims,
     };
     use std::path::Path;
 
@@ -1487,5 +1657,27 @@ mod tests {
             safe_file_path(Some("album/song.flac")).unwrap(),
             Path::new("album/song.flac")
         );
+    }
+
+    #[test]
+    fn only_an_open_ended_range_inside_the_file_is_served_partially() {
+        assert_eq!(open_ended_range_start("bytes=0-", 10), Some(0));
+        assert_eq!(open_ended_range_start("bytes=4-", 10), Some(4));
+        assert_eq!(open_ended_range_start("bytes=9-", 10), Some(9));
+        // Everything else falls back to the whole file rather than a 416.
+        for ignored in [
+            "bytes=10-",
+            "bytes=11-",
+            "bytes=-4",
+            "bytes=2-5",
+            "bytes=0-,5-",
+            "bytes=+3-",
+            "bytes= 3-",
+            "bytes=-",
+            "items=3-",
+            "bytes=99999999999999999999999-",
+        ] {
+            assert_eq!(open_ended_range_start(ignored, 10), None, "{ignored}");
+        }
     }
 }

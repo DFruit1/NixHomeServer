@@ -30,12 +30,27 @@ use std::{
 /// tree must not be able to pin a core or hold a request open indefinitely.
 /// When a bound trips the result is flagged `truncated`, and the UI says "at
 /// least" rather than presenting a partial sum as a total.
+///
+/// The bounds are deliberately generous. A truncated manifest cannot decide a
+/// sync, so the Android engine falls back to its legacy path: `tree` with
+/// `hashes=true` for every directory, which re-reads and re-hashes the whole
+/// library on the server on every sync. A walk that takes a minute is far
+/// cheaper than that, so the walk bounds only exist to stop runaway trees.
 const MAX_DEPTH: usize = 32;
-const MAX_ENTRIES: usize = 500_000;
-const MAX_WALK: Duration = Duration::from_secs(20);
+const MAX_ENTRIES: usize = 1_000_000;
+const MAX_WALK: Duration = Duration::from_secs(60);
 
 /// Names File Sync uses for its own temporary files inside a library.
 pub const INTERNAL_FILE_PREFIX: &str = ".filesync-";
+
+/// How old an internal temporary file must be before a walk removes it.
+///
+/// An upload stages its bytes under [`INTERNAL_FILE_PREFIX`] and renames the
+/// file into place when it completes; a crash or kill mid-upload leaves the
+/// staged file behind, in the user's library and in every mirror snapshot of
+/// it. A live upload keeps writing, so its mtime stays fresh; a day without a
+/// write means nothing will ever finish it.
+const STALE_INTERNAL_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone, Debug)]
 pub struct ManifestEntry {
@@ -57,6 +72,8 @@ pub struct Manifest {
     pub hashed: usize,
     /// Hashes carried over from the previous manifest.
     pub reused: usize,
+    /// Abandoned internal temporary files this walk removed.
+    pub swept: usize,
 }
 
 impl Manifest {
@@ -81,6 +98,9 @@ pub struct CachedManifest {
     /// without deep-copying every entry on each request.
     pub manifest: Arc<Manifest>,
     pub scanned_at: SystemTime,
+    /// `manifest.entries.len()`, kept alongside so the cache can bound its
+    /// total size without dereferencing every manifest it holds.
+    pub entries: usize,
 }
 
 /// One library folder's size, for the app's list of premade folders.
@@ -103,10 +123,15 @@ fn mtime_millis(time: Option<SystemTime>) -> u128 {
 ///
 /// Symlinks are skipped, matching the single-level `list_directory`, so a link
 /// out of the folder cannot pull foreign data into a manifest or a size total.
+///
+/// Internal temporary files are never listed, and those older than
+/// [`STALE_INTERNAL_AGE`] are removed once the walk is done. Removal is best
+/// effort: a file that cannot be deleted stays and never fails the walk.
 pub fn scan(root: &Path) -> io::Result<Manifest> {
     let mut manifest = Manifest::default();
     let mut stack: Vec<(PathBuf, String, usize)> = vec![(root.to_path_buf(), String::new(), 0)];
     let started = Instant::now();
+    let mut stale: Vec<PathBuf> = Vec::new();
 
     'outer: while let Some((directory, prefix, depth)) = stack.pop() {
         if depth > MAX_DEPTH {
@@ -132,6 +157,9 @@ pub fn scan(root: &Path) -> io::Result<Manifest> {
             // under this prefix. It is not user data and must never be offered
             // to a device as something to download.
             if name.starts_with(INTERNAL_FILE_PREFIX) {
+                if file_type.is_file() && is_stale(&item) {
+                    stale.push(item.path());
+                }
                 continue;
             }
             let path = if prefix.is_empty() {
@@ -160,10 +188,25 @@ pub fn scan(root: &Path) -> io::Result<Manifest> {
         }
     }
 
+    manifest.swept = stale
+        .iter()
+        .filter(|path| std::fs::remove_file(path).is_ok())
+        .count();
     manifest
         .entries
         .sort_by(|left, right| left.path.cmp(&right.path));
     Ok(manifest)
+}
+
+/// Whether an internal temporary file has gone unwritten long enough that no
+/// upload can still own it. Anything unreadable counts as fresh, so a doubt
+/// never deletes a file.
+fn is_stale(item: &std::fs::DirEntry) -> bool {
+    item.metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age > STALE_INTERNAL_AGE)
 }
 
 /// Carry hashes from the previous manifest onto a fresh scan.
@@ -277,6 +320,13 @@ pub struct PendingFile {
     /// The server copy's mtime for downloads (so the device can keep it and
     /// later checks match by metadata alone); zero for uploads.
     pub mtime_unix_ms: u128,
+    /// The server copy's SHA-256 for a download whose hash the server already
+    /// knows, so the device can verify what it received without asking for a
+    /// hashed listing. Absent when the file was never hashed, and always
+    /// absent for uploads: the server's hash there describes the copy being
+    /// replaced, not the one that moves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -295,13 +345,14 @@ pub struct DiffResult {
 }
 
 impl DiffResult {
-    fn add_pending(&mut self, path: &str, size: u64, mtime_unix_ms: u128) {
+    fn add_pending(&mut self, path: &str, size: u64, mtime_unix_ms: u128, sha256: Option<String>) {
         self.pending_bytes = self.pending_bytes.saturating_add(size);
         self.pending_count += 1;
         self.pending.push(PendingFile {
             path: path.to_owned(),
             size,
             mtime_unix_ms,
+            sha256,
         });
     }
 }
@@ -326,7 +377,7 @@ pub fn diff(
     if direction == "phone-to-server" {
         for local_file in local {
             let Some((remote_size, remote_mtime)) = manifest.get(&local_file.path) else {
-                result.add_pending(&local_file.path, local_file.size, 0);
+                result.add_pending(&local_file.path, local_file.size, 0, None);
                 continue;
             };
             match compare(
@@ -341,7 +392,9 @@ pub fn diff(
                 Outcome::Same => result.skipped += 1,
                 // An upload moves the device's copy, so the device's size is
                 // what the estimate has to add.
-                Outcome::Different => result.add_pending(&local_file.path, local_file.size, 0),
+                Outcome::Different => {
+                    result.add_pending(&local_file.path, local_file.size, 0, None)
+                }
                 Outcome::Unreadable => result.unreadable.push(local_file.path.clone()),
                 Outcome::NeedHash => {}
             }
@@ -367,8 +420,11 @@ pub fn diff(
             by_path.get(path).copied()
         };
         let Some(local_file) = local_file else {
-            let path = manifest.entries[index].path.clone();
-            result.add_pending(&path, remote_size, remote_mtime);
+            // A cached hash (carried over from an earlier comparison) is still
+            // worth sending; a file nobody compared yet goes without one.
+            let entry = &manifest.entries[index];
+            let (path, hash) = (entry.path.clone(), entry.hash.clone());
+            result.add_pending(&path, remote_size, remote_mtime, hash);
             continue;
         };
         if remote_size == local_file.size && remote_mtime == local_file.mtime_unix_ms {
@@ -381,9 +437,9 @@ pub fn diff(
         };
         match hash_entry_at(manifest, root, index)? {
             Some(remote_hash) if &remote_hash == local_hash => result.skipped += 1,
-            Some(_) => {
+            Some(remote_hash) => {
                 let path = manifest.entries[index].path.clone();
-                result.add_pending(&path, remote_size, remote_mtime);
+                result.add_pending(&path, remote_size, remote_mtime, Some(remote_hash));
             }
             None => result.unreadable.push(local_file.path.clone()),
         }
@@ -569,7 +625,7 @@ mod tests {
         let mut manifest = manifest_of(vec![
             ("keep.flac", 10, 1, Some("same")),
             ("changed.flac", 20, 2, Some("server")),
-            ("new.flac", 30, 3, Some("n")),
+            ("new.flac", 30, 3, None),
         ]);
         let mut same = local("keep.flac", 10, 9);
         same.hash = Some("same".to_owned());
@@ -588,15 +644,23 @@ mod tests {
                 PendingFile {
                     path: "changed.flac".into(),
                     size: 20,
-                    mtime_unix_ms: 2
+                    mtime_unix_ms: 2,
+                    sha256: Some("server".into()),
                 },
                 PendingFile {
                     path: "new.flac".into(),
                     size: 30,
-                    mtime_unix_ms: 3
+                    mtime_unix_ms: 3,
+                    sha256: None,
                 },
             ],
-            "downloads list the server copy with its mtime"
+            "downloads list the server copy with its mtime and any known hash"
+        );
+        let wire = serde_json::to_value(&result.pending).unwrap();
+        assert_eq!(wire[0]["sha256"], "server");
+        assert!(
+            wire[1].get("sha256").is_none(),
+            "an unknown hash is left out rather than sent as null"
         );
         assert_eq!(result.pending_count, result.pending.len());
 
@@ -612,7 +676,8 @@ mod tests {
             vec![PendingFile {
                 path: "up.flac".into(),
                 size: 7,
-                mtime_unix_ms: 0
+                mtime_unix_ms: 0,
+                sha256: None,
             }]
         );
     }
@@ -780,6 +845,42 @@ mod tests {
             );
             assert_eq!(third.needs_hash, vec!["a.flac".to_owned()]);
         });
+    }
+
+    #[test]
+    fn a_scan_sweeps_only_stale_internal_files() {
+        with_tree(
+            &[
+                ("song.flac", b"music"),
+                (".filesync-fresh.upload", b"live"),
+                ("album/.filesync-stale.upload", b"abandoned"),
+                ("album/old.flac", b"keep"),
+            ],
+            |root| {
+                let two_days_ago = SystemTime::now() - Duration::from_secs(48 * 60 * 60);
+                for path in ["album/.filesync-stale.upload", "album/old.flac"] {
+                    std::fs::File::options()
+                        .write(true)
+                        .open(root.join(path))
+                        .and_then(|file| file.set_modified(two_days_ago))
+                        .expect("age a test file");
+                }
+
+                let manifest = scan(root).expect("scan a real tree");
+                assert_eq!(manifest.swept, 1);
+                assert!(!root.join("album/.filesync-stale.upload").exists());
+                assert!(
+                    root.join(".filesync-fresh.upload").exists(),
+                    "an upload that may still be running is left alone"
+                );
+                assert!(
+                    root.join("album/old.flac").exists(),
+                    "age alone never removes user data"
+                );
+                let paths: Vec<&str> = manifest.entries.iter().map(|e| e.path.as_str()).collect();
+                assert_eq!(paths, ["album/old.flac", "song.flac"]);
+            },
+        );
     }
 
     fn hash_of(path: &Path) -> String {
