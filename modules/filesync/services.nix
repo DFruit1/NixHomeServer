@@ -87,6 +87,11 @@ in
       StateDirectoryMode = "0700";
       Restart = "on-failure";
       RestartSec = "5s";
+      # One estimate can carry a ~192 MiB folder list plus the parsed copy of
+      # it, and the manifest cache holds resident entries on top; bound both
+      # so a burst of large requests cannot exhaust the server.
+      MemoryHigh = "1G";
+      MemoryMax = "2G";
       # The first grant recursively visits personal files. Keep it from being
       # killed and retried on large existing trees; the version marker makes
       # subsequent service restarts avoid repeating that migration.

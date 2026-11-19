@@ -141,6 +141,20 @@ internal object BackgroundSyncScheduler {
   }
 
   @Synchronized
+  fun failCheck(context: Context, startedGeneration: Long) {
+    val state = schedule(context)
+    if (!state.optBoolean("enabled", true)) return
+    // A failed run schedules its own retry rather than returning
+    // ListenableWorker.Result.retry(): WorkManager's backoff grows to hours
+    // and, while it waits, the KEEP policy would drop every wake-up from the
+    // app or the heartbeat. Doubling the spacing keeps the same backoff
+    // intent bounded by the two-hour heartbeat instead.
+    val minutes = if (startedGeneration != generation) MIN_CHECK_MINUTES
+      else (2 * state.optLong("minutes", MIN_CHECK_MINUTES)).coerceIn(MIN_CHECK_MINUTES, MAX_CHECK_MINUTES)
+    queueNext(context, state, minutes)
+  }
+
+  @Synchronized
   fun resetSpacing(context: Context) {
     generation++
     val state = schedule(context)
@@ -172,7 +186,10 @@ internal class BackgroundSyncWorker(context: Context, parameters: WorkerParamete
         } catch (error: kotlinx.coroutines.CancellationException) {
           throw error
         } catch (_: Exception) {
-          androidx.work.ListenableWorker.Result.retry()
+          // The enqueue itself failed. Returning retry would park this unique
+          // job in WorkManager's backoff, where KEEP drops the next wake-ups;
+          // the periodic heartbeat re-dispatches within two hours instead.
+          androidx.work.ListenableWorker.Result.success()
         }
       }
     }
@@ -181,8 +198,9 @@ internal class BackgroundSyncWorker(context: Context, parameters: WorkerParamete
     // so a refusal must not end the run before it starts.
     runCatching { setForeground(foregroundInfo()) }
     return withContext(Dispatchers.IO) {
+      var generation: Long? = null
       try {
-        val generation = BackgroundSyncScheduler.beginCheck(applicationContext)
+        generation = BackgroundSyncScheduler.beginCheck(applicationContext)
           ?: return@withContext androidx.work.ListenableWorker.Result.success()
         val transferred = SyncEngine.syncAll(applicationContext)
         ensureActive()
@@ -191,13 +209,16 @@ internal class BackgroundSyncWorker(context: Context, parameters: WorkerParamete
       } catch (error: SyncFailure) {
         SyncEngine.writeStatus(applicationContext, error.message ?: "Background sync could not finish.")
         if (error.needsSignIn) BackgroundSyncScheduler.update(applicationContext, false)
-        if (error.retryable) androidx.work.ListenableWorker.Result.retry()
-        else androidx.work.ListenableWorker.Result.success()
+        else generation?.let { BackgroundSyncScheduler.failCheck(applicationContext, it) }
+        // Never Result.retry(): its backoff stretches to five hours and keeps
+        // the KEEP policy dropping wake-ups while it waits.
+        androidx.work.ListenableWorker.Result.success()
       } catch (error: kotlinx.coroutines.CancellationException) {
         throw error
       } catch (error: Exception) {
         SyncEngine.writeStatus(applicationContext, "Background sync stopped. Open File Sync to review the connection and folder access.")
-        androidx.work.ListenableWorker.Result.retry()
+        generation?.let { BackgroundSyncScheduler.failCheck(applicationContext, it) }
+        androidx.work.ListenableWorker.Result.success()
       }
     }
   }
@@ -722,7 +743,8 @@ internal object SyncEngine {
     var transferred = 0
     var skipped = 0
     val warnings = mutableListOf<String>()
-    val vanished = VanishedFiles()
+    val vanished = SkippedFiles("Vanished on the server")
+    val changed = SkippedFiles("Changed on the server while syncing")
     fun progress(currentFile: String) {
       reportProgress(context, notificationId, plan.pairName, names, plan.direction, currentFile, transferred, skipped)
     }
@@ -740,8 +762,8 @@ internal object SyncEngine {
         val result = legacySync(context, tokens, view, cache, ::progress, {
           transferred++
           onTransfer()
-        }, { skipped = it }, vanished)
-        return result.withWarnings(warnings + listOfNotNull(vanished.warning()))
+        }, { skipped = it }, vanished, changed)
+        return result.withWarnings(warnings + listOfNotNull(vanished.warning(), changed.warning()))
       }
       skipped = data.skipped
       if (plan.direction == "phone-to-server") {
@@ -763,7 +785,12 @@ internal object SyncEngine {
           // A server-side upload in progress (or abandoned) is not user data.
           if (item.path.split('/').any { it.startsWith(INTERNAL_FILE_PREFIX) }) continue
           progress(item.path)
-          val downloaded = downloadOne(context, tokens, view, cache, docIndex, item.path, item.mtimeUnixMs, item.sha256)
+          val downloaded = try {
+            downloadOne(context, tokens, view, cache, docIndex, item.path, item.mtimeUnixMs, item.sha256)
+          } catch (error: ChangedOnServerFailure) {
+            changed.add(item.path)
+            continue
+          }
           if (downloaded == null) {
             vanished.add(item.path)
             continue
@@ -781,9 +808,10 @@ internal object SyncEngine {
         }
       }
       return mapOf("transferred" to transferred, "skipped" to skipped, "direction" to plan.direction)
-        .withWarnings(listOfNotNull(vanished.warning()))
+        .withWarnings(listOfNotNull(vanished.warning(), changed.warning()))
     } catch (error: SyncFailure) {
       vanished.warning()?.let(warnings::add)
+      changed.warning()?.let(warnings::add)
       if (warnings.isEmpty()) throw error
       throw SyncFailure(
         (listOfNotNull(error.message) + warnings).joinToString(" "), error.retryable, error.needsSignIn,
@@ -796,7 +824,7 @@ internal object SyncEngine {
   private fun Map<String, Any>.withWarnings(warnings: List<String>): Map<String, Any> =
     if (warnings.isEmpty()) this else this + ("warning" to warnings.joinToString(" "))
 
-  private class VanishedFiles {
+  private class SkippedFiles(private val reason: String) {
     private val examples = mutableListOf<String>()
     private var count = 0
 
@@ -808,7 +836,7 @@ internal object SyncEngine {
     fun warning(): String? {
       if (count == 0) return null
       val more = if (count > examples.size) " and ${count - examples.size} more" else ""
-      return "Vanished on the server: ${examples.joinToString(", ")}$more. Skipped."
+      return "$reason: ${examples.joinToString(", ")}$more. Skipped."
     }
   }
 
@@ -830,6 +858,14 @@ internal object SyncEngine {
       "Free up space, then sync again.",
     false,
   )
+
+  /**
+   * A full, complete download whose checksum still differs from what the size
+   * check reported. Not retryable: the bytes are healthy, they are just a
+   * newer version than the estimate knew about, and the next sync will pick
+   * it up. Callers record it as a per-file warning and move on.
+   */
+  private class ChangedOnServerFailure(message: String) : SyncFailure(message, false)
 
   /** Stage, hash and upload one device file, retrying transient failures. */
   private fun uploadOne(context: Context, tokens: TokenSource, view: LocalView, cache: HashCache, relative: String) {
@@ -875,15 +911,23 @@ internal object SyncEngine {
     val progress = DownloadProgress()
     try {
       val downloaded = withRetries(relative) {
+        val resumed = progress.bytes > 0L
         val result = streamDownload(tokens, url, relative, progress) {
           target ?: localStep("save $relative") {
             prepareDownloadTarget(context, plan.folderUri, devicePath, serverMtime, docIndex)
           }.also { target = it }
         }
         if (result != null && !expectedHash.isNullOrBlank() && !result.sha256.equals(expectedHash, ignoreCase = true)) {
-          // A corrupt prefix cannot be repaired with another ranged GET.
-          progress.bytes = 0L
-          throw SyncFailure("Downloaded file failed its checksum: $relative", true)
+          if (resumed) {
+            // A resumed join cannot be trusted after a mismatch: discard the
+            // prefix and let the next attempt download the whole file.
+            progress.bytes = 0L
+            throw SyncFailure("Downloaded file failed its checksum: $relative", true)
+          }
+          // A complete download that still misses the checksum was not a
+          // transport failure: the server copy changed since the size check,
+          // and re-downloading it three times would only burn the same bytes.
+          throw ChangedOnServerFailure("$relative changed on the server while syncing.")
         }
         result
       } ?: return null
@@ -912,7 +956,8 @@ internal object SyncEngine {
     progress: (String) -> Unit,
     onTransfer: () -> Unit,
     setSkipped: (Int) -> Unit,
-    vanished: VanishedFiles,
+    vanished: SkippedFiles,
+    changed: SkippedFiles,
   ): Map<String, Any> {
     val plan = view.plan
     val remoteEntries = fetchRemoteTree(tokens, plan.apiBase, plan.serverPath, plan.root)
@@ -939,7 +984,12 @@ internal object SyncEngine {
       var writtenBytes = 0L
       for ((relative, entry) in pending) {
         progress(relative)
-        val downloaded = downloadOne(context, tokens, view, cache, docIndex, relative, entry.modifiedUnixMs, entry.sha256)
+        val downloaded = try {
+          downloadOne(context, tokens, view, cache, docIndex, relative, entry.modifiedUnixMs, entry.sha256)
+        } catch (error: ChangedOnServerFailure) {
+          changed.add(relative)
+          continue
+        }
         if (downloaded == null) {
           vanished.add(relative)
           continue
@@ -1069,6 +1119,12 @@ internal object SyncEngine {
   private fun sweepInternalFiles(context: Context, tree: Uri, internalFiles: List<Entry>) {
     val cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1)
     for (entry in internalFiles) {
+      // Only download temps end in ".tmp" and contain no user data. A
+      // ".backup" is the user's previous copy renamed mid-install: it keeps
+      // the original's old mtime, so an age test cannot tell it from an
+      // abandoned file, and deleting it could destroy the only remaining
+      // copy after a crash between the two renames.
+      if (!entry.path.endsWith(".tmp")) continue
       // Some providers cannot report mtimes. Leave those files alone.
       if (entry.modifiedUnixMs <= 0L || entry.modifiedUnixMs >= cutoff) continue
       runCatching {
@@ -1414,7 +1470,7 @@ internal object SyncEngine {
   }
 
   private data class Downloaded(val bytes: Long, val sha256: String)
-  private class DownloadProgress(var bytes: Long = 0L, var etag: String? = null)
+  private class DownloadProgress(var bytes: Long = 0L, var etag: String? = null, var totalBytes: Long = -1L)
 
   private fun streamDownload(
     tokens: TokenSource,
@@ -1427,7 +1483,11 @@ internal object SyncEngine {
     fun open(token: String): HttpURLConnection = connect(url, "GET", token, TRANSFER_READ_TIMEOUT_MS).apply {
       // Range offsets address the bytes on disk, so opt out of HTTP encoding.
       setRequestProperty("Accept-Encoding", "identity")
-      if (offset > 0) {
+      // A resume is only attempted against a validator: without one, a file
+      // replaced on the server mid-transfer could be joined from two versions
+      // with nothing able to detect it. A server with no ETag gets a plain
+      // GET, and its full 200 discards the partial prefix.
+      if (offset > 0 && progress.etag != null) {
         setRequestProperty("Range", "bytes=$offset-")
         progress.etag?.let { setRequestProperty("If-Range", it) }
       }
@@ -1444,28 +1504,45 @@ internal object SyncEngine {
         connection = open(tokens.refreshAfterRejection(token, keyRevoked = errorCode == "DEVICE_KEY_REVOKED"))
       }
       val code = connection.responseCode
-      if (code == HttpURLConnection.HTTP_NOT_FOUND) return null
+      if (code == HttpURLConnection.HTTP_NOT_FOUND) {
+        // Only the server's own "no such file" is a vanish. A 404 from a
+        // misrouted proxy or gateway means the path is broken, not that the
+        // file went away, and must stop the pair rather than count as one
+        // more skipped file.
+        val missing = runCatching {
+          JSONObject(connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty())
+            .getJSONObject("error").optString("code") == "NOT_FOUND"
+        }.getOrDefault(false)
+        if (missing) return null
+        failHttp(code, "The server could not provide $relative")
+      }
       if (code == 416 && offset > 0) {
         progress.bytes = 0L
         throw SyncFailure("The server rejected the download offset for $relative. Restarting the download.", true)
       }
-      val append = code == HttpURLConnection.HTTP_PARTIAL
+      // An unsolicited 206 (one nobody sent Range for) is not a resume.
+      val append = code == HttpURLConnection.HTTP_PARTIAL && offset > 0
       if (!append && code != HttpURLConnection.HTTP_OK) failHttp(code, "The server could not provide $relative")
       val contentLength = connection.contentLengthLong
       val etag = connection.getHeaderField("ETag")?.takeIf { it.startsWith('"') && it.endsWith('"') }
       val expectedBytes = if (append) {
-        // A partial response must cover the requested suffix before it can
-        // be joined to the prefix. An optional strong ETag guards retries
-        // when the server supplies one.
-        val remaining = suffixLength(connection.getHeaderField("Content-Range"), offset)
-        if (remaining == null || (contentLength >= 0 && remaining != contentLength) ||
-          (etag != null && progress.etag != null && etag != progress.etag)
+        // A partial response must cover the requested suffix before it can be
+        // joined to the prefix, and its total must match the length this
+        // download started from: a different total means the server file was
+        // replaced mid-transfer and joining versions would corrupt the file.
+        // The If-Range ETag check above already guards the common case; the
+        // total covers servers that send no usable ETag.
+        val suffix = suffixRange(connection.getHeaderField("Content-Range"), offset)
+        if (suffix == null || (contentLength >= 0 && suffix.remaining != contentLength) ||
+          (etag != null && progress.etag != null && etag != progress.etag) ||
+          (progress.totalBytes >= 0 && suffix.total != progress.totalBytes)
         ) {
           progress.bytes = 0L
           throw SyncFailure("The server returned an invalid download range for $relative.", true)
         }
-        remaining
+        suffix.remaining
       } else {
+        if (contentLength >= 0) progress.totalBytes = contentLength
         contentLength
       }
       val target = destination()
@@ -1518,13 +1595,16 @@ internal object SyncEngine {
     }
   }
 
-  private fun suffixLength(header: String?, offset: Long): Long? {
+  /** The remaining bytes and the file's total length in a `Content-Range` header. */
+  private class SuffixRange(val remaining: Long, val total: Long)
+
+  private fun suffixRange(header: String?, offset: Long): SuffixRange? {
     if (header == null || offset <= 0) return null
     val range = CONTENT_RANGE.matchEntire(header) ?: return null
     val start = range.groupValues[1].toLongOrNull()
     val end = range.groupValues[2].toLongOrNull()
     val total = range.groupValues[3].toLongOrNull() ?: return null
-    return if (start == offset && total > offset && end == total - 1) total - offset else null
+    return if (start == offset && total > offset && end == total - 1) SuffixRange(total - offset, total) else null
   }
 
   private fun connect(url: URL, method: String, accessToken: String?, readTimeoutMs: Int): HttpURLConnection {
@@ -1846,7 +1926,7 @@ internal object SyncEngine {
   }
 }
 
-internal class SyncFailure(
+internal open class SyncFailure(
   message: String,
   val retryable: Boolean,
   /** The session is gone; background sync stays off until the user signs in. */

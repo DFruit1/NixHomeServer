@@ -47,6 +47,8 @@ const SERVICE: &str = "filesync-api";
 
 /// One estimate request carries one `(path, size, mtime)` record per device
 /// file, so a large library can exceed axum's 2 MiB default body limit.
+/// This is the transport cap; the handler authenticates before it buffers,
+/// so the size only ever costs memory for a signed-in device.
 ///
 /// Sized to the manifest's entry cap: a library at that cap (one million files)
 /// sends roughly 90-100 MB of JSON records, and a request the server refuses
@@ -858,30 +860,30 @@ async fn manifest_for(
 
 /// Join the walk of `key` already in progress, or start one.
 ///
-/// The walk runs in its own task so a caller that disconnects cannot strand
-/// the others waiting on it, and it deregisters itself when it ends, failed
-/// or not, so the next request after a failure walks again instead of
-/// inheriting the error.
+/// The walk runs behind a driver task so a caller that disconnects cannot
+/// strand the others waiting on it, and the driver deregisters the walk when
+/// it ends, failed or not, so the next request after a failure walks again
+/// instead of inheriting the error.
+///
+/// The scan future and its driver are built and spawned while the registry
+/// mutex is NOT held: at runtime shutdown, `tokio::spawn` drops a future it
+/// cannot run, and the registration's `Drop` would otherwise re-lock the
+/// mutex on this thread and deadlock the shutdown.
 fn shared_walk(
     state: &AppState,
     key: &ManifestKey,
     root: PathBuf,
 ) -> Shared<BoxFuture<'static, WalkResult>> {
-    let mut walks = state
-        .walks
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((_, walk)) = walks.get(key) {
-        return walk.clone();
+    {
+        let walks = state
+            .walks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, walk)) = walks.get(key) {
+            return walk.clone();
+        }
     }
-    let id = state.walk_ids.fetch_add(1, Ordering::Relaxed);
-    let guard = WalkRegistration {
-        walks: Arc::clone(&state.walks),
-        key: key.clone(),
-        id,
-    };
-    let task = tokio::spawn(async move {
-        let _registration = guard;
+    let scan = async move {
         let scanned = tokio::task::spawn_blocking(move || {
             manifest::scan(&root).map_err(|_| "The server folder could not be read.".to_owned())
         })
@@ -895,17 +897,34 @@ fn shared_walk(
             );
         }
         Ok(Arc::new(scanned))
+    }
+    .boxed()
+    .shared();
+    let id = state.walk_ids.fetch_add(1, Ordering::Relaxed);
+    {
+        let mut walks = state
+            .walks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, walk)) = walks.get(key) {
+            // Another request registered a walk while this one was being
+            // built. Ours was never registered or polled, so dropping it here
+            // costs nothing (it holds no registration); join the winner's.
+            return walk.clone();
+        }
+        walks.insert(key.clone(), (id, scan.clone()));
+    }
+    let guard = WalkRegistration {
+        walks: Arc::clone(&state.walks),
+        key: key.clone(),
+        id,
+    };
+    let driven = scan.clone();
+    tokio::spawn(async move {
+        let _registration = guard;
+        let _ = driven.await;
     });
-    let walk = task
-        .map(|joined| {
-            joined
-                .map_err(|_| "The server folder could not be read.".to_owned())
-                .and_then(|result| result)
-        })
-        .boxed()
-        .shared();
-    walks.insert(key.clone(), (id, walk.clone()));
-    walk
+    scan
 }
 
 /// Removes a walk from the in-flight registry when the walk's task ends,
@@ -1061,14 +1080,34 @@ struct EstimateRequest {
 /// the diff against its own cached manifest. Files whose metadata agrees count
 /// as identical without any hashing; the few that disagree come back as
 /// `needsHash`, and only then does the client hash them and ask again.
-async fn estimate(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(request): Json<EstimateRequest>,
-) -> Response {
+async fn estimate(State(state): State<Arc<AppState>>, headers: HeaderMap, body: Body) -> Response {
+    // Authenticate before touching the body: the limit is large enough that
+    // buffering a few unauthenticated 192 MiB payloads, which anyone on the
+    // LAN can send, could exhaust the server's memory. The `Json` extractor
+    // would have buffered first and asked questions after.
     let username = match authenticate(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
+    };
+    let bytes = match axum::body::to_bytes(body, ESTIMATE_BODY_LIMIT).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return api_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "REQUEST_TOO_LARGE",
+                "The folder list exceeds the estimate size limit.",
+            )
+        }
+    };
+    let request: EstimateRequest = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "INVALID_BODY",
+                "The size check request could not be read.",
+            )
+        }
     };
     if request.direction != "phone-to-server" && request.direction != "server-to-phone" {
         return api_error(
@@ -1248,6 +1287,10 @@ fn list_directory(
     Ok(entries)
 }
 
+/// What the download handler opens: the file, its length, the served range
+/// start (absent for a full body), and its strong ETag.
+type OpenedDownload = (std::fs::File, Option<u64>, Option<u64>, Option<String>);
+
 async fn download(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1270,28 +1313,62 @@ async fn download(
         .get(header::RANGE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
+    let if_range = headers
+        .get(header::IF_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     let file = tokio::task::spawn_blocking(
-        move || -> io::Result<(std::fs::File, Option<u64>, Option<u64>)> {
+        move || -> io::Result<OpenedDownload> {
             let root = Dir::open_ambient_dir(base, ambient_authority())?;
             let mut file = root.open(relative).map(cap_std::fs::File::into_std)?;
-            let length = file.metadata().map(|metadata| metadata.len()).ok();
-            let start = match (range.as_deref(), length) {
-                (Some(range), Some(length)) => open_ended_range_start(range, length),
+            use std::os::unix::fs::MetadataExt;
+            let metadata = file.metadata().ok();
+            let length = metadata.as_ref().map(|value| value.len());
+            // A strong validator for resumed downloads. It is finer-grained
+            // than the millisecond mtimes the manifest compares with, and the
+            // inode catches a same-size same-mtime replace. The client only
+            // ever resumes when this matches the file it started from, so it
+            // cannot join bytes of two different versions.
+            let etag = metadata.map(|value| {
+                format!(
+                    "\"{:x}-{:x}-{:x}\"",
+                    value.len(),
+                    value.mtime_nsec(),
+                    value.ino()
+                )
+            });
+            let start = match (
+                range.as_deref(),
+                if_range.as_deref(),
+                length,
+                etag.as_deref(),
+            ) {
+                // A matching If-Range says the file is the same one the client
+                // started from, so the suffix may be joined to its prefix.
+                (Some(range), Some(validator), Some(length), Some(etag)) if validator == etag => {
+                    open_ended_range_start(range, length)
+                }
+                (Some(range), None, Some(length), _) => open_ended_range_start(range, length),
+                // A stale or absent validator, an unreadable file: serve the
+                // whole body and let the client start over.
                 _ => None,
             };
             if let Some(start) = start {
                 file.seek(SeekFrom::Start(start))?;
             }
-            Ok((file, length, start))
+            Ok((file, length, start, etag))
         },
     )
     .await;
     match file {
-        Ok(Ok((file, length, start))) => {
+        Ok(Ok((file, length, start, etag))) => {
             let file = tokio::fs::File::from_std(file);
             let mut builder = Response::builder()
                 .header(header::CONTENT_TYPE, "application/octet-stream")
                 .header(header::ACCEPT_RANGES, "bytes");
+            if let Some(etag) = etag.as_deref() {
+                builder = builder.header(header::ETAG, etag);
+            }
             builder = match (length, start) {
                 (Some(length), Some(start)) => builder
                     .status(StatusCode::PARTIAL_CONTENT)
