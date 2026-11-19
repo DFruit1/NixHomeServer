@@ -135,6 +135,12 @@ struct ContentArgs {
     parakeet_model: Option<PathBuf>,
     #[arg(long, default_value_t = 4)]
     threads: u32,
+    /// Where each excerpt begins, past title sequences and most
+    /// "previously on" recaps. A later 180 s start measured no better
+    /// (identify-eval, All Creatures scenarios a-c, 2026-11-20: identical
+    /// outcomes at both windows, and the shifted-proposal scenario was
+    /// never followed either way), so the earlier start keeps its longer
+    /// stretch of dialogue.
     #[arg(long, default_value_t = 120)]
     excerpt_start: u32,
     #[arg(long, default_value_t = 360)]
