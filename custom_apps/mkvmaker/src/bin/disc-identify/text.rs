@@ -44,8 +44,11 @@ pub fn normalize(text: &str) -> String {
     tokens.join(" ")
 }
 
+/// Bigrams over the normalized text, spaces included: two titles that use
+/// the same letters differently ("Now Here Man" vs "Nowhere Man") share fewer
+/// bigrams than titles written the same way.
 fn bigrams(text: &str) -> Vec<(char, char)> {
-    let chars: Vec<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let chars: Vec<char> = text.chars().collect();
     chars.windows(2).map(|pair| (pair[0], pair[1])).collect()
 }
 
@@ -61,8 +64,11 @@ pub fn similarity(left: &str, right: &str) -> f64 {
     if left == right {
         return 1.0;
     }
-    // A volume label with its words run together still names the same show.
-    if left.replace(' ', "") == right.replace(' ', "") {
+    // A volume label with its words run together still names the same show,
+    // but only when one side is that single run-together token: two
+    // multi-word titles that merely share letters are compared as written.
+    let squashed = |text: &str| !text.contains(' ');
+    if squashed(&left) != squashed(&right) && left.replace(' ', "") == right.replace(' ', "") {
         return 0.98;
     }
     let lb = bigrams(&left);
@@ -199,6 +205,21 @@ mod tests {
         assert!(similarity("Fair Means and Fowl", "Fair Means & Fowl") > 0.99);
         assert!(similarity("Horse Sense", "Dog Days") < 0.4);
         assert!(similarity("Allcreaturesgreatandsmall", "All Creatures Great and Small") > 0.95);
+    }
+
+    #[test]
+    fn run_together_labels_match_but_reworded_titles_do_not_get_that_score() {
+        // The 0.98 shortcut is for a squashed volume label against a
+        // properly spaced title, one side a single run-together token.
+        assert!(similarity("All Creatures Great and Small", "Allcreaturesgreatandsmall") > 0.95);
+        // Same letters, differently worded titles are compared as written,
+        // not treated as the same name.
+        let reworded = similarity("Now Here Man", "Nowhere Man");
+        assert!(reworded < 0.9, "{reworded}");
+        assert!(reworded > 0.5, "{reworded}");
+        // A partially merged OCR reading of the real title still matches,
+        // because the bigram comparison now counts the spaces it keeps.
+        assert!(similarity("Outof Practice", "Out of Practice") >= 0.85);
     }
 
     #[test]

@@ -1237,8 +1237,11 @@ TRANSIENT_REASONS = [re.compile(pattern) for pattern in (
     # disc-identify since). Those holds, and any later cut-off, are retried.
     r"^Bonsai could not split the label: Bonsai reply (?:is not the requested JSON|was cut off)",
     # A menu reading cut off at its token limit (long reasoning) is a
-    # sampling accident like the label split above, not a verdict on the menu.
-    r"^Bonsai could not read the menus: Bonsai reply was cut off",
+    # sampling accident like the label split above, not a verdict on the
+    # menu. The identifier now keeps the frames that did read; a partial
+    # read that still cannot name the disc, and a total failure whose
+    # batches each cut off, are retried the same way.
+    r"^Bonsai could not read (?:the menus|some menu frames): .*Bonsai reply was cut off",
     r"^TVmaze (?:search failed|episodes for .+ failed)",
     r"^The OpenSubtitles daily download limit was reached",
     r"^OpenSubtitles comparison is unavailable",
@@ -4440,6 +4443,19 @@ def self_test() -> None:
     assert classify_reasons([
         "Bonsai could not read the menus: Bonsai reply was cut off at its 2048-token "
         "limit before the answer"])["retryable"]
+    # A partial menu read (some frames lost) is retried the same way, whether
+    # the failed batch cut off or the gate answered busy; and a total failure
+    # whose batches each cut off still matches.
+    assert classify_reasons([
+        "Bonsai could not read some menu frames: Bonsai reply was cut off at its "
+        "1500-token limit before the answer"])["retryable"]
+    assert classify_reasons([
+        "Bonsai could not read the menus: Bonsai reply was cut off at its 1500-token "
+        "limit before the answer; Bonsai reply was cut off at its 1500-token limit "
+        "before the answer"])["retryable"]
+    assert classify_reasons([
+        "Bonsai could not read some menu frames: Bonsai returned HTTP 504 Gateway "
+        "Timeout"])["retryable"]
 
     # Library order: the one run of missing episodes with room for the disc,
     # rolling into the next season once the provider says one is complete.

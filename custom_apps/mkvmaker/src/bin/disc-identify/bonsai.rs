@@ -29,6 +29,10 @@ pub struct MenuReading {
     pub disc_number: Option<u32>,
     pub entries: Vec<MenuEntry>,
     pub frames_read: usize,
+    /// Why a frame batch could not be read; the frames that did read were
+    /// still used. Empty unless part of the menus was lost.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 const MENU_PROMPT: &str = "These are still frames from one DVD's menus. Transcribe only text \
@@ -118,6 +122,9 @@ impl Bonsai {
     }
 
     /// Read episode listings from menu frames, four frames per request.
+    /// A batch that cannot be read is skipped and noted in `warnings`; the
+    /// frames that did read still name the disc, so one failing batch no
+    /// longer loses the rest. Only a total failure is an error.
     pub fn read_menu(&self, frames: &[Vec<u8>]) -> Result<MenuReading> {
         let schema = json!({
             "type": "object",
@@ -146,7 +153,13 @@ impl Bonsai {
                     "image_url": {"url": format!("data:image/jpeg;base64,{encoded}")}
                 }));
             }
-            let answer = self.chat_json(content, schema.clone(), 1500, true)?;
+            let answer = match self.chat_json(content, schema.clone(), 1500, true) {
+                Ok(answer) => answer,
+                Err(error) => {
+                    reading.warnings.push(format!("{error:#}"));
+                    continue;
+                }
+            };
             reading.frames_read += batch.len();
             if reading.series_title.is_none() {
                 reading.series_title = answer["series_title"]
@@ -190,6 +203,9 @@ impl Bonsai {
                     reading.entries.push(entry);
                 }
             }
+        }
+        if reading.frames_read == 0 && !frames.is_empty() {
+            bail!("{}", reading.warnings.join("; "));
         }
         Ok(reading)
     }

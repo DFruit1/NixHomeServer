@@ -183,9 +183,11 @@ struct Assignment {
 }
 
 /// Outcome schema. 2 added `discDiagnostics`, `contentDiagnostics` and
-/// `seasonEpisodeCounts`; every schema-1 field keeps its meaning. The import
-/// worker stores this object in each disc's `.identify.json` evidence, which
-/// the evaluation harness reads, so fields are only ever added.
+/// `seasonEpisodeCounts`, and later the nested `menu.warnings` list (frame
+/// batches lost to a Bonsai failure); every schema-1 field keeps its
+/// meaning. The import worker stores this object in each disc's
+/// `.identify.json` evidence, which the evaluation harness reads, so fields
+/// are only ever added.
 const OUTCOME_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize)]
@@ -703,6 +705,11 @@ fn run_disc(args: &DiscArgs) -> Result<Outcome> {
                     .push("The disc has no readable menu frames.".into()),
                 Ok(frames) => match model.read_menu(&frames) {
                     Ok(menu) => {
+                        for warning in &menu.warnings {
+                            outcome
+                                .reasons
+                                .push(format!("Bonsai could not read some menu frames: {warning}"));
+                        }
                         if menu.entries.is_empty() {
                             outcome
                                 .reasons
@@ -2339,6 +2346,7 @@ mod tests {
                 },
             ],
             frames_read: 2,
+            warnings: Vec::new(),
         };
         assert_eq!(menu_matches(&reading, &episodes), vec![(1, 5), (1, 6)]);
     }
