@@ -42,6 +42,14 @@ const EDIT_EXTENSION: Record<EditFormat, string> = {
   "modern-av1": "mkv",
 };
 
+const FORMAT_HINT: Record<EditFormat, string> = {
+  "compatible-mp4": "Plays on almost every device and browser.",
+  "compatible-mkv":
+    "Keeps every subtitle; plays in the Videos app and most browsers.",
+  "efficient-hevc": "About half the size; older devices may need conversion.",
+  "modern-av1": "Smallest files; recent devices only.",
+};
+
 const ACTIVE_STATES = new Set(["queued", "encoding", "installing"]);
 const CLIP_MAX_SECONDS = 30;
 
@@ -126,9 +134,10 @@ export const VideoEditingView = component$<{
     gifAlbumId: "",
     gifAlbumName: "GIF",
     gifBusy: false,
-    gifNotice: "",
+    gifNotice: null as { albumId: string; albumName: string } | null,
     gifError: "",
   });
+  const subtitlesOpen = useSignal(false);
 
   const chooseVideo = $((item: CatalogItem) => {
     if (state.selected?.id === item.id) return;
@@ -141,7 +150,7 @@ export const VideoEditingView = component$<{
     state.actionError = "";
     state.jobs = [];
     state.gifStart = 0;
-    state.gifNotice = "";
+    state.gifNotice = null;
     state.gifError = "";
     state.transcriptNotice = "";
     state.transcriptError = "";
@@ -348,7 +357,7 @@ export const VideoEditingView = component$<{
     state.gifSeconds = seconds;
     const start = Math.max(0, state.gifStart);
     state.gifBusy = true;
-    state.gifNotice = "";
+    state.gifNotice = null;
     state.gifError = "";
     try {
       const created = await api<VideoClip>(
@@ -364,7 +373,10 @@ export const VideoEditingView = component$<{
         },
         180_000,
       );
-      state.gifNotice = `GIF saved to ${created.albumName}.`;
+      state.gifNotice = {
+        albumId: created.albumId,
+        albumName: created.albumName,
+      };
     } catch (error) {
       state.gifError = readableError(error);
     } finally {
@@ -439,6 +451,37 @@ export const VideoEditingView = component$<{
       state.conversionRoots.find((root) => root.id === item.rootId)?.path ?? ""
     );
   };
+  const rangeEnd = () =>
+    state.end > 0 ? state.end : state.duration > 0 ? state.duration : 0;
+  const keepsWholeVideo = () =>
+    state.start <= 0.05 &&
+    (state.duration <= 0 || rangeEnd() >= state.duration - 0.05);
+  const rangeSummary = () => {
+    if (state.duration <= 0) return "Whole video";
+    if (keepsWholeVideo()) return `Whole video · ${clockTime(state.duration)}`;
+    return `Keeping ${clockTime(state.start)}–${clockTime(rangeEnd())} of ${clockTime(state.duration)}`;
+  };
+  const rangeStartPercent = () =>
+    state.duration > 0
+      ? Math.min(100, Math.max(0, (state.start / state.duration) * 100))
+      : 0;
+  const rangeEndPercent = () =>
+    state.duration > 0
+      ? Math.min(100, Math.max(0, (rangeEnd() / state.duration) * 100))
+      : 100;
+  const resetRange = $(() => {
+    state.start = 0;
+    state.end = state.duration;
+  });
+  const recentJobs = () =>
+    [...state.jobs]
+      .sort(
+        (a, b) =>
+          Number(ACTIVE_STATES.has(b.state)) -
+            Number(ACTIVE_STATES.has(a.state)) ||
+          (b.finishedAt ?? b.createdAt) - (a.finishedAt ?? a.createdAt),
+      )
+      .slice(0, 3);
 
   return (
     <section class="video-editing-page" aria-label="Video editing">
@@ -515,6 +558,7 @@ export const VideoEditingView = component$<{
                 controls
                 playsInline
                 preload="metadata"
+                poster={`/api/v1/items/${encodeURIComponent(selected()!.id)}/image`}
                 src={`/api/v1/items/${encodeURIComponent(selected()!.id)}/stream`}
                 onLoadedMetadata$={(_, element) => {
                   state.duration = Number.isFinite(element.duration)
@@ -530,6 +574,54 @@ export const VideoEditingView = component$<{
               </div>
             </section>
 
+            {recentJobs().length > 0 && (
+              <section
+                class="video-edit-recent"
+                aria-label="Recent work for this video"
+              >
+                <ul class="video-edit-jobs">
+                  {recentJobs().map((job) => (
+                    <li key={job.id}>
+                      <div>
+                        <strong>
+                          {job.format === "audio-mp3"
+                            ? "Audio copy"
+                            : job.mode === "copy"
+                              ? "Edited copy"
+                              : "Conversion"}
+                        </strong>
+                        <span>{jobState(job)}</span>
+                      </div>
+                      {ACTIVE_STATES.has(job.state) && (
+                        <div
+                          class="video-edit-progress"
+                          role="progressbar"
+                          aria-label={
+                            job.format === "audio-mp3"
+                              ? "Copying audio"
+                              : "Saving a copy"
+                          }
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-valuenow={
+                            typeof job.progress === "number"
+                              ? Math.round(job.progress * 100)
+                              : undefined
+                          }
+                        >
+                          <span
+                            style={{
+                              transform: `scaleX(${job.progress ?? 0})`,
+                            }}
+                          />
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
             <section
               class="video-edit-section"
               aria-labelledby="save-copy-heading"
@@ -544,19 +636,44 @@ export const VideoEditingView = component$<{
                   Editing requires the Media Manager editor group.
                 </p>
               )}
+              <div class="video-edit-range-summary">
+                <span>{rangeSummary()}</span>
+                {!keepsWholeVideo() && (
+                  <button
+                    type="button"
+                    class="text-button"
+                    onClick$={resetRange}
+                  >
+                    Use the whole video
+                  </button>
+                )}
+              </div>
+              <div class="video-edit-range" aria-hidden="true">
+                <span
+                  style={{
+                    left: `${rangeStartPercent()}%`,
+                    width: `${Math.max(0, rangeEndPercent() - rangeStartPercent())}%`,
+                  }}
+                />
+              </div>
               <div class="video-edit-times">
                 <label>
-                  <span>Start</span>
+                  <span>
+                    Start (seconds)
+                    <small class="video-edit-clock">
+                      {clockTime(state.start)}
+                    </small>
+                  </span>
                   <input
                     type="number"
                     min={0}
+                    max={state.duration > 0 ? state.duration : undefined}
                     step={0.1}
                     value={state.start}
                     onInput$={(_, element) => {
                       state.start = Math.max(0, Number(element.value) || 0);
                     }}
                   />
-                  <small>{clockTime(state.start)}</small>
                   <button
                     type="button"
                     class="text-button"
@@ -566,17 +683,22 @@ export const VideoEditingView = component$<{
                   </button>
                 </label>
                 <label>
-                  <span>End</span>
+                  <span>
+                    End (seconds)
+                    <small class="video-edit-clock">
+                      {clockTime(state.end)}
+                    </small>
+                  </span>
                   <input
                     type="number"
                     min={0}
+                    max={state.duration > 0 ? state.duration : undefined}
                     step={0.1}
                     value={state.end}
                     onInput$={(_, element) => {
                       state.end = Math.max(0, Number(element.value) || 0);
                     }}
                   />
-                  <small>{clockTime(state.end)}</small>
                   <button
                     type="button"
                     class="text-button"
@@ -599,6 +721,9 @@ export const VideoEditingView = component$<{
                       </option>
                     ))}
                   </select>
+                  <small class="video-edit-help">
+                    {FORMAT_HINT[state.format]}
+                  </small>
                 </label>
                 <label>
                   <span>New file name</span>
@@ -608,6 +733,9 @@ export const VideoEditingView = component$<{
                       state.outputName = element.value;
                     }}
                   />
+                  <small class="video-edit-help">
+                    Keep the .{EDIT_EXTENSION[state.format]} extension.
+                  </small>
                 </label>
               </div>
               <button
@@ -628,44 +756,23 @@ export const VideoEditingView = component$<{
                   {state.actionError}
                 </p>
               )}
-              {state.jobs.length > 0 && (
-                <ul class="video-edit-jobs" aria-label="Edits for this video">
-                  {state.jobs.map((job) => (
-                    <li key={job.id}>
-                      <div>
-                        <strong>
-                          {job.format === "audio-mp3"
-                            ? "Audio copy"
-                            : job.mode === "copy"
-                              ? "Edited copy"
-                              : "Conversion"}
-                        </strong>
-                        <span>{jobState(job)}</span>
-                      </div>
-                      {ACTIVE_STATES.has(job.state) && (
-                        <div
-                          class="video-edit-progress"
-                          role="progressbar"
-                          aria-label="Saving a copy"
-                          aria-valuemin={0}
-                          aria-valuemax={100}
-                          aria-valuenow={
-                            typeof job.progress === "number"
-                              ? Math.round(job.progress * 100)
-                              : undefined
-                          }
-                        >
-                          <span
-                            style={{
-                              transform: `scaleX(${job.progress ?? 0})`,
-                            }}
-                          />
-                        </div>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
+            </section>
+
+            <section
+              class="video-edit-section"
+              aria-labelledby="copy-audio-heading"
+            >
+              <h2 id="copy-audio-heading">Copy audio</h2>
+              <MediaCopy
+                key={selected()!.id}
+                initialItemId={selected()!.id}
+                embedded
+                canEdit={props.session?.canEdit ?? false}
+                jobs={state.jobs}
+                onQueued$={() => {
+                  jobRefresh.value++;
+                }}
+              />
             </section>
 
             {props.immichUrl && (
@@ -679,10 +786,16 @@ export const VideoEditingView = component$<{
                 </p>
                 <div class="video-edit-times">
                   <label>
-                    <span>Start</span>
+                    <span>
+                      Start (seconds)
+                      <small class="video-edit-clock">
+                        {clockTime(state.gifStart)}
+                      </small>
+                    </span>
                     <input
                       type="number"
                       min={0}
+                      max={state.duration > 0 ? state.duration : undefined}
                       step={0.1}
                       value={state.gifStart}
                       onInput$={(_, element) => {
@@ -692,7 +805,6 @@ export const VideoEditingView = component$<{
                         );
                       }}
                     />
-                    <small>{clockTime(state.gifStart)}</small>
                     <button
                       type="button"
                       class="text-button"
@@ -751,7 +863,15 @@ export const VideoEditingView = component$<{
                 </button>
                 {state.gifNotice && (
                   <p class="message success" role="status">
-                    {state.gifNotice}
+                    GIF saved to{" "}
+                    <a
+                      href={`${props.immichUrl.replace(/\/+$/, "")}/albums/${encodeURIComponent(state.gifNotice.albumId)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {state.gifNotice.albumName}
+                    </a>
+                    .
                   </p>
                 )}
                 {state.gifError && (
@@ -764,67 +884,52 @@ export const VideoEditingView = component$<{
 
             <section
               class="video-edit-section"
-              aria-labelledby="copy-audio-heading"
-            >
-              <h2 id="copy-audio-heading">Copy audio</h2>
-              <MediaCopy
-                key={selected()!.id}
-                initialItemId={selected()!.id}
-                embedded
-                canEdit={props.session?.canEdit ?? false}
-                jobs={state.jobs}
-                onQueued$={() => {
-                  jobRefresh.value++;
-                }}
-              />
-            </section>
-
-            <section
-              class="video-edit-section"
               aria-labelledby="transcript-heading"
             >
-              <h2 id="transcript-heading">Transcript and subtitles</h2>
+              <h2 id="transcript-heading">Create a transcript</h2>
               <div class="video-edit-transcript">
                 <p class="quiet-copy">
-                  Transcripts become subtitle choices below. Editing makes new
-                  files; the video is not changed.
+                  A transcript adds subtitle choices below. The video is not
+                  changed.
                 </p>
-                <label>
-                  <span>Engine</span>
-                  <select
-                    value={state.transcriptBackend}
-                    disabled={!transcriptionAvailable()}
-                    onChange$={(_, element) => {
-                      state.transcriptBackend =
-                        element.value === "whisper" ? "whisper" : "parakeet";
-                    }}
-                  >
-                    <option value="parakeet">English only (Parakeet)</option>
-                    <option value="whisper">Any language (Whisper)</option>
-                  </select>
-                </label>
-                <label class="video-edit-check">
-                  <input
-                    type="checkbox"
-                    checked={state.transcriptDiarize}
-                    disabled={!transcriptionAvailable()}
-                    onChange$={(_, element) => {
-                      state.transcriptDiarize = element.checked;
-                    }}
-                  />
-                  <span>Identify speakers</span>
-                </label>
-                <label class="video-edit-check">
-                  <input
-                    type="checkbox"
-                    checked={state.transcriptCleanup}
-                    disabled={!transcriptionAvailable()}
-                    onChange$={(_, element) => {
-                      state.transcriptCleanup = element.checked;
-                    }}
-                  />
-                  <span>Correct names and misheard words</span>
-                </label>
+                <div class="video-edit-transcript-options">
+                  <label>
+                    <span>Engine</span>
+                    <select
+                      value={state.transcriptBackend}
+                      disabled={!transcriptionAvailable()}
+                      onChange$={(_, element) => {
+                        state.transcriptBackend =
+                          element.value === "whisper" ? "whisper" : "parakeet";
+                      }}
+                    >
+                      <option value="parakeet">English only (Parakeet)</option>
+                      <option value="whisper">Any language (Whisper)</option>
+                    </select>
+                  </label>
+                  <label class="video-edit-check">
+                    <input
+                      type="checkbox"
+                      checked={state.transcriptDiarize}
+                      disabled={!transcriptionAvailable()}
+                      onChange$={(_, element) => {
+                        state.transcriptDiarize = element.checked;
+                      }}
+                    />
+                    <span>Identify speakers</span>
+                  </label>
+                  <label class="video-edit-check">
+                    <input
+                      type="checkbox"
+                      checked={state.transcriptCleanup}
+                      disabled={!transcriptionAvailable()}
+                      onChange$={(_, element) => {
+                        state.transcriptCleanup = element.checked;
+                      }}
+                    />
+                    <span>Correct names and misheard words</span>
+                  </label>
+                </div>
                 <div class="video-edit-inline-actions">
                   <button
                     type="button"
@@ -856,7 +961,7 @@ export const VideoEditingView = component$<{
                     class="text-button"
                     onClick$={() => state.subtitleKey++}
                   >
-                    Refresh transcript list
+                    Refresh transcript choices
                   </button>
                 </div>
                 {!transcriptionAvailable() && (
@@ -881,19 +986,46 @@ export const VideoEditingView = component$<{
                   </p>
                 )}
               </div>
-              <SubtitleView
-                key={`${selected()!.id}-${state.subtitleKey}`}
-                item={selected()}
-                roots={props.roots}
-                session={props.session}
-                status={props.status}
-              />
+            </section>
+
+            <section
+              class="video-edit-section"
+              aria-labelledby="subtitles-heading"
+            >
+              <h2 id="subtitles-heading">Subtitles</h2>
+              <details
+                class="source-accordion video-edit-subtitles"
+                onToggle$={(_, element) => (subtitlesOpen.value = element.open)}
+              >
+                <summary class="source-accordion-summary">
+                  <span class="source-accordion-title">
+                    Search, upload or install subtitles
+                  </span>
+                  <span class="source-accordion-chevron">
+                    <Icon name="chevron-down" size={16} />
+                  </span>
+                </summary>
+                {subtitlesOpen.value && (
+                  <div class="source-accordion-body">
+                    <SubtitleView
+                      key={`${selected()!.id}-${state.subtitleKey}`}
+                      item={selected()}
+                      roots={props.roots}
+                      session={props.session}
+                      status={props.status}
+                    />
+                  </div>
+                )}
+              </details>
             </section>
           </>
         ) : (
-          <p class="quiet-copy">
-            {state.loading ? "Loading videos…" : "Choose a video to edit."}
-          </p>
+          <div class="video-edit-empty">
+            <Icon name="pencil" size={30} />
+            <p>
+              {state.loading ? "Loading videos…" : "Choose a video to edit."}
+            </p>
+          </div>
         )}
       </div>
     </section>
