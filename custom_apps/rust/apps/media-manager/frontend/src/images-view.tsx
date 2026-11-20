@@ -41,17 +41,17 @@ const tagLabel = (tag: string) => tag.replaceAll("_", " ");
 // Short names for the compact sort control; the native picker keeps full names.
 const sortLabels: Record<string, string> = {
   capturedAt: "Date",
-  aesthetic: "Looks good",
-  keeper: "Worth keeping",
-  cover: "Good cover photo",
+  aesthetic: "Aesthetic",
+  keeper: "Keeper",
+  cover: "Cover",
   scores: "Best overall",
   tag: "Best tag match",
 };
-// Plain names for the three relative analysis scores (each 0–100).
+// Names for the three relative analysis scores (each shown as a percentage).
 const scoreNames = {
-  aesthetic: "Looks good",
-  keeper: "Worth keeping",
-  cover: "Good cover photo",
+  aesthetic: "Aesthetic",
+  keeper: "Keeper",
+  cover: "Cover",
 } as const;
 const scoreLine = (scores: EyeAnalysis["scores"]) =>
   (["aesthetic", "keeper", "cover"] as const)
@@ -1035,9 +1035,9 @@ export const ImagesView = component$<{
                         <option value="relevance">Relevance</option>
                       )}
                       <option value="capturedAt">Date taken</option>
-                      <option value="aesthetic">Looks good</option>
-                      <option value="keeper">Worth keeping</option>
-                      <option value="cover">Good cover photo</option>
+                      <option value="aesthetic">Aesthetic</option>
+                      <option value="keeper">Keeper</option>
+                      <option value="cover">Cover</option>
                       <option value="scores">Best overall</option>
                       <option value="tag">Best tag match</option>
                     </select>
