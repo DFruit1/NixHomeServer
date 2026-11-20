@@ -2173,6 +2173,84 @@ async fn metadata_inspection_includes_bounded_audiobookshelf_and_kavita_snapshot
 }
 
 #[tokio::test]
+async fn blank_application_snapshot_values_do_not_hide_an_items_own_metadata() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir_all(temp.path().join("shared/_Books/Author/Novel"))
+        .expect("book directory");
+    std::fs::write(
+        temp.path().join("shared/_Books/Author/Novel/Novel.epub"),
+        b"book",
+    )
+    .expect("book");
+    let mut config = AppConfig::for_test(
+        temp.path().join("shared").to_str().expect("shared path"),
+        temp.path().join("users").to_str().expect("users path"),
+    );
+    config.state_dir = temp.path().join("state");
+    std::fs::create_dir_all(&config.state_dir).expect("state directory");
+    let kavita_cache = config.state_dir.join("kavita.json");
+    std::fs::write(
+        &kavita_cache,
+        serde_json::json!({"schemaVersion":1,"entries":[{
+            "rootId":"shared-books","ownerUsername":null,"relativePath":"Author/Novel",
+            "itemId":"42","observedAt":1710000001,"title":"","authors":[],"genres":[],
+            "providerIds":{"webLinks":""}
+        }]})
+        .to_string(),
+    )
+    .expect("Kavita cache");
+    config.kavita_metadata_cache_file = Some(kavita_cache);
+    let database = config.database_path();
+    Catalog::initialize(&database).expect("catalog");
+    let app = router(AppState {
+        config,
+        catalog: CatalogHandle::new(database),
+        jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+        provider_accounts_cache: Arc::default(),
+        metadata_memo: Arc::default(),
+        frontend_index: Arc::new(tokio::sync::OnceCell::new()),
+    });
+    scan_root(&app, "shared-books").await;
+
+    let book_id = item_id_by_kind(&app, "shared-books", "book").await;
+    let book = app
+        .clone()
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{book_id}/metadata"
+        )))
+        .await
+        .expect("book metadata");
+    let body = to_bytes(book.into_body(), 128 * 1024)
+        .await
+        .expect("book body");
+    let metadata: Value = serde_json::from_slice(&body).expect("book JSON");
+    assert_eq!(metadata["title"], "Novel");
+    assert_eq!(metadata["fieldSources"]["title"], "filename");
+
+    let response = app
+        .oneshot(viewer_get_request(
+            "/api/v1/metadata/issues?rootId=shared-books",
+        ))
+        .await
+        .expect("metadata issues response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 128 * 1024)
+        .await
+        .expect("metadata issues body");
+    let payload: Value = serde_json::from_slice(&body).expect("metadata issues JSON");
+    let health = payload["results"][0]["health"]
+        .as_array()
+        .expect("health issues");
+    assert!(
+        !health
+            .iter()
+            .any(|issue| issue["code"] == "missing-title"),
+        "a blank application title must not hide the file's own title: {health:?}"
+    );
+}
+
+#[tokio::test]
 async fn installed_subtitles_are_inventoryable_and_existing_srt_cues_are_previewable() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let movie_dir = temp.path().join("shared/_Videos/Movies/Arrival (2016)");

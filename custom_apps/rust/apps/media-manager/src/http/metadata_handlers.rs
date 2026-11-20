@@ -2751,9 +2751,83 @@ fn merge_metadata(
         "subtitleStreams",
     ];
     for field in FIELDS {
-        if let Some(value) = entry.get(*field).filter(|value| !value.is_null()) {
+        if let Some(value) = entry.get(*field).filter(|value| carries_value(value)) {
             base.insert((*field).to_string(), value.clone());
             field_sources.insert((*field).to_string(), source.to_string());
         }
+    }
+}
+
+/// An observation only overrides a merged field when it actually says
+/// something. Application snapshots often carry empty strings and empty lists
+/// for fields the app has not set; letting those win would hide a title, author
+/// or provider ID that the file itself already embeds.
+fn carries_value(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(entries) => entries.values().any(carries_value),
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn blank_application_values_do_not_hide_metadata_the_file_already_has() {
+        let mut merged = json!({
+            "title": "How Do We Know the Bible is True?",
+            "authors": ["Ken Ham", "Bodie Hodge"],
+            "genres": ["Religion"],
+            "providerIds": {"google": "abc"},
+            "year": 2011,
+        });
+        let mut sources = BTreeMap::new();
+
+        merge_metadata(
+            &mut merged,
+            &json!({
+                "title": "",
+                "subtitle": "   ",
+                "authors": [],
+                "genres": [],
+                "providerIds": {"webLinks": ""},
+                "year": 2011,
+            }),
+            "kavita",
+            &mut sources,
+        );
+
+        assert_eq!(merged["title"], "How Do We Know the Bible is True?");
+        assert_eq!(merged["authors"], json!(["Ken Ham", "Bodie Hodge"]));
+        assert_eq!(merged["genres"], json!(["Religion"]));
+        assert_eq!(merged["providerIds"], json!({"google": "abc"}));
+        assert_eq!(sources.get("title"), None);
+        assert_eq!(sources.get("authors"), None);
+        // A field the observation really sets still takes precedence.
+        assert_eq!(merged["year"], 2011);
+        assert_eq!(sources.get("year").map(String::as_str), Some("kavita"));
+    }
+
+    #[test]
+    fn a_later_source_still_replaces_a_real_value() {
+        let mut merged = json!({"title": "Embedded title", "authors": ["Old"]});
+        let mut sources = BTreeMap::new();
+
+        merge_metadata(
+            &mut merged,
+            &json!({"title": "App title", "authors": ["New"]}),
+            "kavita",
+            &mut sources,
+        );
+
+        assert_eq!(merged["title"], "App title");
+        assert_eq!(merged["authors"], json!(["New"]));
+        assert_eq!(sources.get("title").map(String::as_str), Some("kavita"));
     }
 }
