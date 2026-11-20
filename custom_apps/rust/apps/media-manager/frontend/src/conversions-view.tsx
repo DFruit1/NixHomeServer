@@ -568,7 +568,7 @@ export const ConversionsView = component$<{
       seen.add(match.name);
       seen.add(match.name.replace(/\.iso$/i, ""));
       queuedEntries.push({
-        title: match.volumeId || cleanStem,
+        title: isoTitle(match),
         isoName: match.name,
       });
     } else {
@@ -584,7 +584,7 @@ export const ConversionsView = component$<{
     if (!seen.has(stem) && !seen.has(iso.name)) {
       seen.add(stem);
       queuedEntries.push({
-        title: iso.volumeId || stem,
+        title: isoTitle(iso),
         isoName: iso.name,
       });
     }
