@@ -55,7 +55,7 @@ const scoreNames = {
 } as const;
 const scoreLine = (scores: EyeAnalysis["scores"]) =>
   (["aesthetic", "keeper", "cover"] as const)
-    .map((score) => `${scoreNames[score]} ${Math.round(scores[score] * 100)}`)
+    .map((score) => `${scoreNames[score]} ${Math.round(scores[score] * 100)}%`)
     .join(" · ");
 /** When the photo was taken; the file name only when no date is known. */
 const takenLabel = (image: ImmichImage, withTime = true): string => {
@@ -75,6 +75,7 @@ export const ImagesView = component$<{
 }>((props) => {
   const layout = useCollectionView(props, "images", "tiles-3");
   const grid = useSignal<HTMLElement>();
+  const loadMoreSentinel = useSignal<HTMLElement>();
   const selection = useStore({
     active: false,
     ids: [] as string[],
@@ -121,6 +122,7 @@ export const ImagesView = component$<{
     nextCursor: null as number | null,
     loading: true,
     loadingMore: false,
+    emptyBatch: false,
     selecting: false,
     analyzing: false,
     markingForRetag: false,
@@ -200,14 +202,13 @@ export const ImagesView = component$<{
       state.appliedFilters = filters.toString();
       state.index = result.index;
       state.tagMatches = result.tagMatches;
-      state.items = more
-        ? [
-            ...state.items,
-            ...result.items.filter(
-              (item) => !state.items.some((old) => old.id === item.id),
-            ),
-          ]
-        : result.items;
+      const fresh = result.items.filter(
+        (item) => !state.items.some((old) => old.id === item.id),
+      );
+      state.items = more ? [...state.items, ...fresh] : result.items;
+      // Auto-load must not race through empty continuation batches; leave the
+      // next page on the explicit Load more control instead.
+      state.emptyBatch = more && !fresh.length;
       state.appliedQuery = query;
       state.nextPage = result.nextPage;
       state.nextCursor = result.nextCursor ?? null;
@@ -250,6 +251,7 @@ export const ImagesView = component$<{
             selection.ids = ids.slice(0, 200);
             selection.error =
               ids.length > 200 ? "Select up to 200 photos at a time." : "";
+            if (!selection.ids.length) selection.active = false;
           },
           start: () => {
             selection.active = true;
@@ -259,6 +261,46 @@ export const ImagesView = component$<{
           },
         }),
       );
+    },
+    { strategy: "document-ready" },
+  );
+
+  // Keep the gallery continuous: when the end sentinel comes near the
+  // viewport, pull the next page. Re-runs after each page so a short batch
+  // that still leaves the sentinel visible continues filling the scroller.
+  useVisibleTask$(
+    ({ track, cleanup }) => {
+      const sentinel = track(() => loadMoreSentinel.value);
+      if (!sentinel) return;
+      track(() => state.items.length);
+      track(() => state.nextPage);
+      track(() => state.nextCursor);
+      track(() => state.loading);
+      track(() => state.loadingMore);
+      track(() => state.emptyBatch);
+      const scroller = sentinel.closest<HTMLElement>(".images-browser-body");
+      const check = () => {
+        if (
+          state.loading ||
+          state.loadingMore ||
+          state.emptyBatch ||
+          !state.items.length
+        )
+          return;
+        if (!state.nextPage && state.nextCursor === null) return;
+        // Start one near-screenful early; a larger margin would preload
+        // several short batches before the user reaches the gallery end.
+        if (sentinel.getBoundingClientRect().top <= window.innerHeight + 80)
+          void load(true);
+      };
+      const frame = requestAnimationFrame(check);
+      window.addEventListener("scroll", check, { passive: true });
+      scroller?.addEventListener("scroll", check, { passive: true });
+      cleanup(() => {
+        cancelAnimationFrame(frame);
+        window.removeEventListener("scroll", check);
+        scroller?.removeEventListener("scroll", check);
+      });
     },
     { strategy: "document-ready" },
   );
@@ -274,9 +316,13 @@ export const ImagesView = component$<{
 
   const togglePhoto = $((id: string) => {
     selection.error = "";
-    if (selection.ids.includes(id))
+    if (selection.ids.includes(id)) {
       selection.ids = selection.ids.filter((value) => value !== id);
-    else if (selection.ids.length < 200) selection.ids = [...selection.ids, id];
+      // The last deselected photo ends selection mode instead of leaving an
+      // empty action bar with 0 selected.
+      if (!selection.ids.length) selection.active = false;
+    } else if (selection.ids.length < 200)
+      selection.ids = [...selection.ids, id];
     else selection.error = "Select up to 200 photos at a time.";
   });
 
@@ -718,7 +764,7 @@ export const ImagesView = component$<{
                             <dt>{scoreNames[score]}</dt>
                             <dd>
                               {Math.round(state.analysis!.scores[score] * 100)}
-                              <span class="image-score-scale"> out of 100</span>
+                              <span class="image-score-scale">%</span>
                             </dd>
                           </div>
                         ),
@@ -1174,7 +1220,7 @@ export const ImagesView = component$<{
                 <fieldset class="images-filter-group">
                   <legend>
                     Minimum scores
-                    {!semanticSearch.value ? " and tag match" : ""} (out of 100)
+                    {!semanticSearch.value ? " and tag match" : ""} (%)
                   </legend>
                   <div
                     class={`images-filter-row images-filter-row--${semanticSearch.value ? 3 : 4}`}
@@ -1368,8 +1414,16 @@ export const ImagesView = component$<{
                             }}
                           />
                         ))}
-                      <span class={tiles ? "sr-only" : "image-item-copy"}>
-                        <span class="image-item-name">{takenLabel(image)}</span>
+                      <span
+                        class={
+                          tiles
+                            ? "image-item-copy image-item-copy--tiles"
+                            : "image-item-copy"
+                        }
+                      >
+                        <span class="image-item-name">
+                          {takenLabel(image, !tiles)}
+                        </span>
                         {layout.view.value === "detailed-list" && (
                           <>
                             <span class="image-item-meta">
@@ -1377,7 +1431,7 @@ export const ImagesView = component$<{
                             </span>
                             <span class="image-item-meta">
                               {image.analysis
-                                ? `${scoreLine(image.analysis.scores)} (out of 100)`
+                                ? scoreLine(image.analysis.scores)
                                 : "Not analysed yet"}
                             </span>
                             {!!image.decisionTags?.length && (
@@ -1400,14 +1454,23 @@ export const ImagesView = component$<{
                   ))}
                 </div>
                 {(state.nextPage || state.nextCursor !== null) && (
-                  <button
-                    type="button"
-                    class="secondary-button images-load-more"
-                    disabled={state.loadingMore}
-                    onClick$={() => load(true)}
-                  >
-                    {state.loadingMore ? "Loading photos…" : "Load more photos"}
-                  </button>
+                  <>
+                    <div
+                      ref={loadMoreSentinel}
+                      class="images-load-sentinel"
+                      aria-hidden="true"
+                    />
+                    <button
+                      type="button"
+                      class="secondary-button images-load-more"
+                      disabled={state.loadingMore}
+                      onClick$={() => load(true)}
+                    >
+                      {state.loadingMore
+                        ? "Loading photos…"
+                        : "Load more photos"}
+                    </button>
+                  </>
                 )}
                 {state.error && !state.setupRequired && !state.unavailable && (
                   <button

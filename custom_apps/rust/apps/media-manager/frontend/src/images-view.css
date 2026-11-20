@@ -687,8 +687,21 @@
   padding: 8px 2px;
   font-size: var(--text-sm);
 }
+.image-item-copy--tiles {
+  padding: 6px 2px 2px;
+  color: var(--ink-faint);
+  font-size: var(--text-xs);
+}
+.image-item-copy--tiles .image-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .image-item-name {
   overflow-wrap: anywhere;
+}
+.images-load-sentinel {
+  height: 1px;
 }
 .image-item-meta {
   color: var(--ink-soft);

@@ -35,6 +35,9 @@ export function installPhotoSelection(
       ? base.filter((id) => !range.includes(id))
       : [...new Set([...base, ...range])];
     if (next.join() !== selection.get().join()) selection.set(next);
+    // Deselecting the last photo ends selection mode; stop the drag so it
+    // cannot keep repainting a selection that is no longer active.
+    if (!selection.get().length) stop();
   };
   const hit = () => {
     const tile = document
