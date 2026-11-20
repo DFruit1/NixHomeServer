@@ -3,7 +3,13 @@ import { wireJson } from "./test-support/wire-fixtures";
 
 import { createDOM } from "@builder.io/qwik/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { VideosView, inVideoCategory, videoInfo } from "./videos-view";
+import {
+  VideosView,
+  inVideoCategory,
+  videoChapterNumber,
+  videoEntries,
+  videoInfo,
+} from "./videos-view";
 
 const videoRoots = [
   {
@@ -109,6 +115,137 @@ describe("video categories", () => {
     ).toBe(false);
   });
 
+  it("groups a split YouTube video's chapter files into one library row", () => {
+    expect(videoChapterNumber("_YouTube/Album/01 - Intro.mkv")).toBe(1);
+    expect(videoChapterNumber("_YouTube/Album/02. Theme.mkv")).toBe(2);
+    expect(videoChapterNumber("_YouTube/Album/Hidden track.mkv")).toBeNull();
+    expect(videoChapterNumber("_Movies/1917 (2019).mkv")).toBeNull();
+
+    const item = (id: string, relativePath: string) => ({
+      id,
+      rootId: "personal-videos",
+      relativePath,
+      mediaKind: "video",
+      sizeBytes: 1024,
+      modifiedNs: 1,
+      fingerprint: id,
+    });
+    const entries = videoEntries([
+      item("c1", "_YouTube/Blue Archive/01 - 01. Clear Morning.mkv"),
+      item("c2", "_YouTube/Blue Archive/02 - 02. Signal of Abydos.mkv"),
+      item("a", "_YouTube/Channel/First.mkv"),
+      item("b", "_YouTube/Channel/Second.mkv"),
+    ]);
+
+    const chapters = entries.find((entry) => entry.chapters.length > 0);
+    expect(chapters?.info.title).toBe("Blue Archive");
+    expect(chapters?.info.category).toBe("youtube");
+    expect(chapters?.chapters.map((chapter) => chapter.title)).toEqual([
+      "Clear Morning",
+      "Signal of Abydos",
+    ]);
+    // Ordinary channel videos stay separate rows.
+    expect(
+      entries
+        .filter((entry) => entry.chapters.length === 0)
+        .map((entry) => entry.info.title),
+    ).toEqual(["First", "Second"]);
+  });
+
+  it("plays a grouped video and switches chapters below the player", async () => {
+    const chapterCatalog = [
+      {
+        id: "chapter-1",
+        rootId: "personal-videos",
+        relativePath: "_YouTube/Blue Archive/01 - 01. Clear Morning.mkv",
+        mediaKind: "video",
+        sizeBytes: 1024,
+        modifiedNs: 1,
+        fingerprint: "c1",
+      },
+      {
+        id: "chapter-2",
+        rootId: "personal-videos",
+        relativePath: "_YouTube/Blue Archive/02 - 02. Signal of Abydos.mkv",
+        mediaKind: "video",
+        sizeBytes: 1024,
+        modifiedNs: 1,
+        fingerprint: "c2",
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        if (path.includes("/items?rootId=personal-videos"))
+          return new Response(
+            wireJson({ items: chapterCatalog, nextCursor: null }),
+          );
+        if (path.includes("/metadata"))
+          return new Response(wireJson({ title: "" }));
+        if (path.includes("/transcript"))
+          return new Response(
+            wireJson({ cues: [], requestId: "transcript-1" }),
+          );
+        return new Response(wireJson({ available: false, progress: {} }));
+      }),
+    );
+    const { render, screen, userEvent } = await createDOM();
+    await render(<VideosView roots={videoRoots} />);
+    await vi.waitFor(() => expect(rowTitles(screen)).toContain("Blue Archive"));
+    // The split files are one row, so their individual titles are absent.
+    expect(rowTitles(screen)).not.toContain("01 - 01. Clear Morning");
+
+    const group = Array.from(screen.querySelectorAll(".video-list-copy strong"))
+      .find((node) => node.textContent === "Blue Archive")
+      ?.closest("button");
+    await userEvent(group ?? null, "click");
+    await vi.waitFor(() =>
+      expect(screen.querySelector("video")?.getAttribute("src")).toBe(
+        "/api/v1/items/chapter-1/stream",
+      ),
+    );
+    const chapters = Array.from(
+      screen.querySelectorAll<HTMLButtonElement>(".video-chapter"),
+    );
+    expect(
+      chapters.map(
+        (chapter) => chapter.querySelector(".video-chapter-title")?.textContent,
+      ),
+    ).toEqual(["Clear Morning", "Signal of Abydos"]);
+    expect(chapters[0]?.getAttribute("aria-current")).toBe("true");
+
+    await userEvent(chapters[1] ?? null, "click");
+    await vi.waitFor(() =>
+      expect(screen.querySelector("video")?.getAttribute("src")).toBe(
+        "/api/v1/items/chapter-2/stream",
+      ),
+    );
+    expect(
+      screen
+        .querySelectorAll(".video-chapter")[1]
+        ?.getAttribute("aria-current"),
+    ).toBe("true");
+
+    // Playing through a chapter hands over to the next one, as the split
+    // files were one video.
+    await userEvent(
+      screen.querySelectorAll(".video-chapter")[0] ?? null,
+      "click",
+    );
+    await vi.waitFor(() =>
+      expect(screen.querySelector("video")?.getAttribute("src")).toBe(
+        "/api/v1/items/chapter-1/stream",
+      ),
+    );
+    await userEvent(screen.querySelector("video"), "ended");
+    await vi.waitFor(() =>
+      expect(screen.querySelector("video")?.getAttribute("src")).toBe(
+        "/api/v1/items/chapter-2/stream",
+      ),
+    );
+  });
+
   it("defaults to Videos and keeps Movies and TV shows one choice away", async () => {
     vi.stubGlobal("fetch", fetchFixture());
     const { render, screen, userEvent } = await createDOM();
@@ -116,14 +253,31 @@ describe("video categories", () => {
     await vi.waitFor(() => expect(categorySelect(screen)).toBeTruthy());
     expect(categorySelect(screen)?.getAttribute("value")).toBe("videos");
     await vi.waitFor(() => expect(rowTitles(screen)).toContain("Trip"));
+    // Browsing starts without a player, so the gallery has the whole page.
+    expect(screen.querySelector("video")).toBeFalsy();
+    expect(
+      screen
+        .querySelector(".video-page")
+        ?.classList.contains("video-page--browse"),
+    ).toBe(true);
+    expect(rowTitles(screen)).toContain("Clip");
+    expect(rowTitles(screen)).not.toContain("Arrival (2016)");
+    expect(rowTitles(screen)).not.toContain("Episode 1");
+
+    const clip = Array.from(screen.querySelectorAll(".video-list-copy strong"))
+      .find((node) => node.textContent === "Clip")
+      ?.closest("button");
+    await userEvent(clip ?? null, "click");
+    await vi.waitFor(() =>
+      expect(screen.querySelector("video")?.getAttribute("src")).toBe(
+        "/api/v1/items/youtube-video/stream",
+      ),
+    );
     expect(
       screen
         .querySelector('a[aria-label="Edit this video"]')
         ?.getAttribute("href"),
     ).toBe("?view=video-editing&item=youtube-video");
-    expect(rowTitles(screen)).toContain("Clip");
-    expect(rowTitles(screen)).not.toContain("Arrival (2016)");
-    expect(rowTitles(screen)).not.toContain("Episode 1");
 
     const select = categorySelect(screen);
     if (!select) throw new Error("missing category select");
@@ -134,6 +288,8 @@ describe("video categories", () => {
     );
     // The selector already says Movies, so the group heading is redundant.
     expect(screen.querySelector(".video-list-group h3")).toBeFalsy();
+    // The player belongs to the previous category's selection.
+    expect(screen.querySelector("video")).toBeFalsy();
 
     const shows = categorySelect(screen);
     if (!shows) throw new Error("missing category select");

@@ -106,6 +106,23 @@ const menuOption = (root: ParentNode, name: string) =>
     root.querySelectorAll<HTMLButtonElement>(".playback-settings button"),
   ).find((button) => button.textContent?.startsWith(name));
 
+// Browsing starts without a player; pick an album to reveal the transport.
+const showPlayer = async (
+  screen: HTMLElement,
+  userEvent: (target: Element | null, event: string) => Promise<void>,
+  albumName = "Blue Hour",
+) => {
+  await vi.waitFor(() => expect(screen.textContent).toContain(albumName));
+  const album = Array.from(
+    screen.querySelectorAll<HTMLButtonElement>(".album-button"),
+  ).find((button) => button.textContent?.includes(albumName));
+  expect(album, `album ${albumName}`).toBeTruthy();
+  await userEvent(album ?? null, "click");
+  await vi.waitFor(() =>
+    expect(screen.querySelector(".player-controls")).toBeTruthy(),
+  );
+};
+
 describe("music player playback options", () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -113,7 +130,7 @@ describe("music player playback options", () => {
     vi.stubGlobal("fetch", playerFetch());
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="player" />);
-    await vi.waitFor(() => expect(screen.textContent).toContain("Blue Hour"));
+    await showPlayer(screen, userEvent);
     const searchButton = screen.querySelector<HTMLButtonElement>(
       'button[aria-label="Search albums and tracks"]',
     );
@@ -154,7 +171,7 @@ describe("music player playback options", () => {
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="player" />);
 
-    await vi.waitFor(() => expect(screen.textContent).toContain("First Light"));
+    await showPlayer(screen, userEvent);
     // Restore the full transport alongside the detailed options menu.
     const transport = Array.from(
       screen.querySelectorAll(".player-controls > button"),
@@ -197,9 +214,7 @@ describe("music player playback options", () => {
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="player" />);
 
-    await vi.waitFor(() =>
-      expect(screen.querySelector(".player-controls")).toBeDefined(),
-    );
+    await showPlayer(screen, userEvent);
     const gear = screen.querySelector<HTMLButtonElement>(
       "button[aria-label='Playback options']",
     );
@@ -227,9 +242,7 @@ describe("music player playback options", () => {
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="player" />);
 
-    await vi.waitFor(() =>
-      expect(screen.querySelector(".player-controls")).toBeTruthy(),
-    );
+    await showPlayer(screen, userEvent);
     await openOptions(screen, userEvent);
     await userEvent(
       menuOption(screen, "Stop after this track") ?? null,
@@ -255,7 +268,7 @@ describe("music player playback options", () => {
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="player" />);
 
-    await vi.waitFor(() => expect(screen.textContent).toContain("First Light"));
+    await showPlayer(screen, userEvent);
     const gear = screen.querySelector<HTMLButtonElement>(
       "button[aria-label='Playback options']",
     );
@@ -271,8 +284,8 @@ describe("music player playback options", () => {
     expect(panel).toContain("Random order across all 3 tracks");
   });
   // Resume handling regressed during two review fixes; exercise the real QRL
-  // path so an unplayed preselection cannot overwrite retained progress.
-  it("resumes a preselected audiobook without saving its initial zero", async () => {
+  // path so an unplayed selection cannot overwrite retained progress.
+  it("resumes an audiobook picked from the album grid without saving its initial zero", async () => {
     const fallback = playerFetch();
     const writes: number[] = [];
     let reads = 0;
@@ -295,13 +308,17 @@ describe("music player playback options", () => {
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="player" />);
     await vi.waitFor(() => expect(screen.textContent).toContain("A Novel"));
+    expect(screen.querySelector(".player-controls")).toBeFalsy();
     const audio = screen.querySelector<HTMLAudioElement>("audio")!;
     Object.assign(audio, {
       currentTime: 0,
       load: () => {},
       play: () => Promise.resolve(),
     });
-    await userEvent(screen.querySelector('button[aria-label="Play"]'), "click");
+    const album = Array.from(
+      screen.querySelectorAll<HTMLButtonElement>(".album-button"),
+    ).find((button) => button.textContent?.includes("A Novel"));
+    await userEvent(album ?? null, "click");
     await vi.waitFor(() => expect(audio.currentTime).toBe(600));
     expect(reads).toBe(1);
     expect(writes).toEqual([]);

@@ -70,6 +70,122 @@ export interface VideoInfo {
   rank: number;
 }
 
+/** A numbered file inside a YouTube video's chapter folder. */
+export interface VideoChapter {
+  item: CatalogItem;
+  title: string;
+}
+
+/**
+ * One row in the video library: a single file, or the numbered files a
+ * downloader split from one YouTube video into that video's folder.
+ */
+export interface VideoEntry {
+  key: string;
+  item: CatalogItem;
+  info: VideoInfo;
+  chapters: VideoChapter[];
+}
+
+// yt-dlp's chapter split writes `01 - Title.ext` / `01. Title.ext` into the
+// video's own folder. A leading year ("1917 - ...") is not enough on its own:
+// the folder must hold at least two of these and sit in the YouTube library.
+const CHAPTER_FILE = /^\s*(\d{1,3})\s*[-.)]\s+\S/;
+
+export function videoChapterNumber(relativePath: string): number | null {
+  const match = fileStem(relativePath).match(CHAPTER_FILE);
+  return match ? Number(match[1]) : null;
+}
+
+/** "01 - 1. Title Screen" → "Title Screen". */
+export function videoChapterTitle(relativePath: string): string {
+  const title = displayVideoTitleFromFileName(fileName(relativePath));
+  const strip = (value: string) =>
+    value.replace(/^\s*\d{1,3}\s*[-.)]\s+/u, "").trim();
+  const once = strip(title);
+  const twice = strip(once);
+  return twice || once || title;
+}
+
+function chapterFolder(relativePath: string): string {
+  return relativePath.split("/").slice(0, -1).join("/");
+}
+
+/**
+ * Group one YouTube video's chapter files so the library lists the video once
+ * instead of interleaving every chapter with the other downloads.
+ */
+export function videoEntries(items: CatalogItem[]): VideoEntry[] {
+  const folders = new Map<string, CatalogItem[]>();
+  for (const item of items) {
+    const folder = chapterFolder(item.relativePath);
+    if (
+      !folder ||
+      videoInfo(item.relativePath).category !== "youtube" ||
+      videoChapterNumber(item.relativePath) === null
+    )
+      continue;
+    const rows = folders.get(folder) ?? [];
+    rows.push(item);
+    folders.set(folder, rows);
+  }
+
+  const chapterGroups = new Map<string, VideoEntry>();
+  for (const [folder, rows] of folders) {
+    if (rows.length < 2) continue;
+    rows.sort(
+      (a, b) =>
+        (videoChapterNumber(a.relativePath) ?? 0) -
+          (videoChapterNumber(b.relativePath) ?? 0) ||
+        a.relativePath.localeCompare(b.relativePath, undefined, {
+          numeric: true,
+        }),
+    );
+    const first = rows[0]!;
+    const base = videoInfo(first.relativePath);
+    const title =
+      displayFolderName(folder.split("/").at(-1) ?? "") || base.title;
+    chapterGroups.set(folder, {
+      key: `chapters:${folder}`,
+      item: first,
+      info: {
+        ...base,
+        title,
+        rowTitle: title,
+        order: title,
+        section: "",
+        group: "YouTube",
+        category: "youtube",
+        rank: 2,
+      },
+      chapters: rows.map((item) => ({
+        item,
+        title: videoChapterTitle(item.relativePath),
+      })),
+    });
+  }
+
+  const entries: VideoEntry[] = [];
+  const emitted = new Set<string>();
+  for (const item of items) {
+    const folder = chapterFolder(item.relativePath);
+    const group = chapterGroups.get(folder);
+    if (group) {
+      if (emitted.has(folder)) continue;
+      emitted.add(folder);
+      entries.push(group);
+      continue;
+    }
+    entries.push({
+      key: item.id,
+      item,
+      info: videoInfo(item.relativePath),
+      chapters: [],
+    });
+  }
+  return entries;
+}
+
 /**
  * What a viewer reads for a video file when no metadata title is known: no
  * extension, release noise or IDs; DVD `VTS_xx_y` parts take the disc
@@ -160,24 +276,21 @@ export function videoInfo(relativePath: string): VideoInfo {
 
 interface VideoGroup {
   name: string;
-  sections: { name: string; items: { item: CatalogItem; info: VideoInfo }[] }[];
+  sections: { name: string; items: VideoEntry[] }[];
 }
 
 /** Lightweight library sections: Movies, each show by season, YouTube, folders. */
-export function groupVideos(items: CatalogItem[]): VideoGroup[] {
-  const groups = new Map<
-    string,
-    Map<string, { item: CatalogItem; info: VideoInfo }[]>
-  >();
+export function groupVideos(entries: VideoEntry[]): VideoGroup[] {
+  const groups = new Map<string, Map<string, VideoEntry[]>>();
   const ranks = new Map<string, number>();
-  for (const item of items) {
-    const info = videoInfo(item.relativePath);
+  for (const entry of entries) {
+    const info = entry.info;
     const sections = groups.get(info.group) ?? new Map();
     groups.set(info.group, sections);
     ranks.set(info.group, Math.min(ranks.get(info.group) ?? 9, info.rank));
     const rows = sections.get(info.section) ?? [];
     sections.set(info.section, rows);
-    rows.push({ item, info });
+    rows.push(entry);
   }
   return [...groups.entries()]
     .sort(
@@ -237,6 +350,20 @@ function selectedItem(
   return items.find((item) => item.id === selectedId);
 }
 
+function nextChapterId(
+  items: CatalogItem[],
+  category: VideoCategoryChoice,
+  id: string,
+): string | undefined {
+  if (category === "immich") return undefined;
+  const group = videoEntries(items).find((entry) =>
+    entry.chapters.some((chapter) => chapter.item.id === id),
+  );
+  if (!group) return undefined;
+  const index = group.chapters.findIndex((chapter) => chapter.item.id === id);
+  return index >= 0 ? group.chapters[index + 1]?.item.id : undefined;
+}
+
 function itemsInVideoCategory(
   items: CatalogItem[],
   category: VideoCategoryChoice,
@@ -255,6 +382,7 @@ export const VideosView = component$<{
   initialRootId?: string;
 }>((props) => {
   const videoRef = useSignal<HTMLVideoElement>();
+  const chaptersRef = useSignal<HTMLOListElement>();
   const transcript = useStore({
     open: false,
     query: "",
@@ -373,36 +501,46 @@ export const VideosView = component$<{
           throw new Error("This file is not a video.");
         state.items = [...state.items, item];
       }
-      if (!state.items.some((item) => item.id === state.selectedId)) {
-        const requestedIndex = findTargetIndex(
-          state.items,
-          props.initialItemId,
-          props.initialPath,
-        );
-        const target =
-          requestedIndex >= 0 ? state.items[requestedIndex] : undefined;
-        if (target) {
-          // A library or downloader link names one video; open the category
-          // that holds it so the selected row is visible in the list.
-          state.category = videoInfo(target.relativePath).category;
-          state.selectedId = target.id;
-        } else if (state.category !== "immich") {
-          state.selectedId =
-            itemsInVideoCategory(state.items, state.category)[0]?.id ?? "";
-        }
+      // Browsing is the default: the player appears only after a person picks
+      // a video, so the first screen can use its space for thumbnails.
+      if (
+        state.selectedId &&
+        !state.items.some((item) => item.id === state.selectedId)
+      ) {
+        state.selectedId = "";
+        state.title = "";
         state.transcode = false;
         state.transcodeLoading = false;
         state.audioChecked = false;
-      } else if (state.category !== "immich") {
+      }
+      const requestedIndex = findTargetIndex(
+        state.items,
+        props.initialItemId,
+        props.initialPath,
+      );
+      const target =
+        requestedIndex >= 0 ? state.items[requestedIndex] : undefined;
+      if (target) {
+        // A library or downloader link names one video; open the category
+        // that holds it so the selected row is visible in the list.
+        state.category = videoInfo(target.relativePath).category;
+        state.selectedId = target.id;
+        state.transcode = false;
+        state.transcodeLoading = false;
+        state.audioChecked = false;
+      } else if (
+        state.category !== "immich" &&
+        state.selectedId &&
+        !itemsInVideoCategory(state.items, state.category).some(
+          (item) => item.id === state.selectedId,
+        )
+      ) {
         // The default Videos category may not contain an item selected from a
-        // previous visit; fall back to its first video.
-        const visible = itemsInVideoCategory(state.items, state.category);
-        if (!visible.some((item) => item.id === state.selectedId)) {
-          state.selectedId = visible[0]?.id ?? "";
-          state.transcode = false;
-          state.transcodeLoading = false;
-          state.audioChecked = false;
-        }
+        // previous visit; return to browsing that category.
+        state.selectedId = "";
+        state.transcode = false;
+        state.transcodeLoading = false;
+        state.audioChecked = false;
       }
     } catch (error) {
       if (current()) state.error = readableError(error);
@@ -459,9 +597,10 @@ export const VideosView = component$<{
       state.immichNextPage = result.nextPage;
       state.immichLoaded = true;
       if (
+        state.immichSelectedId &&
         !state.immichItems.some((asset) => asset.id === state.immichSelectedId)
       ) {
-        state.immichSelectedId = state.immichItems[0]?.id ?? "";
+        state.immichSelectedId = "";
       }
     } catch (error) {
       if (current()) state.immichError = readableError(error);
@@ -493,7 +632,8 @@ export const VideosView = component$<{
     }
     const visible = itemsInVideoCategory(state.items, category);
     if (!visible.some((item) => item.id === state.selectedId)) {
-      state.selectedId = visible[0]?.id ?? "";
+      // Stay in the thumbnail gallery for the chosen category.
+      state.selectedId = "";
     }
   });
 
@@ -512,7 +652,7 @@ export const VideosView = component$<{
     resumePlaying.value = false;
   });
 
-  const chooseVideo = $((id: string) => {
+  const chooseVideo = $((id: string, autoplay = false) => {
     preparationGeneration.value++;
     navigationGeneration.value++;
     state.selectedId = id;
@@ -523,7 +663,7 @@ export const VideosView = component$<{
     state.error = "";
     deepLinkNotice.value = "";
     resumeAt.value = 0;
-    resumePlaying.value = false;
+    resumePlaying.value = autoplay;
   });
 
   // A finished download can reach the library before the next scheduled scan
@@ -725,6 +865,7 @@ export const VideosView = component$<{
       : undefined;
   const hasSelection = () => Boolean(selected() ?? selectedImmich());
   const displayTitle = () => {
+    if (activeChapterGroup) return activeChapterGroup.info.title;
     const item = selected();
     if (item) return state.title || videoInfo(item.relativePath).title;
     const asset = selectedImmich();
@@ -761,14 +902,27 @@ export const VideosView = component$<{
     });
   const query = state.query.trim().toLowerCase();
   const categoryItems = itemsInVideoCategory(state.items, state.category);
-  const visibleItems = query
-    ? categoryItems.filter(
-        (item) =>
-          item.relativePath.toLowerCase().includes(query) ||
-          videoInfo(item.relativePath).title.toLowerCase().includes(query),
+  const allEntries = videoEntries(categoryItems);
+  const matchesQuery = (entry: VideoEntry) =>
+    entry.item.relativePath.toLowerCase().includes(query) ||
+    entry.info.title.toLowerCase().includes(query) ||
+    entry.info.rowTitle.toLowerCase().includes(query) ||
+    entry.chapters.some(
+      (chapter) =>
+        chapter.title.toLowerCase().includes(query) ||
+        chapter.item.relativePath.toLowerCase().includes(query),
+    );
+  const visibleEntries = query ? allEntries.filter(matchesQuery) : allEntries;
+  const visibleGroups = groupVideos(visibleEntries);
+  const activeChapterGroup = state.selectedId
+    ? videoEntries(state.items).find((entry) =>
+        entry.chapters.some((chapter) => chapter.item.id === state.selectedId),
       )
-    : categoryItems;
-  const visibleGroups = groupVideos(visibleItems);
+    : undefined;
+  const activeChapters = activeChapterGroup?.chapters ?? [];
+  const activeChapterIndex = activeChapters.findIndex(
+    (chapter) => chapter.item.id === state.selectedId,
+  );
   const visibleImmichVideos = query
     ? state.immichItems.filter(
         (asset) =>
@@ -866,13 +1020,27 @@ export const VideosView = component$<{
     });
   });
 
+  useVisibleTask$(({ track }) => {
+    track(() => state.selectedId);
+    track(() => activeChapters.length);
+    const active = chaptersRef.value?.querySelector<HTMLElement>(
+      '[aria-current="true"]',
+    );
+    if (typeof active?.scrollIntoView === "function")
+      active.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+
   return (
     <section
-      class={{ "video-page": true, "video-page--theatre": theatre.value }}
+      class={{
+        "video-page": true,
+        "video-page--browse": !hasSelection(),
+        "video-page--theatre": theatre.value && hasSelection(),
+      }}
       aria-label="Video player"
     >
-      <div class="video-player-column">
-        {hasSelection() ? (
+      {hasSelection() && (
+        <div class="video-player-column">
           <video
             key={playbackKey()}
             ref={videoRef}
@@ -882,6 +1050,14 @@ export const VideosView = component$<{
             playsInline
             preload="metadata"
             src={streamUrl()}
+            onEnded$={() => {
+              const next = nextChapterId(
+                state.items,
+                state.category,
+                state.selectedId,
+              );
+              if (next) void chooseVideo(next, true);
+            }}
             onError$={async () => {
               if (state.transcodeLoading) return;
               if (state.category === "immich" || !state.selectedId) {
@@ -908,184 +1084,251 @@ export const VideosView = component$<{
             }}
             onTimeUpdate$={checkDecodedAudio}
           />
-        ) : (
-          <div class="video-screen video-screen-empty">
-            <Icon name="video" size={42} />
-            <p>
-              {state.loading ||
-              (state.category === "immich" &&
-                state.immichLoading &&
-                state.immichItems.length === 0)
-                ? "Loading videos…"
-                : state.category === "videos"
-                  ? "No regular videos here"
-                  : "No videos found"}
-            </p>
-          </div>
-        )}
-        {(hasSelection() || videoRoots.length > 1) && (
-          <div class="video-title">
-            <div class="video-title-text">
-              {hasSelection() && (
-                <h2 title={playbackLabel()}>{displayTitle()}</h2>
-              )}
-              {videoRoots.length > 1 && state.category !== "immich" && (
-                <label class="video-library-select">
-                  <span>Show</span>
-                  <select
-                    value={state.rootId}
-                    onChange$={(_, element) => (state.rootId = element.value)}
-                  >
-                    <option value="">All libraries</option>
-                    {videoRoots.map((root) => (
-                      <option key={root.id} value={root.id}>
-                        {root.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-            </div>
-            {hasSelection() && (
-              <div class="video-actions">
-                {(transcript.cues.length > 0 || transcript.error) && (
-                  <button
-                    type="button"
-                    class="secondary-button compact-action video-action-button"
-                    aria-expanded={transcript.open}
-                    aria-controls="video-transcript"
-                    onClick$={() => {
-                      transcript.open = !transcript.open;
-                    }}
-                  >
-                    Transcript
-                  </button>
+          {(hasSelection() || videoRoots.length > 1) && (
+            <div class="video-title">
+              <div class="video-title-text">
+                {hasSelection() && (
+                  <h2 title={playbackLabel()}>{displayTitle()}</h2>
                 )}
-                {selected() && (
-                  <a
-                    class="secondary-button compact-action video-action-button video-edit-button"
-                    href={`?view=video-editing&item=${encodeURIComponent(selected()!.id)}`}
-                    aria-label="Edit this video"
-                    title="Edit this video"
-                  >
-                    <Icon name="pencil" size={15} />
-                    <span class="video-action-label">Edit</span>
-                  </a>
-                )}
-                <button
-                  type="button"
-                  class="secondary-button compact-action video-action-button video-theatre-button"
-                  aria-label="Theatre mode"
-                  title="Theatre mode"
-                  aria-pressed={theatre.value}
-                  onClick$={toggleTheatre}
-                >
-                  <Icon name="theatre" size={16} />
-                  <span class="video-action-label">Theatre mode</span>
-                </button>
-                {pipSupported.value && (
-                  <button
-                    type="button"
-                    class="secondary-button compact-action video-action-button video-pip-button"
-                    aria-label={
-                      pipActive.value
-                        ? "Exit picture in picture"
-                        : "Picture in picture"
-                    }
-                    title={
-                      pipActive.value
-                        ? "Exit picture in picture"
-                        : "Picture in picture"
-                    }
-                    aria-pressed={pipActive.value}
-                    onClick$={togglePip}
-                  >
-                    <Icon name="picture-in-picture" size={14} />
-                    <span class="video-action-label">
-                      {pipActive.value
-                        ? "Exit picture in picture"
-                        : "Picture in picture"}
-                    </span>
-                  </button>
+                {videoRoots.length > 1 && state.category !== "immich" && (
+                  <label class="video-library-select">
+                    <span>Show</span>
+                    <select
+                      value={state.rootId}
+                      onChange$={(_, element) => (state.rootId = element.value)}
+                    >
+                      <option value="">All libraries</option>
+                      {videoRoots.map((root) => (
+                        <option key={root.id} value={root.id}>
+                          {root.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 )}
               </div>
-            )}
-          </div>
-        )}
-        {transcript.open && (
-          <section
-            id="video-transcript"
-            class="video-transcript"
-            aria-label="Transcript"
-          >
-            <label>
-              <span class="sr-only">Search transcript</span>
-              <input
-                type="search"
-                placeholder="Search transcript"
-                value={transcript.query}
-                onInput$={(_, input) => {
-                  transcript.query = input.value;
-                }}
-              />
-            </label>
-            {transcript.error && <p role="alert">{transcript.error}</p>}
-            <ol class="video-transcript-lines" aria-label="Dialogue">
-              {transcript.cues
-                .filter((cue) =>
-                  cue.text
-                    .toLocaleLowerCase()
-                    .includes(transcript.query.trim().toLocaleLowerCase()),
-                )
-                .map((cue) => (
-                  <li key={cue.index}>
+              {hasSelection() && (
+                <div class="video-actions">
+                  {(transcript.cues.length > 0 || transcript.error) && (
                     <button
                       type="button"
+                      class="secondary-button compact-action video-action-button"
+                      aria-expanded={transcript.open}
+                      aria-controls="video-transcript"
                       onClick$={() => {
-                        const video = videoRef.value;
-                        if (video) video.currentTime = cue.startMs / 1000;
+                        transcript.open = !transcript.open;
                       }}
                     >
-                      <time>{clockTime(cue.startMs / 1000)}</time>
-                      <span>{cue.text}</span>
+                      Transcript
+                    </button>
+                  )}
+                  {selected() && (
+                    <a
+                      class="secondary-button compact-action video-action-button video-edit-button"
+                      href={`?view=video-editing&item=${encodeURIComponent(selected()!.id)}`}
+                      aria-label="Edit this video"
+                      title="Edit this video"
+                    >
+                      <Icon name="pencil" size={15} />
+                      <span class="video-action-label">Edit</span>
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    class="secondary-button compact-action video-action-button video-theatre-button"
+                    aria-label="Theatre mode"
+                    title="Theatre mode"
+                    aria-pressed={theatre.value}
+                    onClick$={toggleTheatre}
+                  >
+                    <Icon name="theatre" size={16} />
+                    <span class="video-action-label">Theatre mode</span>
+                  </button>
+                  {pipSupported.value && (
+                    <button
+                      type="button"
+                      class="secondary-button compact-action video-action-button video-pip-button"
+                      aria-label={
+                        pipActive.value
+                          ? "Exit picture in picture"
+                          : "Picture in picture"
+                      }
+                      title={
+                        pipActive.value
+                          ? "Exit picture in picture"
+                          : "Picture in picture"
+                      }
+                      aria-pressed={pipActive.value}
+                      onClick$={togglePip}
+                    >
+                      <Icon name="picture-in-picture" size={14} />
+                      <span class="video-action-label">
+                        {pipActive.value
+                          ? "Exit picture in picture"
+                          : "Picture in picture"}
+                      </span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {activeChapters.length > 1 && (
+            <div class="video-chapters">
+              <ol
+                class="video-chapter-list"
+                ref={chaptersRef}
+                aria-label="Chapters"
+              >
+                {activeChapters.map((chapter, index) => (
+                  <li key={chapter.item.id}>
+                    <button
+                      type="button"
+                      class={{
+                        "video-chapter": true,
+                        "video-chapter--active": index === activeChapterIndex,
+                      }}
+                      aria-current={
+                        index === activeChapterIndex ? "true" : undefined
+                      }
+                      onClick$={() => {
+                        if (index === activeChapterIndex) return;
+                        const video = videoRef.value;
+                        void chooseVideo(
+                          chapter.item.id,
+                          Boolean(video && !video.paused && !video.ended),
+                        );
+                      }}
+                    >
+                      <span class="video-chapter-number" aria-hidden="true">
+                        {index + 1}
+                      </span>
+                      <span class="video-chapter-title" title={chapter.title}>
+                        {chapter.title}
+                      </span>
                     </button>
                   </li>
                 ))}
-            </ol>
-            {!transcript.error &&
-              !transcript.cues.some((cue) =>
-                cue.text
-                  .toLocaleLowerCase()
-                  .includes(transcript.query.trim().toLocaleLowerCase()),
-              ) && <p role="status">No matching dialogue.</p>}
-          </section>
-        )}
-        {state.transcodeLoading && (
-          <p role="status" class="video-conversion-status">
-            Converting this video for browser playback. The first play may take
-            a while.
-          </p>
-        )}
-        {state.transcodeLoading && (
-          <p class="video-conversion-hint">
-            For better loading times and device compatibility, consider
-            converting this video to another format in the{" "}
-            <a
-              href={`?view=conversions&item=${encodeURIComponent(state.selectedId)}`}
+              </ol>
+            </div>
+          )}
+          {transcript.open && (
+            <section
+              id="video-transcript"
+              class="video-transcript"
+              aria-label="Transcript"
             >
-              Conversions page
-            </a>
-            .
-          </p>
-        )}
-        {state.error && (
-          <p class="message error" role="alert">
-            {state.error}
-          </p>
-        )}
-      </div>
+              <label>
+                <span class="sr-only">Search transcript</span>
+                <input
+                  type="search"
+                  placeholder="Search transcript"
+                  value={transcript.query}
+                  onInput$={(_, input) => {
+                    transcript.query = input.value;
+                  }}
+                />
+              </label>
+              {transcript.error && <p role="alert">{transcript.error}</p>}
+              <ol class="video-transcript-lines" aria-label="Dialogue">
+                {transcript.cues
+                  .filter((cue) =>
+                    cue.text
+                      .toLocaleLowerCase()
+                      .includes(transcript.query.trim().toLocaleLowerCase()),
+                  )
+                  .map((cue) => (
+                    <li key={cue.index}>
+                      <button
+                        type="button"
+                        onClick$={() => {
+                          const video = videoRef.value;
+                          if (video) video.currentTime = cue.startMs / 1000;
+                        }}
+                      >
+                        <time>{clockTime(cue.startMs / 1000)}</time>
+                        <span>{cue.text}</span>
+                      </button>
+                    </li>
+                  ))}
+              </ol>
+              {!transcript.error &&
+                !transcript.cues.some((cue) =>
+                  cue.text
+                    .toLocaleLowerCase()
+                    .includes(transcript.query.trim().toLocaleLowerCase()),
+                ) && <p role="status">No matching dialogue.</p>}
+            </section>
+          )}
+          {state.transcodeLoading && (
+            <p role="status" class="video-conversion-status">
+              Converting this video for browser playback. The first play may
+              take a while.
+            </p>
+          )}
+          {state.transcodeLoading && (
+            <p class="video-conversion-hint">
+              For better loading times and device compatibility, consider
+              converting this video to another format in the{" "}
+              <a
+                href={`?view=conversions&item=${encodeURIComponent(state.selectedId)}`}
+              >
+                Conversions page
+              </a>
+              .
+            </p>
+          )}
+          {state.error && (
+            <p class="message error" role="alert">
+              {state.error}
+            </p>
+          )}
+        </div>
+      )}
 
       <aside class="video-library" aria-label="Video library">
+        {hasSelection() && (
+          <div class="video-library-head">
+            <button
+              type="button"
+              class="back-button"
+              onClick$={() => {
+                videoRef.value?.pause();
+                state.selectedId = "";
+                state.immichSelectedId = "";
+                state.title = "";
+                state.error = "";
+                transcript.open = false;
+                transcript.query = "";
+                transcript.cues = [];
+                transcript.error = "";
+                resumeAt.value = 0;
+                resumePlaying.value = false;
+              }}
+            >
+              <Icon name="chevron-down" size={16} />
+              All videos
+            </button>
+          </div>
+        )}
+        {!hasSelection() &&
+          videoRoots.length > 1 &&
+          state.category !== "immich" && (
+            <label class="video-category-select video-library-root">
+              <span>Show</span>
+              <select
+                value={state.rootId}
+                onChange$={(_, element) => (state.rootId = element.value)}
+              >
+                <option value="">All libraries</option>
+                {videoRoots.map((root) => (
+                  <option key={root.id} value={root.id}>
+                    {root.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
         <label class="video-category-select">
           <span>Category</span>
           <select
@@ -1141,7 +1384,7 @@ export const VideosView = component$<{
                 {visibleImmichVideos.length === 0 ? (
                   <p class="video-library-empty">No matching videos.</p>
                 ) : (
-                  <ul class="video-list">
+                  <ul class="video-list video-list--flat">
                     {visibleImmichVideos.map((asset) => (
                       <li
                         key={asset.id}
@@ -1208,7 +1451,7 @@ export const VideosView = component$<{
                 ? "Video libraries are unavailable."
                 : "No videos in this library."}
           </p>
-        ) : visibleItems.length === 0 ? (
+        ) : visibleEntries.length === 0 ? (
           <p class="video-library-empty">
             {query
               ? "No matching videos."
@@ -1225,43 +1468,53 @@ export const VideosView = component$<{
                   <div key={section.name} class="video-list-section">
                     {section.name && <h4>{section.name}</h4>}
                     <ul>
-                      {section.items.map(({ item, info }) => (
-                        <li
-                          key={item.id}
-                          class={{ active: item.id === state.selectedId }}
-                        >
-                          <button
-                            type="button"
-                            aria-current={
-                              item.id === state.selectedId ? "true" : undefined
-                            }
-                            onClick$={() => chooseVideo(item.id)}
-                          >
-                            <span class="video-list-icon">
-                              <Icon name="video" />
-                              <img
-                                src={thumbnailSrc(
-                                  `/api/v1/items/${encodeURIComponent(item.id)}/image`,
+                      {section.items.map((entry) => {
+                        const active = entry.chapters.length
+                          ? entry.chapters.some(
+                              (chapter) => chapter.item.id === state.selectedId,
+                            )
+                          : entry.item.id === state.selectedId;
+                        return (
+                          <li key={entry.key} class={{ active }}>
+                            <button
+                              type="button"
+                              aria-current={active ? "true" : undefined}
+                              onClick$={() => {
+                                if (active) return;
+                                void chooseVideo(entry.item.id);
+                              }}
+                            >
+                              <span class="video-list-icon">
+                                <Icon name="video" />
+                                <img
+                                  src={thumbnailSrc(
+                                    `/api/v1/items/${encodeURIComponent(entry.item.id)}/image`,
+                                  )}
+                                  srcset={thumbnailSrcset(
+                                    `/api/v1/items/${encodeURIComponent(entry.item.id)}/image`,
+                                  )}
+                                  sizes={thumbnailSizes("76px")}
+                                  alt=""
+                                  loading="lazy"
+                                  onError$={(_, image) => {
+                                    image.hidden = true;
+                                  }}
+                                />
+                              </span>
+                              <span class="video-list-copy">
+                                <strong
+                                  title={fileName(entry.item.relativePath)}
+                                >
+                                  {entry.info.rowTitle}
+                                </strong>
+                                {entry.chapters.length > 1 && (
+                                  <span>{entry.chapters.length} chapters</span>
                                 )}
-                                srcset={thumbnailSrcset(
-                                  `/api/v1/items/${encodeURIComponent(item.id)}/image`,
-                                )}
-                                sizes={thumbnailSizes("76px")}
-                                alt=""
-                                loading="lazy"
-                                onError$={(_, image) => {
-                                  image.hidden = true;
-                                }}
-                              />
-                            </span>
-                            <span class="video-list-copy">
-                              <strong title={fileName(item.relativePath)}>
-                                {info.rowTitle}
-                              </strong>
-                            </span>
-                          </button>
-                        </li>
-                      ))}
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
                     </ul>
                   </div>
                 ))}

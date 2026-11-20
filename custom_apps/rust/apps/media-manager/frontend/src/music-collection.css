@@ -172,6 +172,36 @@
   position: absolute;
   inset: 0;
 }
+/* Track count sits in a quarter-circle bite at the cover's bottom-left, so the
+   count is available at a glance without a second text line. */
+.music-collection .album-count-badge {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  width: 24px;
+  height: 24px;
+  padding: 0 0 2px 3px;
+  border-radius: 0 100% 0 0;
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+@media (min-width: 641px) {
+  .music-collection .album-count-badge {
+    width: 30px;
+    height: 30px;
+    padding: 0 0 3px 5px;
+  }
+}
+.music-collection .album-button:hover .album-count-badge {
+  background: var(--paper-recess);
+}
 .music-collection img[hidden] {
   display: none;
 }
@@ -318,4 +348,31 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Music tiles: covers take a little more of the row and the gutter shrinks,
+   so the grid reads as thumbnails first. */
+.music-collection.collection-layout[data-view^="tiles-"] {
+  gap: 8px;
+}
+.music-collection[data-view^="tiles-"] :is(.album-button, .track-button) {
+  gap: 5px;
+  padding: 4px;
+}
+.music-collection[data-view^="tiles-"]
+  :is(.album-artwork, .track-artwork-thumb) {
+  border-radius: 7px;
+}
+/* Three or four across on a phone: one quieter line of text per tile. */
+@media (max-width: 640px) {
+  .music-collection[data-view="tiles-3"] :is(.album-name, .track-name),
+  .music-collection[data-view="tiles-4"] :is(.album-name, .track-name) {
+    display: block;
+    overflow: hidden;
+    color: var(--ink-soft);
+    font-size: var(--text-xs);
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }

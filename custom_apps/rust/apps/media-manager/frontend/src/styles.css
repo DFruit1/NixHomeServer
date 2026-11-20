@@ -3639,12 +3639,30 @@ a:focus-visible {
   gap: 24px;
   align-items: start;
 }
+/* No track chosen yet: the album browser is the page, with no empty player
+   card taking the first screen. */
+.player-layout--browse {
+  grid-template-columns: minmax(0, 1fr);
+}
+.player-layout--browse .player-sidebar {
+  max-height: none;
+}
 
 .video-page {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
   gap: 24px;
   align-items: start;
+}
+/* Before a video is chosen the library is the page: large thumbnails get the
+   full width instead of leaving a player-sized hole above a narrow list. */
+.video-page--browse {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+}
+.video-page--browse .video-library {
+  max-height: none;
+  min-height: 0;
 }
 .video-player-column {
   min-width: 0;
@@ -3735,6 +3753,79 @@ a:focus-visible {
   margin-top: 4px;
   color: var(--ink-soft);
   font-size: var(--text-xs);
+}
+/* Chapters of one split YouTube video sit under the player like YouTube's
+   description list: one scrolling row with the playing chapter marked. */
+.video-chapters {
+  margin: 10px 8px 4px;
+}
+.video-chapter-list {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 2px 0 4px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  list-style: none;
+  scrollbar-width: thin;
+}
+.video-chapter-list li {
+  flex: 0 0 auto;
+}
+.video-chapter {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 260px;
+  min-height: 36px;
+  padding: 5px 11px 5px 7px;
+  border: 1px solid rgba(246, 243, 236, 0.24);
+  border-radius: 999px;
+  color: rgba(246, 243, 236, 0.85);
+  background: rgba(246, 243, 236, 0.06);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.video-chapter:hover {
+  color: #fffdf8;
+  background: rgba(246, 243, 236, 0.14);
+}
+.video-chapter:focus-visible {
+  outline: 2px solid #f2d58d;
+  outline-offset: 2px;
+}
+.video-chapter--active {
+  border-color: rgba(246, 243, 236, 0.7);
+  color: #fffdf8;
+  background: rgba(246, 243, 236, 0.2);
+}
+.video-chapter-number {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(246, 243, 236, 0.16);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.video-chapter--active .video-chapter-number {
+  background: rgba(246, 243, 236, 0.28);
+}
+.video-chapter-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.video-library-head {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px 0;
+}
+.video-library-head .back-button {
+  margin-right: 0;
 }
 .video-library {
   display: flex;

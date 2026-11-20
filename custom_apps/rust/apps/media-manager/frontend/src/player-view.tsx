@@ -212,7 +212,8 @@ export const PlayerView = component$<{
           if (audio && !audio.paused) audio.pause();
         }
       } else if (audioItems.length > 0) {
-        playerState.currentIndex = 0;
+        // Browsing is the default; the player appears after choosing a track.
+        playerState.currentIndex = -1;
       } else {
         playerState.currentIndex = -1;
       }
@@ -410,9 +411,9 @@ export const PlayerView = component$<{
 
   // A deep link from the YouTube Downloader selects one track and asks the
   // browser to start it. Apply it once, after the tracks load, and always call
-  // playTrack even when the target is already the current index (the player
-  // pre-selects the first track) so the stream URL is actually set. Reveal the
-  // track's album so the linked song, not just the album grid, is in view.
+  // playTrack even when the target is already the current index so the stream
+  // URL is actually set. Reveal the track's album so the linked song, not just
+  // the album grid, is in view.
   useVisibleTask$(
     async ({ track }) => {
       track(() => playerState.loading);
@@ -937,6 +938,8 @@ export const PlayerView = component$<{
     }
   });
   const currentTrack = playerState.tracks[playerState.currentIndex];
+  const hasCurrentTrack = () =>
+    Boolean(currentTrack) && playerState.currentIndex >= 0;
   const currentDisplay = currentTrack ? trackDisplay(currentTrack) : undefined;
   const currentSubtitle = currentDisplay ? trackSubtitle(currentDisplay) : "";
   const upNextDisplay = upNext ? trackDisplay(upNext) : undefined;
@@ -1050,285 +1053,294 @@ export const PlayerView = component$<{
   });
   return (
     <>
-      <section class="player-layout" hidden={props.active === false}>
-        <div class="player-main">
-          <div class="now-playing">
-            <div class="now-playing-artwork empty-art">
-              <Icon name="music-note" size={64} />
-              {currentTrack && (
-                <PlayerArtwork
-                  src={`/api/v1/items/${encodeURIComponent(currentTrack.id)}/image`}
-                  class="album-art"
-                />
-              )}
-            </div>
-            <div class="now-playing-info">
-              <h2 class="track-title" title={currentDisplay?.title}>
-                {currentDisplay ? currentDisplay.title : "No track selected"}
-              </h2>
-              <p class="track-artist-album" title={currentSubtitle}>
-                {currentSubtitle}
-              </p>
-            </div>
-            <div class="player-time">
-              <span>{formatTime(playerState.currentTime)}</span>
-              <div class="seek-bar-container">
-                <input
-                  type="range"
-                  class="seek-bar"
-                  aria-label="Playback position"
-                  min="0"
-                  max={playerState.duration || 0}
-                  step="0.1"
-                  value={playerState.currentTime}
-                  onInput$={(_, el) => seek(Number(el.value))}
-                />
+      <section
+        class={{
+          "player-layout": true,
+          "player-layout--browse": !hasCurrentTrack(),
+        }}
+        hidden={props.active === false}
+      >
+        {hasCurrentTrack() && (
+          <div class="player-main">
+            <div class="now-playing">
+              <div class="now-playing-artwork empty-art">
+                <Icon name="music-note" size={64} />
+                {currentTrack && (
+                  <PlayerArtwork
+                    src={`/api/v1/items/${encodeURIComponent(currentTrack.id)}/image`}
+                    class="album-art"
+                  />
+                )}
               </div>
-              <span>{formatTime(playerState.duration)}</span>
-            </div>
-            <div class="player-controls">
-              <button
-                type="button"
-                class={{
-                  "control-button": true,
-                  "control-active": playerState.loop !== "off",
-                }}
-                aria-label={(() => {
-                  switch (playerState.loop) {
-                    case "one":
-                      return "Loop one";
-                    case "all":
-                      return "Loop all";
-                    default:
-                      return "Loop off";
-                  }
-                })()}
-                title={(() => {
-                  switch (playerState.loop) {
-                    case "one":
-                      return "Repeat this track";
-                    case "all":
-                      return "Repeat the queue";
-                    default:
-                      return "Repeat off";
-                  }
-                })()}
-                onClick$={cycleLoop}
-              >
-                {playerState.loop === "one" ? (
-                  <Icon name="repeat-one" size={16} />
-                ) : (
-                  <Icon name="repeat" size={16} />
-                )}
-                {playerState.loop === "one" && (
-                  <span class="loop-badge">1</span>
-                )}
-              </button>
-              <button
-                type="button"
-                class={{
-                  "control-button": true,
-                  "control-active": playerState.stopAfterCurrent,
-                }}
-                aria-label="Stop after this track"
-                aria-pressed={playerState.stopAfterCurrent}
-                title="Stop after this track"
-                onClick$={toggleStopAfterCurrent}
-              >
-                <Icon name="stop" size={16} />
-              </button>
-
-              <button
-                type="button"
-                class="control-button"
-                aria-label="Previous track"
-                disabled={playerState.tracks.length === 0}
-                onClick$={skipPrev}
-              >
-                <Icon name="skip-back" size={22} />
-              </button>
-              <button
-                type="button"
-                class="control-button play-button"
-                aria-label={playerState.isPlaying ? "Pause" : "Play"}
-                disabled={playerState.tracks.length === 0}
-                onClick$={togglePlay}
-              >
-                {playerState.isPlaying ? (
-                  <Icon name="pause" size={28} />
-                ) : (
-                  <Icon name="play" size={28} />
-                )}
-              </button>
-              <button
-                type="button"
-                class="control-button"
-                aria-label="Next track"
-                disabled={playerState.tracks.length === 0}
-                onClick$={skipNext}
-              >
-                <Icon name="skip-forward" size={22} />
-              </button>
-              <button
-                type="button"
-                class={{
-                  "control-button": true,
-                  "control-active": playerState.shuffle !== "off",
-                }}
-                aria-label={shuffleLabel}
-                title={shuffleLabel}
-                onClick$={cycleShuffle}
-              >
-                <Icon name="shuffle" size={16} />
-              </button>
-              <div
-                class="player-settings"
-                ref={settingsRef}
-                document:onClick$={(event: MouseEvent) => {
-                  const container = settingsRef.value;
-                  const target = event.target as Node | null;
-                  if (!container || !target || container.contains(target))
-                    return;
-                  playerState.settingsOpen = false;
-                }}
-                document:onKeyDown$={(event: KeyboardEvent) => {
-                  if (event.key === "Escape") playerState.settingsOpen = false;
-                }}
-              >
+              <div class="now-playing-info">
+                <h2 class="track-title" title={currentDisplay?.title}>
+                  {currentDisplay ? currentDisplay.title : "No track selected"}
+                </h2>
+                <p class="track-artist-album" title={currentSubtitle}>
+                  {currentSubtitle}
+                </p>
+              </div>
+              <div class="player-time">
+                <span>{formatTime(playerState.currentTime)}</span>
+                <div class="seek-bar-container">
+                  <input
+                    type="range"
+                    class="seek-bar"
+                    aria-label="Playback position"
+                    min="0"
+                    max={playerState.duration || 0}
+                    step="0.1"
+                    value={playerState.currentTime}
+                    onInput$={(_, el) => seek(Number(el.value))}
+                  />
+                </div>
+                <span>{formatTime(playerState.duration)}</span>
+              </div>
+              <div class="player-controls">
                 <button
                   type="button"
                   class={{
                     "control-button": true,
-                    "control-active": playerState.settingsOpen,
+                    "control-active": playerState.loop !== "off",
                   }}
-                  title="Playback options"
-                  aria-label="Playback options"
-                  aria-haspopup="menu"
-                  aria-expanded={playerState.settingsOpen}
-                  onClick$={() =>
-                    (playerState.settingsOpen = !playerState.settingsOpen)
-                  }
+                  aria-label={(() => {
+                    switch (playerState.loop) {
+                      case "one":
+                        return "Loop one";
+                      case "all":
+                        return "Loop all";
+                      default:
+                        return "Loop off";
+                    }
+                  })()}
+                  title={(() => {
+                    switch (playerState.loop) {
+                      case "one":
+                        return "Repeat this track";
+                      case "all":
+                        return "Repeat the queue";
+                      default:
+                        return "Repeat off";
+                    }
+                  })()}
+                  onClick$={cycleLoop}
                 >
-                  <Icon name="gear" size={16} />
+                  {playerState.loop === "one" ? (
+                    <Icon name="repeat-one" size={16} />
+                  ) : (
+                    <Icon name="repeat" size={16} />
+                  )}
+                  {playerState.loop === "one" && (
+                    <span class="loop-badge">1</span>
+                  )}
                 </button>
-                {playerState.settingsOpen && (
-                  <PlaybackSettings
-                    shuffle={playerState.shuffle}
-                    endAction={endAction}
-                    sleepMinutes={playerState.sleepTimer}
-                    keepPlaying={pipEnabled.value}
-                    kindLabel={kindLabel}
-                    albumLabel={displayFolderName(currentAlbum)}
-                    albumTrackCount={albumTrackCount}
-                    kindTrackCount={kindTrackCount}
-                    onShuffle$={setShuffleScope}
-                    onEndAction$={setEndAction}
-                    onSleep$={setSleepMinutes}
-                    onKeepPlaying$={togglePip}
-                  />
-                )}
-              </div>
-            </div>
-            <div class="player-extras">
-              <div class="volume-control">
-                <Icon name="volume" size={16} />
-                <input
-                  type="range"
-                  class="volume-bar"
-                  aria-label="Volume"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={playerState.volume}
-                  onInput$={(_, el) => setVolume(Number(el.value))}
-                />
-              </div>
-              <button
-                type="button"
-                class={{
-                  "control-button": true,
-                  "control-active": pipEnabled.value,
-                }}
-                aria-label="Keep music playing on other pages"
-                title="Keep music playing on other pages"
-                aria-pressed={pipEnabled.value}
-                onClick$={togglePip}
-              >
-                <Icon name="picture-in-picture" size={16} />
-              </button>
-              <button
-                type="button"
-                class={{
-                  "control-button": true,
-                  timer: true,
-                  "sleep-active": playerState.sleepTimer > 0,
-                }}
-                aria-label={
-                  playerState.sleepTimer > 0
-                    ? `Sleep timer: ${playerState.sleepTimer} min`
-                    : "Sleep timer off"
-                }
-                onClick$={cycleSleepTimer}
-              >
-                <Icon name="timer" size={16} />
-                {playerState.sleepTimer > 0 && (
-                  <span class="sleep-label">{sleepCountdown}</span>
-                )}
-              </button>
-            </div>
-            {playbackStatus.length > 0 && (
-              <p class="playback-status">
-                <span role="status">{playbackStatus.join(" · ")}</span>
-                {sleepCountdown && (
-                  <span class="playback-status-countdown">
-                    {" "}
-                    ({sleepCountdown} left)
-                  </span>
-                )}
-              </p>
-            )}
-          </div>
-          <section class="up-next" aria-label="Up next">
-            {upNext ? (
-              <>
                 <button
                   type="button"
-                  class="up-next-track"
-                  onClick$={() => playTrack(upNextStep.index)}
-                  aria-label={`Play next: ${upNextDisplay?.title ?? ""}`}
+                  class={{
+                    "control-button": true,
+                    "control-active": playerState.stopAfterCurrent,
+                  }}
+                  aria-label="Stop after this track"
+                  aria-pressed={playerState.stopAfterCurrent}
+                  title="Stop after this track"
+                  onClick$={toggleStopAfterCurrent}
                 >
-                  <span class="up-next-art">
-                    <Icon name="music-note" size={22} />
-                    <PlayerArtwork
-                      src={thumbnailSrc(
-                        `/api/v1/items/${encodeURIComponent(upNext.id)}/image`,
-                      )}
-                    />
-                  </span>
-                  <span class="up-next-copy">
-                    <span>Up next</span>
-                    <strong>{upNextDisplay?.title}</strong>
-                    {upNextDisplay && trackSubtitle(upNextDisplay) && (
-                      <span>{trackSubtitle(upNextDisplay)}</span>
-                    )}
-                  </span>
-                  <Icon name="play" size={18} />
+                  <Icon name="stop" size={16} />
+                </button>
+
+                <button
+                  type="button"
+                  class="control-button"
+                  aria-label="Previous track"
+                  disabled={playerState.tracks.length === 0}
+                  onClick$={skipPrev}
+                >
+                  <Icon name="skip-back" size={22} />
+                </button>
+                <button
+                  type="button"
+                  class="control-button play-button"
+                  aria-label={playerState.isPlaying ? "Pause" : "Play"}
+                  disabled={playerState.tracks.length === 0}
+                  onClick$={togglePlay}
+                >
+                  {playerState.isPlaying ? (
+                    <Icon name="pause" size={28} />
+                  ) : (
+                    <Icon name="play" size={28} />
+                  )}
                 </button>
                 <button
                   type="button"
                   class="control-button"
-                  aria-label="Skip upcoming track"
-                  title="Replace the upcoming track without interrupting playback"
-                  onClick$={dismissNext}
+                  aria-label="Next track"
+                  disabled={playerState.tracks.length === 0}
+                  onClick$={skipNext}
                 >
-                  <Icon name="skip-forward" size={18} />
+                  <Icon name="skip-forward" size={22} />
                 </button>
-              </>
-            ) : (
-              <span class="up-next-empty">Up next · End of queue</span>
-            )}
-          </section>
-        </div>
+                <button
+                  type="button"
+                  class={{
+                    "control-button": true,
+                    "control-active": playerState.shuffle !== "off",
+                  }}
+                  aria-label={shuffleLabel}
+                  title={shuffleLabel}
+                  onClick$={cycleShuffle}
+                >
+                  <Icon name="shuffle" size={16} />
+                </button>
+                <div
+                  class="player-settings"
+                  ref={settingsRef}
+                  document:onClick$={(event: MouseEvent) => {
+                    const container = settingsRef.value;
+                    const target = event.target as Node | null;
+                    if (!container || !target || container.contains(target))
+                      return;
+                    playerState.settingsOpen = false;
+                  }}
+                  document:onKeyDown$={(event: KeyboardEvent) => {
+                    if (event.key === "Escape")
+                      playerState.settingsOpen = false;
+                  }}
+                >
+                  <button
+                    type="button"
+                    class={{
+                      "control-button": true,
+                      "control-active": playerState.settingsOpen,
+                    }}
+                    title="Playback options"
+                    aria-label="Playback options"
+                    aria-haspopup="menu"
+                    aria-expanded={playerState.settingsOpen}
+                    onClick$={() =>
+                      (playerState.settingsOpen = !playerState.settingsOpen)
+                    }
+                  >
+                    <Icon name="gear" size={16} />
+                  </button>
+                  {playerState.settingsOpen && (
+                    <PlaybackSettings
+                      shuffle={playerState.shuffle}
+                      endAction={endAction}
+                      sleepMinutes={playerState.sleepTimer}
+                      keepPlaying={pipEnabled.value}
+                      kindLabel={kindLabel}
+                      albumLabel={displayFolderName(currentAlbum)}
+                      albumTrackCount={albumTrackCount}
+                      kindTrackCount={kindTrackCount}
+                      onShuffle$={setShuffleScope}
+                      onEndAction$={setEndAction}
+                      onSleep$={setSleepMinutes}
+                      onKeepPlaying$={togglePip}
+                    />
+                  )}
+                </div>
+              </div>
+              <div class="player-extras">
+                <div class="volume-control">
+                  <Icon name="volume" size={16} />
+                  <input
+                    type="range"
+                    class="volume-bar"
+                    aria-label="Volume"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={playerState.volume}
+                    onInput$={(_, el) => setVolume(Number(el.value))}
+                  />
+                </div>
+                <button
+                  type="button"
+                  class={{
+                    "control-button": true,
+                    "control-active": pipEnabled.value,
+                  }}
+                  aria-label="Keep music playing on other pages"
+                  title="Keep music playing on other pages"
+                  aria-pressed={pipEnabled.value}
+                  onClick$={togglePip}
+                >
+                  <Icon name="picture-in-picture" size={16} />
+                </button>
+                <button
+                  type="button"
+                  class={{
+                    "control-button": true,
+                    timer: true,
+                    "sleep-active": playerState.sleepTimer > 0,
+                  }}
+                  aria-label={
+                    playerState.sleepTimer > 0
+                      ? `Sleep timer: ${playerState.sleepTimer} min`
+                      : "Sleep timer off"
+                  }
+                  onClick$={cycleSleepTimer}
+                >
+                  <Icon name="timer" size={16} />
+                  {playerState.sleepTimer > 0 && (
+                    <span class="sleep-label">{sleepCountdown}</span>
+                  )}
+                </button>
+              </div>
+              {playbackStatus.length > 0 && (
+                <p class="playback-status">
+                  <span role="status">{playbackStatus.join(" · ")}</span>
+                  {sleepCountdown && (
+                    <span class="playback-status-countdown">
+                      {" "}
+                      ({sleepCountdown} left)
+                    </span>
+                  )}
+                </p>
+              )}
+            </div>
+            <section class="up-next" aria-label="Up next">
+              {upNext ? (
+                <>
+                  <button
+                    type="button"
+                    class="up-next-track"
+                    onClick$={() => playTrack(upNextStep.index)}
+                    aria-label={`Play next: ${upNextDisplay?.title ?? ""}`}
+                  >
+                    <span class="up-next-art">
+                      <Icon name="music-note" size={22} />
+                      <PlayerArtwork
+                        src={thumbnailSrc(
+                          `/api/v1/items/${encodeURIComponent(upNext.id)}/image`,
+                        )}
+                      />
+                    </span>
+                    <span class="up-next-copy">
+                      <span>Up next</span>
+                      <strong>{upNextDisplay?.title}</strong>
+                      {upNextDisplay && trackSubtitle(upNextDisplay) && (
+                        <span>{trackSubtitle(upNextDisplay)}</span>
+                      )}
+                    </span>
+                    <Icon name="play" size={18} />
+                  </button>
+                  <button
+                    type="button"
+                    class="control-button"
+                    aria-label="Skip upcoming track"
+                    title="Replace the upcoming track without interrupting playback"
+                    onClick$={dismissNext}
+                  >
+                    <Icon name="skip-forward" size={18} />
+                  </button>
+                </>
+              ) : (
+                <span class="up-next-empty">Up next · End of queue</span>
+              )}
+            </section>
+          </div>
+        )}
         <div class="player-sidebar">
           <div class="player-sidebar-header">
             {!playerState.albumView && (
@@ -1549,6 +1561,16 @@ export const PlayerView = component$<{
                         currentTrack.relativePath.startsWith(
                           album.dirPath + "/",
                         );
+                      const countLabel = `${album.tracks.length} ${
+                        album.audiobook
+                          ? album.tracks.length === 1
+                            ? "part"
+                            : "parts"
+                          : album.tracks.length === 1
+                            ? "track"
+                            : "tracks"
+                      }`;
+                      const tiles = layout.view.value.startsWith("tiles-");
                       return (
                         <li key={album.dirPath} class="album-item">
                           <button
@@ -1578,6 +1600,14 @@ export const PlayerView = component$<{
                                   alt=""
                                   loading="lazy"
                                 />
+                                {tiles && (
+                                  <span
+                                    class="album-count-badge"
+                                    aria-hidden="true"
+                                  >
+                                    {Math.min(album.tracks.length, 99)}
+                                  </span>
+                                )}
                               </div>
                             )}
                             <span class="album-copy">
@@ -1585,17 +1615,11 @@ export const PlayerView = component$<{
                                 {displayFolderName(album.name) ||
                                   "Unfiled tracks"}
                               </span>
-                              {layout.view.value !== "simple-list" && (
-                                <span class="album-count">
-                                  {album.tracks.length}{" "}
-                                  {album.audiobook
-                                    ? album.tracks.length === 1
-                                      ? "part"
-                                      : "parts"
-                                    : album.tracks.length === 1
-                                      ? "track"
-                                      : "tracks"}
-                                </span>
+                              {tiles && (
+                                <span class="sr-only">{countLabel}</span>
+                              )}
+                              {layout.view.value === "detailed-list" && (
+                                <span class="album-count">{countLabel}</span>
                               )}
                               {layout.view.value === "detailed-list" && (
                                 <span class="album-path">
@@ -1660,7 +1684,7 @@ export const PlayerView = component$<{
                         <span class="track-name" title={track.relativePath}>
                           {display.title}
                         </span>
-                        {layout.view.value !== "simple-list" && (
+                        {(layout.view.value.endsWith("-list") || query) && (
                           <span class="track-album">
                             {query
                               ? friendlyPath(dirPath)
