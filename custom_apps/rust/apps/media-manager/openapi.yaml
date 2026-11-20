@@ -2459,6 +2459,7 @@ components:
         id: { type: string }
         filename: { type: string }
         capturedAt: { type: string }
+        location: { type: string, maxLength: 512, description: "Photo place derived from EXIF: city, state and country where present." }
         tags: { type: array, items: { $ref: "#/components/schemas/ImmichTag" } }
         analysis: { anyOf: [{ $ref: "#/components/schemas/EyeAnalysis" }, { type: "null" }] }
     ImmichIndexStatus:

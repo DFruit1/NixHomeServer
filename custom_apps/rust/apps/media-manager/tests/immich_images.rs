@@ -148,7 +148,7 @@ fn photo(tagged: bool) -> Value {
     if tagged {
         tags.push(json!({"id":NEW_TAG,"value":"EYE/beach"}));
     }
-    json!({"id":PHOTO,"type":"IMAGE","originalFileName":"portrait.jpg","fileCreatedAt":"2026-10-01T10:00:00Z","visibility":"timeline","isTrashed":false,"originalPath":"/private/immich/original.jpg","tags":tags})
+    json!({"id":PHOTO,"type":"IMAGE","originalFileName":"portrait.jpg","fileCreatedAt":"2026-10-01T10:00:00Z","visibility":"timeline","isTrashed":false,"originalPath":"/private/immich/original.jpg","tags":tags,"exifInfo":{"city":"Sydney","state":"New South Wales","country":"Australia"}})
 }
 async fn search(
     State(state): State<Fixture>,
@@ -485,6 +485,10 @@ async fn semantic_search_rechecks_access_and_scopes_metadata_across_filtered_pag
     api_contract::assert_component("ImmichIndexedPage", &first);
     assert_eq!(first["items"].as_array().unwrap().len(), 48);
     assert_eq!(first["items"][0]["id"], PHOTO);
+    assert_eq!(
+        first["items"][0]["location"],
+        "Sydney, New South Wales, Australia"
+    );
     assert_eq!(first["items"][0]["analysis"], analysis);
     assert_eq!(first["items"][1]["analysis"], Value::Null);
     assert_eq!(first["nextPage"], Value::Null);

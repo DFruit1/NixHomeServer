@@ -6,13 +6,18 @@
  */
 const THUMBNAIL_SIZES = [160, 320, 640] as const;
 
-export const thumbnailSrc = (url: string) => `${url}?size=320`;
+// Retried previews carry a cache-busting query, so append rather than assume
+// the URL has no query string yet.
+const sized = (url: string, size: number) =>
+  `${url}${url.includes("?") ? "&" : "?"}size=${size}`;
+
+export const thumbnailSrc = (url: string) => sized(url, 320);
 
 // Large tiles on high-density phones use the unresized image, which is at
 // least Immich's 1440px preview for photos, or the original cover.
 export const thumbnailSrcset = (url: string) =>
   [
-    ...THUMBNAIL_SIZES.map((size) => `${url}?size=${size} ${size}w`),
+    ...THUMBNAIL_SIZES.map((size) => `${sized(url, size)} ${size}w`),
     `${url} 1440w`,
   ].join(", ");
 

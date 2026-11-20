@@ -23,7 +23,11 @@ import type {
   ImmichTaggingState,
 } from "./api-contract.generated";
 import { Icon } from "./icon";
-import { CollectionViewControl, useCollectionView } from "./collection-view";
+import {
+  CollectionViewControl,
+  photoCollectionViews,
+  useCollectionView,
+} from "./collection-view";
 import { DecisionQuestions } from "./decision-questions";
 import {
   collectionTileSizes,
@@ -36,7 +40,8 @@ import { LoadingState } from "./view-states";
 
 const photoPath = (id: string) =>
   `/provider-lookups/immich/images/${encodeURIComponent(id)}`;
-const previewUrl = (id: string) => `/api/v1${photoPath(id)}/preview`;
+const previewUrl = (id: string, attempt = 0) =>
+  `/api/v1${photoPath(id)}/preview${attempt ? `?retry=${attempt}` : ""}`;
 const tagLabel = (tag: string) => tag.replaceAll("_", " ");
 // Short names for the compact sort control; the native picker keeps full names.
 const sortLabels: Record<string, string> = {
@@ -73,7 +78,12 @@ export const ImagesView = component$<{
   immichUrl?: string;
   userSubject?: string;
 }>((props) => {
-  const layout = useCollectionView(props, "images", "tiles-3");
+  const layout = useCollectionView(
+    props,
+    "images",
+    "tiles-3",
+    photoCollectionViews,
+  );
   const grid = useSignal<HTMLElement>();
   const loadMoreSentinel = useSignal<HTMLElement>();
   const selection = useStore({
@@ -136,6 +146,7 @@ export const ImagesView = component$<{
     unavailable: false,
     imageFailed: false,
     failedPreviews: [] as string[],
+    previewAttempts: {} as Record<string, number>,
   });
 
   const load = $(async (more = false) => {
@@ -261,6 +272,43 @@ export const ImagesView = component$<{
           },
         }),
       );
+    },
+    { strategy: "document-ready" },
+  );
+
+  // Native lazy loading can leave a row that has just scrolled into view
+  // queued behind distant work, and its shared priority delays the first
+  // visible pixels. Promote tiles within a screen before they are reached so
+  // an in-view thumbnail starts immediately at high priority.
+  useVisibleTask$(
+    ({ track, cleanup }) => {
+      const element = track(() => grid.value);
+      if (!element || typeof IntersectionObserver === "undefined") return;
+      const observer = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            const image = entry.target as HTMLImageElement;
+            observer.unobserve(image);
+            image.loading = "eager";
+            image.fetchPriority = "high";
+          }
+        },
+        { rootMargin: "600px 0px" },
+      );
+      const observeNew = () => {
+        for (const image of Array.from(
+          element.querySelectorAll<HTMLImageElement>("img"),
+        ))
+          observer.observe(image);
+      };
+      observeNew();
+      const mutations = new MutationObserver(observeNew);
+      mutations.observe(element, { childList: true, subtree: true });
+      cleanup(() => {
+        observer.disconnect();
+        mutations.disconnect();
+      });
     },
     { strategy: "document-ready" },
   );
@@ -834,7 +882,6 @@ export const ImagesView = component$<{
               "images-browser-header--selecting": selection.active,
             }}
           >
-            <h2 class={{ "sr-only": selection.active }}>Photos</h2>
             {selection.active ? (
               <div
                 class="images-selection-actions"
@@ -900,23 +947,10 @@ export const ImagesView = component$<{
               </div>
             ) : (
               <div class="images-header-actions">
-                <button
-                  type="button"
-                  class="images-header-icon"
-                  aria-label="Select photos"
-                  title="Select photos"
-                  onClick$={() => {
-                    selection.active = true;
-                    selection.ids = [];
-                    selection.error = "";
-                    headerMenuOpen.value = false;
-                  }}
-                >
-                  <Icon name="select" size={20} />
-                </button>
                 <CollectionViewControl
                   label="Layout"
                   compact
+                  views={photoCollectionViews}
                   value={layout.view.value}
                   onChange$={layout.change}
                 />
@@ -940,6 +974,19 @@ export const ImagesView = component$<{
                       id="images-header-menu"
                       class="image-more-actions images-header-menu-list"
                     >
+                      <li>
+                        <button
+                          type="button"
+                          onClick$={() => {
+                            selection.active = true;
+                            selection.ids = [];
+                            selection.error = "";
+                            headerMenuOpen.value = false;
+                          }}
+                        >
+                          Select photos
+                        </button>
+                      </li>
                       <li>
                         <button
                           type="button"
@@ -1266,33 +1313,6 @@ export const ImagesView = component$<{
                 <span>Photo analysis needs attention: {state.index.error}</span>
               </div>
             )}
-            {state.index &&
-              (state.index.scanning ||
-                state.index.failed > 0 ||
-                !!state.index.error ||
-                state.index.analyzed < state.index.discovered) && (
-                <p class="images-index-line">
-                  <span role="status">
-                    {state.index.scanning
-                      ? `Analysing ${state.index.analyzed.toLocaleString()} of ${state.index.discovered.toLocaleString()} photos`
-                      : `${state.index.analyzed.toLocaleString()} of ${state.index.discovered.toLocaleString()} photos analysed`}
-                    {state.index.error ? " · will try again shortly" : ""}
-                    {state.index.failed
-                      ? ` · ${state.index.failed.toLocaleString()} failed`
-                      : ""}
-                  </span>
-                  <button
-                    type="button"
-                    class="images-header-icon images-index-refresh"
-                    aria-label="Refresh photos"
-                    title="Refresh photos"
-                    disabled={state.loading || state.loadingMore}
-                    onClick$={() => load()}
-                  >
-                    <Icon name="refresh" size={16} />
-                  </button>
-                </p>
-              )}
             {state.error && !state.setupRequired && !state.unavailable && (
               <div class="message error" role="alert">
                 <span>{state.error}</span>
@@ -1364,31 +1384,34 @@ export const ImagesView = component$<{
                   data-selecting={selection.active ? "true" : undefined}
                   data-view={layout.view.value}
                 >
-                  {state.items.map((image) => (
-                    <button
-                      key={image.id}
-                      data-photo-id={image.id}
-                      aria-label={takenLabel(image)}
-                      type="button"
-                      class={{
-                        "image-tile": true,
-                        selected: selection.active
-                          ? selection.ids.includes(image.id)
-                          : state.selected?.id === image.id,
-                      }}
-                      aria-pressed={
-                        selection.active
-                          ? selection.ids.includes(image.id)
-                          : state.selected?.id === image.id
-                      }
-                      title={tiles ? takenLabel(image) : undefined}
-                      disabled={busy}
-                      onClick$={() =>
-                        selection.active ? togglePhoto(image.id) : choose(image)
-                      }
-                    >
-                      {layout.view.value !== "simple-list" &&
-                        (state.failedPreviews.includes(image.id) ? (
+                  {state.items.map((image) => {
+                    const attempt = state.previewAttempts[image.id] ?? 0;
+                    return (
+                      <button
+                        key={image.id}
+                        data-photo-id={image.id}
+                        aria-label={takenLabel(image)}
+                        type="button"
+                        class={{
+                          "image-tile": true,
+                          selected: selection.active
+                            ? selection.ids.includes(image.id)
+                            : state.selected?.id === image.id,
+                        }}
+                        aria-pressed={
+                          selection.active
+                            ? selection.ids.includes(image.id)
+                            : state.selected?.id === image.id
+                        }
+                        title={tiles ? takenLabel(image) : undefined}
+                        disabled={busy}
+                        onClick$={() =>
+                          selection.active
+                            ? togglePhoto(image.id)
+                            : choose(image)
+                        }
+                      >
+                        {state.failedPreviews.includes(image.id) ? (
                           <span
                             class="image-tile-placeholder"
                             role="img"
@@ -1399,33 +1422,39 @@ export const ImagesView = component$<{
                           </span>
                         ) : (
                           <img
-                            src={thumbnailSrc(previewUrl(image.id))}
-                            srcset={thumbnailSrcset(previewUrl(image.id))}
+                            src={thumbnailSrc(previewUrl(image.id, attempt))}
+                            srcset={thumbnailSrcset(
+                              previewUrl(image.id, attempt),
+                            )}
                             sizes={tileSizes}
                             alt=""
                             loading="lazy"
+                            decoding="async"
                             width={240}
                             height={200}
                             onError$={() => {
-                              state.failedPreviews = [
-                                ...state.failedPreviews,
-                                image.id,
-                              ];
+                              // A canceled or timed-out preview is often
+                              // transient. Retry once with a fresh URL before
+                              // settling on the placeholder.
+                              const failures =
+                                state.previewAttempts[image.id] ?? 0;
+                              if (failures < 1) {
+                                state.previewAttempts[image.id] = failures + 1;
+                                return;
+                              }
+                              if (!state.failedPreviews.includes(image.id))
+                                state.failedPreviews = [
+                                  ...state.failedPreviews,
+                                  image.id,
+                                ];
                             }}
                           />
-                        ))}
-                      <span
-                        class={
-                          tiles
-                            ? "image-item-copy image-item-copy--tiles"
-                            : "image-item-copy"
-                        }
-                      >
-                        <span class="image-item-name">
-                          {takenLabel(image, !tiles)}
-                        </span>
+                        )}
                         {layout.view.value === "detailed-list" && (
-                          <>
+                          <span class="image-item-copy">
+                            <span class="image-item-name">
+                              {takenLabel(image, false)}
+                            </span>
                             <span class="image-item-meta">
                               {image.filename}
                             </span>
@@ -1434,24 +1463,14 @@ export const ImagesView = component$<{
                                 ? scoreLine(image.analysis.scores)
                                 : "Not analysed yet"}
                             </span>
-                            {!!image.decisionTags?.length && (
-                              <span class="image-item-meta">
-                                {image.decisionTags.join(", ")}
-                              </span>
-                            )}
-                            {image.analysis && (
-                              <span class="image-item-meta">
-                                {image.analysis.suggestions
-                                  .slice(0, 3)
-                                  .map((suggestion) => tagLabel(suggestion.tag))
-                                  .join(", ")}
-                              </span>
-                            )}
-                          </>
+                            <span class="image-item-meta">
+                              {image.location || "—"}
+                            </span>
+                          </span>
                         )}
-                      </span>
-                    </button>
-                  ))}
+                      </button>
+                    );
+                  })}
                 </div>
                 {(state.nextPage || state.nextCursor !== null) && (
                   <>

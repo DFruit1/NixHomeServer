@@ -760,6 +760,39 @@ struct Asset {
     visibility: String,
     #[serde(default)]
     tags: Vec<Tag>,
+    #[serde(default)]
+    exif_info: Option<ExifInfo>,
+}
+
+/// The readable place Immich derives from EXIF. All three fields are optional,
+/// and Immich may omit the whole object on list responses (`withExif: false`).
+#[derive(Deserialize)]
+struct ExifInfo {
+    #[serde(default)]
+    city: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    country: Option<String>,
+}
+
+impl ExifInfo {
+    fn valid(&self) -> bool {
+        [&self.city, &self.state, &self.country]
+            .into_iter()
+            .flatten()
+            .all(|part| part.len() <= 128 && !part.chars().any(char::is_control))
+    }
+
+    fn location(&self) -> Option<String> {
+        let parts = [&self.city, &self.state, &self.country]
+            .into_iter()
+            .flatten()
+            .map(|part| part.trim())
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
+        (!parts.is_empty()).then(|| parts.join(", "))
+    }
 }
 
 #[derive(Deserialize)]
@@ -781,9 +814,15 @@ impl Asset {
                 .tags
                 .iter()
                 .all(|tag| valid_mbid(&tag.id) && tag.value.len() <= 1024)
+            && self.exif_info.as_ref().is_none_or(ExifInfo::valid)
     }
     fn public(self) -> Value {
-        json!({ "id": self.id, "filename": self.original_file_name, "capturedAt": self.file_created_at, "tags": self.tags })
+        let location = self.exif_info.as_ref().and_then(ExifInfo::location);
+        let mut value = json!({ "id": self.id, "filename": self.original_file_name, "capturedAt": self.file_created_at, "tags": self.tags });
+        if let Some(location) = location {
+            value["location"] = json!(location);
+        }
+        value
     }
     /// List shape for the Videos page; Immich video tags are not shown there.
     fn video_public(self) -> Value {

@@ -3,17 +3,29 @@ import type { QRL } from "@builder.io/qwik";
 import "./collection-view.css";
 import { Icon } from "./icon";
 
-export const collectionViews = [
+export type CollectionView =
+  | "detailed-list"
+  | "simple-list"
+  | "tiles-1"
+  | "tiles-2"
+  | "tiles-3"
+  | "tiles-4";
+type CollectionViewOption = readonly [CollectionView, string];
+export const collectionViews: readonly CollectionViewOption[] = [
   ["detailed-list", "Detailed list"],
   ["simple-list", "Simple list"],
   ["tiles-1", "1 tile per row"],
   ["tiles-2", "2 tiles per row"],
   ["tiles-3", "3 tiles per row"],
   ["tiles-4", "4 tiles per row"],
-] as const;
-export type CollectionView = (typeof collectionViews)[number][0];
-const validView = (value: string | null): value is CollectionView =>
-  collectionViews.some(([view]) => view === value);
+];
+/** Photos browse in one full row or a tile grid; Music also keeps simple rows. */
+export const photoCollectionViews: readonly CollectionViewOption[] =
+  collectionViews.filter(([view]) => view !== "simple-list");
+const validView = (
+  value: string | null,
+  views: readonly CollectionViewOption[],
+): value is CollectionView => views.some(([view]) => view === value);
 const preferenceKey = (subject: string, surface: string) =>
   `mm-collection-view:v1:${JSON.stringify([subject, surface])}`;
 
@@ -24,6 +36,7 @@ export function useCollectionView(
   props: { userSubject?: string },
   surface: "images" | "music",
   fallback: CollectionView,
+  views: readonly CollectionViewOption[] = collectionViews,
 ) {
   const view = useSignal<CollectionView>(fallback);
   useTask$(({ track }) => {
@@ -34,13 +47,13 @@ export function useCollectionView(
       const saved = window.localStorage.getItem(
         preferenceKey(subject, surface),
       );
-      if (validView(saved)) view.value = saved;
+      if (validView(saved, views)) view.value = saved;
     } catch {
       // Blocked/full storage must not prevent choosing a view for this visit.
     }
   });
   const change = $((value: CollectionView) => {
-    if (!validView(value)) return;
+    if (!validView(value, views)) return;
     view.value = value;
     if (!props.userSubject) return;
     try {
@@ -63,16 +76,20 @@ export const CollectionViewControl = component$<{
   hideCaption?: boolean;
   /** Show the current layout as a short named chip over the native picker. */
   compact?: boolean;
+  /** Layouts this surface offers; defaults to every shared layout. */
+  views?: readonly CollectionViewOption[];
 }>((props) => {
+  const views = props.views ?? collectionViews;
   const select = (
     <select
       aria-label={props.label}
       value={props.value}
       onChange$={(_, select) => {
-        if (validView(select.value)) return props.onChange$(select.value);
+        if (validView(select.value, views))
+          return props.onChange$(select.value);
       }}
     >
-      {collectionViews.map(([value, label]) => (
+      {views.map(([value, label]) => (
         <option key={value} value={value}>
           {label}
         </option>
@@ -81,7 +98,7 @@ export const CollectionViewControl = component$<{
   );
   if (props.compact) {
     const tiles = props.value.startsWith("tiles-");
-    const current = collectionViews.find(([value]) => value === props.value);
+    const current = views.find(([value]) => value === props.value);
     // "3 per row" reads as a layout setting, where a bare grid icon and
     // number read like a photo count.
     return (

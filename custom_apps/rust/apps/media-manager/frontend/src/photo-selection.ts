@@ -101,7 +101,7 @@ export function installPhotoSelection(
           scroll();
         });
       });
-    }, 400);
+    }, 600);
   };
   const move = (event: TouchEvent) => {
     if (event.touches.length !== 1) return stop();

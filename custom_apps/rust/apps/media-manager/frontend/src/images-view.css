@@ -309,20 +309,17 @@
   border-bottom: 1px solid var(--line);
   background: var(--images-bar-bg);
 }
-.images-browser-header h2 {
-  font-family: var(--font-serif);
-  font-size: var(--title-sm);
-  font-weight: 500;
-}
 .images-header-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 2px;
   min-width: 0;
+  /* Without the page title the actions keep the row's right edge. */
+  margin-left: auto;
 }
-/* Quiet icon actions: Select, View and More stay one tap away without
-   competing with the photos. */
+/* Quiet icon actions: Layout and More stay one tap away without competing
+   with the photos. */
 .images-header-icon,
 .collection-view-compact {
   position: relative;
@@ -559,24 +556,6 @@
   color: var(--ink-soft);
   font-size: var(--text-sm);
 }
-.images-index-line {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0 8px;
-  margin: -4px 0 8px;
-  color: var(--ink-faint);
-  font-size: var(--text-xs);
-  font-variant-numeric: tabular-nums;
-}
-.images-index-line > span {
-  flex: 1 1 0;
-  min-width: 0;
-}
-.images-index-line .images-index-refresh {
-  flex: 0 0 auto;
-  margin: -10px -8px -10px 0;
-}
 .images-browser-body > .message {
   margin-bottom: 12px;
 }
@@ -686,16 +665,6 @@
   min-width: 0;
   padding: 8px 2px;
   font-size: var(--text-sm);
-}
-.image-item-copy--tiles {
-  padding: 6px 2px 2px;
-  color: var(--ink-faint);
-  font-size: var(--text-xs);
-}
-.image-item-copy--tiles .image-item-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .image-item-name {
   overflow-wrap: anywhere;
