@@ -148,9 +148,12 @@ measurement details live in [Compute Offload](documentation/operations.md#comput
 * During ongoing Android development, use `pnpm build:android` (an alias for
   `pnpm release:android`) for each distributable rebuild. It selects a version
   code above the live F-Droid version, signs, publishes, and verifies F-Droid
-  and IPFS automatically. The display version can stay unchanged. Use
+  and IPFS automatically. Each File Sync publish also raises the displayed
+  patch version above the live release and updates the version files in the
+  checkout, so commit those files with the release. Use
   `pnpm build:android --build-only` only for intentionally local validation;
-  raw Tauri Android builds do not run the publication workflow.
+  it neither queries the repository nor bumps the version. Raw Tauri Android
+  builds do not run the publication workflow.
 
 ---
 

@@ -9,9 +9,11 @@ if [[ "$#" -lt 1 || "$#" -gt 2 || ( "$#" == 2 && "$2" != "--build-only" ) ]]; th
 fi
 app="$1"
 build_only="${2:-}"
+# File Sync publishes every rebuild, so its display version must advance with the
+# version code instead of staying at the last hand-edited value.
 case "$app" in
-  filesync) shell="filesync-tauri"; test_command="test" ;;
-  youtube-downloader) shell="youtube-downloader-tauri"; test_command="check" ;;
+  filesync) shell="filesync-tauri"; test_command="test"; bump_display_version=1 ;;
+  youtube-downloader) shell="youtube-downloader-tauri"; test_command="check"; bump_display_version=0 ;;
   *) echo "Unsupported Android app: $app" >&2; exit 2 ;;
 esac
 
@@ -37,9 +39,10 @@ tauri_version="$(node -p 'JSON.parse(require("node:fs").readFileSync("src-tauri/
   exit 1
 }
 
-# Repeated development builds keep their display version but must have a higher
-# Android version code to be offered as updates. Query the live repository before
-# spending time building; publication still rechecks the code and signing key.
+# Every published build needs a higher Android version code, and File Sync also
+# needs a higher display version than the live repository shows. Query the live
+# repository before spending time building; publication still rechecks the code
+# and signing key.
 android_config=()
 if [[ "$build_only" != "--build-only" ]]; then
   # shellcheck source=scripts/helpers/repo-common.sh
@@ -47,31 +50,86 @@ if [[ "$build_only" != "--build-only" ]]; then
   init_repo_root
   ensure_default_nix_config
   domain="$(nix_flake_json 'vars.domain' | node -p 'JSON.parse(require("node:fs").readFileSync(0, "utf8"))')"
-  version_code="$(node --input-type=module - "https://fdroid.$domain/fdroid/repo/index-v2.json" <<'JS'
-import { readFileSync } from 'node:fs';
+  release_metadata="$(node --input-type=module - "https://fdroid.$domain/fdroid/repo/index-v2.json" "$bump_display_version" <<'JS'
+import { readFileSync, writeFileSync } from 'node:fs';
 
+const parseVersion = (value) => {
+  const parts = /^(\d+)\.(\d+)\.(\d+)$/.exec(value ?? '');
+  return parts ? parts.slice(1).map(Number) : null;
+};
+const compareVersions = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+const incrementVersion = ([major, minor, patch]) => {
+  if (patch < 999) return [major, minor, patch + 1];
+  if (minor < 999) return [major, minor + 1, 0];
+  return [major + 1, 0, 0];
+};
+const writeVersion = (path, version, pattern) => {
+  const text = readFileSync(path, 'utf8');
+  const updated = text.replace(pattern, (_match, prefix, suffix) => `${prefix}${version}${suffix}`);
+  if (updated === text) throw new Error(`No release version found in ${path}`);
+  writeFileSync(path, updated);
+};
+
+const [, , indexUrl, bumpDisplayVersion] = process.argv;
+const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
 const config = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8'));
-const parts = /^(\d+)\.(\d+)\.(\d+)$/.exec(config.version)?.slice(1).map(Number);
-if (!parts || parts[1] > 999 || parts[2] > 999) {
+if (packageJson.version !== config.version) {
+  throw new Error('package.json and src-tauri/tauri.conf.json must share one release version');
+}
+const sourceVersion = parseVersion(config.version);
+if (!sourceVersion || sourceVersion[1] > 999 || sourceVersion[2] > 999) {
   throw new Error('Automatic Android releases require a numeric major.minor.patch version (minor/patch <= 999)');
 }
-const android = config.bundle?.android;
-const sourceCode = android?.versionCode ?? (parts[0] * 1000000 + parts[1] * 1000 + parts[2]);
-const response = await fetch(process.argv[2], { signal: AbortSignal.timeout(20000) });
+const sourceCode = config.bundle?.android?.versionCode
+  ?? (sourceVersion[0] * 1000000 + sourceVersion[1] * 1000 + sourceVersion[2]);
+
+const response = await fetch(indexUrl, { signal: AbortSignal.timeout(20000) });
 if (!response.ok) throw new Error(`Cannot read F-Droid index: HTTP ${response.status}`);
 const index = await response.json();
 if (!index.packages || typeof index.packages !== 'object') throw new Error('Invalid F-Droid index');
-const codes = Object.values(index.packages[config.identifier]?.versions ?? {})
-  .map(version => version.manifest.versionCode);
-if (![sourceCode, ...codes].every(code => Number.isSafeInteger(code) && code >= 1 && code <= 2100000000)) {
+const published = Object.values(index.packages[config.identifier]?.versions ?? {});
+const codes = published.map((entry) => entry.manifest.versionCode);
+if (![sourceCode, ...codes].every((code) => Number.isSafeInteger(code) && code >= 1 && code <= 2100000000)) {
   throw new Error('Invalid Android version code in source or F-Droid index');
 }
 const nextCode = Math.max(sourceCode, Math.max(0, ...codes) + 1);
 if (nextCode > 2100000000) throw new Error('Android version code limit reached');
-console.log(nextCode);
+
+let releaseVersion = config.version;
+if (bumpDisplayVersion === '1' && published.length > 0) {
+  const liveVersions = published.map((entry) => parseVersion(entry.manifest.versionName));
+  if (liveVersions.every((versions) => versions === null)) {
+    throw new Error('The live F-Droid release has no numeric major.minor.patch display version');
+  }
+  const highestLive = liveVersions
+    .filter(Boolean)
+    .reduce((best, candidate) => (compareVersions(candidate, best) > 0 ? candidate : best));
+  const nextVersion = compareVersions(sourceVersion, highestLive) > 0
+    ? sourceVersion
+    : incrementVersion(highestLive);
+  releaseVersion = nextVersion.join('.');
+}
+if (releaseVersion !== config.version) {
+  writeVersion('package.json', releaseVersion, /("version"\s*:\s*")[^"]+(")/);
+  writeVersion('src-tauri/tauri.conf.json', releaseVersion, /("version"\s*:\s*")[^"]+(")/);
+  const cargoPath = 'src-tauri/Cargo.toml';
+  const cargo = readFileSync(cargoPath, 'utf8');
+  const crateVersions = [...cargo.matchAll(/^version\s*=\s*"([^"]+)"/gm)];
+  if (crateVersions.length !== 1 || crateVersions[0][1] !== config.version) {
+    throw new Error('src-tauri/Cargo.toml must declare the same release version as the app metadata');
+  }
+  writeVersion(cargoPath, releaseVersion, /^(version\s*=\s*")[^"]+(")/m);
+}
+console.log(JSON.stringify({ version: releaseVersion, versionCode: nextCode }));
 JS
   )"
-  echo "Publishing $package_version with Android version code $version_code"
+  release_version="$(node -p 'JSON.parse(require("node:fs").readFileSync(0, "utf8")).version' <<<"$release_metadata")"
+  version_code="$(node -p 'JSON.parse(require("node:fs").readFileSync(0, "utf8")).versionCode' <<<"$release_metadata")"
+  if [[ "$release_version" != "$package_version" ]]; then
+    echo "Bumped the published display version from $package_version to $release_version;"
+    echo "commit the updated version files (including src-tauri/Cargo.lock) with this release."
+  fi
+  echo "Publishing $release_version with Android version code $version_code"
   android_config=(--config "{\"bundle\":{\"android\":{\"versionCode\":$version_code,\"autoIncrementVersionCode\":false}}}")
 fi
 

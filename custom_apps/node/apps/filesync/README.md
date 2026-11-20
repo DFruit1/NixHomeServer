@@ -85,14 +85,19 @@ root from its own preset configuration; clients cannot supply an absolute path.
 
 Run `pnpm build:android` (or `pnpm release:android`) from this app directory
 for each distributable rebuild. The command selects an Android version code
-above the live F-Droid version, so the display version can remain unchanged
-during development. It builds and tests the ARM64 APK, signs it with the existing
-Android debug keystore, checks the app identity, version code, and signing
-certificate against the live F-Droid index, then uploads it to the server's
-watched File Sync path. It waits until both the F-Droid index and IPFS mirror
-serve the new APK. Use `pnpm build:android --build-only` to create a local
-APK without publishing it. The same signing key is required for in-place
-updates; back it up before releasing from another workstation.
+above the live F-Droid version and raises the displayed patch version above the
+live release, so the phone shows the new version instead of the previous one.
+It writes the bumped version into `package.json`, `src-tauri/tauri.conf.json`
+and `src-tauri/Cargo.toml`, so commit those version files (including the
+updated `src-tauri/Cargo.lock`) with the release. It builds and
+tests the ARM64 APK, signs it with the existing Android debug keystore, checks
+the app identity, version code, and signing certificate against the live
+F-Droid index, then uploads it to the server's watched File Sync path. It waits
+until both the F-Droid index and IPFS mirror serve the new APK. Use
+`pnpm build:android --build-only` to create a local APK without publishing,
+querying the live repository or bumping the version. The same signing key is
+required for in-place updates; back it up before releasing from another
+workstation.
 
 Add the existing F-Droid repository URL
 (`https://fdroid.<your-domain>/fdroid/repo`) to the F-Droid client. The IPFS

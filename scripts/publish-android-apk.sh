@@ -87,6 +87,27 @@ if (( version_code <= current_code )); then
   echo "Refusing to publish $app version code $version_code; F-Droid has $current_code" >&2
   exit 1
 fi
+# File Sync must also show a newer display version than the live release. Skip
+# the comparison when either side is not a numeric major.minor.patch value.
+if [[ "$app" == filesync && "$version_name" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+  new_version=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+  current_name="$(jq -r --arg id "$app_id" '[.packages[$id].versions[]?] | max_by(.manifest.versionCode) | .manifest.versionName // ""' "$work_dir/current.json")"
+  if [[ "$current_name" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    current_version=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+    newer=false
+    if (( 10#${new_version[0]} != 10#${current_version[0]} )); then
+      (( 10#${new_version[0]} > 10#${current_version[0]} )) && newer=true
+    elif (( 10#${new_version[1]} != 10#${current_version[1]} )); then
+      (( 10#${new_version[1]} > 10#${current_version[1]} )) && newer=true
+    elif (( 10#${new_version[2]} > 10#${current_version[2]} )); then
+      newer=true
+    fi
+    if [[ "$newer" != true ]]; then
+      echo "Refusing to publish $app version $version_name; F-Droid already shows $current_name" >&2
+      exit 1
+    fi
+  fi
+fi
 if [[ -n "$current_signer" && "$signer" != "$current_signer" ]]; then
   echo "Refusing to replace $app: APK signing certificate changed" >&2
   exit 1
