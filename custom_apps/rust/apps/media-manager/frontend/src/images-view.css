@@ -436,15 +436,21 @@
   display: inline-flex;
   flex-direction: row;
   align-items: center;
+  justify-content: space-between;
+  width: 146px;
   gap: 4px;
   height: var(--control-height);
-  padding: 0 8px 0 12px;
+  padding: 0 6px 0 10px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-control);
   color: var(--ink);
   background: var(--card);
   font-size: var(--text-md);
   white-space: nowrap;
+}
+.images-sort-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .images-search label.images-sort-chip {
   display: inline-flex;
@@ -496,27 +502,19 @@
 .images-direction.ascending .icon {
   rotate: -90deg;
 }
-.images-filter-toggle {
-  position: relative;
+/* While the search field is focused or holds a term, the sort control gives
+   its width to the search and keeps only its chevron. */
+.images-toolbar--searching .images-sort-chip {
+  width: var(--control-height);
+  justify-content: center;
+  padding: 0;
 }
-.images-filter-toggle[aria-expanded="true"] {
+.images-toolbar--searching .images-sort-chip > span {
+  display: none;
+}
+.images-toolbar-menu > button[aria-expanded="true"] {
   border-color: var(--accent);
   background: var(--accent-wash);
-}
-.images-filter-count {
-  position: absolute;
-  top: -6px;
-  right: -6px;
-  display: inline-grid;
-  place-items: center;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
-  border-radius: 999px;
-  color: var(--accent-ink);
-  background: var(--accent);
-  font-size: var(--text-xs);
-  font-variant-numeric: tabular-nums;
 }
 .images-filters {
   display: grid;
@@ -688,9 +686,9 @@
   padding: 0;
 }
 .images-grid[data-view="detailed-list"] :is(img, .image-tile-placeholder) {
-  flex: 0 0 72px;
-  width: 72px;
-  height: 60px;
+  flex: 0 0 94px;
+  width: 94px;
+  height: 78px;
   aspect-ratio: auto;
 }
 .images-grid[data-view="detailed-list"] .image-tile-placeholder > span,
@@ -1071,6 +1069,21 @@
   }
 }
 @media (max-width: 640px) {
+  /* Photos get a little more of the screen edge than the other pages. */
+  .main-content.main-content--images {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  /* One toolbar row: the search field takes the space the sort control gives
+     up while a term is being typed. */
+  .images-toolbar {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+  /* Revealing the filters stops just below the Layout/More header. */
+  .images-search {
+    scroll-margin-top: 56px;
+  }
   .images-filter-tags {
     grid-template-columns: minmax(0, 1fr);
   }

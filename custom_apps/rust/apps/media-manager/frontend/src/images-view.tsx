@@ -36,6 +36,7 @@ import {
 } from "./thumbnail";
 import { installPhotoSelection } from "./photo-selection";
 import { preparePhotoFiles } from "./photo-sharing";
+import { revealWhenMounted } from "./reveal";
 import { LoadingState } from "./view-states";
 
 const photoPath = (id: string) =>
@@ -97,11 +98,15 @@ export const ImagesView = component$<{
   const shareController = useSignal<NoSerialize<AbortController>>();
   const detail = useSignal<HTMLElement>();
   const rulesOpen = useSignal(false);
-  const rulesButton = useSignal<HTMLButtonElement>();
+  const headerMoreButton = useSignal<HTMLButtonElement>();
+  const toolbarMoreButton = useSignal<HTMLButtonElement>();
+  const searchForm = useSignal<HTMLFormElement>();
   const filtersOpen = useSignal(false);
+  const searchFocused = useSignal(false);
   const semanticSearch = useSignal(true);
   const moreOpen = useSignal(false);
-  const headerMenuOpen = useSignal(false);
+  const moreMenuOpen = useSignal<"" | "header" | "toolbar">("");
+  const moreMenuOpener = useSignal<"header" | "toolbar">("header");
   const returnToPhoto = useSignal<{ id: string; top: number }>();
   const pushedImageId = useSignal<string | null>(null);
   const state = useStore({
@@ -602,7 +607,7 @@ export const ImagesView = component$<{
 
   const openRules = $(() => {
     moreOpen.value = false;
-    headerMenuOpen.value = false;
+    moreMenuOpen.value = "";
     rulesOpen.value = true;
   });
   const closeRules = $(async () => {
@@ -610,7 +615,11 @@ export const ImagesView = component$<{
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => resolve()),
     );
-    rulesButton.value?.focus();
+    const opener =
+      moreMenuOpener.value === "toolbar"
+        ? toolbarMoreButton.value
+        : headerMoreButton.value;
+    opener?.focus();
   });
 
   // Back closes the decision editor, then leaves photo selection mode.
@@ -630,7 +639,7 @@ export const ImagesView = component$<{
     $((event: KeyboardEvent) => {
       if (event.key === "Escape") {
         moreOpen.value = false;
-        headerMenuOpen.value = false;
+        moreMenuOpen.value = "";
         selection.active = false;
         selection.ids = [];
       }
@@ -642,8 +651,8 @@ export const ImagesView = component$<{
       const target = event.target as Element | null;
       if (moreOpen.value && !target?.closest?.(".image-more"))
         moreOpen.value = false;
-      if (headerMenuOpen.value && !target?.closest?.(".images-header-menu"))
-        headerMenuOpen.value = false;
+      if (moreMenuOpen.value && !target?.closest?.(".images-header-menu"))
+        moreMenuOpen.value = "";
     }),
   );
 
@@ -667,8 +676,73 @@ export const ImagesView = component$<{
     (["minAesthetic", "minKeeper", "minCover"] as const).filter(
       (key) => Number(state.filters[key]) > 0,
     ).length;
+  const openFilters = $(() => {
+    moreMenuOpen.value = "";
+    if (filtersOpen.value) {
+      filtersOpen.value = false;
+      return;
+    }
+    filtersOpen.value = true;
+    revealWhenMounted(() => searchForm.value);
+  });
+  const renderMoreMenu = (id: string) => (
+    <ul id={id} class="image-more-actions images-header-menu-list">
+      <li>
+        <button
+          type="button"
+          onClick$={() => {
+            moreMenuOpen.value = "";
+            selection.active = true;
+            selection.ids = [];
+            selection.error = "";
+          }}
+        >
+          Select photos
+        </button>
+      </li>
+      <li>
+        <button
+          type="button"
+          aria-controls="decision-editor"
+          onClick$={openRules}
+        >
+          Decision questions
+        </button>
+      </li>
+      <li>
+        <button
+          type="button"
+          disabled={state.loading || state.loadingMore}
+          onClick$={() => {
+            moreMenuOpen.value = "";
+            return load();
+          }}
+        >
+          Refresh photos
+        </button>
+      </li>
+      <li>
+        <button
+          type="button"
+          aria-expanded={filtersOpen.value}
+          aria-controls="image-filters"
+          onClick$={openFilters}
+        >
+          {filtersOpen.value ? "Hide filters" : "Filters"}
+          {activeFilters ? ` · ${activeFilters} active` : ""}
+        </button>
+      </li>
+      {state.index && (
+        <li class="images-header-menu-note">
+          {state.index.analyzed.toLocaleString()} of{" "}
+          {state.index.discovered.toLocaleString()} photos analysed
+        </li>
+      )}
+    </ul>
+  );
+  const searchExpanded = searchFocused.value || state.query.trim() !== "";
   const tiles = layout.view.value.startsWith("tiles-");
-  const tileSizes = collectionTileSizes(layout.view.value, 72, {
+  const tileSizes = collectionTileSizes(layout.view.value, 94, {
     phone: "100vw",
     desktop: "420px",
   });
@@ -956,73 +1030,30 @@ export const ImagesView = component$<{
                 />
                 <div class="images-header-menu">
                   <button
-                    ref={rulesButton}
+                    ref={headerMoreButton}
                     type="button"
                     class="images-header-icon"
                     aria-label="More photo options"
                     title="More"
-                    aria-expanded={headerMenuOpen.value}
+                    aria-expanded={moreMenuOpen.value === "header"}
                     aria-controls="images-header-menu"
-                    onClick$={() =>
-                      (headerMenuOpen.value = !headerMenuOpen.value)
-                    }
+                    onClick$={() => {
+                      moreMenuOpener.value = "header";
+                      moreMenuOpen.value =
+                        moreMenuOpen.value === "header" ? "" : "header";
+                    }}
                   >
                     <Icon name="more" size={20} />
                   </button>
-                  {headerMenuOpen.value && (
-                    <ul
-                      id="images-header-menu"
-                      class="image-more-actions images-header-menu-list"
-                    >
-                      <li>
-                        <button
-                          type="button"
-                          onClick$={() => {
-                            selection.active = true;
-                            selection.ids = [];
-                            selection.error = "";
-                            headerMenuOpen.value = false;
-                          }}
-                        >
-                          Select photos
-                        </button>
-                      </li>
-                      <li>
-                        <button
-                          type="button"
-                          aria-controls="decision-editor"
-                          onClick$={openRules}
-                        >
-                          Decision questions
-                        </button>
-                      </li>
-                      <li>
-                        <button
-                          type="button"
-                          disabled={state.loading || state.loadingMore}
-                          onClick$={() => {
-                            headerMenuOpen.value = false;
-                            return load();
-                          }}
-                        >
-                          Refresh photos
-                        </button>
-                      </li>
-                      {state.index && (
-                        <li class="images-header-menu-note">
-                          {state.index.analyzed.toLocaleString()} of{" "}
-                          {state.index.discovered.toLocaleString()} photos
-                          analysed
-                        </li>
-                      )}
-                    </ul>
-                  )}
+                  {moreMenuOpen.value === "header" &&
+                    renderMoreMenu("images-header-menu")}
                 </div>
               </div>
             )}
           </header>
           <div class="images-browser-body">
             <form
+              ref={searchForm}
               class={{
                 "images-search": true,
                 "images-search--sticky":
@@ -1031,7 +1062,12 @@ export const ImagesView = component$<{
               preventdefault:submit
               onSubmit$={() => load()}
             >
-              <div class="images-toolbar">
+              <div
+                class={{
+                  "images-toolbar": true,
+                  "images-toolbar--searching": searchExpanded,
+                }}
+              >
                 <div class="images-search-field">
                   <label for="image-search" class="sr-only">
                     Search filenames
@@ -1041,6 +1077,8 @@ export const ImagesView = component$<{
                     type="search"
                     maxLength={200}
                     value={state.query}
+                    onFocus$={() => (searchFocused.value = true)}
+                    onBlur$={() => (searchFocused.value = false)}
                     onInput$={(_, input) => (state.query = input.value)}
                     placeholder="Search"
                   />
@@ -1109,38 +1147,26 @@ export const ImagesView = component$<{
                       <Icon name="arrow" size={18} />
                     </button>
                   )}
-                  <button
-                    type="button"
-                    class="secondary-button images-icon-button images-filter-toggle"
-                    aria-expanded={filtersOpen.value}
-                    aria-controls="image-filters"
-                    aria-label={
-                      activeFilters
-                        ? `Filters, ${activeFilters} active`
-                        : "Filters"
-                    }
-                    title="Filters"
-                    onClick$={() => (filtersOpen.value = !filtersOpen.value)}
-                  >
-                    <svg
-                      aria-hidden="true"
-                      width="18"
-                      height="18"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.75"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
+                  <div class="images-header-menu images-toolbar-menu">
+                    <button
+                      ref={toolbarMoreButton}
+                      type="button"
+                      class="secondary-button images-icon-button"
+                      aria-label="More photo options"
+                      title="More"
+                      aria-expanded={moreMenuOpen.value === "toolbar"}
+                      aria-controls="images-toolbar-menu"
+                      onClick$={() => {
+                        moreMenuOpener.value = "toolbar";
+                        moreMenuOpen.value =
+                          moreMenuOpen.value === "toolbar" ? "" : "toolbar";
+                      }}
                     >
-                      <path d="M4 6h16M7 12h10M10 18h4" />
-                    </svg>
-                    {activeFilters > 0 && (
-                      <span class="images-filter-count" aria-hidden="true">
-                        {activeFilters}
-                      </span>
-                    )}
-                  </button>
+                      <Icon name="more" size={18} />
+                    </button>
+                    {moreMenuOpen.value === "toolbar" &&
+                      renderMoreMenu("images-toolbar-menu")}
+                  </div>
                 </div>
               </div>
               <div
@@ -1454,9 +1480,6 @@ export const ImagesView = component$<{
                           <span class="image-item-copy">
                             <span class="image-item-name">
                               {takenLabel(image, false)}
-                            </span>
-                            <span class="image-item-meta">
-                              {image.filename}
                             </span>
                             <span class="image-item-meta">
                               {image.analysis
