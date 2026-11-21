@@ -18,6 +18,8 @@ let
     MEDIA_MANAGER_EDITOR_GROUP = cfg.editorGroup;
     MEDIA_MANAGER_MUTATION_MODE = cfg.mutationMode;
     MEDIA_MANAGER_MKVMAKER_PROGRESS_FILE = "/run/mkvmaker/progress.json";
+    # Written by mkvmaker's audio CD importer when that integration exists.
+    MEDIA_MANAGER_AUDIOCD_STATUS_FILE = "/run/mkvmaker-audio/status.json";
     MEDIA_MANAGER_INTEGRATIONS_JSON = integrationsJson;
     MEDIA_MANAGER_FRONTEND_DIR = "${cfg.package}/share/media-manager/frontend";
     MEDIA_MANAGER_FFPROBE = "${pkgs.ffmpeg}/bin/ffprobe";
@@ -195,7 +197,7 @@ in
       MemoryDenyWriteExecute = true;
       CapabilityBoundingSet = [ ];
       AmbientCapabilities = [ ];
-      ReadOnlyPaths = [ "-${vars.sharedRoot}" "-${vars.usersRoot}" "-/run/mkvmaker" ]
+      ReadOnlyPaths = [ "-${vars.sharedRoot}" "-${vars.usersRoot}" "-/run/mkvmaker" "-/run/mkvmaker-audio" ]
         ++ lib.concatMap (integration: integration.readOnlyPaths) (lib.attrValues activeIntegrations);
       ReadWritePaths = [ cfg.stateDir "${vars.dataRoot}/media-manager/intake" ];
       SystemCallArchitectures = "native";

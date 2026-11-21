@@ -1676,10 +1676,23 @@ published, and are kept there so a book can be rebuilt later.
 
 A set that is not certain moves to `_AudioCDs/_NeedsIdentification/<folder>/`
 with an `identify.json` giving the reason, the proposal, each disc's lookup
-result and a `confirmWith` name. When identification ran, `identification`
-holds the transcript excerpts, what Bonsai read from them, the playing time
-and every catalogue edition compared. To confirm, rename the folder to the
-`confirmWith` name, correcting it first where it is wrong:
+result and a `confirmWith` name (empty when nothing names the book). When
+identification ran, `identification` holds the transcript excerpts, what
+Bonsai read from them, the playing time and every catalogue edition compared.
+
+Media Manager's Conversions page lists these books under **Audiobook CDs, not
+yet imported**, together with books still waiting for discs and the reason for
+each. For a held book in the shared inbox, Media Manager editors check or
+correct the prefilled folder name and choose **Accept**. The page refuses a
+name without the `[N discs]` tag, a disc count that differs from the ISOs in
+the folder, a name that already exists, or a folder that changed since the
+page loaded; Media Manager's filesystem broker then renames the folder within
+about 30 seconds, never replacing an entry, and the importer publishes the
+book on its next run. Books held in a personal inbox are listed for their
+owner with the name to use, and are confirmed by renaming the folder in Files.
+
+Anyone with the share can instead rename the folder in Files. Either way the
+name to give is the `confirmWith` name, corrected first where it is wrong:
 
 ```text
 Terry Pratchett - Guards! Guards! (1989) [6 discs]
@@ -1717,7 +1730,7 @@ jq . /run/mkvmaker-audio/status.json
 ```
 
 `status.json` lists every set that is settling, waiting for discs, held,
-retrying or skipped, and the book being built. The queue state is
+retrying or skipped, and the book being built; the Conversions page reads it. The queue state is
 `/var/lib/mkvmaker/audio/audio-import.json`; it is disposable, except that
 deleting it forgets which discs were already imported.
 

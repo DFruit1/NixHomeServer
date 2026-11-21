@@ -2183,6 +2183,60 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /conversions/audiobooks:
+    get:
+      operationId: listAudiobookInbox
+      description: >-
+        Lists the audiobook CD sets that the audio CD importer is waiting on:
+        books whose discs have not all arrived, books held for a person in
+        _ISO/_AudioCDs/_NeedsIdentification, and books waiting for a retry.
+        The data comes from the importer's status file and is bounded display
+        text. Sets from the shared inbox are shown to every signed-in user;
+        sets from a personal inbox only to their owner.
+      responses:
+        "200":
+          description: The sets needing attention and the book being built, if any.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AudiobookInbox" }
+  /conversions/audiobooks/confirm:
+    post:
+      operationId: confirmHeldAudiobook
+      description: >-
+        Confirms an audiobook held in the shared
+        _ISO/_AudioCDs/_NeedsIdentification by renaming its folder to
+        "Author - Title (Year) [N discs]" (year optional), where N is the
+        number of ISOs in the folder. The web service checks and queues the
+        request; the filesystem broker repeats the checks and renames within
+        that folder without replacing any entry. The importer then publishes
+        the book. Requires editor access and enabled mutations.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [folder, folderId, name]
+              properties:
+                folder: { type: string, description: The held folder's name as listed. }
+                folderId: { type: string, description: The listed folder identity; a replaced folder is refused. }
+                name: { type: string, maxLength: 200 }
+      responses:
+        "202":
+          description: Rename checked and queued for the filesystem broker.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rename]
+                properties:
+                  rename: { $ref: "#/components/schemas/HeldDiscRename" }
+                  requestId: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /conversions/inbox/error:
     get:
       responses:
@@ -3010,6 +3064,47 @@ components:
           type: string
           nullable: true
           description: Why the broker refused the rename.
+    AudiobookSet:
+      type: object
+      required: [inbox, folder, state, message, discs]
+      description: One audiobook CD set the importer is waiting on.
+      properties:
+        inbox: { type: string, enum: [shared, personal] }
+        folder: { type: string, maxLength: 255 }
+        state:
+          type: string
+          enum: [held, waiting, retrying]
+          description: held needs a person; waiting needs more discs; retrying is tried again automatically.
+        message: { type: string, maxLength: 1000, description: The importer's plain-language reason. }
+        discs: { type: integer, minimum: 0, description: ISOs present. }
+        missingDiscs:
+          type: array
+          items: { type: integer, minimum: 1 }
+        confirmWith:
+          type: string
+          maxLength: 255
+          description: The folder name that confirms a held book, from the importer's proposal.
+        folderId:
+          type: string
+          description: Identity of a held folder in the shared inbox, returned when confirming it.
+        rename: { $ref: "#/components/schemas/HeldDiscRename" }
+    AudiobookInbox:
+      type: object
+      required: [available, books]
+      properties:
+        available: { type: boolean, description: False when the audio CD importer is not installed or has not run. }
+        books:
+          type: array
+          items: { $ref: "#/components/schemas/AudiobookSet" }
+        active:
+          type: object
+          required: [folder, step]
+          properties:
+            folder: { type: string }
+            step: { type: string }
+            percent: { type: number, nullable: true, minimum: 0, maximum: 100 }
+        filesBaseUrl: { type: string }
+        requestId: { type: string }
     IntegrationRefresh:
       type: object
       required: [integrationId, state]

@@ -64,6 +64,8 @@ pub struct AppConfig {
     pub editor_group: String,
     pub mutation_mode: MutationMode,
     pub mkvmaker_progress_file: PathBuf,
+    /// The audio CD importer's status, written by mkvmaker's `audio-import`.
+    pub audiocd_status_file: PathBuf,
     pub transcribe_state_dir: Option<PathBuf>,
     pub conversion_staging_dir: Option<PathBuf>,
     /// Free space video conversions leave on the shared data pool.
@@ -191,6 +193,10 @@ impl AppConfig {
                 "MEDIA_MANAGER_MKVMAKER_PROGRESS_FILE",
                 "/run/mkvmaker/progress.json",
             )),
+            audiocd_status_file: PathBuf::from(env_string(
+                "MEDIA_MANAGER_AUDIOCD_STATUS_FILE",
+                "/run/mkvmaker-audio/status.json",
+            )),
             conversion_staging_dir: env::var_os("MEDIA_MANAGER_CONVERSION_STAGING_DIR")
                 .map(PathBuf::from),
             free_space_reserve_bytes: match optional_env("MEDIA_MANAGER_FREE_SPACE_RESERVE_BYTES") {
@@ -242,6 +248,7 @@ impl AppConfig {
             editor_group: DEFAULT_EDITOR_GROUP.to_string(),
             mutation_mode: MutationMode::ReadOnly,
             mkvmaker_progress_file: PathBuf::from("progress.json"),
+            audiocd_status_file: PathBuf::from("audiocd-status.json"),
             transcribe_state_dir: None,
             conversion_staging_dir: None,
             free_space_reserve_bytes: 0,
@@ -272,6 +279,11 @@ impl AppConfig {
 
     pub fn dvd_inbox_path(&self) -> PathBuf {
         self.shared_root.join("_ISO").join("_DVDs")
+    }
+
+    /// The shared audio CD inbox of mkvmaker's `audio-import`.
+    pub fn audio_inbox_path(&self) -> PathBuf {
+        self.shared_root.join("_ISO").join("_AudioCDs")
     }
 
     pub fn visible_roots(&self, identity: &Identity) -> Vec<VisibleRoot> {

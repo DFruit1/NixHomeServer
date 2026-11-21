@@ -9,6 +9,8 @@ let
     "${vars.sharedRoot}/_Podcasts"
     "${vars.sharedRoot}/_Books"
     "${vars.sharedRoot}/_ISO/_DVDs"
+    # Held audiobooks are read here and confirmed by a broker rename.
+    "${vars.sharedRoot}/_ISO/_AudioCDs"
   ];
   pathArgs = lib.escapeShellArgs sharedPaths;
 in

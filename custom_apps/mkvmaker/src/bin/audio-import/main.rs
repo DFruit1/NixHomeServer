@@ -66,7 +66,7 @@ const RETRY_HOURS: [u64; 3] = [1, 6, 24];
 /// Quarter-hourly tries for provider details before a certain book is
 /// published without them.
 const ENRICH_ATTEMPTS: u32 = 4;
-const HOW_TO_CONFIRM: &str = "Rename this folder to the confirmWith name to import it. Correct the author, title, year or number of discs in the name first if they are wrong.";
+const HOW_TO_CONFIRM: &str = "Rename this folder to the confirmWith name to import it, correcting the author, title, year or number of discs first if they are wrong. With no confirmWith name, write it as: Author - Title (Year) [N discs], where N is the number of ISOs here.";
 
 #[derive(Parser)]
 #[command(
@@ -905,7 +905,7 @@ impl Worker {
             message: reason,
             missing_discs: Vec::new(),
             proposal,
-            confirm_with: Some(confirm_with),
+            confirm_with: Some(confirm_with).filter(|name| !name.is_empty()),
             discs: discs.len(),
         });
         Ok(moved)
@@ -952,7 +952,7 @@ impl Worker {
         let (author_dir, existing) = library_lookup(&inbox.library, &proposal);
         if let Some(existing) = existing {
             let reason = format!(
-                "{} by {} is already in the library at {}. Move that folder away, then give this one its confirmWith name to import it.",
+                "{} by {} is already in the library at {}. Move that folder away, then confirm this book's folder name to import it.",
                 proposal.title,
                 proposal.author,
                 existing.display()
@@ -1361,7 +1361,9 @@ impl Worker {
                 proposal: evidence
                     .as_ref()
                     .and_then(|evidence| evidence.proposal.clone()),
-                confirm_with: evidence.map(|evidence| evidence.confirm_with),
+                confirm_with: evidence
+                    .map(|evidence| evidence.confirm_with)
+                    .filter(|name| !name.is_empty()),
                 discs: set.isos.len(),
             });
             return Ok(false);

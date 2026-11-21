@@ -139,7 +139,9 @@ pub fn parse_folder_name(name: &str) -> Option<NameClaim> {
     })
 }
 
-/// The folder name a person gives a held set to confirm it.
+/// The folder name a person gives a held set to confirm it. Empty when
+/// nothing names the book: a made-up "Author - Title" could be accepted by
+/// mistake and published under that name.
 pub fn confirming_name(proposal: Option<&Proposal>, present: usize) -> String {
     let (author, title, year) = match proposal {
         Some(proposal) if !proposal.author.is_empty() && !proposal.title.is_empty() => (
@@ -147,7 +149,7 @@ pub fn confirming_name(proposal: Option<&Proposal>, present: usize) -> String {
             proposal.title.as_str(),
             proposal.year,
         ),
-        _ => ("Author", "Title", None),
+        _ => return String::new(),
     };
     let mut name = format!(
         "{} - {}",
@@ -427,7 +429,14 @@ pub fn decide(folder: &str, discs: &[Disc], marker_total: Option<u32>) -> Decisi
 
     let missing = missing_numbers(discs, total);
     if !missing.is_empty() {
-        let message = format!("Waiting for disc {} of {total}.", list_numbers(&missing));
+        let message = match missing.as_slice() {
+            [one] => format!("Waiting for disc {one} of {total}."),
+            [rest @ .., last] => format!(
+                "Waiting for discs {} and {last} of {total}.",
+                list_numbers(rest)
+            ),
+            [] => unreachable!("checked above"),
+        };
         return Decision::Wait {
             proposal,
             missing,

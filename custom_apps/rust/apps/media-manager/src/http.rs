@@ -369,6 +369,14 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/conversions/inbox/identify",
             post(conversions::identify_held_disc),
         )
+        .route(
+            "/api/v1/conversions/audiobooks",
+            get(conversions::audiobook_inbox),
+        )
+        .route(
+            "/api/v1/conversions/audiobooks/confirm",
+            post(conversions::confirm_held_audiobook),
+        )
         .route("/api/v1/scans", post(plans::scan))
         .route("/api/v1/catalog/refresh", post(plans::refresh_root))
         .route(

@@ -19,6 +19,8 @@ import type {
 } from "./api-contract.generated";
 import { ConversionInput, type ConversionTask } from "./conversion-input";
 import type {
+  AudiobookInbox,
+  AudiobookSet,
   ConversionInputAccepted,
   ConversionInputs,
 } from "./api-contract.generated";
@@ -334,6 +336,7 @@ export const ConversionsView = component$<{
   const conv = useStore<{
     conversions?: ConversionEnvelope;
     inbox?: ConversionInbox;
+    audiobooks?: AudiobookInbox;
     error: string;
     transcriptions?: TranscriptionEnvelope;
     transcriptionError: string;
@@ -395,17 +398,25 @@ export const ConversionsView = component$<{
     let stopped = false;
     const load = async (signal: AbortSignal) => {
       const request = <T,>(path: string) => api<T>(path, { signal });
-      const [inputs, conversions, inbox, transcription, videos, plans] =
-        await Promise.allSettled([
-          request<ConversionInputs>("/conversions/jobs"),
-          request<ConversionEnvelope>("/conversions"),
-          request<ConversionInbox>("/conversions/inbox"),
-          transcribe
-            ? request<TranscriptionEnvelope>("/transcriptions")
-            : Promise.resolve(undefined),
-          request<VideoConversionList>("/video-conversions"),
-          request<PlanListResponse>("/plans"),
-        ]);
+      const [
+        inputs,
+        conversions,
+        inbox,
+        audiobooks,
+        transcription,
+        videos,
+        plans,
+      ] = await Promise.allSettled([
+        request<ConversionInputs>("/conversions/jobs"),
+        request<ConversionEnvelope>("/conversions"),
+        request<ConversionInbox>("/conversions/inbox"),
+        request<AudiobookInbox>("/conversions/audiobooks"),
+        transcribe
+          ? request<TranscriptionEnvelope>("/transcriptions")
+          : Promise.resolve(undefined),
+        request<VideoConversionList>("/video-conversions"),
+        request<PlanListResponse>("/plans"),
+      ]);
       if (stopped || signal.aborted) return;
       if (videos.status === "fulfilled") conv.videos = videos.value;
       if (plans.status === "fulfilled") {
@@ -447,6 +458,8 @@ export const ConversionsView = component$<{
       if (conversions.status === "fulfilled")
         conv.conversions = conversions.value;
       if (inbox.status === "fulfilled") conv.inbox = inbox.value;
+      // Absent on a server without the audio CD importer; never an error here.
+      if (audiobooks.status === "fulfilled") conv.audiobooks = audiobooks.value;
       conv.error = [
         ...new Set(
           [conversions, inbox].flatMap((result) =>
@@ -507,6 +520,8 @@ export const ConversionsView = component$<{
   const inboxProcessed = conv.inbox?.processed ?? [];
   const inboxFailed = conv.inbox?.failed ?? [];
   const inboxNeedsIdentification = conv.inbox?.needsIdentification ?? [];
+  const audiobookSets = conv.audiobooks?.books ?? [];
+  const audiobookActive = conv.audiobooks?.active;
   const filesBaseUrl = conv.inbox?.filesBaseUrl ?? "";
   const transcripts = (conv.transcriptions?.jobs ?? []).map((job) => ({
     ...job,
@@ -606,6 +621,22 @@ export const ConversionsView = component$<{
       stage: job.detail || "Making a video for your library",
       percent: job.percent,
     })),
+    ...(audiobookActive
+      ? [
+          {
+            id: "audiobook-cd",
+            name: bookTitle(audiobookActive.folder),
+            icon: "disc" as const,
+            label: "Audiobook CD import",
+            stage: audiobookActive.step,
+            // Identifying a book has no measurable position.
+            percent:
+              audiobookActive.step === "Identifying"
+                ? null
+                : (audiobookActive.percent ?? null),
+          },
+        ]
+      : []),
     ...activeTranscripts.map((job) => ({
       id: `transcript-${job.id}`,
       name: job.name,
@@ -720,6 +751,7 @@ export const ConversionsView = component$<{
     items.some((item) => !dismissed.value.includes(item.key));
   const hasSidebar =
     inboxNeedsIdentification.length > 0 ||
+    audiobookSets.length > 0 ||
     shown(completedItems) ||
     shown(failedItems);
   // The panel exists to show work in progress (or why it could not start);
@@ -902,6 +934,13 @@ export const ConversionsView = component$<{
             <NeedsIdentificationCard
               isos={inboxNeedsIdentification}
               filesBaseUrl={filesBaseUrl}
+              canRename={!!conv.inputs?.canSubmit}
+            />
+          )}
+          {audiobookSets.length > 0 && (
+            <AudiobookCdCard
+              books={audiobookSets}
+              filesBaseUrl={conv.audiobooks?.filesBaseUrl ?? filesBaseUrl}
               canRename={!!conv.inputs?.canSubmit}
             />
           )}
@@ -1128,6 +1167,188 @@ const NeedsIdentificationCard = component$<{
                     <span>{iso.heldDir}</span>
                   </span>
                 ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </section>
+  );
+});
+
+/** A book folder's name without the ripper's MusicBrainz tag. */
+function bookTitle(folder: string): string {
+  return folder.replace(/\s*\[mbid-[^\]]*\]/gi, "").trim() || folder;
+}
+
+/**
+ * Confirm one held audiobook by giving its folder the name the importer
+ * publishes from. The server checks the name against the discs present; the
+ * file broker renames the folder, so the result appears on a later refresh.
+ */
+const HeldBookConfirm = component$<{
+  book: AudiobookSet;
+  drafts: Record<string, HeldDraft>;
+}>((props) => {
+  const book = props.book;
+  const rename = book.rename;
+  const fieldId = `held-book-${encodeURIComponent(book.folder)}`;
+  if (rename?.state === "queued")
+    return <p class="side-item-status">Renaming to {rename.name}…</p>;
+  if (rename?.state === "applied")
+    return (
+      <p class="side-item-status">
+        Renamed. The book is imported when the importer next runs.
+      </p>
+    );
+  const draft = props.drafts[book.folder];
+  const value =
+    draft?.value ??
+    (rename?.state === "failed"
+      ? rename.name
+      : // A book nothing has named gets no prefilled guess to accept.
+        (book.confirmWith ?? ""));
+  const error = draft
+    ? draft.error
+    : rename?.state === "failed"
+      ? rename.error
+      : undefined;
+  return (
+    <form
+      class="held-confirm"
+      preventdefault:submit
+      onSubmit$={async () => {
+        const name = value.trim();
+        if (!name || draft?.busy) return;
+        props.drafts[book.folder] = { value, busy: true };
+        try {
+          await api("/conversions/audiobooks/confirm", {
+            method: "POST",
+            body: JSON.stringify({
+              folder: book.folder,
+              folderId: book.folderId,
+              name,
+            }),
+          });
+          // Shown until the next refresh reports the queued rename itself.
+          book.rename = { state: "queued", name };
+          delete props.drafts[book.folder];
+        } catch (failure) {
+          props.drafts[book.folder] = { value, error: readableError(failure) };
+        }
+      }}
+    >
+      <label for={fieldId}>Folder name</label>
+      <div class="held-confirm__row">
+        <input
+          id={fieldId}
+          type="text"
+          value={value}
+          spellcheck={false}
+          autoComplete="off"
+          maxLength={200}
+          placeholder={`Author - Title (Year) [${book.discs} ${book.discs === 1 ? "disc" : "discs"}]`}
+          aria-invalid={error ? "true" : undefined}
+          aria-describedby={error ? `${fieldId}-error` : undefined}
+          onInput$={(_, el) => {
+            props.drafts[book.folder] = { value: el.value };
+          }}
+        />
+        <button
+          type="submit"
+          class="secondary-button"
+          disabled={draft?.busy || !value.trim()}
+        >
+          {draft?.busy ? "Accepting…" : "Accept"}
+        </button>
+      </div>
+      {error && (
+        <p
+          id={`${fieldId}-error`}
+          class="message error side-item-error"
+          role="alert"
+        >
+          {error}
+        </p>
+      )}
+    </form>
+  );
+});
+
+/**
+ * Audiobook CD sets the importer has not imported yet: discs still to come,
+ * or a book it will not name without a person. A to-do list like the held
+ * discs, shown only while some exist.
+ */
+const AudiobookCdCard = component$<{
+  books: AudiobookSet[];
+  filesBaseUrl: string;
+  canRename: boolean;
+}>((props) => {
+  const folder = "_ISO/_AudioCDs/_NeedsIdentification";
+  const drafts = useStore<Record<string, HeldDraft>>({});
+  const folderLink = props.filesBaseUrl ? (
+    <a
+      href={`${props.filesBaseUrl}/files/_Shared/${sharedPath(folder)}/`}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      {folder}
+    </a>
+  ) : (
+    <code>{folder}</code>
+  );
+  const anyHeld = props.books.some((book) => book.state === "held");
+  return (
+    <section class="panel side-panel">
+      <div class="panel-heading">
+        <div>
+          <h2 id="audiobook-heading">Audiobook CDs, not yet imported</h2>
+        </div>
+      </div>
+      <div
+        class="side-panel-body"
+        role="region"
+        aria-labelledby="audiobook-heading"
+        tabIndex={0}
+      >
+        {anyHeld && (
+          <p class="side-panel-instruction">
+            {props.canRename
+              ? "Check a held book's name and accept it, or rename its folder in "
+              : "Rename a held book's folder in "}
+            {folderLink}
+            {" to the author, title and number of discs, such as "}
+            <code>Author - Title (1989) [6 discs]</code>. It is imported within
+            a minute.
+          </p>
+        )}
+        <ul class="side-list">
+          {props.books.map((book) => {
+            const confirmable =
+              props.canRename && book.inbox === "shared" && !!book.folderId;
+            const detail = [
+              `${book.discs} ${book.discs === 1 ? "disc" : "discs"} here`,
+              book.inbox === "personal" ? "your own inbox" : "",
+            ]
+              .filter(Boolean)
+              .join(" · ");
+            return (
+              <li key={`${book.inbox}/${book.folder}`}>
+                <span class="side-item-name" title={book.folder}>
+                  <strong>{bookTitle(book.folder)}</strong>
+                  <small>{detail}</small>
+                </span>
+                {book.message && <p class="side-item-reason">{book.message}</p>}
+                {book.state !== "held" ? null : confirmable ? (
+                  <HeldBookConfirm book={book} drafts={drafts} />
+                ) : (
+                  book.confirmWith && (
+                    <p class="side-item-suggestion">
+                      Name to confirm: <code>{book.confirmWith}</code>
+                    </p>
+                  )
+                )}
               </li>
             );
           })}

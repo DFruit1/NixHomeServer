@@ -35,6 +35,7 @@ fn run() -> Result<(), String> {
 
     media_manager::conversion_jobs::reconcile(&config)?;
     media_manager::held_disc_rename::reconcile(&config)?;
+    media_manager::held_book_rename::reconcile(&config)?;
 
     let mut catalog = Catalog::initialize(&config.database_path())
         .map_err(|error| format!("open control database: {error}"))?;

@@ -846,7 +846,7 @@ use outside knowledge.\n\nStart of the first disc:\n{}\n\nEnd of the last disc:\
         if !order_known {
             return Resolution::Hold {
                 reason: format!(
-                    "Identified as {} by {}, but the discs carry no usable disc numbers. Renaming the folder to its confirmWith name imports them in file-name order.",
+                    "Identified as {} by {}, but the discs carry no usable disc numbers. Confirming the folder name imports them in file-name order.",
                     proposal.title, proposal.author
                 ),
                 proposal: Some(proposal),

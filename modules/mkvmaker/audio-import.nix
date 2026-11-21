@@ -144,7 +144,8 @@ in
       wantedBy = [ "multi-user.target" ];
       requires = [ "mkvmaker-storage-layout-v1.service" ];
       after = [ "mkvmaker-storage-layout-v1.service" ];
-      before = [ "mkvmaker-audio-import.service" ];
+      # Media Manager grants itself access to the inbox once it exists.
+      before = [ "mkvmaker-audio-import.service" "media-manager-storage-access.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
