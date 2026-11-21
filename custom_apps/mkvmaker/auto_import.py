@@ -1073,6 +1073,39 @@ def ripper_sidecar(source: Path) -> Path:
     return source.with_name(source.stem + ".jellyfin.json")
 
 
+def checksum_manifest(source: Path) -> Path:
+    """The desktop ripper's ``sha256sum`` manifest uploaded beside the ISO."""
+    return source.with_name(source.name + ".sha256")
+
+
+def move_checksum(manifest: Path, archived: Path) -> None:
+    """Keep an ISO's checksum manifest beside it wherever the ISO goes.
+
+    Left behind in the inbox, a manifest makes the ripper refuse a later disc
+    of the same name as a conflicting file. It is rewritten for the ISO's new
+    name, so ``sha256sum -c`` keeps working after a rename; a manifest already
+    at the destination is never replaced.
+    """
+    if not manifest.is_file() or manifest.is_symlink():
+        return
+    destination = checksum_manifest(archived)
+    if destination.exists() or destination.is_symlink():
+        print(f"Kept {manifest.name}: {destination.name} already exists", file=sys.stderr)
+        return
+    try:
+        fields = manifest.read_text(encoding="utf-8").split()
+        digest = fields[0].lower() if fields else ""
+        if len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest):
+            temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+            temporary.write_text(f"{digest}  {archived.name}\n", encoding="utf-8")
+            os.replace(temporary, destination)
+            manifest.unlink()
+        else:
+            os.replace(manifest, destination)
+    except (OSError, UnicodeDecodeError) as error:
+        print(f"Could not move {manifest.name} with its ISO: {error}", file=sys.stderr)
+
+
 def iso_owner(source: Path) -> str | None:
     """Username of whoever uploaded the ISO; their provider accounts are used."""
     try:
@@ -2441,6 +2474,7 @@ def archive_source(source: Path, directory: Path, plan: dict[str, Any] | None = 
             os.replace(sidecar, ripper_sidecar(destination))
         except OSError as error:
             print(f"Could not move {sidecar.name} with its ISO: {error}", file=sys.stderr)
+    move_checksum(checksum_manifest(source), destination)
     if plan:
         # Informational only, and the ISO has already moved: a failure here
         # must not make the caller treat the archive as undone.
@@ -2635,6 +2669,7 @@ def park_for_identification(args: argparse.Namespace, source: Path,
         "retry": retry,
         "identify": identify_path.name,
         "sidecar": ripper_sidecar(archived).name,
+        "checksum": checksum_manifest(archived).name,
         "files": record.get("heldFiles", []),
         "titles": record.get("titles", []),
         "heldDir": record.get("heldDir", ""),
@@ -2882,6 +2917,8 @@ def resolve_renamed_holds(args: argparse.Namespace, lock_path: Path, state_path:
             original_sidecar = directory / str(record.get("sidecar") or "")
             if record.get("sidecar") and original_sidecar.is_file():
                 os.replace(original_sidecar, ripper_sidecar(archived))
+            if record.get("checksum"):
+                move_checksum(directory / str(record["checksum"]), archived)
             del records[key]
             # Save at once: a later disc's slow copy must not leave this one
             # recorded as still held if the worker is stopped mid-way.
@@ -3102,6 +3139,8 @@ def complete_retry_publish(args: argparse.Namespace, directory: Path, processed_
             except OSError as error:
                 print(f"Could not move {original_sidecar.name} with its ISO: {error}",
                       file=sys.stderr)
+        if record.get("checksum"):
+            move_checksum(directory / str(record["checksum"]), archived)
         print(f"Published held episodes of {iso.name} to {season_dir} after re-identifying them")
     del records[key]
     return True
@@ -4846,6 +4885,7 @@ def self_test() -> None:
     live_shaped_retry_self_test()
 
     special_and_layout_self_test()
+    checksum_manifest_self_test()
     assert match_score("The Wire", "The Wire") == 1.0
     assert natural_key("disc2.iso") < natural_key("disc10.iso")
     with tempfile.NamedTemporaryFile() as handle:
@@ -4854,6 +4894,47 @@ def self_test() -> None:
         digest = iso_sha256(Path(handle.name))
     assert digest == hashlib.sha256(b"mkvmaker duplicate self-test\n").hexdigest()
     print("mkvmaker auto-import self-tests passed")
+
+
+def checksum_manifest_self_test() -> None:
+    """The ripper's .sha256 manifest follows its ISO and names it correctly."""
+    with tempfile.TemporaryDirectory() as work:
+        inbox = Path(work)
+        processed = inbox / "_Processed"
+        digest = "ab" * 32
+        source = inbox / "DISC_1.iso"
+        source.write_bytes(b"iso")
+        checksum_manifest(source).write_text(f"{digest}  DISC_1.iso\n", encoding="utf-8")
+        ripper_sidecar(source).write_text("{}", encoding="utf-8")
+        archived = archive_source(source, processed, name="Show (1978) S01E01.iso")
+        assert not checksum_manifest(source).exists(), "manifest left in the inbox"
+        assert checksum_manifest(archived).read_text(encoding="utf-8") == \
+            f"{digest}  Show (1978) S01E01.iso\n"
+        # A later disc of the same name: the existing manifest is never replaced.
+        again = inbox / "Show (1978) S01E01.iso"
+        again.write_bytes(b"other")
+        checksum_manifest(again).write_text(f"{'cd' * 32}  {again.name}\n", encoding="utf-8")
+        second = archive_source(again, processed)
+        assert second.name == "Show (1978) S01E01-2.iso"
+        assert checksum_manifest(second).read_text(encoding="utf-8").startswith("cd" * 32)
+        assert checksum_manifest(archived).read_text(encoding="utf-8").startswith(digest)
+        # A manifest that is not sha256sum-shaped is moved as it is.
+        odd = inbox / "ODD.iso"
+        odd.write_bytes(b"odd")
+        checksum_manifest(odd).write_text("not a digest\n", encoding="utf-8")
+        moved = archive_source(odd, processed)
+        assert checksum_manifest(moved).read_text(encoding="utf-8") == "not a digest\n"
+        # A held ISO a person renamed: its record names the original manifest.
+        held = inbox / "_NeedsIdentification"
+        held.mkdir()
+        parked = held / "RENAMED S01E05.iso"
+        parked.write_bytes(b"held")
+        (held / "HELD.iso.sha256").write_text(f"{'ef' * 32}  HELD.iso\n", encoding="utf-8")
+        final = archive_source(parked, processed)
+        move_checksum(held / "HELD.iso.sha256", final)
+        assert not (held / "HELD.iso.sha256").exists()
+        assert checksum_manifest(final).read_text(encoding="utf-8") == \
+            f"{'ef' * 32}  RENAMED S01E05.iso\n"
 
 
 def main() -> int:
