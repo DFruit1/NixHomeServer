@@ -162,6 +162,16 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ImmichIndexedPage" }
+  /provider-lookups/immich/images/analysis-issues:
+    get:
+      operationId: listImmichAnalysisIssues
+      description: Photos that failed analysis repeatedly and are no longer retried, with current Immich access rechecked. Empty when Photos is not connected.
+      responses:
+        "200":
+          description: Bounded photo-analysis failures for the caller's private index.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImmichAnalysisIssues" }
   /provider-lookups/immich/images/{id}:
     get:
       operationId: getImmichImage
@@ -2485,6 +2495,23 @@ components:
               maxItems: 16
               description: Typed words whose search also matched other saved tags, so the page can explain a widened result.
               items: { $ref: "#/components/schemas/ImmichTagMatch" }
+    ImmichAnalysisIssue:
+      type: object
+      additionalProperties: false
+      required: [assetId, filename, capturedAt, reason]
+      properties:
+        assetId: { type: string }
+        filename: { type: string }
+        capturedAt: { type: string }
+        reason: { type: string, description: "Stable failure code, for example immich_request_failed when Photos could not render the original." }
+    ImmichAnalysisIssues:
+      type: object
+      additionalProperties: false
+      required: [items, truncated, requestId]
+      properties:
+        items: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/ImmichAnalysisIssue" } }
+        truncated: { type: boolean }
+        requestId: { type: string }
     ImmichTagMatch:
       type: object
       required: [term, tags]

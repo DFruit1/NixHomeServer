@@ -1,4 +1,5 @@
 import type {
+  ImmichAnalysisIssues,
   MetadataHealthIssue,
   MetadataHealthResult,
   MetadataObservation,
@@ -2299,6 +2300,75 @@ const HealthSummary = component$<{
   );
 });
 
+function photoIssueReason(reason: string): string {
+  switch (reason) {
+    case "immich_request_failed":
+      return "Photos could not render the original, which may be damaged or incomplete.";
+    case "immich_photo_not_found":
+      return "The photo is no longer available in Photos.";
+    case "eye_analysis_failed":
+      return "EYE could not decode this image.";
+    case "eye_analysis_invalid":
+      return "EYE returned no usable result for this image.";
+    default:
+      return "The photo could not be analysed after three attempts.";
+  }
+}
+
+// Photos are not catalog items, so their failed analyses are reported beside
+// the library checks rather than as a fake media root. A photo drops out of
+// this list when Analyze again (or retag) clears it in Photos.
+const PhotoAnalysisHealth = component$(() => {
+  const issues = useSignal<ImmichAnalysisIssues>({
+    items: [],
+    truncated: false,
+    requestId: "",
+  });
+  useTask$(async () => {
+    try {
+      issues.value = await api<ImmichAnalysisIssues>(
+        "/provider-lookups/immich/images/analysis-issues",
+      );
+    } catch {
+      // Photos may be disabled or the caller may not be connected yet; the
+      // Photos page owns those explanations.
+    }
+  });
+  const items = issues.value.items;
+  if (items.length === 0) return null;
+  const count = items.length;
+  return (
+    <section
+      class="health-photo-issues"
+      aria-labelledby="health-photo-issues-title"
+    >
+      <h2 id="health-photo-issues-title">Photos</h2>
+      <p>
+        {count}
+        {issues.value.truncated ? " or more" : ""}{" "}
+        {count === 1 ? "photo" : "photos"} couldn't be analysed after three
+        attempts and will not be retried. Photos may be unable to render the
+        original, for example after a damaged copy. Replace or repair it, then
+        choose Analyze again in Photos.
+      </p>
+      <ul>
+        {items.map((issue) => (
+          <li key={issue.assetId}>
+            <strong>{issue.filename}</strong>
+            <span>{photoIssueReason(issue.reason)}</span>
+            {issue.capturedAt && (
+              <time dateTime={issue.capturedAt}>
+                {issue.capturedAt.slice(0, 10)}
+              </time>
+            )}
+          </li>
+        ))}
+      </ul>
+      <a href="?view=images">Open Photos</a>
+    </section>
+  );
+});
+
 interface MetadataHealthProps {
   roots: HealthRoot[];
   initialRootId?: string;
@@ -2800,6 +2870,8 @@ const MetadataHealthContent = component$<MetadataHealthProps>((props) => {
           incomplete={inbox.errors.length > 0}
         />
       </div>
+
+      <PhotoAnalysisHealth />
 
       {inbox.errors.length > 0 && (
         <div class="health-error-state" role="alert">

@@ -581,6 +581,67 @@ async fn semantic_search_rechecks_access_and_scopes_metadata_across_filtered_pag
     task.abort();
 }
 
+// Metadata health must list only abandoned analyses, and only while the caller
+// still has current access to the photo. A locked photo's cached filename must
+// not survive in the health report.
+#[tokio::test]
+async fn analysis_issues_report_unavailable_photos_and_recheck_access() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = Fixture::default();
+    let (app, task) = test_app(&temp, fixture.clone()).await;
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{ROOT}/{PHOTO}/analysis"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let database = rusqlite::Connection::open(temp.path().join("accounts.sqlite3")).unwrap();
+    database
+        .execute(
+            "UPDATE image_assets SET unavailable='immich_request_failed',attempts=3,retry_at=0",
+            [],
+        )
+        .unwrap();
+    drop(database);
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("{ROOT}/analysis-issues"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_response(response).await;
+    assert_eq!(body["items"][0]["filename"], "portrait.jpg");
+    assert_eq!(body["items"][0]["capturedAt"], "2026-10-01T10:00:00Z");
+    assert_eq!(body["items"][0]["reason"], "immich_request_failed");
+    assert_eq!(body["truncated"], false);
+    fixture.revoked.lock().unwrap().push(PHOTO.to_string());
+    let response = app
+        .oneshot(request(
+            "GET",
+            &format!("{ROOT}/analysis-issues"),
+            "alice",
+            false,
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_response(response).await["items"], json!([]));
+    task.abort();
+}
+
 #[tokio::test]
 async fn semantic_failures_do_not_expose_upstream_details_or_silently_change_search() {
     let temp = tempfile::tempdir().unwrap();

@@ -1341,7 +1341,8 @@ export const ImagesView = component$<{
                   {state.index.unavailable === 1 ? "" : "s"} couldn't be
                   analysed after repeated attempts. Photos may be unable to
                   render them, for example after a damaged original. Replace or
-                  repair them, then choose Analyze again on each photo.
+                  repair them, then choose Analyze again on each photo. They are
+                  also listed in <a href="?view=health">Metadata health</a>.
                 </span>
               </div>
             )}

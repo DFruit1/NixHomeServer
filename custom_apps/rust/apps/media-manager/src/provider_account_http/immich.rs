@@ -13,7 +13,7 @@ pub(super) mod downloads;
 mod indexing;
 mod tag_review;
 pub(super) mod videos;
-pub(super) use indexing::{indexed, run_indexer};
+pub(super) use indexing::{analysis_issues, indexed, run_indexer};
 pub(super) use tag_review::{run_tag_review, Bonsai};
 const MAX_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
 

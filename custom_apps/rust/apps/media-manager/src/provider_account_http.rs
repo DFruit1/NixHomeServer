@@ -807,6 +807,10 @@ pub fn provider_account_router(state: ProviderBrokerState) -> Router {
             get(immich::indexed),
         )
         .route(
+            "/api/v1/provider-lookups/immich/images/analysis-issues",
+            get(immich::analysis_issues),
+        )
+        .route(
             "/api/v1/provider-lookups/immich/videos",
             get(immich::videos::list),
         )

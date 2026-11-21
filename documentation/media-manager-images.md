@@ -142,6 +142,18 @@ removed tags stay removed until the photo is retagged. Journal events
 `photo_tags_reviewed` (kept and removed counts) and `photo_tag_review_failed`
 record progress without tag names.
 
+## Unreadable photos
+
+EYE and the background decision sweep retry a photo whose analysis fails. After
+three failures the broker stops retrying it: Photos could not render the
+original (typically because the file is truncated or corrupt), and the same
+request cannot start succeeding. The photo stays unanalyzed, Images reports it
+as unavailable, and **Metadata health** lists its filename, capture date and
+the failed step in a Photos section. Replacing the original in Photos and
+choosing **Analyze again** (or retagging) clears the refusal immediately;
+automatic sweeps then resume. The health report is read-only and changes no
+photo or file.
+
 ## Saved decision questions
 
 Open **Images → Decision questions** to add and save up to 16 personal

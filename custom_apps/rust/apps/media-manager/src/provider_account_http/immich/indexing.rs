@@ -101,6 +101,11 @@ async fn process_page(
                 generation,
             )
             .map_err(|_| index_error(id))?;
+        // A photo whose pixels or preview cannot be read would also fail the
+        // decision model's own analysis pass, so it is not retried there.
+        if index.unavailable(&asset.id).map_err(|_| index_error(id))? {
+            continue;
+        }
         if index
             .decision_retry(&asset.id, None)
             .map_err(|_| index_error(id))?
@@ -117,12 +122,11 @@ async fn process_page(
                 json!({"service":"media-manager-provider-broker","event":"decision_assessment_retry","requestId":id})
             );
         }
-        if index.unavailable(&asset.id).map_err(|_| index_error(id))?
-            || (index.tagged(&asset.id).map_err(|_| index_error(id))?
-                && index
-                    .analysis(&asset.id)
-                    .map_err(|_| index_error(id))?
-                    .is_some())
+        if (index.tagged(&asset.id).map_err(|_| index_error(id))?
+            && index
+                .analysis(&asset.id)
+                .map_err(|_| index_error(id))?
+                .is_some())
             || index
                 .retry_at(&asset.id, None)
                 .map_err(|_| index_error(id))?
@@ -245,6 +249,64 @@ pub(in crate::provider_account_http) async fn indexed(
         .map_err(|_| index_error(&id))?;
     Ok(Json(
         json!({"items":items,"nextPage":next,"canTag":false,"index":index.status().map_err(|_|index_error(&id))?,"tagMatches":tag_matches,"requestId":id}),
+    ))
+}
+
+/// Photos whose analysis was abandoned after repeated failures, for the
+/// Metadata health page. Filenames are private metadata, so current upstream
+/// access is rechecked before any row is returned.
+pub(in crate::provider_account_http) async fn analysis_issues(
+    State(state): State<ProviderBrokerState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    const MAX_ISSUES: usize = 50;
+    let id = request_id();
+    let identity = identity_from_headers(&headers, &id)?;
+    let account = account(&state, &identity, &id)?;
+    let scope = account.scope(&identity);
+    let index = Index {
+        store: &state.store,
+        scope: &scope,
+    };
+    let rows = index
+        .unavailable_assets(MAX_ISSUES + 1)
+        .map_err(|_| index_error(&id))?;
+    let truncated = rows.len() > MAX_ISSUES;
+    let rows: Vec<_> = rows.into_iter().take(MAX_ISSUES).collect();
+    let mut items = Vec::new();
+    for chunk in rows.chunks(6) {
+        let current = futures_util::future::join_all(chunk.iter().map(
+            |(asset_id, filename, captured_at, reason)| {
+                let state = state.clone();
+                let account = account.clone();
+                let id = id.clone();
+                async move {
+                    let access = account.asset(&state, asset_id, &id).await;
+                    (
+                        filename.clone(),
+                        captured_at.clone(),
+                        reason.clone(),
+                        access,
+                    )
+                }
+            },
+        ))
+        .await;
+        for (filename, captured_at, reason, access) in current {
+            match access {
+                Ok(asset) => items.push(json!({
+                    "assetId": asset.id,
+                    "filename": filename,
+                    "capturedAt": captured_at,
+                    "reason": reason,
+                })),
+                Err(err) if err.status() == StatusCode::NOT_FOUND => {}
+                Err(err) => return Err(err),
+            }
+        }
+    }
+    Ok(Json(
+        json!({"items": items, "truncated": truncated, "requestId": id}),
     ))
 }
 

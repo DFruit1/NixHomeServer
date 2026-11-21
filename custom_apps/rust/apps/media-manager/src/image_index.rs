@@ -355,6 +355,23 @@ impl Index<'_> {
             .optional()?
             .unwrap_or(false))
     }
+    /// Bounded list of photos that are no longer retried, for health reporting.
+    pub fn unavailable_assets(
+        &self,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<(String, String, String, String)>> {
+        let db = self.store.index_connection()?;
+        let mut statement = db.prepare(
+            "SELECT asset_id,filename,captured_at,unavailable FROM image_assets
+             WHERE scope=?1 AND unavailable IS NOT NULL
+             ORDER BY captured_at DESC, asset_id LIMIT ?2",
+        )?;
+        statement
+            .query_map(params![self.scope, limit as i64], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect()
+    }
     /// Count one failed analysis and return the running total.
     pub fn record_failure(&self, id: &str) -> rusqlite::Result<i64> {
         let db = self.store.index_connection()?;
@@ -643,6 +660,10 @@ mod tests {
             .unwrap();
         assert!(index.unavailable("asset").unwrap());
         assert_eq!(index.retry_at("asset", None).unwrap(), 0);
+        let issues = index.unavailable_assets(10).unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].1, "damaged.jpg");
+        assert_eq!(issues[0].3, "immich_request_failed");
         let status = index.status().unwrap();
         assert_eq!(status["failed"], 0);
         assert_eq!(status["unavailable"], 1);

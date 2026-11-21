@@ -5346,6 +5346,37 @@ a:focus-visible {
   color: var(--ink-soft);
   font-size: var(--text-sm);
 }
+.health-photo-issues {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--card);
+}
+.health-photo-issues h2 {
+  margin: 0;
+  font-size: var(--text-md);
+}
+.health-photo-issues p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+}
+.health-photo-issues ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: var(--text-sm);
+}
+.health-photo-issues li span {
+  display: block;
+  color: var(--ink-soft);
+}
+.health-photo-issues a {
+  justify-self: start;
+}
 .health-results {
   display: grid;
   gap: 24px;
