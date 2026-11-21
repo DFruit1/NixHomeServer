@@ -1541,15 +1541,15 @@ to `_Shared/_ISO/_AudioCDs`, one folder per book with one ISO per CD, each with
 its `.iso.sha256` manifest and `.audio.json` or `.disc.json` sidecar.
 `audio-import` (part of the mkvmaker package) checks that inbox every minute
 through `mkvmaker-audio-import.timer` and publishes each complete book into
-Audiobookshelf. The importer exists only while both the DVD converter and
-Audiobookshelf are enabled.
+Audiobookshelf and each album into the music folder. The importer exists only
+while both the DVD converter and Audiobookshelf are enabled.
 
 The inbox decides the library:
 
-| Inbox | Library |
-| --- | --- |
-| `_Shared/_ISO/_AudioCDs` | Shared Audiobooks (`_Shared/_Audiobooks`) |
-| a user's own `_ISO/_AudioCDs` | that user's `_Audiobooks` |
+| Inbox | Books and spoken word | Music |
+| --- | --- | --- |
+| `_Shared/_ISO/_AudioCDs` | Shared Audiobooks (`_Shared/_Audiobooks`) | `_Shared/_Music` |
+| a user's own `_ISO/_AudioCDs` | that user's `_Audiobooks` | that user's `_Music` |
 
 A book folder may sit up to three levels below the inbox (the ripper sends
 `Audiobooks/<book>/`). An ISO dropped straight into the inbox is treated as a
@@ -1567,9 +1567,8 @@ A book is published without a person only when all of these hold:
 - The library has no folder for that author and title yet.
 
 An incomplete set waits in the inbox; nothing is published until the last disc
-arrives. Music discs are not imported yet and stay in the inbox untouched.
-Anything else goes through identification (next) and is held when that does
-not settle it.
+arrives. Anything else goes through identification (next) and is held when
+that does not settle it. Albums follow the same rules ([Music CDs](#music-cds)).
 
 #### Identification and provider details
 
@@ -1671,6 +1670,39 @@ The book is built in `.audiocd-import` inside the library (ignored by
 Audiobookshelf) and appears with one rename. Its ISOs and sidecars then move to
 `_AudioCDs/_Processed/<book>/` beside an `import.json` recording what was
 published, and are kept there so a book can be rebuilt later.
+
+#### Music CDs
+
+A disc the ripper classed as music is published as lossless FLAC, one file
+per track, in `Artist/Album (Year)/NN - Title.flac` (with `Disc N` folders for
+an album of several discs, once all of them have arrived). The ripper already
+tagged an exact MusicBrainz Disc ID match, so its tracks are moved unchanged,
+with the cover when the ISO has one. Nothing is re-encoded, and an album
+already in the music folder is never replaced: the new one is held.
+
+A disc that neither MusicBrainz nor its own announcements could name is then
+tried as an album, again on two sources that must agree:
+
+1. Each track is fingerprinted with Chromaprint and looked up through the
+   provider broker with the **uploader's** AcoustID account (the ISO's file
+   owner). At least four fifths of the tracks must appear on one release
+   group. Without an AcoustID account the disc is held, saying so.
+2. A MusicBrainz release of that group must have a disc with the same number
+   of tracks, each within four seconds (or 3%) of this disc's.
+
+When exactly one album fits and it is a single disc, it is published with the
+release's artist, album, year and track titles written into the FLAC tags
+(remuxed, not re-encoded). An album of several discs, or more than one
+fitting album, is held with what was found. To confirm a held album, add
+`[music]` before the disc count:
+
+```text
+Radiohead - OK Computer (1997) [music] [1 disc]
+```
+
+A confirmed album keeps the track titles identification found; otherwise the
+tracks keep their ripper names (`Track 01`). Discs the ripper classed as
+neither a book nor music are held.
 
 #### Held books
 

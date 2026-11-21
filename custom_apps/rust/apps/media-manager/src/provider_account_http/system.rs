@@ -42,7 +42,16 @@ pub fn provider_system_router(state: ProviderBrokerState) -> Router {
             "/system/v1/audible/cover",
             post(super::system_audible::cover),
         )
-        .layer(DefaultBodyLimit::max(4 * 1024))
+        .route(
+            "/system/v1/acoustid/release-groups",
+            post(super::system_music::acoustid_release_groups),
+        )
+        .route(
+            "/system/v1/musicbrainz/release-group",
+            post(super::system_music::musicbrainz_release_group),
+        )
+        // A Chromaprint fingerprint of a long track runs to several kilobytes.
+        .layer(DefaultBodyLimit::max(24 * 1024))
         .layer(middleware::from_fn(no_store_responses))
         .with_state(state);
     homelab_common::work::isolate_handlers(router, 4)

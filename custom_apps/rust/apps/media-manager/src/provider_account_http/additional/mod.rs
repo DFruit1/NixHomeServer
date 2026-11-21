@@ -55,6 +55,7 @@ pub(super) fn default_bases() -> BTreeMap<String, String> {
         ("audnexus", "https://api.audnex.us/"),
         // Searched only by the system socket's audio CD lookups.
         ("audible", "https://api.audible.com/1.0/"),
+        ("musicbrainz", "https://musicbrainz.org/ws/2/"),
         ("podcast-index", "https://api.podcastindex.org/api/1.0/"),
         ("subdl", "https://api.subdl.com/api/v2/"),
         ("thediscdb", "https://thediscdb.com/graphql"),

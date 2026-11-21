@@ -122,6 +122,17 @@ struct Args {
     parakeet_model: Option<PathBuf>,
     #[arg(long, default_value_t = 4)]
     identify_threads: u32,
+    /// Library that albums from the shared inbox are published into.
+    /// Without it music discs stay in the inbox.
+    #[arg(long)]
+    music_library: Option<PathBuf>,
+    /// A user's music library, relative to that user's folder.
+    #[arg(long)]
+    user_music_library: Option<String>,
+    /// Chromaprint's fpcalc, which fingerprints the tracks of a music CD
+    /// that MusicBrainz does not know by its Disc ID.
+    #[arg(long)]
+    fpcalc: Option<PathBuf>,
     /// Print the chapters heard in these audio files, taken in order as one
     /// book, and exit. Needs --parakeet; scratch goes under --state-dir.
     #[arg(long, num_args = 1.., value_name = "FILE")]
@@ -131,7 +142,10 @@ struct Args {
 struct Inbox {
     label: String,
     root: PathBuf,
+    /// Where audiobooks and spoken word are published.
     library: PathBuf,
+    /// Where albums are published, when music import is set up.
+    music: Option<PathBuf>,
 }
 
 /// The files of one book as they lie in an inbox or in the holding folder.
@@ -458,6 +472,7 @@ fn discover_inboxes(args: &Args) -> Result<Vec<Inbox>> {
             label: "Shared".to_string(),
             root: PathBuf::from(root),
             library: PathBuf::from(library),
+            music: args.music_library.clone(),
         });
     }
     if let Some(users_root) = &args.users_root {
@@ -469,6 +484,11 @@ fn discover_inboxes(args: &Args) -> Result<Vec<Inbox>> {
                     label: file_name(&user),
                     root,
                     library,
+                    music: args
+                        .user_music_library
+                        .as_ref()
+                        .map(|relative| user.join(relative))
+                        .filter(|music| is_real_dir(music)),
                 });
             }
         }
@@ -700,7 +720,10 @@ impl Worker {
 
     fn clean_stale_staging(&self, inboxes: &[Inbox]) {
         for inbox in inboxes {
-            for path in entries(&inbox.library.join(STAGING_DIR)) {
+            for path in std::iter::once(&inbox.library)
+                .chain(&inbox.music)
+                .flat_map(|library| entries(&library.join(STAGING_DIR)))
+            {
                 if is_real_dir(&path) {
                     println!("Removing unfinished staging folder {}", path.display());
                     let _ = fs::remove_dir_all(&path);
@@ -949,7 +972,23 @@ impl Worker {
         order: &[usize],
         identification: Value,
     ) -> Result<bool> {
-        let (author_dir, existing) = library_lookup(&inbox.library, &proposal);
+        let music = proposal.category == "music";
+        let library = if music {
+            let Some(library) = &inbox.music else {
+                self.note(
+                    inbox,
+                    set,
+                    "skipped",
+                    "Music import is not set up for this inbox; the discs stay where they are."
+                        .to_string(),
+                );
+                return Ok(false);
+            };
+            library.clone()
+        } else {
+            inbox.library.clone()
+        };
+        let (author_dir, existing) = library_lookup(&library, &proposal);
         if let Some(existing) = existing {
             let reason = format!(
                 "{} by {} is already in the library at {}. Move that folder away, then confirm this book's folder name to import it.",
@@ -988,7 +1027,7 @@ impl Worker {
             .map(|m| m.len())
             .sum();
         let needed = iso_bytes + iso_bytes / 4 + (512 << 20);
-        let free = fsops::free_bytes(&inbox.library)?;
+        let free = fsops::free_bytes(&library)?;
         if free < needed {
             bail!(
                 "not enough free space to build the book ({} MiB free, {} MiB needed)",
@@ -997,7 +1036,7 @@ impl Worker {
             );
         }
 
-        let staging_root = inbox.library.join(STAGING_DIR);
+        let staging_root = library.join(STAGING_DIR);
         fs::create_dir_all(&staging_root)
             .with_context(|| format!("cannot create {}", staging_root.display()))?;
         // Audiobookshelf skips a folder holding a `.ignore` file.
@@ -1128,7 +1167,26 @@ impl Worker {
                 // The identity is certain; a matching edition only adds to it.
                 let runtime: Option<f64> =
                     order.iter().map(|index| discs[*index].disc.seconds).sum();
-                let details = match self.identifier.enrich(&mut proposal, runtime) {
+                // A person confirming a held album keeps the track titles
+                // that identification had already found for it.
+                if proposal.confirmed_by == "folder-name"
+                    && proposal.track_titles.is_empty()
+                    && let Some(earlier) =
+                        read_evidence(&set.dir).and_then(|evidence| evidence.proposal)
+                    && normalized(&earlier.title) == normalized(&proposal.title)
+                {
+                    proposal.track_titles = earlier.track_titles;
+                    if proposal.release_id.is_empty() {
+                        proposal.release_id = earlier.release_id;
+                    }
+                }
+                // Audible knows books, not albums.
+                let enriched = if proposal.category == "music" {
+                    Ok(Value::Null)
+                } else {
+                    self.identifier.enrich(&mut proposal, runtime)
+                };
+                let details = match enriched {
                     Ok(details) => details,
                     Err(Unavailable(reason)) => {
                         let record = self.state.deferred.entry(key.clone()).or_default();
@@ -1230,9 +1288,6 @@ impl Worker {
             Decision::Wait {
                 proposal, message, ..
             } if set.held => self.hold(inbox, set, &discs, Held::plain(Some(proposal), message)),
-            Decision::Skip { message } if set.held => {
-                self.hold(inbox, set, &discs, Held::plain(None, message))
-            }
             Decision::Wait {
                 proposal,
                 missing,
@@ -1249,10 +1304,6 @@ impl Worker {
                     confirm_with: None,
                     discs: discs.len(),
                 });
-                Ok(false)
-            }
-            Decision::Skip { message } => {
-                self.note(inbox, set, "skipped", message);
                 Ok(false)
             }
         }
@@ -1487,6 +1538,7 @@ fn run() -> Result<()> {
         parakeet: args.parakeet.clone().zip(args.parakeet_model.clone()),
         threads: args.identify_threads,
         socket: args.provider_socket.clone(),
+        fpcalc: args.fpcalc.clone(),
     };
     let _ = fs::remove_dir_all(args.state_dir.join("scratch"));
     if !args.find_chapters.is_empty() {

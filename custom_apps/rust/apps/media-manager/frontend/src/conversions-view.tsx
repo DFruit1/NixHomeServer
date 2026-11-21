@@ -627,7 +627,7 @@ export const ConversionsView = component$<{
             id: "audiobook-cd",
             name: bookTitle(audiobookActive.folder),
             icon: "disc" as const,
-            label: "Audiobook CD import",
+            label: "Audio CD import",
             stage: audiobookActive.step,
             // Identifying a book has no measurable position.
             percent:
@@ -1276,8 +1276,8 @@ const HeldBookConfirm = component$<{
 });
 
 /**
- * Audiobook CD sets the importer has not imported yet: discs still to come,
- * or a book it will not name without a person. A to-do list like the held
+ * Audio CD sets the importer has not imported yet: discs still to come, or a
+ * book or album it will not name without a person. A to-do list like the held
  * discs, shown only while some exist.
  */
 const AudiobookCdCard = component$<{
@@ -1303,7 +1303,7 @@ const AudiobookCdCard = component$<{
     <section class="panel side-panel">
       <div class="panel-heading">
         <div>
-          <h2 id="audiobook-heading">Audiobook CDs, not yet imported</h2>
+          <h2 id="audiobook-heading">Audio CDs, not yet imported</h2>
         </div>
       </div>
       <div
@@ -1319,8 +1319,9 @@ const AudiobookCdCard = component$<{
               : "Rename a held book's folder in "}
             {folderLink}
             {" to the author, title and number of discs, such as "}
-            <code>Author - Title (1989) [6 discs]</code>. It is imported within
-            a minute.
+            <code>Author - Title (1989) [6 discs]</code>. An album adds{" "}
+            <code>[music]</code> before the disc count. It is imported within a
+            minute.
           </p>
         )}
         <ul class="side-list">

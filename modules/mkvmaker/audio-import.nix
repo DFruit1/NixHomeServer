@@ -54,6 +54,13 @@ let
     cfg.identify.subtitleSocket
   ]
   ++ lib.optionals (identify && cfg.identify.bonsaiUrl != null) [ "--bonsai-url" cfg.identify.bonsaiUrl ]
+  ++ lib.optionals (audio.sharedMusicLibrary != null) [ "--music-library" audio.sharedMusicLibrary ]
+  ++ lib.optionals (audio.userLibrary != null && audio.userMusicLibrary != null) [
+    "--user-music-library"
+    audio.userMusicLibrary
+  ]
+  # Chromaprint is already in the closure through Media Manager.
+  ++ lib.optionals identify [ "--fpcalc" "${pkgs.chromaprint}/bin/fpcalc" ]
   ++ lib.optionals (identify && cfg.identify.parakeet != null) [
     "--parakeet"
     cfg.identify.parakeet
@@ -92,6 +99,20 @@ in
         ${userInbox} is watched too and publishes into that user's library.
       '';
     };
+    sharedMusicLibrary = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = "${vars.sharedRoot}/_Music";
+      description = ''
+        Library that albums from the shared inbox are published into, as
+        lossless FLAC. It is the shared music folder Media Manager plays
+        from. Null leaves music discs in the inbox.
+      '';
+    };
+    userMusicLibrary = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = "_Music";
+      description = "Music folder inside each user's file root, for albums from that user's inbox.";
+    };
     libraryGroups = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -120,12 +141,16 @@ in
     # The importer moves a user's ISOs out of that user's inbox, so it needs
     # write access below _ISO; the sticky bit on _ISO itself still keeps it
     # from removing the ISOs a user stores there directly.
+    repo.storage.sharedRoots.contentSubdirs =
+      lib.optional (audio.sharedMusicLibrary == "${vars.sharedRoot}/_Music") "_Music";
+
     repo.storage.userRoots = lib.mkIf (audio.userLibrary != null) {
+      contentSubdirs = lib.optional (audio.userMusicLibrary != null) audio.userMusicLibrary;
       rootTraverseGroups = [ "mkvmaker" ];
       recursiveWritableGrants = [
         {
           group = "mkvmaker";
-          relativePaths = [ "_ISO" ];
+          relativePaths = [ "_ISO" ] ++ lib.optional (audio.userMusicLibrary != null) audio.userMusicLibrary;
         }
       ];
       perUserDirectories = [
@@ -233,7 +258,8 @@ in
           cfg.paths.stateRoot
           audio.sharedInbox
           audio.sharedLibrary
-        ] ++ lib.optional (audio.userLibrary != null) vars.usersRoot;
+        ] ++ lib.optional (audio.sharedMusicLibrary != null) audio.sharedMusicLibrary
+        ++ lib.optional (audio.userLibrary != null) vars.usersRoot;
       };
     };
 

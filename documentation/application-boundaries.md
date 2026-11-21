@@ -126,4 +126,13 @@ document this endpoint, so every unexpected answer is `provider_error` and the
 importer retries later. `POST /system/v1/audible/cover` (`image`) fetches one
 JPEG of at most 2 MiB, and only from the catalogue's own image host.
 
+For music discs it serves `POST /system/v1/acoustid/release-groups` (`owner`,
+`fingerprint`, `duration`), which returns the MusicBrainz release groups one
+Chromaprint fingerprint appears on, using the named user's saved AcoustID
+account (`no_account` without one), and `POST
+/system/v1/musicbrainz/release-group` (`releaseGroup`), which lists up to
+fifty releases of that group with each disc's track titles and lengths.
+Both answers are cached for a week; AcoustID requests are spaced 350 ms apart
+and MusicBrainz requests 1.1 s.
+
 With the list empty (the default) no socket exists.

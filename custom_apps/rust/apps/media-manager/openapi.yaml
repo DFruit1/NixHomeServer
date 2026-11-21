@@ -2187,8 +2187,8 @@ paths:
     get:
       operationId: listAudiobookInbox
       description: >-
-        Lists the audiobook CD sets that the audio CD importer is waiting on:
-        books whose discs have not all arrived, books held for a person in
+        Lists the audio CD sets that the audio CD importer is waiting on:
+        books whose discs have not all arrived, books and albums held for a person in
         _ISO/_AudioCDs/_NeedsIdentification, and books waiting for a retry.
         The data comes from the importer's status file and is bounded display
         text. Sets from the shared inbox are shown to every signed-in user;
@@ -2205,8 +2205,9 @@ paths:
       description: >-
         Confirms an audiobook held in the shared
         _ISO/_AudioCDs/_NeedsIdentification by renaming its folder to
-        "Author - Title (Year) [N discs]" (year optional), where N is the
-        number of ISOs in the folder. The web service checks and queues the
+        "Author - Title (Year) [N discs]" (year optional; an album is
+        "Artist - Album (Year) [music] [N discs]"), where N is the number of
+        ISOs in the folder. The web service checks and queues the
         request; the filesystem broker repeats the checks and renames within
         that folder without replacing any entry. The importer then publishes
         the book. Requires editor access and enabled mutations.

@@ -19,7 +19,7 @@ use crate::{
     build::{media_seconds, Tools},
     content::{post_unix, transcribe_excerpt, Asr},
     disc::{extract_member, Disc, DiscKind},
-    fsops::natural_key,
+    fsops::{file_owner, natural_key},
     text::{clip, normalize, similarity, words},
 };
 use base64::Engine;
@@ -37,6 +37,8 @@ const OPENING_SECONDS: f64 = 240.0;
 const CLOSING_SECONDS: f64 = 120.0;
 const SEARCH_ROUTE: &str = "/system/v1/audible/search";
 const COVER_ROUTE: &str = "/system/v1/audible/cover";
+const FINGERPRINT_ROUTE: &str = "/system/v1/acoustid/release-groups";
+const RELEASE_GROUP_ROUTE: &str = "/system/v1/musicbrainz/release-group";
 
 pub struct Identifier {
     pub bonsai: Option<Bonsai>,
@@ -45,6 +47,8 @@ pub struct Identifier {
     pub threads: u32,
     /// The provider broker's system socket.
     pub socket: Option<PathBuf>,
+    /// Chromaprint's `fpcalc`, for discs MusicBrainz does not know by ID.
+    pub fpcalc: Option<PathBuf>,
 }
 
 /// One disc of the set being identified.
@@ -358,6 +362,51 @@ fn text_key(parts: &[&str]) -> String {
         .collect()
 }
 
+/// One release of a release group, as the broker reduces it.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct Release {
+    id: String,
+    title: String,
+    artist: String,
+    date: String,
+    status: String,
+    media: Vec<Medium>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct Medium {
+    tracks: Vec<ReleaseTrack>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ReleaseTrack {
+    title: String,
+    length_ms: Option<u64>,
+}
+
+/// True when a medium has this disc's number of tracks and every listed
+/// length is within four seconds (or 3%) of the disc's.
+fn medium_matches(medium: &Medium, seconds: &[f64]) -> bool {
+    if medium.tracks.len() != seconds.len() {
+        return false;
+    }
+    let mut compared = 0;
+    for (track, disc) in medium.tracks.iter().zip(seconds) {
+        let Some(length) = track.length_ms else {
+            continue;
+        };
+        let listed = length as f64 / 1000.0;
+        if (listed - disc).abs() > f64::max(4.0, listed * 0.03) {
+            return false;
+        }
+        compared += 1;
+    }
+    compared * 5 >= seconds.len() * 4
+}
+
 impl Identifier {
     pub fn can_identify(&self) -> bool {
         self.socket.is_some()
@@ -659,6 +708,197 @@ use outside knowledge.\n\nStart of the first disc:\n{}\n\nEnd of the last disc:\
         Ok((!credits.title.is_empty()).then_some(credits))
     }
 
+    /// Chromaprint fingerprint and length of one audio file.
+    fn fingerprint(fpcalc: &Path, file: &Path) -> Option<(String, f64)> {
+        let output = std::process::Command::new(fpcalc)
+            .arg("-json")
+            .arg(file)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        let value: Value = serde_json::from_slice(&output.stdout).ok()?;
+        Some((
+            value["fingerprint"].as_str()?.to_string(),
+            value["duration"].as_f64()?,
+        ))
+    }
+
+    /// Identify a single music CD that MusicBrainz does not know by its Disc
+    /// ID. Two sources must agree here too: the tracks' AcoustID
+    /// fingerprints must share one release group, and a release of that
+    /// group must list this disc's number of tracks at this disc's lengths.
+    /// `None` when this is not a disc the method applies to.
+    fn identify_album(
+        &self,
+        tools: &Tools,
+        sources: &[Source],
+        work: &Path,
+        evidence: &mut Value,
+    ) -> Option<Result<Proposal, Result<String, Unavailable>>> {
+        let (Some(fpcalc), Some(socket)) = (&self.fpcalc, &self.socket) else {
+            return None;
+        };
+        let [source] = sources else { return None };
+        if source.disc.kind != DiscKind::AudioArchive {
+            return None;
+        }
+        let hold = |reason: String| Some(Err(Ok(reason)));
+        let Some(owner) = file_owner(source.path) else {
+            return hold("The disc's uploader could not be determined, so its tracks were not fingerprinted.".to_string());
+        };
+        // Fingerprint every track.
+        let mut prints = Vec::new();
+        for member in Self::members(source.disc) {
+            let file = work.join("fingerprint-source.flac");
+            let _ = fs::remove_file(&file);
+            let print = extract_member(&tools.sevenzip, source.path, &member, &file)
+                .ok()
+                .and_then(|()| Self::fingerprint(fpcalc, &file));
+            let _ = fs::remove_file(&file);
+            let Some(print) = print else {
+                return hold(format!("Track {member} could not be fingerprinted."));
+            };
+            prints.push(print);
+        }
+        let seconds: Vec<f64> = prints.iter().map(|(_, seconds)| *seconds).collect();
+        // Which release groups each track appears on.
+        let mut votes: BTreeMap<String, usize> = BTreeMap::new();
+        for (fingerprint, duration) in &prints {
+            let body = json!({ "owner": owner, "fingerprint": fingerprint, "duration": duration.round() as u64 });
+            match post_unix(socket, FINGERPRINT_ROUTE, &body.to_string()) {
+                Ok((200, value)) => {
+                    for group in value["releaseGroups"].as_array().into_iter().flatten() {
+                        if let Some(id) = group.as_str() {
+                            *votes.entry(id.to_string()).or_default() += 1;
+                        }
+                    }
+                }
+                Ok((404, value)) if value["error"] == "no_account" => {
+                    return hold(format!(
+                        "The tracks were not fingerprinted: {owner} has no AcoustID account saved in Media Manager's Online services."
+                    ));
+                }
+                Ok((status, value)) => {
+                    return Some(Err(Err(Unavailable(format!(
+                        "The AcoustID lookup failed ({status} {}).",
+                        value["error"].as_str().unwrap_or("no detail")
+                    )))));
+                }
+                Err(error) => {
+                    return Some(Err(Err(Unavailable(format!(
+                        "The provider broker could not be reached: {error:#}."
+                    )))));
+                }
+            }
+        }
+        // A release group must hold at least four fifths of the tracks.
+        let needed = (prints.len() * 4).div_ceil(5).max(1);
+        let mut candidates: Vec<(&String, &usize)> = votes
+            .iter()
+            .filter(|(_, count)| **count >= needed)
+            .collect();
+        candidates.sort_by(|left, right| right.1.cmp(left.1));
+        evidence["fingerprints"] = json!({
+            "tracks": prints.len(),
+            "releaseGroupsSeen": votes.len(),
+            "releaseGroupsShared": candidates.len(),
+        });
+        if candidates.is_empty() {
+            return hold("The tracks' fingerprints do not share one release, so the disc was not identified as an album.".to_string());
+        }
+        // Which of them has a release that is this disc.
+        let mut matched: Vec<(Release, usize)> = Vec::new();
+        for (group, _) in candidates.into_iter().take(5) {
+            let releases: Vec<Release> = match post_unix(
+                socket,
+                RELEASE_GROUP_ROUTE,
+                &json!({ "releaseGroup": group }).to_string(),
+            ) {
+                Ok((200, value)) => {
+                    serde_json::from_value(value["releases"].clone()).unwrap_or_default()
+                }
+                Ok((status, value)) => {
+                    return Some(Err(Err(Unavailable(format!(
+                        "The MusicBrainz lookup failed ({status} {}).",
+                        value["error"].as_str().unwrap_or("no detail")
+                    )))));
+                }
+                Err(error) => {
+                    return Some(Err(Err(Unavailable(format!(
+                        "The provider broker could not be reached: {error:#}."
+                    )))));
+                }
+            };
+            // The earliest official release that matches names the album.
+            let mut fitting: Vec<(Release, usize)> = releases
+                .into_iter()
+                .filter_map(|release| {
+                    let position = release
+                        .media
+                        .iter()
+                        .position(|medium| medium_matches(medium, &seconds))?;
+                    Some((release, position))
+                })
+                .collect();
+            fitting.sort_by_key(|(release, _)| {
+                (
+                    release.status != "Official",
+                    release.date.is_empty(),
+                    release.date.clone(),
+                )
+            });
+            if let Some(first) = fitting.into_iter().next() {
+                matched.push(first);
+            }
+        }
+        evidence["albums"] = json!(matched
+            .iter()
+            .map(|(release, position)| json!({
+                "release": release.id,
+                "artist": release.artist,
+                "album": release.title,
+                "date": release.date,
+                "disc": position + 1,
+                "discs": release.media.len(),
+            }))
+            .collect::<Vec<_>>());
+        let [(release, position)] = matched.as_slice() else {
+            return hold(if matched.is_empty() {
+                "The fingerprints point to releases whose track lists do not match this disc's tracks and lengths.".to_string()
+            } else {
+                "The fingerprints and track lengths fit more than one album; see the identification record.".to_string()
+            });
+        };
+        let proposal = Proposal {
+            author: release.artist.clone(),
+            title: release.title.clone(),
+            year: release.date.get(..4).and_then(|year| year.parse().ok()),
+            category: "music".to_string(),
+            release_id: release.id.clone(),
+            disc_total: Some(1),
+            confirmed_by: "acoustid-fingerprints+musicbrainz-track-lengths".to_string(),
+            track_titles: release.media[*position]
+                .tracks
+                .iter()
+                .map(|track| track.title.clone())
+                .collect(),
+            ..Proposal::default()
+        };
+        if release.media.len() > 1 {
+            let reason = format!(
+                "Identified as disc {} of {} of {} by {}. An album of several discs is confirmed by hand; this disc alone would be filed as the whole album.",
+                position + 1,
+                release.media.len(),
+                release.title,
+                release.artist
+            );
+            evidence["albumProposal"] = json!(proposal);
+            return Some(Err(Ok(reason)));
+        }
+        Some(Ok(proposal))
+    }
+
     /// Try to settle a set that `book::decide` held as unidentified or as
     /// having an unknown number of discs.
     pub fn resolve(
@@ -743,12 +983,33 @@ use outside knowledge.\n\nStart of the first disc:\n{}\n\nEnd of the last disc:\
                     }
                 }
                 _ => {
-                    return Resolution::Hold {
-                        proposal: base,
-                        reason: format!(
-                            "{fallback_reason} The opening and closing announcements did not name a title and an author either."
-                        ),
-                        evidence,
+                    // Not a book that announces itself; perhaps an album.
+                    let spoken = "The opening and closing announcements did not name a title and an author either.";
+                    return match self.identify_album(tools, sources, work, &mut evidence) {
+                        Some(Ok(proposal)) => Resolution::Publish {
+                            proposal,
+                            order,
+                            evidence,
+                        },
+                        Some(Err(Ok(reason))) => {
+                            let proposal: Option<Proposal> =
+                                serde_json::from_value(evidence["albumProposal"].take()).ok();
+                            Resolution::Hold {
+                                proposal: proposal.or(base),
+                                reason: format!("{fallback_reason} {spoken} {reason}"),
+                                evidence,
+                            }
+                        }
+                        Some(Err(Err(Unavailable(reason)))) => Resolution::Retry {
+                            proposal: base,
+                            reason,
+                            evidence,
+                        },
+                        None => Resolution::Hold {
+                            proposal: base,
+                            reason: format!("{fallback_reason} {spoken}"),
+                            evidence,
+                        },
                     };
                 }
             };

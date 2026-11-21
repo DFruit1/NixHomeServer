@@ -212,6 +212,33 @@ pub fn free_bytes(path: &Path) -> Result<u64> {
     Ok((stats.f_bavail as u64).saturating_mul(stats.f_frsize as u64))
 }
 
+/// Login name of the file's owner: the person who uploaded it, whose saved
+/// provider accounts identification may use.
+pub fn file_owner(path: &Path) -> Option<String> {
+    let uid = fs::metadata(path).ok()?.uid();
+    let mut buffer = vec![0 as libc::c_char; 4096];
+    // SAFETY: `entry` is plain data that getpwuid_r fills in on success.
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: every pointer is valid for the call, and `buffer` outlives the
+    // read of `pw_name` below, which points into it.
+    let status = unsafe {
+        libc::getpwuid_r(
+            uid,
+            &mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut found,
+        )
+    };
+    if status != 0 || found.is_null() {
+        return None;
+    }
+    // SAFETY: on success `pw_name` is a NUL-terminated string in `buffer`.
+    let name = unsafe { std::ffi::CStr::from_ptr(entry.pw_name) };
+    name.to_str().ok().map(str::to_owned)
+}
+
 pub fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
     let directory = path.parent().context("JSON path has no parent")?;
     let temporary = directory.join(format!(

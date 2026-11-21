@@ -819,6 +819,148 @@ fn build_from_data(
     })
 }
 
+/// An album keeps its lossless tracks: `NN - Title.flac`, in `Disc N`
+/// folders when it has several discs. A disc MusicBrainz knew by its ID was
+/// tagged by the ripper and is moved unchanged; one identified here, by
+/// fingerprint or by a person, is retagged without re-encoding.
+fn build_album(
+    tools: &Tools,
+    job: &Job,
+    progress: &mut dyn FnMut(&str, f64),
+    stop: &AtomicBool,
+) -> Result<Built> {
+    let (proposal, discs, work, output) = (job.proposal, job.discs, job.work, job.output);
+    if discs
+        .iter()
+        .any(|(_, disc)| disc.kind != DiscKind::AudioArchive)
+    {
+        bail!("an album can only be built from audio CDs");
+    }
+    fs::create_dir_all(output)?;
+    let retag = proposal.confirmed_by != "musicbrainz-disc-id";
+    let multi = discs.len() > 1;
+    let mut files = Vec::new();
+    let mut seconds = 0.0;
+    let mut position = 0;
+    let mut cover_copied = false;
+    for (index, (iso, disc)) in discs.iter().enumerate() {
+        check_stop(stop)?;
+        progress(
+            "Reading the discs",
+            index as f64 / discs.len() as f64 * 100.0,
+        );
+        let directory = work.join(format!("disc{:02}", index + 1));
+        extract(tools, iso, &directory)?;
+        let mut tracks = disc.tracks.clone();
+        tracks.sort_by_key(|track| track.number);
+        let count = tracks.len();
+        for track in tracks {
+            check_stop(stop)?;
+            let path = directory.join(&track.file);
+            if !fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) {
+                bail!("{} is missing track file {}", disc.iso_name, track.file);
+            }
+            if !track.sha256.is_empty() && sha256_file(&path)? != track.sha256 {
+                bail!(
+                    "{} track {} does not match the checksum recorded when it was ripped",
+                    disc.iso_name,
+                    track.number
+                );
+            }
+            seconds += flac_info(&path)?.0;
+            let title = proposal
+                .track_titles
+                .get(position)
+                .filter(|title| !title.is_empty())
+                .unwrap_or(&track.title)
+                .clone();
+            position += 1;
+            let named = !generic_track_title(&title, track.number);
+            let shown = if named {
+                title.clone()
+            } else {
+                format!("Track {:02}", track.number)
+            };
+            let name = format!(
+                "{:02} - {}.flac",
+                track.number,
+                safe_component(&shown, "Track")
+            );
+            let relative = if multi {
+                PathBuf::from(format!("Disc {}", index + 1)).join(&name)
+            } else {
+                PathBuf::from(&name)
+            };
+            let destination = output.join(&relative);
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            if retag {
+                let mut tags = vec![
+                    format!("artist={}", proposal.author),
+                    format!("album_artist={}", proposal.author),
+                    format!("album={}", proposal.title),
+                    format!("track={}/{count}", track.number),
+                    format!("disc={}/{}", index + 1, discs.len()),
+                ];
+                if named {
+                    tags.push(format!("title={title}"));
+                }
+                if let Some(year) = proposal.year {
+                    tags.push(format!("date={year}"));
+                }
+                if !proposal.release_id.is_empty() {
+                    tags.push(format!("MUSICBRAINZ_ALBUMID={}", proposal.release_id));
+                }
+                let mut command = Command::new(&tools.ffmpeg);
+                command
+                    .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-i"])
+                    .arg(&path)
+                    .args(["-map", "0", "-c", "copy"]);
+                for tag in &tags {
+                    command.args(["-metadata", tag]);
+                }
+                let result = command
+                    .arg(&destination)
+                    .stdin(Stdio::null())
+                    .output()
+                    .with_context(|| format!("cannot run {}", tools.ffmpeg.display()))?;
+                if !result.status.success() {
+                    bail!(
+                        "ffmpeg could not tag track {}: {}",
+                        track.number,
+                        String::from_utf8_lossy(&result.stderr).trim()
+                    );
+                }
+            } else {
+                crate::fsops::move_file(&path, &destination)?;
+            }
+            files.push(relative.to_string_lossy().into_owned());
+        }
+        if !cover_copied && !disc.cover.is_empty() && !disc.cover.contains('/') {
+            let candidate = directory.join(&disc.cover);
+            if candidate.is_file() {
+                let extension = candidate
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or("jpg");
+                let name = format!("cover.{}", extension.to_ascii_lowercase());
+                fs::copy(&candidate, output.join(&name)).context("cannot copy the cover")?;
+                files.push(name);
+                cover_copied = true;
+            }
+        }
+    }
+    Ok(Built {
+        audio: "flac".to_string(),
+        duration_seconds: seconds,
+        chapters: 0,
+        chapter_source: "none".to_string(),
+        chapter_details: Value::Null,
+        files,
+    })
+}
+
 /// Build the book folder in `output` from the ordered discs, using `work`
 /// for extraction scratch.
 pub fn build(
@@ -828,6 +970,9 @@ pub fn build(
     stop: &AtomicBool,
 ) -> Result<Built> {
     let (proposal, discs, work, output) = (job.proposal, job.discs, job.work, job.output);
+    if proposal.category == "music" {
+        return build_album(tools, job, progress, stop);
+    }
     if discs
         .iter()
         .all(|(_, disc)| disc.kind == DiscKind::AudioArchive)

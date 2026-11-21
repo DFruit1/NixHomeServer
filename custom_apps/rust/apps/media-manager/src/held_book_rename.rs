@@ -28,7 +28,9 @@ fn invalid(message: impl Into<String>) -> Refusal {
 
 /// Parse `Author - Title (Year) [N discs]`, the form the importer accepts as
 /// a person's statement of a book's identity and completeness. The year is
-/// optional. Returns the number of discs the name states.
+/// optional, and `[music]` before the disc tag marks an album
+/// (`Artist - Album (Year) [music] [N discs]`). Returns the number of discs
+/// the name states.
 pub fn parse_book_name(name: &str) -> Result<u32, Refusal> {
     let pattern = format!("Use the author, title and number of discs, such as {EXAMPLE}");
     if name.is_empty() {
@@ -71,6 +73,10 @@ pub fn parse_book_name(name: &str) -> Result<u32, Refusal> {
                 .filter(|discs| (1..=99).contains(discs))?;
             Some((book.trim_end(), discs))
         });
+    let tagged = tagged.map(|(book, discs)| {
+        let book = book.strip_suffix(" [music]").map_or(book, str::trim_end);
+        (book, discs)
+    });
     let Some((mut book, discs)) = tagged else {
         return Err(invalid(format!(
             "End the name with the number of discs in square brackets. {pattern}."

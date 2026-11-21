@@ -50,6 +50,9 @@ pub struct Proposal {
     pub abridged: Option<bool>,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub cover_url: String,
+    /// Track titles of an album identified by its fingerprints, in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub track_titles: Vec<String>,
 }
 
 /// Why a set could not be settled from the ripper's own evidence.
@@ -83,8 +86,6 @@ pub enum Decision {
         proposal: Option<Proposal>,
         reason: String,
     },
-    /// Not this importer's business yet: left untouched in the inbox.
-    Skip { message: String },
 }
 
 #[derive(Debug, PartialEq)]
@@ -93,17 +94,23 @@ pub struct NameClaim {
     pub title: String,
     pub year: Option<i32>,
     pub discs: Option<u32>,
+    /// Tagged `[music]`: an album for the music library, not a book.
+    pub music: bool,
 }
 
 /// Read `Author - Title (Year) [N discs]`; the year and disc tag are optional
-/// and the ripper's `[mbid-…]` tag is ignored.
+/// and the ripper's `[mbid-…]` tag is ignored. `[music]` marks an album,
+/// read as `Artist - Album`.
 pub fn parse_folder_name(name: &str) -> Option<NameClaim> {
     let mut rest = name.trim();
     let mut discs = None;
+    let mut music = false;
     while rest.ends_with(']') {
         let open = rest.rfind('[')?;
         let tag = rest[open + 1..rest.len() - 1].trim().to_ascii_lowercase();
         if tag.starts_with("mbid-") {
+        } else if tag == "music" {
+            music = true;
         } else if let Some(count) = tag
             .strip_suffix(" discs")
             .or_else(|| tag.strip_suffix(" disc"))
@@ -136,6 +143,7 @@ pub fn parse_folder_name(name: &str) -> Option<NameClaim> {
         title: title.to_string(),
         year,
         discs,
+        music,
     })
 }
 
@@ -158,6 +166,9 @@ pub fn confirming_name(proposal: Option<&Proposal>, present: usize) -> String {
     );
     if let Some(year) = year {
         name.push_str(&format!(" ({year})"));
+    }
+    if proposal.is_some_and(|proposal| proposal.category == "music") {
+        name.push_str(" [music]");
     }
     let noun = if present == 1 { "disc" } else { "discs" };
     name.push_str(&format!(" [{present} {noun}]"));
@@ -281,7 +292,7 @@ pub fn decide(folder: &str, discs: &[Disc], marker_total: Option<u32>) -> Decisi
             year: claim
                 .year
                 .or_else(|| from_discs.as_ref().and_then(|proposal| proposal.year)),
-            category: "audiobook".to_string(),
+            category: if claim.music { "music" } else { "audiobook" }.to_string(),
             release_id: from_discs
                 .as_ref()
                 .map(|proposal| proposal.release_id.clone())
@@ -327,14 +338,6 @@ pub fn decide(folder: &str, discs: &[Disc], marker_total: Option<u32>) -> Decisi
     let hold = |reason: String| hold_as(HoldKind::Conflict, reason);
 
     let categories: BTreeSet<&str> = discs.iter().map(|disc| disc.category.as_str()).collect();
-    if categories
-        .iter()
-        .all(|category| matches!(*category, "music" | "other"))
-    {
-        return Decision::Skip {
-            message: "Music discs are not imported yet; they stay in the inbox.".to_string(),
-        };
-    }
     if categories.contains("unidentified") {
         return hold_as(
             HoldKind::Unidentified,
@@ -342,12 +345,13 @@ pub fn decide(folder: &str, discs: &[Disc], marker_total: Option<u32>) -> Decisi
                 .to_string(),
         );
     }
-    if !categories
+    // A set is a book or an album, never both, and nothing else is imported.
+    let bookish = categories
         .iter()
-        .all(|category| matches!(*category, "audiobook" | "spoken-word"))
-    {
+        .all(|category| matches!(*category, "audiobook" | "spoken-word"));
+    if !bookish && categories.iter().any(|category| *category != "music") {
         return hold(format!(
-            "The ripper did not class every disc as an audiobook ({}).",
+            "The ripper classed these discs as neither one book nor one album ({}).",
             categories.into_iter().collect::<Vec<_>>().join(", ")
         ));
     }
