@@ -13,6 +13,7 @@
 
 mod book;
 mod build;
+mod chapters;
 mod disc;
 mod fsops;
 mod identify;
@@ -121,6 +122,10 @@ struct Args {
     parakeet_model: Option<PathBuf>,
     #[arg(long, default_value_t = 4)]
     identify_threads: u32,
+    /// Print the chapters heard in these audio files, taken in order as one
+    /// book, and exit. Needs --parakeet; scratch goes under --state-dir.
+    #[arg(long, num_args = 1.., value_name = "FILE")]
+    find_chapters: Vec<PathBuf>,
 }
 
 struct Inbox {
@@ -1029,15 +1034,23 @@ impl Worker {
                     );
                 }
             };
-            build::build(
-                &self.tools,
-                &proposal,
-                &ordered,
-                &staging.join("work"),
-                &staging.join("book"),
-                &mut progress,
-                &self.stop,
-            )
+            let (work, output) = (staging.join("work"), staging.join("book"));
+            let job = build::Job {
+                proposal: &proposal,
+                discs: &ordered,
+                work: &work,
+                output: &output,
+                speech: self.identifier.parakeet.as_ref().map(|(parakeet, model)| {
+                    chapters::Speech {
+                        ffmpeg: &self.tools.ffmpeg,
+                        parakeet,
+                        model,
+                        threads: self.identifier.threads,
+                        bonsai: self.identifier.bonsai.as_ref(),
+                    }
+                }),
+            };
+            build::build(&self.tools, &job, &mut progress, &self.stop)
         };
         let built: Built = match built {
             Ok(built) => built,
@@ -1384,6 +1397,52 @@ impl Worker {
     }
 }
 
+/// Diagnostic: what chapter detection hears in a set of audio files.
+fn find_chapters(
+    args: &Args,
+    tools: &Tools,
+    identifier: &Identifier,
+    stop: &AtomicBool,
+) -> Result<()> {
+    let (parakeet, model) = identifier
+        .parakeet
+        .as_ref()
+        .context("--find-chapters needs --parakeet and --parakeet-model")?;
+    let mut pieces = Vec::new();
+    for file in &args.find_chapters {
+        let seconds = build::media_seconds(tools, file)
+            .with_context(|| format!("cannot read the length of {}", file.display()))?;
+        pieces.push((file.clone(), seconds));
+    }
+    let scratch = args.state_dir.join("scratch");
+    fs::create_dir_all(&scratch)?;
+    let speech = chapters::Speech {
+        ffmpeg: &tools.ffmpeg,
+        parakeet,
+        model,
+        threads: identifier.threads,
+        bonsai: identifier.bonsai.as_ref(),
+    };
+    let found = chapters::spoken_chapters(
+        &speech,
+        &pieces,
+        &scratch,
+        &mut |step, percent| eprintln!("{step}: {percent:.0}%"),
+        stop,
+    );
+    let _ = fs::remove_dir_all(&scratch);
+    match found? {
+        Some(found) => println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &json!({ "chapters": found.chapters, "details": found.note })
+            )?
+        ),
+        None => println!("No believable run of chapter headings was heard."),
+    }
+    Ok(())
+}
+
 fn run() -> Result<()> {
     let args = Args::parse();
     fs::create_dir_all(&args.state_dir)
@@ -1410,10 +1469,6 @@ fn run() -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => State::default(),
         Err(error) => return Err(error).context("cannot read the import state"),
     };
-    let inboxes = discover_inboxes(&args)?;
-    if inboxes.is_empty() {
-        bail!("no inbox was given and no user inbox exists");
-    }
     let tools = Tools {
         ffmpeg: args.ffmpeg.clone(),
         ffprobe: args.ffprobe.clone(),
@@ -1432,6 +1487,13 @@ fn run() -> Result<()> {
         socket: args.provider_socket.clone(),
     };
     let _ = fs::remove_dir_all(args.state_dir.join("scratch"));
+    if !args.find_chapters.is_empty() {
+        return find_chapters(&args, &tools, &identifier, &stop);
+    }
+    let inboxes = discover_inboxes(&args)?;
+    if inboxes.is_empty() {
+        bail!("no inbox was given and no user inbox exists");
+    }
     let mut worker = Worker {
         args,
         tools,

@@ -192,7 +192,11 @@ Each run handles every book folder that is ready and exits. A book is
 published only when its whole set of discs is present and each disc is an exact
 MusicBrainz Disc ID match or carries the author and title typed at the drive;
 anything else waits in the inbox or is held for a person. It needs `ffmpeg`,
-`ffprobe` and `7zz` (`--ffmpeg`, `--ffprobe`, `--sevenzip`). See
+`ffprobe` and `7zz` (`--ffmpeg`, `--ffprobe`, `--sevenzip`). With
+`--provider-socket`, `--bonsai-url` and `--parakeet` it also identifies
+unnamed discs from their spoken credits, adds narrator, series and cover from a
+matching Audible edition, and places chapters at the spoken headings.
+`--find-chapters FILE…` prints the chapters heard in audio files and exits. See
 [the operations runbook](../../documentation/operations.md#automatic-audio-cd-import).
 
 ## Reliability and recovery

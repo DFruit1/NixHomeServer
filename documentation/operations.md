@@ -1626,8 +1626,41 @@ The published folder is `Author/Title (Year)`, or the series form above:
 - **MP3 data CDs** are copied unchanged, in `Disc NN` folders for a multi-disc
   book.
 
-There is one chapter per CD track for now. A real MusicBrainz track title is
-kept; a placeholder becomes `Disc 2, Track 5`. `metadata.json` in the folder
+Chapters come from the spoken headings when they can be heard, because CD
+tracks are index points and often change every few minutes:
+
+1. Every track start and the end of every pause of 1.8 seconds or more is a
+   place where a heading could be. On a commercial audiobook cut into
+   five-minute tracks that was about twenty places an hour.
+2. Twelve seconds from each place are transcribed with Parakeet, sixty
+   excerpts to a run. A place counts when its excerpt begins with a heading:
+   `Chapter seven`, `Part two`, `Book 3`, `Section 1`, or `Prologue`,
+   `Preface`, `Foreword`, `Introduction`, `Epilogue`, `Afterword`, `Appendix`
+   and similar. A numbered heading also counts at the start of a later
+   sentence in the first twenty words; a mention inside a sentence does not.
+3. The headings are used only as a believable run: at least three chapters
+   whose numbers rise (starting again after each part) and cover at least
+   three fifths of their range, or failing that three parts. Front and back
+   matter is kept only before the first and after the last numbered heading.
+4. Bonsai then words each title for print (`Chapter 2: Learn How to Infer`).
+   Only the title is taken from it, and only words that were said.
+
+Without such a run, or without the transcribe app, there is one chapter per CD
+track: a real MusicBrainz track title is kept and a placeholder becomes
+`Disc 2, Track 5`. `import.json` records which was used (`chapterSource`) and
+how many places were examined. Listening takes about half a minute of wall
+time per hour of audio on four threads.
+
+To see what would be heard in a set of audio files without importing anything
+(take the tool paths from `systemctl cat mkvmaker-audio-import`):
+
+```bash
+audio-import --state-dir "$(mktemp -d)" --ffmpeg … --ffprobe … \
+  --parakeet … --parakeet-model … --bonsai-url http://127.0.0.1:8094/v1 \
+  --find-chapters disc1/*.flac disc2/*.flac
+```
+
+`metadata.json` in the folder
 carries the title, author, narrator (from a MusicBrainz credit such as
 `Author read by Narrator`, or the matching edition), series, description,
 ASIN, year, publisher and chapters. Both libraries give

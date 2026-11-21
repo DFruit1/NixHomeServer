@@ -4,6 +4,7 @@
 
 use crate::{
     book::Proposal,
+    chapters::{spoken_chapters, Speech},
     disc::{Disc, DiscKind},
     fsops::{natural_key, normalized, safe_component, sha256_file},
 };
@@ -56,8 +57,21 @@ pub struct Built {
     pub audio: String,
     pub duration_seconds: f64,
     pub chapters: usize,
+    /// `spoken-headings`, `cd-tracks`, `files` or `embedded`.
     pub chapter_source: String,
+    #[serde(skip_serializing_if = "Value::is_null")]
+    pub chapter_details: Value,
     pub files: Vec<String>,
+}
+
+/// One book to build: its discs in playing order, a scratch folder, the
+/// folder to fill, and the speech tools when chapter headings can be heard.
+pub struct Job<'a> {
+    pub proposal: &'a Proposal,
+    pub discs: &'a [(PathBuf, Disc)],
+    pub work: &'a Path,
+    pub output: &'a Path,
+    pub speech: Option<Speech<'a>>,
 }
 
 #[derive(Serialize)]
@@ -423,13 +437,11 @@ fn os(value: &str) -> std::ffi::OsString {
 
 fn build_from_archives(
     tools: &Tools,
-    proposal: &Proposal,
-    discs: &[(PathBuf, Disc)],
-    work: &Path,
-    output: &Path,
+    job: &Job,
     progress: &mut dyn FnMut(&str, f64),
     stop: &AtomicBool,
 ) -> Result<Built> {
+    let (proposal, discs, work, output) = (job.proposal, job.discs, job.work, job.output);
     let mut pieces = Vec::new();
     let mut cover: Option<PathBuf> = None;
     let mut channels = 1;
@@ -477,7 +489,36 @@ fn build_from_archives(
         cover = Some(work.join(PROVIDER_COVER));
     }
     let total: f64 = pieces.iter().map(|piece| piece.seconds).sum();
-    let chapters = chapters_from_pieces(&pieces, discs.len());
+    let mut chapters = chapters_from_pieces(&pieces, discs.len());
+    let mut chapter_source = "cd-tracks";
+    let mut chapter_details = Value::Null;
+    if let Some(speech) = &job.speech {
+        let files: Vec<(PathBuf, f64)> = pieces
+            .iter()
+            .map(|piece| (piece.path.clone(), piece.seconds))
+            .collect();
+        match spoken_chapters(speech, &files, work, progress, stop) {
+            Ok(Some(found)) => {
+                chapters = found.chapters;
+                chapter_source = "spoken-headings";
+                chapter_details = found.note;
+            }
+            Ok(None) => {
+                chapter_details = serde_json::json!({
+                    "spokenHeadings": "no believable run of chapter headings was heard"
+                });
+            }
+            Err(error) if error.is::<Stopped>() => return Err(error),
+            // A book is never lost to its chapter marks.
+            Err(error) => {
+                eprintln!(
+                    "Chapter headings could not be heard ({error:#}); using one chapter per track"
+                );
+                chapter_details =
+                    serde_json::json!({ "spokenHeadingsError": format!("{error:#}") });
+            }
+        }
+    }
 
     let mut mono = channels == 1;
     if !mono {
@@ -564,7 +605,8 @@ fn build_from_archives(
         audio: if mono { "aac-mono" } else { "aac-stereo" }.to_string(),
         duration_seconds: total,
         chapters: chapters.len(),
-        chapter_source: "cd-tracks".to_string(),
+        chapter_source: chapter_source.to_string(),
+        chapter_details,
         files,
     })
 }
@@ -648,6 +690,7 @@ fn build_from_data(
             duration_seconds: seconds,
             chapters: 0,
             chapter_source: "embedded".to_string(),
+            chapter_details: Value::Null,
             files: vec![file_name, "metadata.json".to_string()],
         });
     }
@@ -740,6 +783,7 @@ fn build_from_data(
                 duration_seconds: total,
                 chapters: chapters.len(),
                 chapter_source: "files".to_string(),
+                chapter_details: Value::Null,
                 files: vec![file_name, "metadata.json".to_string()],
             });
         }
@@ -770,6 +814,7 @@ fn build_from_data(
         duration_seconds: seconds,
         chapters: 0,
         chapter_source: "files".to_string(),
+        chapter_details: Value::Null,
         files,
     })
 }
@@ -778,18 +823,16 @@ fn build_from_data(
 /// for extraction scratch.
 pub fn build(
     tools: &Tools,
-    proposal: &Proposal,
-    discs: &[(PathBuf, Disc)],
-    work: &Path,
-    output: &Path,
+    job: &Job,
     progress: &mut dyn FnMut(&str, f64),
     stop: &AtomicBool,
 ) -> Result<Built> {
+    let (proposal, discs, work, output) = (job.proposal, job.discs, job.work, job.output);
     if discs
         .iter()
         .all(|(_, disc)| disc.kind == DiscKind::AudioArchive)
     {
-        build_from_archives(tools, proposal, discs, work, output, progress, stop)
+        build_from_archives(tools, job, progress, stop)
     } else if discs.iter().all(|(_, disc)| disc.kind == DiscKind::Data) {
         let mut built = build_from_data(tools, proposal, discs, work, output, progress, stop)?;
         if work.join(PROVIDER_COVER).is_file() && !output.join("cover.jpg").exists() {
