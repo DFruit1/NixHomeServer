@@ -1568,9 +1568,54 @@ A book is published without a person only when all of these hold:
 
 An incomplete set waits in the inbox; nothing is published until the last disc
 arrives. Music discs are not imported yet and stay in the inbox untouched.
-Anything else is held (below).
+Anything else goes through identification (next) and is held when that does
+not settle it.
 
-The published folder is `Author/Title (Year)`:
+#### Identification and provider details
+
+The importer uses the tools the DVD identifier already has: the Parakeet model
+on the CPU, Bonsai through the concurrency gate, and the provider broker's
+system socket, which searches Audible's public catalogue (no account). The
+importer itself has no route to the internet. Without the transcribe app the
+speech step is skipped, without Bonsai nothing spoken is read, and without the
+broker socket books are published from the ripper's evidence alone.
+
+Two independent sources must agree before a book is named without a person:
+
+1. **What the discs say.** Up to four minutes from the start of the first disc
+   and two minutes from the end of the last are transcribed, and Bonsai reports
+   the announced title, author and narrator. A name is used only if its words
+   occur in the transcript, because Bonsai recognises famous prose and will
+   name a book that was never announced. A MusicBrainz CD stub counts as this
+   source when nothing usable was spoken.
+2. **The catalogue.** An English Audible edition of that title and author whose
+   runtime is within 3% (at least four minutes) of the discs' playing time.
+   The catalogue's spelling of the title and author replaces the recogniser's.
+
+The runtime match also shows the set is complete. That settles a book whose
+author and title were typed at the drive without a number of discs: it is
+published once the discs present add up to an edition's runtime. A multi-disc
+set without disc numbers is still held, because its playing order is not
+known.
+
+Every book that is published, however it was identified, gets details from its
+matching edition:
+
+- **Edition matched by runtime:** narrator (a MusicBrainz narrator credit is
+  kept), series and position, description, ASIN, abridged or unabridged, cover
+  (when the ISO has none), and the year and publisher when the discs gave none.
+- **Title and author matched, runtime not:** series, description and cover
+  only, since narrator and ASIN belong to one recording.
+
+A series book is published as `Author/Series/Book N - Title (Year)`.
+
+If Bonsai or the catalogue is unavailable, an unidentified set is held and
+tried again after 1, 6 and 24 hours, without repeating the transcription; the
+evidence file's `retry` object shows the next attempt. A book that is already
+certain waits up to an hour for the catalogue, in quarter-hour steps, and is
+then published without provider details.
+
+The published folder is `Author/Title (Year)`, or the series form above:
 
 - **Audio CDs** become one AAC M4B with embedded chapters, tags and the cover
   when the ISO has one: 64 kbit/s mono when the two channels are identical (as
@@ -1584,7 +1629,8 @@ The published folder is `Author/Title (Year)`:
 There is one chapter per CD track for now. A real MusicBrainz track title is
 kept; a placeholder becomes `Disc 2, Track 5`. `metadata.json` in the folder
 carries the title, author, narrator (from a MusicBrainz credit such as
-`Author read by Narrator`), year, publisher and chapters. Both libraries give
+`Author read by Narrator`, or the matching edition), series, description,
+ASIN, year, publisher and chapters. Both libraries give
 that file the highest metadata precedence, and Audiobookshelf's own library
 watcher picks the folder up, so no scan is requested.
 
@@ -1597,8 +1643,10 @@ published, and are kept there so a book can be rebuilt later.
 
 A set that is not certain moves to `_AudioCDs/_NeedsIdentification/<folder>/`
 with an `identify.json` giving the reason, the proposal, each disc's lookup
-result and a `confirmWith` name. To confirm, rename the folder to that name,
-correcting it first where it is wrong:
+result and a `confirmWith` name. When identification ran, `identification`
+holds the transcript excerpts, what Bonsai read from them, the playing time
+and every catalogue edition compared. To confirm, rename the folder to the
+`confirmWith` name, correcting it first where it is wrong:
 
 ```text
 Terry Pratchett - Guards! Guards! (1989) [6 discs]

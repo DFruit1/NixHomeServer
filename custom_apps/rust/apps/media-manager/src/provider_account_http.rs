@@ -31,6 +31,7 @@ mod google_books;
 mod immich;
 mod server_services;
 mod system;
+mod system_audible;
 mod system_tmdb;
 mod tmdb_lookups;
 

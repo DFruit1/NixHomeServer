@@ -55,6 +55,9 @@ pub struct Disc {
     pub audio_files: Vec<String>,
     /// The ISO checksum the ripper recorded, when it sent one.
     pub recorded_sha256: String,
+    /// Playing time of an audio CD, from its table of contents.
+    #[serde(default)]
+    pub seconds: Option<f64>,
 }
 
 impl Disc {
@@ -93,6 +96,37 @@ fn read_json(path: &Path) -> Option<Value> {
         .filter(Value::is_object)
 }
 
+/// Playing time of the audio tracks from the saved table of contents
+/// (75 sectors a second), or from the track lengths when there is none.
+fn playing_seconds(archive: &Value) -> Option<f64> {
+    let probe = &archive["source_probe"];
+    let leadout = probe["leadout"].as_u64().filter(|sector| *sector > 0);
+    let tracks = probe["tracks"].as_array();
+    if let (Some(leadout), Some(tracks)) = (leadout, tracks) {
+        let mut sectors = 0u64;
+        for (index, track) in tracks.iter().enumerate() {
+            let start = track["offset"].as_u64()?;
+            let end = tracks
+                .get(index + 1)
+                .and_then(|next| next["offset"].as_u64())
+                .unwrap_or(leadout);
+            if track["audio"].as_bool().unwrap_or(true) {
+                sectors += end.checked_sub(start)?;
+            }
+        }
+        if sectors > 0 {
+            return Some(sectors as f64 / 75.0);
+        }
+    }
+    let lengths: Option<Vec<u64>> = archive["tracks"]
+        .as_array()?
+        .iter()
+        .map(|track| track["length_ms"].as_u64())
+        .collect();
+    let total: u64 = lengths?.iter().sum();
+    (total > 0).then_some(total as f64 / 1000.0)
+}
+
 /// `X.iso` → `X<suffix>`.
 pub fn sibling(iso: &Path, suffix: &str) -> PathBuf {
     let stem = iso
@@ -127,6 +161,25 @@ pub fn manifest_sha256(iso: &Path) -> Option<String> {
     let text = fs::read_to_string(iso.with_file_name(format!("{name}.sha256"))).ok()?;
     let digest = text.split_whitespace().next()?.to_ascii_lowercase();
     (digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(digest)
+}
+
+/// Write one file of the image to `destination`.
+pub fn extract_member(sevenzip: &Path, iso: &Path, member: &str, destination: &Path) -> Result<()> {
+    let output = fs::File::create(destination)
+        .with_context(|| format!("cannot create {}", destination.display()))?;
+    let status = Command::new(sevenzip)
+        .args(["e", "-so", "-bd", "--"])
+        .arg(iso)
+        .arg(member)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(output))
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("cannot run {}", sevenzip.display()))?;
+    if !status.success() || fs::metadata(destination).map_or(0, |meta| meta.len()) == 0 {
+        bail!("7-Zip cannot read {member} from {}", iso.display());
+    }
+    Ok(())
 }
 
 fn read_member(sevenzip: &Path, iso: &Path, member: &str) -> Option<Vec<u8>> {
@@ -273,6 +326,7 @@ pub fn load(iso: &Path, sevenzip: &Path) -> Result<Disc> {
             cover: text(&archive, "cover_art"),
             audio_files: Vec::new(),
             recorded_sha256,
+            seconds: playing_seconds(&archive),
         });
     }
 
@@ -303,5 +357,6 @@ pub fn load(iso: &Path, sevenzip: &Path) -> Result<Disc> {
         cover: String::new(),
         audio_files,
         recorded_sha256,
+        seconds: None,
     })
 }

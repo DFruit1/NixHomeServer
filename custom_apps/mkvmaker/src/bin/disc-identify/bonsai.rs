@@ -58,7 +58,7 @@ impl Bonsai {
     /// Bonsai reasons by default, and on a short budget the trace can use
     /// every token before any answer: label splitting (400 tokens) failed
     /// this way on every disc from 2026-11-15 to 2026-11-17.
-    fn chat_json(
+    pub fn chat_json(
         &self,
         content: Vec<Value>,
         schema: Value,

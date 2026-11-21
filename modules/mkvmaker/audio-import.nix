@@ -45,7 +45,23 @@ let
     userInbox
     "--user-library"
     audio.userLibrary
+  ]
+  # Identification reuses what the DVD identifier is given: the provider
+  # broker's system socket, the Bonsai gate and the Parakeet model.
+  ++ lib.optionals identify [ "--identify-threads" (toString cfg.identify.threads) ]
+  ++ lib.optionals (identify && cfg.identify.subtitleSocket != null) [
+    "--provider-socket"
+    cfg.identify.subtitleSocket
+  ]
+  ++ lib.optionals (identify && cfg.identify.bonsaiUrl != null) [ "--bonsai-url" cfg.identify.bonsaiUrl ]
+  ++ lib.optionals (identify && cfg.identify.parakeet != null) [
+    "--parakeet"
+    cfg.identify.parakeet
+    "--parakeet-model"
+    cfg.identify.parakeetModel
   ]);
+  identify = cfg.identify.enable;
+  brokerUnit = lib.optional identify "media-manager-provider-broker.service";
 in
 {
   options.repo.mkvmaker.audio = {
@@ -162,7 +178,8 @@ in
     systemd.services.mkvmaker-audio-import = {
       description = "Import audio CD ISOs into their libraries";
       requires = [ "mkvmaker-audio-storage-layout-v1.service" ] ++ audio.libraryUnits;
-      after = [ "mkvmaker-audio-storage-layout-v1.service" ] ++ audio.libraryUnits;
+      wants = brokerUnit;
+      after = [ "mkvmaker-audio-storage-layout-v1.service" ] ++ audio.libraryUnits ++ brokerUnit;
       environment.HOME = cfg.paths.stateRoot;
       unitConfig.RequiresMountsFor = [ vars.dataRoot ];
       serviceConfig = {
@@ -186,8 +203,9 @@ in
         IOWeight = 20;
         IOSchedulingClass = "best-effort";
         IOSchedulingPriority = 7;
-        MemoryHigh = "1G";
-        MemoryMax = "2G";
+        # Parakeet holds its 0.7 GB model in memory while it transcribes.
+        MemoryHigh = "3G";
+        MemoryMax = "4G";
         NoNewPrivileges = true;
         PrivateTmp = true;
         ProtectSystem = "strict";
@@ -201,7 +219,11 @@ in
         LockPersonality = true;
         RestrictSUIDSGID = true;
         RestrictNamespaces = true;
-        RestrictAddressFamilies = [ "AF_UNIX" ];
+        # The provider broker is a Unix socket and the Bonsai gate listens on
+        # loopback; the importer itself never reaches the internet.
+        RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+        IPAddressDeny = "any";
+        IPAddressAllow = "localhost";
         SystemCallArchitectures = "native";
         # Each entry is its own bind mount, so a rename between two of them
         # fails with EXDEV. The importer therefore stages a book inside its

@@ -19,6 +19,10 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// A cover fetched from the metadata provider, which the caller may place
+/// in the work folder. It is used when the discs carry none.
+pub const PROVIDER_COVER: &str = "provider-cover.jpg";
+
 pub struct Tools {
     pub ffmpeg: PathBuf,
     pub ffprobe: PathBuf,
@@ -60,13 +64,24 @@ pub struct Built {
 #[serde(rename_all = "camelCase")]
 struct AbsMetadata<'a> {
     title: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    subtitle: &'a str,
     authors: Vec<&'a str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     narrators: Vec<&'a str>,
+    /// `Name #3`, the form Audiobookshelf parses into name and sequence.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    series: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     published_year: Option<String>,
     #[serde(skip_serializing_if = "str::is_empty")]
     publisher: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    description: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    asin: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    abridged: Option<bool>,
     #[serde(skip_serializing_if = "<[Chapter]>::is_empty")]
     chapters: &'a [Chapter],
 }
@@ -146,6 +161,14 @@ fn probe(tools: &Tools, path: &Path, entries: &str, chapters: bool) -> Result<Va
         );
     }
     serde_json::from_slice(&output.stdout).context("ffprobe printed invalid JSON")
+}
+
+/// Playing time of an audio file: exact for FLAC, probed for the rest.
+pub fn media_seconds(tools: &Tools, path: &Path) -> Option<f64> {
+    flac_info(path)
+        .map(|(seconds, _)| seconds)
+        .ok()
+        .or_else(|| probed_duration(&probe(tools, path, "format=duration", false).ok()?))
 }
 
 fn probed_duration(value: &Value) -> Option<f64> {
@@ -364,14 +387,29 @@ fn chapters_from_pieces(pieces: &[Piece], disc_count: usize) -> Vec<Chapter> {
 fn write_abs_metadata(output: &Path, proposal: &Proposal, chapters: &[Chapter]) -> Result<()> {
     let metadata = AbsMetadata {
         title: &proposal.title,
+        subtitle: &proposal.subtitle,
         authors: vec![proposal.author.as_str()],
-        narrators: if proposal.narrator.is_empty() {
-            Vec::new()
-        } else {
-            vec![proposal.narrator.as_str()]
-        },
+        narrators: proposal
+            .narrator
+            .split(", ")
+            .filter(|name| !name.is_empty())
+            .collect(),
+        series: proposal
+            .series
+            .iter()
+            .map(|series| {
+                if series.sequence.is_empty() {
+                    series.name.clone()
+                } else {
+                    format!("{} #{}", series.name, series.sequence)
+                }
+            })
+            .collect(),
         published_year: proposal.year.map(|year| year.to_string()),
         publisher: &proposal.publisher,
+        description: &proposal.description,
+        asin: &proposal.asin,
+        abridged: proposal.abridged,
         chapters,
     };
     let mut text = serde_json::to_string_pretty(&metadata)?;
@@ -434,6 +472,9 @@ fn build_from_archives(
                 cover = Some(candidate);
             }
         }
+    }
+    if cover.is_none() && work.join(PROVIDER_COVER).is_file() {
+        cover = Some(work.join(PROVIDER_COVER));
     }
     let total: f64 = pieces.iter().map(|piece| piece.seconds).sum();
     let chapters = chapters_from_pieces(&pieces, discs.len());
@@ -750,7 +791,13 @@ pub fn build(
     {
         build_from_archives(tools, proposal, discs, work, output, progress, stop)
     } else if discs.iter().all(|(_, disc)| disc.kind == DiscKind::Data) {
-        build_from_data(tools, proposal, discs, work, output, progress, stop)
+        let mut built = build_from_data(tools, proposal, discs, work, output, progress, stop)?;
+        if work.join(PROVIDER_COVER).is_file() && !output.join("cover.jpg").exists() {
+            fs::copy(work.join(PROVIDER_COVER), output.join("cover.jpg"))
+                .context("cannot copy the cover")?;
+            built.files.push("cover.jpg".to_string());
+        }
+        Ok(built)
     } else {
         bail!("the set mixes audio CDs and data CDs")
     }

@@ -33,5 +33,10 @@ in
       wants = [ "transcribe-model-prepare.service" ];
       after = [ "transcribe-model-prepare.service" ];
     };
+    # The audio CD importer transcribes spoken credits with the same model.
+    systemd.services.mkvmaker-audio-import = lib.mkIf config.repo.mkvmaker.audio.enable {
+      wants = [ "transcribe-model-prepare.service" ];
+      after = [ "transcribe-model-prepare.service" ];
+    };
   };
 }

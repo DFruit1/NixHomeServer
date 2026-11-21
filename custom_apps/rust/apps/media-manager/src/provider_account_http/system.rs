@@ -34,6 +34,14 @@ pub fn provider_system_router(state: ProviderBrokerState) -> Router {
             "/system/v1/tmdb/tv-episodes",
             post(super::system_tmdb::tv_episodes),
         )
+        .route(
+            "/system/v1/audible/search",
+            post(super::system_audible::search),
+        )
+        .route(
+            "/system/v1/audible/cover",
+            post(super::system_audible::cover),
+        )
         .layer(DefaultBodyLimit::max(4 * 1024))
         .layer(middleware::from_fn(no_store_responses))
         .with_state(state);

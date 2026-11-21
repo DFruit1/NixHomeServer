@@ -115,5 +115,15 @@ owner's daily download quota. It also serves `POST /system/v1/tmdb/tv-episodes`
 `year`), which returns a series' TMDB seasons, specials included, with each
 episode's number, name, air date and runtime, using the named user's saved TMDB
 account. Layouts are public data and cached for a week. Errors are `no_account`
-(404), `not_found`, `ambiguous` (409, with candidates) and `provider_error`. With the list empty (the default) no socket
-exists.
+(404), `not_found`, `ambiguous` (409, with candidates) and `provider_error`.
+
+The socket also serves two keyless routes for the audio CD importer.
+`POST /system/v1/audible/search` (`title`, optional `author`) returns up to ten
+editions from Audible's public catalogue with their ASIN, authors, narrators,
+runtime, abridgement, series, description and cover address; answers are cached
+for a week and upstream requests are spaced a second apart. Audible does not
+document this endpoint, so every unexpected answer is `provider_error` and the
+importer retries later. `POST /system/v1/audible/cover` (`image`) fetches one
+JPEG of at most 2 MiB, and only from the catalogue's own image host.
+
+With the list empty (the default) no socket exists.

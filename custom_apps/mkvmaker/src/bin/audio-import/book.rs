@@ -13,10 +13,19 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Series {
+    pub name: String,
+    /// The book's position, as the provider writes it (`8`, `2.5`); may be empty.
+    pub sequence: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Proposal {
     pub author: String,
+    /// One or more narrators, separated by `, `.
     pub narrator: String,
     pub title: String,
     pub year: Option<i32>,
@@ -24,9 +33,34 @@ pub struct Proposal {
     pub release_id: String,
     pub publisher: String,
     pub disc_total: Option<u32>,
-    /// `musicbrainz-disc-id`, `ripper-answer` or `folder-name`; empty when
-    /// nothing has confirmed the proposal yet.
+    /// What made the identity certain: `musicbrainz-disc-id`,
+    /// `ripper-answer`, `folder-name`, or a pair of sources such as
+    /// `spoken-credits+audible-runtime`. Empty while nothing has.
     pub confirmed_by: String,
+    // The rest comes from a matching provider edition.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub subtitle: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub series: Option<Series>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub asin: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abridged: Option<bool>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cover_url: String,
+}
+
+/// Why a set could not be settled from the ripper's own evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoldKind {
+    /// Nothing certain names the book; identification may still find it.
+    Unidentified,
+    /// The book is certain but nothing says how many discs it has.
+    UnknownTotal,
+    /// The evidence contradicts itself; only a person can settle it.
+    Conflict,
 }
 
 #[derive(Debug, PartialEq)]
@@ -42,8 +76,10 @@ pub enum Decision {
         missing: Vec<u32>,
         message: String,
     },
-    /// A person has to look: moves to `_NeedsIdentification`.
+    /// A person has to look, unless identification can settle `kind`:
+    /// moves to `_NeedsIdentification`.
     Hold {
+        kind: HoldKind,
         proposal: Option<Proposal>,
         reason: String,
     },
@@ -210,7 +246,7 @@ fn proposal_from_discs(discs: &[Disc]) -> Option<Proposal> {
         release_id: first.release_id.clone(),
         publisher: first.publisher.clone(),
         disc_total: discs.iter().filter_map(|disc| disc.disc_total).max(),
-        confirmed_by: String::new(),
+        ..Proposal::default()
     })
 }
 
@@ -218,6 +254,7 @@ fn proposal_from_discs(discs: &[Disc]) -> Option<Proposal> {
 pub fn decide(folder: &str, discs: &[Disc], marker_total: Option<u32>) -> Decision {
     if discs.is_empty() {
         return Decision::Hold {
+            kind: HoldKind::Conflict,
             proposal: None,
             reason: "The folder holds no ISO.".to_string(),
         };
@@ -253,10 +290,12 @@ pub fn decide(folder: &str, discs: &[Disc], marker_total: Option<u32>) -> Decisi
                 .unwrap_or_default(),
             disc_total: Some(total),
             confirmed_by: "folder-name".to_string(),
+            ..Proposal::default()
         };
         let present = discs.len() as u32;
         if present > total {
             return Decision::Hold {
+                kind: HoldKind::Conflict,
                 proposal: Some(proposal),
                 reason: format!("The folder name says {total} discs but {present} are present."),
             };
@@ -278,10 +317,12 @@ pub fn decide(folder: &str, discs: &[Disc], marker_total: Option<u32>) -> Decisi
         return Decision::Publish { proposal, order };
     }
 
-    let hold = |reason: String| Decision::Hold {
+    let hold_as = |kind: HoldKind, reason: String| Decision::Hold {
+        kind,
         proposal: from_discs.clone(),
         reason,
     };
+    let hold = |reason: String| hold_as(HoldKind::Conflict, reason);
 
     let categories: BTreeSet<&str> = discs.iter().map(|disc| disc.category.as_str()).collect();
     if categories
@@ -293,7 +334,8 @@ pub fn decide(folder: &str, discs: &[Disc], marker_total: Option<u32>) -> Decisi
         };
     }
     if categories.contains("unidentified") {
-        return hold(
+        return hold_as(
+            HoldKind::Unidentified,
             "The disc was not identified: MusicBrainz has no exact match for it and nobody typed its author and title at the drive."
                 .to_string(),
         );
@@ -312,7 +354,10 @@ pub fn decide(folder: &str, discs: &[Disc], marker_total: Option<u32>) -> Decisi
         .iter()
         .any(|disc| disc.author.is_empty() || disc.title.is_empty())
     {
-        return hold("At least one disc has no author or title.".to_string());
+        return hold_as(
+            HoldKind::Unidentified,
+            "At least one disc has no author or title.".to_string(),
+        );
     }
     let books: BTreeSet<(String, String)> = discs
         .iter()
@@ -338,16 +383,32 @@ pub fn decide(folder: &str, discs: &[Disc], marker_total: Option<u32>) -> Decisi
         } else {
             &disc.lookup_status
         };
-        return hold(format!(
-            "{} is not an exact MusicBrainz Disc ID match (lookup: {status}) and nobody typed its author and title at the drive.",
-            disc.iso_name
-        ));
+        return hold_as(
+            HoldKind::Unidentified,
+            format!(
+                "{} is not an exact MusicBrainz Disc ID match (lookup: {status}) and nobody typed its author and title at the drive.",
+                disc.iso_name
+            ),
+        );
     }
+
+    let mut proposal = from_discs.clone().expect("discs have a title");
+    proposal.confirmed_by = if discs.iter().any(|disc| disc.hint_applied) {
+        "ripper-answer".to_string()
+    } else {
+        "musicbrainz-disc-id".to_string()
+    };
 
     let mut totals: BTreeSet<u32> = discs.iter().filter_map(|disc| disc.disc_total).collect();
     totals.extend(marker_total);
     let total = match totals.len() {
-        0 => return hold("The number of discs in this book is unknown.".to_string()),
+        0 => {
+            return Decision::Hold {
+                kind: HoldKind::UnknownTotal,
+                proposal: Some(proposal),
+                reason: "The number of discs in this book is unknown.".to_string(),
+            };
+        }
         1 => *totals.iter().next().expect("one total"),
         _ => {
             return hold(format!(
@@ -362,13 +423,7 @@ pub fn decide(folder: &str, discs: &[Disc], marker_total: Option<u32>) -> Decisi
         ));
     };
 
-    let mut proposal = from_discs.clone().expect("discs have a title");
     proposal.disc_total = Some(total);
-    proposal.confirmed_by = if discs.iter().any(|disc| disc.hint_applied) {
-        "ripper-answer".to_string()
-    } else {
-        "musicbrainz-disc-id".to_string()
-    };
 
     let missing = missing_numbers(discs, total);
     if !missing.is_empty() {

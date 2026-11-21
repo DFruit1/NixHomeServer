@@ -53,6 +53,8 @@ pub(super) fn default_bases() -> BTreeMap<String, String> {
         ("comic-vine", "https://comicvine.gamespot.com/api/"),
         ("isbndb", "https://api2.isbndb.com/"),
         ("audnexus", "https://api.audnex.us/"),
+        // Searched only by the system socket's audio CD lookups.
+        ("audible", "https://api.audible.com/1.0/"),
         ("podcast-index", "https://api.podcastindex.org/api/1.0/"),
         ("subdl", "https://api.subdl.com/api/v2/"),
         ("thediscdb", "https://thediscdb.com/graphql"),

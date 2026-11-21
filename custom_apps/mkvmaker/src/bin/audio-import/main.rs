@@ -15,9 +15,22 @@ mod book;
 mod build;
 mod disc;
 mod fsops;
+mod identify;
+// Shared with the DVD identifier: the Bonsai gate client with its busy
+// handling, the Parakeet excerpt transcriber with the provider broker's
+// Unix-socket transport, and the name comparison helpers.
+#[allow(dead_code)]
+#[path = "../disc-identify/bonsai.rs"]
+mod bonsai;
+#[allow(dead_code)]
+#[path = "../disc-identify/content.rs"]
+mod content;
+#[allow(dead_code)]
+#[path = "../disc-identify/text.rs"]
+mod text;
 
 use anyhow::{bail, Context, Result};
-use book::{confirming_name, decide, parse_folder_name, Decision, Proposal};
+use book::{confirming_name, decide, parse_folder_name, Decision, HoldKind, Proposal};
 use build::{Built, Stopped, Tools};
 use clap::Parser;
 use disc::Disc;
@@ -25,7 +38,9 @@ use fsops::{
     move_file, natural_key, normalized, rename_noreplace, safe_component, sha256_file, signature,
     unique_destination, write_json_atomic, Signature,
 };
+use identify::{Identifier, Resolution, Source, Unavailable, Unsettled};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -45,6 +60,11 @@ const DUPLICATE_DIR: &str = "_Duplicate";
 const STAGING_DIR: &str = ".audiocd-import";
 const EVIDENCE_FILE: &str = "identify.json";
 const MARKER_FILE: &str = ".audiobook.json";
+/// Hours after which a set held for something temporary is tried again.
+const RETRY_HOURS: [u64; 3] = [1, 6, 24];
+/// Quarter-hourly tries for provider details before a certain book is
+/// published without them.
+const ENRICH_ATTEMPTS: u32 = 4;
 const HOW_TO_CONFIRM: &str = "Rename this folder to the confirmWith name to import it. Correct the author, title, year or number of discs in the name first if they are wrong.";
 
 #[derive(Parser)]
@@ -85,6 +105,22 @@ struct Args {
     /// Base delay between retries, multiplied by the attempt number.
     #[arg(long, default_value_t = 900)]
     retry_seconds: u64,
+    /// Provider broker system socket (Audible catalogue lookups and covers).
+    /// Without it books are published from the ripper's evidence alone.
+    #[arg(long)]
+    provider_socket: Option<PathBuf>,
+    /// OpenAI-compatible Bonsai endpoint that reads the spoken credits.
+    #[arg(long)]
+    bonsai_url: Option<String>,
+    #[arg(long, default_value = "bonsai-ternary-27b")]
+    bonsai_model: String,
+    /// parakeet-cli, which transcribes the opening and closing announcements.
+    #[arg(long, requires = "parakeet_model")]
+    parakeet: Option<PathBuf>,
+    #[arg(long, requires = "parakeet")]
+    parakeet_model: Option<PathBuf>,
+    #[arg(long, default_value_t = 4)]
+    identify_threads: u32,
 }
 
 struct Inbox {
@@ -171,6 +207,56 @@ struct State {
     /// Held folders that received another disc and must be looked at again.
     #[serde(default)]
     reevaluate: BTreeSet<String>,
+    /// Held folders waiting for something temporary, by folder path.
+    #[serde(default)]
+    retries: BTreeMap<String, RetryRecord>,
+    /// Certain books waiting for provider details, by set key.
+    #[serde(default)]
+    deferred: BTreeMap<String, Deferred>,
+    #[serde(default)]
+    identify: identify::Cache,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct RetryRecord {
+    /// Retries scheduled so far.
+    attempt: usize,
+    next_attempt: u64,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct Deferred {
+    count: u32,
+    next_attempt: u64,
+    reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetryView {
+    attempt: usize,
+    of: usize,
+    next_attempt_at: String,
+}
+
+/// Why a set is held and what identification found.
+struct Held {
+    proposal: Option<Proposal>,
+    reason: String,
+    identification: Value,
+    /// Held only because something was temporarily unavailable.
+    transient: bool,
+}
+
+impl Held {
+    fn plain(proposal: Option<Proposal>, reason: String) -> Self {
+        Self {
+            proposal,
+            reason,
+            identification: Value::Null,
+            transient: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -198,6 +284,13 @@ struct Evidence {
     confirm_with: String,
     how_to_confirm: String,
     discs: Vec<DiscSummary>,
+    /// Transcript excerpts, the spoken credits and the catalogue editions
+    /// compared, when identification ran.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    identification: Value,
+    /// Present while the set is tried again automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry: Option<RetryView>,
 }
 
 #[derive(Clone, Serialize)]
@@ -456,6 +549,7 @@ fn library_lookup(library: &Path, proposal: &Proposal) -> (PathBuf, Option<PathB
 struct Worker {
     args: Args,
     tools: Tools,
+    identifier: Identifier,
     state: State,
     state_path: PathBuf,
     stop: Arc<AtomicBool>,
@@ -577,6 +671,26 @@ impl Worker {
         self.state
             .reevaluate
             .retain(|path| Path::new(path).exists());
+        self.state
+            .retries
+            .retain(|path, _| Path::new(path).exists());
+        self.state
+            .deferred
+            .retain(|path, _| Path::new(path).exists());
+        let known: BTreeSet<&str> = self
+            .state
+            .discs
+            .values()
+            .map(|disc| disc.sha256.as_str())
+            .collect();
+        self.state.identify.transcripts.retain(|key, _| {
+            key.split(':')
+                .next()
+                .is_some_and(|sha256| known.contains(sha256))
+        });
+        if self.state.identify.credits.len() > 500 {
+            self.state.identify.credits.clear();
+        }
     }
 
     fn clean_stale_staging(&self, inboxes: &[Inbox]) {
@@ -692,9 +806,14 @@ impl Worker {
         inbox: &Inbox,
         set: &SetSource,
         discs: &[Loaded],
-        proposal: Option<Proposal>,
-        reason: String,
+        held: Held,
     ) -> Result<bool> {
+        let Held {
+            proposal,
+            mut reason,
+            identification,
+            transient,
+        } = held;
         let (directory, moved) = if set.held {
             (set.dir.clone(), false)
         } else {
@@ -703,6 +822,47 @@ impl Worker {
             self.move_set(set, &directory)?;
             (directory, true)
         };
+        let directory_key = directory.to_string_lossy().into_owned();
+        let mut retry = None;
+        if transient {
+            let used = self
+                .state
+                .retries
+                .get(&directory_key)
+                .map_or(0, |record| record.attempt);
+            if let Some(hours) = RETRY_HOURS.get(used) {
+                let next_attempt = now() + hours * 3600;
+                self.state.retries.insert(
+                    directory_key.clone(),
+                    RetryRecord {
+                        attempt: used + 1,
+                        next_attempt,
+                    },
+                );
+                retry = Some(RetryView {
+                    attempt: used + 1,
+                    of: RETRY_HOURS.len(),
+                    next_attempt_at: chrono::DateTime::from_timestamp(next_attempt as i64, 0)
+                        .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                        .unwrap_or_default(),
+                });
+                reason.push_str(&format!(" It is tried again in {hours} h."));
+            } else {
+                // Keep the record so the count is not started again.
+                self.state.retries.insert(
+                    directory_key.clone(),
+                    RetryRecord {
+                        attempt: used,
+                        next_attempt: u64::MAX,
+                    },
+                );
+                reason.push_str(
+                    " Three later tries did not help; rename the folder to confirm it by hand.",
+                );
+            }
+        } else {
+            self.state.retries.remove(&directory_key);
+        }
         let confirm_with = confirming_name(proposal.as_ref(), discs.len());
         let mut evidence = Evidence {
             schema_version: 1,
@@ -719,6 +879,8 @@ impl Worker {
             confirm_with: confirm_with.clone(),
             how_to_confirm: HOW_TO_CONFIRM.to_string(),
             discs: disc_summaries(discs),
+            identification,
+            retry,
         };
         let unchanged = read_evidence(&directory).is_some_and(|old| {
             evidence.updated_at.clone_from(&old.updated_at);
@@ -729,13 +891,11 @@ impl Worker {
             write_json_atomic(&directory.join(EVIDENCE_FILE), &evidence)?;
             println!("Holding {} for a person: {reason}", directory.display());
         }
-        self.state
-            .reevaluate
-            .remove(&directory.to_string_lossy().into_owned());
+        self.state.reevaluate.remove(&directory_key);
         self.statuses.push(SetStatus {
             inbox: inbox.label.clone(),
             folder: file_name(&directory),
-            path: directory.to_string_lossy().into_owned(),
+            path: directory_key,
             state: "held",
             message: reason,
             missing_discs: Vec::new(),
@@ -782,6 +942,7 @@ impl Worker {
         discs: &[Loaded],
         proposal: Proposal,
         order: &[usize],
+        identification: Value,
     ) -> Result<bool> {
         let (author_dir, existing) = library_lookup(&inbox.library, &proposal);
         if let Some(existing) = existing {
@@ -791,14 +952,29 @@ impl Worker {
                 proposal.author,
                 existing.display()
             );
-            return self.hold(inbox, set, discs, Some(proposal), reason);
+            let held = Held {
+                proposal: Some(proposal),
+                reason,
+                identification,
+                transient: false,
+            };
+            return self.hold(inbox, set, discs, held);
         }
         let mut folder = safe_component(&proposal.title, "Audiobook");
         if let Some(year) = proposal.year {
             folder.push_str(&format!(" ({year})"));
         }
-        let target = author_dir.join(&folder);
         let book = format!("{} - {folder}", file_name(&author_dir));
+        // Audiobookshelf's own layout for a series: Author/Series/Book N - Title.
+        let mut parent = author_dir.clone();
+        if let Some(series) = &proposal.series {
+            parent = author_dir.join(safe_component(&series.name, "Series"));
+            let sequence = safe_component(&series.sequence, "");
+            if !sequence.is_empty() {
+                folder = format!("Book {sequence} - {folder}");
+            }
+        }
+        let target = parent.join(&folder);
 
         let iso_bytes: u64 = set
             .isos
@@ -823,7 +999,13 @@ impl Worker {
         let _ = fs::write(staging_root.join(".ignore"), "");
         self.counter += 1;
         let staging = staging_root.join(format!("{}-{}", std::process::id(), self.counter));
-        fs::create_dir_all(&staging)?;
+        fs::create_dir_all(staging.join("work"))?;
+        if !proposal.cover_url.is_empty() {
+            self.identifier.fetch_cover(
+                &proposal.cover_url,
+                &staging.join("work").join(build::PROVIDER_COVER),
+            );
+        }
         let ordered: Vec<(PathBuf, Disc)> = order
             .iter()
             .map(|index| (discs[*index].path.clone(), discs[*index].disc.clone()))
@@ -865,8 +1047,8 @@ impl Worker {
             }
         };
 
-        let published = fs::create_dir_all(&author_dir)
-            .with_context(|| format!("cannot create {}", author_dir.display()))
+        let published = fs::create_dir_all(&parent)
+            .with_context(|| format!("cannot create {}", parent.display()))
             .and_then(|()| {
                 rename_noreplace(&staging.join("book"), &target)
                     .with_context(|| format!("cannot publish {}", target.display()))
@@ -889,6 +1071,7 @@ impl Worker {
                 "book": book,
                 "published": target.to_string_lossy(),
                 "proposal": proposal,
+                "identification": identification,
                 "result": built,
                 "discs": order.iter().map(|index| serde_json::json!({
                     "iso": discs[*index].disc.iso_name,
@@ -923,15 +1106,120 @@ impl Worker {
         } else {
             marker_total(&set.dir)
         };
+        let key = set.key();
         match decide(&set.name, &plain, total) {
-            Decision::Publish { proposal, order } => {
-                self.publish(inbox, set, &discs, proposal, &order)
+            Decision::Publish {
+                mut proposal,
+                order,
+            } => {
+                // The identity is certain; a matching edition only adds to it.
+                let runtime: Option<f64> =
+                    order.iter().map(|index| discs[*index].disc.seconds).sum();
+                let details = match self.identifier.enrich(&mut proposal, runtime) {
+                    Ok(details) => details,
+                    Err(Unavailable(reason)) => {
+                        let record = self.state.deferred.entry(key.clone()).or_default();
+                        record.count += 1;
+                        if record.count <= ENRICH_ATTEMPTS {
+                            record.next_attempt = now() + 900;
+                            record.reason = format!(
+                                "{reason} Trying again in 15 minutes; after an hour the book is published without provider details."
+                            );
+                            let message = record.reason.clone();
+                            self.note(inbox, set, "waiting", message);
+                            return Ok(false);
+                        }
+                        json!({ "provider": "audible", "matchedBy": "none", "unavailable": reason })
+                    }
+                };
+                self.state.deferred.remove(&key);
+                self.publish(inbox, set, &discs, proposal, &order, details)
             }
-            Decision::Hold { proposal, reason } => self.hold(inbox, set, &discs, proposal, reason),
+            Decision::Hold {
+                kind,
+                proposal,
+                reason,
+            } if kind != HoldKind::Conflict && self.identifier.can_identify() => {
+                let scratch = self.args.state_dir.join("scratch");
+                let _ = fs::remove_dir_all(&scratch);
+                fs::create_dir_all(&scratch)
+                    .with_context(|| format!("cannot create {}", scratch.display()))?;
+                self.write_status(
+                    Some(Active {
+                        inbox: &inbox.label,
+                        folder: &set.name,
+                        step: "Identifying",
+                        percent: 0.0,
+                    }),
+                    &self.shown,
+                );
+                let sources: Vec<Source> = discs
+                    .iter()
+                    .map(|loaded| Source {
+                        path: &loaded.path,
+                        disc: &loaded.disc,
+                        sha256: &loaded.sha256,
+                    })
+                    .collect();
+                let resolution = self.identifier.resolve(
+                    &self.tools,
+                    Unsettled {
+                        kind,
+                        proposal,
+                        reason,
+                    },
+                    &sources,
+                    &mut self.state.identify,
+                    &scratch,
+                );
+                let _ = fs::remove_dir_all(&scratch);
+                match resolution {
+                    Resolution::Publish {
+                        proposal,
+                        order,
+                        evidence,
+                    } => self.publish(inbox, set, &discs, proposal, &order, evidence),
+                    Resolution::Hold {
+                        proposal,
+                        reason,
+                        evidence,
+                    } => self.hold(
+                        inbox,
+                        set,
+                        &discs,
+                        Held {
+                            proposal,
+                            reason,
+                            identification: evidence,
+                            transient: false,
+                        },
+                    ),
+                    Resolution::Retry {
+                        proposal,
+                        reason,
+                        evidence,
+                    } => self.hold(
+                        inbox,
+                        set,
+                        &discs,
+                        Held {
+                            proposal,
+                            reason,
+                            identification: evidence,
+                            transient: true,
+                        },
+                    ),
+                }
+            }
+            Decision::Hold {
+                proposal, reason, ..
+            } => self.hold(inbox, set, &discs, Held::plain(proposal, reason)),
             Decision::Wait {
                 proposal, message, ..
-            } if set.held => self.hold(inbox, set, &discs, Some(proposal), message),
-            Decision::Skip { message } if set.held => self.hold(inbox, set, &discs, None, message),
+            } if set.held => self.hold(inbox, set, &discs, Held::plain(Some(proposal), message)),
+            Decision::Skip { message } if set.held => {
+                self.hold(inbox, set, &discs, Held::plain(None, message))
+            }
             Decision::Wait {
                 proposal,
                 missing,
@@ -1029,7 +1317,19 @@ impl Worker {
                 return Ok(false);
             }
         }
+        if let Some(deferred) = self.state.deferred.get(&key).cloned()
+            && deferred.next_attempt > now()
+        {
+            self.note(inbox, &set, "waiting", deferred.reason);
+            return Ok(false);
+        }
+        let retry_due = self
+            .state
+            .retries
+            .get(&key)
+            .is_some_and(|record| record.next_attempt <= now());
         if set.held
+            && !retry_due
             && !self.state.reevaluate.contains(&key)
             && !self.state.unarchived.contains_key(&key)
             && !parse_folder_name(&set.name).is_some_and(|claim| claim.discs.is_some())
@@ -1119,9 +1419,23 @@ fn run() -> Result<()> {
         ffprobe: args.ffprobe.clone(),
         sevenzip: args.sevenzip.clone(),
     };
+    let identifier = Identifier {
+        bonsai: args
+            .bonsai_url
+            .as_deref()
+            .map(|url| {
+                bonsai::Bonsai::new(url, &args.bonsai_model, std::time::Duration::from_secs(300))
+            })
+            .transpose()?,
+        parakeet: args.parakeet.clone().zip(args.parakeet_model.clone()),
+        threads: args.identify_threads,
+        socket: args.provider_socket.clone(),
+    };
+    let _ = fs::remove_dir_all(args.state_dir.join("scratch"));
     let mut worker = Worker {
         args,
         tools,
+        identifier,
         state,
         state_path,
         stop,
