@@ -99,14 +99,17 @@ nix eval --json --file secrets/manifest.nix \
   | jq -r '.externalSecrets | to_entries[] | select(.value.required == false) | .key' \
   | sort -u >"$optional_manifest_names"
 
-# This explicitly named desktop consumer uses the standard encryption manifest,
+# These explicitly named desktop consumers use the standard encryption manifest,
 # but must never materialize a new credential in the NixOS runtime.
+desktop_only_secrets=(langfuseMcpClientEnv forgejoPushToken)
 nixos_manifest_names="${tmpdir}/nixos-manifest-names.txt"
-sed '/^langfuseMcpClientEnv$/d' "$manifest_names" >"$nixos_manifest_names"
-if grep -Fxq langfuseMcpClientEnv "$definitions_file"; then
-  echo "❌ Desktop Langfuse credential must not be materialized by agenix."
-  exit 1
-fi
+grep -Fxv -f <(printf '%s\n' "${desktop_only_secrets[@]}") "$manifest_names" >"$nixos_manifest_names"
+for desktop_secret in "${desktop_only_secrets[@]}"; do
+  if grep -Fxq "$desktop_secret" "$definitions_file"; then
+    echo "❌ Desktop credential $desktop_secret must not be materialized by agenix."
+    exit 1
+  fi
+done
 missing_manifest_definitions="$(comm -23 "$nixos_manifest_names" "$definitions_file" || true)"
 if [[ -n "$missing_manifest_definitions" ]]; then
   echo "❌ Server manifest secrets missing from agenix declarations:"

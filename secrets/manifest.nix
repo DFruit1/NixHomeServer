@@ -233,5 +233,13 @@
       required = false;
       consumedBy = "when Forgejo is enabled and GitHub mirrors are declared";
     };
+    forgejoPushToken = {
+      description = "Forgejo access token for desktop git pushes and API calls to git.<domain>.";
+      format = "plain Forgejo token value";
+      settingPath = "secrets/unencrypted/forgejoPushToken";
+      validator = "nonempty";
+      required = false;
+      consumedBy = "desktop git credential helper (decrypted in memory by the server identity)";
+    };
   };
 }

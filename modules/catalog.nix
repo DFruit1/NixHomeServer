@@ -44,7 +44,7 @@ rec {
     files = app ./files "Files" "storage" [ ] [ ];
     filesync = app ./filesync "File Sync API" "storage" [ ] [ "filesync-api" ];
     fdroid = app ./fdroid "F-Droid Repository" "operations" [ ] [ ];
-    forgejo = app ./forgejo "Git" "operations" [ "forgejoClientSecret" ] [ ];
+    forgejo = app ./forgejo "Git" "operations" [ "forgejoClientSecret" "forgejoPushToken" ] [ ];
     freshrss = app ./freshrss "FreshRSS" "knowledge" [ ] [ ];
     groundwater-logger = app ./groundwater-logger "Groundwater Platform" "operations" [
       "groundwaterAppMqttPassword"
