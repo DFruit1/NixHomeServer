@@ -1533,6 +1533,113 @@ only on the server through `mkvmaker-import.timer` and
 rebuild it against the converter's existing `--worker-id`/`--lease-seconds`
 queue protocol rather than restoring this removed wiring.
 
+### Automatic audio CD import
+
+The desktop ripper (version 8 or later) archives each audio CD as an ISO of
+lossless FLAC tracks, and each MP3 or M4B data CD as a raw ISO. It sends them
+to `_Shared/_ISO/_AudioCDs`, one folder per book with one ISO per CD, each with
+its `.iso.sha256` manifest and `.audio.json` or `.disc.json` sidecar.
+`audio-import` (part of the mkvmaker package) checks that inbox every minute
+through `mkvmaker-audio-import.timer` and publishes each complete book into
+Audiobookshelf. The importer exists only while both the DVD converter and
+Audiobookshelf are enabled.
+
+The inbox decides the library:
+
+| Inbox | Library |
+| --- | --- |
+| `_Shared/_ISO/_AudioCDs` | Shared Audiobooks (`_Shared/_Audiobooks`) |
+| a user's own `_ISO/_AudioCDs` | that user's `_Audiobooks` |
+
+A book folder may sit up to three levels below the inbox (the ripper sends
+`Audiobooks/<book>/`). An ISO dropped straight into the inbox is treated as a
+one-disc book. Folders are read once their files have been unchanged for a
+minute.
+
+#### When a book is published
+
+A book is published without a person only when all of these hold:
+
+- Every disc is an exact MusicBrainz Disc ID match, or carries the author and
+  title typed at the drive. Typed answers are kept as written.
+- The discs name the same author and title and agree on the number of discs.
+- Every disc of the set is present, numbered once each.
+- The library has no folder for that author and title yet.
+
+An incomplete set waits in the inbox; nothing is published until the last disc
+arrives. Music discs are not imported yet and stay in the inbox untouched.
+Anything else is held (below).
+
+The published folder is `Author/Title (Year)`:
+
+- **Audio CDs** become one AAC M4B with embedded chapters, tags and the cover
+  when the ISO has one: 64 kbit/s mono when the two channels are identical (as
+  on most spoken-word CDs), otherwise 96 kbit/s stereo. The finished file's
+  duration and chapter count are checked against the discs before it is
+  published.
+- **M4B or M4A data CDs** are joined into one M4B without re-encoding.
+- **MP3 data CDs** are copied unchanged, in `Disc NN` folders for a multi-disc
+  book.
+
+There is one chapter per CD track for now. A real MusicBrainz track title is
+kept; a placeholder becomes `Disc 2, Track 5`. `metadata.json` in the folder
+carries the title, author, narrator (from a MusicBrainz credit such as
+`Author read by Narrator`), year, publisher and chapters. Both libraries give
+that file the highest metadata precedence, and Audiobookshelf's own library
+watcher picks the folder up, so no scan is requested.
+
+The book is built in `.audiocd-import` inside the library (ignored by
+Audiobookshelf) and appears with one rename. Its ISOs and sidecars then move to
+`_AudioCDs/_Processed/<book>/` beside an `import.json` recording what was
+published, and are kept there so a book can be rebuilt later.
+
+#### Held books
+
+A set that is not certain moves to `_AudioCDs/_NeedsIdentification/<folder>/`
+with an `identify.json` giving the reason, the proposal, each disc's lookup
+result and a `confirmWith` name. To confirm, rename the folder to that name,
+correcting it first where it is wrong:
+
+```text
+Terry Pratchett - Guards! Guards! (1989) [6 discs]
+```
+
+The year is optional. The `[N discs]` tag states that the set is complete; a
+folder named that way in the inbox is trusted in the same way. A name whose
+disc count differs from the ISOs present stays held, with the reason updated.
+Discs without a disc number are ordered by file name. Later discs of a held
+book that arrive in the inbox join its held folder instead of being held
+separately.
+
+A book already in the library is never replaced or duplicated: the new set is
+held, naming the existing folder. Move that folder away, then rename the held
+one to its `confirmWith` name.
+
+#### Duplicates and failures
+
+An ISO whose SHA-256 matches a disc already imported is preserved in
+`_AudioCDs/_Duplicate` with a `.duplicate.json` naming the earlier import. An
+ISO that does not match the checksum the ripper recorded, or any other error,
+is retried 15 and 30 minutes later; after the third failure an inbox set is
+preserved in `_AudioCDs/_Failed/<folder>/` beside an `error.txt`. Move the
+folder back into the inbox to try again. A held set that keeps failing stays
+held; rename it to try again. If the ISOs cannot be archived after a book was
+published, archiving alone is retried.
+
+Useful checks and controls:
+
+```bash
+systemctl status mkvmaker-audio-import.timer mkvmaker-audio-import.service
+journalctl -u mkvmaker-audio-import.service
+sudo systemctl start mkvmaker-audio-import.service
+jq . /run/mkvmaker-audio/status.json
+```
+
+`status.json` lists every set that is settling, waiting for discs, held,
+retrying or skipped, and the book being built. The queue state is
+`/var/lib/mkvmaker/audio/audio-import.json`; it is disposable, except that
+deleting it forgets which discs were already imported.
+
 ### Media Manager
 
 The [Images page](media-manager-images.md) connects automatically to each user's

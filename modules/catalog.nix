@@ -101,6 +101,8 @@ rec {
       "mkvmaker-storage-layout-v1"
       "mkvmaker-import"
       "mkvmaker-import-worker"
+      "mkvmaker-audio-storage-layout-v1"
+      "mkvmaker-audio-import"
     ];
     ntfy = app ./ntfy "ntfy" "automation" [ ] [ ];
     offline-music = app ./offline-music "Offline Music" "media" [ ] [ ];
@@ -193,6 +195,7 @@ rec {
     { module = ./Integrations/publish_youtube_downloader_to_fdroid.nix; allApps = [ "fdroid" "youtube-downloader" ]; anyApps = [ ]; }
     { module = ./Integrations/identify_dvd_episodes_with_bonsai.nix; allApps = [ "mkvmaker" "bonsai" ]; anyApps = [ ]; }
     { module = ./Integrations/identify_dvd_episodes_with_transcribe.nix; allApps = [ "mkvmaker" "transcribe" ]; anyApps = [ ]; }
+    { module = ./Integrations/import_audio_cds_into_audiobookshelf.nix; allApps = [ "mkvmaker" "audiobookshelf" ]; anyApps = [ ]; }
     { module = ./Integrations/clean_transcripts_with_bonsai.nix; allApps = [ "transcribe" "bonsai" ]; anyApps = [ ]; }
     { module = ./Integrations/reserve_qwen_for_background_jobs.nix; allApps = [ "bonsai" "qwen-27b" ]; anyApps = [ ]; }
     { module = ./Integrations/serve_ai_tools_through_qwen.nix; allApps = [ "ai-tools" "qwen-27b" ]; anyApps = [ ]; }

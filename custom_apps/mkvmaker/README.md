@@ -179,6 +179,22 @@ subtitle or TMDB requests (a recorded subtitle counts as a free cache hit;
 TVmaze lists come from the week-long `--cache-dir`). Titles run one at a time
 because the Bonsai gate is shared.
 
+## Audio CD import (server)
+
+The package also ships `audio-import`, which publishes the desktop ripper's
+audio CD and audiobook data-CD ISOs into Audiobookshelf:
+
+```sh
+audio-import --inbox /srv/iso/_AudioCDs=/srv/audiobooks --state-dir /var/lib/audio-import
+```
+
+Each run handles every book folder that is ready and exits. A book is
+published only when its whole set of discs is present and each disc is an exact
+MusicBrainz Disc ID match or carries the author and title typed at the drive;
+anything else waits in the inbox or is held for a person. It needs `ffmpeg`,
+`ffprobe` and `7zz` (`--ffmpeg`, `--ffprobe`, `--sevenzip`). See
+[the operations runbook](../../documentation/operations.md#automatic-audio-cd-import).
+
 ## Reliability and recovery
 
 - Every ISO is scanned, even in main-feature mode, so title selection and
