@@ -1205,6 +1205,11 @@ pub(super) async fn analyze(
             generation,
         )
         .map_err(|_| index_error(&id))?;
+    // An explicit request retries a photo the sweep gave up on, for example
+    // after its original or Immich preview was repaired.
+    index
+        .clear_unavailable(&asset_id)
+        .map_err(|_| index_error(&id))?;
     let analysis = analyze_asset(&state, &account, &index, &asset_id, &id, false).await?;
     Ok(Json(
         json!({ "assetId": asset_id, "analysis": analysis, "requestId": id }),
@@ -1242,6 +1247,9 @@ pub(super) async fn retag(
             &asset.file_created_at,
             generation,
         )
+        .map_err(|_| index_error(&id))?;
+    index
+        .clear_unavailable(&asset_id)
         .map_err(|_| index_error(&id))?;
     index
         .mark_for_retagging(&asset_id)

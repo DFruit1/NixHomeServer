@@ -3,6 +3,10 @@ use super::*;
 // One page per account per round prevents a large library starving other users.
 // Checkpoints advance only after the page is processed. Completed analyses are
 // reused after a restart; failed photos retry on the next half-hour sweep.
+// Photos that fail the same way three times cannot be analyzed by retrying
+// (typically Immich has no preview for a damaged original), so they are
+// reported once and left out of later sweeps.
+const MAX_ANALYSIS_ATTEMPTS: i64 = 3;
 pub(in crate::provider_account_http) async fn run_indexer(state: ProviderBrokerState) {
     let Some(runtime) = state.images.clone() else {
         return;
@@ -113,11 +117,12 @@ async fn process_page(
                 json!({"service":"media-manager-provider-broker","event":"decision_assessment_retry","requestId":id})
             );
         }
-        if (index.tagged(&asset.id).map_err(|_| index_error(id))?
-            && index
-                .analysis(&asset.id)
-                .map_err(|_| index_error(id))?
-                .is_some())
+        if index.unavailable(&asset.id).map_err(|_| index_error(id))?
+            || (index.tagged(&asset.id).map_err(|_| index_error(id))?
+                && index
+                    .analysis(&asset.id)
+                    .map_err(|_| index_error(id))?
+                    .is_some())
             || index
                 .retry_at(&asset.id, None)
                 .map_err(|_| index_error(id))?
@@ -137,11 +142,24 @@ async fn process_page(
             {
                 return Err(err)
             }
-            Err(_) => {
-                index
-                    .retry_at(&asset.id, Some(now + 1800))
+            Err(err) => {
+                let attempts = index
+                    .record_failure(&asset.id)
                     .map_err(|_| index_error(id))?;
-                failed = true;
+                if attempts >= MAX_ANALYSIS_ATTEMPTS {
+                    index
+                        .mark_unavailable(&asset.id, err.code())
+                        .map_err(|_| index_error(id))?;
+                    eprintln!(
+                        "{}",
+                        json!({"service":"media-manager-provider-broker","event":"image_analysis_unavailable","requestId":id})
+                    );
+                } else {
+                    index
+                        .retry_at(&asset.id, Some(now + 1800))
+                        .map_err(|_| index_error(id))?;
+                    failed = true;
+                }
             }
         }
         // Bound background pressure; the shared gate also serializes interactive

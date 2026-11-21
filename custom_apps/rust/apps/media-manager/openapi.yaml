@@ -2464,11 +2464,12 @@ components:
         analysis: { anyOf: [{ $ref: "#/components/schemas/EyeAnalysis" }, { type: "null" }] }
     ImmichIndexStatus:
       type: object
-      required: [discovered, analyzed, failed, scanning, error]
+      required: [discovered, analyzed, failed, unavailable, scanning, error]
       properties:
         discovered: { type: integer, minimum: 0 }
         analyzed: { type: integer, minimum: 0 }
         failed: { type: integer, minimum: 0 }
+        unavailable: { type: integer, minimum: 0, description: "Photos that failed analysis repeatedly, typically because Photos has no preview for a damaged original. They are not retried automatically; Analyze again clears the refusal." }
         scanning: { type: boolean }
         error: { type: [string, "null"] }
     ImmichIndexedPage:

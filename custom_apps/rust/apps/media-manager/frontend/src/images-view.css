@@ -26,6 +26,10 @@
 .images-page .message {
   margin: 0;
 }
+.images-page .photo-analysis-unavailable {
+  background: var(--paper-recess);
+  color: var(--ink-soft);
+}
 
 /* Shared field style (brief: one input style, labels above controls). */
 .images-search :is(input, select),

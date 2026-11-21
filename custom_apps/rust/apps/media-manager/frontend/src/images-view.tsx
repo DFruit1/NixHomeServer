@@ -1334,6 +1334,17 @@ export const ImagesView = component$<{
                 </button>
               </div>
             </form>
+            {state.index && state.index.unavailable > 0 && (
+              <div class="message photo-analysis-unavailable" role="status">
+                <span>
+                  {state.index.unavailable.toLocaleString()} photo
+                  {state.index.unavailable === 1 ? "" : "s"} couldn't be
+                  analysed after repeated attempts. Photos may be unable to
+                  render them, for example after a damaged original. Replace or
+                  repair them, then choose Analyze again on each photo.
+                </span>
+              </div>
+            )}
             {state.index?.error && (
               <div class="message error" role="alert">
                 <span>Photo analysis needs attention: {state.index.error}</span>

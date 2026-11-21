@@ -36,7 +36,8 @@ pub(crate) fn initialize(db: &Connection) -> rusqlite::Result<()> {
            filename TEXT NOT NULL, captured_at TEXT NOT NULL,
            analysis TEXT, aesthetic REAL, keeper REAL, cover REAL,
            seen INTEGER NOT NULL, retry_at INTEGER NOT NULL DEFAULT 0,
-           tagged INTEGER NOT NULL DEFAULT 0,
+           tagged INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0,
+           unavailable TEXT,
            PRIMARY KEY(scope, asset_id)
          );
          CREATE INDEX IF NOT EXISTS image_assets_date ON image_assets(scope, captured_at, asset_id);
@@ -58,20 +59,30 @@ pub(crate) fn initialize(db: &Connection) -> rusqlite::Result<()> {
            error TEXT
          );",
     )?;
-    let has_tagged = db
+    let columns = db
         .prepare("PRAGMA table_info(image_assets)")?
         .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<rusqlite::Result<Vec<_>>>()?
-        .iter()
-        .any(|name| name == "tagged");
-    if !has_tagged {
-        let tx = db.unchecked_transaction()?;
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let has = |name: &str| columns.iter().any(|column| column == name);
+    let tx = db.unchecked_transaction()?;
+    if !has("tagged") {
         tx.execute_batch(
             "ALTER TABLE image_assets ADD COLUMN tagged INTEGER NOT NULL DEFAULT 0;
             UPDATE image_assets SET tagged=1 WHERE analysis IS NOT NULL;",
         )?;
-        tx.commit()?;
     }
+    // A photo whose preview cannot be produced fails the same way every sweep.
+    // Count the attempts so the indexer can report it once instead of retrying
+    // a damaged original forever.
+    if !has("attempts") {
+        tx.execute_batch(
+            "ALTER TABLE image_assets ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !has("unavailable") {
+        tx.execute_batch("ALTER TABLE image_assets ADD COLUMN unavailable TEXT;")?;
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -219,7 +230,7 @@ impl Index<'_> {
     pub fn save(&self, id: &str, analysis: &Analysis) -> rusqlite::Result<()> {
         let mut db = self.store.index_connection()?;
         let tx = db.transaction()?;
-        tx.execute("UPDATE image_assets SET analysis=?3,aesthetic=?4,keeper=?5,cover=?6,retry_at=0,tagged=1 WHERE scope=?1 AND asset_id=?2",
+        tx.execute("UPDATE image_assets SET analysis=?3,aesthetic=?4,keeper=?5,cover=?6,retry_at=0,attempts=0,unavailable=NULL,tagged=1 WHERE scope=?1 AND asset_id=?2",
             params![self.scope,id,serde_json::to_string(analysis).expect("validated analysis"),analysis.scores.aesthetic,analysis.scores.keeper,analysis.scores.cover])?;
         tx.execute(
             "DELETE FROM image_tags WHERE scope=?1 AND asset_id=?2",
@@ -328,6 +339,52 @@ impl Index<'_> {
             params![self.scope, id],
             |r| r.get(0),
         )
+    }
+    /// Photos whose analysis failed repeatedly stay out of the sweep. Their
+    /// input cannot become analyzable until the original or its Immich preview
+    /// is repaired, which is outside this read-only integration.
+    pub fn unavailable(&self, id: &str) -> rusqlite::Result<bool> {
+        Ok(self
+            .store
+            .index_connection()?
+            .query_row(
+                "SELECT unavailable IS NOT NULL FROM image_assets WHERE scope=?1 AND asset_id=?2",
+                params![self.scope, id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+    }
+    /// Count one failed analysis and return the running total.
+    pub fn record_failure(&self, id: &str) -> rusqlite::Result<i64> {
+        let db = self.store.index_connection()?;
+        db.execute(
+            "UPDATE image_assets SET attempts=attempts+1 WHERE scope=?1 AND asset_id=?2",
+            params![self.scope, id],
+        )?;
+        db.query_row(
+            "SELECT attempts FROM image_assets WHERE scope=?1 AND asset_id=?2",
+            params![self.scope, id],
+            |r| r.get(0),
+        )
+    }
+    /// Record why a photo cannot be analyzed so the owner sees a stable notice
+    /// instead of a retry that can never succeed.
+    pub fn mark_unavailable(&self, id: &str, reason: &str) -> rusqlite::Result<()> {
+        self.store.index_connection()?.execute(
+            "UPDATE image_assets SET unavailable=?3,retry_at=0 WHERE scope=?1 AND asset_id=?2",
+            params![self.scope, id, reason],
+        )?;
+        Ok(())
+    }
+    /// An explicit Analyze again clears the previous refusal so a repaired
+    /// original can recover without waiting for another automatic sweep.
+    pub fn clear_unavailable(&self, id: &str) -> rusqlite::Result<()> {
+        self.store.index_connection()?.execute(
+            "UPDATE image_assets SET unavailable=NULL,attempts=0,retry_at=0 WHERE scope=?1 AND asset_id=?2",
+            params![self.scope, id],
+        )?;
+        Ok(())
     }
     /// Cached candidates only. Their current access must be checked before
     /// returning any private metadata, including the tag-widening report.
@@ -528,7 +585,12 @@ impl Index<'_> {
     pub fn status(&self) -> rusqlite::Result<serde_json::Value> {
         let db = self.store.index_connection()?;
         let (total, analyzed, failed): (i64,i64,i64) = db.query_row(
-            "SELECT count(*),count(analysis),coalesce(sum(retry_at>0),0) FROM image_assets WHERE scope=?1",[self.scope],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+            "SELECT count(*),count(analysis),coalesce(sum(retry_at>0 AND unavailable IS NULL),0) FROM image_assets WHERE scope=?1",[self.scope],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        let unavailable: i64 = db.query_row(
+            "SELECT count(*) FROM image_assets WHERE scope=?1 AND unavailable IS NOT NULL",
+            [self.scope],
+            |r| r.get(0),
+        )?;
         let scan: Option<(i64, Option<String>)> = db
             .query_row(
                 "SELECT next_scan,error FROM image_scans WHERE scope=?1",
@@ -537,7 +599,7 @@ impl Index<'_> {
             )
             .optional()?;
         Ok(
-            serde_json::json!({"discovered":total,"analyzed":analyzed,"failed":failed,"scanning":scan.as_ref().is_none_or(|s| s.0<=crate::http::unix_timestamp()),"error":scan.and_then(|s|s.1)}),
+            serde_json::json!({"discovered":total,"analyzed":analyzed,"failed":failed,"unavailable":unavailable,"scanning":scan.as_ref().is_none_or(|s| s.0<=crate::http::unix_timestamp()),"error":scan.and_then(|s|s.1)}),
         )
     }
 }
@@ -548,4 +610,44 @@ impl Index<'_> {
 fn distinct_decision_tags(db: &Connection, scope: &str) -> rusqlite::Result<Vec<String>> {
     let mut stmt = db.prepare("SELECT DISTINCT tag FROM decision_tags WHERE scope=?1")?;
     stmt.query_map([scope], |row| row.get(0))?.collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider_accounts::ProviderAccountStore;
+
+    // A damaged original makes Immich fail every preview request the same way.
+    // The sweep used to reschedule it forever and keep the "will be retried"
+    // warning visible; an explicit Analyze again must still unblock the photo.
+    #[test]
+    fn unavailable_photos_stop_retrying_until_analyzed_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProviderAccountStore::open(
+            &temp.path().join("accounts.sqlite3"),
+            &temp.path().join("master.key"),
+        )
+        .unwrap();
+        let index = Index {
+            store: &store,
+            scope: "scope",
+        };
+        index
+            .observe("asset", "damaged.jpg", "2021-01-01T00:00:00Z", 1)
+            .unwrap();
+        assert_eq!(index.record_failure("asset").unwrap(), 1);
+        assert!(!index.unavailable("asset").unwrap());
+        index.retry_at("asset", Some(100)).unwrap();
+        index
+            .mark_unavailable("asset", "immich_request_failed")
+            .unwrap();
+        assert!(index.unavailable("asset").unwrap());
+        assert_eq!(index.retry_at("asset", None).unwrap(), 0);
+        let status = index.status().unwrap();
+        assert_eq!(status["failed"], 0);
+        assert_eq!(status["unavailable"], 1);
+        index.clear_unavailable("asset").unwrap();
+        assert!(!index.unavailable("asset").unwrap());
+        assert_eq!(index.record_failure("asset").unwrap(), 1);
+    }
 }

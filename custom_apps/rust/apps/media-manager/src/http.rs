@@ -1556,6 +1556,10 @@ impl ApiError {
         self.status
     }
 
+    pub(crate) fn code(&self) -> &'static str {
+        self.code
+    }
+
     pub(crate) fn new(
         status: StatusCode,
         code: &'static str,
