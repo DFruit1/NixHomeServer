@@ -169,8 +169,7 @@ in
       wantedBy = [ "multi-user.target" ];
       requires = [ "mkvmaker-storage-layout-v1.service" ];
       after = [ "mkvmaker-storage-layout-v1.service" ];
-      # Media Manager grants itself access to the inbox once it exists.
-      before = [ "mkvmaker-audio-import.service" "media-manager-storage-access.service" ];
+      before = [ "mkvmaker-audio-import.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -185,6 +184,13 @@ in
           ${lib.escapeShellArgs archiveDirs}
         setfacl -m g:mkvmaker:rwx,d:g:mkvmaker:rwx \
           ${lib.escapeShellArgs (writableDirs ++ archiveDirs)}
+        # Media Manager lists held books and its broker renames them. Its own
+        # access unit also covers this inbox, but on the deploy that first
+        # created the inbox it ran a second earlier and found nothing
+        # (2026-11-21), so the grant is made here as well.
+        setfacl -m g:media-manager:r-x,d:g:media-manager:r-x \
+          -m g:media-manager-broker:rwx,d:g:media-manager-broker:rwx \
+          ${lib.escapeShellArgs writableDirs}
       '';
     };
 
